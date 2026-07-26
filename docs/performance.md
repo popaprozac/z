@@ -77,14 +77,14 @@ Modularization is not automatically a win if it makes these numbers materially
 worse. Any regression beyond ordinary measurement noise needs an explanation
 or an optimization before the extraction is treated as complete.
 
-The subsequent signature/symbol, graph, and lexical-name extractions produced
-this comparison:
+The subsequent signature/symbol, graph, lexical-name, and shared type-shape
+extractions produced this comparison:
 
-| Operation | Path/model | Signatures/symbols | Graph | Names | Latest change |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | +5.7 ms / +2.2% |
-| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | +3.5 ms / +1.3% |
-| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | -71 ms / -3.3% |
+| Operation | Path/model | Signatures/symbols | Graph | Names | Type shapes | Latest change |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | 268.1 ms | +4.4 ms / +1.7% |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | 274.8 ms | +12.0 ms / +4.6% |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | 1.986 s | -67 ms / -3.3% |
 
 The Stage-1 results show that additional semantic modules do not inherently
 slow the native frontend. The small Stage-1 and Stage-0 changes after extracting
@@ -94,10 +94,10 @@ split's larger improvement suggests some parsing or semantic work scales
 nonlinearly with declarations or state per file. Smaller Stage-0 semantic units
 also reduce the exhaustive native-authority observation cost.
 
-After the name split, a warm timed resolver invocation spent approximately
-165 ms in native lexing, parsing, graph/name/type/expression analysis, and
+After the type-shape split, a warm timed resolver invocation spent approximately
+166 ms in native lexing, parsing, graph/name/type/expression analysis, and
 encoding, plus 9 ms decoding the temporary protocol. The first cold bridge
-rebuild spent approximately 856 ms in boundary preparation. Cold rebuild cost
+rebuild spent approximately 1.04 s in boundary preparation. Cold rebuild cost
 remains noisier than warm checks and is tracked separately.
 
 The earlier small ordinary Stage-0 increase demonstrated that loading more

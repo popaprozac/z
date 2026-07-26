@@ -642,8 +642,10 @@ When focused self-hosting work resumes, use this order:
    lexical module paths, signature projection, and symbol construction are now
    separate. Parsing, dependency edges, graph skeleton construction, and
    dependency ordering now live in `module-graph.zs`; lexical scope and name
-   validation now live in `semantic-names.zs`. Semantic orchestration plus
-   type/expression/ownership-flow analysis remain.
+   validation now live in `semantic-names.zs`. Shared intrinsic, numeric,
+   nullable, fixed-array, generic, and callable type-shape recognition now lives
+   in `semantic-type-shapes.zs`. Semantic orchestration plus declaration-type,
+   expression, and ownership-flow analysis remain.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
