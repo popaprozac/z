@@ -43,7 +43,7 @@ import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
-import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion } from "./sema.ts";
+import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion, ObjCCallInfo } from "./sema.ts";
 import { collectForeignHandleTypeAliases } from "./foreign-handle-types.ts";
 import {
   parseForeignDeclarationContracts,
@@ -890,17 +890,24 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
   }
 
-  const chainedSelector = objectiveCSelectorAt(context, word.start);
-  if (chainedSelector) {
-    const details = new Set<string>();
-    for (const declaration of context.semanticInfo.foreignInterfaces.values()) {
-      for (const method of declaration.methods) {
-        if (method.selector === chainedSelector && method.baseName === word.text) {
-          details.add(objCMethodDetail(method, foreignObjCRequiresMain(declaration, context)));
-        }
-      }
+  const chainedCall = objectiveCCallAt(context, word.start);
+  if (chainedCall) {
+    const declaration = [...context.semanticInfo.foreignInterfaces.values()]
+      .find((candidate) => candidate.className === chainedCall.className);
+    const method = chainedCall.async?.method
+      ?? declaration?.methods.find((candidate) => (
+        candidate.selector === chainedCall.selector
+        && candidate.instance === chainedCall.instance
+      ));
+    if (method) {
+      return objCMethodHover(
+        method,
+        declaration ? foreignObjCRequiresMain(declaration, context) : false,
+        source,
+        word.start,
+        word.end,
+      );
     }
-    if (details.size > 0) return markdownHover([...details].join("\n"), source, word.start, word.end);
   }
 
   const memberPrefix = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.$/);
@@ -1012,15 +1019,23 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     }
     const resolved = resolveReceiver(context, memberPrefix[1], word.start - memberPrefix[1].length - 1);
     if (resolved?.kind === "module") {
+      const declaration = resolveModuleFunction(resolved.module, resolved.namespacePath, word.text);
+      if (declaration) {
+        return foreignFunctionHover(declaration, resolved.module, source, word.start, word.end);
+      }
       const item = describeModuleMember(resolved.module, resolved.namespacePath, word.text);
       if (item) return markdownHover(item, source, word.start, word.end);
     }
     if (resolved?.kind === "objc") {
       const mainIsolated = foreignObjCRequiresMain(resolved.declaration, context);
       const property = collectObjCProperties(resolved.declaration, resolved.instance, context).find((item) => item.name === word.text);
-      if (property) return markdownHover(`${objcPropertyDetail(property, mainIsolated)}${foreignAvailabilityDetail(property.metadata)}`, source, word.start, word.end);
+      if (property) {
+        return objCPropertyHover(property, mainIsolated, source, word.start, word.end);
+      }
       const methods = collectObjCMethods(resolved.declaration, resolved.instance, context).filter((item) => item.baseName === word.text);
-      if (methods.length) return markdownHover(methods.map((method) => objCMethodDetail(method, mainIsolated)).join("\n"), source, word.start, word.end);
+      if (methods.length) {
+        return objCMethodsHover(methods, mainIsolated, source, word.start, word.end);
+      }
     }
     if (resolved?.kind === "struct") {
       const affinity = context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name);
@@ -2801,7 +2816,7 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     }
     if (containsDeclarationName(contract.nameLocation.offset, contract.name, word.start)) {
       if (declaration) {
-        return markdownHover(foreignFunctionDetail(declaration), source, word.start, word.end);
+        return foreignFunctionHover(declaration, module, source, word.start, word.end);
       }
       if (methodMatch) {
         return markdownHover(
@@ -4686,13 +4701,13 @@ function moduleCompletions(
   }
   for (const declaration of module.functions.values()) {
     if (declaration.namespacePath.join(".") !== namespaceName) continue;
-    items.push({ label: declaration.name, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
+    items.push({ label: declaration.name, kind: completionKinds.function, detail: foreignFunctionDetail(declaration, module) });
   }
   if (namespacePath.length === 0) {
     for (const [alias, qualifiedName] of module.functionAliases) {
       const declaration = module.functions.get(qualifiedName);
       if (declaration?.namespacePath.length) {
-        items.push({ label: alias, kind: completionKinds.function, detail: foreignFunctionDetail(declaration) });
+        items.push({ label: alias, kind: completionKinds.function, detail: foreignFunctionDetail(declaration, module) });
       }
     }
   }
@@ -4946,6 +4961,24 @@ function objcPropertyDetail(property: ForeignObjCProperty, inheritedMain: boolea
   return `${qualifiers.length > 0 ? `${qualifiers.join(" ")} ` : ""}${property.name}: ${foreignTypeName(property.type)}${executor}`;
 }
 
+function objCPropertyHover(
+  property: ForeignObjCProperty,
+  inheritedMain: boolean,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  const sections = [foreignAvailabilityMarkdown([property.metadata])]
+    .filter((section): section is string => Boolean(section));
+  return structuredMarkdownHover(
+    objcPropertyDetail(property, inheritedMain),
+    sections,
+    source,
+    start,
+    end,
+  );
+}
+
 function objCMethodSnippet(method: ForeignObjCMethod): string {
   const parameters = method.asyncCallbackParameter === null
     ? method.parameters
@@ -4982,6 +5015,95 @@ function objCMethodDetail(method: ForeignObjCMethod, inheritedMain: boolean | nu
   const throws = error?.kind === "object" ? ` throws ${publicObjCTypeName(error.typeName)}` : "";
   const visible = method.parameters.filter((_, index) => index !== method.asyncCallbackParameter);
   return `async ${method.baseName}(${signature(visible)}): ${result}${throws}${executor}  // synthesized from exactly-once callback\n${raw}`;
+}
+
+function objCMethodHover(
+  method: ForeignObjCMethod,
+  inheritedMain: boolean,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  return objCMethodsHover([method], inheritedMain, source, start, end);
+}
+
+function objCMethodsHover(
+  methods: readonly ForeignObjCMethod[],
+  inheritedMain: boolean,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  const signatures = new Set<string>();
+  for (const method of methods) {
+    const detail = objCMethodDetail(method, inheritedMain);
+    const availabilityStart = detail.indexOf("\n\nAvailability:");
+    const signatureDetail = availabilityStart >= 0 ? detail.slice(0, availabilityStart) : detail;
+    for (const line of signatureDetail.split("\n")) {
+      const signature = line.replace(/\s+\/\/.*$/, "").trim();
+      if (signature) signatures.add(signature);
+    }
+  }
+  const selectors = [...new Set(methods.map((method) => method.selector))];
+  const sections = [
+    selectors.length === 1
+      ? `**Objective-C selector:** \`${selectors[0]}\``
+      : `**Objective-C selectors**\n\n${selectors.map((selector) => `- \`${selector}\``).join("\n")}`,
+    foreignAvailabilityMarkdown(methods.map((method) => method.metadata)),
+  ].filter((section): section is string => Boolean(section));
+  return structuredMarkdownHover([...signatures].join("\n"), sections, source, start, end);
+}
+
+function foreignFunctionHover(
+  declaration: ForeignFunction,
+  module: ForeignModule,
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  const signatures = foreignFunctionDetail(declaration, module)
+    .split("\n")
+    .filter((line) => line.trim() && !line.startsWith("Availability:"))
+    .map((line) => line.replace(/\s+\/\/ C:.*$/, "").trim());
+  const nativeSignatures = [...new Set(declaration.overloads.map((overload) => overload.cSignature))];
+  const sections = [
+    `**Native ABI**\n\n${nativeSignatures.map((signature) => `- \`${signature}\``).join("\n")}`,
+    foreignAvailabilityMarkdown(declaration.overloads.map((overload) => overload.metadata)),
+  ].filter((section): section is string => Boolean(section));
+  return structuredMarkdownHover([...new Set(signatures)].join("\n"), sections, source, start, end);
+}
+
+function foreignAvailabilityMarkdown(
+  metadata: readonly ForeignDeclarationMetadata[],
+): string | null {
+  const details = new Set<string>();
+  const platformNames: Readonly<Record<string, string>> = {
+    macos: "macOS",
+    ios: "iOS",
+    watchos: "watchOS",
+    tvos: "tvOS",
+  };
+  for (const item of metadata) {
+    for (const availability of item.availability) {
+      const platform = platformNames[availability.platform ?? ""] ?? availability.platform ?? "All targets";
+      const message = availability.message ? ` — ${availability.message}` : "";
+      if (availability.unavailable) {
+        details.add(`${platform}: unavailable${message}`);
+        continue;
+      }
+      const facts = [
+        availability.introduced ? `${availability.introduced}+` : null,
+        availability.deprecated
+          ? `deprecated${availability.deprecatedVersion ? ` ${availability.deprecatedVersion}` : ""}`
+          : null,
+        availability.obsoleted ? `obsoleted ${availability.obsoleted}` : null,
+      ].filter((value): value is string => Boolean(value));
+      if (facts.length > 0) details.add(`${platform}: ${facts.join("; ")}${message}`);
+    }
+  }
+  return details.size > 0
+    ? `**Availability**\n\n${[...details].map((detail) => `- ${detail}`).join("\n")}`
+    : null;
 }
 
 function resolveForeignModuleNamespace(
@@ -5064,7 +5186,7 @@ function resolveModuleNamedType(
 
 function describeModuleMember(module: ForeignModule, namespacePath: readonly string[], name: string): string | null {
   const fn = resolveModuleFunction(module, namespacePath, name);
-  if (fn) return foreignFunctionDetail(fn);
+  if (fn) return foreignFunctionDetail(fn, module);
   const named = resolveModuleNamedType(module, namespacePath, name);
   if (named) return `${foreignNamedTypeDetail(named)}${foreignAvailabilityDetail(named.metadata)}`;
   const namespaceName = [...namespacePath, name].join(".");
@@ -5112,7 +5234,7 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   return `${named.exportName}: ${named.cName}${executor}  // native value: ${available.join(", ")}${missing}${thread}${constructorDetail}`;
 }
 
-function foreignFunctionDetail(declaration: ForeignFunction): string {
+function foreignFunctionDetail(declaration: ForeignFunction, module?: ForeignModule): string {
   return declaration.overloads.map((overload) => {
     const buffers = overload.buffers ?? [];
     const projectedBuffers = new Map(buffers.map((buffer) => [buffer.bufferParameter, buffer]));
@@ -5126,14 +5248,17 @@ function foreignFunctionDetail(declaration: ForeignFunction): string {
       .map(({ parameter, nativeIndex }, index) => (
         projectedBuffers.has(nativeIndex)
           ? `${projectedBuffers.get(nativeIndex)!.access === "inout" ? "inout " : ""}${projectedBuffers.get(nativeIndex)!.name}: Slice<${projectedBuffers.get(nativeIndex)!.elementType}>`
-          : foreignParameterDetail(parameter, index)
+          : foreignParameterDetail(parameter, index, module)
       ));
     if (overload.variadic) parameters.push("...arguments");
     const result = overload.status
-      ? `void throws ${foreignTypeName(overload.returnType)}`
-      : foreignTypeName(overload.returnType);
+      ? `${overload.connection ? "native.Connection" : "void"} throws ${foreignTypeName(overload.returnType, module)}`
+      : foreignTypeName(overload.returnType, module);
     const executor = overload.metadata.executorAffinity === "main" ? " on thread.main" : "";
-    return `${declaration.name}(${parameters.join(", ")}): ${result}${executor}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
+    const callbackError = overload.parameters.some((parameter) => (
+      parameter.type.kind === "callback" && parameter.type.failure !== null
+    ));
+    return `${declaration.name}${callbackError ? "<E>" : ""}(${parameters.join(", ")}): ${result}${executor}  // C: ${overload.cSignature}${foreignAvailabilityDetail(overload.metadata)}`;
   }).join("\n");
 }
 
@@ -5307,10 +5432,10 @@ function declarationHover(
   return null;
 }
 
-function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): string | null {
-  let selector: string | null = null;
+function objectiveCCallAt(context: AnalyzedSource, memberOffset: number): ObjCCallInfo | null {
+  let result: ObjCCallInfo | null = null;
   const visit = (value: unknown): void => {
-    if (selector || value === null || typeof value !== "object") return;
+    if (result || value === null || typeof value !== "object") return;
     if (Array.isArray(value)) {
       for (const item of value) visit(item);
       return;
@@ -5322,13 +5447,17 @@ function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): st
     };
     if (node.kind === "call" && node.location && node.callee?.kind === "member"
       && node.callee.location?.offset === memberOffset) {
-      selector = context.semanticInfo.objcCalls.get(node.location.offset)?.selector ?? null;
-      if (selector) return;
+      result = context.semanticInfo.objcCalls.get(node.location.offset) ?? null;
+      if (result) return;
     }
     for (const child of Object.values(value as Record<string, unknown>)) visit(child);
   };
   visit(context.program);
-  return selector;
+  return result;
+}
+
+function objectiveCSelectorAt(context: AnalyzedSource, memberOffset: number): string | null {
+  return objectiveCCallAt(context, memberOffset)?.selector ?? null;
 }
 
 type ObjCArgumentLabelInfo = {
@@ -5460,7 +5589,7 @@ function formatTypeParameters(
   }).join(", ")}>`;
 }
 
-function foreignTypeName(type: ForeignType): string {
+function foreignTypeName(type: ForeignType, module?: ForeignModule): string {
   if (type.kind === "z") return displayArrayType(type.name);
   if (type.kind === "nullPointer") return "null";
   if (type.kind === "fixedNative") return `fixed ${type.expression}`;
@@ -5469,30 +5598,63 @@ function foreignTypeName(type: ForeignType): string {
   if (type.kind === "named") return type.type.typeName;
   if (type.kind === "reference") return type.type.kind === "scalar" ? type.type.underlying : type.type.typeName;
   if (type.kind === "object") return `${type.className ?? "id"}${type.nullable ? " | null" : ""}`;
-  if (type.kind === "pointer") return type.stringView
-    ? `view cstring${type.nullable ? " | null" : ""}`
-    : `${type.cName}${type.nullable ? " | null" : ""}`;
+  if (type.kind === "pointer") {
+    if (type.stringView) return `view cstring${type.nullable ? " | null" : ""}`;
+    const sourceName = module ? foreignPointerSourceName(type, module) : null;
+    return sourceName ?? `${type.cName}${type.nullable ? " | null" : ""}`;
+  }
   if (type.kind === "pointerOut") return `${type.pointer.cName}${type.pointer.nullable ? " | null" : ""}`;
   if (type.kind === "scalarPointer") return type.typeName;
   if (type.kind === "callback" || type.kind === "block") {
     const parameters = type.parameters.map((parameter, index) => (
-      `${type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`}: ${foreignTypeName(parameter)}`
+      `${type.kind === "callback" ? type.parameterNames?.[index] ?? `argument${index + 1}` : `argument${index + 1}`}: ${foreignTypeName(parameter, module)}`
     ));
-    return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType)}`;
+    const throws = type.kind === "callback" && type.failure !== null ? " throws E" : "";
+    return `(${parameters.join(", ")}) => ${foreignTypeName(type.returnType, module)}${throws}`;
   }
   return type.cName;
 }
 
-function foreignParameterDetail(parameter: { readonly name: string | null; readonly type: ForeignType }, index: number): string {
+function foreignPointerSourceName(
+  pointer: Extract<ForeignType, { readonly kind: "pointer" }>,
+  module: ForeignModule,
+): string | null {
+  if (module.declaration.moduleName === "declarationNative") return null;
+  const aliases = collectForeignHandleTypeAliases(new Map([[module.declaration.moduleName, module]]));
+  const direct = aliases.displayByCanonicalName.get(pointer.typeName);
+  if (direct) return direct;
+  for (const [sourceName, canonical] of aliases.canonicalBySourceName) {
+    if (sourceName.startsWith("__z_objc:")) continue;
+    const candidate = module.types.get(canonical);
+    if (candidate?.kind !== "pointer" || candidate.identity !== pointer.identity) continue;
+    return `${sourceName}${pointer.nullable ? " | null" : ""}`;
+  }
+  return null;
+}
+
+function foreignParameterDetail(
+  parameter: { readonly name: string | null; readonly type: ForeignType; readonly literal?: string | number },
+  index: number,
+  module?: ForeignModule,
+): string {
   const name = parameter.name ?? `argument${index + 1}`;
-  if (parameter.type.kind === "pointerOut") return `out ${name}: ${foreignTypeName(parameter.type)}`;
+  if (parameter.literal !== undefined) {
+    const literal = typeof parameter.literal === "string" && module
+      ? `${module.declaration.moduleName}.${parameter.literal}`
+      : String(parameter.literal);
+    return `${name}: ${literal}`;
+  }
+  if (parameter.type.kind === "callback" && parameter.type.lifetime === "escape") {
+    return `move ${name}: ${foreignTypeName(parameter.type, module)}`;
+  }
+  if (parameter.type.kind === "pointerOut") return `out ${name}: ${foreignTypeName(parameter.type, module)}`;
   if (parameter.type.kind === "scalarPointer") {
     const capability = parameter.type.access === "in" ? "" : `${parameter.type.access} `;
-    return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
+    return `${capability}${name}: ${foreignTypeName(parameter.type, module)}`;
   }
-  if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type)}`;
+  if (parameter.type.kind !== "reference") return `${name}: ${foreignTypeName(parameter.type, module)}`;
   const capability = parameter.type.access === "move" ? "" : `${parameter.type.access} `;
-  return `${capability}${name}: ${foreignTypeName(parameter.type)}`;
+  return `${capability}${name}: ${foreignTypeName(parameter.type, module)}`;
 }
 
 function normalizeNativeSpelling(value: string): string {
@@ -5776,6 +5938,20 @@ function wordAt(source: string, offset: number): { readonly text: string; readon
 function markdownHover(value: string, source: string, start: number, end: number): Hover {
   return {
     contents: { kind: "markdown", value: `\`\`\`z\n${value}\n\`\`\`` },
+    range: { start: positionAt(source, start), end: positionAt(source, end) },
+  };
+}
+
+function structuredMarkdownHover(
+  code: string,
+  sections: readonly string[],
+  source: string,
+  start: number,
+  end: number,
+): Hover {
+  const detail = sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
+  return {
+    contents: { kind: "markdown", value: `\`\`\`z\n${code}\n\`\`\`${detail}` },
     range: { start: positionAt(source, start), end: positionAt(source, end) },
   };
 }

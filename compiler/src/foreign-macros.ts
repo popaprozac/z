@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import type { ImportDeclaration } from "./ast.ts";
@@ -7,6 +6,7 @@ import type {
   ForeignScalarTypeName,
   ForeignSourceLocation,
 } from "./foreign-ir.ts";
+import { runWithBufferedStdoutOrSpill } from "./process-output.ts";
 
 export function collectIntegerMacroConstants(
   declaration: ImportDeclaration,
@@ -22,13 +22,10 @@ export function collectIntegerMacroConstants(
     "-dD",
     "/dev/null",
   ];
-  const result = spawnSync(
+  const result = runWithBufferedStdoutOrSpill(
     objectiveC ? "xcrun" : "clang",
     objectiveC ? ["clang", ...arguments_] : arguments_,
-    {
-      encoding: "utf8",
-      maxBuffer: objectiveC ? 256 * 1024 * 1024 : 64 * 1024 * 1024,
-    },
+    objectiveC ? 256 * 1024 * 1024 : 64 * 1024 * 1024,
   );
   if (result.error || result.status !== 0) return new Map();
 

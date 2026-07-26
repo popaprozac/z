@@ -10,7 +10,10 @@ import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts"
 import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
 import { buildStage0ModuleGraph } from "../compiler/src/native-semantic-parity.ts";
 import { NativeFrontendDiagnosticError } from "../compiler/src/native-frontend-diagnostics.ts";
-import { runWithBufferedStdoutOrSpill } from "../compiler/src/process-output.ts";
+import {
+  isProcessOutputOverflowError,
+  runWithBufferedStdoutOrSpill,
+} from "../compiler/src/process-output.ts";
 import {
   decodeStage1DeclarationStream,
   decodeStage1ModuleGraphStream,
@@ -41,6 +44,56 @@ test("captures machine-readable compiler output beyond the former 64 MiB pipe ce
   assert.equal(Buffer.byteLength(result.stdout), mebibytes * 1024 * 1024);
 });
 
+test("recognizes child-process buffer and decoded-string overflow failures", () => {
+  const errorWith = (code: string, message: string): Error => Object.assign(new Error(message), { code });
+  assert.equal(isProcessOutputOverflowError(errorWith("ENOBUFS", "spawnSync ENOBUFS")), true);
+  assert.equal(isProcessOutputOverflowError(errorWith("ERR_STRING_TOO_LONG", "Cannot create a string longer than 0x1fffffe8 characters")), true);
+  assert.equal(isProcessOutputOverflowError(new RangeError("Invalid string length")), true);
+  assert.equal(isProcessOutputOverflowError(errorWith("ENOENT", "command not found")), false);
+  assert.equal(isProcessOutputOverflowError(undefined), false);
+});
+
+test("compiles the shimless curl application without performing its network request", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(projectRoot, "examples/applications/z-curl/main.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToNative(source, example).source;
+  assert.match(generated, /curl_easy_setopt\(easy, CURLOPT_URL/);
+  assert.match(generated, /return CURL_WRITEFUNC_ERROR;/);
+  assert.match(generated, /z_native_connection_deinit/);
+  assert.match(generated, /curl_easy_perform\(easy\)/);
+
+  const setoptOffset = source.indexOf("curl_easy_setopt") + 2;
+  const setoptHover = hover(source, example, setoptOffset)?.contents.value ?? "";
+  assert.match(setoptHover, /curl_easy_setopt\(curl: curl\.CURL, option: curl\.CURLOPT_URL, url: cstring\)/);
+  assert.match(setoptHover, /curl_easy_setopt<E>.*move write: .*throws E.*native\.Connection throws curl\.CURLcode/);
+  assert.match(setoptHover, /\*\*Native ABI\*\*/);
+  assert.doesNotMatch(setoptHover, /\/\/ C:/);
+});
+
+test("compiles installed Raylib and SDL3 application pressure probes", () => {
+  if (process.platform !== "darwin") return;
+
+  const raylibHeader = "/opt/homebrew/include/raylib.h";
+  if (existsSync(raylibHeader)) {
+    const raylibExample = resolve(projectRoot, "examples/applications/z-raylib/main.zs");
+    const generated = compileToNative(readFileSync(raylibExample, "utf8"), raylibExample).source;
+    assert.match(generated, /InitWindow\(800, 450, "Z \+ raylib"\)/);
+    assert.match(generated, /CheckCollisionPointRec\(mousePosition, quitButton\)/);
+    assert.match(generated, /CloseWindow\(\)/);
+  }
+
+  const sdlHeader = "/opt/homebrew/include/SDL3/SDL_render.h";
+  if (existsSync(sdlHeader)) {
+    const sdlExample = resolve(projectRoot, "examples/applications/z-sdl3/main.zs");
+    const generated = compileToNative(readFileSync(sdlExample, "utf8"), sdlExample).source;
+    assert.match(generated, /SDL_CreateWindow\("Z \+ SDL3", 800, 450, 0ULL\)/);
+    assert.match(generated, /SDL_GetMouseState\(&\(mouseX\), &\(mouseY\)\)/);
+    assert.match(generated, /SDL_HasEvent\(quitEvent\)/);
+    assert.match(generated, /SDL_DestroyWindow\(window\)/);
+  }
+});
+
 test("emits functions and direct imported C calls", () => {
   const source = `
     import stdio from "stdio.h";
@@ -67,6 +120,28 @@ test("lowers raw native expressions through isolated helpers and supports raw fu
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("keeps raw contextual when ordinary bindings expose native-language-named fields", () => {
+  const source = `
+    struct NativeFlags {
+      c: boolean;
+      cpp: boolean;
+      objc: boolean;
+    }
+
+    function main(): i32 {
+      const raw = NativeFlags({ c: true, cpp: false, objc: false });
+      if (raw.c) { return 1; }
+      if (raw.cpp) { return 2; }
+      if (raw.objc) { return 3; }
+      return 0;
+    }
+  `;
+  const generated = compileToC(source, "raw-contextual.zs");
+  assert.match(generated, /if \(\(raw\)\.c\)/);
+  assert.match(generated, /if \(\(raw\)\.cpp\)/);
+  assert.match(generated, /if \(\(raw\)\.objc\)/);
 });
 
 test("checks raw native boundary capabilities and supported representations", () => {
@@ -112,6 +187,62 @@ test("checks raw native boundary capabilities and supported representations", ()
     () => compileToNative(throwing, "raw-throws.zs"),
     /raw native function body must be synchronous and non-throwing/,
   );
+
+  const asyncRaw = `
+    async function operation(): i32 = raw c { return 42; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(asyncRaw, "raw-async.zs"),
+    /raw native function body must be synchronous and non-throwing/,
+  );
+
+  const genericRaw = `
+    function operation<T>(value: T): i32 = raw c { return 42; }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(genericRaw, "raw-generic.zs"),
+    /raw native function body cannot be generic/,
+  );
+
+  const rawMethod = `
+    struct Counter {
+      value: i32;
+      function read(): i32 = raw c { return 42; }
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(rawMethod, "raw-method.zs"),
+    /raw native method bodies are deferred/,
+  );
+
+  const generatedSymbol = `
+    struct Guard { id: i32; }
+    function main(): i32 {
+      return raw c using (): i32 {
+        Z_Guard guard;
+        guard.id = 1;
+        return guard.id;
+      };
+    }
+  `;
+  assert.throws(
+    () => compileToNative(generatedSymbol, "raw-generated-symbol.zs"),
+    /raw native source cannot reference compiler-owned symbol "Z_Guard"/,
+  );
+
+  const harmlessText = `
+    function main(): i32 {
+      return raw c using (): i32 {
+        // Z_NotAReference and _z_not_a_reference remain ordinary comment text.
+        const char *message = "Z_AlsoNotAReference";
+        return message[0] == 'Z' ? 0 : 1;
+      };
+    }
+  `;
+  assert.match(compileToC(harmlessText, "raw-generated-text.zs"), /Z_AlsoNotAReference/);
 });
 
 test("provides raw-boundary completion, hover, and syntax highlighting vocabulary", () => {
@@ -289,6 +420,22 @@ test("rejects unsafe native use outside its boundary and incompatible local asse
   assert.throws(
     () => compileToNative(escapedReturn, resolve(projectRoot, "unsafe-return-escape.zs")),
     /unsafe native value cannot be returned from its unsafe block/,
+  );
+
+  const launderedThroughCall = `
+    import native from "tests/fixtures/unsafe-native.h";
+    function identity(value: cstring): cstring { return value; }
+    function version(): cstring {
+      return unsafe {
+        const borrowed: cstring = native.z_unsafe_version();
+        select identity(borrowed);
+      };
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToNative(launderedThroughCall, resolve(projectRoot, "unsafe-call-escape.zs")),
+    /unsafe native value cannot cross an ordinary Z call boundary/,
   );
 });
 
@@ -1527,7 +1674,7 @@ test("passes typed Z functions to call-only C callbacks with optional context ad
   const escapingUse = source.indexOf("z_register_context_callback") + 1;
   assert.match(
     hover(source, fixture, escapingUse)?.contents.value ?? "",
-    /z_register_context_callback\(callback: \(argument1: i32\) => i32\): void/,
+    /z_register_context_callback\(move callback: \(argument1: i32\) => i32\): void/,
   );
   const completionSource = source.replace("callbacks.z_apply_i32", "callbacks.z_app");
   const completionOffset = completionSource.indexOf("callbacks.z_app") + "callbacks.z_app".length;
@@ -1908,6 +2055,66 @@ test("reports unsupported C signatures at the Z call site", () => {
     () => compileToC(source, "foreign-pointer.zs"),
     /C function "freopen" uses unsupported type "FILE \*"/,
   );
+});
+
+test("does not route unsupported by-value native records through unusable interop remedies", () => {
+  const directory = mkdtempSync("/tmp/z-native-value-diagnostic-");
+  const header = resolve(directory, "native-value.h");
+  const declaration = `${header}.zd`;
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(header, `
+    typedef struct NativeImage {
+      void *data;
+      int width;
+    } NativeImage;
+
+    static inline NativeImage z_image_load(void) {
+      NativeImage image = { 0, 0 };
+      return image;
+    }
+
+    static inline void z_image_unload(NativeImage image) {
+      (void)image;
+    }
+  `);
+  const source = `
+    import native from "./native-value.h";
+    function main(): i32 {
+      const image = native.z_image_load();
+      return 0;
+    }
+  `;
+  writeFileSync(fileName, source);
+
+  const direct = diagnostics(source, fileName)[0];
+  assert.equal(direct.code, "Z0823");
+  assert.match(direct.message, /native record "NativeImage" by value.*contains pointer storage/);
+  assert.match(direct.message, /adjacent \.zd file cannot make this by-value layout representable yet/);
+  assert.match(direct.message, /raw c\/cpp\/objc/);
+  assert.doesNotMatch(direct.message, /place a local unverified call inside `unsafe/);
+
+  writeFileSync(declaration, `
+    declare module "native-value.h" {
+      export function z_image_load(): _ {
+        deinit z_image_unload;
+      }
+      export function z_image_unload(move image: _): _;
+    }
+  `);
+  const declared = diagnostics(source, fileName)[0];
+  assert.equal(declared.code, "Z0823");
+  assert.match(declared.message, /native record "NativeImage" by value.*contains pointer storage/);
+  assert.match(declared.message, /raw c\/cpp\/objc/);
+
+  const unsafeSource = source.replace(
+    "const image = native.z_image_load();",
+    "unsafe { const image = native.z_image_load(); }",
+  );
+  const unsafeDiagnostic = diagnostics(unsafeSource, fileName)[0];
+  assert.equal(unsafeDiagnostic.code, "Z0823");
+  assert.match(unsafeDiagnostic.message, /unsafe cannot represent native record "NativeImage" passed by value/);
+  assert.match(unsafeDiagnostic.message, /raw c\/cpp\/objc/);
+  assert.doesNotMatch(unsafeDiagnostic.message, /checked \.zd projection/);
 });
 
 test("narrows, borrows, consumes, and cleans up owned C handles", () => {
@@ -2388,7 +2595,10 @@ test("surfaces native availability in hover and rejects universally unavailable 
     message: "use z_current",
   }]);
   const legacyUse = source.indexOf("z_legacy") + 2;
-  assert.match(hover(source, fileName, legacyUse)?.contents.value ?? "", /Availability: macos: introduced 10\.12, deprecated 13\.0/);
+  assert.match(
+    hover(source, fileName, legacyUse)?.contents.value ?? "",
+    /\*\*Availability\*\*[\s\S]*macOS: 10\.12\+; deprecated 13\.0/,
+  );
   const legacyDefinition = definition(source, `file://${fileName}`, legacyUse);
   assert.match(legacyDefinition?.uri ?? "", /tests\/fixtures\/z-availability\.h$/);
   assert.equal(legacyDefinition?.range.start.line, 5);
@@ -3487,6 +3697,14 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
     example,
   );
   assert.match(customGetter.source, /\[window isVisible\]/);
+
+  const activateOffset = source.indexOf("app.activate") + "app.".length + 2;
+  const activateHover = hover(source, example, activateOffset)?.contents.value ?? "";
+  assert.equal((activateHover.match(/activate\(\): void/g) ?? []).length, 1);
+  assert.match(activateHover, /activate\(\): void on thread\.main/);
+  assert.match(activateHover, /\*\*Objective-C selector:\*\* `activate`/);
+  assert.match(activateHover, /\*\*Availability\*\*[\s\S]*macOS: 14\.0\+/);
+  assert.doesNotMatch(activateHover, /iOS|watchOS|tvOS/);
 });
 
 test("narrows nullable Objective-C references before member access", () => {

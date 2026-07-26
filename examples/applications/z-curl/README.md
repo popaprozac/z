@@ -28,8 +28,10 @@ bun run z run examples/applications/z-curl/main.zs
 The application performs a real HTTPS `GET https://example.com`. libcurl
 delivers response chunks through a Z closure, which logs each borrowed
 `Slice<u8>` length and reports the consumed byte count to C. It therefore
-requires network connectivity when run. Compiler regressions use a separate
-local fixture and do not depend on the network.
+requires network connectivity when run. The compiler suite compiles this exact
+application and inspects its generated callback, connection cleanup, and
+request calls without launching the binary, so regression coverage does not
+depend on the network.
 
 The callback and context are installed as one checked operation even though the
 C ABI uses two separate `curl_easy_setopt` calls. The returned

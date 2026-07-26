@@ -43,7 +43,11 @@ export type ForeignType =
   | ForeignScalarPointerType
   | ForeignOutPointerType
   | ForeignPointerType
-  | { readonly kind: "unsupported"; readonly cName: string };
+  | {
+    readonly kind: "unsupported";
+    readonly cName: string;
+    readonly reason?: "byValueRecordWithPointers" | "byValueRecordLayout";
+  };
 
 export type ForeignNamedType = (
   | {

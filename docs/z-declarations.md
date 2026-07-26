@@ -241,6 +241,11 @@ second is the C parameter. Naming the projection keeps multiple ordinary
 projections distinct and gives callback adapters an unambiguous value such as
 `bytes.length`.
 
+The current callback tier is narrower: one callback may declare one named byte
+projection, although its length expression may multiply several native
+`size_t` factors. Multiple named projections and other element types remain
+future contract extensions.
+
 Callers pass stored fixed arrays, `Array<u8>`, or existing `Slice<u8>` values
 without spelling `in`; a slice is intrinsically borrowed. The declaration's
 `in data` describes the native pointer contract. The length disappears from the

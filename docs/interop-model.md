@@ -296,7 +296,10 @@ readable NUL-terminated text. An unsupported pointer without a compatible
 context becomes an opaque scope-local identity. It may compare with null and
 pass only to a native parameter with the exact same normalized pointer
 spelling. It has no members, indexing, dereference, arithmetic, ownership, or
-implicit cleanup, and it cannot leave the block. This first tier rejects
+implicit cleanup, cannot pass through an ordinary Z function, and cannot leave
+the block. Exact matching native calls remain available, while
+`String.from(value)` is the explicit owned-copy boundary for an asserted
+`cstring`. This first tier rejects
 nesting, async functions, suspension, generators, and closure construction. It also
 rejects unsupported by-value layouts rather than exposing generated C names.
 
@@ -317,6 +320,13 @@ identity or borrowed native storage may not.
 Unsafe code accepts the proof obligation locally; it does not turn off ordinary
 Z ownership or type checking. Reusable ownership, nullability, cleanup,
 callback, or threading facts still belong in `.zd`.
+
+Pointer-bearing native records passed by value are not an unsafe-pointer
+special case: Z must represent their complete ABI value in expressions and
+storage. Both checked and unsafe Z therefore reject them in the current tier,
+and `.zd` cannot yet make them representable. A one-off operation belongs in
+`raw`; a reusable checked value-resource contract remains a separate reviewed
+extension.
 
 Raw native source is the final escape hatch when an API cannot be represented
 as a Z call even with `.zd` facts. The anonymous form is an immediately applied
@@ -348,8 +358,10 @@ function nativeCount(input: i32): i32 = raw cpp {
 
 `raw objc` may be combined with `on thread.main`. Async, throwing, generic, and
 method raw bodies remain outside the first tier. Clang diagnostics are mapped
-back to the raw source location. Prefer header imports and `.zd`; raw code
-receives no Z safety proof inside the body.
+back to the raw source location. Until helpers move to separate translation
+units, identifiers beginning with compiler-owned `Z_` or `_z_` are rejected in
+embedded source. Prefer header imports and `.zd`; raw code receives no Z safety
+proof inside the body.
 
 The first `.zd` slice augments Clang declarations without repeating their ABI
 types. `_` means "use the header-derived type," while ordinary Z capabilities,

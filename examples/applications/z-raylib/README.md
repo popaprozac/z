@@ -9,8 +9,13 @@ interactive window with a hoverable quit button. It exercises:
 - explicit nominal-enum conversion with `i32(raylib.MOUSE_BUTTON_LEFT)`; and
 - deterministic global-runtime cleanup through Z `deinit`.
 
-The checked Z surface needs no `.zd` additions because this slice uses only
-plain C values and functions. `RaylibRuntime` ensures `CloseWindow()` runs on
+The checked Z surface needs no `.zd` additions because this deliberately narrow
+slice uses only plain C values and functions. That is not yet evidence that all
+of raylib is representable: APIs that pass pointer-bearing resource records
+such as `Image`, `Shader`, and `Model` by value remain outside Z's checked
+foreign-value tier. Z now diagnoses that boundary directly and recommends
+`raw c` for a one-off operation; a reviewed `.zd` value-resource contract is
+the intended reusable solution. `RaylibRuntime` ensures `CloseWindow()` runs on
 every exit after successful initialization.
 
 On macOS, install raylib with Homebrew and run from the repository root:

@@ -18,6 +18,14 @@ parameters initialize one scalar each.
 `SDLRuntime` calls `SDL_Quit()` last. On every exit after initialization, Z
 first destroys the renderer, then the window, then the runtime guard.
 
+The current loop is intentionally a temporary event probe. It pumps SDL and
+queries quit-event presence with `SDL_HasEvent`, but it does not dequeue
+ordinary events. The conventional `SDL_PollEvent(out event)` loop is blocked
+because `SDL_Event` is an ABI union and the current importer exposes its scalar
+`type` discriminator while withholding nested record and pointer payload
+members. This example therefore proves the checked window, renderer, scalar
+output, enum-conversion, and cleanup paths—not complete SDL event handling.
+
 On macOS, install SDL3 with Homebrew and run from the repository root:
 
 ```sh

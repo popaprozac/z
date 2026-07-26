@@ -372,6 +372,7 @@ function readHeader(
         pointerTypes,
         namedTypes,
         spelling.canonicalNativeName,
+        imported.unsupportedValueRecords,
       ),
       mapCallbackContext: mapCallbackContextType,
       mapCallbackRelease: mapCallbackReleaseType,
@@ -500,6 +501,7 @@ function collectNamedTypes(
   namespaces: ReadonlySet<string>;
   constants: ReadonlyMap<string, ForeignConstant>;
   byCName: ReadonlyMap<string, ForeignNamedType>;
+  unsupportedValueRecords: ReadonlyMap<string, "byValueRecordWithPointers" | "byValueRecordLayout">;
 } {
   const nodes: ClangNode[] = [];
   visit(root, (node) => nodes.push(node));
@@ -743,6 +745,18 @@ function collectNamedTypes(
     byCName.set(named.cName, named);
     byCName.set(named.qualifiedName, named);
   }
+  const unsupportedValueRecords = new Map<string, "byValueRecordWithPointers" | "byValueRecordLayout">();
+  for (const seed of seeds.values()) {
+    if (seed.kind !== "record" || namedTypes.has(seed.qualifiedName)) continue;
+    const reason = recordContainsPointer(seed, potential, new Set())
+      ? "byValueRecordWithPointers"
+      : "byValueRecordLayout";
+    unsupportedValueRecords.set(seed.cName, reason);
+    unsupportedValueRecords.set(seed.qualifiedName, reason);
+    if ((seedNames.get(seed.exportName)?.length ?? 0) === 1) {
+      unsupportedValueRecords.set(seed.exportName, reason);
+    }
+  }
 
   for (const seed of seeds.values()) {
     const named = namedTypes.get(seed.qualifiedName);
@@ -804,7 +818,7 @@ function collectNamedTypes(
       namespaces.add(named.namespacePath.slice(0, depth).join("."));
     }
   }
-  return { namedTypes, namedTypeAliases, namespaces, constants, byCName };
+  return { namedTypes, namedTypeAliases, namespaces, constants, byCName, unsupportedValueRecords };
 }
 
 function collectCxxValueCallables(
@@ -1375,6 +1389,25 @@ function recordIsSupported(
   return supported;
 }
 
+function recordContainsPointer(
+  seed: { typeName: string; kind: string; namespacePath: readonly string[]; declaration?: ClangNode },
+  named: ReadonlyMap<string, { typeName: string; kind: string; namespacePath: readonly string[]; declaration?: ClangNode }>,
+  visiting: Set<string>,
+): boolean {
+  if (seed.kind !== "record" || !seed.declaration || visiting.has(seed.typeName)) return false;
+  visiting.add(seed.typeName);
+  const containsPointer = (seed.declaration.inner ?? [])
+    .filter((field) => field.kind === "FieldDecl")
+    .some((field) => {
+      if (!field.type?.qualType) return false;
+      if (field.type.qualType.includes("*")) return true;
+      const nested = resolvePotentialNamedType(field.type.qualType, seed.namespacePath, named);
+      return nested?.kind === "record" && recordContainsPointer(nested, named, visiting);
+    });
+  visiting.delete(seed.typeName);
+  return containsPointer;
+}
+
 function resolvePotentialNamedType<T>(
   cName: string,
   namespacePath: readonly string[],
@@ -1594,6 +1627,7 @@ function mapForeignType(
   types: Map<string, ForeignPointerType>,
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   desugaredCName?: string,
+  unsupportedValueRecords: ReadonlyMap<string, "byValueRecordWithPointers" | "byValueRecordLayout"> = new Map(),
 ): ForeignType {
   if (position === "parameter" && (note?.callback?.lifetime === "call" || note?.callback?.lifetime === "escape")) {
     const callback = mapCallbackType(
@@ -1671,6 +1705,10 @@ function mapForeignType(
   if (named) {
     if (named.kind === "scalar") return { kind: "z", name: named.underlying, cName };
     return { kind: "named", type: named, cName };
+  }
+  const unsupportedValueRecord = unsupportedValueRecords.get(valueName);
+  if (unsupportedValueRecord) {
+    return { kind: "unsupported", cName, reason: unsupportedValueRecord };
   }
   if (
     stars === 2

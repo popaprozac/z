@@ -156,7 +156,7 @@ export function lex(
   let offset = 0;
   let line = base.line;
   let column = base.column;
-  let rawHeaderState: "none" | "language" | "body" = "none";
+  let rawHeaderState: "none" | "language" | "bodyOrUsing" | "boundary" = "none";
 
   const location = (): SourceLocation => ({ offset: base.offset + offset, line, column, fileName });
   const peek = (distance = 0): string => source[offset + distance] ?? "\0";
@@ -311,7 +311,9 @@ export function lex(
       if (rawHeaderState === "none" && text === "raw") {
         rawHeaderState = "language";
       } else if (rawHeaderState === "language") {
-        rawHeaderState = text === "c" || text === "cpp" || text === "objc" ? "body" : "none";
+        rawHeaderState = text === "c" || text === "cpp" || text === "objc" ? "bodyOrUsing" : "none";
+      } else if (rawHeaderState === "bodyOrUsing") {
+        rawHeaderState = text === "using" ? "boundary" : "none";
       }
       continue;
     }
@@ -414,11 +416,15 @@ export function lex(
       advance();
       advance();
       tokens.push({ kind: pairedKind, text: pair, location: start });
+      if (rawHeaderState === "language" || rawHeaderState === "bodyOrUsing") rawHeaderState = "none";
       continue;
     }
     const kind = punctuation[character];
     if (kind) {
-      if (kind === "leftBrace" && rawHeaderState === "body") {
+      if (
+        kind === "leftBrace"
+        && (rawHeaderState === "bodyOrUsing" || rawHeaderState === "boundary")
+      ) {
         advance();
         tokens.push({ kind: "leftBrace", text: "{", location: start });
         const bodyStart = location();
@@ -461,6 +467,24 @@ export function lex(
             advance();
             continue;
           }
+          if (/[A-Za-z_]/.test(current)) {
+            const identifierStart = location();
+            let identifier = "";
+            while (/[A-Za-z0-9_]/.test(peek())) identifier += advance();
+            if (identifier.startsWith("Z_") || identifier.startsWith("_z_")) {
+              throw new DiagnosticError(
+                fileName,
+                identifierStart,
+                `raw native source cannot reference compiler-owned symbol ${JSON.stringify(identifier)}`,
+                {
+                  code: "Z0820",
+                  notes: ["Z_ and _z_ are reserved generated-C namespaces and are not a stable foreign ABI"],
+                  helps: ["cross values through using, or call declarations supplied by an imported native header"],
+                },
+              );
+            }
+            continue;
+          }
           if (current === "{") {
             depth += 1;
             advance();
@@ -483,7 +507,13 @@ export function lex(
       }
       advance();
       tokens.push({ kind, text: character, location: start });
-      if (kind === "semicolon") rawHeaderState = "none";
+      if (
+        kind === "semicolon"
+        || rawHeaderState === "language"
+        || rawHeaderState === "bodyOrUsing"
+      ) {
+        rawHeaderState = "none";
+      }
       continue;
     }
 

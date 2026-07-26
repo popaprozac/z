@@ -280,6 +280,59 @@ code, escaping `objc.connect` storage remains in a synchronous
 application-lifetime function, and raw AppKit identities are not captured into
 the worker-owned persistence graph.
 
+## Native library application probes: curl, raylib, and SDL3
+
+Sources:
+
+- [`z-curl`](../examples/applications/z-curl)
+- [`z-raylib`](../examples/applications/z-raylib)
+- [`z-sdl3`](../examples/applications/z-sdl3)
+
+These applications test whether direct-header ergonomics survive contact with
+large, differently shaped C libraries. The compiler suite compiles the real
+application sources without launching their windows or performing curl's
+network request.
+
+The curl probe remains entirely in checked Z plus `.zd`. It proves typed status
+projection, fixed variadic options, a deterministically owned nullable handle,
+and an owner-tied callback/context pair whose native byte parameters appear as
+one borrowed `Slice<u8>`. No handwritten shim or raw block is involved.
+
+The raylib 6.0 header exposed 600 imported callable overloads in the measured
+environment. Of those, 302 fit the current checked tier and 298 were withheld.
+The interactive example deliberately uses the clean plain-value subset and
+needs no `.zd`; it must not be read as evidence that all raylib APIs work.
+Many withheld resource APIs pass pointer-bearing records such as `Image`,
+`Shader`, or `Model` by value. Z now diagnoses that representation boundary
+directly. Neither `unsafe` nor the current `.zd` vocabulary can make such a
+value representable; one-off access requires `raw c` until a reusable
+value-resource contract is reviewed.
+
+SDL3 proved that spill-backed Clang ingestion handles a 70.8 MB
+`SDL_render.h` AST and that `.zd` scalar `out f32` projections compose with
+owned window/renderer handles. It also exposed the union boundary:
+`SDL_Event`'s scalar `type` discriminator is imported, but nested record and
+pointer payload members are deliberately withheld. The current demo therefore
+uses `SDL_PumpEvents` plus `SDL_HasEvent`. That detects quit requests but does
+not dequeue ordinary events, so it is a temporary pressure probe rather than a
+reference SDL event loop. The intended follow-up is a checked
+`SDL_PollEvent(out event)` loop after nested union payloads receive a safe
+discriminated projection.
+
+Together these probes establish a useful line:
+
+| Native shape | Current result |
+| --- | --- |
+| Plain scalar/record C call | Direct checked import |
+| Missing ownership, status, callback, or scalar-pointer fact | Checked `.zd` contract |
+| Scope-local unsupported pointer proof | `unsafe`, without raw-pointer syntax |
+| Pointer-bearing record passed by value | Precise rejection; `raw` only in the current tier |
+| Nested C-union payload | Withheld pending a checked discriminator contract |
+
+The next design checkpoint is the reusable pointer-bearing value-resource
+shape. It should reuse Z's existing ownership vocabulary (`in`, `move`, and
+`deinit`) and be validated against raylib before new `.zd` syntax is committed.
+
 ## Loop-carried child-task slots
 
 An adversarial loop exposed a compiler/runtime soundness boundary: one

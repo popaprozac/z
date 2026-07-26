@@ -2131,7 +2131,10 @@ Raw boundaries initially admit ABI-stable integer, floating-point, boolean,
 view, and generated Result representations are rejected rather than exposing
 unstable names such as generated structs or liveness flags. `#line` mapping
 returns native diagnostics to the original `.zs` body. Rich embedded-language
-completion remains later editor work.
+completion remains later editor work. Until raw helpers move to separate
+translation units, embedded source also reserves compiler-owned identifiers
+beginning with `Z_` or `_z_`; referencing one is rejected rather than exposing
+an unstable generated-code ABI.
 
 The latter two tiers are escape hatches, not substitutes for extending FIIR and
 `.zd`. The first `unsafe` tier accepts two pointer shapes plus scalar/enum
@@ -2160,12 +2163,15 @@ scope-confined opaque native identity. It can be compared with `null` and
 passed only to an unsupported parameter with the exact same normalized native
 pointer spelling. It cannot be dereferenced, indexed, inspected, returned,
 stored outside the block, selected from a value-producing unsafe expression,
-or captured. `return` still exits the enclosing function. `select` may produce
-a representable scalar or independently owned Z value; for example,
-`String.from(borrowed)` copies an asserted `cstring` before it leaves the
-boundary. Unsafe blocks are synchronous and may
-not appear directly in an async function in this tier. Unsupported by-value
-layouts still require a checked `.zd` projection or raw source.
+captured, or passed through an ordinary Z call to conceal its unsafe origin.
+Exact matching native calls remain available, and `String.from(borrowed)` is
+the explicit owned-copy boundary for an asserted `cstring`. `return` still
+exits the enclosing function. `select` may produce a representable scalar or
+independently owned Z value. Unsafe blocks are synchronous and may not appear
+directly in an async function in this tier. Pointer-bearing native records
+passed by value remain unrepresentable in both checked and unsafe Z. The
+current `.zd` vocabulary cannot change that representation, so such an
+operation requires raw source until a reviewed value-resource contract lands.
 
 A C union may receive ABI-preserving storage through a contracted `out Union*`
 parameter without entering `unsafe`: the contract proves initialization of the

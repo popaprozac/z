@@ -1520,9 +1520,11 @@ An explicit `cstring` context may reinterpret a native character-pointer
 result. Other unsupported pointers become opaque scope-local identities. They
 may be compared with `null` and passed only to native parameters with the exact
 same pointer spelling. They cannot be dereferenced, indexed, inspected,
-returned, stored outside the block, captured by a closure, or used directly in async
-functions. The first tier does not add raw-pointer syntax or infer ownership,
-mutation, initialization, cleanup, or threading facts.
+returned, stored outside the block, captured by a closure, passed through an
+ordinary Z function to conceal their unsafe origin, or used directly in async
+functions. Exact matching native calls remain available. The first tier does
+not add raw-pointer syntax or infer ownership, mutation, initialization,
+cleanup, or threading facts.
 
 Imported C unions are a separate narrow case. A checked `.zd` `out Union*`
 contract may initialize ABI-preserving union storage without `unsafe`, but
@@ -1540,7 +1542,9 @@ not. Copy borrowed text with `String.from(value)` before selecting it.
 
 Prefer an adjacent `.zd` contract whenever the fact is reusable or should make
 the call safe. Use raw native source when the operation cannot be represented
-through Z types at all.
+through Z types at all. Pointer-bearing native records passed by value are one
+such current boundary: checked and unsafe Z both reject them, and the existing
+`.zd` vocabulary cannot change their representation.
 
 ### Raw native source
 
@@ -1576,7 +1580,10 @@ The supported language tags are `c`, `cpp`, and `objc`. A raw function may
 retain an `on thread.main` declaration. The first tier rejects `async`,
 `throws`, generics, raw methods, `move` operands, and Z-owned representations.
 Boundary types are currently ABI-stable scalars, `cstring`, and imported native
-types. Native compile errors point to the original `.zs` body.
+types. Embedded source cannot reference compiler-owned names beginning with
+`Z_` or `_z_`; those names are an unstable implementation detail until raw
+helpers move into separate translation units. Native compile errors point to
+the original `.zs` body.
 
 A project may explicitly configure `target.platform` and
 `target.minimumVersion` together in `z.json`. The target is compile-time project

@@ -49,11 +49,7 @@ export function runWithBufferedStdoutOrSpill(
     encoding: "utf8",
     maxBuffer: stdoutMaxBuffer,
   });
-  const overflowed = buffered.error
-    && (
-      (buffered.error as Error & { readonly code?: string }).code === "ENOBUFS"
-      || buffered.error.message.includes("maxBuffer")
-    );
+  const overflowed = isProcessOutputOverflowError(buffered.error);
   if (overflowed) return runWithSpilledStdout(command, arguments_);
   return {
     status: buffered.status,
@@ -61,4 +57,14 @@ export function runWithBufferedStdoutOrSpill(
     stderr: buffered.stderr ?? "",
     stdout: buffered.stdout ?? "",
   };
+}
+
+export function isProcessOutputOverflowError(error: Error | undefined): boolean {
+  if (!error) return false;
+  const code = (error as Error & { readonly code?: string }).code;
+  return code === "ENOBUFS"
+    || code === "ERR_STRING_TOO_LONG"
+    || error.message.includes("maxBuffer")
+    || error.message.includes("Cannot create a string longer than")
+    || error.message.includes("Invalid string length");
 }

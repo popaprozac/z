@@ -8682,6 +8682,16 @@ function checkArguments(
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const argument = args[index];
+    if (state.unsafeDepth > 0 && containsUnsafeUnverifiedValue(argument, state)) {
+      throw new DiagnosticError(fileName, argument.location, "an unsafe native value cannot cross an ordinary Z call boundary", {
+        code: "Z0822",
+        notes: ["an arbitrary Z callee could return, store, or otherwise extend the locally asserted native lifetime"],
+        helps: [
+          "consume an opaque value through an exactly matching native call",
+          "copy asserted cstring text with String.from before passing the owned String to Z code",
+        ],
+      });
+    }
     if (argument.kind === "identifier" && containsViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")))) {
       if (parameter.mode !== "in" || target.async) {
         throw new DiagnosticError(fileName, argument.location, `view-bearing value ${JSON.stringify(argument.name)} can only enter a synchronous in parameter`, {
@@ -11496,6 +11506,19 @@ function isUnsafeUnverifiedValue(expression: Expression, state: AnalysisState): 
   return false;
 }
 
+function containsUnsafeUnverifiedValue(expression: Expression, state: AnalysisState): boolean {
+  if (isUnsafeUnverifiedValue(expression, state)) return true;
+  if (expression.kind === "call") {
+    return expression.arguments.some((argument) => containsUnsafeUnverifiedValue(argument, state));
+  }
+  if (expression.kind === "member") return containsUnsafeUnverifiedValue(expression.object, state);
+  if (expression.kind === "index") {
+    return containsUnsafeUnverifiedValue(expression.object, state)
+      || containsUnsafeUnverifiedValue(expression.index, state);
+  }
+  return false;
+}
+
 function checkForeignCall(
   target: ForeignFunctionOverload,
   args: Expression[],
@@ -11521,7 +11544,29 @@ function checkForeignCall(
   ]
     .filter((type): type is Extract<ForeignType, { readonly kind: "unsupported" }> => type.kind === "unsupported");
   const unsupported = unsupportedTypes[0];
+  const unsupportedValueRecord = unsupportedTypes.find((type) => (
+    type.reason === "byValueRecordWithPointers"
+    || type.reason === "byValueRecordLayout"
+  ));
   if (unsupported && state.unsafeDepth === 0) {
+    if (unsupportedValueRecord) {
+      const pointerBearing = unsupportedValueRecord.reason === "byValueRecordWithPointers";
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `C function ${JSON.stringify(target.name)} passes unsupported native record ${JSON.stringify(unsupportedValueRecord.cName)} by value${pointerBearing ? " and that record contains pointer storage" : ""}`,
+        {
+          code: "Z0823",
+          notes: [
+            pointerBearing
+              ? "the current checked interop tier cannot represent a by-value record containing native pointers"
+              : "the current checked interop tier cannot represent this native record layout by value",
+            "an adjacent .zd file cannot make this by-value layout representable yet",
+          ],
+          helps: ["isolate this operation in raw c/cpp/objc source until native value-resource contracts are implemented"],
+        },
+      );
+    }
     throw new DiagnosticError(
       fileName,
       location,
@@ -11533,6 +11578,22 @@ function checkForeignCall(
     );
   }
   if (unsupported && state.unsafeDepth > 0) {
+    if (unsupportedValueRecord) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `unsafe cannot represent native record ${JSON.stringify(unsupportedValueRecord.cName)} passed by value`,
+        {
+          code: "Z0823",
+          notes: [
+            unsupportedValueRecord.reason === "byValueRecordWithPointers"
+              ? "the record contains native pointer storage; unsafe supports pointer pass-through, not pointer-bearing value layouts"
+              : "unsafe supports pointer pass-through, not unsupported by-value native layouts",
+          ],
+          helps: ["isolate this operation in raw c/cpp/objc source until native value-resource contracts are implemented"],
+        },
+      );
+    }
     const nonPointer = unsupportedTypes.find((type) => !isUnsafeNativePointerSpelling(type.cName));
     if (nonPointer) {
       throw new DiagnosticError(

@@ -117,6 +117,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     typeAliases.program,
     foreignHandleTypes.canonicalBySourceName,
   );
+  validateRawNativeDeclarationShapes(resolvedProgram, fileName);
   const inferredProgram = inferGenericCalls(resolvedProgram, fileName, foreignModules);
   const foreignIdentityTypes = new Set(
     [...foreignModules.values()].flatMap((module) => [...module.interfaces.values()].map((type) => type.typeName)),
@@ -215,6 +216,47 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeAuthoritativeExpressionResolutionCount: nativeSemanticBridge?.authoritativeExpressionCount() ?? 0,
     nativeFrontendParityMilliseconds,
   };
+}
+
+function validateRawNativeDeclarationShapes(program: Program, fileName: string): void {
+  const validateFunction = (declaration: Program["functions"][number]): void => {
+    if (!declaration.rawBody) return;
+    const diagnosticFile = declaration.rawBody.location.fileName ?? fileName;
+    if (declaration.async || declaration.errorType) {
+      throw new DiagnosticError(
+        diagnosticFile,
+        declaration.rawBody.location,
+        "a raw native function body must be synchronous and non-throwing in the first tier",
+        { code: "Z0820" },
+      );
+    }
+    if ((declaration.typeParameters?.length ?? 0) > 0) {
+      throw new DiagnosticError(
+        diagnosticFile,
+        declaration.rawBody.location,
+        "a raw native function body cannot be generic in the first tier",
+        {
+          code: "Z0820",
+          notes: ["the native body needs one concrete ABI signature"],
+        },
+      );
+    }
+  };
+  for (const declaration of program.functions) validateFunction(declaration);
+  for (const aggregate of program.structs) {
+    for (const method of aggregate.methods) {
+      if (!method.rawBody) continue;
+      throw new DiagnosticError(
+        method.rawBody.location.fileName ?? fileName,
+        method.rawBody.location,
+        "raw native method bodies are deferred beyond the first raw interop tier",
+        {
+          code: "Z0820",
+          helps: ["use a free raw native function with an explicit boundary signature"],
+        },
+      );
+    }
+  }
 }
 
 export function compileToC(source: string, fileName: string): string {
