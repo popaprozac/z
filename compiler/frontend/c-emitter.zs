@@ -206,13 +206,49 @@ function appendExpression(
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.enumValue) {
-    if (declaration.expressions[index].labels.length != 1) {
+    if (
+      declaration.expressions[index].labels.length < 1
+      || declaration.expressions[index].labels.length > 2
+    ) {
       throw "native C emission received a malformed enum value";
+    }
+    if (declaration.expressions[index].labels.length == 2) {
+      output.append("(Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("){.tag = Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("Tag_");
+      output.append(declaration.expressions[index].labels[0]);
+      output.append("}");
+      return;
     }
     output.append("Z_");
     output.append(declaration.expressions[index].value);
     output.append("_");
     output.append(declaration.expressions[index].labels[0]);
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.enumPayloadValue
+  ) {
+    if (
+      declaration.expressions[index].labels.length != 1
+      || declaration.expressions[index].children.length != 1
+    ) {
+      throw "native C emission received a malformed enum payload value";
+    }
+    output.append("(Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){.tag = Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("Tag_");
+    output.append(declaration.expressions[index].labels[0]);
+    output.append(", .payload.");
+    output.append(declaration.expressions[index].labels[0]);
+    output.append(" = ");
+    const payload = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, payload);
+    output.append("}");
     return;
   }
   throw "native C emission does not support this lowered expression yet";
@@ -521,20 +557,46 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   for (const declaration of program.enums) {
     output.append("typedef enum Z_");
     output.append(declaration.name);
+    if (declaration.payloadBearing) output.append("Tag");
     output.append(" {\n");
     let variant: usize = 0;
     while (variant < declaration.variants.length) {
       output.append("  Z_");
       output.append(declaration.name);
+      if (declaration.payloadBearing) output.append("Tag");
       output.append("_");
-      output.append(declaration.variants[variant]);
+      output.append(declaration.variants[variant].name);
       if (variant + 1 < declaration.variants.length) output.append(",");
       output.append("\n");
       variant = variant + 1;
     }
     output.append("} Z_");
     output.append(declaration.name);
+    if (declaration.payloadBearing) output.append("Tag");
     output.append(";\n\n");
+    if (declaration.payloadBearing) {
+      output.append("typedef struct Z_");
+      output.append(declaration.name);
+      output.append(" {\n  Z_");
+      output.append(declaration.name);
+      output.append("Tag tag;\n  union {\n");
+      for (const item of declaration.variants) {
+        match (in item.payload) {
+          some(type) => {
+            const payloadType = try cType(type);
+            output.append("    ");
+            output.append(payloadType);
+            output.append(" ");
+            output.append(item.name);
+            output.append(";\n");
+          }
+          none => {}
+        }
+      }
+      output.append("  } payload;\n} Z_");
+      output.append(declaration.name);
+      output.append(";\n\n");
+    }
   }
   for (const aggregate of program.structs) {
     output.append("typedef struct Z_");

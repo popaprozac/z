@@ -688,7 +688,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    back-edge state can join; error cleanup merging remains a future slice.
    Payload-free nominal enums are now executable through this path as C enum
    tags, including case values, equality, parameters, returns, and storage in
-   value structs. Payload-bearing enums, exhaustive match lowering, and
+   value structs. Cleanup-free scalar payload enums now lower to a tag plus
+   payload union and support payload construction and return transport.
+   Exhaustive match extraction, aggregate/cleanup-bearing payloads, and
    `Option`/`Result` representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,

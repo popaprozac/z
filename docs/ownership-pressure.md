@@ -642,9 +642,16 @@ evidence required before this tier broadens.
 The native emitter then begins the enum representation needed by errors without
 coupling both changes. Payload-free enums lower to nominal C enums with
 namespaced constants and retain their type through parameters, comparisons,
-returns, and value-struct fields. Payload variants still reject; they require a
-tagged payload representation and recursive cleanup before `Option`, `Result`,
-or typed `throw` can honestly use them.
+returns, and value-struct fields. Cleanup-bearing payload variants still reject;
+they require recursive active-variant cleanup before `Option`, `Result`, or
+typed `throw` can honestly use them.
+
+The first tagged representation is now executable for cleanup-free scalar
+payloads. A dedicated nominal tag plus C union carries payload constructors,
+payload-free cases, and returned enum values without erasing their Z type.
+Aggregate payloads remain rejected because accepting their layout before
+active-variant cleanup would reintroduce the shallow ownership bug the prior
+struct work just closed.
 
 What the compiler proves:
 

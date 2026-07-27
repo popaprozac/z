@@ -8246,6 +8246,39 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const enumExecution = spawnSync(enumExecutable, [], { encoding: "utf8" });
   assert.equal(enumExecution.status, 42, enumExecution.stderr);
 
+  const payloadEnumInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-payload-enum.zs",
+  );
+  const payloadEnumEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", payloadEnumInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(payloadEnumEmission.status, 0, payloadEnumEmission.stderr);
+  assert.match(payloadEnumEmission.stdout, /typedef enum Z_ReadingTag/);
+  assert.match(
+    payloadEnumEmission.stdout,
+    /typedef struct Z_Reading.*?int32_t count;.*?\} payload;/s,
+  );
+  assert.match(
+    payloadEnumEmission.stdout,
+    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_count, \.payload\.count = value\};/,
+  );
+  assert.match(
+    payloadEnumEmission.stdout,
+    /return \(Z_Reading\)\{\.tag = Z_ReadingTag_idle\};/,
+  );
+  const payloadEnumExecutable = resolve(directory, "payload-enum");
+  const payloadEnumCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", payloadEnumExecutable],
+    { encoding: "utf8", input: payloadEnumEmission.stdout },
+  );
+  assert.equal(payloadEnumCompilation.status, 0, payloadEnumCompilation.stderr);
+  const payloadEnumExecution = spawnSync(payloadEnumExecutable, [], { encoding: "utf8" });
+  assert.equal(payloadEnumExecution.status, 42, payloadEnumExecution.stderr);
+
   const cleanupInput = resolve(projectRoot, "tests/fixtures/self-host-emit-cleanup.zs");
   const cleanupEmission = spawnSync(
     process.execPath,

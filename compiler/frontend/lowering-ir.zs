@@ -45,7 +45,13 @@ export struct LoweredStruct {
 
 export struct LoweredEnum {
   name: String;
-  variants: Array<String>;
+  variants: Array<LoweredVariant>;
+  payloadBearing: boolean;
+}
+
+export struct LoweredVariant {
+  name: String;
+  payload: Option<LoweredType>;
 }
 
 export struct LoweredParameter {
@@ -69,6 +75,7 @@ export enum LoweredExpressionKind {
   fieldValue,
   structValue,
   enumValue,
+  enumPayloadValue,
 }
 
 export struct LoweredExpression {
@@ -150,6 +157,16 @@ function enumIndex(in program: Program, in name: String): Option<usize> {
     index = index + 1;
   }
   return Option<usize>.none;
+}
+
+function enumHasPayload(in program: Program, index: usize): boolean {
+  for (const variant of program.enums[index].variants) {
+    match (in variant.payload) {
+      some(_) => return true;
+      none => {}
+    }
+  }
+  return false;
 }
 
 function lowerType(in program: Program, in type: TypeReference): LoweredType throws String {
@@ -684,6 +701,49 @@ function lowerExpression(
     }
     const calleeInput = tree.nodes[index].children[0];
     if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const enumInput = tree.nodes[calleeInput].children[0];
+      if (tree.nodes[enumInput].kind == ExpressionKind.identifierExpression) {
+        match (enumIndex(program, tree.nodes[enumInput].value)) {
+          some(declarationIndex) => {
+            for (const variant of program.enums[declarationIndex].variants) {
+              if (variant.name == tree.nodes[calleeInput].value) {
+                match (in variant.payload) {
+                  some(_) => {
+                    if (tree.nodes[index].children.length != 2) {
+                      throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
+                    }
+                    const payloadInput = tree.nodes[index].children[1];
+                    const payload = try lowerExpression(
+                      program,
+                      tree,
+                      payloadInput,
+                      inout output
+                    );
+                    let children = Array<usize>();
+                    children.push(payload);
+                    let labels = Array<String>();
+                    labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+                    return pushExpression(
+                      inout output,
+                      LoweredExpressionKind.enumPayloadValue,
+                      tree.nodes[enumInput].value,
+                      children,
+                      labels
+                    );
+                  }
+                  none => {}
+                }
+              }
+            }
+          }
+          none => {}
+        }
+      }
+    }
+    if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
     ) {
@@ -757,6 +817,9 @@ function lowerExpression(
               }
               let labels = Array<String>();
               labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+              if (enumHasPayload(program, declarationIndex)) {
+                labels.push("tagged");
+              }
               return pushExpression(
                 inout output,
                 LoweredExpressionKind.enumValue,
@@ -1039,17 +1102,33 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
 
   let enums = Array<LoweredEnum>();
   for (const declaration of program.enums) {
-    let variants = Array<String>();
+    let variants = Array<LoweredVariant>();
+    let payloadBearing = false;
     for (const variant of declaration.variants) {
+      let payload = Option<LoweredType>.none;
       match (in variant.payload) {
-        some(_) => throw `native lowering does not support payload enum ${declaration.name} yet`;
+        some(type) => {
+          const lowered = try lowerType(program, type);
+          if (
+            lowered.kind == LoweredTypeKind.structType
+            || lowered.kind == LoweredTypeKind.enumType
+          ) {
+            throw `native lowering does not support cleanup-capable payload enum ${declaration.name} yet`;
+          }
+          payload = Option.some(move lowered);
+          payloadBearing = true;
+        }
         none => {}
       }
-      variants.push(variant.name.copyBytes(0, variant.name.byteLength));
+      variants.push(LoweredVariant({
+        name: variant.name.copyBytes(0, variant.name.byteLength),
+        payload,
+      }));
     }
     enums.push(LoweredEnum({
       name: declaration.name.copyBytes(0, declaration.name.byteLength),
       variants,
+      payloadBearing,
     }));
   }
 

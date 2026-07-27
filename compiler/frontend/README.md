@@ -149,6 +149,11 @@ construction are semantic lowering decisions, not formatting. Deterministic
 cleanup can now extend the IR with explicit scope-exit plans rather than
 teaching the C printer to rediscover ownership from syntax.
 
+Enums with cleanup-free scalar payloads now use a separate tag enum plus C
+payload union. Payload constructors and payload-free cases both preserve the
+nominal enum through function return. Aggregate payloads remain fail-closed
+until active-variant cleanup and match extraction share that representation.
+
 The first cleanup plans are now executable for ownership-bearing value
 parameters and top-level linear locals whose custom `deinit` body is empty. A
 lowered return evaluates its result into a temporary, runs reverse exit cleanup,
