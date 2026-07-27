@@ -203,8 +203,11 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   `try` now propagates failure and replaces scalar or cleanup-bearing storage
   only after success, destroying the previous owner exactly once. Terminating
   `return`/`throw` match arms, explicit String `copy`, and checked integer
-  shifts compose through the same IR. The real compiler probe now reaches
-  `Map<String, usize>` in the semantic model. A local selective alias is resolved back to the exported
+  shifts compose through the same IR. Native `Map<String, scalar>` lowering
+  now emits owned String keys, open-addressed hashed lookup, `set`, `has`,
+  `get`, and deterministic cleanup. The real compiler probe advances through
+  `Map<String, usize>` and now reaches `Set<String>` in module binding
+  validation. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

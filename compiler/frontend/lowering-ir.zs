@@ -38,6 +38,7 @@ export enum LoweredTypeKind {
   usizeType,
   stringType,
   arrayType,
+  mapType,
   structType,
   enumType,
 }
@@ -62,6 +63,12 @@ export struct LoweredStruct {
 export struct LoweredArray {
   name: String;
   elementType: LoweredType;
+}
+
+export struct LoweredMap {
+  name: String;
+  keyType: LoweredType;
+  valueType: LoweredType;
 }
 
 export struct LoweredEnum {
@@ -122,6 +129,11 @@ export enum LoweredExpressionKind {
   arrayLength,
   arrayIndex,
   arrayPush,
+  mapEmpty,
+  mapLength,
+  mapHas,
+  mapGet,
+  mapSet,
   textBufferEmpty,
   textBufferAppend,
   textBufferAppendBytes,
@@ -191,6 +203,7 @@ export struct LoweredFunction {
 
 export struct LoweredProgram {
   arrays: Array<LoweredArray>;
+  maps: Array<LoweredMap>;
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
@@ -267,6 +280,15 @@ function intrinsicArrayName(in elementType: LoweredType): String {
   return `__z_Array_${identity}`;
 }
 
+function intrinsicMapName(
+  in keyType: LoweredType,
+  in valueType: LoweredType
+): String {
+  const keyIdentity = loweredTypeIdentity(keyType);
+  const valueIdentity = loweredTypeIdentity(valueType);
+  return `__z_Map_${keyIdentity.byteLength}_${keyIdentity}${valueIdentity}`;
+}
+
 function intrinsicResultName(
   in successType: LoweredType,
   in errorType: LoweredType
@@ -307,6 +329,16 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (stringStartsWith(name, "__z_Map_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.mapType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "view ")) {
+    const targetName = name.copyBytes(5, name.byteLength);
+    return try lowerTypeName(program, targetName);
+  }
   match (intrinsicOptionPayloadName(name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -328,6 +360,14 @@ function lowerTypeName(
         return LoweredType({
           kind: LoweredTypeKind.arrayType,
           name: intrinsicArrayName(elementType),
+        });
+      }
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        const keyType = try lowerTypeName(program, generic.arguments[0]);
+        const valueType = try lowerTypeName(program, generic.arguments[1]);
+        return LoweredType({
+          kind: LoweredTypeKind.mapType,
+          name: intrinsicMapName(keyType, valueType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -367,6 +407,14 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (stringStartsWith(name, "view ")) {
+    const targetName = name.copyBytes(5, name.byteLength);
+    return try lowerModuleTypeName(
+      program,
+      importedTypes,
+      targetName
+    );
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {
@@ -389,6 +437,22 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.arrayType,
           name: intrinsicArrayName(elementType),
+        });
+      }
+      if (generic.base == "Map" && generic.arguments.length == 2) {
+        const keyType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[1]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.mapType,
+          name: intrinsicMapName(keyType, valueType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -445,6 +509,7 @@ function lowerBindingType(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
+  in ownerName: String,
   index: usize
 ): LoweredType throws String {
   match (in arena.nodes[index].typeAnnotation) {
@@ -464,6 +529,31 @@ function lowerBindingType(
       importedTypes,
       binding.typeName
     );
+  }
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        match (staticallyResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          root
+        )) {
+          some(typeName) => return try lowerModuleTypeName(
+            program,
+            importedTypes,
+            typeName
+          );
+          none => {}
+        }
+      }
+      none => {}
+    }
+    none => {}
   }
   throw `native lowering could not find the inferred type for local ${arena.nodes[index].name}`;
 }
@@ -548,6 +638,7 @@ function aggregateNeedsCleanup(
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
   if (
     type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.mapType
     || type.kind == LoweredTypeKind.stringType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
@@ -713,6 +804,7 @@ function moduleTypeNeedsCleanupDepth(
 ): boolean {
   if (
     type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.mapType
     || type.kind == LoweredTypeKind.stringType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
@@ -783,11 +875,73 @@ function intrinsicArrayDeclaration(
   }
 }
 
+function intrinsicMapDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<LoweredMap> throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Map" || generic.arguments.length != 2) {
+        return Option<LoweredMap>.none;
+      }
+      const keyType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
+      const valueType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[1]
+      );
+      return Option.some(LoweredMap({
+        name: intrinsicMapName(keyType, valueType),
+        keyType,
+        valueType,
+      }));
+    }
+    none => return Option<LoweredMap>.none;
+  }
+}
+
 function intrinsicOptionDeclaration(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
+  match (intrinsicOptionPayloadName(name)) {
+    some(payloadName) => {
+      const payload = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        payloadName
+      );
+      let variants = Array<LoweredVariant>();
+      variants.push(LoweredVariant({
+        name: "some",
+        payload: Option.some(LoweredType({
+          kind: payload.kind,
+          name: payload.name.copyBytes(0, payload.name.byteLength),
+        })),
+      }));
+      variants.push(LoweredVariant({
+        name: "none",
+        payload: Option<LoweredType>.none,
+      }));
+      return Option.some(LoweredEnum({
+        name: intrinsicOptionName(payload),
+        variants,
+        payloadBearing: true,
+        needsDeinit: moduleTypeNeedsCleanup(
+          program,
+          importedTypes,
+          payload
+        ),
+      }));
+    }
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base != "Option" || generic.arguments.length != 1) {
@@ -1774,6 +1928,194 @@ function uniquelyResolvedFieldTypeName(
   return Option.some(move resolved);
 }
 
+function namedValueTypeName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in name: String,
+  useOffset: usize
+): Option<String> {
+  let resolved = "";
+  let resolvedOffset: usize = 0;
+  for (const binding of evidence.bindingResolutions) {
+    if (
+      binding.name == name
+      && binding.offset <= useOffset
+      && (
+        resolved.byteLength == 0
+        || binding.offset >= resolvedOffset
+      )
+    ) {
+      resolved = binding.typeName.copyBytes(0, binding.typeName.byteLength);
+      resolvedOffset = binding.offset;
+    }
+  }
+  if (resolved.byteLength > 0) return Option.some(move resolved);
+  for (const declaration of program.functions) {
+    if (declaration.name != ownerName) continue;
+    for (const parameter of declaration.parameters) {
+      if (parameter.name == name) {
+        return Option.some(parameter.type.name.copyBytes(
+          0,
+          parameter.type.name.byteLength
+        ));
+      }
+    }
+  }
+  return Option<String>.none;
+}
+
+function fieldTypeNameForOwner(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String,
+  in fieldName: String
+): Option<String> {
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name != ownerTypeName) continue;
+    for (const field of aggregate.fields) {
+      if (field.name == fieldName) {
+        return Option.some(field.type.name.copyBytes(
+          0,
+          field.type.name.byteLength
+        ));
+      }
+    }
+  }
+  for (const imported of importedTypes) {
+    if (
+      imported.localName != ownerTypeName
+      && imported.targetName != ownerTypeName
+    ) continue;
+    for (const field of imported.fields) {
+      if (field.name == fieldName) {
+        return Option.some(loweredTypeIdentity(field.type));
+      }
+    }
+  }
+  return Option<String>.none;
+}
+
+function staticallyResolvedExpressionTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => return Option.some(move name);
+    none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    const name = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    const offset = tree.nodes[index].offset;
+    const named = namedValueTypeName(
+      program,
+      evidence,
+      ownerName,
+      name,
+      offset
+    );
+    match (named) {
+      some(typeName) => return Option.some(move typeName);
+      none => {}
+    }
+    let loopIndex: usize = 0;
+    let loopOffset: usize = 0;
+    while (loopIndex < arena.nodes.length) {
+      if (
+        arena.nodes[loopIndex].kind == StatementKind.forStatement
+        && arena.nodes[loopIndex].name == name
+        && arena.nodes[loopIndex].offset <= offset
+        && arena.nodes[loopIndex].offset >= loopOffset
+      ) {
+        match (in arena.nodes[loopIndex].expression) {
+          some(iterable) => match (in iterable.tree) {
+            some(iterableTree) => {
+              const iterableRoot = iterableTree.root;
+              match (staticallyResolvedExpressionTypeName(
+                program,
+                importedTypes,
+                evidence,
+                arena,
+                ownerName,
+                iterableTree,
+                iterableRoot
+              )) {
+                some(iterableType) => {
+                  match (genericTypeShape(iterableType)) {
+                    some(generic) => {
+                      if (
+                        generic.base == "Array"
+                        && generic.arguments.length == 1
+                      ) {
+                        return Option.some(generic.arguments[0].copyBytes(
+                          0,
+                          generic.arguments[0].byteLength
+                        ));
+                      }
+                    }
+                    none => {}
+                  }
+                  if (
+                    stringStartsWith(iterableType, "__z_Array_")
+                    && iterableType.byteLength > 10
+                  ) {
+                    return Option.some(iterableType.copyBytes(
+                      10,
+                      iterableType.byteLength
+                    ));
+                  }
+                }
+                none => {}
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+        loopOffset = arena.nodes[loopIndex].offset;
+      }
+      loopIndex = loopIndex + 1;
+    }
+    return Option<String>.none;
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    const fieldName = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    match (staticallyResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      tree,
+      receiver
+    )) {
+      some(ownerTypeName) => return fieldTypeNameForOwner(
+        program,
+        importedTypes,
+        ownerTypeName,
+        fieldName
+      );
+      none => {}
+    }
+  }
+  return Option<String>.none;
+}
+
 function lowerExpression(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -2125,6 +2467,20 @@ function lowerExpression(
               Array<String>()
             );
           }
+          if (generic.base == "Map" && generic.arguments.length == 2) {
+            const mapType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              tree.nodes[calleeInput].value
+            );
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.mapEmpty,
+              mapType.name,
+              Array<usize>(),
+              Array<String>()
+            );
+          }
         }
         none => {}
       }
@@ -2219,6 +2575,66 @@ function lowerExpression(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && (
+        tree.nodes[calleeInput].value == "has"
+        || tree.nodes[calleeInput].value == "get"
+        || tree.nodes[calleeInput].value == "set"
+      )
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.mapType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            let argument: usize = 1;
+            while (argument < tree.nodes[index].children.length) {
+              const argumentInput = tree.nodes[index].children[argument];
+              const value = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                argumentInput,
+                inout output
+              );
+              children.push(value);
+              argument = argument + 1;
+            }
+            let kind = LoweredExpressionKind.mapHas;
+            if (tree.nodes[calleeInput].value == "get") {
+              kind = LoweredExpressionKind.mapGet;
+            } else if (tree.nodes[calleeInput].value == "set") {
+              kind = LoweredExpressionKind.mapSet;
+            }
+            return pushExpression(
+              inout output,
+              kind,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].value == "push"
       && tree.nodes[calleeInput].children.length == 1
       && tree.nodes[index].children.length == 2
@@ -2264,6 +2680,28 @@ function lowerExpression(
             return pushExpression(
               inout output,
               LoweredExpressionKind.arrayPush,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+          if (
+            receiverType.kind == LoweredTypeKind.mapType
+            && tree.nodes[index].value == "length"
+          ) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.mapLength,
               receiverType.name,
               children,
               Array<String>()
@@ -2905,12 +3343,25 @@ function directThrowingCallResult(
 
 function matchSubjectTypeName(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
+  match (staticallyResolvedExpressionTypeName(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    tree,
+    index
+  )) {
+    some(name) => return Option.some(move name);
+    none => {}
+  }
   match (resolvedExpressionTypeName(evidence, tree, index)) {
     some(name) => return Option.some(name);
     none => {}
@@ -3037,8 +3488,10 @@ function matchEnumDeclaration(
   root: usize
 ): LoweredEnum throws String {
   const subjectInput = tree.nodes[root].children[0];
+  let resolvedSubjectName = "";
   match (matchSubjectTypeName(
     program,
+    importedTypes,
     evidence,
     arena,
     ownerName,
@@ -3046,6 +3499,7 @@ function matchEnumDeclaration(
     subjectInput
   )) {
     some(name) => {
+      resolvedSubjectName = name.copyBytes(0, name.byteLength);
       const intrinsic = try intrinsicEnumDeclaration(
         program,
         importedTypes,
@@ -3099,6 +3553,9 @@ function matchEnumDeclaration(
     none => {
       const subject = tree.nodes[root].children[0];
       const subjectKind = expressionKindName(tree.nodes[subject].kind);
+      if (resolvedSubjectName.byteLength > 0) {
+        throw `native match lowering could not lower ${resolvedSubjectName} for ${subjectKind} subject at ${tree.nodes[subject].line}:${tree.nodes[subject].column}`;
+      }
       throw `native match lowering could not resolve ${subjectKind} subject at ${tree.nodes[subject].line}:${tree.nodes[subject].column}`;
     }
   };
@@ -3517,6 +3974,7 @@ function lowerStatement(
                   );
                   match (matchSubjectTypeName(
                     program,
+                    importedTypes,
                     evidence,
                     arena,
                     ownerName,
@@ -3693,6 +4151,7 @@ function lowerStatement(
                 importedTypes,
                 evidence,
                 arena,
+                ownerName,
                 index
               );
               const call = try lowerExpression(
@@ -3795,6 +4254,7 @@ function lowerStatement(
                 importedTypes,
                 evidence,
                 arena,
+                ownerName,
                 index
               );
               let children = Array<usize>();
@@ -3870,6 +4330,7 @@ function lowerStatement(
       importedTypes,
       evidence,
       arena,
+      ownerName,
       index
     );
     type = Option.some(move loweredType);
@@ -4051,7 +4512,15 @@ function lowerStatement(
         some(tree) => {
           const root = tree.root;
           let typeName = "";
-          match (resolvedExpressionTypeName(evidence, tree, root)) {
+          match (staticallyResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            arena,
+            ownerName,
+            tree,
+            root
+          )) {
             some(resolved) => typeName = resolved;
             none => {}
           }
@@ -4069,7 +4538,15 @@ function lowerStatement(
             }
           }
           if (typeName.byteLength == 0) {
-            throw "native lowering could not resolve the for iterable type";
+            match (in type) {
+              some(elementType) => {
+                typeName = intrinsicArrayName(elementType);
+              }
+              none => {}
+            }
+          }
+          if (typeName.byteLength == 0) {
+            throw `native lowering could not resolve the for iterable type at ${tree.nodes[root].line}:${tree.nodes[root].column}`;
           }
           const iterableType = try lowerModuleTypeName(
             program,
@@ -4355,6 +4832,16 @@ function containsLoweredArray(
   return false;
 }
 
+function containsLoweredMap(
+  in maps: Array<LoweredMap>,
+  in name: String
+): boolean {
+  for (const declaration of maps) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function containsLoweredFunction(
   in functions: Array<LoweredFunction>,
   in name: String
@@ -4561,6 +5048,7 @@ function collectIntrinsicTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String,
   inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   match (genericTypeShape(name)) {
@@ -4571,6 +5059,7 @@ function collectIntrinsicTypeName(
           importedTypes,
           argument,
           inout arrays,
+          inout maps,
           inout enums
         );
       }
@@ -4583,6 +5072,19 @@ function collectIntrinsicTypeName(
         some(declaration) => {
           if (!containsLoweredArray(arrays, declaration.name)) {
             arrays.push(move declaration);
+          }
+        }
+        none => {}
+      }
+      const map = try intrinsicMapDeclaration(
+        program,
+        importedTypes,
+        name
+      );
+      match (map) {
+        some(declaration) => {
+          if (!containsLoweredMap(maps, declaration.name)) {
+            maps.push(move declaration);
           }
         }
         none => {}
@@ -4610,6 +5112,7 @@ function collectArenaIntrinsicEnums(
   in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
   inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   for (const statement of arena.nodes) {
@@ -4619,6 +5122,7 @@ function collectArenaIntrinsicEnums(
         importedTypes,
         type.name,
         inout arrays,
+        inout maps,
         inout enums
       );
       none => {}
@@ -4633,6 +5137,7 @@ function collectArenaIntrinsicEnums(
                 importedTypes,
                 node.value,
                 inout arrays,
+                inout maps,
                 inout enums
               );
             }
@@ -4652,6 +5157,7 @@ function collectArenaIntrinsicEnums(
                 importedTypes,
                 node.value,
                 inout arrays,
+                inout maps,
                 inout enums
               );
             }
@@ -4667,9 +5173,31 @@ function collectArenaIntrinsicEnums(
 function collectIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
+  for (const binding of evidence.bindingResolutions) {
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      binding.typeName,
+      inout arrays,
+      inout maps,
+      inout enums
+    );
+  }
+  for (const expression of evidence.expressionResolutions) {
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      expression.typeName,
+      inout arrays,
+      inout maps,
+      inout enums
+    );
+  }
   for (const aggregate of program.aggregates) {
     for (const field of aggregate.fields) {
       try collectIntrinsicTypeName(
@@ -4677,6 +5205,7 @@ function collectIntrinsicEnums(
         importedTypes,
         field.type.name,
         inout arrays,
+        inout maps,
         inout enums
       );
     }
@@ -4686,6 +5215,7 @@ function collectIntrinsicEnums(
         importedTypes,
         deinitializer.body,
         inout arrays,
+        inout maps,
         inout enums
       );
       none => {}
@@ -4699,6 +5229,7 @@ function collectIntrinsicEnums(
           importedTypes,
           type.name,
           inout arrays,
+          inout maps,
           inout enums
         );
         none => {}
@@ -4712,6 +5243,7 @@ function collectIntrinsicEnums(
         importedTypes,
         parameter.type.name,
         inout arrays,
+        inout maps,
         inout enums
       );
     }
@@ -4720,6 +5252,7 @@ function collectIntrinsicEnums(
       importedTypes,
       declaration.returnType.name,
       inout arrays,
+      inout maps,
       inout enums
     );
     match (in declaration.errorType) {
@@ -4729,6 +5262,7 @@ function collectIntrinsicEnums(
           importedTypes,
           type.name,
           inout arrays,
+          inout maps,
           inout enums
         );
         const returnName = declaration.returnType.name.copyBytes(
@@ -4742,6 +5276,7 @@ function collectIntrinsicEnums(
           importedTypes,
           resultName,
           inout arrays,
+          inout maps,
           inout enums
         );
       }
@@ -4752,6 +5287,7 @@ function collectIntrinsicEnums(
       importedTypes,
       declaration.body,
       inout arrays,
+      inout maps,
       inout enums
     );
   }
@@ -4963,6 +5499,7 @@ function appendLoweredProgram(
   moduleIndex: usize,
   entryIndex: usize,
   inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
@@ -5021,7 +5558,9 @@ function appendLoweredProgram(
   try collectIntrinsicEnums(
     program,
     importedTypes,
+    evidence,
     inout arrays,
+    inout maps,
     inout enums
   );
   for (const declaration of program.enums) {
@@ -5241,6 +5780,7 @@ export function lowerProgram(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   let arrays = Array<LoweredArray>();
+  let maps = Array<LoweredMap>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -5253,11 +5793,12 @@ export function lowerProgram(
     0,
     0,
     inout arrays,
+    inout maps,
     inout structs,
     inout enums,
     inout functions
   );
-  return LoweredProgram({ arrays, structs, enums, functions });
+  return LoweredProgram({ arrays, maps, structs, enums, functions });
 }
 
 export function lowerModules(
@@ -5268,6 +5809,7 @@ export function lowerModules(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   let arrays = Array<LoweredArray>();
+  let maps = Array<LoweredMap>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
@@ -5287,6 +5829,7 @@ export function lowerModules(
       moduleIndex,
       entryIndex,
       inout arrays,
+      inout maps,
       inout structs,
       inout enums,
       inout functions
@@ -5302,5 +5845,5 @@ export function lowerModules(
       }
     }
   }
-  return LoweredProgram({ arrays, structs, enums, functions });
+  return LoweredProgram({ arrays, maps, structs, enums, functions });
 }

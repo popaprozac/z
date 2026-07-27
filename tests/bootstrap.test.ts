@@ -8160,6 +8160,29 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
 
+  const mapInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-map.zs",
+  );
+  const mapEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", mapInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(mapEmission.status, 0, mapEmission.stderr);
+  assert.match(mapEmission.stdout, /_rehash\(.*?calloc\(capacity, sizeof\(size_t\)\)/s);
+  assert.match(mapEmission.stdout, /_set\(&\(indices\), Z_STRING_LITERAL\("answer"\), 42\)/);
+  assert.match(mapEmission.stdout, /_get\(&\(indices\), Z_STRING_LITERAL\("answer"\)\)/);
+  const mapExecutable = resolve(directory, "map");
+  const mapCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", mapExecutable],
+    { encoding: "utf8", input: mapEmission.stdout },
+  );
+  assert.equal(mapCompilation.status, 0, mapCompilation.stderr);
+  const mapExecution = spawnSync(mapExecutable, [], { encoding: "utf8" });
+  assert.equal(mapExecution.status, 42, mapExecution.stderr);
+
   const moduleInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",

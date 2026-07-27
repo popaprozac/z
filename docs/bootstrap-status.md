@@ -684,8 +684,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    imported function results. Direct assignment-form `try` propagates failure
    and replaces scalar or cleanup-bearing storage only after success, while
    terminating match arms, explicit String `copy`, and checked shifts are
-   executable. The real compiler probe now advances through parser/lexer
-   collection use and stops at `Map<String, usize>` in the semantic model.
+   executable. Native `Map<String, scalar>` lowering now emits an owned-key
+   open-addressed table with `set`, `has`, `get`, and deterministic cleanup;
+   its generated C fixture compiles and returns 42. The real compiler probe
+   advances through `Map<String, usize>` and now stops at `Set<String>` in
+   module binding validation.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer
