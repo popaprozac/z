@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 14,914 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 14,978 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -379,23 +379,24 @@ The 2026-07-26 decomposition checkpoint contains 14,914 lines of Z:
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
 | `semantic-call-contracts.zs` | 114 | per-call capability conflicts plus pending throwing-call encoding and diagnostics |
 | `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
+| `semantic-expression-types.zs` | 196 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 4,522 | recursive expression inference, ownership-flow merging, and semantic orchestration |
+| `module-resolver.zs` | 4,390 | recursive expression inference, ownership-flow merging, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own nineteen-module frontend graph and currently produces parity evidence for
-721 symbols, 1,442 binding/signature queries, 926 inferred local bindings, and
-3,423 root expression types. The binding and expression counts describe the
+own twenty-module frontend graph and currently produces parity evidence for
+743 symbols, 1,486 binding/signature queries, 926 inferred local bindings, and
+3,422 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the call-contract and expression-ownership extraction, native lexing,
-parsing, resolution, semantic analysis, and encoding took approximately
-163–165 ms; decoding the temporary text protocol took another 9–10 ms. These are checkpoint
+run after the expression-type extraction, native lexing, parsing, resolution,
+semantic analysis, and encoding took approximately 161 ms; decoding the
+temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -483,8 +484,10 @@ instead of repeatedly traversing the same symbol. Per-call alias conflicts and
 pending throwing effects now form a separate call
 contract leaf. Initialization/use-after-move diagnostics, storage-root
 discovery, and whole-value consumption form a separate expression-ownership
-leaf over the shared flow state. Stage 0 checks the split, and the native
-resolver resolves its own nineteen-module graph.
+leaf over the shared flow state. Expected/actual compatibility for contextual
+numeric literals, function values, nullability, Slices, and receiver-tied views
+now forms one expression-type leaf. Stage 0 checks the split, and the native
+resolver resolves its own twenty-module graph.
 A same-filesystem, same-toolchain comparison measured the new graph at 290 ms
 versus 293 ms for the prior flow-state commit; the independently sampled warm
 checkpoint was 264 ms versus 271 ms at the first decomposition checkpoint. This

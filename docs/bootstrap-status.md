@@ -667,6 +667,9 @@ When focused self-hosting work resumes, use this order:
    throwing-call effects now live in `semantic-call-contracts.zs`.
    Initialization/use-after-move diagnostics, storage-root discovery, and
    whole-value consumption now live in `semantic-expression-ownership.zs`.
+   Expected/actual compatibility for callable values, contextual literals,
+   nullability, Slices, and receiver-tied views now lives in
+   `semantic-expression-types.zs`.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
