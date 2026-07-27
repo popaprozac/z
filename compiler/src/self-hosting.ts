@@ -208,6 +208,7 @@ export type Stage1ModuleGraphStructure = {
       readonly targetModule: number | null;
       readonly importedName: string;
       readonly functionSignature?: Stage1ModuleFunctionSignature | null;
+      readonly typeSignature?: Stage1ModuleTypeSignature | null;
       readonly offset: number;
       readonly line: number;
       readonly column: number;
@@ -231,6 +232,48 @@ export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]):
   return Buffer.concat(records);
 }
 
+function copyStage1ModuleFunctionSignature(
+  signature: Stage1ModuleFunctionSignature,
+): Stage1ModuleFunctionSignature {
+  return {
+    asynchronous: signature.asynchronous,
+    executorAffinity: signature.executorAffinity,
+    typeParameters: [...signature.typeParameters],
+    typeParameterConstraints: signature.typeParameterConstraints
+      .map((constraint) => ({ ...constraint })),
+    parameterModes: [...signature.parameterModes],
+    parameterTypes: [...signature.parameterTypes],
+    returnType: signature.returnType,
+    errorType: signature.errorType,
+  };
+}
+
+function copyStage1ModuleTypeSignature(
+  signature: Stage1ModuleTypeSignature,
+): Stage1ModuleTypeSignature {
+  return {
+    typeParameters: [...signature.typeParameters],
+    typeParameterConstraints: signature.typeParameterConstraints
+      .map((constraint) => ({ ...constraint })),
+    executorAffinity: signature.executorAffinity,
+    implementedTraits: [...signature.implementedTraits],
+    fields: signature.fields.map((field) => ({ ...field })),
+    methods: signature.methods.map((method) => ({
+      name: method.name,
+      staticMethod: method.staticMethod,
+      visibility: method.visibility,
+      receiverMode: method.receiverMode,
+      signature: copyStage1ModuleFunctionSignature(method.signature),
+    })),
+    variants: signature.variants.map((variant) => ({ ...variant })),
+    customDeinit: signature.customDeinit,
+    customConstructor: signature.customConstructor,
+    constructorSignature: signature.constructorSignature
+      ? copyStage1ModuleFunctionSignature(signature.constructorSignature)
+      : null,
+  };
+}
+
 export function decodeStage1ModuleGraphStream(
   output: string,
   structure?: Stage1ModuleGraphStructure,
@@ -250,19 +293,11 @@ export function decodeStage1ModuleGraphStream(
           targetModule: symbol.targetModule,
           importedName: symbol.importedName,
           functionSignature: symbol.functionSignature
-            ? {
-                asynchronous: symbol.functionSignature.asynchronous,
-                executorAffinity: symbol.functionSignature.executorAffinity,
-                typeParameters: [...symbol.functionSignature.typeParameters],
-                typeParameterConstraints: symbol.functionSignature.typeParameterConstraints
-                  .map((constraint) => ({ ...constraint })),
-                parameterModes: [...symbol.functionSignature.parameterModes],
-                parameterTypes: [...symbol.functionSignature.parameterTypes],
-                returnType: symbol.functionSignature.returnType,
-                errorType: symbol.functionSignature.errorType,
-              }
+            ? copyStage1ModuleFunctionSignature(symbol.functionSignature)
             : null,
-          typeSignature: null,
+          typeSignature: symbol.typeSignature
+            ? copyStage1ModuleTypeSignature(symbol.typeSignature)
+            : null,
           location: {
             offset: symbol.offset,
             line: symbol.line,

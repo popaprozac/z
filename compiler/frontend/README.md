@@ -133,15 +133,17 @@ the resolver. Entry identity, module paths, dependency lists, dependency order,
 graph/evidence counts, and symbol identity are queried directly through that
 handle and consumed by the host. One bulk fixed-width record fill carries every
 symbol's kind, export state, imported name, local target, and source location.
-Top-level function signatures use a second base-record batch plus one flattened
-item batch for type parameters, trait constraints, parameter capabilities/types,
-return types, errors, and executor affinity. Topology, `symbol`, `signature`, and
-`functionConstraint` records are no longer emitted through the compatibility
-stream. Aggregate type signatures, constructors, methods, and semantic evidence
-remain temporarily in that stream. The retained handle owns the resolved Z graph
-and all borrowed signature strings until the host releases it, so later
-structural queries can replace the remaining records without a second native
-resolution or borrowed lifetime escape.
+Top-level function signatures use a base-record batch plus one flattened item
+batch for type parameters, trait constraints, parameter capabilities/types,
+return types, errors, and executor affinity. Aggregate/type bases and items form
+a second pair, while constructor and method callable bases/items form a third.
+Together they preserve fields, variants, visibility, read-only state, trait
+conformance, receiver capabilities, async/error effects, and executor affinity.
+Topology and every symbol/signature record are no longer emitted through the
+compatibility stream; semantic evidence remains temporarily. The retained handle
+owns the resolved Z graph and all borrowed signature strings until the host
+releases it, so later structural queries can replace the remaining records
+without a second native resolution or borrowed lifetime escape.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. A
 shared stage-zero loader discovers that canonical source batch once for both the

@@ -29,6 +29,7 @@ export type NativeFrontendSymbolStructure = {
   readonly targetModule: number | null;
   readonly importedName: string;
   readonly functionSignature: NativeFrontendFunctionSignatureStructure | null;
+  readonly typeSignature: NativeFrontendTypeSignatureStructure | null;
   readonly offset: number;
   readonly line: number;
   readonly column: number;
@@ -46,6 +47,36 @@ export type NativeFrontendFunctionSignatureStructure = {
   readonly parameterTypes: readonly string[];
   readonly returnType: string;
   readonly errorType: string | null;
+};
+
+export type NativeFrontendTypeSignatureStructure = {
+  readonly typeParameters: readonly string[];
+  readonly typeParameterConstraints: readonly {
+    readonly parameter: string;
+    readonly traitName: string;
+  }[];
+  readonly executorAffinity: string | null;
+  readonly implementedTraits: readonly string[];
+  readonly fields: readonly {
+    readonly name: string;
+    readonly typeName: string;
+    readonly visibility: "public" | "private";
+    readonly readonlyField: boolean;
+  }[];
+  readonly methods: readonly {
+    readonly name: string;
+    readonly staticMethod: boolean;
+    readonly visibility: "public" | "private";
+    readonly receiverMode: "in" | "inout" | "move";
+    readonly signature: NativeFrontendFunctionSignatureStructure;
+  }[];
+  readonly variants: readonly {
+    readonly name: string;
+    readonly payloadType: string | null;
+  }[];
+  readonly customDeinit: boolean;
+  readonly customConstructor: boolean;
+  readonly constructorSignature: NativeFrontendFunctionSignatureStructure | null;
 };
 
 export type NativeFrontendGraphStructure = {
@@ -145,6 +176,22 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_type_signature_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_type_signature_item_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_member_signature_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_member_signature_item_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_call_resolution_count: {
       args: [FFIType.ptr],
       returns: FFIType.u64,
@@ -190,6 +237,22 @@ export function resolveWithNativeFrontendLibrary(
       returns: FFIType.u64,
     },
     z_stage1_resolve_copy_function_signature_item_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_type_signature_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_type_signature_item_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_member_signature_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_member_signature_item_records: {
       args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
       returns: FFIType.u64,
     },
@@ -369,6 +432,7 @@ export function resolveWithNativeFrontendLibrary(
               "imported symbol name",
             ),
             functionSignature: null,
+            typeSignature: null,
             offset: field(8, "offset"),
             line: field(9, "line"),
             column: field(10, "column"),
@@ -583,6 +647,567 @@ export function resolveWithNativeFrontendLibrary(
           throw new Error("the native frontend returned a sparse function signature");
         }
       }
+      type TypeSignatureExpectation = {
+        readonly signature: {
+          typeParameters: string[];
+          typeParameterConstraints: {
+            parameter: string;
+            traitName: string;
+          }[];
+          implementedTraits: string[];
+          fields: {
+            name: string;
+            typeName: string;
+            visibility: "public" | "private";
+            readonlyField: boolean;
+          }[];
+          methods: {
+            name: string;
+            staticMethod: boolean;
+            visibility: "public" | "private";
+            receiverMode: "in" | "inout" | "move";
+            signature: NativeFrontendFunctionSignatureStructure;
+          }[];
+          variants: {
+            name: string;
+            payloadType: string | null;
+          }[];
+          constructorSignature: NativeFrontendFunctionSignatureStructure | null;
+          customConstructor: boolean;
+        };
+        readonly typeParameterCount: number;
+        readonly constraintCount: number;
+        readonly implementedTraitCount: number;
+        readonly fieldCount: number;
+        readonly methodCount: number;
+        readonly variantCount: number;
+        typeParametersWritten: number;
+        constraintsWritten: number;
+        implementedTraitsWritten: number;
+        fieldsWritten: number;
+        variantsWritten: number;
+      };
+      const typeSignatureCount = nativeUsize(
+        library.symbols.z_stage1_resolve_type_signature_count(responsePointer),
+        "type-signature count",
+      );
+      const typeSignatureItemCount = nativeUsize(
+        library.symbols.z_stage1_resolve_type_signature_item_count(responsePointer),
+        "type-signature item count",
+      );
+      const typeSignatureRecordWidth = 12 * 8;
+      const typeSignatureRecords = Buffer.alloc(
+        Math.max(1, typeSignatureCount * typeSignatureRecordWidth),
+      );
+      const writtenTypeSignatures = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_type_signature_records(
+          responsePointer,
+          ptr(typeSignatureRecords),
+          typeSignatureCount,
+        ),
+        "written type-signature count",
+      );
+      if (writtenTypeSignatures !== typeSignatureCount) {
+        throw new Error("the native frontend returned an incomplete type-signature batch");
+      }
+      const typeSignatureExpectations = new Map<string, TypeSignatureExpectation>();
+      let expectedTypeSignatureItemCount = 0;
+      for (
+        let typeSignatureIndex = 0;
+        typeSignatureIndex < typeSignatureCount;
+        typeSignatureIndex += 1
+      ) {
+        const recordOffset = typeSignatureIndex * typeSignatureRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          typeSignatureRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `type signature ${typeSignatureIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const symbol = modules[moduleIndex]?.symbols[symbolIndex];
+        if (
+          !symbol
+          || !isNativeAggregateSymbolKind(symbol.kind)
+          || symbol.typeSignature !== null
+        ) {
+          throw new Error("the native frontend returned a type signature for an invalid symbol");
+        }
+        const executorAffinity = nativeString(
+          field(2, "executor-affinity pointer"),
+          field(3, "executor-affinity length"),
+          "type executor affinity",
+        );
+        const customDeinit = field(4, "custom-deinit state");
+        const customConstructor = field(5, "custom-constructor state");
+        if (customDeinit > 1 || customConstructor > 1) {
+          throw new Error("the native frontend returned invalid type-signature flags");
+        }
+        const typeParameterCount = field(6, "type-parameter count");
+        const constraintCount = field(7, "constraint count");
+        const implementedTraitCount = field(8, "implemented-trait count");
+        const fieldCount = field(9, "field count");
+        const methodCount = field(10, "method count");
+        const variantCount = field(11, "variant count");
+        const signature = {
+          typeParameters: new Array<string>(typeParameterCount),
+          typeParameterConstraints: new Array<{
+            parameter: string;
+            traitName: string;
+          }>(constraintCount),
+          executorAffinity: executorAffinity.length === 0 ? null : executorAffinity,
+          implementedTraits: new Array<string>(implementedTraitCount),
+          fields: new Array<{
+            name: string;
+            typeName: string;
+            visibility: "public" | "private";
+            readonlyField: boolean;
+          }>(fieldCount),
+          methods: new Array<{
+            name: string;
+            staticMethod: boolean;
+            visibility: "public" | "private";
+            receiverMode: "in" | "inout" | "move";
+            signature: NativeFrontendFunctionSignatureStructure;
+          }>(methodCount),
+          variants: new Array<{
+            name: string;
+            payloadType: string | null;
+          }>(variantCount),
+          customDeinit: customDeinit === 1,
+          customConstructor: customConstructor === 1,
+          constructorSignature: null,
+        };
+        (symbol as {
+          typeSignature: NativeFrontendTypeSignatureStructure | null;
+        }).typeSignature = signature;
+        const key = `${moduleIndex}:${symbolIndex}`;
+        if (typeSignatureExpectations.has(key)) {
+          throw new Error("the native frontend returned duplicate type signatures");
+        }
+        typeSignatureExpectations.set(key, {
+          signature,
+          typeParameterCount,
+          constraintCount,
+          implementedTraitCount,
+          fieldCount,
+          methodCount,
+          variantCount,
+          typeParametersWritten: 0,
+          constraintsWritten: 0,
+          implementedTraitsWritten: 0,
+          fieldsWritten: 0,
+          variantsWritten: 0,
+        });
+        expectedTypeSignatureItemCount += typeParameterCount
+          + constraintCount
+          + implementedTraitCount
+          + fieldCount
+          + variantCount;
+      }
+      if (expectedTypeSignatureItemCount !== typeSignatureItemCount) {
+        throw new Error("the native frontend type-signature item counts do not match");
+      }
+      const typeSignatureItemRecordWidth = 11 * 8;
+      const typeSignatureItemRecords = Buffer.alloc(
+        Math.max(1, typeSignatureItemCount * typeSignatureItemRecordWidth),
+      );
+      const writtenTypeSignatureItems = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_type_signature_item_records(
+          responsePointer,
+          ptr(typeSignatureItemRecords),
+          typeSignatureItemCount,
+        ),
+        "written type-signature item count",
+      );
+      if (writtenTypeSignatureItems !== typeSignatureItemCount) {
+        throw new Error("the native frontend returned an incomplete type-signature item batch");
+      }
+      for (
+        let itemRecordIndex = 0;
+        itemRecordIndex < typeSignatureItemCount;
+        itemRecordIndex += 1
+      ) {
+        const recordOffset = itemRecordIndex * typeSignatureItemRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          typeSignatureItemRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `type signature item ${itemRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const kind = field(2, "kind");
+        const itemIndex = field(3, "index");
+        const first = nativeString(
+          field(4, "first pointer"),
+          field(5, "first length"),
+          "type-signature item",
+        );
+        const second = nativeString(
+          field(6, "second pointer"),
+          field(7, "second length"),
+          "type-signature item",
+        );
+        const third = nativeString(
+          field(8, "third pointer"),
+          field(9, "third length"),
+          "type-signature item",
+        );
+        const flag = field(10, "flag");
+        const expectation = typeSignatureExpectations.get(`${moduleIndex}:${symbolIndex}`);
+        if (!expectation) {
+          throw new Error("the native frontend returned an item without a type signature");
+        }
+        if (kind === 0) {
+          if (
+            itemIndex >= expectation.typeParameterCount
+            || itemIndex in expectation.signature.typeParameters
+            || second.length !== 0
+            || third.length !== 0
+            || flag !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid aggregate type parameter");
+          }
+          expectation.signature.typeParameters[itemIndex] = first;
+          expectation.typeParametersWritten += 1;
+          continue;
+        }
+        if (kind === 1) {
+          if (
+            itemIndex >= expectation.constraintCount
+            || itemIndex in expectation.signature.typeParameterConstraints
+            || third.length !== 0
+            || flag !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid aggregate constraint");
+          }
+          expectation.signature.typeParameterConstraints[itemIndex] = {
+            parameter: first,
+            traitName: second,
+          };
+          expectation.constraintsWritten += 1;
+          continue;
+        }
+        if (kind === 2) {
+          if (
+            itemIndex >= expectation.implementedTraitCount
+            || itemIndex in expectation.signature.implementedTraits
+            || second.length !== 0
+            || third.length !== 0
+            || flag !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid implemented trait");
+          }
+          expectation.signature.implementedTraits[itemIndex] = first;
+          expectation.implementedTraitsWritten += 1;
+          continue;
+        }
+        if (kind === 3) {
+          if (
+            itemIndex >= expectation.fieldCount
+            || itemIndex in expectation.signature.fields
+            || !isNativeVisibility(third)
+            || flag > 1
+          ) {
+            throw new Error("the native frontend returned an invalid aggregate field");
+          }
+          expectation.signature.fields[itemIndex] = {
+            name: first,
+            typeName: second,
+            visibility: third,
+            readonlyField: flag === 1,
+          };
+          expectation.fieldsWritten += 1;
+          continue;
+        }
+        if (kind === 4) {
+          if (
+            itemIndex >= expectation.variantCount
+            || itemIndex in expectation.signature.variants
+            || third.length !== 0
+            || flag !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid enum variant");
+          }
+          expectation.signature.variants[itemIndex] = {
+            name: first,
+            payloadType: second.length === 0 ? null : second,
+          };
+          expectation.variantsWritten += 1;
+          continue;
+        }
+        throw new Error(`the native frontend returned invalid type-signature item kind ${kind}`);
+      }
+      for (const expectation of typeSignatureExpectations.values()) {
+        if (
+          expectation.typeParametersWritten !== expectation.typeParameterCount
+          || expectation.constraintsWritten !== expectation.constraintCount
+          || expectation.implementedTraitsWritten !== expectation.implementedTraitCount
+          || expectation.fieldsWritten !== expectation.fieldCount
+          || expectation.variantsWritten !== expectation.variantCount
+        ) {
+          throw new Error("the native frontend returned a sparse type signature");
+        }
+      }
+      const memberSignatureCount = nativeUsize(
+        library.symbols.z_stage1_resolve_member_signature_count(responsePointer),
+        "member-signature count",
+      );
+      const memberSignatureItemCount = nativeUsize(
+        library.symbols.z_stage1_resolve_member_signature_item_count(responsePointer),
+        "member-signature item count",
+      );
+      const memberSignatureRecordWidth = 21 * 8;
+      const memberSignatureRecords = Buffer.alloc(
+        Math.max(1, memberSignatureCount * memberSignatureRecordWidth),
+      );
+      const writtenMemberSignatures = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_member_signature_records(
+          responsePointer,
+          ptr(memberSignatureRecords),
+          memberSignatureCount,
+        ),
+        "written member-signature count",
+      );
+      if (writtenMemberSignatures !== memberSignatureCount) {
+        throw new Error("the native frontend returned an incomplete member-signature batch");
+      }
+      const memberSignatureExpectations = new Map<string, SignatureExpectation>();
+      let expectedMemberSignatureItemCount = 0;
+      for (
+        let memberSignatureIndex = 0;
+        memberSignatureIndex < memberSignatureCount;
+        memberSignatureIndex += 1
+      ) {
+        const recordOffset = memberSignatureIndex * memberSignatureRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          memberSignatureRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `member signature ${memberSignatureIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const memberKind = field(2, "kind");
+        const memberIndex = field(3, "index");
+        const typeExpectation = typeSignatureExpectations.get(`${moduleIndex}:${symbolIndex}`);
+        if (!typeExpectation) {
+          throw new Error("the native frontend returned a member without a type signature");
+        }
+        const name = nativeString(
+          field(4, "name pointer"),
+          field(5, "name length"),
+          "member name",
+        );
+        const staticMethod = field(6, "static state");
+        const visibility = nativeString(
+          field(7, "visibility pointer"),
+          field(8, "visibility length"),
+          "member visibility",
+        );
+        const receiverMode = nativeString(
+          field(9, "receiver-mode pointer"),
+          field(10, "receiver-mode length"),
+          "member receiver mode",
+        );
+        const asynchronous = field(11, "async state");
+        if (staticMethod > 1 || asynchronous > 1) {
+          throw new Error("the native frontend returned invalid member-signature flags");
+        }
+        const returnType = nativeString(
+          field(12, "return-type pointer"),
+          field(13, "return-type length"),
+          "member return type",
+        );
+        const errorType = nativeString(
+          field(14, "error-type pointer"),
+          field(15, "error-type length"),
+          "member error type",
+        );
+        const executorAffinity = nativeString(
+          field(16, "executor-affinity pointer"),
+          field(17, "executor-affinity length"),
+          "member executor affinity",
+        );
+        const typeParameterCount = field(18, "type-parameter count");
+        const parameterCount = field(19, "parameter count");
+        const constraintCount = field(20, "constraint count");
+        const signature = {
+          asynchronous: asynchronous === 1,
+          executorAffinity: executorAffinity.length === 0 ? null : executorAffinity,
+          typeParameters: new Array<string>(typeParameterCount),
+          typeParameterConstraints: new Array<{
+            parameter: string;
+            traitName: string;
+          }>(constraintCount),
+          parameterModes: new Array<"value" | "in" | "inout" | "out">(parameterCount),
+          parameterTypes: new Array<string>(parameterCount),
+          returnType,
+          errorType: errorType.length === 0 ? null : errorType,
+        };
+        if (memberKind === 0) {
+          if (
+            memberIndex !== 0
+            || !typeExpectation.signature.customConstructor
+            || typeExpectation.signature.constructorSignature !== null
+            || name.length !== 0
+            || staticMethod !== 0
+            || visibility.length !== 0
+            || receiverMode.length !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid constructor signature");
+          }
+          typeExpectation.signature.constructorSignature = signature;
+        } else if (memberKind === 1) {
+          if (
+            memberIndex >= typeExpectation.methodCount
+            || memberIndex in typeExpectation.signature.methods
+            || !isNativeVisibility(visibility)
+            || !isNativeReceiverMode(receiverMode)
+          ) {
+            throw new Error("the native frontend returned an invalid method signature");
+          }
+          typeExpectation.signature.methods[memberIndex] = {
+            name,
+            staticMethod: staticMethod === 1,
+            visibility,
+            receiverMode,
+            signature,
+          };
+        } else {
+          throw new Error(`the native frontend returned invalid member-signature kind ${memberKind}`);
+        }
+        const key = `${moduleIndex}:${symbolIndex}:${memberKind}:${memberIndex}`;
+        if (memberSignatureExpectations.has(key)) {
+          throw new Error("the native frontend returned duplicate member signatures");
+        }
+        memberSignatureExpectations.set(key, {
+          signature,
+          typeParameterCount,
+          parameterCount,
+          constraintCount,
+          typeParametersWritten: 0,
+          parametersWritten: 0,
+          constraintsWritten: 0,
+        });
+        expectedMemberSignatureItemCount += typeParameterCount
+          + parameterCount
+          + constraintCount;
+      }
+      if (expectedMemberSignatureItemCount !== memberSignatureItemCount) {
+        throw new Error("the native frontend member-signature item counts do not match");
+      }
+      const memberSignatureItemRecordWidth = 10 * 8;
+      const memberSignatureItemRecords = Buffer.alloc(
+        Math.max(1, memberSignatureItemCount * memberSignatureItemRecordWidth),
+      );
+      const writtenMemberSignatureItems = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_member_signature_item_records(
+          responsePointer,
+          ptr(memberSignatureItemRecords),
+          memberSignatureItemCount,
+        ),
+        "written member-signature item count",
+      );
+      if (writtenMemberSignatureItems !== memberSignatureItemCount) {
+        throw new Error("the native frontend returned an incomplete member-signature item batch");
+      }
+      for (
+        let itemRecordIndex = 0;
+        itemRecordIndex < memberSignatureItemCount;
+        itemRecordIndex += 1
+      ) {
+        const recordOffset = itemRecordIndex * memberSignatureItemRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          memberSignatureItemRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `member signature item ${itemRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const memberKind = field(2, "member kind");
+        const memberIndex = field(3, "member index");
+        const itemKind = field(4, "item kind");
+        const itemIndex = field(5, "item index");
+        const first = nativeString(
+          field(6, "first pointer"),
+          field(7, "first length"),
+          "member-signature item",
+        );
+        const second = nativeString(
+          field(8, "second pointer"),
+          field(9, "second length"),
+          "member-signature item",
+        );
+        const expectation = memberSignatureExpectations.get(
+          `${moduleIndex}:${symbolIndex}:${memberKind}:${memberIndex}`,
+        );
+        if (!expectation) {
+          throw new Error("the native frontend returned an item without a member signature");
+        }
+        if (itemKind === 0) {
+          if (
+            itemIndex >= expectation.typeParameterCount
+            || itemIndex in expectation.signature.typeParameters
+            || second.length !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid member type parameter");
+          }
+          expectation.signature.typeParameters[itemIndex] = first;
+          expectation.typeParametersWritten += 1;
+          continue;
+        }
+        if (itemKind === 1) {
+          if (
+            itemIndex >= expectation.parameterCount
+            || itemIndex in expectation.signature.parameterModes
+            || !isNativeParameterMode(first)
+          ) {
+            throw new Error("the native frontend returned an invalid member parameter");
+          }
+          expectation.signature.parameterModes[itemIndex] = first;
+          expectation.signature.parameterTypes[itemIndex] = second;
+          expectation.parametersWritten += 1;
+          continue;
+        }
+        if (itemKind === 2) {
+          if (
+            itemIndex >= expectation.constraintCount
+            || itemIndex in expectation.signature.typeParameterConstraints
+          ) {
+            throw new Error("the native frontend returned an invalid member constraint");
+          }
+          expectation.signature.typeParameterConstraints[itemIndex] = {
+            parameter: first,
+            traitName: second,
+          };
+          expectation.constraintsWritten += 1;
+          continue;
+        }
+        throw new Error(`the native frontend returned invalid member-signature item kind ${itemKind}`);
+      }
+      for (const expectation of memberSignatureExpectations.values()) {
+        if (
+          expectation.typeParametersWritten !== expectation.typeParameterCount
+          || expectation.parametersWritten !== expectation.parameterCount
+          || expectation.constraintsWritten !== expectation.constraintCount
+        ) {
+          throw new Error("the native frontend returned a sparse member signature");
+        }
+      }
+      for (const expectation of typeSignatureExpectations.values()) {
+        if (
+          !Array.from(
+            { length: expectation.methodCount },
+            (_, index) => index in expectation.signature.methods,
+          ).every(Boolean)
+          || (
+            expectation.signature.customConstructor
+            && expectation.signature.constructorSignature === null
+          )
+          || (
+            !expectation.signature.customConstructor
+            && expectation.signature.constructorSignature !== null
+          )
+        ) {
+          throw new Error("the native frontend returned incomplete aggregate members");
+        }
+      }
       return {
         stream: payload,
         summary,
@@ -616,6 +1241,20 @@ function nativeSymbolKind(code: number): NativeFrontendSymbolStructure["kind"] {
   const kind = kinds[code];
   if (!kind) throw new Error(`the native frontend returned invalid symbol kind ${code}`);
   return kind;
+}
+
+function isNativeAggregateSymbolKind(
+  value: NativeFrontendSymbolStructure["kind"],
+): value is "struct" | "class" | "trait" | "enum" {
+  return value === "struct" || value === "class" || value === "trait" || value === "enum";
+}
+
+function isNativeVisibility(value: string): value is "public" | "private" {
+  return value === "public" || value === "private";
+}
+
+function isNativeReceiverMode(value: string): value is "in" | "inout" | "move" {
+  return value === "in" || value === "inout" || value === "move";
 }
 
 function isNativeParameterMode(

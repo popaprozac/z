@@ -79,11 +79,11 @@ or an optimization before the extraction is treated as complete.
 
 The subsequent semantic decomposition checkpoints produced this comparison:
 
-| Operation | Path/model | Signatures/symbols | Graph | Names | Type shapes | Identity/validation | Flow state | Type ownership | Member lookups | Pattern validation | Generic/aggregate | Calls/ownership | Expression types | Closures | Function contexts | Intrinsics | Evidence | Operators | Structural summary | Structural topology | Structural symbols | Structural function signatures |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | 268.1 ms | 261.5 ms | 243.5 ms | 263.5 ms | 267.5 ms | 258.9 ms | 254.1 ms | 256.4 ms | 258.4 ms | 261.0 ms | 257.5 ms | 260.1 ms | 253.9 ms | 247.6 ms | 249.0 ms | 242.0 ms | 254.4 ms | 236.6 ms |
-| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | 274.8 ms | 270.1 ms | 240.4 ms | 266.4 ms | 273.6 ms | 268.8 ms | 265.3 ms | 267.2 ms | 260.9 ms | 269.9 ms | 265.5 ms | 266.9 ms | 268.2 ms | 262.9 ms | 265.5 ms | 257.0 ms | 270.2 ms | 248.8 ms |
-| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | 1.986 s | 1.669 s | 1.524 s | 1.582 s | 1.470 s | 1.396 s | 1.312 s | 1.281 s | 1.276 s | 1.249 s | 1.185 s | 1.181 s | 1.147 s | 1.124 s | 1.128 s | 1.081 s | 1.143 s | 1.045 s |
+| Operation | Path/model | Signatures/symbols | Graph | Names | Type shapes | Identity/validation | Flow state | Type ownership | Member lookups | Pattern validation | Generic/aggregate | Calls/ownership | Expression types | Closures | Function contexts | Intrinsics | Evidence | Operators | Structural summary | Structural topology | Structural symbols | Structural function signatures | Structural all signatures |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Stage-1 self-analysis | 270.8 ms | 270.4 ms | 258.0 ms | 263.7 ms | 268.1 ms | 261.5 ms | 243.5 ms | 263.5 ms | 267.5 ms | 258.9 ms | 254.1 ms | 256.4 ms | 258.4 ms | 261.0 ms | 257.5 ms | 260.1 ms | 253.9 ms | 247.6 ms | 249.0 ms | 242.0 ms | 254.4 ms | 236.6 ms | 239.9 ms |
+| Ordinary Stage-0 check | 267.5 ms | 278.8 ms | 259.3 ms | 262.8 ms | 274.8 ms | 270.1 ms | 240.4 ms | 266.4 ms | 273.6 ms | 268.8 ms | 265.3 ms | 267.2 ms | 260.9 ms | 269.9 ms | 265.5 ms | 266.9 ms | 268.2 ms | 262.9 ms | 265.5 ms | 257.0 ms | 270.2 ms | 248.8 ms | 250.2 ms |
+| Hybrid Stage-0/native authority check | 2.468 s | 2.198 s | 2.124 s | 2.053 s | 1.986 s | 1.669 s | 1.524 s | 1.582 s | 1.470 s | 1.396 s | 1.312 s | 1.281 s | 1.276 s | 1.249 s | 1.185 s | 1.181 s | 1.147 s | 1.124 s | 1.128 s | 1.081 s | 1.143 s | 1.045 s | 1.045 s |
 
 The Stage-1 results show that additional semantic modules do not inherently
 slow the native frontend. The small Stage-1 and Stage-0 changes after extracting
@@ -126,6 +126,13 @@ the compatibility stream. Whole-process samples measured 236.6 ms for Stage 1,
 better than the preceding samples, but they are not a controlled causal claim:
 the structural change removes `signature` and `functionConstraint` serialization,
 while machine and filesystem-cache variance can still move the totals.
+
+Completing aggregate, constructor, and method signature handoff measured 149 ms
+of warm native work and 5 ms of remaining compatibility-stream decoding.
+Whole-process samples were 239.9 ms for Stage 1, 250.2 ms for Stage 0, and
+1.045 s for the hybrid path. Those are equivalent to the preceding checkpoint
+within normal variance. The compatibility stream now carries semantic evidence
+only; signature shape no longer affects its size.
 
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.

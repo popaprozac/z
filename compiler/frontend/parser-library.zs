@@ -49,6 +49,23 @@ function stage1SymbolHasFunctionSignature(in symbol: ModuleSymbol): boolean {
   };
 }
 
+function stage1SymbolHasTypeSignature(in symbol: ModuleSymbol): boolean {
+  return match (in symbol.typeSignature) {
+    some(_) => true;
+    none => false;
+  };
+}
+
+function stage1TypeHasConstructorSignature(in symbol: ModuleSymbol): boolean {
+  match (in symbol.typeSignature) {
+    some(signature) => return match (in signature.constructorSignature) {
+      some(_) => true;
+      none => false;
+    };
+    none => return false;
+  }
+}
+
 function stage1Parse(in path: String, in source: String): String {
   const outcome = attempt renderProgram(path, source);
   return match (outcome) {
