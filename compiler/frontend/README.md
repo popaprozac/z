@@ -177,7 +177,11 @@ representation, static UTF-8 literals, byte equality, `byteAt`, `byteLength`,
 `isEmpty`, owned `copyBytes`, and deterministic cleanup. Cleanup-bearing `const`
 bindings use writable C storage without permitting Z rebinding. With these
 runtime types available, the real compiler probe advances to explicit borrowed
-parameter lowering. A local selective alias is resolved back to the exported
+parameter lowering. That parameter tier now preserves `in`, `inout`, and `out`
+as `const T *`/`T *` C contracts, dereferences reads and writes, forwards
+addresses at calls, and excludes borrowed values from owned cleanup. The probe
+therefore advances again to inferred locals initialized by intrinsic String
+operations. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

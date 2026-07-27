@@ -74,13 +74,22 @@ export struct LoweredVariant {
   payload: Option<LoweredType>;
 }
 
+export enum LoweredParameterMode {
+  value,
+  input,
+  output,
+  inputOutput,
+}
+
 export struct LoweredParameter {
   name: String;
   type: LoweredType;
+  mode: LoweredParameterMode;
 }
 
 export enum LoweredExpressionKind {
   localValue,
+  parameterValue,
   receiverValue,
   integerValue,
   stringValue,
@@ -1416,6 +1425,29 @@ function attachMoveLiveFlags(
   }
 }
 
+function rewriteParameterValues(
+  in parameters: Array<LoweredParameter>,
+  inout expressions: Array<LoweredExpression>
+): void {
+  let expressionIndex: usize = 0;
+  while (expressionIndex < expressions.length) {
+    if (
+      expressions[expressionIndex].kind == LoweredExpressionKind.localValue
+    ) {
+      for (const parameter of parameters) {
+        if (
+          parameter.mode != LoweredParameterMode.value
+          && parameter.name == expressions[expressionIndex].value
+        ) {
+          expressions[expressionIndex].kind =
+            LoweredExpressionKind.parameterValue;
+        }
+      }
+    }
+    expressionIndex = expressionIndex + 1;
+  }
+}
+
 function pushExpression(
   inout output: Array<LoweredExpression>,
   kind: LoweredExpressionKind,
@@ -1449,6 +1481,56 @@ function resolvedCallTarget(
     ));
   }
   return Option<String>.none;
+}
+
+function lowerParameterMode(mode: ParameterMode): LoweredParameterMode {
+  if (mode == ParameterMode.input) return LoweredParameterMode.input;
+  if (mode == ParameterMode.output) return LoweredParameterMode.output;
+  if (mode == ParameterMode.inputOutput) {
+    return LoweredParameterMode.inputOutput;
+  }
+  return LoweredParameterMode.value;
+}
+
+function parameterModeName(mode: ParameterMode): String {
+  if (mode == ParameterMode.input) return "in";
+  if (mode == ParameterMode.output) return "out";
+  if (mode == ParameterMode.inputOutput) return "inout";
+  return "value";
+}
+
+function resolvedCallParameterModes(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Array<String> {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+    ) continue;
+    let modes = Array<String>();
+    for (const mode of resolution.parameterModes) {
+      modes.push(mode.copyBytes(0, mode.byteLength));
+    }
+    return modes;
+  }
+  if (tree.nodes[index].children.length > 0) {
+    const callee = tree.nodes[index].children[0];
+    if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      for (const declaration of program.functions) {
+        if (declaration.name != tree.nodes[callee].value) continue;
+        let modes = Array<String>();
+        for (const parameter of declaration.parameters) {
+          modes.push(parameterModeName(parameter.mode));
+        }
+        return modes;
+      }
+    }
+  }
+  return Array<String>();
 }
 
 function resolvedExpressionTypeName(
@@ -1568,6 +1650,31 @@ function lowerExpression(
       tree.nodes[index].value,
       Array<usize>(),
       Array<String>()
+    );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+  ) {
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.localValue,
+      tree.nodes[index].value,
+      Array<usize>(),
+      Array<String>()
+    );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const binding = tree.nodes[index].children[0];
+    return try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      binding,
+      inout output
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
@@ -2062,7 +2169,7 @@ function lowerExpression(
       LoweredExpressionKind.directCall,
       "",
       children,
-      Array<String>()
+      resolvedCallParameterModes(program, evidence, tree, index)
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.memberExpression) {
@@ -3282,15 +3389,15 @@ function lowerFunction(
   let ownedParameters = Array<LoweredCleanup>();
   let liveFlags = Array<LoweredLiveFlag>();
   for (const parameter of declaration.parameters) {
-    if (parameter.mode != ParameterMode.value) {
-      throw `native lowering only supports value parameters in ${declaration.name} yet`;
-    }
     const parameterType = try lowerModuleType(
       program,
       importedTypes,
       parameter.type
     );
-    if (moduleTypeNeedsCleanup(program, importedTypes, parameterType)) {
+    if (
+      parameter.mode == ParameterMode.value
+      && moduleTypeNeedsCleanup(program, importedTypes, parameterType)
+    ) {
       const moved = arenaMovesName(
         program,
         declaration.body,
@@ -3322,6 +3429,7 @@ function lowerFunction(
     parameters.push(LoweredParameter({
       name: parameter.name.copyBytes(0, parameter.name.byteLength),
       type: move parameterType,
+      mode: lowerParameterMode(parameter.mode),
     }));
   }
   let expressions = Array<LoweredExpression>();
@@ -3360,6 +3468,7 @@ function lowerFunction(
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
   attachMoveLiveFlags(inout expressions, liveFlags);
+  rewriteParameterValues(parameters, inout expressions);
   let returnType = try lowerModuleType(
     program,
     importedTypes,

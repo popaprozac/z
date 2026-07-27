@@ -5,6 +5,7 @@ import {
   LoweredExpressionKind,
   LoweredFunction,
   LoweredCleanup,
+  LoweredParameterMode,
   LoweredProgram,
   LoweredStatementKind,
   LoweredType,
@@ -102,6 +103,14 @@ function appendExpression(
     || declaration.expressions[index].kind == LoweredExpressionKind.booleanValue
   ) {
     output.append(declaration.expressions[index].value);
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.parameterValue
+  ) {
+    output.append("(*");
+    output.append(declaration.expressions[index].value);
+    output.append(")");
     return;
   }
   if (
@@ -306,7 +315,23 @@ function appendExpression(
     while (argument < declaration.expressions[index].children.length) {
       if (argument > 1) output.append(", ");
       const value = declaration.expressions[index].children[argument];
+      if (
+        declaration.expressions[index].labels.length >= argument
+        && (
+          declaration.expressions[index].labels[argument - 1] == "in"
+          || declaration.expressions[index].labels[argument - 1] == "inout"
+          || declaration.expressions[index].labels[argument - 1] == "out"
+        )
+      ) output.append("&(");
       try appendExpression(inout output, declaration, value);
+      if (
+        declaration.expressions[index].labels.length >= argument
+        && (
+          declaration.expressions[index].labels[argument - 1] == "in"
+          || declaration.expressions[index].labels[argument - 1] == "inout"
+          || declaration.expressions[index].labels[argument - 1] == "out"
+        )
+      ) output.append(")");
       argument = argument + 1;
     }
     output.append(")");
@@ -819,8 +844,10 @@ function appendFunctionSignature(
     if (!first) output.append(", ");
     first = false;
     const parameterType = try cType(parameter.type);
+    if (parameter.mode == LoweredParameterMode.input) output.append("const ");
     output.append(parameterType);
-    output.append(" ");
+    if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+    else output.append(" ");
     output.append(parameter.name);
   }
   if (first) output.append("void");

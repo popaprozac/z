@@ -658,7 +658,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    owned UTF-8-boundary-checked `copyBytes`, and deterministic cleanup. It keeps
    cleanup-bearing `const` bindings writable at the C storage level solely so
    destruction can receive their address. The compiler probe now reaches
-   explicit borrowed parameters as its next unsupported lowering contract.
+   explicit borrowed parameters as its next unsupported lowering contract. The
+   following capability tier preserves `in`, `inout`, and `out` as
+   `const T *`/`T *` C contracts, rewrites parameter reads and writes through
+   those pointers, forwards addresses at calls, and never schedules borrowed
+   values for owned cleanup. Its executable fixture covers borrowed String plus
+   scalar initialization and mutation. The compiler probe now reaches inferred
+   locals initialized by intrinsic String operations.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

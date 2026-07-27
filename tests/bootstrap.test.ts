@@ -8463,8 +8463,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
       + "  }\n"
       + "  return 0;\n"
       + "}\n"
+      + "function borrowedLength(in value: String): usize { return value.byteLength; }\n"
+      + "function initialize(out value: usize): void { value = 20; }\n"
+      + "function increment(inout value: usize): void { value = value + 2; }\n"
       + "function main(): i32 {\n"
-      + "  if (inspect(\"hello\") == 3) return 0;\n"
+      + "  let answer: usize;\n"
+      + "  initialize(out answer);\n"
+      + "  increment(inout answer);\n"
+      + "  if (inspect(\"hello\") == 3 && borrowedLength(\"ok\") == 2 && answer == 22) return 0;\n"
       + "  return 1;\n"
       + "}\n",
   );
@@ -8483,6 +8489,22 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(nativeStringEmission.stdout, /z_string_byte_at\(value, 0\)/);
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&middle\)/);
   assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&value\)/);
+  assert.match(
+    nativeStringEmission.stdout,
+    /size_t borrowedLength\(const Z_String \*value\).*?\(\(\*value\)\)\.length/s,
+  );
+  assert.match(
+    nativeStringEmission.stdout,
+    /void initialize\(size_t \*value\).*?\(\*value\) = 20;/s,
+  );
+  assert.match(
+    nativeStringEmission.stdout,
+    /void increment\(size_t \*value\).*?\(\*value\) = z_stage1_checked_add_usize\(\(\*value\), 2\);/s,
+  );
+  assert.match(
+    nativeStringEmission.stdout,
+    /borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
+  );
   const nativeStringExecutable = resolve(directory, "native-string");
   const nativeStringCompilation = spawnSync(
     "clang",
