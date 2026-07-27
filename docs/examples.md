@@ -238,6 +238,9 @@ and `try await` without falling back for inferred bindings.
 [`async-tasks.zs`](../examples/async/async-tasks.zs) carries those same effects
 through owned `Task<T, E>` handles and consuming joins; all twelve inferred
 locals are native-authoritative.
+[`executor-placement.zs`](../examples/async/executor-placement.zs) proves
+direct synchronous and async placement, placed tasks, consuming joins, and an
+`inout`/`move` block result across all six inferred locals.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

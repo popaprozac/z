@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,207 lines of Z:
+The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -377,10 +377,11 @@ The 2026-07-26 decomposition checkpoint contains 15,207 lines of Z:
 | `semantic-type-shapes.zs` | 340 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
 | `semantic-type-identities.zs` | 373 | canonical symbol identity, cross-module spelling, and trait conformance lookup |
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
-| `semantic-call-contracts.zs` | 114 | per-call capability conflicts plus pending throwing-call encoding and diagnostics |
+| `semantic-call-contracts.zs` | 156 | per-call capability conflicts plus pending throwing/async-call encoding and diagnostics |
 | `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
 | `semantic-expression-types.zs` | 196 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
 | `semantic-closures.zs` | 452 | closure parameter contextualization, callable-shape construction, and lexical capture discovery |
+| `semantic-executor-placement.zs` | 116 | placed-task type effects plus explicit capture capability and move-state preparation |
 | `semantic-function-contexts.zs` | 183 | function parameter/receiver bindings, generic context, and generator yield/return discovery |
 | `semantic-intrinsics.zs` | 240 | compiler-provided numeric, collection, iteration, and generator callable behavior |
 | `semantic-evidence.zs` | 248 | callable target lookup plus generic-call, binding, and expression evidence construction |
@@ -390,18 +391,18 @@ The 2026-07-26 decomposition checkpoint contains 15,207 lines of Z:
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 3,874 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own twenty-eight-module frontend graph and currently produces parity evidence
-for 888 symbols, 1,776 binding/signature queries, 957 inferred local bindings,
-and 3,628 root expression types. The binding and expression counts describe the
+own twenty-nine-module frontend graph and currently produces parity evidence
+for 910 symbols, 1,820 binding/signature queries, 974 inferred local bindings,
+and 3,683 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-176 ms. One bulk fixed-width fill carries all 888 symbol identities, kinds, export
+166 ms. One bulk fixed-width fill carries all 910 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -443,6 +444,17 @@ handle, consumes it on join, and restores the pending error channel for
 `try`/`attempt`. The unchanged application moved from four to all twelve
 inferred bindings under native authority. Self-analysis now exports 960 binding
 and 3,638 root-expression contracts.
+
+Executor placement exposed both the next authority gap and the importance of
+honest fallback. The native resolver now infers direct placed calls, placed
+tasks, block result/error contracts, explicit `in`/`inout`/`move` captures, and
+post-join ownership flow. The unchanged example moves from two to all six
+inferred bindings. An AppKit probe also showed that a capture may be valid in
+Stage 0 while its upstream foreign or `thread.spawn` type is absent from the
+native source graph; that entire placement now defers rather than producing a
+false native diagnostic. Capture preparation lives in
+`semantic-executor-placement.zs` instead of adding another ownership subsystem
+to the resolver.
 
 What the compiler proves:
 

@@ -563,6 +563,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    consumes its ownership and restores the success/error effect for direct,
    `try`, or `attempt` handling. The existing async-tasks application moves from
    four to all twelve inferred bindings under native authority.
+   Native-source-resolved `await on` and `task on` placements now preserve
+   direct call effects and block result/error contracts. Explicit `in`, `inout`,
+   and `move` captures are validated in a dedicated semantic module; block
+   `select` types and post-join ownership flow feed ordinary native evidence.
+   The executor-placement example moves from two to all six inferred bindings.
+   A placement whose capture originates in unavailable foreign or
+   `thread.spawn` metadata deliberately defers instead of inventing an
+   unknown-capture diagnostic.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -582,7 +590,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    explicit function/method calls and aggregate construction; constrained generic
    bodies may call only methods supplied by their declared traits.
    Foreign/intrinsic method lookup, generic trait declarations, foreign call
-   effects, remaining executor-placement effects,
+   effects and executor placements with unavailable foreign/thread metadata,
    escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability
    enforcement, and full recursive ownership contexts remain stage-zero work.
@@ -702,10 +710,10 @@ When focused self-hosting work resumes, use this order:
    equality result typing now live in `semantic-operators.zs`; short-circuit
    flow and actual ownership consumption remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
-   foreign/intrinsic and remaining executor-placement boundaries, escaping
-   closure environments, precise borrow last-use release, receiver-path
-   capabilities, and recursive ownership contexts. Do not port a feature merely
-   for nominal completeness; add a realistic corpus case first.
+   foreign/intrinsic boundaries, escaping closure environments, precise borrow
+   last-use release, receiver-path capabilities, and recursive ownership
+   contexts. Do not port a feature merely for nominal completeness; add a
+   realistic corpus case first.
 3. Keep the completed version-1 structural phase API green. One owned native
    result handle supplies entry, module paths, dependency lists/order,
    symbols, every signature shape, and all call/binding/expression evidence.

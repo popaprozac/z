@@ -174,7 +174,8 @@ success/error effect until `await`; cold `AsyncGenerator` construction and
 intrinsic awaited advancement use the same model. Structured `task` creation
 materializes source-level `Task<T, E>` evidence, and awaiting the handle consumes
 it while restoring the pending success/error effect. Opaque expression spans,
-generic trait declarations, foreign calls, remaining executor effects,
+generic trait declarations, foreign calls and placements whose upstream capture
+types are absent from the native source graph,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
 Concrete generic call evidence retains source-level nested types such as

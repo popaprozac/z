@@ -26,6 +26,11 @@ import {
   resolveClosureSignature,
 } from "./semantic-closures.zs";
 import {
+  applyExecutorCaptureMoves,
+  prepareExecutorCaptureBindings,
+  taskEffectType,
+} from "./semantic-executor-placement.zs";
+import {
   functionValueBindings,
   prepareFunctionBindings,
 } from "./semantic-function-contexts.zs";
@@ -1262,6 +1267,139 @@ function inferExpressionNodeType(
       }
     }
   }
+  if (kind == ExpressionKind.executorPlacementExpression) {
+    const asyncContext = valueBindingType(
+      bindings,
+      "__z_native_async_context"
+    );
+    if (asyncContext.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "executor placement requires an enclosing async function",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    let declaredReturn = "void";
+    let declaredError = "";
+    let bodyKind = "";
+    if (tree.nodes[index].labels.length > 0) {
+      const label = tree.nodes[index].labels[0].copyBytes(
+        0,
+        tree.nodes[index].labels[0].byteLength
+      );
+      if (label.byteLength > 0) {
+        declaredReturn = label.copyBytes(0, label.byteLength);
+      }
+    }
+    if (tree.nodes[index].labels.length > 1) {
+      declaredError = tree.nodes[index].labels[1].copyBytes(
+        0,
+        tree.nodes[index].labels[1].byteLength
+      );
+    }
+    if (tree.nodes[index].labels.length > 2) {
+      bodyKind = tree.nodes[index].labels[2].copyBytes(
+        0,
+        tree.nodes[index].labels[2].byteLength
+      );
+    }
+    if (bodyKind == "call" && children.length > 2) {
+      const callIndex = children[children.length - 1];
+      const outcome = try inferExpressionNodeType(
+        module,
+        modules,
+        moduleIndex,
+        arena,
+        tree,
+        callIndex,
+        inout bindings,
+        inout evidence
+      );
+      if (outcome.byteLength == 0) return "";
+      let successType = outcome.copyBytes(0, outcome.byteLength);
+      let errorType = "";
+      match (pendingAsyncCallShape(outcome)) {
+        some(call) => {
+          successType = call.successType.copyBytes(
+            0,
+            call.successType.byteLength
+          );
+          errorType = call.errorType.copyBytes(0, call.errorType.byteLength);
+        }
+        none => {
+          match (pendingThrowingCallShape(outcome)) {
+            some(call) => {
+              successType = call.successType.copyBytes(
+                0,
+                call.successType.byteLength
+              );
+              errorType = call.errorType.copyBytes(
+                0,
+                call.errorType.byteLength
+              );
+            }
+            none => {}
+          }
+        }
+      }
+      if (tree.nodes[index].value == "spawn") {
+        return taskEffectType(successType, errorType);
+      }
+      if (errorType.byteLength > 0) {
+        return pendingThrowingCallType(successType, errorType);
+      }
+      return successType;
+    }
+
+    let blockBindings = copyValueBindings(bindings);
+    let movedCaptures = Array<String>();
+    const capturesReady = try prepareExecutorCaptureBindings(
+      module,
+      tree,
+      children,
+      bindings,
+      inout blockBindings,
+      inout movedCaptures
+    );
+    if (!capturesReady) return "";
+    const selectBinding = loopSelectTypeBindingName();
+    addValueBinding(inout blockBindings, selectBinding, declaredReturn);
+    if (declaredError.byteLength > 0) {
+      addValueBinding(
+        inout blockBindings,
+        "__z_native_error_type",
+        declaredError
+      );
+    }
+    const statements = copyIndices(tree.nodes[index].statements);
+    const expectedReturn = valueBindingType(
+      bindings,
+      "__z_native_return_type"
+    );
+    try inferStatementSequence(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      statements,
+      inout blockBindings,
+      inout evidence,
+      expectedReturn
+    );
+    if (tree.nodes[index].value != "spawn") {
+      copyBindingFlowStates(inout bindings, blockBindings);
+    }
+    applyExecutorCaptureMoves(movedCaptures, inout bindings);
+    if (tree.nodes[index].value == "spawn") {
+      return taskEffectType(declaredReturn, declaredError);
+    }
+    if (declaredError.byteLength > 0) {
+      return pendingThrowingCallType(declaredReturn, declaredError);
+    }
+    return declaredReturn;
+  }
   if (kind == ExpressionKind.awaitExpression && children.length == 1) {
     const asyncContext = valueBindingType(
       bindings,
@@ -1371,18 +1509,7 @@ function inferExpressionNodeType(
     if (outcome.byteLength == 0) return "";
     match (pendingAsyncCallShape(outcome)) {
       some(call) => {
-        let arguments = Array<String>();
-        arguments.push(call.successType.copyBytes(
-          0,
-          call.successType.byteLength
-        ));
-        if (call.errorType.byteLength > 0) {
-          arguments.push(call.errorType.copyBytes(
-            0,
-            call.errorType.byteLength
-          ));
-        }
-        return parameterizedTypeName("Task", arguments);
+        return taskEffectType(call.successType, call.errorType);
       }
       none => {
         throw resolutionError(
