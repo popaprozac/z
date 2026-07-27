@@ -198,6 +198,19 @@ function appendBranch(
   try appendStatement(inout output, declaration, index, depth);
 }
 
+function appendCondition(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize
+): void throws String {
+  const alreadyGrouped =
+    declaration.expressions[index].kind == LoweredExpressionKind.unaryOperation
+    || declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation;
+  if (!alreadyGrouped) output.append("(");
+  try appendExpression(inout output, declaration, index);
+  if (!alreadyGrouped) output.append(")");
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -299,12 +312,12 @@ function appendStatement(
   }
   if (declaration.statements[index].kind == LoweredStatementKind.ifStatement) {
     appendIndent(inout output, depth);
-    output.append("if (");
+    output.append("if ");
     match (in declaration.statements[index].expression) {
-      some(condition) => try appendExpression(inout output, declaration, condition);
+      some(condition) => try appendCondition(inout output, declaration, condition);
       none => throw "native C emission received an if without a condition";
     }
-    output.append(") {\n");
+    output.append(" {\n");
     if (declaration.statements[index].children.length == 0) {
       throw "native C emission received an if without a branch";
     }
@@ -322,12 +335,12 @@ function appendStatement(
   }
   if (declaration.statements[index].kind == LoweredStatementKind.whileStatement) {
     appendIndent(inout output, depth);
-    output.append("while (");
+    output.append("while ");
     match (in declaration.statements[index].expression) {
-      some(condition) => try appendExpression(inout output, declaration, condition);
+      some(condition) => try appendCondition(inout output, declaration, condition);
       none => throw "native C emission received a while without a condition";
     }
-    output.append(") {\n");
+    output.append(" {\n");
     if (declaration.statements[index].children.length != 1) {
       throw "native C emission received a while without one body";
     }

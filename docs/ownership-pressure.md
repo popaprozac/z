@@ -579,9 +579,7 @@ cleanup-order proof rather than silently discarding user behavior.
 
 Linear parameter transfer now has its own proof. A `relay` function passes
 `move resource` to the final owner without emitting a deinitializer; the final
-callee alone cleans it after result evaluation. The lowerer rejects
-cleanup-bearing parameters in `if`/`while` functions for now, rather than
-treating a move discovered on one path as global.
+callee alone cleans it after result evaluation.
 
 Linear local transfer follows the same rule. An ordinary local is destroyed
 after its return expression is evaluated; `move local` removes that cleanup and
@@ -591,9 +589,17 @@ source-to-C distinction that the production compiler must preserve: a Z
 C slot cannot be `const`, because deterministic destruction legitimately takes
 its address. Z's semantic pass still rejects reassignment.
 
-Nested owner scopes, owned replacement assignment, non-empty deinitializer
-bodies, and path-sensitive branch/loop/error cleanup merging remain the next
-ownership evidence required before this tier broadens.
+The first control-flow cleanup probe keeps an outer owner live through `if` and
+`while`. Every nested return evaluates its result and then runs the same cleanup
+snapshot; ordinary fallthrough retains the owner. A conditional move is not
+treated as a whole-function move: the lowerer rejects it until the IR can join
+divergent live states, likely through an explicit runtime live bit. Nested
+cleanup-bearing locals also reject rather than silently escape their lexical
+scope.
+
+Nested owner-scope cleanup, owned replacement assignment, non-empty
+deinitializer bodies, and path-sensitive transfer/error cleanup merging remain
+the next ownership evidence required before this tier broadens.
 
 What the compiler proves:
 

@@ -8167,8 +8167,8 @@ test("emits and runs the first program directly from the native Z AST", () => {
     { encoding: "utf8" },
   );
   assert.equal(controlFlowEmission.status, 0, controlFlowEmission.stderr);
-  assert.match(controlFlowEmission.stdout, /while \(\(current <= limit\)\)/);
-  assert.match(controlFlowEmission.stdout, /if \(\(answer == 120\)\)/);
+  assert.match(controlFlowEmission.stdout, /while \(current <= limit\)/);
+  assert.match(controlFlowEmission.stdout, /if \(answer == 120\)/);
   const controlFlowExecutable = resolve(directory, "control-flow");
   const controlFlowCompilation = spawnSync(
     "clang",
@@ -8286,6 +8286,64 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(localCleanupCompilation.status, 0, localCleanupCompilation.stderr);
   const localCleanupExecution = spawnSync(localCleanupExecutable, [], { encoding: "utf8" });
   assert.equal(localCleanupExecution.status, 42, localCleanupExecution.stderr);
+
+  const cleanupFlowInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-cleanup-flow.zs",
+  );
+  const cleanupFlowEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", cleanupFlowInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(cleanupFlowEmission.status, 0, cleanupFlowEmission.stderr);
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /inspectBranch\(Z_Resource resource, bool chooseFirst\).*?if \(chooseFirst\).*?Z_Resource_deinit\(&resource\);.*?Z_Resource_deinit\(&resource\);/s,
+  );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /localBranch\(bool chooseFirst\).*?if \(chooseFirst\).*?Z_Resource_deinit\(&resource\);.*?Z_Resource_deinit\(&resource\);/s,
+  );
+  const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
+  const cleanupFlowCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", cleanupFlowExecutable],
+    { encoding: "utf8", input: cleanupFlowEmission.stdout },
+  );
+  assert.equal(cleanupFlowCompilation.status, 0, cleanupFlowCompilation.stderr);
+  const cleanupFlowExecution = spawnSync(cleanupFlowExecutable, [], { encoding: "utf8" });
+  assert.equal(cleanupFlowExecution.status, 42, cleanupFlowExecution.stderr);
+
+  const pathSensitiveMoveInput = resolve(directory, "path-sensitive-move.zs");
+  writeFileSync(
+    pathSensitiveMoveInput,
+    [
+      "struct Resource {",
+      "  id: i32;",
+      "  deinit {}",
+      "}",
+      "function consume(resource: Resource): i32 { return resource.id; }",
+      "function choose(resource: Resource, condition: boolean): i32 {",
+      "  if (condition) {",
+      "    return consume(move resource);",
+      "  }",
+      "  return resource.id;",
+      "}",
+      "function main(): i32 { return choose(Resource({ id: 42 }), false); }",
+      "",
+    ].join("\n"),
+  );
+  const pathSensitiveMoveEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", pathSensitiveMoveInput],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(pathSensitiveMoveEmission.status, 0);
+  assert.match(
+    pathSensitiveMoveEmission.stderr,
+    /native cleanup lowering does not support path-sensitive transfer of resource in choose yet/,
+  );
 
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");

@@ -159,8 +159,10 @@ branch/loop/error flow are complete.
 Linear owned-parameter transfer is executable too. `move resource` becomes an
 explicit lowered ownership operation that emits no C copy wrapper, removes
 cleanup from the transferring function, and leaves destruction with the final
-callee. Cleanup-bearing parameters still reject branch/loop lowering until
-path-sensitive owner-state merging lands.
+callee. Owners that remain live through `if` and `while` now receive cleanup on
+nested returns and ordinary fallthrough. A move combined with control flow is
+still rejected until divergent owner states can join explicitly; nested owner
+declarations remain fail-closed until lexical scope-exit cleanup lands.
 
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic

@@ -224,6 +224,37 @@ function functionHasControlFlow(in declaration: FunctionDeclaration): boolean {
   return false;
 }
 
+function isRootStatement(in arena: StatementArena, index: usize): boolean {
+  for (const root of arena.roots) {
+    if (root == index) return true;
+  }
+  return false;
+}
+
+function rejectNestedCleanupLocals(
+  in program: Program,
+  in declaration: FunctionDeclaration
+): void throws String {
+  let index: usize = 0;
+  while (index < declaration.body.nodes.length) {
+    if (
+      declaration.body.nodes[index].kind == StatementKind.variableStatement
+      && !isRootStatement(declaration.body, index)
+    ) {
+      match (in declaration.body.nodes[index].typeAnnotation) {
+        some(annotation) => {
+          const type = try lowerType(program, annotation);
+          if (typeNeedsCleanup(program, type)) {
+            throw `native cleanup lowering does not support nested owner scope for ${declaration.body.nodes[index].name} in ${declaration.name} yet`;
+          }
+        }
+        none => {}
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function attachExitCleanups(
   inout statements: Array<LoweredStatement>,
   index: usize,
@@ -249,6 +280,7 @@ function appendLinearLocalCleanups(
   in roots: Array<usize>,
   inout fallthroughCleanups: Array<LoweredCleanup>
 ): void throws String {
+  try rejectNestedCleanupLocals(program, declaration);
   let live = Array<LoweredCleanup>();
   let rootIndex: usize = 0;
   while (rootIndex < declaration.body.roots.length) {
@@ -259,8 +291,11 @@ function appendLinearLocalCleanups(
         some(annotation) => {
           const type = try lowerType(program, annotation);
           if (typeNeedsCleanup(program, type)) {
-            if (functionHasControlFlow(declaration)) {
-              throw `native cleanup lowering does not support branch or loop flow in ${declaration.name} yet`;
+            if (
+              functionHasControlFlow(declaration)
+              && functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)
+            ) {
+              throw `native cleanup lowering does not support path-sensitive transfer of ${declaration.body.nodes[sourceIndex].name} in ${declaration.name} yet`;
             }
             if (!functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)) {
               live.push(LoweredCleanup({
@@ -281,11 +316,7 @@ function appendLinearLocalCleanups(
     ) {
       throw `native cleanup lowering does not support owned replacement in ${declaration.name} yet`;
     }
-    if (declaration.body.nodes[sourceIndex].kind == StatementKind.returnStatement) {
-      for (const cleanup of live) {
-        statements[loweredIndex].cleanups.push(copyCleanup(cleanup));
-      }
-    }
+    attachExitCleanups(inout statements, loweredIndex, live);
     rootIndex = rootIndex + 1;
   }
   for (const cleanup of live) {
@@ -600,15 +631,17 @@ function lowerFunction(
   }
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
-  let cleanupBearingParameterCount: usize = 0;
   for (const parameter of declaration.parameters) {
     if (parameter.mode != ParameterMode.value) {
       throw `native lowering only supports value parameters in ${declaration.name} yet`;
     }
     const parameterType = try lowerType(program, parameter.type);
     if (typeNeedsCleanup(program, parameterType)) {
-      cleanupBearingParameterCount = cleanupBearingParameterCount + 1;
-      if (!functionMovesName(declaration, parameter.name)) {
+      const moved = functionMovesName(declaration, parameter.name);
+      if (moved && functionHasControlFlow(declaration)) {
+        throw `native cleanup lowering does not support path-sensitive transfer of ${parameter.name} in ${declaration.name} yet`;
+      }
+      if (!moved) {
         ownedParameters.push(LoweredCleanup({
           name: parameter.name.copyBytes(0, parameter.name.byteLength),
           type: LoweredType({
@@ -622,9 +655,6 @@ function lowerFunction(
       name: parameter.name.copyBytes(0, parameter.name.byteLength),
       type: move parameterType,
     }));
-  }
-  if (cleanupBearingParameterCount > 0 && functionHasControlFlow(declaration)) {
-    throw `native cleanup lowering does not support branch or loop flow in ${declaration.name} yet`;
   }
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
