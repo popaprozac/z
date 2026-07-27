@@ -4,6 +4,7 @@ export enum TokenKind {
   identifier,
   number,
   string,
+  rawBody,
   templateStart,
   templateText,
   templateExpressionStart,
@@ -104,6 +105,13 @@ export struct LexerError {
   offset: usize;
   line: usize;
   column: usize;
+}
+
+enum RawHeaderState {
+  none,
+  language,
+  bodyOrUsing,
+  boundary,
 }
 
 function isIdentifierStart(byte: u8): boolean {
@@ -299,6 +307,7 @@ function tokenizeInto(
   let byteSurplus: usize = 0;
   let line = baseLine;
   let column = baseColumn;
+  let rawHeaderState = RawHeaderState.none;
 
   while (offset < source.byteLength) {
     const byte = source.byteAt(offset);
@@ -462,6 +471,21 @@ function tokenizeInto(
       }
       const text = source.copyBytes(tokenOffset, offset);
       const keyword = keywordKind(text);
+      if (rawHeaderState == RawHeaderState.none && text == "raw") {
+        rawHeaderState = RawHeaderState.language;
+      } else if (rawHeaderState == RawHeaderState.language) {
+        if (text == "c" || text == "cpp" || text == "objc") {
+          rawHeaderState = RawHeaderState.bodyOrUsing;
+        } else {
+          rawHeaderState = RawHeaderState.none;
+        }
+      } else if (rawHeaderState == RawHeaderState.bodyOrUsing) {
+        if (text == "using") {
+          rawHeaderState = RawHeaderState.boundary;
+        } else {
+          rawHeaderState = RawHeaderState.none;
+        }
+      }
       match (keyword) {
         some(kind) => pushToken(inout tokens, kind, text, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
         none => pushToken(inout tokens, TokenKind.identifier, text, baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
@@ -549,13 +573,132 @@ function tokenizeInto(
         offset = offset + 2;
         column = column + 2;
         pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
+        if (
+          rawHeaderState == RawHeaderState.language
+          || rawHeaderState == RawHeaderState.bodyOrUsing
+        ) rawHeaderState = RawHeaderState.none;
       }
       none => {
         const single = singleSymbolKind(byte);
         match (single) {
           some(kind) => {
+            if (
+              kind == TokenKind.leftBrace
+              && (
+                rawHeaderState == RawHeaderState.bodyOrUsing
+                || rawHeaderState == RawHeaderState.boundary
+              )
+            ) {
+              advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+              pushToken(
+                inout tokens,
+                TokenKind.leftBrace,
+                "{",
+                baseOffset + tokenCoordinateOffset,
+                tokenLine,
+                tokenColumn
+              );
+              const bodyOffset = offset;
+              const bodyCoordinateOffset = offset - byteSurplus;
+              const bodyLine = line;
+              const bodyColumn = column;
+              let depth: usize = 0;
+              let quote: u8 = 0;
+              while (true) {
+                if (offset >= source.byteLength) {
+                  throw LexerError({
+                    message: "unterminated raw native body",
+                    offset: baseOffset + tokenCoordinateOffset,
+                    line: tokenLine,
+                    column: tokenColumn,
+                  });
+                }
+                const bodyByte = source.byteAt(offset);
+                if (quote != 0) {
+                  if (bodyByte == 92) {
+                    advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                    if (offset < source.byteLength) {
+                      advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                    }
+                    continue;
+                  }
+                  if (bodyByte == quote) quote = 0;
+                  advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                  continue;
+                }
+                if (bodyByte == 34 || bodyByte == 39) {
+                  quote = bodyByte;
+                  advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                  continue;
+                }
+                if (
+                  bodyByte == 47
+                  && offset + 1 < source.byteLength
+                  && source.byteAt(offset + 1) == 47
+                ) {
+                  while (offset < source.byteLength && source.byteAt(offset) != 10) {
+                    advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                  }
+                  continue;
+                }
+                if (
+                  bodyByte == 47
+                  && offset + 1 < source.byteLength
+                  && source.byteAt(offset + 1) == 42
+                ) {
+                  try skipBlockComment(
+                    source,
+                    baseOffset,
+                    inout offset,
+                    inout byteSurplus,
+                    inout line,
+                    inout column
+                  );
+                  continue;
+                }
+                if (bodyByte == 123) {
+                  depth = depth + 1;
+                  advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                  continue;
+                }
+                if (bodyByte == 125) {
+                  if (depth == 0) break;
+                  depth = depth - 1;
+                  advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+                  continue;
+                }
+                advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+              }
+              pushToken(
+                inout tokens,
+                TokenKind.rawBody,
+                source.copyBytes(bodyOffset, offset),
+                baseOffset + bodyCoordinateOffset,
+                bodyLine,
+                bodyColumn
+              );
+              const endCoordinateOffset = offset - byteSurplus;
+              const endLine = line;
+              const endColumn = column;
+              advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
+              pushToken(
+                inout tokens,
+                TokenKind.rightBrace,
+                "}",
+                baseOffset + endCoordinateOffset,
+                endLine,
+                endColumn
+              );
+              rawHeaderState = RawHeaderState.none;
+              continue;
+            }
             advanceSource(source, inout offset, inout byteSurplus, inout line, inout column);
             pushToken(inout tokens, kind, source.copyBytes(tokenOffset, offset), baseOffset + tokenCoordinateOffset, tokenLine, tokenColumn);
+            if (
+              kind == TokenKind.semicolon
+              || rawHeaderState == RawHeaderState.language
+              || rawHeaderState == RawHeaderState.bodyOrUsing
+            ) rawHeaderState = RawHeaderState.none;
           }
           none => throw LexerError({
             message: `unexpected source byte ${byte}`,
@@ -584,6 +727,7 @@ export function tokenKindName(kind: TokenKind): String {
     identifier => "identifier";
     number => "number";
     string => "string";
+    rawBody => "rawBody";
     templateStart => "templateStart";
     templateText => "templateText";
     templateExpressionStart => "templateExpressionStart";

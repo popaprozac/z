@@ -8042,7 +8042,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   const result = spawnSync(process.execPath, [cli, "self-host-parse", fixture, lexer, parser, "--timings"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /self-host-parser-input\.zs: stage-1 parser matches 17 declarations, 4 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
-  assert.match(result.stdout, /lexer\.zs: stage-1 parser matches 17 declarations, 1 imports, 13 function signatures, 13 function bodies, and 3 type shapes/);
+  assert.match(result.stdout, /lexer\.zs: stage-1 parser matches 18 declarations, 1 imports, 13 function signatures, 13 function bodies, and 4 type shapes/);
   assert.match(result.stdout, /parser\.zs: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
   assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; stage-0 compile \+ native build included)\)/);
   assert.match(result.stdout, /native in-process batch \(host file I\/O \+ FFI \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
@@ -8083,6 +8083,60 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
     /before its file header/,
   );
 }, 10_000);
+
+test("keeps raw native bodies opaque across native lexer and parser parity", () => {
+  const input = resolve(projectRoot, "examples/interop/raw/native-boundary.zs");
+  const lexical = spawnSync(
+    process.execPath,
+    [cli, "self-host-lex", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(lexical.status, 0, lexical.stderr);
+  assert.match(lexical.stdout, /native-boundary\.zs: stage-1 lexer matches \d+ tokens/);
+
+  const structural = spawnSync(
+    process.execPath,
+    [cli, "self-host-parse", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(structural.status, 0, structural.stderr);
+  assert.match(
+    structural.stdout,
+    /native-boundary\.zs: stage-1 parser matches 2 declarations, 0 imports, 2 function signatures, 2 function bodies, and 0 type shapes/,
+  );
+
+  const native = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(native.status, 0, native.stderr);
+  const observedExpressions = native.stdout.match(
+    /observes (\d+) root expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = native.stdout.match(
+    /uses (\d+) root expression native-authoritative contracts/,
+  )?.[1];
+  assert.equal(observedExpressions, "3");
+  assert.equal(authoritativeExpressions, observedExpressions);
+
+  const directory = mkdtempSync("/tmp/z-native-contextual-raw-");
+  const ordinaryBinding = resolve(directory, "main.zs");
+  writeFileSync(
+    ordinaryBinding,
+    "function main(): i32 {\n"
+      + "  const raw: i32 = 42;\n"
+      + "  const c: i32 = raw;\n"
+      + "  return c - 42;\n"
+      + "}\n",
+  );
+  const ordinary = spawnSync(
+    process.execPath,
+    [cli, "check", ordinaryBinding, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(ordinary.status, 0, ordinary.stderr);
+}, 20_000);
 
 test("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");

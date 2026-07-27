@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current parser arenas, module graph, structural phase API, function/type/method signatures, lexical/type lookup, primitive/generic/async/cross-module expression typing, definite-initialization and ownership flow, and structured diagnostics for that subset. All 154 currently parseable executable examples pass the hybrid native gate without partial binding/expression authority; foreign ABI-only judgments deliberately defer. Raw-function parser parity, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer—including opaque raw-native body boundaries—current parser arenas, module graph, structural phase API, function/type/method signatures, lexical/type lookup, primitive/generic/async/cross-module expression typing, definite-initialization and ownership flow, and structured diagnostics for that subset. All 155 executable examples pass the hybrid native gate without partial binding/expression authority; foreign ABI-only and raw-expression semantics deliberately defer. Complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -617,10 +617,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    explicitly classified as unresolved external types. Only judgments that need
    the missing ABI facts defer to Stage 0; surrounding Z calls, aggregates,
    bindings, expressions, and ownership remain native-authoritative. The five
-   unchanged interop examples now check, bringing all 154 examples understood by
-   the native parser through the hybrid gate without a partial
-   binding/expression-authority gap. The remaining executable root uses a raw
-   native function-body grammar that still needs parser parity.
+   unchanged interop examples now check. The adjacent raw-native root exposed a
+   parser rather than type-system gap. Stage 1 now lexes a raw body as one opaque
+   token, preserving nested native braces/quotes/comments, and structurally
+   accepts `function ... = raw c|cpp|objc { ... }` without interpreting the
+   embedded source. Ordinary identifiers named `raw` remain ordinary. All 155
+   executable examples now pass the hybrid gate with zero partial
+   binding/expression-authority gaps; Stage 0 continues to own raw escape-hatch
+   semantic validation.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

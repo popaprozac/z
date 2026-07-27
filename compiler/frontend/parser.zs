@@ -2963,6 +2963,25 @@ function parseFunctionDeclaration(
   let body = StatementArena({ nodes: Array<Statement>(), roots: Array<usize>() });
   if (signatureOnly) {
     try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a function signature");
+  } else if (takeIf(tokens, inout current, TokenKind.equal)) {
+    const raw = try expect(tokens, inout current, TokenKind.identifier, "`raw` after `=`");
+    if (raw.text != "raw") {
+      throw fail(raw, "a native function body must use `= raw c`, `= raw cpp`, or `= raw objc`");
+    }
+    const language = try expect(
+      tokens,
+      inout current,
+      TokenKind.identifier,
+      "`c`, `cpp`, or `objc` after `raw`"
+    );
+    if (
+      language.text != "c"
+      && language.text != "cpp"
+      && language.text != "objc"
+    ) throw fail(language, "raw native language must be `c`, `cpp`, or `objc`");
+    try expectKind(tokens, inout current, TokenKind.leftBrace, "`{` starting a raw native body");
+    try expectKind(tokens, inout current, TokenKind.rawBody, "raw native source");
+    try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` ending a raw native body");
   } else {
     let bodyNodes = Array<Statement>();
     const bodyRoots = try parseProjectedBlock(

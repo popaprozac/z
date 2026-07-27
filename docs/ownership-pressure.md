@@ -362,12 +362,12 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-27 decomposition checkpoint contains 15,983 lines of Z:
+The 2026-07-27 decomposition checkpoint contains 16,146 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
-| `lexer.zs` | 673 | UTF-8 scanning with UTF-16 public locations |
-| `parser.zs` | 3,913 | declarations, statements, and flat expression arenas |
+| `lexer.zs` | 817 | UTF-8 scanning with UTF-16 public locations plus opaque raw-native body boundaries |
+| `parser.zs` | 3,932 | declarations, statements, flat expression arenas, and raw-function structural parity |
 | `semantic-model.zs` | 180 | graph, symbol, signature, diagnostic, and semantic-evidence values |
 | `module-paths.zs` | 94 | lexical local-module recognition and normalization |
 | `module-signatures.zs` | 263 | declaration-to-semantic signature projection |
@@ -396,13 +396,13 @@ The 2026-07-27 decomposition checkpoint contains 15,983 lines of Z:
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-nine-module frontend graph and currently produces parity evidence
-for 917 symbols, 1,834 binding/signature queries, 991 inferred local bindings,
-and 3,750 root expression types. The binding and expression counts describe the
+for 918 symbols, 1,836 binding/signature queries, 1,001 inferred local bindings,
+and 3,803 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-175 ms. One bulk fixed-width fill carries all 917 symbol identities, kinds, export
+178 ms. One bulk fixed-width fill carries all 918 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -413,8 +413,8 @@ base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
 canonical graph returned by the versioned phase API directly. The latest
-whole-process samples were 250.3 ms for Stage 1, 247.2 ms for Stage 0, and
-1.130 s for the hybrid parity path. All three remain inside the established
+whole-process samples were 251.3 ms for Stage 1, 250.4 ms for Stage 0, and
+1.137 s for the hybrid parity path. All three remain inside the established
 band. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
@@ -521,12 +521,23 @@ literals, unannotated foreign closures, and ownership transfer that require
 that unavailable metadata defer to Stage 0 instead of guessing. The unchanged
 C typedef, selective-import, Objective-C property, and target/action examples
 now check with every Stage-0-observed binding and expression still backed by
-native authority where Z has enough information. All 154 parseable executable
-roots complete without a partial native-evidence gap; the remaining root uses
-the `function ... = raw c {}` grammar that the native parser has not yet
-adopted. This is intentionally a migration seam: importing Clang/Swift FIIR
-into the native compiler remains future work, and the fallback does not claim
-that opaque foreign semantics are understood.
+native authority where Z has enough information. This is intentionally a
+migration seam: importing Clang/Swift FIIR into the native compiler remains
+future work, and the fallback does not claim that opaque foreign semantics are
+understood.
+
+The final executable-root failure was structural rather than semantic:
+Stage 1 parsed only ordinary `{ ... }` Z function bodies, while the accepted
+grammar also permits `function ... = raw c|cpp|objc { ... }`. The native lexer
+now recognizes the same contextual header as Stage 0, emits the body as one
+opaque token while respecting nested braces, strings, character literals, and
+comments, and leaves ordinary bindings named `raw` untouched. The parser
+accepts the function form without interpreting native source; raw expressions
+remain opaque semantic spans checked by Stage 0's dedicated escape-hatch
+analysis. Lexer parity, parser parity, and hybrid semantic checking now pass on
+the unchanged raw-boundary example. The complete 155-root executable corpus
+therefore reports zero failures and zero partial native binding/expression
+authority gaps.
 
 What the compiler proves:
 
