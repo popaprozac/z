@@ -4,7 +4,10 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import { identifierLookupName } from "./semantic-expression-ownership.zs";
-import { equivalentTypes } from "./semantic-type-identities.zs";
+import {
+  equivalentTypes,
+  transparentTypeName,
+} from "./semantic-type-identities.zs";
 import {
   nativeFunctionSignature,
   stringStartsWith,
@@ -28,6 +31,7 @@ export struct NativeClosureSignatureShape {
   parameterModes: Array<String>;
   parameterTypes: Array<String>;
   returnType: String;
+  errorType: String;
 }
 
 function copyBindings(in bindings: Array<String>): Array<String> {
@@ -88,22 +92,19 @@ export function resolveClosureSignature(
   in declaredReturnType: String,
   in errorType: String
 ): NativeClosureSignatureShape throws ModuleResolveError {
-  if (errorType.byteLength > 0) {
-    throw moduleResolutionError(
-      ModuleResolveErrorKind.typeMismatch,
-      module.path,
-      "throwing closure values are not implemented yet",
-      tree.nodes[index].line,
-      tree.nodes[index].column
-    );
-  }
   let contextualParameterModes = Array<String>();
   let contextualParameterTypes = Array<String>();
   let returnType = declaredReturnType.copyBytes(
     0,
     declaredReturnType.byteLength
   );
-  match (nativeFunctionSignature(contextualType)) {
+  let resolvedErrorType = errorType.copyBytes(0, errorType.byteLength);
+  const expandedContextualType = transparentTypeName(
+    modules,
+    moduleIndex,
+    contextualType
+  );
+  match (nativeFunctionSignature(expandedContextualType)) {
     some(signature) => {
       let closureParameterCount: usize = 0;
       for (const child of tree.nodes[index].children) {
@@ -149,6 +150,31 @@ export function resolveClosureSignature(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           `closure return type expects ${signature.returnType}, found ${returnType}`,
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+      }
+      if (resolvedErrorType.byteLength == 0) {
+        resolvedErrorType = signature.errorType.copyBytes(
+          0,
+          signature.errorType.byteLength
+        );
+      } else if (
+        signature.errorType.byteLength == 0
+        || !equivalentTypes(
+          modules,
+          moduleIndex,
+          resolvedErrorType,
+          signature.errorType
+        )
+      ) {
+        const expected = signature.errorType.byteLength == 0
+          ? "a nonthrowing closure"
+          : `throws ${signature.errorType}`;
+        throw moduleResolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `closure error type expects ${expected}, found throws ${resolvedErrorType}`,
           tree.nodes[index].line,
           tree.nodes[index].column
         );
@@ -244,6 +270,7 @@ export function resolveClosureSignature(
     parameterModes,
     parameterTypes,
     returnType,
+    errorType: resolvedErrorType,
   });
 }
 
@@ -252,7 +279,8 @@ export function nativeClosureFunctionType(
   index: usize,
   in parameterModes: Array<String>,
   in parameterTypes: Array<String>,
-  in returnType: String
+  in returnType: String,
+  in errorType: String
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
@@ -285,6 +313,10 @@ export function nativeClosureFunctionType(
   }
   output.append(") => ");
   output.append(returnType);
+  if (errorType.byteLength > 0) {
+    output.append(" throws ");
+    output.append(errorType);
+  }
   return output.finish();
 }
 

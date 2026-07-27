@@ -325,8 +325,43 @@ export function nativeFunctionSignature(
     index = index + 1;
   }
   const functionTypeLength = functionType.byteLength;
-  const returnType = trimmedTypeSlice(functionType, close + 4, functionTypeLength);
+  let throwsAt = functionTypeLength;
+  let returnParenthesisDepth: usize = 0;
+  let returnAngleDepth: usize = 0;
+  let returnBracketDepth: usize = 0;
+  index = close + 4;
+  while (index + 8 <= functionTypeLength) {
+    const byte = functionType.byteAt(index);
+    if (byte == 40) returnParenthesisDepth = returnParenthesisDepth + 1;
+    else if (byte == 41 && returnParenthesisDepth > 0) {
+      returnParenthesisDepth = returnParenthesisDepth - 1;
+    } else if (byte == 60) returnAngleDepth = returnAngleDepth + 1;
+    else if (byte == 62 && returnAngleDepth > 0) {
+      returnAngleDepth = returnAngleDepth - 1;
+    } else if (byte == 91) returnBracketDepth = returnBracketDepth + 1;
+    else if (byte == 93 && returnBracketDepth > 0) {
+      returnBracketDepth = returnBracketDepth - 1;
+    }
+    if (
+      returnParenthesisDepth == 0
+      && returnAngleDepth == 0
+      && returnBracketDepth == 0
+      && functionType.copyBytes(index, index + 8) == " throws "
+    ) {
+      throwsAt = index;
+      break;
+    }
+    index = index + 1;
+  }
+  const returnType = trimmedTypeSlice(functionType, close + 4, throwsAt);
   if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
+  let errorType = "";
+  if (throwsAt < functionTypeLength) {
+    errorType = trimmedTypeSlice(functionType, throwsAt + 8, functionTypeLength);
+    if (errorType.byteLength == 0) {
+      return Option<ModuleFunctionSignature>.none;
+    }
+  }
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
@@ -335,6 +370,6 @@ export function nativeFunctionSignature(
     parameterModes,
     parameterTypes,
     returnType,
-    errorType: "",
+    errorType,
   }));
 }

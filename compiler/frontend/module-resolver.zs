@@ -125,6 +125,7 @@ import {
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
+  transparentTypeName,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -2389,6 +2390,13 @@ function inferExpressionNodeType(
     }
     addValueBinding(inout closureBindings, "__z_native_function_name", "closure");
     addValueBinding(inout closureBindings, "__z_native_return_type", returnType);
+    if (closureSignature.errorType.byteLength > 0) {
+      addValueBinding(
+        inout closureBindings,
+        "__z_native_error_type",
+        closureSignature.errorType
+      );
+    }
     if (bodyKind == "block") {
       const statements = copyIndices(tree.nodes[index].statements);
       try inferStatementSequence(
@@ -2444,7 +2452,8 @@ function inferExpressionNodeType(
       index,
       closureSignature.parameterModes,
       closureSignature.parameterTypes,
-      returnType
+      returnType,
+      closureSignature.errorType
     );
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
@@ -2590,7 +2599,12 @@ function inferExpressionNodeType(
       );
       const lookup = identifierLookupName(callee);
       const localType = valueBindingType(bindings, lookup);
-      match (nativeFunctionSignature(localType)) {
+      const callableLocalType = transparentTypeName(
+        modules,
+        moduleIndex,
+        localType
+      );
+      match (nativeFunctionSignature(callableLocalType)) {
         some(signature) => {
           const substitutions = Array<NativeValueBinding>();
           const arguments = callArgumentNodes(children);
@@ -2815,7 +2829,12 @@ function inferExpressionNodeType(
                 bindings,
                 field
               );
-              match (nativeFunctionSignature(field.typeName)) {
+              const callableFieldType = transparentTypeName(
+                modules,
+                moduleIndex,
+                field.typeName
+              );
+              match (nativeFunctionSignature(callableFieldType)) {
                 some(signature) => {
                   const substitutions = Array<NativeValueBinding>();
                   const argumentNodes = callArgumentNodes(children);

@@ -580,6 +580,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    callable through the same native signature path. The existing classes,
    Option, owned async-enum, and function-value programs all pass with every
    Stage-0-observed binding and expression backed by native authority.
+   Transparent callable aliases now expand to their underlying signature during
+   native closure contextualization and calls. Function-type parsing retains
+   `throws E`; contextual and explicitly throwing closures carry that error
+   into body checking, returned function evidence, and pending call effects.
+   The ordinary throwing-function application plus both native-thread error
+   examples now consume every observed binding and expression through native
+   authority.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

@@ -271,6 +271,32 @@ export function rebaseTypeName(
   };
 }
 
+export function transparentTypeName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): String {
+  return match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        != ModuleSymbolKind.typeAliasSymbol
+      ) {
+        return name.copyBytes(0, name.byteLength);
+      }
+      const target = rebaseTypeName(
+        modules,
+        location.moduleIndex,
+        moduleIndex,
+        modules[location.moduleIndex].symbols[location.symbolIndex].importedName
+      );
+      if (target == name) return target;
+      return transparentTypeName(modules, moduleIndex, target);
+    }
+    none => name.copyBytes(0, name.byteLength);
+  };
+}
+
 export function semanticTypeIdentity(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -1,6 +1,9 @@
 import { requireSettledExpressionType } from "./semantic-call-contracts.zs";
 import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
-import { equivalentTypes } from "./semantic-type-identities.zs";
+import {
+  equivalentTypes,
+  transparentTypeName,
+} from "./semantic-type-identities.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
@@ -45,15 +48,25 @@ function nativeFunctionSignaturesCompatible(
   in expected: String,
   in actual: String
 ): boolean {
-  match (nativeFunctionSignature(expected)) {
+  const expandedExpected = transparentTypeName(modules, moduleIndex, expected);
+  const expandedActual = transparentTypeName(modules, moduleIndex, actual);
+  match (nativeFunctionSignature(expandedExpected)) {
     some(expectedSignature) => {
-      match (nativeFunctionSignature(actual)) {
+      match (nativeFunctionSignature(expandedActual)) {
         some(actualSignature) => {
           if (
             expectedSignature.parameterTypes.length
               != actualSignature.parameterTypes.length
             || expectedSignature.returnType.byteLength == 0
             || actualSignature.returnType.byteLength == 0
+            || (
+              expectedSignature.errorType.byteLength == 0
+              && actualSignature.errorType.byteLength > 0
+            )
+            || (
+              expectedSignature.errorType.byteLength > 0
+              && actualSignature.errorType.byteLength == 0
+            )
           ) return false;
           let index: usize = 0;
           while (index < expectedSignature.parameterTypes.length) {
@@ -69,11 +82,18 @@ function nativeFunctionSignaturesCompatible(
             ) return false;
             index = index + 1;
           }
-          return equivalentTypes(
+          if (!equivalentTypes(
             modules,
             moduleIndex,
             expectedSignature.returnType,
             actualSignature.returnType
+          )) return false;
+          if (expectedSignature.errorType.byteLength == 0) return true;
+          return equivalentTypes(
+            modules,
+            moduleIndex,
+            expectedSignature.errorType,
+            actualSignature.errorType
           );
         }
         none => return false;

@@ -10497,6 +10497,39 @@ test("compares native function values by capability and type, not parameter name
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
+test("preserves throwing closure and transparent callable-alias effects natively", () => {
+  const cases = [
+    "examples/language/basics/throwing-function-values.zs",
+    "examples/async/thread-errors.zs",
+    "examples/async/thread-native-errors.zs",
+  ];
+  for (const fileName of cases) {
+    const input = resolve(projectRoot, fileName);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${fileName}\n${result.stderr}`);
+    const observedBindings = result.stdout.match(
+      /observes (\d+) inferred local binding stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeBindings = result.stdout.match(
+      /uses (\d+) inferred local binding native-authoritative contracts/,
+    )?.[1];
+    const observedExpressions = result.stdout.match(
+      /observes (\d+) root expression stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeExpressions = result.stdout.match(
+      /uses (\d+) root expression native-authoritative contracts/,
+    )?.[1];
+    assert.ok(observedBindings, fileName);
+    assert.ok(observedExpressions, fileName);
+    assert.equal(authoritativeBindings, observedBindings, fileName);
+    assert.equal(authoritativeExpressions, observedExpressions, fileName);
+  }
+});
+
 test("preserves nominal identities inside linked generic monomorphs", () => {
   const directory = mkdtempSync("/tmp/z-native-generic-identities-");
   const syntaxModule = resolve(directory, "syntax.zs");

@@ -183,6 +183,12 @@ aggregate evidence counts alone cannot prove: trait receiver modes, contextual
 payload-free generic variants, structurally compatible function types with
 different parameter names, and invocation through function-valued aggregate
 fields all retain native authority.
+Transparent callable aliases now expand before contextual closure and call
+analysis. Function-type shapes retain a separate `throws E` effect, so
+contextual or explicitly throwing closure bodies receive the error contract and
+their resulting callable evidence preserves it. Existing synchronous and
+native-thread throwing-closure programs therefore remain native-authoritative
+without requiring foreign thread metadata in the native source graph.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

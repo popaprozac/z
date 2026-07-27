@@ -374,13 +374,13 @@ The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 | `module-symbols.zs` | 253 | symbol construction, import bindings, and lookup indexes |
 | `module-graph.zs` | 200 | parsing, dependency edges, graph skeletons, and ordering |
 | `semantic-names.zs` | 406 | lexical scopes, pattern bindings, and unknown-name diagnostics |
-| `semantic-type-shapes.zs` | 340 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
-| `semantic-type-identities.zs` | 373 | canonical symbol identity, cross-module spelling, and trait conformance lookup |
+| `semantic-type-shapes.zs` | 375 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
+| `semantic-type-identities.zs` | 399 | canonical symbol identity, cross-module spelling, transparent aliases, and trait conformance lookup |
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
 | `semantic-call-contracts.zs` | 156 | per-call capability conflicts plus pending throwing/async-call encoding and diagnostics |
 | `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
-| `semantic-expression-types.zs` | 196 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
-| `semantic-closures.zs` | 452 | closure parameter contextualization, callable-shape construction, and lexical capture discovery |
+| `semantic-expression-types.zs` | 215 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
+| `semantic-closures.zs` | 484 | closure parameter/effect contextualization, callable-shape construction, and lexical capture discovery |
 | `semantic-executor-placement.zs` | 116 | placed-task type effects plus explicit capture capability and move-state preparation |
 | `semantic-function-contexts.zs` | 183 | function parameter/receiver bindings, generic context, and generator yield/return discovery |
 | `semantic-intrinsics.zs` | 240 | compiler-provided numeric, collection, iteration, and generator callable behavior |
@@ -391,18 +391,18 @@ The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,922 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 3,941 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-nine-module frontend graph and currently produces parity evidence
-for 910 symbols, 1,820 binding/signature queries, 974 inferred local bindings,
-and 3,683 root expression types. The binding and expression counts describe the
+for 913 symbols, 1,826 binding/signature queries, 983 inferred local bindings,
+and 3,717 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-166 ms. One bulk fixed-width fill carries all 910 symbol identities, kinds, export
+167 ms. One bulk fixed-width fill carries all 913 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -413,8 +413,8 @@ base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
 canonical graph returned by the versioned phase API directly. The latest
-whole-process samples were 261.1 ms for Stage 1, 273.2 ms for Stage 0, and
-1.147 s for the hybrid parity path. Stage 1 was 1.05 times faster than the
+whole-process samples were 245.5 ms for Stage 1, 255.2 ms for Stage 0, and
+1.105 s for the hybrid parity path. Stage 1 was 1.04 times faster than the
 ordinary Stage-0 check in this sample. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
@@ -468,6 +468,17 @@ Option, owned async-enum, and function-value examples now complete under native
 authority. This validates corpus sweeps as a distinct self-hosting gate:
 aggregate counts can be green while a previously unrepresented composition
 still exposes a semantic mismatch.
+
+Throwing function values exposed the next effect-composition gap. A transparent
+alias hid the callable parameter types from closure contextualization, while
+the flat function-type parser treated `throws E` as part of the return type.
+Native type identity now expands transparent aliases at callable boundaries,
+and callable shapes retain a distinct error channel. Closure bodies receive
+that contextual error type, returned closure evidence preserves it, and calls
+recover the same pending throwing effect. The existing synchronous
+throwing-function example and both `thread.spawn` error examples now remain
+fully native-authoritative without teaching the native resolver about the
+thread runtime itself.
 
 What the compiler proves:
 
