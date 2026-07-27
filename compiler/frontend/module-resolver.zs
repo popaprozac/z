@@ -12,6 +12,13 @@ import {
 } from "./module-symbols.zs";
 import { validateModuleNames } from "./semantic-names.zs";
 import {
+  NativeCallAccess,
+  pendingThrowingCallShape,
+  pendingThrowingCallType,
+  registerCallAccess,
+  requireSettledExpressionType,
+} from "./semantic-call-contracts.zs";
+import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
@@ -41,6 +48,14 @@ import {
   requireGenericConstraints,
   settledContextualType,
 } from "./semantic-generic-inference.zs";
+import {
+  consumeOwnedExpressionNode,
+  consumeOwnedExpressionSyntax,
+  expressionStorageRootName,
+  identifierLookupName,
+  requireInitializedBinding,
+  requireInitializedOutputParameters,
+} from "./semantic-expression-ownership.zs";
 import {
   NativeAggregateConstructionShape,
   NativeMatchShape,
@@ -137,16 +152,6 @@ import {
   TypeReference,
 } from "./parser.zs";
 
-struct NativeCallAccess {
-  root: String;
-  capability: String;
-}
-
-struct NativeThrowingCallShape {
-  successType: String;
-  errorType: String;
-}
-
 function resolutionError(
   kind: ModuleResolveErrorKind,
   in path: String,
@@ -194,16 +199,6 @@ function collectMatchBindingNames(
   }
 }
 
-function identifierLookupName(in name: String): String {
-  let index: usize = 0;
-  while (index < name.byteLength) {
-    if (name.byteAt(index) == 60) return name.copyBytes(0, index);
-    index = index + 1;
-  }
-  return name.copyBytes(0, name.byteLength);
-}
-
-
 function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
 }
@@ -222,193 +217,6 @@ function contextualExpectedType(
 }
 
 
-function requireInitializedBinding(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  index: usize,
-  in bindings: Array<NativeValueBinding>,
-  in name: String
-): void throws ModuleResolveError {
-  const initialization = valueBindingInitialization(bindings, name);
-  if (initialization != NativeInitializationState.initialized) {
-    const message = initialization == NativeInitializationState.uninitialized
-      ? `use of uninitialized value "${name}"`
-      : `value "${name}" may be uninitialized on another control-flow path`;
-    throw resolutionError(
-      ModuleResolveErrorKind.typeMismatch,
-      module.path,
-      message,
-      tree.nodes[index].line,
-      tree.nodes[index].column
-    );
-  }
-  const ownership = valueBindingOwnership(bindings, name);
-  if (ownership == NativeOwnershipState.available) return;
-  const message = ownership == NativeOwnershipState.moved
-    ? `use of moved value "${name}"`
-    : `value "${name}" may have moved on another control-flow path`;
-  throw resolutionError(
-    ModuleResolveErrorKind.typeMismatch,
-    module.path,
-    message,
-    tree.nodes[index].line,
-    tree.nodes[index].column
-  );
-}
-
-function requireInitializedOutputParameters(
-  in module: ParsedModule,
-  line: usize,
-  column: usize,
-  in bindings: Array<NativeValueBinding>
-): void throws ModuleResolveError {
-  for (const binding of bindings) {
-    if (
-      binding.outputParameter
-      && binding.initialization != NativeInitializationState.initialized
-    ) {
-      throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        `out parameter "${binding.name}" may be uninitialized on a successful return path`,
-        line,
-        column
-      );
-    }
-  }
-}
-
-function expressionStorageRootName(
-  in tree: ExpressionTree,
-  index: usize
-): String {
-  const kind = tree.nodes[index].kind;
-  if (
-    kind == ExpressionKind.identifierExpression
-    || kind == ExpressionKind.argumentBindingExpression
-  ) return identifierLookupName(tree.nodes[index].value);
-  if (
-    kind == ExpressionKind.argumentReferenceExpression
-    || kind == ExpressionKind.memberExpression
-    || kind == ExpressionKind.indexExpression
-  ) {
-    if (tree.nodes[index].children.length > 0) {
-      const child = tree.nodes[index].children[0];
-      return expressionStorageRootName(tree, child);
-    }
-  }
-  return "";
-}
-
-function consumeOwnedExpressionNode(
-  in module: ParsedModule,
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in tree: ExpressionTree,
-  index: usize,
-  in typeName: String,
-  force: boolean,
-  inout bindings: Array<NativeValueBinding>
-): void throws ModuleResolveError {
-  if (!force && !typeMovesOnOwnedUse(modules, moduleIndex, typeName)) return;
-  const kind = tree.nodes[index].kind;
-  if (
-    kind == ExpressionKind.memberExpression
-    && tree.nodes[index].children.length == 1
-  ) {
-    const receiverIndex = tree.nodes[index].children[0];
-    const enumType = typeExpressionName(tree, receiverIndex);
-    const variantName = identifierLookupName(tree.nodes[index].value);
-    if (isKnownMatchVariant(modules, moduleIndex, enumType, variantName)) return;
-  }
-  if (kind == ExpressionKind.memberExpression || kind == ExpressionKind.indexExpression) {
-    throw resolutionError(
-      ModuleResolveErrorKind.typeMismatch,
-      module.path,
-      "cannot move an ownership-bearing field or element out of its owner",
-      tree.nodes[index].line,
-      tree.nodes[index].column
-    );
-  }
-  const root = expressionStorageRootName(tree, index);
-  if (root.byteLength == 0) return;
-  if (valueBindingIsBorrowed(bindings, root)) {
-    const message = valueBindingIsMatchBorrowed(bindings, root)
-      ? `cannot move borrowed match binding "${root}"`
-      : `cannot move borrowed parameter "${root}"`;
-    throw resolutionError(
-      ModuleResolveErrorKind.typeMismatch,
-      module.path,
-      message,
-      tree.nodes[index].line,
-      tree.nodes[index].column
-    );
-  }
-  setValueBindingOwnership(inout bindings, root, NativeOwnershipState.moved);
-}
-
-function consumeOwnedExpressionSyntax(
-  in module: ParsedModule,
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in expression: ExpressionSyntax,
-  in typeName: String,
-  inout bindings: Array<NativeValueBinding>
-): void throws ModuleResolveError {
-  match (in expression.tree) {
-    some(tree) => {
-      const root = tree.root;
-      try consumeOwnedExpressionNode(
-        module,
-        modules,
-        moduleIndex,
-        tree,
-        root,
-        typeName,
-        false,
-        inout bindings
-      );
-    }
-    none => {}
-  }
-}
-
-function callCapabilitiesConflict(in left: String, in right: String): boolean {
-  return !(
-    (left == "in" && right == "in")
-    || (left == "value" && right == "value")
-  );
-}
-
-function registerCallAccess(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  nodeIndex: usize,
-  inout accesses: Array<NativeCallAccess>,
-  in root: String,
-  in capability: String
-): void throws ModuleResolveError {
-  if (root.byteLength == 0) return;
-  for (const access of accesses) {
-    if (
-      access.root == root
-      && callCapabilitiesConflict(access.capability, capability)
-    ) {
-      throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        `overlapping ${access.capability} and ${capability} uses of "${root}" in one call are not allowed`,
-        tree.nodes[nodeIndex].line,
-        tree.nodes[nodeIndex].column
-      );
-    }
-  }
-  accesses.push(NativeCallAccess({
-    root: root.copyBytes(0, root.byteLength),
-    capability: capability.copyBytes(0, capability.byteLength),
-  }));
-}
-
 function numberLiteralType(in value: String): String {
   let index: usize = 0;
   while (index < value.byteLength) {
@@ -417,63 +225,6 @@ function numberLiteralType(in value: String): String {
     index = index + 1;
   }
   return "i32";
-}
-
-function pendingThrowingCallType(
-  in successType: String,
-  in errorType: String
-): String {
-  return `__z_native_throwing_call:${successType}\t${errorType}`;
-}
-
-function pendingThrowingCallShape(
-  in typeName: String
-): Option<NativeThrowingCallShape> {
-  const prefix = "__z_native_throwing_call:";
-  if (!stringStartsWith(typeName, prefix)) {
-    return Option<NativeThrowingCallShape>.none;
-  }
-  let separator = prefix.byteLength;
-  while (separator < typeName.byteLength && typeName.byteAt(separator) != 9) {
-    separator = separator + 1;
-  }
-  if (separator == typeName.byteLength) {
-    return Option<NativeThrowingCallShape>.none;
-  }
-  return Option.some(NativeThrowingCallShape({
-    successType: typeName.copyBytes(prefix.byteLength, separator),
-    errorType: typeName.copyBytes(separator + 1, typeName.byteLength),
-  }));
-}
-
-function unhandledThrowingCallError(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  index: usize
-): ModuleResolveError {
-  let message = "throwing call requires `attempt` or `try`";
-  if (tree.nodes[index].kind == ExpressionKind.newExpression) {
-    message = "throwing constructor requires `attempt` or `try`";
-  }
-  return resolutionError(
-    ModuleResolveErrorKind.typeMismatch,
-    module.path,
-    message,
-    tree.nodes[index].line,
-    tree.nodes[index].column
-  );
-}
-
-function requireSettledExpressionType(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  index: usize,
-  in typeName: String
-): void throws ModuleResolveError {
-  match (pendingThrowingCallShape(typeName)) {
-    some(shape) => throw unhandledThrowingCallError(module, tree, index);
-    none => {}
-  }
 }
 
 function isContextualNumericLiteral(in tree: ExpressionTree, index: usize): boolean {

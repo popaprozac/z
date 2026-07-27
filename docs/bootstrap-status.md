@@ -663,7 +663,10 @@ When focused self-hosting work resumes, use this order:
    substitution, constraint checking, and parameterized type-name construction
    now live in `semantic-generic-inference.zs`; aggregate construction consumes
    one normalized lookup shape while recursive field-expression inference
-   remains in the resolver.
+   remains in the resolver. Per-call capability conflicts and pending
+   throwing-call effects now live in `semantic-call-contracts.zs`.
+   Initialization/use-after-move diagnostics, storage-root discovery, and
+   whole-value consumption now live in `semantic-expression-ownership.zs`.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

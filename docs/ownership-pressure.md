@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 14,859 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 14,914 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -377,23 +377,25 @@ The 2026-07-26 decomposition checkpoint contains 14,859 lines of Z:
 | `semantic-type-shapes.zs` | 340 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
 | `semantic-type-identities.zs` | 373 | canonical symbol identity, cross-module spelling, and trait conformance lookup |
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
+| `semantic-call-contracts.zs` | 114 | per-call capability conflicts plus pending throwing-call encoding and diagnostics |
+| `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 4,771 | recursive expression inference, ownership-flow merging, and semantic orchestration |
+| `module-resolver.zs` | 4,522 | recursive expression inference, ownership-flow merging, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own seventeen-module frontend graph and currently produces parity evidence for
-684 symbols, 1,368 binding/signature queries, 926 inferred local bindings, and
+own nineteen-module frontend graph and currently produces parity evidence for
+721 symbols, 1,442 binding/signature queries, 926 inferred local bindings, and
 3,423 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the generic-inference extraction, native lexing, parsing, resolution,
-semantic analysis, and encoding took approximately 162 ms; decoding the
-temporary text protocol took another 9 ms. These are checkpoint
+run after the call-contract and expression-ownership extraction, native lexing,
+parsing, resolution, semantic analysis, and encoding took approximately
+163–165 ms; decoding the temporary text protocol took another 9–10 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
 protocol.
@@ -477,8 +479,12 @@ pattern diagnostics then consume those lookups without depending on expression
 inference. Recursive generic unification, contextual substitution, constraint
 checking, and parameterized type construction form another semantic leaf.
 Contextual aggregate inference now consumes one normalized construction shape
-instead of repeatedly traversing the same symbol. Stage 0 checks the split and
-the native resolver resolves its own seventeen-module graph.
+instead of repeatedly traversing the same symbol. Per-call alias conflicts and
+pending throwing effects now form a separate call
+contract leaf. Initialization/use-after-move diagnostics, storage-root
+discovery, and whole-value consumption form a separate expression-ownership
+leaf over the shared flow state. Stage 0 checks the split, and the native
+resolver resolves its own nineteen-module graph.
 A same-filesystem, same-toolchain comparison measured the new graph at 290 ms
 versus 293 ms for the prior flow-state commit; the independently sampled warm
 checkpoint was 264 ms versus 271 ms at the first decomposition checkpoint. This
