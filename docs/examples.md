@@ -230,6 +230,11 @@ Cross-module aliases with the same visible declaration name remain distinct
 inside nested user-defined monomorphs such as `Envelope<Slot<Node>>`; the native
 bridge proves each source-template identity and generic path before accepting
 the inferred binding or expression type.
+Direct async calls preserve their success and error effects until `await`.
+[`async-generators.zs`](../examples/language/control-flow/async-generators.zs)
+proves cold generator construction and intrinsic awaited `.next()` results;
+[`async-errors.zs`](../examples/async/async-errors.zs) proves `attempt await`
+and `try await` without falling back for inferred bindings.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

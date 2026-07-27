@@ -394,14 +394,14 @@ The 2026-07-26 decomposition checkpoint contains 15,207 lines of Z:
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own twenty-five-module frontend graph and currently produces parity evidence for
-832 symbols, 1,664 binding/signature queries, 929 inferred local bindings, and
-3,427 root expression types. The binding and expression counts describe the
+own twenty-eight-module frontend graph and currently produces parity evidence
+for 888 symbols, 1,776 binding/signature queries, 957 inferred local bindings,
+and 3,628 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-166 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
+176 ms. One bulk fixed-width fill carries all 888 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -425,6 +425,15 @@ arguments needed to reconstruct nominal evidence. Materialization now retains
 the source template and arguments, and the semantic bridge compares their exact
 identity-path shape. Equal-looking type text can no longer authorize a linked
 generic value whose declarations differ.
+
+The existing async-generator application exposed another composition gap:
+Stage 1 retained `async` and `throws` on declarations but discarded the effect
+when inferring a call, so none of its seven locals could become native
+evidence. A pending async-call shape now carries success and error types until
+`await` consumes it. Cold async-generator construction, intrinsic `.next()`,
+`attempt await`, and `try await` all use that representation. The application
+now exports and consumes all seven inferred bindings; the scalar async-error
+example does the same for both of its bindings.
 
 What the compiler proves:
 

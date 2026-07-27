@@ -12,6 +12,8 @@ import {
 import { validateModuleNames } from "./semantic-names.zs";
 import {
   NativeCallAccess,
+  pendingAsyncCallShape,
+  pendingAsyncCallType,
   pendingThrowingCallShape,
   pendingThrowingCallType,
   registerCallAccess,
@@ -1069,7 +1071,15 @@ function inferSignatureCallType(
       inout evidence
     );
   }
-  if (signature.asynchronous) return "";
+  if (signature.asynchronous) {
+    match (genericTypeShape(returnType)) {
+      some(generic) => {
+        if (generic.base == "AsyncGenerator") return returnType;
+      }
+      none => {}
+    }
+    return pendingAsyncCallType(returnType, errorType);
+  }
   if (errorType.byteLength > 0) {
     match (throwingGeneratorHandleType(returnType, errorType)) {
       some(generatorType) => return generatorType;
@@ -1246,6 +1256,49 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           message,
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+      }
+    }
+  }
+  if (kind == ExpressionKind.awaitExpression && children.length == 1) {
+    const asyncContext = valueBindingType(
+      bindings,
+      "__z_native_async_context"
+    );
+    if (asyncContext.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "await requires an enclosing async function",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    const outcome = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      inout bindings,
+      inout evidence
+    );
+    if (outcome.byteLength == 0) return "";
+    match (pendingAsyncCallShape(outcome)) {
+      some(call) => {
+        if (call.errorType.byteLength > 0) {
+          return pendingThrowingCallType(call.successType, call.errorType);
+        }
+        return call.successType.copyBytes(0, call.successType.byteLength);
+      }
+      none => {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "await requires an async call or Task value",
           tree.nodes[index].line,
           tree.nodes[index].column
         );

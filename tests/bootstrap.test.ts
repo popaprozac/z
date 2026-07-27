@@ -10501,6 +10501,42 @@ test("preserves nominal identities inside linked generic monomorphs", () => {
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
+test("preserves direct and intrinsic async effects in native semantic evidence", () => {
+  const cases = [
+    ["examples/language/control-flow/async-generators.zs", "7"],
+    ["examples/async/async-errors.zs", "2"],
+  ] as const;
+  for (const [fileName, expectedBindings] of cases) {
+    const input = resolve(projectRoot, fileName);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${fileName}\n${result.stderr}`);
+    const exportedBindings = result.stdout.match(
+      /exports (\d+) inferred local binding contracts/,
+    )?.[1];
+    const observedBindings = result.stdout.match(
+      /observes (\d+) inferred local binding stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeBindings = result.stdout.match(
+      /uses (\d+) inferred local binding native-authoritative contracts/,
+    )?.[1];
+    const observedExpressions = result.stdout.match(
+      /observes (\d+) root expression stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeExpressions = result.stdout.match(
+      /uses (\d+) root expression native-authoritative contracts/,
+    )?.[1];
+    assert.equal(exportedBindings, expectedBindings, fileName);
+    assert.equal(observedBindings, exportedBindings, fileName);
+    assert.equal(authoritativeBindings, observedBindings, fileName);
+    assert.ok(observedExpressions, fileName);
+    assert.equal(authoritativeExpressions, observedExpressions, fileName);
+  }
+});
+
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");
   const fileName = resolve(directory, "main.zs");

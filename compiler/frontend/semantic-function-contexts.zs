@@ -159,6 +159,9 @@ export function prepareFunctionBindings(
     "__z_native_return_type",
     declaration.returnType.name
   );
+  if (declaration.asynchronous) {
+    addValueBinding(inout bindings, "__z_native_async_context", "true");
+  }
   match (in declaration.errorType) {
     some(error) => addValueBinding(
       inout bindings,

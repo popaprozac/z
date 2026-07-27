@@ -20,6 +20,11 @@ export struct NativeThrowingCallShape {
   errorType: String;
 }
 
+export struct NativeAsyncCallShape {
+  successType: String;
+  errorType: String;
+}
+
 function callCapabilitiesConflict(in left: String, in right: String): boolean {
   return !(
     (left == "in" && right == "in")
@@ -83,6 +88,33 @@ export function pendingThrowingCallShape(
   }));
 }
 
+export function pendingAsyncCallType(
+  in successType: String,
+  in errorType: String
+): String {
+  return `__z_native_async_call:${successType}\t${errorType}`;
+}
+
+export function pendingAsyncCallShape(
+  in typeName: String
+): Option<NativeAsyncCallShape> {
+  const prefix = "__z_native_async_call:";
+  if (!stringStartsWith(typeName, prefix)) {
+    return Option<NativeAsyncCallShape>.none;
+  }
+  let separator = prefix.byteLength;
+  while (separator < typeName.byteLength && typeName.byteAt(separator) != 9) {
+    separator = separator + 1;
+  }
+  if (separator == typeName.byteLength) {
+    return Option<NativeAsyncCallShape>.none;
+  }
+  return Option.some(NativeAsyncCallShape({
+    successType: typeName.copyBytes(prefix.byteLength, separator),
+    errorType: typeName.copyBytes(separator + 1, typeName.byteLength),
+  }));
+}
+
 function unhandledThrowingCallError(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -107,6 +139,16 @@ export function requireSettledExpressionType(
   index: usize,
   in typeName: String
 ): void throws ModuleResolveError {
+  match (pendingAsyncCallShape(typeName)) {
+    some(shape) => throw moduleResolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "async call requires `await` or `task`",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+    none => {}
+  }
   match (pendingThrowingCallShape(typeName)) {
     some(shape) => throw unhandledThrowingCallError(module, tree, index);
     none => {}

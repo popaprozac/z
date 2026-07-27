@@ -516,8 +516,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    paths, and `NativeSemanticIndex` keys it by canonical module and expression
    offset. The semantic bridge accepts a native expression result only when its
    location, concrete type, and every declaration identity match the linked
-   Stage-0 expression. Generated, opaque, foreign, async, and otherwise absent
-   roots continue through the Stage-0 fallback. Ordinary native checks report
+   Stage-0 expression. Generated, opaque, foreign, unsupported task/executor,
+   and otherwise absent roots continue through the Stage-0 fallback. Ordinary native checks report
    expression contracts exported, observed, and used authoritatively as separate
    counts.
    Native evidence lookups translate linked Stage-0 source locations back to
@@ -550,6 +550,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    checks without `--native-frontend` retain the stage-zero path.
    Native-authority counts are reported separately for functions, methods, and
    constructors.
+   Direct Z async calls now retain an internal pending success/error effect
+   instead of discarding their result type. `await` consumes that effect only
+   inside an async function, preserves typed failures for the surrounding
+   `attempt` or `try`, and rejects unsettled async calls. Cold
+   `AsyncGenerator<T, R, E>` construction remains synchronous, while intrinsic
+   awaited `.next()` advancement follows the same pending-effect path. The
+   existing async-generator and scalar async-error examples now export and
+   consume every inferred binding contract through native authority.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -567,8 +575,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native signatures now retain generic trait constraints and nominal aggregate
    conformance. Native inference enforces those constraints for inferred and
    explicit function/method calls and aggregate construction; constrained generic
-   bodies may call only methods supplied by their declared traits. Foreign/intrinsic
-   method lookup, generic trait declarations, async/foreign call effects,
+   bodies may call only methods supplied by their declared traits.
+   Foreign/intrinsic method lookup, generic trait declarations, foreign call
+   effects, remaining task/executor async effects,
    escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability
    enforcement, and full recursive ownership contexts remain stage-zero work.
@@ -688,10 +697,10 @@ When focused self-hosting work resumes, use this order:
    equality result typing now live in `semantic-operators.zs`; short-circuit
    flow and actual ownership consumption remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
-   foreign/intrinsic and async effect boundaries, escaping closure environments,
-   precise borrow last-use release, receiver-path capabilities, and recursive
-   ownership contexts. Do not port a feature merely for nominal completeness;
-   add a realistic corpus case first.
+   foreign/intrinsic and remaining task/executor effect boundaries, escaping
+   closure environments, precise borrow last-use release, receiver-path
+   capabilities, and recursive ownership contexts. Do not port a feature merely
+   for nominal completeness; add a realistic corpus case first.
 3. Keep the completed version-1 structural phase API green. One owned native
    result handle supplies entry, module paths, dependency lists/order,
    symbols, every signature shape, and all call/binding/expression evidence.

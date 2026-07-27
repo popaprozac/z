@@ -157,7 +157,7 @@ export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve plus structural handoff, and stage-zero parity work.
 Identifier and expression-level type lookup currently cover materialized
-expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
+expression trees. Unknown foreign and intrinsic-member shapes deliberately defer
 instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
 generic construction, and trait-authorized calls inside constrained bodies enforce
@@ -169,8 +169,10 @@ otherwise-missing result parameters from a local annotation, assignment target,
 or enclosing function return contract. Generic functions, static and instance
 methods, declared constructors, and synthesized aggregate fields propagate
 settled parameter types through nested calls and ternary, value-producing `if`,
-and expression-`match` branches. Opaque expression spans, generic trait
-declarations, async/foreign call effects,
+and expression-`match` branches. Direct Z async calls retain their pending
+success/error effect until `await`; cold `AsyncGenerator` construction and
+intrinsic awaited advancement use the same model. Opaque expression spans,
+generic trait declarations, foreign calls, remaining task/executor effects,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
 Concrete generic call evidence retains source-level nested types such as
