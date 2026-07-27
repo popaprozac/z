@@ -87,6 +87,42 @@ export function parseWithNativeFrontendLibrary(libraryPath: string, inputPaths: 
   }
 }
 
+export function emitWithNativeFrontendLibrary(libraryPath: string, inputPath: string): string {
+  const library = dlopen(libraryPath, {
+    z_stage1_emit: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    z_stage1_free: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
+    },
+  });
+  try {
+    const pathBytes = Buffer.from(inputPath, "utf8");
+    const sourceBytes = Buffer.from(readFileSync(inputPath, "utf8"), "utf8");
+    const pathStorage = pathBytes.byteLength > 0 ? pathBytes : Buffer.alloc(1);
+    const sourceStorage = sourceBytes.byteLength > 0 ? sourceBytes : Buffer.alloc(1);
+    const resultPointer = library.symbols.z_stage1_emit(
+      ptr(pathStorage),
+      pathBytes.byteLength,
+      ptr(sourceStorage),
+      sourceBytes.byteLength,
+    );
+    if (!resultPointer) throw new Error("the native frontend library returned a null emitter response");
+    try {
+      const response = new CString(resultPointer).toString();
+      if (response.startsWith("error\n")) throw new Error(response.slice("error\n".length));
+      if (!response.startsWith("ok\n")) throw new Error("the native frontend library returned a malformed emitter response");
+      return response.slice("ok\n".length);
+    } finally {
+      library.symbols.z_stage1_free(resultPointer);
+    }
+  } finally {
+    library.close();
+  }
+}
+
 export function resolveWithNativeFrontendLibrary(
   libraryPath: string,
   entryPath: string,

@@ -12,6 +12,7 @@ import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
 import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
 import {
+  emitWithNativeFrontendLibrary,
   parseWithNativeFrontendLibrary,
   resolveWithNativeFrontendLibrary,
   type NativeFrontendGraphSummary,
@@ -35,7 +36,7 @@ import {
 const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
-if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve"].includes(command)) {
+if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
@@ -54,6 +55,9 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
       const unexpected = trailingArguments.filter((argument) => argument !== "--timings");
       if (unexpected.length > 0) throw new Error("self-host-resolve discovers local modules from its entry; pass only one .zs path");
       verifyStage1Resolver(inputPath, timings);
+    } else if (command === "self-host-emit") {
+      if (trailingArguments.length > 0) throw new Error("self-host-emit accepts one .zs source path");
+      emitWithStage1(inputPath);
     } else if (command === "check") {
       const nativeFrontend = trailingArguments.includes("--native-frontend");
       const timings = trailingArguments.includes("--timings");
@@ -330,6 +334,13 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
     console.log(`  protocol decode: ${formatMilliseconds(decodeMilliseconds)}`);
     console.log(`  stage-0 parity parse (file I/O excluded): ${formatMilliseconds(stage0Milliseconds)}`);
   }
+}
+
+function emitWithStage1(inputPath: string): void {
+  const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
+  const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
+  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, inputPath));
 }
 
 function stage0ImportShapes(program: Program, fileName: string): readonly Stage1ImportShape[] {
@@ -1614,6 +1625,17 @@ Z_STAGE1_EXPORT void *z_stage1_parse(
   Z_String path = { (const char *)path_data, path_length, 0 };
   Z_String source = { (const char *)source_data, source_length, 0 };
   return z_stage1_copy_string(stage1Parse(&path, &source));
+}
+
+Z_STAGE1_EXPORT void *z_stage1_emit(
+  const uint8_t *path_data,
+  uintptr_t path_length,
+  const uint8_t *source_data,
+  uintptr_t source_length
+) {
+  Z_String path = { (const char *)path_data, path_length, 0 };
+  Z_String source = { (const char *)source_data, source_length, 0 };
+  return z_stage1_copy_string(stage1Emit(&path, &source));
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_api_version(void) {
@@ -3332,4 +3354,5 @@ function usage(): void {
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
   console.error("       z self-host-resolve <entry.zs> [--timings]");
+  console.error("       z self-host-emit <file.zs>");
 }

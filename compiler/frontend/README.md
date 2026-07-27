@@ -105,6 +105,9 @@ semantic analysis and code generation; the frontend itself is native Z code.
   resolved graph through the same in-process native-library boundary.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
+- `c-emitter.zs` is the first native lowering/code-generation slice. It emits
+  ordinary `i32`/`void` functions, value parameters, explicitly typed locals,
+  direct calls, arithmetic, and returns from the owned Stage 1 AST.
 - `parser-library.zs` is the compiler-facing root compiled into a
   content-addressed dynamic library and loaded in-process by the Bun driver.
 
@@ -116,8 +119,15 @@ Run exact stage-zero parity with:
 bun run z self-host-lex compiler/frontend/lexer.zs
 bun run z self-host-parse compiler/frontend/lexer.zs compiler/frontend/parser.zs
 bun run z self-host-resolve examples/language/modules/main.zs --timings
+bun run z self-host-emit tests/fixtures/self-host-emit-input.zs
 bun run z check examples/language/modules/main.zs --native-frontend --timings
 ```
+
+`self-host-emit` is an end-to-end bootstrap proof rather than an alternate
+production backend. Its output compiles and runs without rebuilding a
+TypeScript AST, proving that native lexing, parsing, and C emission compose.
+Stage 0 still owns full semantic analysis, lowering, module linking, runtime
+support, foreign interop, and production `emit`/`run`.
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend
@@ -265,5 +275,5 @@ generic constraints, async ownership, and C++-backed resource fields. Every
 Stage-0 semantic resolution observed on that corpus has a validated native
 authority contract. Migrating the remaining unsupported ownership/effect
 contexts is the next self-hosting layer.
-The ordered continuation plan and resume criteria live in
-[`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-resume-point).
+The ordered continuation plan and current criteria live in
+[`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-continuation-point).

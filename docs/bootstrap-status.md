@@ -625,6 +625,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    executable examples now pass the hybrid gate with zero partial
    binding/expression-authority gaps; Stage 0 continues to own raw escape-hatch
    semantic validation.
+   The first native C-emission proof now consumes the owned Stage 1 `Program`
+   directly. `z self-host-emit` lowers a deliberately closed subset—ordinary
+   `i32`/`void` functions, value parameters, explicitly typed locals, direct
+   calls, arithmetic, and returns—to portable C. The regression compiles that C
+   with Clang and executes it, returning 42. This removes TypeScript AST
+   reconstruction from one complete source-to-native path. It is not yet the
+   production emitter: Stage 0 remains authoritative for full semantics,
+   modules, ownership cleanup, runtime types, foreign interop, and diagnostics.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -701,15 +709,16 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    protocols, and mutable shared-state isolation. Do not commit actors,
    channels, pools, or a multithreaded executor as settled language design yet.
 
-## Self-hosting resume point
+## Self-hosting continuation point
 
-Self-hosting is intentionally paused at a stable semantic-authority checkpoint,
-not declared complete. Native Z owns lexing, structural parsing, module-graph
-resolution, a substantial semantic subset, structured diagnostics for that
-subset, and the evidence consumed by ordinary `check --native-frontend` runs.
-The representative corpus gate must remain green as language work continues.
+Self-hosting has advanced beyond its stable semantic-authority checkpoint into
+the first executable native-emission slice, but is not declared complete.
+Native Z owns lexing, structural parsing, module-graph resolution, a substantial
+semantic subset, structured diagnostics for that subset, the evidence consumed
+by ordinary `check --native-frontend` runs, and a deliberately narrow direct
+AST-to-C proof. The representative corpus gate must remain green as this grows.
 
-When focused self-hosting work resumes, use this order:
+Continue focused self-hosting work in this order:
 
 1. Continue decomposing the former 8,980-line `module-resolver.zs` without
    changing semantics: separate evidence/model types, graph construction, name/type
@@ -782,7 +791,10 @@ When focused self-hosting work resumes, use this order:
 4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.
-5. Port lowering and the C-family emitter for that compiler subset. Continue to
+5. Grow the now-started native lowering and C-family emitter from its first
+   executable scalar/function slice to the compiler subset. Add constructs only
+   with an end-to-end fixture and decide on an explicit lowering IR once the
+   second and third nontrivial shapes reveal stable requirements. Continue to
    invoke Clang as an external tool; self-hosting does not require replacing it.
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding

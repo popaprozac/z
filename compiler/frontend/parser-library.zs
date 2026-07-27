@@ -2,6 +2,9 @@
 // stage1Parse to the Bun host without making Z module exports imply a C ABI.
 
 import { renderProgram } from "./parser-protocol.zs";
+import { emitC } from "./c-emitter.zs";
+import { tokenize } from "./lexer.zs";
+import { parseProgram } from "./parser.zs";
 import {
   Stage1ModuleGraphResult,
   emptyStage1ModuleGraphResult,
@@ -72,6 +75,24 @@ function stage1Parse(in path: String, in source: String): String {
   return match (outcome) {
     success(stream) => `ok\n${stream}`;
     failure(message) => `error\n${message}`;
+  };
+}
+
+function stage1Emit(in path: String, in source: String): String {
+  const tokenOutcome = attempt tokenize(source);
+  const tokens = match (tokenOutcome) {
+    success(tokens) => tokens;
+    failure(error) => return `error\nlexer error at ${error.line}:${error.column}: ${error.message}`;
+  };
+  const parseOutcome = attempt parseProgram(tokens);
+  const program = match (parseOutcome) {
+    success(program) => program;
+    failure(error) => return `error\nparser error at ${error.line}:${error.column}: ${error.message}`;
+  };
+  const emitOutcome = attempt emitC(program);
+  return match (emitOutcome) {
+    success(emitted) => `ok\n${emitted}`;
+    failure(message) => `error\n${path}: ${message}`;
   };
 }
 

@@ -192,6 +192,16 @@ again within the established band. The frontend graph exports 1,001 inferred
 bindings and 3,803 root expressions, and all 155 executable roots now pass
 without a partial native binding/expression-authority gap.
 
+Adding the first native C-emission module produced a thirty-module frontend
+graph and measured 181.69 ms for the warm native resolve/semantic phase.
+Whole-process resolver samples were 252.7 ms for Stage 1, 247.2 ms for Stage 0,
+and 1.147 s for the hybrid path, still inside the established band. On the tiny
+scalar/function emission fixture, the deliberately narrow `self-host-emit`
+command measured 36.0 ms versus 44.4 ms for production Stage-0 `emit`. That
+comparison is useful as an edit-loop baseline, not a speedup claim: the native
+proof does not yet perform Stage 0's complete semantic analysis, runtime
+lowering, or module/interop work.
+
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.
 Native module fingerprints and incremental parse/semantic caches should

@@ -539,6 +539,18 @@ the unchanged raw-boundary example. The complete 155-root executable corpus
 therefore reports zero failures and zero partial native binding/expression
 authority gaps.
 
+The first native emitter then tested a different composition boundary: whether
+the owned parser AST is usable for code generation without translating it back
+through TypeScript. A small Z emitter now walks function, statement, and
+expression arenas directly and emits C for scalar functions, value parameters,
+typed locals, calls, arithmetic, and returns. Its regression compiles the
+result with Clang and executes it with exit status 42. The deliberately narrow
+surface is useful evidence: direct AST consumption works, recursive expression
+walking is ergonomic with index arenas, and an emission failure can remain a
+typed Z error. It does not yet prove ownership lowering, runtime support,
+multi-module linking, or foreign emission; expanding those honestly is the next
+pressure test.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

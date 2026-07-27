@@ -8138,6 +8138,29 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   assert.equal(ordinary.status, 0, ordinary.stderr);
 }, 20_000);
 
+test("emits and runs the first program directly from the native Z AST", () => {
+  const input = resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs");
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /int32_t add\(int32_t a, int32_t b\);/);
+  assert.match(emission.stdout, /const int32_t answer = add\(20, 22\);/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-emit-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 42, execution.stderr);
+}, 20_000);
+
 test("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
