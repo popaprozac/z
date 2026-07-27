@@ -8323,6 +8323,32 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
+    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  switch \(state\.tag\).*?value = resource\.id;\n      Z_Resource_deinit\(&resource\);.*?return value;/s,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /selectResource\(Z_ResourceState state\).*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource resource = state\.payload\.ready;\n      return resource;/s,
+  );
+  const ownedLocalStart = ownedEnumEmission.stdout.indexOf(
+    "int32_t inspectOwnedLocal(void) {",
+  );
+  const ownedLocalDefinition = ownedEnumEmission.stdout.slice(
+    ownedLocalStart,
+    ownedEnumEmission.stdout.indexOf(
+      "int32_t inspectIf(Z_ResourceState state",
+      ownedLocalStart,
+    ),
+  );
+  assert.match(
+    ownedLocalDefinition,
+    /Z_Resource selected;[\s\S]*selected = resource;[\s\S]*Z_Resource_deinit\(&selected\);/,
+  );
+  assert.doesNotMatch(
+    ownedLocalDefinition,
+    /Z_Resource_deinit\(&resource\)/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
     /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    switch \(state\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
   );
   assert.match(

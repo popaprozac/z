@@ -671,6 +671,14 @@ each selected arm becomes a typed lowered return, evaluates its result, and
 then runs the arm payload cleanup. This first value-producing tier avoids a
 second C-only ownership path while leaving local-binding destinations and
 selecting blocks for the broader match-expression lowering.
+Explicitly typed local destinations now use an uninitialized C slot followed by
+one assignment in every exhaustive arm. This is portable C rather than a
+statement-expression extension, while Stage 1's match proof supplies definite
+initialization. If the arm value is the cleanup-bearing payload itself,
+ownership transfers into the result and the arm does not clean the old name;
+if the arm only projects a scalar, the payload remains arm-local and cleans
+after assignment. The resulting owned local then follows the ordinary
+scope-exit plan.
 
 What the compiler proves:
 

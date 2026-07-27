@@ -325,6 +325,18 @@ function syntaxMovesName(in expression: ExpressionSyntax, in name: String): bool
   };
 }
 
+function syntaxIsIdentifier(
+  in expression: ExpressionSyntax,
+  in name: String
+): boolean {
+  return match (in expression.tree) {
+    some(tree) => tree.nodes[tree.root].kind
+      == ExpressionKind.identifierExpression
+      && tree.nodes[tree.root].value == name;
+    none => false;
+  };
+}
+
 function arenaMovesName(
   in arena: StatementArena,
   in name: String
@@ -473,6 +485,27 @@ function planCleanupStatement(
 ): void throws String {
   if (statements[loweredIndex].kind == LoweredStatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
+    return;
+  }
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.localStatement
+    && statements[loweredIndex].children.length == 1
+    && statements[statements[loweredIndex].children[0]].kind
+      == LoweredStatementKind.matchStatement
+  ) {
+    const loweredMatch = statements[loweredIndex].children[0];
+    try planCleanupStatement(
+      program,
+      arena,
+      ownerName,
+      sourceIndex,
+      loweredMatch,
+      live,
+      inout statements,
+      inout liveFlags,
+      insideLoop,
+      loopCleanups
+    );
     return;
   }
   if (statements[loweredIndex].kind == LoweredStatementKind.matchStatement) {
@@ -1073,6 +1106,7 @@ function lowerMatchTree(
   in tree: ExpressionTree,
   root: usize,
   returnValueArms: boolean,
+  in valueBinding: String,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
@@ -1119,37 +1153,68 @@ function lowerMatchTree(
       ));
     }
     let children = Array<usize>();
-    if (returnValueArms) {
+    let payloadTransfersOut = false;
+    if (returnValueArms || valueBinding.byteLength > 0) {
       if (tree.nodes[arm].statements.length != 1) {
-        throw "native return-match lowering requires one concise expression per arm yet";
+        throw "native value-match lowering requires one concise expression per arm yet";
       }
       const bodyIndex = tree.nodes[arm].statements[0];
       if (arena.nodes[bodyIndex].kind != StatementKind.expressionStatement) {
-        throw "native return-match lowering requires concise expression arms yet";
+        throw "native value-match lowering requires concise expression arms yet";
       }
       const value = match (in arena.nodes[bodyIndex].expression) {
-        some(source) => try lowerExpressionSyntax(
-          program,
-          source,
-          inout expressions
-        );
+        some(source) => {
+          if (
+            labels.length == 1
+            && syntaxIsIdentifier(source, labels[0])
+          ) payloadTransfersOut = true;
+          select try lowerExpressionSyntax(
+            program,
+            source,
+            inout expressions
+          );
+        }
         none => throw "native return-match lowering received an empty arm";
       };
       const loweredBody = statements.length;
-      statements.push(LoweredStatement({
-        kind: LoweredStatementKind.returnStatement,
-        mutableBinding: false,
-        name: "",
-        type: Option<LoweredType>.none,
-        expression: Option.some(value),
-        secondExpression: Option<usize>.none,
-        children: Array<usize>(),
-        cleanups: Array<LoweredCleanup>(),
-        liveFlag: "",
-        labels: Array<String>(),
-        matchConsumesSubject: false,
-        matchBindingNeedsCleanup: false,
-      }));
+      if (returnValueArms) {
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.returnStatement,
+          mutableBinding: false,
+          name: "",
+          type: Option<LoweredType>.none,
+          expression: Option.some(value),
+          secondExpression: Option<usize>.none,
+          children: Array<usize>(),
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: Array<String>(),
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+      } else {
+        const target = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.localValue,
+          valueBinding,
+          Array<usize>(),
+          Array<String>()
+        );
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.assignmentStatement,
+          mutableBinding: false,
+          name: "",
+          type: Option<LoweredType>.none,
+          expression: Option.some(target),
+          secondExpression: Option.some(value),
+          children: Array<usize>(),
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: Array<String>(),
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+      }
       children.push(loweredBody);
     } else {
       for (const bodyIndex of tree.nodes[arm].statements) {
@@ -1165,7 +1230,8 @@ function lowerMatchTree(
     }
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => tree.nodes[root].value != "in"
-        && typeNeedsCleanup(program, type);
+        && typeNeedsCleanup(program, type)
+        && !payloadTransfersOut;
       none => false;
     };
     const loweredArm = statements.length;
@@ -1222,6 +1288,7 @@ function lowerStatement(
   if (
     arena.nodes[index].kind == StatementKind.matchStatement
     || arena.nodes[index].kind == StatementKind.returnStatement
+    || arena.nodes[index].kind == StatementKind.variableStatement
   ) {
     match (in arena.nodes[index].expression) {
       some(syntax) => {
@@ -1229,15 +1296,51 @@ function lowerStatement(
           some(tree) => {
             const root = tree.root;
             if (tree.nodes[root].kind == ExpressionKind.matchExpression) {
-              return try lowerMatchTree(
+              const valueBinding = arena.nodes[index].kind
+                == StatementKind.variableStatement
+                ? arena.nodes[index].name.copyBytes(
+                  0,
+                  arena.nodes[index].name.byteLength
+                )
+                : "";
+              const loweredMatch = try lowerMatchTree(
                 program,
                 arena,
                 tree,
                 root,
                 arena.nodes[index].kind == StatementKind.returnStatement,
+                valueBinding,
                 inout expressions,
                 inout statements
               );
+              if (arena.nodes[index].kind != StatementKind.variableStatement) {
+                return loweredMatch;
+              }
+              const bindingType = match (in arena.nodes[index].typeAnnotation) {
+                some(annotation) => try lowerType(program, annotation);
+                none => throw `native lowering requires an explicit type for local ${arena.nodes[index].name} in its first slice`;
+              };
+              let children = Array<usize>();
+              children.push(loweredMatch);
+              const localIndex = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.localStatement,
+                mutableBinding: arena.nodes[index].mutableBinding,
+                name: arena.nodes[index].name.copyBytes(
+                  0,
+                  arena.nodes[index].name.byteLength
+                ),
+                type: Option.some(move bindingType),
+                expression: Option<usize>.none,
+                secondExpression: Option<usize>.none,
+                children,
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: Array<String>(),
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              return localIndex;
             }
           }
           none => {}

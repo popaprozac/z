@@ -703,8 +703,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    the path that did not enter the match. A direct `return match (...)` with
    concise expression arms now normalizes to the same statement-match IR and
    cleanup plan, including owned payload transfer. General match-expression
-   destinations, arbitrary subjects, and native `Option`/`Result`
-   representation remain the next enum tier.
+   lowering now also initializes explicitly typed local bindings through
+   exhaustive arm assignments. Cleanup-bearing arm values may transfer directly
+   into either a return or the local result; scalar projections instead clean
+   the payload at arm exit, and owned local results join ordinary reverse scope
+   cleanup. Inferred match-result bindings, selecting arm blocks, arbitrary
+   subjects, and native `Option`/`Result` representation remain the next enum
+   tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

@@ -301,8 +301,16 @@ function appendStatement(
       }
       none => false;
     };
+    const hasInitializer = match (in declaration.statements[index].expression) {
+      some(_) => true;
+      none => false;
+    };
     appendIndent(inout output, depth);
-    if (!declaration.statements[index].mutableBinding && constStorage) {
+    if (
+      !declaration.statements[index].mutableBinding
+      && constStorage
+      && hasInitializer
+    ) {
       output.append("const ");
     }
     output.append(type);
@@ -321,6 +329,9 @@ function appendStatement(
       output.append("bool ");
       output.append(declaration.statements[index].liveFlag);
       output.append(" = true;\n");
+    }
+    for (const child of declaration.statements[index].children) {
+      try appendStatement(inout output, declaration, child, depth);
     }
     return;
   }

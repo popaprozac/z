@@ -27,6 +27,30 @@ function inspectValue(state: ResourceState): i32 {
   };
 }
 
+function inspectLocal(state: ResourceState): i32 {
+  const value: i32 = match (state) {
+    ready(resource) => resource.id;
+    empty => 0;
+  };
+  return value;
+}
+
+function selectResource(state: ResourceState): Resource {
+  return match (state) {
+    ready(resource) => resource;
+    empty => Resource({ id: 0 });
+  };
+}
+
+function inspectOwnedLocal(): i32 {
+  const state: ResourceState = ResourceState.ready(Resource({ id: 42 }));
+  const selected: Resource = match (state) {
+    ready(resource) => resource;
+    empty => Resource({ id: 0 });
+  };
+  return selected.id;
+}
+
 function inspectIf(
   state: ResourceState,
   inspectNow: boolean
@@ -45,7 +69,7 @@ function observe(): i32 {
   const container: Container = Container({
     state: ResourceState.ready(Resource({ id: 1 })),
   });
-  return inspectValue(ResourceState.ready(Resource({ id: 42 })));
+  return inspectOwnedLocal();
 }
 
 function main(): i32 {
