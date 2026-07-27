@@ -734,6 +734,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `Result<void, E>` uses a payload-free `success` case rather than emitting an
    invalid or placeholder C union field; `return;`, `throw`, `attempt`, match,
    and active error cleanup are executable through that representation.
+   Procedural `try fallibleVoid();` emits the same single-evaluation failure
+   branch, cleans surrounding owners before propagation, and continues without
+   manufacturing a success value.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

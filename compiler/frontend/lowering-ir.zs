@@ -709,6 +709,10 @@ function planCleanupStatement(
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
     return;
   }
+  if (statements[loweredIndex].kind == LoweredStatementKind.tryStatement) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, live);
+    return;
+  }
   if (
     statements[loweredIndex].kind == LoweredStatementKind.localStatement
     && statements[loweredIndex].children.length == 1
@@ -1922,6 +1926,75 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.expressionStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => {
+        match (in syntax.tree) {
+          some(tree) => {
+            const root = tree.root;
+            if (
+              tree.nodes[root].kind == ExpressionKind.tryExpression
+              && tree.nodes[root].children.length == 1
+            ) {
+              const attempted = tree.nodes[root].children[0];
+              const innerResult = try directThrowingCallResult(
+                program,
+                tree,
+                attempted
+              );
+              const inner = match (innerResult) {
+                some(declaration) => declaration;
+                none => throw "native try lowering requires one direct throwing function call yet";
+              };
+              for (const variant of inner.variants) {
+                if (variant.name == "success") {
+                  match (in variant.payload) {
+                    some(_) => throw "native expression-statement try currently requires a void success type";
+                    none => {}
+                  }
+                }
+              }
+              const outerResult = try throwingFunctionResult(program, ownerName);
+              const outer = match (outerResult) {
+                some(declaration) => declaration;
+                none => throw "native try lowering requires an enclosing throwing function";
+              };
+              const call = try lowerExpression(
+                program,
+                tree,
+                attempted,
+                inout expressions
+              );
+              let labels = Array<String>();
+              labels.push("");
+              labels.push(outer.name.copyBytes(0, outer.name.byteLength));
+              const loweredTry = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.tryStatement,
+                mutableBinding: false,
+                name: inner.name.copyBytes(0, inner.name.byteLength),
+                type: Option.some(LoweredType({
+                  kind: LoweredTypeKind.voidType,
+                  name: "",
+                })),
+                expression: Option.some(call),
+                secondExpression: Option<usize>.none,
+                children: Array<usize>(),
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels,
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              return loweredTry;
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
   if (arena.nodes[index].kind == StatementKind.variableStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => {

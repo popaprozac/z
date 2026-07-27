@@ -719,6 +719,9 @@ local. This keeps propagation visible to cleanup planning rather than relying
 on a C statement-expression extension. Fallible `void` functions use the same
 shape without inventing a success payload: `return;` sets only the success tag,
 while failure retains and conditionally destroys the real error payload.
+Expression-statement `try` on a fallible void call uses the same explicit
+failure edge and cleanup snapshot, with no assignment or placeholder success
+storage on the continuing path.
 
 What the compiler proves:
 

@@ -471,11 +471,13 @@ function appendStatement(
     output.append(";\n");
     appendIndent(inout output, depth);
     output.append("}\n");
-    appendIndent(inout output, depth);
-    output.append(declaration.statements[index].labels[0]);
-    output.append(" = ");
-    output.append(temporary);
-    output.append(".payload.success;\n");
+    if (declaration.statements[index].labels[0].byteLength > 0) {
+      appendIndent(inout output, depth);
+      output.append(declaration.statements[index].labels[0]);
+      output.append(" = ");
+      output.append(temporary);
+      output.append(".payload.success;\n");
+    }
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {

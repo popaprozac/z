@@ -56,8 +56,14 @@ function validate(shouldFail: boolean): void throws Problem {
   return;
 }
 
+function relayVoid(shouldFail: boolean): void throws Problem {
+  const audit: Resource = Resource({ id: 2 });
+  try validate(shouldFail);
+  return;
+}
+
 function inspectVoid(shouldFail: boolean): i32 {
-  const result: Result<void, Problem> = attempt validate(shouldFail);
+  const result: Result<void, Problem> = attempt relayVoid(shouldFail);
   return match (result) {
     success => 42;
     failure(error) => -error.code;

@@ -8383,6 +8383,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
     resultEmission.stdout,
     /validate\(bool shouldFail\).*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_failure, \.payload\.failure = .*?return \(Z___z_Result_void_Problem\)\{\.tag = Z___z_Result_void_ProblemTag_success\};/s,
   );
+  assert.match(
+    resultEmission.stdout,
+    /relayVoid\(bool shouldFail\).*?_z_stage1_try_\d+ = validate\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_void_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?Z___z_Result_void_Problem _z_stage1_return_\d+ = .*?Z_Resource_deinit\(&audit\);/s,
+  );
   const resultExecutable = resolve(directory, "result");
   const resultCompilation = spawnSync(
     "clang",
