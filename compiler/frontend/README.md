@@ -216,14 +216,18 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   remainder, imported throwing-call evidence, discarded non-void `try`, nested
   assignment targets, and contextual `Option` returns close the remaining
   lowering stops. The unchanged 31-module `parser-library.zs` graph now lowers
-  completely into one native C translation unit. Clang validation is the next
-  boundary: contextual `usize` arithmetic, borrowed cleanup-bearing call
-  temporaries, contextual `Option` assignment, and total-return proof remain
-  before that translation unit compiles. A local selective
-  alias is resolved back to the exported
-source symbol before emission, so alias ergonomics do not invent an ABI-level
-wrapper. Duplicate type or function spellings across modules now fail before C
-emission rather than generating an ambiguous translation unit. Value structs
+  completely into one native C translation unit and compiles and links cleanly
+  as strict C11 with Clang `-Wall -Wextra -Werror`. Contextual integer evidence,
+  cleanup-bearing borrowed temporaries, contextual `Option` construction,
+  mutable nested Array storage, collision-safe match payloads, and implicit
+  `Result<void, E>` success all survive that end-to-end path. The resulting
+  binary still has the bootstrap `main` that exits immediately; exposing and
+  invoking the native parse/resolve/emit protocol without the TypeScript driver
+  is the next boundary. A local selective alias is resolved back to the
+  exported source symbol before emission, so alias ergonomics do not invent an
+  ABI-level wrapper. Duplicate type or function spellings across modules now
+  fail before C emission rather than generating an ambiguous translation unit.
+  Value structs
 now retain canonical graph identity and cleanup metadata across a selective type
 alias, factory return, inferred local, parameter, and field projection. An
 implicit owned-argument transfer suppresses caller cleanup and the imported

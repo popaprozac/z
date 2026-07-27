@@ -8117,7 +8117,7 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   const authoritativeExpressions = native.stdout.match(
     /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
-  assert.equal(observedExpressions, "3");
+  assert.equal(observedExpressions, "6");
   assert.equal(authoritativeExpressions, observedExpressions);
 
   const directory = mkdtempSync("/tmp/z-native-contextual-raw-");
@@ -8218,7 +8218,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(transitiveTypeEmission.status, 0, transitiveTypeEmission.stderr);
   assert.match(
     transitiveTypeEmission.stdout,
-    /int32_t readValue\(const Z_Wrapper \*wrapper\).*?payload\.value/s,
+    /int32_t readValue\(const Z_Wrapper \*wrapper\).*?_z_stage1_match_payload_\d+_\d+\.value/s,
   );
   const transitiveTypeExecutable = resolve(directory, "transitive-types");
   const transitiveTypeCompilation = spawnSync(
@@ -8246,7 +8246,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(matchTryEmission.status, 0, matchTryEmission.stderr);
   assert.match(
     matchTryEmission.stdout,
-    /case Z___z_Option_i32Tag_some:.*?return readValue\(observed\);/s,
+    /case Z___z_Option_i32Tag_some:.*?return readValue\(_z_stage1_match_payload_\d+_\d+\);/s,
   );
   const matchTryExecutable = resolve(directory, "match-try");
   const matchTryCompilation = spawnSync(
@@ -8278,11 +8278,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?int32_t resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);/s,
+    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static __attribute__\(\(unused\)\) void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?int32_t resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);/s,
   );
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_ResourceState \{.*?Z_Resource ready;.*?static void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{.*?Z_Resource_deinit\(&self->payload\.ready\);.*?int32_t stateId\(Z_ResourceState value\) \{.*?case Z_ResourceStateTag_ready:.*?Z_Resource_deinit\(&resource\);/s,
+    /typedef struct Z_ResourceState \{.*?Z_Resource ready;.*?static __attribute__\(\(unused\)\) void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{.*?Z_Resource_deinit\(&self->payload\.ready\);.*?int32_t stateId\(Z_ResourceState value\) \{.*?case Z_ResourceStateTag_ready:.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);/s,
   );
   assert.match(
     moduleEmission.stdout,
@@ -8408,7 +8408,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(
     typeCollisionEmission.stdout.match(
-      /static void Z_module_\d+_State_deinit\(Z_module_\d+_State \*self\)/g,
+      /static __attribute__\(\(unused\)\) void Z_module_\d+_State_deinit\(Z_module_\d+_State \*self\)/g,
     )?.length,
     4,
   );
@@ -8554,7 +8554,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     nativeIntegerEmission.stdout,
-    /typedef struct Z___z_Array_i32 \{.*?void \*data;.*?size_t length;.*?size_t capacity;.*?static void Z___z_Array_i32_deinit\(Z___z_Array_i32 \*self\).*?size_t discard\(Z___z_Array_i32 values\).*?Z___z_Array_i32_deinit\(&values\);/s,
+    /typedef struct Z___z_Array_i32 \{.*?void \*data;.*?size_t length;.*?size_t capacity;.*?static __attribute__\(\(unused\)\) void Z___z_Array_i32_deinit\(Z___z_Array_i32 \*self\).*?size_t discard\(Z___z_Array_i32 values\).*?Z___z_Array_i32_deinit\(&values\);/s,
   );
   const nativeIntegerExecutable = resolve(directory, "native-integers");
   const nativeIntegerCompilation = spawnSync(
@@ -8745,7 +8745,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     payloadEnumEmission.stdout,
-    /Z_Reading _z_stage1_match_\d+ = reading;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ReadingTag_count: \{\n      const int32_t value = _z_stage1_match_\d+\.payload\.count;\n      return value;/s,
+    /Z_Reading _z_stage1_match_\d+ = reading;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ReadingTag_count: \{\n      const int32_t __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.count;\n      return _z_stage1_match_payload_\d+_\d+;/s,
   );
   const payloadEnumExecutable = resolve(directory, "payload-enum");
   const payloadEnumCompilation = spawnSync(
@@ -8786,15 +8786,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     optionEmission.stdout,
-    /static void Z___z_Option_Resource_deinit\(Z___z_Option_Resource \*self\) \{.*?case Z___z_Option_ResourceTag_some:.*?Z_Resource_deinit\(&self->payload\.some\);/s,
+    /static __attribute__\(\(unused\)\) void Z___z_Option_Resource_deinit\(Z___z_Option_Resource \*self\) \{.*?case Z___z_Option_ResourceTag_some:.*?Z_Resource_deinit\(&self->payload\.some\);/s,
   );
   assert.match(
     optionEmission.stdout,
-    /inspectResource\(Z___z_Option_Resource option\).*?Z_Resource resource = _z_stage1_match_\d+\.payload\.some;.*?Z_Resource_deinit\(&resource\);/s,
+    /inspectResource\(Z___z_Option_Resource option\).*?Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.some;.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);/s,
   );
   assert.match(
     optionEmission.stdout,
-    /discardResource\(void\).*?Z___z_Option_Resource held = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
+    /discardResource\(void\).*?Z___z_Option_Resource held __attribute__\(\(unused\)\) = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
   );
   const optionExecutable = resolve(directory, "option");
   const optionCompilation = spawnSync(
@@ -8831,15 +8831,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /static void Z___z_Result_Resource_Problem_deinit\(Z___z_Result_Resource_Problem \*self\) \{.*?case Z___z_Result_Resource_ProblemTag_success:.*?Z_Resource_deinit\(&self->payload\.success\);.*?case Z___z_Result_Resource_ProblemTag_failure:.*?Z_Problem_deinit\(&self->payload\.failure\);/s,
+    /static __attribute__\(\(unused\)\) void Z___z_Result_Resource_Problem_deinit\(Z___z_Result_Resource_Problem \*self\) \{.*?case Z___z_Result_Resource_ProblemTag_success:.*?Z_Resource_deinit\(&self->payload\.success\);.*?case Z___z_Result_Resource_ProblemTag_failure:.*?Z_Problem_deinit\(&self->payload\.failure\);/s,
   );
   assert.match(
     resultEmission.stdout,
-    /inspectResource\(bool shouldFail\).*?Z_Resource resource = _z_stage1_match_\d+\.payload\.success;.*?Z_Resource_deinit\(&resource\);.*?Z_Problem error = _z_stage1_match_\d+\.payload\.failure;.*?Z_Problem_deinit\(&error\);/s,
+    /inspectResource\(bool shouldFail\).*?Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.success;.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?Z_Problem __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.failure;.*?Z_Problem_deinit\(&_z_stage1_match_payload_\d+_\d+\);/s,
   );
   assert.match(
     resultEmission.stdout,
-    /discardResult\(void\).*?Z___z_Result_Resource_Problem result = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
+    /discardResult\(void\).*?Z___z_Result_Resource_Problem result __attribute__\(\(unused\)\) = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -8887,15 +8887,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /static void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{[\s\S]*case Z_ResourceStateTag_ready:[\s\S]*Z_Resource_deinit\(&self->payload\.ready\);/,
+    /static __attribute__\(\(unused\)\) void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{[\s\S]*case Z_ResourceStateTag_ready:[\s\S]*Z_Resource_deinit\(&self->payload\.ready\);/,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /static void Z_Container_deinit\(Z_Container \*self\) \{[\s\S]*Z_ResourceState_deinit\(&self->state\);/,
+    /static __attribute__\(\(unused\)\) void Z_Container_deinit\(Z_Container \*self\) \{[\s\S]*Z_ResourceState_deinit\(&self->state\);/,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspect\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;.*?_z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+    /inspect\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;.*?_z_stage1_return_\d+ = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      return/s,
   );
   const inspectStart = ownedEnumEmission.stdout.indexOf(
     "int32_t inspect(Z_ResourceState state) {",
@@ -8913,15 +8913,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectValue\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;\n      int32_t _z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+    /inspectValue\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;\n      int32_t _z_stage1_return_\d+ = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n      return/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = resource\.id;\n      Z_Resource_deinit\(&resource\);.*?return value;/s,
+    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;\n      return resource;/s,
+    /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = _z_stage1_match_\d+\.payload\.ready;\n      return _z_stage1_match_payload_\d+_\d+;/s,
   );
   const ownedLocalStart = ownedEnumEmission.stdout.indexOf(
     "int32_t inspectOwnedLocal(void) {",
@@ -8935,11 +8935,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedLocalDefinition,
-    /Z_Resource selected;[\s\S]*selected = resource;[\s\S]*Z_Resource_deinit\(&selected\);/,
+    /Z_Resource selected;[\s\S]*selected = _z_stage1_match_payload_\d+_\d+;[\s\S]*Z_Resource_deinit\(&selected\);/,
   );
   assert.doesNotMatch(
     ownedLocalDefinition,
-    /Z_Resource_deinit\(&resource\)/,
+    /Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\)/,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -8947,15 +8947,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectReturnBlock\(Z_ResourceState state\).*?Z_Resource audit = .*?_z_stage1_return_\d+ = audit\.id;\n        Z_Resource_deinit\(&audit\);\n        Z_Resource_deinit\(&resource\);\n        return/s,
+    /inspectReturnBlock\(Z_ResourceState state\).*?Z_Resource audit = .*?_z_stage1_return_\d+ = audit\.id;\n        Z_Resource_deinit\(&audit\);\n        Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n        return/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocalBlock\(Z_ResourceState state\) \{\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&resource\);.*?return value;/s,
+    /inspectLocalBlock\(Z_ResourceState state\) \{\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
+    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -9071,11 +9071,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /static void Z_Envelope_deinit\(Z_Envelope \*self\) \{\n  \(void\)self;\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+    /static __attribute__\(\(unused\)\) void Z_Envelope_deinit\(Z_Envelope \*self\) \{\n  \(void\)self;\n  Z_Resource_deinit\(&self->resource\);\n\}/,
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /static void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+    /static __attribute__\(\(unused\)\) void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
   );
   assert.match(
     cleanupFlowEmission.stdout,
@@ -9177,7 +9177,28 @@ test("lowers the complete native frontend graph to C", () => {
     emission.stdout,
     /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(const Z_String \*entryPath, const Z_String \*batch\);/,
   );
-}, 10_000);
+  const directory = mkdtempSync("/tmp/z-self-host-frontend-");
+  const executable = resolve(directory, "frontend");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+}, 15_000);
 
 test("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");
@@ -9211,17 +9232,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 18 expression type contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 22 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 18 expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 22 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 18 expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 22 expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -11662,7 +11683,7 @@ test("preserves weak-reference construction and upgrade effects natively", () =>
   )?.[1];
   assert.equal(observedBindings, "10");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "56");
+  assert.equal(observedExpressions, "76");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11691,7 +11712,7 @@ test("preserves recursive ownership through unimported aggregate field types", (
   )?.[1];
   assert.equal(observedBindings, "7");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "87");
+  assert.equal(observedExpressions, "91");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11718,7 +11739,7 @@ test("defers dependent generic comparisons to concrete specialization", () => {
   )?.[1];
   assert.equal(observedBindings, "4");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "15");
+  assert.equal(observedExpressions, "18");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

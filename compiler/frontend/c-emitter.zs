@@ -187,13 +187,19 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayIndex
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.arrayMutableIndex
   ) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed Array index";
     }
     output.append("(*Z_");
     output.append(declaration.expressions[index].value);
-    output.append("_at(&(");
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.arrayMutableIndex
+    ) output.append("_at_mut(&(");
+    else output.append("_at(&(");
     const receiver = declaration.expressions[index].children[0];
     const offset = declaration.expressions[index].children[1];
     try appendExpression(inout output, declaration, receiver);
@@ -411,6 +417,13 @@ function appendExpression(
     const operand = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, operand);
     output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.borrowedTemporary
+  ) {
+    output.append(`_z_stage1_borrow_${index}`);
     return;
   }
   if (
@@ -714,6 +727,85 @@ function appendExpression(
   throw "native C emission does not support this lowered expression yet";
 }
 
+function containsBorrowedTemporary(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.borrowedTemporary
+  ) return true;
+  for (const child of declaration.expressions[index].children) {
+    if (containsBorrowedTemporary(declaration, child)) return true;
+  }
+  return false;
+}
+
+function appendBorrowedTemporaryInitializers(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize
+): void throws String {
+  for (const child of declaration.expressions[index].children) {
+    try appendBorrowedTemporaryInitializers(
+      inout output,
+      declaration,
+      child,
+      depth
+    );
+  }
+  if (
+    declaration.expressions[index].kind
+      != LoweredExpressionKind.borrowedTemporary
+  ) return;
+  if (
+    declaration.expressions[index].value != "String"
+    || declaration.expressions[index].children.length != 1
+  ) {
+    throw "native C emission received an unsupported borrowed temporary";
+  }
+  appendIndent(inout output, depth);
+  output.append("Z_String ");
+  output.append(`_z_stage1_borrow_${index}`);
+  output.append(" = ");
+  const initializer = declaration.expressions[index].children[0];
+  try appendExpression(
+    inout output,
+    declaration,
+    initializer
+  );
+  output.append(";\n");
+}
+
+function appendBorrowedTemporaryCleanups(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize
+): void {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.borrowedTemporary
+  ) {
+    appendIndent(inout output, depth);
+    output.append("Z_String_deinit(&");
+    output.append(`_z_stage1_borrow_${index}`);
+    output.append(");\n");
+  }
+  let child = declaration.expressions[index].children.length;
+  while (child > 0) {
+    child = child - 1;
+    const childExpression = declaration.expressions[index].children[child];
+    appendBorrowedTemporaryCleanups(
+      inout output,
+      declaration,
+      childExpression,
+      depth
+    );
+  }
+}
+
 function appendBranch(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -743,6 +835,19 @@ function appendCondition(
   if (!alreadyGrouped) output.append(")");
 }
 
+function localNameIsUsed(
+  in declaration: LoweredFunction,
+  in name: String
+): boolean {
+  for (const expression of declaration.expressions) {
+    if (
+      expression.kind == LoweredExpressionKind.localValue
+      && expression.value == name
+    ) return true;
+  }
+  return false;
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -759,6 +864,8 @@ function appendStatement(
         select storageType.kind != LoweredTypeKind.structType
           && storageType.kind != LoweredTypeKind.enumType
           && storageType.kind != LoweredTypeKind.arrayType
+          && storageType.kind != LoweredTypeKind.mapType
+          && storageType.kind != LoweredTypeKind.setType
           && storageType.kind != LoweredTypeKind.stringType;
       }
       none => false;
@@ -767,6 +874,15 @@ function appendStatement(
       some(_) => true;
       none => false;
     };
+    match (in declaration.statements[index].expression) {
+      some(initializer) => try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        initializer,
+        depth
+      );
+      none => {}
+    }
     appendIndent(inout output, depth);
     if (
       !declaration.statements[index].mutableBinding
@@ -778,6 +894,12 @@ function appendStatement(
     output.append(type);
     output.append(" ");
     output.append(declaration.statements[index].name);
+    if (
+      !localNameIsUsed(
+        declaration,
+        declaration.statements[index].name
+      )
+    ) output.append(" __attribute__((unused))");
     match (in declaration.statements[index].expression) {
       some(expression) => {
         output.append(" = ");
@@ -786,6 +908,15 @@ function appendStatement(
       none => {}
     }
     output.append(";\n");
+    match (in declaration.statements[index].expression) {
+      some(initializer) => appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        initializer,
+        depth
+      );
+      none => {}
+    }
     if (declaration.statements[index].liveFlag.byteLength > 0) {
       appendIndent(inout output, depth);
       output.append("bool ");
@@ -798,6 +929,23 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.returnStatement) {
+    let returnExpression = Option<usize>.none;
+    match (in declaration.statements[index].expression) {
+      some(expression) => {
+        returnExpression = Option.some(expression);
+        try appendBorrowedTemporaryInitializers(
+          inout output,
+          declaration,
+          expression,
+          depth
+        );
+      }
+      none => {}
+    }
+    const borrowsTemporary = match (in returnExpression) {
+      some(expression) => containsBorrowedTemporary(declaration, expression);
+      none => false;
+    };
     if (declaration.statements[index].cleanups.length > 0) {
       match (in declaration.statements[index].expression) {
         some(expression) => {
@@ -807,6 +955,12 @@ function appendStatement(
           output.append(` _z_stage1_return_${index} = `);
           try appendExpression(inout output, declaration, expression);
           output.append(";\n");
+          appendBorrowedTemporaryCleanups(
+            inout output,
+            declaration,
+            expression,
+            depth
+          );
           appendCleanups(inout output, declaration.statements[index].cleanups, depth);
           appendIndent(inout output, depth);
           output.append(`return _z_stage1_return_${index};\n`);
@@ -817,6 +971,27 @@ function appendStatement(
           output.append("return;\n");
         }
       }
+      return;
+    }
+    if (borrowsTemporary) {
+      const expression = match (in returnExpression) {
+        some(value) => value;
+        none => throw "native C emission lost a borrowed return temporary";
+      };
+      appendIndent(inout output, depth);
+      const returnType = try cType(declaration.returnType);
+      output.append(returnType);
+      output.append(` _z_stage1_return_${index} = `);
+      try appendExpression(inout output, declaration, expression);
+      output.append(";\n");
+      appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      appendIndent(inout output, depth);
+      output.append(`return _z_stage1_return_${index};\n`);
       return;
     }
     appendIndent(inout output, depth);
@@ -832,6 +1007,15 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.assignmentStatement) {
+    match (in declaration.statements[index].secondExpression) {
+      some(value) => try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        value,
+        depth
+      );
+      none => {}
+    }
     if (declaration.statements[index].cleanups.length > 0) {
       if (declaration.statements[index].cleanups.length != 1) {
         throw "native C emission received ambiguous owned replacement cleanup";
@@ -847,6 +1031,15 @@ function appendStatement(
         none => throw "native C emission received an assignment without a value";
       }
       output.append(";\n");
+      match (in declaration.statements[index].secondExpression) {
+        some(value) => appendBorrowedTemporaryCleanups(
+          inout output,
+          declaration,
+          value,
+          depth
+        );
+        none => {}
+      }
       appendCleanups(inout output, declaration.statements[index].cleanups, depth);
       appendIndent(inout output, depth);
       match (in declaration.statements[index].expression) {
@@ -872,15 +1065,42 @@ function appendStatement(
       none => throw "native C emission received an assignment without a value";
     }
     output.append(";\n");
+    match (in declaration.statements[index].secondExpression) {
+      some(value) => appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        value,
+        depth
+      );
+      none => {}
+    }
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.expressionStatement) {
+    match (in declaration.statements[index].expression) {
+      some(expression) => try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => {}
+    }
     appendIndent(inout output, depth);
     match (in declaration.statements[index].expression) {
       some(expression) => try appendExpression(inout output, declaration, expression);
       none => throw "native C emission received an empty expression statement";
     }
     output.append(";\n");
+    match (in declaration.statements[index].expression) {
+      some(expression) => appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => {}
+    }
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.tryStatement) {
@@ -892,6 +1112,15 @@ function appendStatement(
     }
     const temporary = `_z_stage1_try_${index}`;
     const propagated = `_z_stage1_failure_${index}`;
+    match (in declaration.statements[index].expression) {
+      some(expression) => try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => {}
+    }
     appendIndent(inout output, depth);
     output.append("Z_");
     output.append(declaration.statements[index].name);
@@ -907,6 +1136,15 @@ function appendStatement(
       none => throw "native C emission received a try statement without a call";
     }
     output.append(";\n");
+    match (in declaration.statements[index].expression) {
+      some(expression) => appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => {}
+    }
     appendIndent(inout output, depth);
     output.append("if (");
     output.append(temporary);
@@ -1047,6 +1285,7 @@ function appendStatement(
           }
           const payloadType = try cType(type);
           output.append(payloadType);
+          output.append(" __attribute__((unused))");
           output.append(" ");
           output.append(declaration.statements[arm].labels[0]);
           output.append(" = ");
@@ -1251,6 +1490,16 @@ function appendFunction(
   }
   for (const root of declaration.roots) {
     try appendStatement(inout output, declaration, root, 1);
+  }
+  match (in declaration.fallthroughExpression) {
+    some(expression) => {
+      appendCleanups(inout output, declaration.fallthroughCleanups, 1);
+      appendIndent(inout output, 1);
+      output.append("return ");
+      try appendExpression(inout output, declaration, expression);
+      output.append(";\n");
+    }
+    none => {}
   }
   if (declaration.returnType.kind == LoweredTypeKind.voidType) {
     appendCleanups(inout output, declaration.fallthroughCleanups, 1);
@@ -1594,7 +1843,7 @@ function appendMapRuntime(
     output.append("  }\n");
     output.append("  return (size_t)hash;\n");
     output.append("}\n\n");
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_rehash(Z_");
     output.append(declaration.name);
@@ -1615,7 +1864,7 @@ function appendMapRuntime(
     output.append("  self->bucketCount = capacity;\n");
     output.append("  self->tombstones = 0;\n");
     output.append("}\n\n");
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_ensure_capacity(Z_");
     output.append(declaration.name);
@@ -1746,7 +1995,7 @@ function appendSetRuntime(
     output.append("    hash ^= (unsigned char)value.data[index];\n");
     output.append("    hash *= UINT64_C(1099511628211);\n");
     output.append("  }\n  return (size_t)hash;\n}\n\n");
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_rehash(Z_");
     output.append(declaration.name);
@@ -1766,7 +2015,7 @@ function appendSetRuntime(
     output.append("  self->buckets = buckets;\n");
     output.append("  self->bucketCount = capacity;\n");
     output.append("  self->tombstones = 0;\n}\n\n");
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_ensure_capacity(Z_");
     output.append(declaration.name);
@@ -2085,6 +2334,18 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append(elementType);
     output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at_mut(Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  if (index >= self->length) abort();\n");
+    output.append("  return &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_push(Z_");
@@ -2117,21 +2378,21 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   try appendMapRuntime(inout output, program);
   appendSetRuntime(inout output, program);
   for (const declaration of program.arrays) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *self);\n");
   }
   for (const declaration of program.maps) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *self);\n");
   }
   for (const declaration of program.sets) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
@@ -2139,7 +2400,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit) {
-      output.append("static void Z_");
+      output.append("static __attribute__((unused)) void Z_");
       output.append(aggregate.name);
       output.append("_deinit(Z_");
       output.append(aggregate.name);
@@ -2148,7 +2409,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   for (const declaration of program.enums) {
     if (declaration.needsDeinit) {
-      output.append("static void Z_");
+      output.append("static __attribute__((unused)) void Z_");
       output.append(declaration.name);
       output.append("_deinit(Z_");
       output.append(declaration.name);
@@ -2161,7 +2422,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   output.append("\n");
   for (const declaration of program.arrays) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
@@ -2187,7 +2448,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("}\n\n");
   }
   for (const declaration of program.maps) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
@@ -2206,7 +2467,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("}\n\n");
   }
   for (const declaration of program.sets) {
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
     output.append(declaration.name);
@@ -2226,7 +2487,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   for (const declaration of program.enums) {
     if (declaration.needsDeinit) {
-      output.append("static void Z_");
+      output.append("static __attribute__((unused)) void Z_");
       output.append(declaration.name);
       output.append("_deinit(Z_");
       output.append(declaration.name);
@@ -2255,7 +2516,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit) {
-      output.append("static void Z_");
+      output.append("static __attribute__((unused)) void Z_");
       output.append(aggregate.name);
       output.append("_deinit(Z_");
       output.append(aggregate.name);

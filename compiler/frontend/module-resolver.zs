@@ -1955,7 +1955,7 @@ function inferExpressionNodeType(
       );
       try requireSettledExpressionType(module, tree, children[1], right);
       mergeBindingFlowStates(inout bindings, beforeRight, rightBindings);
-      return try binaryOperatorType(
+      const result = try binaryOperatorType(
         module,
         modules,
         moduleIndex,
@@ -1965,6 +1965,31 @@ function inferExpressionNodeType(
         left,
         right
       );
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        children[0],
+        left,
+        inout evidence
+      );
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        children[1],
+        right,
+        inout evidence
+      );
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        index,
+        result,
+        inout evidence
+      );
+      return result;
     }
     let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
@@ -1993,7 +2018,7 @@ function inferExpressionNodeType(
         || value == ">="
       )
     ) return "boolean";
-    return try binaryOperatorType(
+    const result = try binaryOperatorType(
       module,
       modules,
       moduleIndex,
@@ -2003,6 +2028,31 @@ function inferExpressionNodeType(
       left,
       right
     );
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      children[0],
+      left,
+      inout evidence
+    );
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      children[1],
+      right,
+      inout evidence
+    );
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      index,
+      result,
+      inout evidence
+    );
+    return result;
   }
   if (kind == ExpressionKind.valueBlockExpression) {
     const statements = copyIndices(tree.nodes[index].statements);

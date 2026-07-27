@@ -953,6 +953,30 @@ it must not be approximated by reusing a fixed frame slot. This boundary applies
 to ordinary `task`, placed `task on`, and explicit `thread.spawn` children, not
 only to borrowed arguments.
 
+## The complete frontend as strict native C
+
+Lowering the unchanged 31-module frontend graph exposed a concentrated set of
+composition gaps only after native emission itself became reachable. Integer
+literals inside `usize` arithmetic needed the resolver's contextual binary
+evidence rather than an emitter default. `Option.some` needed its destination
+type through returns, assignments, and aggregate fields. Throwing `void`
+functions needed an explicit successful fallthrough value. A temporary owned
+template String borrowed by a call needed a named IR lifetime: evaluate it
+once, pass its address, and deinitialize it immediately after the call.
+
+The same pass found target-sensitive mutable Array indexing, C-level physical
+constness for cleanup-bearing `Map`/`Set` locals, and nested match payload names
+that could collide even when their Z scopes were distinct. These are not new
+language features. They are evidence that ownership, contextual typing, and
+lexical identity must remain explicit in lowering instead of being recovered by
+the printer.
+
+With those gaps closed, `parser-library.zs` emits a roughly 2.3 MB translation
+unit that compiles and links as strict C11 under Clang
+`-Wall -Wextra -Werror`. The linked program still has a bootstrap no-op `main`;
+the next pressure point is a stable native protocol entry point that exercises
+parse, resolve, and emit without the TypeScript driver.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -696,13 +696,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    representation. Checked integer division/remainder, ordinary imported-call
    contracts, discarded non-void `try`, nested assignment targets, and
    contextual `Option` returns now compose as well. The unchanged 31-module
-   compiler graph lowers completely to a 2.3 MB C translation unit. That output
-   is not yet a native compiler binary: Clang currently exposes the next four
-   lowering gaps—contextual `usize` arithmetic, borrowed cleanup-bearing
-   temporaries at call boundaries, contextual `Option` assignment, and
-   total-return proof.
-   These three shapes established and now pass through the native lowering-IR
-   boundary. The flat typed arenas normalize checked arithmetic, direct calls,
+   compiler graph lowers completely to a 2.3 MB C translation unit and that
+   unit compiles and links under strict C11 with Clang
+   `-Wall -Wextra -Werror`. Contextual `usize` arithmetic, deterministic
+   borrowed String temporaries, nested mutable Array storage, collision-safe
+   match payloads, and implicit successful `Result<void, E>` fallthrough were
+   the final compile blockers. The linked binary still uses a bootstrap
+   no-op `main`; a native protocol entry point and replacement of the
+   TypeScript-hosted driver remain before this is a standalone compiler.
+   The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer
    no longer imports parser nodes or interprets operator strings. Deterministic
    cleanup adds scope/branch/return exit plans, so ownership-bearing structs
