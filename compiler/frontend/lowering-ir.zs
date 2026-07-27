@@ -1076,8 +1076,42 @@ function pushExpression(
   return index;
 }
 
+function resolvedCallTarget(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return Option.some(resolution.targetName.copyBytes(
+      0,
+      resolution.targetName.byteLength
+    ));
+  }
+  return Option<String>.none;
+}
+
+function importedCallTarget(
+  in program: Program,
+  in localName: String
+): Option<String> {
+  for (const declaration of program.imports) {
+    if (!declaration.selective) continue;
+    for (const binding of declaration.bindings) {
+      if (binding.localName == localName) return Option.some(
+        binding.importedName.copyBytes(0, binding.importedName.byteLength)
+      );
+    }
+  }
+  return Option<String>.none;
+}
+
 function lowerExpression(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   inout output: Array<LoweredExpression>
@@ -1119,6 +1153,7 @@ function lowerExpression(
     const attempted = tree.nodes[index].children[0];
     return try lowerExpression(
       program,
+      evidence,
       tree,
       attempted,
       inout output
@@ -1132,7 +1167,13 @@ function lowerExpression(
       throw "native lowering received a malformed unary expression";
     }
     const operandInput = tree.nodes[index].children[0];
-    const operand = try lowerExpression(program, tree, operandInput, inout output);
+    const operand = try lowerExpression(
+      program,
+      evidence,
+      tree,
+      operandInput,
+      inout output
+    );
     let kind = LoweredExpressionKind.unaryOperation;
     if (tree.nodes[index].value == "-") kind = LoweredExpressionKind.checkedNegateI32;
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
@@ -1160,8 +1201,20 @@ function lowerExpression(
     }
     const leftInput = tree.nodes[index].children[0];
     const rightInput = tree.nodes[index].children[1];
-    const left = try lowerExpression(program, tree, leftInput, inout output);
-    const right = try lowerExpression(program, tree, rightInput, inout output);
+    const left = try lowerExpression(
+      program,
+      evidence,
+      tree,
+      leftInput,
+      inout output
+    );
+    const right = try lowerExpression(
+      program,
+      evidence,
+      tree,
+      rightInput,
+      inout output
+    );
     let kind = LoweredExpressionKind.binaryOperation;
     if (tree.nodes[index].value == "+") kind = LoweredExpressionKind.checkedAddI32;
     else if (tree.nodes[index].value == "-") kind = LoweredExpressionKind.checkedSubtractI32;
@@ -1219,6 +1272,7 @@ function lowerExpression(
                     const payloadInput = tree.nodes[index].children[1];
                     const payload = try lowerExpression(
                       program,
+                      evidence,
                       tree,
                       payloadInput,
                       inout output
@@ -1254,6 +1308,7 @@ function lowerExpression(
                     const payloadInput = tree.nodes[index].children[1];
                     const payload = try lowerExpression(
                       program,
+                      evidence,
                       tree,
                       payloadInput,
                       inout output
@@ -1300,7 +1355,13 @@ function lowerExpression(
           let field: usize = 0;
           while (field < tree.nodes[objectInput].children.length) {
             const valueInput = tree.nodes[objectInput].children[field];
-            const value = try lowerExpression(program, tree, valueInput, inout output);
+            const value = try lowerExpression(
+              program,
+              evidence,
+              tree,
+              valueInput,
+              inout output
+            );
             children.push(value);
             labels.push(tree.nodes[objectInput].labels[field].copyBytes(
               0,
@@ -1319,13 +1380,57 @@ function lowerExpression(
         none => {}
       }
     }
-    const callee = try lowerExpression(program, tree, calleeInput, inout output);
+    let callee: usize = 0;
+    if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
+      match (resolvedCallTarget(evidence, tree, index)) {
+        some(target) => callee = pushExpression(
+          inout output,
+          LoweredExpressionKind.localValue,
+          target,
+          Array<usize>(),
+          Array<String>()
+        );
+        none => match (importedCallTarget(
+          program,
+          tree.nodes[calleeInput].value
+        )) {
+          some(target) => callee = pushExpression(
+            inout output,
+            LoweredExpressionKind.localValue,
+            target,
+            Array<usize>(),
+            Array<String>()
+          );
+          none => callee = try lowerExpression(
+            program,
+            evidence,
+            tree,
+            calleeInput,
+            inout output
+          );
+        }
+      }
+    } else {
+      callee = try lowerExpression(
+        program,
+        evidence,
+        tree,
+        calleeInput,
+        inout output
+      );
+    }
     let children = Array<usize>();
     children.push(callee);
     let argument: usize = 1;
     while (argument < tree.nodes[index].children.length) {
       const argumentInput = tree.nodes[index].children[argument];
-      const value = try lowerExpression(program, tree, argumentInput, inout output);
+      const value = try lowerExpression(
+        program,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
       children.push(value);
       argument = argument + 1;
     }
@@ -1396,7 +1501,13 @@ function lowerExpression(
         none => {}
       }
     }
-    const receiver = try lowerExpression(program, tree, receiverInput, inout output);
+    const receiver = try lowerExpression(
+      program,
+      evidence,
+      tree,
+      receiverInput,
+      inout output
+    );
     let children = Array<usize>();
     children.push(receiver);
     return pushExpression(
@@ -1412,13 +1523,14 @@ function lowerExpression(
 
 function lowerExpressionSyntax(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select try lowerExpression(program, tree, root, inout output);
+      select try lowerExpression(program, evidence, tree, root, inout output);
     }
     none => throw "native lowering cannot lower an opaque expression";
   };
@@ -1700,13 +1812,19 @@ function valueArmIsIdentifier(
 
 function lowerValueDestination(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   returnValue: boolean,
   in valueBinding: String,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
-  const value = try lowerExpressionSyntax(program, expression, inout expressions);
+  const value = try lowerExpressionSyntax(
+    program,
+    evidence,
+    expression,
+    inout expressions
+  );
   const loweredBody = statements.length;
   if (returnValue) {
     statements.push(LoweredStatement({
@@ -1767,6 +1885,7 @@ function lowerValueArmStatement(
     return match (in arena.nodes[index].expression) {
       some(expression) => try lowerValueDestination(
         program,
+        evidence,
         expression,
         returnValue,
         valueBinding,
@@ -1853,7 +1972,13 @@ function lowerMatchTree(
     throw "native match lowering received a malformed match expression";
   }
   const subjectInput = tree.nodes[root].children[0];
-  const subject = try lowerExpression(program, tree, subjectInput, inout expressions);
+  const subject = try lowerExpression(
+    program,
+    evidence,
+    tree,
+    subjectInput,
+    inout expressions
+  );
   const declaration = try matchEnumDeclaration(
     program,
     evidence,
@@ -2025,6 +2150,7 @@ function lowerStatement(
               };
               const call = try lowerExpression(
                 program,
+                evidence,
                 tree,
                 attempted,
                 inout expressions
@@ -2092,6 +2218,7 @@ function lowerStatement(
               );
               const call = try lowerExpression(
                 program,
+                evidence,
                 tree,
                 attempted,
                 inout expressions
@@ -2271,6 +2398,7 @@ function lowerStatement(
               const attempted = tree.nodes[root].children[0];
               loweredValue = try lowerExpression(
                 program,
+                evidence,
                 tree,
                 attempted,
                 inout expressions
@@ -2279,6 +2407,7 @@ function lowerStatement(
             } else {
               loweredValue = try lowerExpression(
                 program,
+                evidence,
                 tree,
                 root,
                 inout expressions
@@ -2288,7 +2417,12 @@ function lowerStatement(
           none => throw "native lowering cannot lower an opaque expression";
         }
       } else {
-        loweredValue = try lowerExpressionSyntax(program, source, inout expressions);
+        loweredValue = try lowerExpressionSyntax(
+          program,
+          evidence,
+          source,
+          inout expressions
+        );
       }
       if (
         arena.nodes[index].kind == StatementKind.returnStatement
@@ -2357,6 +2491,7 @@ function lowerStatement(
     some(source) => {
       const loweredExpression = try lowerExpressionSyntax(
         program,
+        evidence,
         source,
         inout expressions
       );

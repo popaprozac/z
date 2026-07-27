@@ -1,5 +1,5 @@
-import { add } from "./math.zs";
+import { add as combine } from "./math.zs";
 
 function main(): i32 {
-  return add(20, 22);
+  return combine(20, 22);
 }

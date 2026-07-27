@@ -733,8 +733,9 @@ inference inside code generation.
 
 The emitter now also consumes the resolver's dependency order instead of
 discarding every module except the entry. A two-module scalar fixture exports a
-function, imports it selectively, lowers both module programs into one typed IR,
-and emits one direct C call. This first tier intentionally does not claim that
+function under a local selective alias, lowers both module programs into one
+typed IR, resolves that alias back to the exported source symbol, and emits one
+direct C call with no wrapper. This first tier intentionally does not claim that
 source spelling alone is enough for imported aggregate identity; imported value
 types and colliding module-private symbols remain the next nominal-identity
 pressure test.
