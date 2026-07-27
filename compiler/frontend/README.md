@@ -172,7 +172,12 @@ instead of treating every integer expression as `i32`. The first dynamic-array
 storage tier monomorphizes `Array<T>` into owned data/length/capacity storage,
 passes it through signatures, and destroys its elements recursively before
 freeing storage. Construction, growth, indexing, and iteration remain the next
-array slices. A local selective alias is resolved back to the exported
+array slices. Owned `String` now has its native data/length/capacity
+representation, static UTF-8 literals, byte equality, `byteAt`, `byteLength`,
+`isEmpty`, owned `copyBytes`, and deterministic cleanup. Cleanup-bearing `const`
+bindings use writable C storage without permitting Z rebinding. With these
+runtime types available, the real compiler probe advances to explicit borrowed
+parameter lowering. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

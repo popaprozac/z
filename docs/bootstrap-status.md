@@ -652,7 +652,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Cleanup-bearing elements are destroyed in reverse order before storage is
    freed. Construction, growth, indexing, and iteration are deliberately still
    fail-closed. With this tier present, the real compiler emission probe advances
-   from `Array<Token>` to owned `String` as its first unsupported type.
+   from `Array<Token>` to owned `String` as its first unsupported type. The
+   following owned-String tier emits data/length/capacity storage, static UTF-8
+   literals, exact byte equality, checked byte access, byte length/emptiness,
+   owned UTF-8-boundary-checked `copyBytes`, and deterministic cleanup. It keeps
+   cleanup-bearing `const` bindings writable at the C storage level solely so
+   destruction can receive their address. The compiler probe now reaches
+   explicit borrowed parameters as its next unsupported lowering contract.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

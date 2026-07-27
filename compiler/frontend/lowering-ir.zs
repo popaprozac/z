@@ -34,6 +34,7 @@ export enum LoweredTypeKind {
   i32Type,
   u8Type,
   usizeType,
+  stringType,
   arrayType,
   structType,
   enumType,
@@ -82,6 +83,7 @@ export enum LoweredExpressionKind {
   localValue,
   receiverValue,
   integerValue,
+  stringValue,
   booleanValue,
   checkedAddInteger,
   checkedSubtractInteger,
@@ -95,6 +97,11 @@ export enum LoweredExpressionKind {
   structValue,
   enumValue,
   enumPayloadValue,
+  stringEqual,
+  stringLength,
+  stringIsEmpty,
+  stringByteAt,
+  stringCopyBytes,
 }
 
 export struct LoweredExpression {
@@ -220,6 +227,7 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
   if (type.kind == LoweredTypeKind.u8Type) return "u8";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
+  if (type.kind == LoweredTypeKind.stringType) return "String";
   return type.name.copyBytes(0, type.name.byteLength);
 }
 
@@ -260,6 +268,12 @@ function lowerTypeName(
   if (name == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
   if (name == "usize") {
     return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
+  }
+  if (name == "String") {
+    return LoweredType({
+      kind: LoweredTypeKind.stringType,
+      name: "String",
+    });
   }
   match (intrinsicOptionPayloadName(name)) {
     some(_) => return LoweredType({
@@ -391,7 +405,10 @@ function enumNeedsCleanup(
         const loweredPayload = attempt lowerType(program, payload);
         match (loweredPayload) {
           success(type) => {
-            if (type.kind == LoweredTypeKind.arrayType) return true;
+            if (
+              type.kind == LoweredTypeKind.arrayType
+              || type.kind == LoweredTypeKind.stringType
+            ) return true;
           }
           failure(_) => {}
         }
@@ -430,7 +447,10 @@ function aggregateNeedsCleanup(
     const loweredField = attempt lowerType(program, field.type);
     match (loweredField) {
       success(type) => {
-        if (type.kind == LoweredTypeKind.arrayType) return true;
+        if (
+          type.kind == LoweredTypeKind.arrayType
+          || type.kind == LoweredTypeKind.stringType
+        ) return true;
       }
       failure(_) => {}
     }
@@ -451,7 +471,10 @@ function aggregateNeedsCleanup(
 }
 
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
-  if (type.kind == LoweredTypeKind.arrayType) return true;
+  if (
+    type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.stringType
+  ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return aggregateNeedsCleanup(program, index, 0);
@@ -613,7 +636,10 @@ function moduleTypeNeedsCleanupDepth(
   in type: LoweredType,
   depth: usize
 ): boolean {
-  if (type.kind == LoweredTypeKind.arrayType) return true;
+  if (
+    type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.stringType
+  ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return moduleAggregateNeedsCleanup(
@@ -1553,6 +1579,15 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.stringExpression) {
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.stringValue,
+      tree.nodes[index].value,
+      Array<usize>(),
+      Array<String>()
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.booleanExpression) {
     return pushExpression(
       inout output,
@@ -1644,7 +1679,17 @@ function lowerExpression(
       inout output
     );
     let kind = LoweredExpressionKind.binaryOperation;
-    if (tree.nodes[index].value == "+") {
+    if (
+      (
+        tree.nodes[index].value == "=="
+        || tree.nodes[index].value == "!="
+      )
+      && (
+        tree.nodes[leftInput].kind == ExpressionKind.stringExpression
+        || tree.nodes[rightInput].kind == ExpressionKind.stringExpression
+      )
+    ) kind = LoweredExpressionKind.stringEqual;
+    else if (tree.nodes[index].value == "+") {
       kind = LoweredExpressionKind.checkedAddInteger;
     } else if (tree.nodes[index].value == "-") {
       kind = LoweredExpressionKind.checkedSubtractInteger;
@@ -1692,6 +1737,81 @@ function lowerExpression(
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[calleeInput].value == "byteAt"
+        || tree.nodes[calleeInput].value == "copyBytes"
+      ) {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        let children = Array<usize>();
+        children.push(receiver);
+        if (
+          tree.nodes[calleeInput].value == "byteAt"
+          && tree.nodes[index].children.length == 2
+        ) {
+          const positionInput = tree.nodes[index].children[1];
+          const position = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            positionInput,
+            inout output
+          );
+          children.push(position);
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.stringByteAt,
+            "",
+            children,
+            Array<String>()
+          );
+        }
+        if (
+          tree.nodes[calleeInput].value == "copyBytes"
+          && tree.nodes[index].children.length == 3
+        ) {
+          const startInput = tree.nodes[index].children[1];
+          const start = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            startInput,
+            inout output
+          );
+          children.push(start);
+          const endInput = tree.nodes[index].children[2];
+          const end = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            endInput,
+            inout output
+          );
+          children.push(end);
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.stringCopyBytes,
+            "",
+            children,
+            Array<String>()
+          );
+        }
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
@@ -1950,6 +2070,39 @@ function lowerExpression(
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[index].value == "byteLength"
+      || tree.nodes[index].value == "isEmpty"
+    ) {
+      const receiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(receiver);
+      if (tree.nodes[index].value == "byteLength") {
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.stringLength,
+          "",
+          children,
+          Array<String>()
+        );
+      }
+      if (tree.nodes[index].value == "isEmpty") {
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.stringIsEmpty,
+          "",
+          children,
+          Array<String>()
+        );
+      }
+    }
     if (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {
       const intrinsic = try intrinsicOptionDeclaration(
         program,

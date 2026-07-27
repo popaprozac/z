@@ -23,6 +23,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
   if (type.kind == LoweredTypeKind.u8Type) return "uint8_t";
   if (type.kind == LoweredTypeKind.usizeType) return "size_t";
+  if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
@@ -37,6 +38,31 @@ function appendIndent(inout output: TextBuffer, depth: usize): void {
     output.append("  ");
     current = current + 1;
   }
+}
+
+function appendCStringLiteral(
+  inout output: TextBuffer,
+  in value: String
+): void {
+  output.append("\"");
+  let index: usize = 0;
+  while (index < value.byteLength) {
+    const byte = value.byteAt(index);
+    if (byte == 34) output.append("\\\"");
+    else if (byte == 92) output.append("\\\\");
+    else if (byte == 10) output.append("\\n");
+    else if (byte == 13) output.append("\\r");
+    else if (byte == 9) output.append("\\t");
+    else if (byte >= 32 && byte <= 126) output.appendAscii(byte);
+    else {
+      output.append("\\");
+      output.appendAscii(48 + ((byte / 64) % 8));
+      output.appendAscii(48 + ((byte / 8) % 8));
+      output.appendAscii(48 + (byte % 8));
+    }
+    index = index + 1;
+  }
+  output.append("\"");
 }
 
 function appendCleanups(
@@ -76,6 +102,14 @@ function appendExpression(
     || declaration.expressions[index].kind == LoweredExpressionKind.booleanValue
   ) {
     output.append(declaration.expressions[index].value);
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.stringValue
+  ) {
+    output.append("Z_STRING_LITERAL(");
+    appendCStringLiteral(inout output, declaration.expressions[index].value);
+    output.append(")");
     return;
   }
   if (
@@ -166,6 +200,98 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     output.append(" ");
     try appendExpression(inout output, declaration, right);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.stringEqual) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed String comparison";
+    }
+    if (declaration.expressions[index].value == "!=") output.append("!");
+    output.append("z_string_equal(");
+    const left = declaration.expressions[index].children[0];
+    const right = declaration.expressions[index].children[1];
+    try appendExpression(
+      inout output,
+      declaration,
+      left
+    );
+    output.append(", ");
+    try appendExpression(
+      inout output,
+      declaration,
+      right
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.stringLength
+    || declaration.expressions[index].kind == LoweredExpressionKind.stringIsEmpty
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed String property";
+    }
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.stringIsEmpty
+    ) output.append("(");
+    output.append("(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(").length");
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.stringIsEmpty
+    ) output.append(" == 0)");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.stringByteAt
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed String.byteAt call";
+    }
+    output.append("z_string_byte_at(");
+    const receiver = declaration.expressions[index].children[0];
+    const position = declaration.expressions[index].children[1];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(", ");
+    try appendExpression(
+      inout output,
+      declaration,
+      position
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.stringCopyBytes
+  ) {
+    if (declaration.expressions[index].children.length != 3) {
+      throw "native C emission received a malformed String.copyBytes call";
+    }
+    output.append("z_string_copy_bytes(");
+    let child: usize = 0;
+    while (child < declaration.expressions[index].children.length) {
+      if (child > 0) output.append(", ");
+      const value = declaration.expressions[index].children[child];
+      try appendExpression(
+        inout output,
+        declaration,
+        value
+      );
+      child = child + 1;
+    }
     output.append(")");
     return;
   }
@@ -318,7 +444,9 @@ function appendStatement(
     const constStorage = match (in declaration.statements[index].type) {
       some(storageType) => {
         select storageType.kind != LoweredTypeKind.structType
-          && storageType.kind != LoweredTypeKind.enumType;
+          && storageType.kind != LoweredTypeKind.enumType
+          && storageType.kind != LoweredTypeKind.arrayType
+          && storageType.kind != LoweredTypeKind.stringType;
       }
       none => false;
     };
@@ -746,7 +874,10 @@ function loweredTypeNeedsDeinit(
   in program: LoweredProgram,
   in type: LoweredType
 ): boolean {
-  if (type.kind == LoweredTypeKind.arrayType) return true;
+  if (
+    type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.stringType
+  ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
   }
@@ -968,7 +1099,7 @@ function appendTypeDefinitions(
 
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
-  output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n\n");
+  output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_add_i32(int32_t left, int32_t right) {\n");
   output.append("  int32_t result;\n");
   output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
@@ -1017,6 +1148,63 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("static inline __attribute__((unused)) size_t z_stage1_checked_multiply_usize(size_t left, size_t right) {\n");
   output.append("  size_t result;\n");
   output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("typedef struct Z_String {\n");
+  output.append("  const char *data;\n");
+  output.append("  size_t length;\n");
+  output.append("  size_t capacity;\n");
+  output.append("} Z_String;\n\n");
+  output.append("#define Z_STRING_LITERAL(value) ((Z_String){ .data = (value), .length = sizeof(value) - 1, .capacity = 0 })\n\n");
+  output.append("static inline __attribute__((unused)) void Z_String_deinit(Z_String *self) {\n");
+  output.append("  if (self->capacity > 0) free((void *)self->data);\n");
+  output.append("  self->data = NULL;\n");
+  output.append("  self->length = 0;\n");
+  output.append("  self->capacity = 0;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) bool z_string_equal(Z_String left, Z_String right) {\n");
+  output.append("  if (left.length != right.length) return false;\n");
+  output.append("  if (left.length == 0) return true;\n");
+  output.append("  return memcmp(left.data, right.data, left.length) == 0;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_string_reserve(Z_String *self, size_t additional) {\n");
+  output.append("  if (additional > SIZE_MAX - self->length - 1) abort();\n");
+  output.append("  const size_t required = self->length + additional + 1;\n");
+  output.append("  if (required <= self->capacity) return;\n");
+  output.append("  size_t next = self->capacity == 0 ? 32 : self->capacity;\n");
+  output.append("  while (next < required) {\n");
+  output.append("    if (next > SIZE_MAX / 2) { next = required; break; }\n");
+  output.append("    next *= 2;\n");
+  output.append("  }\n");
+  output.append("  void *storage;\n");
+  output.append("  if (self->capacity == 0 && self->data != NULL) {\n");
+  output.append("    storage = malloc(next);\n");
+  output.append("    if (storage != NULL) memcpy(storage, self->data, self->length);\n");
+  output.append("  } else storage = realloc((void *)self->data, next);\n");
+  output.append("  if (storage == NULL) abort();\n");
+  output.append("  self->data = (const char *)storage;\n");
+  output.append("  self->capacity = next;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_string_append_bytes(Z_String *self, const char *data, size_t length) {\n");
+  output.append("  if (length == 0) return;\n");
+  output.append("  z_string_reserve(self, length);\n");
+  output.append("  memcpy((char *)self->data + self->length, data, length);\n");
+  output.append("  self->length += length;\n");
+  output.append("  ((char *)self->data)[self->length] = '\\0';\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_string_byte_at(Z_String value, size_t index) {\n");
+  output.append("  if (index >= value.length) abort();\n");
+  output.append("  return (uint8_t)value.data[index];\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) bool z_string_is_utf8_boundary(Z_String value, size_t index) {\n");
+  output.append("  return index == 0 || index == value.length || (((uint8_t)value.data[index] & 0xC0u) != 0x80u);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) Z_String z_string_copy_bytes(Z_String value, size_t start, size_t end) {\n");
+  output.append("  if (start > end || end > value.length) abort();\n");
+  output.append("  if (!z_string_is_utf8_boundary(value, start) || !z_string_is_utf8_boundary(value, end)) abort();\n");
+  output.append("  Z_String result = { NULL, 0, 0 };\n");
+  output.append("  const char *bytes = value.data != NULL ? value.data + start : \"\";\n");
+  output.append("  z_string_append_bytes(&result, bytes, end - start);\n");
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);

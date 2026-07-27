@@ -8453,6 +8453,50 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(nativeIntegerExecution.status, 0, nativeIntegerExecution.stderr);
 
+  const nativeStringInput = resolve(directory, "native-string.zs");
+  writeFileSync(
+    nativeStringInput,
+    "function inspect(value: String): usize {\n"
+      + "  const middle: String = value.copyBytes(1, 4);\n"
+      + "  if (middle == \"ell\" && value.byteAt(0) == 104 && value.byteLength == 5 && !value.isEmpty) {\n"
+      + "    return middle.byteLength;\n"
+      + "  }\n"
+      + "  return 0;\n"
+      + "}\n"
+      + "function main(): i32 {\n"
+      + "  if (inspect(\"hello\") == 3) return 0;\n"
+      + "  return 1;\n"
+      + "}\n",
+  );
+  const nativeStringEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", nativeStringInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeStringEmission.status, 0, nativeStringEmission.stderr);
+  assert.match(
+    nativeStringEmission.stdout,
+    /Z_String inspect\(Z_String value\)|size_t inspect\(Z_String value\)/,
+  );
+  assert.match(nativeStringEmission.stdout, /z_string_copy_bytes\(value, 1, 4\)/);
+  assert.match(nativeStringEmission.stdout, /z_string_equal\(middle, Z_STRING_LITERAL\("ell"\)\)/);
+  assert.match(nativeStringEmission.stdout, /z_string_byte_at\(value, 0\)/);
+  assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&middle\)/);
+  assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&value\)/);
+  const nativeStringExecutable = resolve(directory, "native-string");
+  const nativeStringCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", nativeStringExecutable],
+    { encoding: "utf8", input: nativeStringEmission.stdout },
+  );
+  assert.equal(nativeStringCompilation.status, 0, nativeStringCompilation.stderr);
+  const nativeStringExecution = spawnSync(
+    nativeStringExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeStringExecution.status, 0, nativeStringExecution.stderr);
+
   const overflowInput = resolve(directory, "overflow.zs");
   writeFileSync(
     overflowInput,
