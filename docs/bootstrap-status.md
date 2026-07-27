@@ -693,8 +693,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    contracts, and uniquely named public field types can flow transitively
    without a redundant source import. Value-producing match arms can now
    propagate a direct throwing call through the existing typed `Result`
-   representation. The unchanged compiler graph now reaches integer division
-   in `appendCStringLiteral`.
+   representation. Checked integer division/remainder, ordinary imported-call
+   contracts, discarded non-void `try`, nested assignment targets, and
+   contextual `Option` returns now compose as well. The unchanged 31-module
+   compiler graph lowers completely to a 2.3 MB C translation unit. That output
+   is not yet a native compiler binary: Clang currently exposes the next four
+   lowering gaps—contextual `usize` arithmetic, borrowed cleanup-bearing
+   temporaries at call boundaries, contextual `Option` assignment, and
+   total-return proof.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

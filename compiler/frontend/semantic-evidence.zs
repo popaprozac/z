@@ -129,7 +129,7 @@ export function callableSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
-export function recordGenericCallResolution(
+export function recordCallResolution(
   in tree: ExpressionTree,
   callIndex: usize,
   targetModuleIndex: usize,

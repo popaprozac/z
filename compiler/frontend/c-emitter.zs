@@ -326,6 +326,8 @@ function appendExpression(
     declaration.expressions[index].kind == LoweredExpressionKind.checkedAddInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedMultiplyInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedDivideInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedRemainderInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedShiftLeftInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedShiftRightInteger
   ) {
@@ -347,6 +349,14 @@ function appendExpression(
       declaration.expressions[index].kind
         == LoweredExpressionKind.checkedMultiplyInteger
     ) output.append("multiply_");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedDivideInteger
+    ) output.append("divide_");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedRemainderInteger
+    ) output.append("remainder_");
     else if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.checkedShiftLeftInteger
@@ -946,11 +956,25 @@ function appendStatement(
         output.append("Z_");
         output.append(replacementName);
         output.append("_deinit(&");
-        output.append(declaration.statements[index].labels[0]);
+        match (in declaration.statements[index].secondExpression) {
+          some(target) => try appendExpression(
+            inout output,
+            declaration,
+            target
+          );
+          none => output.append(declaration.statements[index].labels[0]);
+        }
         output.append(");\n");
       }
       appendIndent(inout output, depth);
-      output.append(declaration.statements[index].labels[0]);
+      match (in declaration.statements[index].secondExpression) {
+        some(target) => try appendExpression(
+          inout output,
+          declaration,
+          target
+        );
+        none => output.append(declaration.statements[index].labels[0]);
+      }
       output.append(" = ");
       output.append(temporary);
       output.append(".payload.success;\n");
@@ -1830,6 +1854,16 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_divide_i32(int32_t left, int32_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  if (left == INT32_MIN && right == -1) abort();\n");
+  output.append("  return left / right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_remainder_i32(int32_t left, int32_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  if (left == INT32_MIN && right == -1) abort();\n");
+  output.append("  return left % right;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_negate_i32(int32_t value) {\n");
   output.append("  int32_t result;\n");
   output.append("  if (__builtin_sub_overflow(0, value, &result)) abort();\n");
@@ -1850,6 +1884,14 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_divide_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  return (uint8_t)(left / right);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_remainder_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  return (uint8_t)(left % right);\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) size_t z_stage1_checked_add_usize(size_t left, size_t right) {\n");
   output.append("  size_t result;\n");
   output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
@@ -1864,6 +1906,14 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  size_t result;\n");
   output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
   output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_divide_usize(size_t left, size_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  return left / right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_remainder_usize(size_t left, size_t right) {\n");
+  output.append("  if (right == 0) abort();\n");
+  output.append("  return left % right;\n");
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_shift_left_u8(uint8_t left, uint8_t right) {\n");
   output.append("  if (right >= 8 || left > (uint8_t)(UINT8_MAX >> right)) abort();\n");

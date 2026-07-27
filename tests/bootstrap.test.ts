@@ -8515,11 +8515,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
     nativeIntegerInput,
     "function addSize(value: usize): usize { return value + 2; }\n"
       + "function doubleByte(value: u8): u8 { return value * 2; }\n"
+      + "function halveSize(value: usize): usize { return value / 2; }\n"
+      + "function remainderByte(value: u8): u8 { return value % 5; }\n"
+      + "function halveSigned(value: i32): i32 { return value / 2; }\n"
       + "function discard(values: Array<i32>): usize { return 0; }\n"
       + "function main(): i32 {\n"
       + "  const size: usize = 20;\n"
       + "  const byte: u8 = 11;\n"
-      + "  if (addSize(size) == 22 && doubleByte(byte) == 22) return 0;\n"
+      + "  if (addSize(size) == 22 && doubleByte(byte) == 22 && halveSize(size) == 10 && remainderByte(byte) == 1 && halveSigned(42) == 21) return 0;\n"
       + "  return 1;\n"
       + "}\n",
   );
@@ -8536,6 +8539,18 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     nativeIntegerEmission.stdout,
     /uint8_t doubleByte\(uint8_t value\).*?z_stage1_checked_multiply_u8\(value, 2\)/s,
+  );
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /size_t halveSize\(size_t value\).*?z_stage1_checked_divide_usize\(value, 2\)/s,
+  );
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /uint8_t remainderByte\(uint8_t value\).*?z_stage1_checked_remainder_u8\(value, 5\)/s,
+  );
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /int32_t halveSigned\(int32_t value\).*?z_stage1_checked_divide_i32\(value, 2\)/s,
   );
   assert.match(
     nativeIntegerEmission.stdout,
@@ -9148,6 +9163,22 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 20_000);
 
+test("lowers the complete native frontend graph to C", () => {
+  const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", frontend],
+    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, const Z_String \*value\);/);
+  assert.match(emission.stdout, /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program\);/);
+  assert.match(
+    emission.stdout,
+    /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(const Z_String \*entryPath, const Z_String \*batch\);/,
+  );
+}, 10_000);
+
 test("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
@@ -9319,7 +9350,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(genericEvidence.status, 0, genericEvidence.stderr);
-  assert.match(genericEvidence.stdout, /native frontend hybrid exports 12 concrete generic call contracts/);
+  assert.match(genericEvidence.stdout, /native frontend hybrid exports 12 resolved call contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 function, 7 method, and 3 constructor native-authoritative contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 2 aggregate, 7 field, and 0 enum-variant native-authoritative contracts/);
   assert.match(genericEvidence.stdout, /native frontend hybrid uses 1 explicit type-use native-authoritative contract/);
@@ -9351,7 +9382,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(genericErrorEvidence.status, 0, genericErrorEvidence.stderr);
-  assert.match(genericErrorEvidence.stdout, /native frontend hybrid exports 1 concrete generic call contract/);
+  assert.match(genericErrorEvidence.stdout, /native frontend hybrid exports 1 resolved call contract/);
   assert.match(genericErrorEvidence.stdout, /native frontend hybrid uses 1 function, 0 method, and 0 constructor native-authoritative contracts/);
 
   const contextualClosureMain = resolve(invalidDirectory, "contextual-closure-main.zs");
@@ -11672,7 +11703,7 @@ test("defers dependent generic comparisons to concrete specialization", () => {
     { encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /exports 5 concrete generic call contracts/);
+  assert.match(result.stdout, /exports 5 resolved call contracts/);
   const observedBindings = result.stdout.match(
     /observes (\d+) inferred local binding stage-0 Z resolutions/,
   )?.[1];
@@ -12768,7 +12799,7 @@ test("infers generic results from annotations, assignments, and returns", () => 
   assert.equal(native.status, 0, native.stderr);
   const hybrid = spawnSync(process.execPath, [cli, "check", input, "--native-frontend"], { encoding: "utf8" });
   assert.equal(hybrid.status, 0, hybrid.stderr);
-  assert.match(hybrid.stdout, /native frontend hybrid exports 29 concrete generic call contracts/);
+  assert.match(hybrid.stdout, /native frontend hybrid exports 29 resolved call contracts/);
   assert.match(hybrid.stdout, /native frontend hybrid uses 22 function, 5 method, and 2 constructor native-authoritative contracts/);
 
   const invalid = source.replace("Option<Reading> = constrained()", "Option<i32> = constrained()");

@@ -506,7 +506,7 @@ contextual `0`; Stage 0 accepts the concrete `Pair<i32>` specialization, while
 Stage 1 eagerly demanded that abstract `T` already be numeric. Native inference
 now treats only this dependent relational shape as provisional and returns a
 boolean condition. The existing example regains full native authority for five
-generic call contracts, four inferred bindings, and six observed expressions.
+resolved call contracts, four inferred bindings, and six observed expressions.
 This is an honest migration seam, not the final generic rule: Stage 0 continues
 to reject invalid concrete specializations, and native specialization must
 eventually perform that proof before Stage 1 stands alone.

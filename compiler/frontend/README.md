@@ -212,8 +212,14 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   and uniquely named public types remain usable when they flow transitively
   through an imported field. A value-producing match arm can now propagate one
   direct throwing call through `try`, forwarding a returning arm's compatible
-  `Result` or assigning a selecting arm's success payload. The compiler probe
-  now reaches integer division in `appendCStringLiteral`. A local selective
+  `Result` or assigning a selecting arm's success payload. Checked division and
+  remainder, imported throwing-call evidence, discarded non-void `try`, nested
+  assignment targets, and contextual `Option` returns close the remaining
+  lowering stops. The unchanged 31-module `parser-library.zs` graph now lowers
+  completely into one native C translation unit. Clang validation is the next
+  boundary: contextual `usize` arithmetic, borrowed cleanup-bearing call
+  temporaries, contextual `Option` assignment, and total-return proof remain
+  before that translation unit compiles. A local selective
   alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C

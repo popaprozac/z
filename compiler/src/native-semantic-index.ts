@@ -66,8 +66,8 @@ export class NativeSemanticIndex {
         ) {
           throw new Error(`native frontend returned a mismatched ${resolution.kind} target at offset ${resolution.offset} in ${module.path}`);
         }
-        if (resolution.typeParameters.length === 0 || resolution.typeArguments.some((argument) => argument.length === 0)) {
-          throw new Error(`native frontend returned an incomplete generic call resolution at offset ${resolution.offset} in ${module.path}`);
+        if (resolution.typeArguments.some((argument) => argument.length === 0)) {
+          throw new Error(`native frontend returned an incomplete call resolution at offset ${resolution.offset} in ${module.path}`);
         }
         resolutions.set(resolution.offset, resolution);
       }

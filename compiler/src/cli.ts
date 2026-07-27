@@ -213,8 +213,8 @@ function reportStage1Resolver(
     .join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
-  const genericCallContracts = run.summary.callResolutionCount;
-  const genericCallContractLabel = genericCallContracts === 1 ? "contract" : "contracts";
+  const resolvedCallContracts = run.summary.callResolutionCount;
+  const resolvedCallContractLabel = resolvedCallContracts === 1 ? "contract" : "contracts";
   const bindingContracts = run.summary.bindingResolutionCount;
   const bindingContractLabel = bindingContracts === 1 ? "contract" : "contracts";
   const expressionContracts = run.summary.expressionResolutionCount;
@@ -222,7 +222,7 @@ function reportStage1Resolver(
   const subject = presentation === "check-hybrid" ? "native frontend hybrid" : "stage-1 resolver";
   console.log(`${run.entryPath}: ${subject} matches ${run.summary.moduleCount} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
-  console.log(`${subject} exports ${genericCallContracts} concrete generic call ${genericCallContractLabel}`);
+  console.log(`${subject} exports ${resolvedCallContracts} resolved call ${resolvedCallContractLabel}`);
   console.log(`${subject} exports ${bindingContracts} inferred local binding ${bindingContractLabel}`);
   console.log(`${subject} exports ${expressionContracts} expression type ${expressionContractLabel}`);
   if (callResolutionCount !== null) {

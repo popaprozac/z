@@ -39,7 +39,7 @@ import {
   emptySemanticEvidence,
   recordBindingResolution,
   recordExpressionResolution,
-  recordGenericCallResolution,
+  recordCallResolution,
 } from "./semantic-evidence.zs";
 import {
   collectionMethodMutates,
@@ -1070,8 +1070,8 @@ function inferSignatureCallType(
       none => {}
     }
   }
-  if (substitutions.length > 0 && callKind != "value") {
-    recordGenericCallResolution(
+  if (callKind != "value") {
+    recordCallResolution(
       tree,
       callIndex,
       targetModuleIndex,

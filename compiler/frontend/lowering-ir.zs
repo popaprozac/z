@@ -112,6 +112,8 @@ export enum LoweredExpressionKind {
   checkedAddInteger,
   checkedSubtractInteger,
   checkedMultiplyInteger,
+  checkedDivideInteger,
+  checkedRemainderInteger,
   checkedShiftLeftInteger,
   checkedShiftRightInteger,
   checkedNegateInteger,
@@ -1886,6 +1888,29 @@ function resolvedExpressionTypeName(
   return Option<String>.none;
 }
 
+function contextualIntrinsicTypeName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in sourceName: String
+): String {
+  if (sourceName != "Option") {
+    return sourceName.copyBytes(0, sourceName.byteLength);
+  }
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => {
+      match (genericTypeShape(name)) {
+        some(generic) => {
+          if (generic.base == "Option") return name;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return sourceName.copyBytes(0, sourceName.byteLength);
+}
+
 function checkedIntegerTypeName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -2574,6 +2599,10 @@ function lowerExpression(
       kind = LoweredExpressionKind.checkedSubtractInteger;
     } else if (tree.nodes[index].value == "*") {
       kind = LoweredExpressionKind.checkedMultiplyInteger;
+    } else if (tree.nodes[index].value == "/") {
+      kind = LoweredExpressionKind.checkedDivideInteger;
+    } else if (tree.nodes[index].value == "%") {
+      kind = LoweredExpressionKind.checkedRemainderInteger;
     } else if (tree.nodes[index].value == "<<") {
       kind = LoweredExpressionKind.checkedShiftLeftInteger;
     } else if (tree.nodes[index].value == ">>") {
@@ -2603,6 +2632,8 @@ function lowerExpression(
       kind == LoweredExpressionKind.checkedAddInteger
       || kind == LoweredExpressionKind.checkedSubtractInteger
       || kind == LoweredExpressionKind.checkedMultiplyInteger
+      || kind == LoweredExpressionKind.checkedDivideInteger
+      || kind == LoweredExpressionKind.checkedRemainderInteger
       || kind == LoweredExpressionKind.checkedShiftLeftInteger
       || kind == LoweredExpressionKind.checkedShiftRightInteger
     )
@@ -3064,10 +3095,16 @@ function lowerExpression(
     ) {
       const enumInput = tree.nodes[calleeInput].children[0];
       if (tree.nodes[enumInput].kind == ExpressionKind.identifierExpression) {
+        const intrinsicName = contextualIntrinsicTypeName(
+          evidence,
+          tree,
+          index,
+          tree.nodes[enumInput].value
+        );
         const intrinsic = try intrinsicOptionDeclaration(
           program,
           importedTypes,
-          tree.nodes[enumInput].value
+          intrinsicName
         );
         match (in intrinsic) {
           some(declaration) => {
@@ -3433,10 +3470,16 @@ function lowerExpression(
       }
     }
     if (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {
+      const intrinsicName = contextualIntrinsicTypeName(
+        evidence,
+        tree,
+        index,
+        tree.nodes[receiverInput].value
+      );
       const intrinsic = try intrinsicOptionDeclaration(
         program,
         importedTypes,
-        tree.nodes[receiverInput].value
+        intrinsicName
       );
       match (in intrinsic) {
         some(declaration) => {
@@ -3539,6 +3582,101 @@ function lowerExpression(
   throw `native lowering does not support ${unsupportedKind} expression at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
 }
 
+function lowerExpressionExpected(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in expectedTypeName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  match (genericTypeShape(expectedTypeName)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        const intrinsic = try intrinsicOptionDeclaration(
+          program,
+          importedTypes,
+          expectedTypeName
+        );
+        const declaration = match (intrinsic) {
+          some(value) => value;
+          none => throw `native contextual lowering could not materialize ${expectedTypeName}`;
+        };
+        if (
+          tree.nodes[index].kind == ExpressionKind.callExpression
+          && tree.nodes[index].children.length == 2
+        ) {
+          const callee = tree.nodes[index].children[0];
+          if (
+            tree.nodes[callee].kind == ExpressionKind.memberExpression
+            && tree.nodes[callee].children.length == 1
+          ) {
+            const receiver = tree.nodes[callee].children[0];
+            if (
+              tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+              && tree.nodes[receiver].value == "Option"
+              && tree.nodes[callee].value == "some"
+            ) {
+              const payloadIndex = tree.nodes[index].children[1];
+              const payload = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                payloadIndex,
+                inout output
+              );
+              let children = Array<usize>();
+              children.push(payload);
+              let labels = Array<String>();
+              labels.push("some");
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.enumPayloadValue,
+                declaration.name,
+                children,
+                labels
+              );
+            }
+          }
+        }
+        if (
+          tree.nodes[index].kind == ExpressionKind.memberExpression
+          && tree.nodes[index].children.length == 1
+        ) {
+          const receiver = tree.nodes[index].children[0];
+          if (
+            tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+            && tree.nodes[receiver].value == "Option"
+            && tree.nodes[index].value == "none"
+          ) {
+            let labels = Array<String>();
+            labels.push("none");
+            labels.push("tagged");
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.enumValue,
+              declaration.name,
+              Array<usize>(),
+              labels
+            );
+          }
+        }
+      }
+    }
+    none => {}
+  }
+  return try lowerExpression(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    inout output
+  );
+}
+
 function lowerExpressionSyntax(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -3600,6 +3738,7 @@ function loweredSourceEnum(
 function directThrowingCallResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize
 ): Option<LoweredEnum> throws String {
@@ -3630,6 +3769,20 @@ function directThrowingCallResult(
         none => return Option<LoweredEnum>.none;
       }
     }
+  }
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+      || resolution.errorType.byteLength == 0
+    ) continue;
+    const resultName = `Result<${resolution.returnType}, ${resolution.errorType}>`;
+    return try intrinsicResultDeclaration(
+      program,
+      importedTypes,
+      resultName
+    );
   }
   return Option<LoweredEnum>.none;
 }
@@ -3902,6 +4055,7 @@ function lowerValueDestination(
         const innerResult = try directThrowingCallResult(
           program,
           importedTypes,
+          evidence,
           tree,
           attempted
         );
@@ -4347,6 +4501,7 @@ function lowerStatement(
             const innerResult = try directThrowingCallResult(
               program,
               importedTypes,
+              evidence,
               tree,
               attempted
             );
@@ -4365,20 +4520,22 @@ function lowerStatement(
             };
             let targetName = "";
             let targetTypeName = "";
+            let targetExpression = Option<usize>.none;
             match (in arena.nodes[index].expression) {
               some(targetSyntax) => match (in targetSyntax.tree) {
                 some(targetTree) => {
                   const targetRoot = targetTree.root;
                   if (
                     targetTree.nodes[targetRoot].kind
-                      != ExpressionKind.identifierExpression
+                      == ExpressionKind.identifierExpression
                   ) {
-                    throw "native assignment try lowering requires a direct binding target";
+                    targetName = targetTree.nodes[targetRoot].value.copyBytes(
+                      0,
+                      targetTree.nodes[targetRoot].value.byteLength
+                    );
+                  } else {
+                    targetName = "target";
                   }
-                  targetName = targetTree.nodes[targetRoot].value.copyBytes(
-                    0,
-                    targetTree.nodes[targetRoot].value.byteLength
-                  );
                   match (matchSubjectTypeName(
                     program,
                     importedTypes,
@@ -4391,6 +4548,15 @@ function lowerStatement(
                     some(name) => targetTypeName = name;
                     none => {}
                   }
+                  const loweredTarget = try lowerExpression(
+                    program,
+                    importedTypes,
+                    evidence,
+                    targetTree,
+                    targetRoot,
+                    inout expressions
+                  );
+                  targetExpression = Option.some(loweredTarget);
                 }
                 none => {}
               }
@@ -4431,7 +4597,7 @@ function lowerStatement(
               name: inner.name.copyBytes(0, inner.name.byteLength),
               type: Option.some(move targetType),
               expression: Option.some(call),
-              secondExpression: Option<usize>.none,
+              secondExpression: targetExpression,
               children: Array<usize>(),
               cleanups: Array<LoweredCleanup>(),
               liveFlag: "",
@@ -4461,6 +4627,7 @@ function lowerStatement(
               const innerResult = try directThrowingCallResult(
                 program,
                 importedTypes,
+                evidence,
                 tree,
                 attempted
               );
@@ -4468,12 +4635,18 @@ function lowerStatement(
                 some(declaration) => declaration;
                 none => throw "native try lowering requires one direct throwing function call yet";
               };
+              let successType = LoweredType({
+                kind: LoweredTypeKind.voidType,
+                name: "",
+              });
               for (const variant of inner.variants) {
-                if (variant.name == "success") {
-                  match (in variant.payload) {
-                    some(_) => throw "native expression-statement try currently requires a void success type";
-                    none => {}
-                  }
+                if (variant.name != "success") continue;
+                match (in variant.payload) {
+                  some(payload) => successType = LoweredType({
+                    kind: payload.kind,
+                    name: payload.name.copyBytes(0, payload.name.byteLength),
+                  });
+                  none => {}
                 }
               }
               const outerResult = try throwingFunctionResult(
@@ -4501,10 +4674,7 @@ function lowerStatement(
                 kind: LoweredStatementKind.tryStatement,
                 mutableBinding: false,
                 name: inner.name.copyBytes(0, inner.name.byteLength),
-                type: Option.some(LoweredType({
-                  kind: LoweredTypeKind.voidType,
-                  name: "",
-                })),
+                type: Option.some(move successType),
                 expression: Option.some(call),
                 secondExpression: Option<usize>.none,
                 children: Array<usize>(),
@@ -4537,6 +4707,7 @@ function lowerStatement(
               const innerResult = try directThrowingCallResult(
                 program,
                 importedTypes,
+                evidence,
                 tree,
                 attempted
               );
@@ -4793,12 +4964,22 @@ function lowerStatement(
               );
               directTryReturn = true;
             } else {
-              loweredValue = try lowerExpression(
+              let expectedTypeName = "";
+              for (const declaration of program.functions) {
+                if (declaration.name == ownerName) {
+                  expectedTypeName = declaration.returnType.name.copyBytes(
+                    0,
+                    declaration.returnType.name.byteLength
+                  );
+                }
+              }
+              loweredValue = try lowerExpressionExpected(
                 program,
                 importedTypes,
                 evidence,
                 tree,
                 root,
+                expectedTypeName,
                 inout expressions
               );
             }
