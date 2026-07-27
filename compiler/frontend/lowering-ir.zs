@@ -198,6 +198,15 @@ function intrinsicOptionName(in payload: LoweredType): String {
   return `__z_Option_${identity}`;
 }
 
+function intrinsicResultName(
+  in successType: LoweredType,
+  in errorType: LoweredType
+): String {
+  const successIdentity = loweredTypeIdentity(successType);
+  const errorIdentity = loweredTypeIdentity(errorType);
+  return `__z_Result_${successIdentity}_${errorIdentity}`;
+}
+
 function intrinsicOptionPayloadName(in name: String): Option<String> {
   const prefix = "__z_Option_";
   if (!stringStartsWith(name, prefix)) return Option<String>.none;
@@ -227,6 +236,14 @@ function lowerTypeName(
         return LoweredType({
           kind: LoweredTypeKind.enumType,
           name: intrinsicOptionName(payload),
+        });
+      }
+      if (generic.base == "Result" && generic.arguments.length == 2) {
+        const successType = try lowerTypeName(program, generic.arguments[0]);
+        const errorType = try lowerTypeName(program, generic.arguments[1]);
+        return LoweredType({
+          kind: LoweredTypeKind.enumType,
+          name: intrinsicResultName(successType, errorType),
         });
       }
     }
@@ -332,6 +349,31 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
       }
       none => {}
     }
+    for (const declaration of program.functions) {
+      match (in declaration.errorType) {
+        some(error) => {
+          const successType = attempt lowerType(program, declaration.returnType);
+          const errorType = attempt lowerType(program, error);
+          match (successType) {
+            success(successValue) => {
+              match (errorType) {
+                success(errorValue) => {
+                  if (
+                    intrinsicResultName(successValue, errorValue) == type.name
+                  ) {
+                    return typeNeedsCleanup(program, successValue)
+                      || typeNeedsCleanup(program, errorValue);
+                  }
+                }
+                failure(_) => {}
+              }
+            }
+            failure(_) => {}
+          }
+        }
+        none => {}
+      }
+    }
   }
   return false;
 }
@@ -367,6 +409,79 @@ function intrinsicOptionDeclaration(
     }
     none => return Option<LoweredEnum>.none;
   }
+}
+
+function intrinsicResultDeclaration(
+  in program: Program,
+  in name: String
+): Option<LoweredEnum> throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Result" || generic.arguments.length != 2) {
+        return Option<LoweredEnum>.none;
+      }
+      const successType = try lowerTypeName(program, generic.arguments[0]);
+      const errorType = try lowerTypeName(program, generic.arguments[1]);
+      let variants = Array<LoweredVariant>();
+      variants.push(LoweredVariant({
+        name: "success",
+        payload: Option.some(LoweredType({
+          kind: successType.kind,
+          name: successType.name.copyBytes(0, successType.name.byteLength),
+        })),
+      }));
+      variants.push(LoweredVariant({
+        name: "failure",
+        payload: Option.some(LoweredType({
+          kind: errorType.kind,
+          name: errorType.name.copyBytes(0, errorType.name.byteLength),
+        })),
+      }));
+      return Option.some(LoweredEnum({
+        name: intrinsicResultName(successType, errorType),
+        variants,
+        payloadBearing: true,
+        needsDeinit: typeNeedsCleanup(program, successType)
+          || typeNeedsCleanup(program, errorType),
+      }));
+    }
+    none => return Option<LoweredEnum>.none;
+  }
+}
+
+function intrinsicEnumDeclaration(
+  in program: Program,
+  in name: String
+): Option<LoweredEnum> throws String {
+  const option = try intrinsicOptionDeclaration(program, name);
+  match (option) {
+    some(declaration) => return Option.some(move declaration);
+    none => {}
+  }
+  return try intrinsicResultDeclaration(program, name);
+}
+
+function throwingFunctionResult(
+  in program: Program,
+  in ownerName: String
+): Option<LoweredEnum> throws String {
+  for (const declaration of program.functions) {
+    if (declaration.name == ownerName) {
+      match (in declaration.errorType) {
+        some(errorType) => {
+          const returnName = declaration.returnType.name.copyBytes(
+            0,
+            declaration.returnType.name.byteLength
+          );
+          const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
+          const resultName = `Result<${returnName}, ${errorName}>`;
+          return try intrinsicResultDeclaration(program, resultName);
+        }
+        none => return Option<LoweredEnum>.none;
+      }
+    }
+  }
+  return Option<LoweredEnum>.none;
 }
 
 function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
@@ -480,6 +595,7 @@ function ownerLiveFlag(in name: String): String {
 function statementFallsThrough(in arena: StatementArena, index: usize): boolean {
   if (
     arena.nodes[index].kind == StatementKind.returnStatement
+    || arena.nodes[index].kind == StatementKind.throwStatement
     || arena.nodes[index].kind == StatementKind.breakStatement
     || arena.nodes[index].kind == StatementKind.continueStatement
   ) return false;
@@ -938,6 +1054,21 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (
+    tree.nodes[index].kind == ExpressionKind.attemptExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const attempted = tree.nodes[index].children[0];
+    return try lowerExpression(
+      program,
+      tree,
+      attempted,
+      inout output
+    );
+  }
+  if (tree.nodes[index].kind == ExpressionKind.tryExpression) {
+    throw "native lowering does not support try propagation yet";
+  }
   if (tree.nodes[index].kind == ExpressionKind.unaryExpression) {
     if (tree.nodes[index].children.length != 1) {
       throw "native lowering received a malformed unary expression";
@@ -1276,6 +1407,38 @@ function matchSubjectTypeName(
 ): Option<String> {
   let subject = index;
   if (
+    tree.nodes[subject].kind == ExpressionKind.attemptExpression
+    && tree.nodes[subject].children.length == 1
+  ) {
+    const attempted = tree.nodes[subject].children[0];
+    if (
+      tree.nodes[attempted].kind == ExpressionKind.callExpression
+      && tree.nodes[attempted].children.length > 0
+    ) {
+      const callee = tree.nodes[attempted].children[0];
+      if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+        for (const declaration of program.functions) {
+          if (declaration.name == tree.nodes[callee].value) {
+            match (in declaration.errorType) {
+              some(errorType) => {
+                const returnName = declaration.returnType.name.copyBytes(
+                  0,
+                  declaration.returnType.name.byteLength
+                );
+                const errorName = errorType.name.copyBytes(
+                  0,
+                  errorType.name.byteLength
+                );
+                return Option.some(`Result<${returnName}, ${errorName}>`);
+              }
+              none => {}
+            }
+          }
+        }
+      }
+    }
+  }
+  if (
     tree.nodes[subject].kind == ExpressionKind.callExpression
     && tree.nodes[subject].children.length > 0
   ) subject = tree.nodes[subject].children[0];
@@ -1352,7 +1515,7 @@ function matchEnumDeclaration(
   const subjectInput = tree.nodes[root].children[0];
   match (matchSubjectTypeName(program, arena, ownerName, tree, subjectInput)) {
     some(name) => {
-      const intrinsic = try intrinsicOptionDeclaration(program, name);
+      const intrinsic = try intrinsicEnumDeclaration(program, name);
       match (intrinsic) {
         some(declaration) => return declaration;
         none => {}
@@ -1780,6 +1943,8 @@ function lowerStatement(
     kind = LoweredStatementKind.assignmentStatement;
   } else if (arena.nodes[index].kind == StatementKind.returnStatement) {
     kind = LoweredStatementKind.returnStatement;
+  } else if (arena.nodes[index].kind == StatementKind.throwStatement) {
+    kind = LoweredStatementKind.returnStatement;
   } else if (arena.nodes[index].kind == StatementKind.expressionStatement) {
     kind = LoweredStatementKind.expressionStatement;
   } else if (arena.nodes[index].kind == StatementKind.blockStatement) {
@@ -1811,8 +1976,36 @@ function lowerStatement(
   let expression = Option<usize>.none;
   match (in arena.nodes[index].expression) {
     some(source) => {
-      const loweredExpression = try lowerExpressionSyntax(program, source, inout expressions);
-      expression = Option.some(loweredExpression);
+      const loweredValue = try lowerExpressionSyntax(program, source, inout expressions);
+      if (
+        arena.nodes[index].kind == StatementKind.returnStatement
+        || arena.nodes[index].kind == StatementKind.throwStatement
+      ) {
+        const result = try throwingFunctionResult(program, ownerName);
+        match (in result) {
+          some(declaration) => {
+            let children = Array<usize>();
+            children.push(loweredValue);
+            let labels = Array<String>();
+            if (arena.nodes[index].kind == StatementKind.throwStatement) {
+              labels.push("failure");
+            } else {
+              labels.push("success");
+            }
+            const wrapped = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.enumPayloadValue,
+              declaration.name,
+              children,
+              labels
+            );
+            expression = Option.some(wrapped);
+          }
+          none => expression = Option.some(loweredValue);
+        }
+      } else {
+        expression = Option.some(loweredValue);
+      }
     }
     none => {}
   }
@@ -1936,7 +2129,15 @@ function lowerFunction(
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
   attachMoveLiveFlags(inout expressions, liveFlags);
-  const returnType = try lowerType(program, declaration.returnType);
+  let returnType = try lowerType(program, declaration.returnType);
+  const resultType = try throwingFunctionResult(program, declaration.name);
+  match (in resultType) {
+    some(result) => returnType = LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: result.name.copyBytes(0, result.name.byteLength),
+    });
+    none => {}
+  }
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     parameters,
@@ -2020,28 +2221,14 @@ function collectIntrinsicTypeName(
       for (const argument of generic.arguments) {
         try collectIntrinsicTypeName(program, argument, inout enums);
       }
-      if (generic.base == "Option" && generic.arguments.length == 1) {
-        const payload = try lowerTypeName(program, generic.arguments[0]);
-        const declarationName = intrinsicOptionName(payload);
-        if (containsLoweredEnum(enums, declarationName)) return;
-        let variants = Array<LoweredVariant>();
-        variants.push(LoweredVariant({
-          name: "some",
-          payload: Option.some(LoweredType({
-            kind: payload.kind,
-            name: payload.name.copyBytes(0, payload.name.byteLength),
-          })),
-        }));
-        variants.push(LoweredVariant({
-          name: "none",
-          payload: Option<LoweredType>.none,
-        }));
-        enums.push(LoweredEnum({
-          name: move declarationName,
-          variants,
-          payloadBearing: true,
-          needsDeinit: typeNeedsCleanup(program, payload),
-        }));
+      const intrinsic = try intrinsicEnumDeclaration(program, name);
+      match (intrinsic) {
+        some(declaration) => {
+          if (!containsLoweredEnum(enums, declaration.name)) {
+            enums.push(move declaration);
+          }
+        }
+        none => {}
       }
     }
     none => {}
@@ -2116,7 +2303,16 @@ function collectIntrinsicEnums(in program: Program): Array<LoweredEnum> throws S
     }
     try collectIntrinsicTypeName(program, declaration.returnType.name, inout enums);
     match (in declaration.errorType) {
-      some(type) => try collectIntrinsicTypeName(program, type.name, inout enums);
+      some(type) => {
+        try collectIntrinsicTypeName(program, type.name, inout enums);
+        const returnName = declaration.returnType.name.copyBytes(
+          0,
+          declaration.returnType.name.byteLength
+        );
+        const errorName = type.name.copyBytes(0, type.name.byteLength);
+        const resultName = `Result<${returnName}, ${errorName}>`;
+        try collectIntrinsicTypeName(program, resultName, inout enums);
+      }
       none => {}
     }
     try collectArenaIntrinsicEnums(program, declaration.body, inout enums);

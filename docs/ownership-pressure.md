@@ -700,8 +700,17 @@ hands a consuming match's active payload to one arm-local owner. Explicit
 constructors, `none`, parameters, returns, typed locals, and direct-call match
 subjects all compile and execute unchanged. This is stronger evidence than a
 parallel built-in emitter path: Option representation and ownership are ordinary
-lowered enum operations. Contextually inferred constructors and `Result<T, E>`
-remain the next intrinsic pressure points.
+lowered enum operations.
+
+`Result<T, E>` now proves the same point for Z's error surface without exposing
+constructor ceremony. A throwing function's ordinary `return` lowers to the
+`success` variant, `throw` lowers to `failure`, and `attempt` leaves the native
+tagged result available to `match`. Cleanup-bearing values on either side obey
+the active-variant rule: an uninspected result destroys its stored payload,
+while a consuming match transfers that payload into one arm-local owner and
+cleans it after the arm value is evaluated. Contextually inferred Option
+constructors and propagation through `try` remain the next intrinsic pressure
+points.
 
 What the compiler proves:
 

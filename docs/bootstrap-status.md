@@ -720,8 +720,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Cleanup-bearing payloads synthesize an active-variant deinitializer and
    transfer into match bindings exactly once. The `Option<i32>` path adds no
    allocation, while `Option<Resource>` inherits the resource's deterministic
-   cleanup. Inferred Option constructors and match-result bindings plus native
-   `Result<T, E>` representation remain the next enum tiers.
+   cleanup. Compiler-provided `Result<T, E>` now shares that representation:
+   `return` constructs `success`, `throw` constructs `failure`, and `attempt`
+   preserves the tagged result for an exhaustive match. Both cleanup-free and
+   cleanup-bearing success/error payloads are executable; an unconsumed result
+   destroys only its active payload, while a consuming match transfers that
+   payload to exactly one arm owner. Inferred Option constructors,
+   match-result bindings, and native `try` propagation remain the next tiers.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

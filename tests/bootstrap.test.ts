@@ -8332,6 +8332,51 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const optionExecution = spawnSync(optionExecutable, [], { encoding: "utf8" });
   assert.equal(optionExecution.status, 42, optionExecution.stderr);
 
+  const resultInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-result.zs",
+  );
+  const resultEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", resultInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(resultEmission.status, 0, resultEmission.stderr);
+  assert.match(resultEmission.stdout, /typedef enum Z___z_Result_i32_ProblemTag/);
+  assert.match(
+    resultEmission.stdout,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_failure, \.payload\.failure = \(Z_Problem\)\{\.code = 7\}\};/,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /return \(Z___z_Result_i32_Problem\)\{\.tag = Z___z_Result_i32_ProblemTag_success, \.payload\.success = 42\};/,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /Z___z_Result_i32_Problem result = load\(shouldFail\);.*?case Z___z_Result_i32_ProblemTag_success:.*?case Z___z_Result_i32_ProblemTag_failure:/s,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /static void Z___z_Result_Resource_Problem_deinit\(Z___z_Result_Resource_Problem \*self\) \{.*?case Z___z_Result_Resource_ProblemTag_success:.*?Z_Resource_deinit\(&self->payload\.success\);.*?case Z___z_Result_Resource_ProblemTag_failure:.*?Z_Problem_deinit\(&self->payload\.failure\);/s,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /inspectResource\(bool shouldFail\).*?Z_Resource resource = _z_stage1_match_\d+\.payload\.success;.*?Z_Resource_deinit\(&resource\);.*?Z_Problem error = _z_stage1_match_\d+\.payload\.failure;.*?Z_Problem_deinit\(&error\);/s,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /discardResult\(void\).*?Z___z_Result_Resource_Problem result = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
+  );
+  const resultExecutable = resolve(directory, "result");
+  const resultCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", resultExecutable],
+    { encoding: "utf8", input: resultEmission.stdout },
+  );
+  assert.equal(resultCompilation.status, 0, resultCompilation.stderr);
+  const resultExecution = spawnSync(resultExecutable, [], { encoding: "utf8" });
+  assert.equal(resultExecution.status, 42, resultExecution.stderr);
+
   const ownedEnumInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-owned-enum.zs",
