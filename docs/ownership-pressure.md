@@ -973,9 +973,54 @@ the printer.
 
 With those gaps closed, `parser-library.zs` emits a roughly 2.3 MB translation
 unit that compiles and links as strict C11 under Clang
-`-Wall -Wextra -Werror`. The linked program still has a bootstrap no-op `main`;
-the next pressure point is a stable native protocol entry point that exercises
-parse, resolve, and emit without the TypeScript driver.
+`-Wall -Wextra -Werror`.
+
+## Executing the self-emitted frontend
+
+The next checkpoint turns that translation unit into a native library and calls
+its representation-neutral String protocol directly. Stage 0 still discovers
+the source graph and builds the seed library, but the seed emits the unchanged
+31-module frontend; Clang then builds that emitted C into the library used for
+subsequent `self-host-parse` and `self-host-emit` requests. The latter now
+executes native Z parsing, resolution, semantic analysis, ownership-aware
+lowering, and C emission before the TypeScript driver receives the final bytes.
+
+Executing the compiler rather than merely compiling it exposed ownership
+carriers that the smaller fixture corpus had not composed:
+
+- direct `return`, `throw`, `select`, and `yield` of a cleanup-bearing local
+  transfer the value rather than shallow-copying it before cleanup;
+- contextual and ordinary enum payload construction transfer a direct owned
+  identifier, including `Option.some(value)`;
+- consuming match payloads can move into nested enum payloads or mutable
+  storage without their arm cleanup destroying the transferred value;
+- owned-by-value ordinary function arguments now lower through the same move
+  operation that cleanup analysis already assumed;
+- local and imported struct construction transfer direct owned fields, so a
+  `ModuleGraph` can carry its module and dependency arrays across module
+  boundaries;
+- a local initialized by a value-producing match is not destroyed on an
+  initializer arm that returns before the local exists.
+
+The compiler source also made payload-to-storage intent explicit with
+`move` where a consuming match transfers an owned String or aggregate. This
+keeps the self-hosting subset honest: implicit expression-block transfer and
+owned call/aggregate boundaries remain ergonomic, while ordinary storage
+replacement exposes the ownership event.
+
+The existing native emitter matrix now runs unchanged through the self-emitted
+library, compiles each result under strict C11, executes the successful
+programs, and preserves the structured diagnostic for an invalid program. A
+second integration test asks the self-emitted compiler to emit the complete
+frontend again, strict-compiles that result, links it, and runs its bootstrap
+entry point.
+
+The remaining boundary is intentionally narrower: the structural resolver FFI
+exports typed aggregate evidence whose C layout currently depends on stage-0
+knowledge. It stays on the seed library until generated ABI metadata or a
+representation-neutral query protocol replaces those handwritten casts. The
+Bun driver, filesystem graph discovery, foreign importers, and ordinary
+`check`/`emit`/`run` path also remain stage 0.
 
 ## Not tested yet
 

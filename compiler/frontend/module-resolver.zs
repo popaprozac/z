@@ -394,7 +394,7 @@ function inferContextualObjectExpressionNode(
     fields: Array<String>(),
   });
   match (aggregateConstructionShape(modules, moduleIndex, expectedType)) {
-    some(shape) => construction = shape;
+    some(shape) => construction = move shape;
     none => return "";
   }
   let genericParameters = Array<String>();
@@ -621,7 +621,7 @@ function inferMatchExpressionNodeType(
   let shape = NativeMatchShape({ name: "", variants: Array<NativeMatchVariant>() });
   match (shapeOption) {
     some(known) => {
-      shape = known;
+      shape = move known;
       shapeKnown = true;
     }
     none => {}

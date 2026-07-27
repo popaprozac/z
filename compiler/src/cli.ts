@@ -259,7 +259,7 @@ function verifyStage1Resolver(inputPath: string, timings: boolean): void {
 function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
-  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  const boundary = prepareSelfHostedStage1StringLibrary(projectRoot, bridgePath);
   const executionStarted = performance.now();
   const nativeStream = parseWithNativeFrontendLibrary(boundary.libraryPath, inputPaths);
   const executionMilliseconds = performance.now() - executionStarted;
@@ -327,7 +327,9 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
     console.log(`${inputPath}: stage-1 parser matches ${stage1.length} declarations, ${stage1Program.importShapes.length} imports, ${stage1Program.functionSignatures.length} function signatures, ${stage1Program.functionBodies.length} function bodies, and ${stage1Program.typeShapes.length} type shapes`);
   }
   if (timings) {
-    const cacheState = boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
+    const cacheState = boundary.cacheHit
+      ? "cache hit"
+      : "cache miss; seed compile + self-emission + native build included";
     console.log(`stage-1 parser timing (${inputPaths.length} ${inputPaths.length === 1 ? "file" : "files"}, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  native in-process batch (host file I/O + FFI + lex + parse + encode): ${formatMilliseconds(executionMilliseconds)}`);
@@ -348,7 +350,7 @@ function emitWithStage1(inputPath: string): void {
   }));
   const batch = encodeStage1ModuleBatch(sources);
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
-  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  const boundary = prepareSelfHostedStage1StringLibrary(projectRoot, bridgePath);
   process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch));
 }
 
@@ -1384,6 +1386,76 @@ function prepareStage1ParserLibrary(projectRoot: string, bridgePath: string): Pr
   return { libraryPath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
 }
 
+function prepareSelfHostedStage1StringLibrary(
+  projectRoot: string,
+  bridgePath: string,
+): PreparedStage1ParserLibrary {
+  const started = performance.now();
+  const fingerprint = stage1BridgeFingerprint(projectRoot);
+  const outputStem = `stage1-self-hosted-strings-${fingerprint.slice(0, 20)}`;
+  const libraryPath = join(projectRoot, ".z-cache", `${outputStem}${nativeLibraryExtension()}`);
+  if (existsSync(libraryPath)) {
+    return { libraryPath, cacheHit: true, prepareMilliseconds: performance.now() - started };
+  }
+
+  const bootstrap = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  const bridgeSource = readFileSync(bridgePath, "utf8");
+  const bridgeProgram = parse(lex(bridgeSource, bridgePath), bridgePath);
+  const sourceBatch = loadSourceModuleBatch(bridgeSource, bridgeProgram, bridgePath);
+  const batch = encodeStage1ModuleBatch(sourceBatch.modules.map((module) => ({
+    path: module.fileName,
+    source: module.source,
+  })));
+  const emitted = emitWithNativeFrontendLibrary(
+    bootstrap.libraryPath,
+    bridgePath,
+    batch,
+  );
+  const builtPath = buildSelfHostedNativeLibrary(
+    bridgePath,
+    emitted,
+    stage1StringLibraryWrapper(),
+    outputStem,
+  );
+  return { libraryPath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
+}
+
+function buildSelfHostedNativeLibrary(
+  inputPath: string,
+  source: string,
+  wrapper: string,
+  outputStem: string,
+): string {
+  const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
+  const cacheDirectory = join(projectRoot, ".z-cache");
+  mkdirSync(cacheDirectory, { recursive: true });
+  const sourcePath = join(cacheDirectory, `${outputStem}.c`);
+  const libraryPath = join(cacheDirectory, `${outputStem}${nativeLibraryExtension()}`);
+  writeFileSync(sourcePath, `${source}\n${wrapper}`);
+
+  const compilerArguments = [
+    "-std=c11",
+    ...(process.platform === "darwin"
+      ? ["-dynamiclib"]
+      : process.platform === "win32"
+        ? ["-shared"]
+        : ["-shared", "-fPIC"]),
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-g",
+    "-I", dirname(inputPath),
+    sourcePath,
+    "-o",
+    libraryPath,
+  ];
+  const compilation = process.platform === "darwin"
+    ? spawnSync("xcrun", ["clang", ...compilerArguments], { encoding: "utf8" })
+    : spawnSync("clang", compilerArguments, { encoding: "utf8" });
+  if (compilation.status !== 0) throw new Error(compilation.stderr || "Clang failed");
+  return libraryPath;
+}
+
 function buildNativeLibrary(inputPath: string, artifact: NativeArtifact, outputStem: string): string {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const cacheDirectory = join(projectRoot, ".z-cache");
@@ -1421,6 +1493,49 @@ function nativeLibraryExtension(): string {
   if (process.platform === "darwin") return ".dylib";
   if (process.platform === "win32") return ".dll";
   return ".so";
+}
+
+function stage1StringLibraryWrapper(): string {
+  return `#if defined(_WIN32)
+#define Z_STAGE1_EXPORT __declspec(dllexport)
+#else
+#define Z_STAGE1_EXPORT __attribute__((visibility("default")))
+#endif
+
+static void *z_stage1_copy_string(Z_String result) {
+  char *copy = (char *)malloc(result.length + 1);
+  if (copy == NULL) abort();
+  if (result.length > 0) memcpy(copy, result.data, result.length);
+  copy[result.length] = '\\0';
+  if (result.capacity > 0) free((void *)result.data);
+  return copy;
+}
+
+Z_STAGE1_EXPORT void *z_stage1_parse(
+  const uint8_t *path_data,
+  uintptr_t path_length,
+  const uint8_t *source_data,
+  uintptr_t source_length
+) {
+  Z_String path = { (const char *)path_data, path_length, 0 };
+  Z_String source = { (const char *)source_data, source_length, 0 };
+  return z_stage1_copy_string(stage1Parse(&path, &source));
+}
+
+Z_STAGE1_EXPORT void *z_stage1_emit(
+  const uint8_t *entry_data,
+  uintptr_t entry_length,
+  const uint8_t *batch_data,
+  uintptr_t batch_length
+) {
+  Z_String entry = { (const char *)entry_data, entry_length, 0 };
+  Z_String batch = { (const char *)batch_data, batch_length, 0 };
+  return z_stage1_copy_string(stage1Emit(&entry, &batch));
+}
+
+Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {
+  free(pointer);
+}`;
 }
 
 function stage1ParserLibraryWrapper(): string {

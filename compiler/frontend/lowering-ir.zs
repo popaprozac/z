@@ -13,6 +13,7 @@ import {
   FunctionDeclaration,
   ParameterMode,
   Program,
+  Statement,
   StatementArena,
   StatementKind,
   TypeReference,
@@ -1191,6 +1192,30 @@ function treeMovesName(
     const callee = tree.nodes[index].children[0];
     if (
       tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].children.length == 1
+      && tree.nodes[index].children.length == 2
+    ) {
+      const enumInput = tree.nodes[callee].children[0];
+      const payload = tree.nodes[index].children[1];
+      if (
+        tree.nodes[enumInput].kind == ExpressionKind.identifierExpression
+        && tree.nodes[payload].kind == ExpressionKind.identifierExpression
+        && tree.nodes[payload].value == name
+      ) {
+        if (
+          tree.nodes[enumInput].value == "Option"
+          || tree.nodes[enumInput].value == "Result"
+        ) return true;
+        for (const declaration of program.enums) {
+          if (declaration.name != tree.nodes[enumInput].value) continue;
+          for (const variant of declaration.variants) {
+            if (variant.name == tree.nodes[callee].value) return true;
+          }
+        }
+      }
+    }
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
       && tree.nodes[callee].value == "finish"
       && tree.nodes[callee].children.length == 1
     ) {
@@ -1212,20 +1237,15 @@ function treeMovesName(
       ) return true;
     }
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
-      for (const aggregate of program.aggregates) {
-        if (
-          aggregate.name != tree.nodes[callee].value
-          || tree.nodes[index].children.length != 2
-        ) continue;
+      if (tree.nodes[index].children.length == 2) {
         const initializer = tree.nodes[index].children[1];
-        if (tree.nodes[initializer].kind != ExpressionKind.objectExpression) {
-          continue;
-        }
-        for (const field of tree.nodes[initializer].children) {
-          if (
-            tree.nodes[field].kind == ExpressionKind.identifierExpression
-            && tree.nodes[field].value == name
-          ) return true;
+        if (tree.nodes[initializer].kind == ExpressionKind.objectExpression) {
+          for (const field of tree.nodes[initializer].children) {
+            if (
+              tree.nodes[field].kind == ExpressionKind.identifierExpression
+              && tree.nodes[field].value == name
+            ) return true;
+          }
         }
       }
       for (const declaration of program.functions) {
@@ -1284,17 +1304,41 @@ function arenaMovesName(
   in name: String
 ): boolean {
   for (const statement of arena.nodes) {
-    match (in statement.expression) {
-      some(expression) => {
-        if (syntaxMovesName(program, expression, name)) return true;
-      }
-      none => {}
+    if (statementMovesName(program, arena, statement, name)) return true;
+  }
+  return false;
+}
+
+function statementMovesName(
+  in program: Program,
+  in arena: StatementArena,
+  in statement: Statement,
+  in name: String
+): boolean {
+  match (in statement.expression) {
+    some(expression) => {
+      if (
+        (
+          statement.kind == StatementKind.returnStatement
+          || statement.kind == StatementKind.throwStatement
+          || statement.kind == StatementKind.selectStatement
+          || statement.kind == StatementKind.yieldStatement
+        )
+        && syntaxIsIdentifier(expression, name)
+      ) return true;
+      if (syntaxMovesName(program, expression, name)) return true;
     }
-    match (in statement.secondExpression) {
-      some(expression) => {
-        if (syntaxMovesName(program, expression, name)) return true;
-      }
-      none => {}
+    none => {}
+  }
+  match (in statement.secondExpression) {
+    some(expression) => {
+      if (syntaxMovesName(program, expression, name)) return true;
+    }
+    none => {}
+  }
+  for (const child of statement.children) {
+    if (statementMovesName(program, arena, arena.nodes[child], name)) {
+      return true;
     }
   }
   return false;
@@ -1452,6 +1496,12 @@ function planCleanupStatement(
       == LoweredStatementKind.matchStatement
   ) {
     const loweredMatch = statements[loweredIndex].children[0];
+    let initializerLive = Array<LoweredCleanup>();
+    for (const cleanup of live) {
+      if (cleanup.name != statements[loweredIndex].name) {
+        initializerLive.push(copyCleanup(cleanup));
+      }
+    }
     try planCleanupStatement(
       program,
       importedTypes,
@@ -1459,7 +1509,7 @@ function planCleanupStatement(
       ownerName,
       sourceIndex,
       loweredMatch,
-      live,
+      initializerLive,
       inout statements,
       inout liveFlags,
       insideLoop,
@@ -1826,6 +1876,27 @@ function pushExpression(
     labels,
   }));
   return index;
+}
+
+function wrapImplicitOwnedTransfer(
+  in tree: ExpressionTree,
+  input: usize,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize {
+  if (
+    tree.nodes[input].kind != ExpressionKind.identifierExpression
+    || output[value].kind == LoweredExpressionKind.moveValue
+  ) return value;
+  let children = Array<usize>();
+  children.push(value);
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.moveValue,
+    "",
+    move children,
+    Array<String>()
+  );
 }
 
 function resolvedCallTarget(
@@ -2492,7 +2563,7 @@ function lowerExpression(
       children.push(child);
       let typeName = "";
       match (resolvedExpressionTypeName(evidence, tree, childInput)) {
-        some(resolved) => typeName = resolved;
+        some(resolved) => typeName = move resolved;
         none => {
           if (
             tree.nodes[childInput].kind == ExpressionKind.stringExpression
@@ -2514,7 +2585,7 @@ function lowerExpression(
           importedTypes,
           tree.nodes[childInput].value
         )) {
-          some(resolved) => typeName = resolved;
+          some(resolved) => typeName = move resolved;
           none => {}
         }
       }
@@ -3199,12 +3270,18 @@ function lowerExpression(
                       throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
                     }
                     const payloadInput = tree.nodes[index].children[1];
-                    const payload = try lowerExpression(
+                    let payload = try lowerExpression(
                       program,
                       importedTypes,
                       evidence,
                       tree,
                       payloadInput,
+                      inout output
+                    );
+                    payload = wrapImplicitOwnedTransfer(
+                      tree,
+                      payloadInput,
+                      payload,
                       inout output
                     );
                     let children = Array<usize>();
@@ -3236,12 +3313,18 @@ function lowerExpression(
                       throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
                     }
                     const payloadInput = tree.nodes[index].children[1];
-                    const payload = try lowerExpression(
+                    let payload = try lowerExpression(
                       program,
                       importedTypes,
                       evidence,
                       tree,
                       payloadInput,
+                      inout output
+                    );
+                    payload = wrapImplicitOwnedTransfer(
+                      tree,
+                      payloadInput,
+                      payload,
                       inout output
                     );
                     let children = Array<usize>();
@@ -3281,12 +3364,18 @@ function lowerExpression(
                     throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
                   }
                   const payloadInput = tree.nodes[index].children[1];
-                  const payload = try lowerExpression(
+                  let payload = try lowerExpression(
                     program,
                     importedTypes,
                     evidence,
                     tree,
                     payloadInput,
+                    inout output
+                  );
+                  payload = wrapImplicitOwnedTransfer(
+                    tree,
+                    payloadInput,
+                    payload,
                     inout output
                   );
                   let children = Array<usize>();
@@ -3318,7 +3407,7 @@ function lowerExpression(
         importedTypes,
         tree.nodes[calleeInput].value
       )) {
-        some(name) => constructionName = name;
+        some(name) => constructionName = move name;
         none => match (structIndex(program, tree.nodes[calleeInput].value)) {
           some(_) => constructionName = tree.nodes[calleeInput].value.copyBytes(
             0,
@@ -3354,7 +3443,7 @@ function lowerExpression(
               constructionName,
               fieldName
             )) {
-              some(name) => expectedTypeName = name;
+              some(name) => expectedTypeName = move name;
               none => {}
             }
             let value: usize = 0;
@@ -3378,6 +3467,12 @@ function lowerExpression(
                 inout output
               );
             }
+            value = wrapImplicitOwnedTransfer(
+              tree,
+              valueInput,
+              value,
+              inout output
+            );
             children.push(value);
             labels.push(fieldName.copyBytes(
               0,
@@ -3454,6 +3549,17 @@ function lowerExpression(
         argumentInput,
         inout output
       );
+      if (
+        parameterModes.length >= argument
+        && parameterModes[argument - 1] == "value"
+      ) {
+        value = wrapImplicitOwnedTransfer(
+          tree,
+          argumentInput,
+          value,
+          inout output
+        );
+      }
       if (
         parameterModes.length >= argument
         && (
@@ -3758,12 +3864,18 @@ function lowerExpressionExpected(
               && tree.nodes[callee].value == "some"
             ) {
               const payloadIndex = tree.nodes[index].children[1];
-              const payload = try lowerExpression(
+              let payload = try lowerExpression(
                 program,
                 importedTypes,
                 evidence,
                 tree,
                 payloadIndex,
+                inout output
+              );
+              payload = wrapImplicitOwnedTransfer(
+                tree,
+                payloadIndex,
+                payload,
                 inout output
               );
               let children = Array<usize>();
@@ -4278,13 +4390,25 @@ function lowerValueDestination(
     }
     none => {}
   }
-  const value = try lowerExpressionSyntax(
+  let value = try lowerExpressionSyntax(
     program,
     importedTypes,
     evidence,
     expression,
     inout expressions
   );
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      value = wrapImplicitOwnedTransfer(
+        tree,
+        root,
+        value,
+        inout expressions
+      );
+    }
+    none => {}
+  }
   const loweredBody = statements.length;
   if (returnValue) {
     let returnedValue = value;
@@ -4538,8 +4662,20 @@ function lowerMatchTree(
         emittedPayloadBinding.byteLength
       ));
     }
-    let children = Array<usize>();
     let payloadTransfersOut = false;
+    if (sourcePayloadBinding.byteLength > 0) {
+      for (const bodyIndex of tree.nodes[arm].statements) {
+        if (
+          statementMovesName(
+            program,
+            arena,
+            arena.nodes[bodyIndex],
+            sourcePayloadBinding
+          )
+        ) payloadTransfersOut = true;
+      }
+    }
+    let children = Array<usize>();
     if (returnValueArms || valueBinding.byteLength > 0) {
       if (tree.nodes[arm].statements.length != 1) {
         throw "native value-match lowering requires one value-producing arm body";
@@ -4731,7 +4867,7 @@ function lowerStatement(
                     targetTree,
                     targetRoot
                   )) {
-                    some(name) => targetTypeName = name;
+                    some(name) => targetTypeName = move name;
                     none => {}
                   }
                   const loweredTarget = try lowerExpression(
@@ -5169,6 +5305,21 @@ function lowerStatement(
                 expectedTypeName,
                 inout expressions
               );
+              if (
+                tree.nodes[root].kind == ExpressionKind.identifierExpression
+                && expressions[loweredValue].kind
+                  != LoweredExpressionKind.moveValue
+              ) {
+                let moveChildren = Array<usize>();
+                moveChildren.push(loweredValue);
+                loweredValue = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.moveValue,
+                  "",
+                  moveChildren,
+                  Array<String>()
+                );
+              }
             }
           }
           none => throw "native lowering cannot lower an opaque expression";
@@ -5183,6 +5334,24 @@ function lowerStatement(
         );
         if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
           markMutableStorage(inout expressions, loweredValue);
+        }
+        if (
+          arena.nodes[index].kind == StatementKind.throwStatement
+          || arena.nodes[index].kind == StatementKind.selectStatement
+          || arena.nodes[index].kind == StatementKind.yieldStatement
+        ) {
+          match (in source.tree) {
+            some(tree) => {
+              const root = tree.root;
+              loweredValue = wrapImplicitOwnedTransfer(
+                tree,
+                root,
+                loweredValue,
+                inout expressions
+              );
+            }
+            none => {}
+          }
         }
       }
       if (
@@ -5276,7 +5445,7 @@ function lowerStatement(
                     targetTree,
                     targetRoot
                   )) {
-                    some(name) => expectedTypeName = name;
+                    some(name) => expectedTypeName = move name;
                     none => {}
                   }
                 }
@@ -5343,7 +5512,7 @@ function lowerStatement(
             tree,
             root
           )) {
-            some(resolved) => typeName = resolved;
+            some(resolved) => typeName = move resolved;
             none => {}
           }
           if (
@@ -5355,7 +5524,7 @@ function lowerStatement(
               importedTypes,
               tree.nodes[root].value
             )) {
-              some(resolved) => typeName = resolved;
+              some(resolved) => typeName = move resolved;
               none => {}
             }
           }
