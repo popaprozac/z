@@ -647,20 +647,27 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer
    no longer imports parser nodes or interprets operator strings. Deterministic
-   cleanup adds scope/branch/return exit plans, so the next slice extends this
-   IR before ownership-bearing structs.
+   cleanup adds scope/branch/return exit plans, so ownership-bearing structs
+   extend this IR rather than teaching the C printer source semantics.
    The first such extension is implemented for a deliberately linear tier:
    a data-only struct may declare an empty custom `deinit`, an owned value
    parameter receives an explicit lowered cleanup plan, and return emission
    saves the result before destroying the parameter. The executable regression
    places `Resource_deinit(&resource)` between result evaluation and the C
-   return. Moves, owned locals, non-empty deinitializers, and branch/loop/error
-   cleanup merging remain future slices.
+   return.
    A linear parameter-transfer follow-up lowers `move resource` explicitly.
    The relay function emits the value handoff without deinitializing it, while
    the final owner retains the return-exit cleanup. Any cleanup-bearing
    parameter combined with branch/loop control is rejected in this tier,
    preventing a path-insensitive transfer from suppressing cleanup elsewhere.
+   Top-level linear owned locals now enter that same cleanup plan after
+   initialization. Live locals clean in reverse order after return-result
+   evaluation, while `move local` transfers cleanup to the callee. Destructible
+   value structs deliberately use writable C storage even when their Z binding
+   is `const`: Z prevents rebinding semantically, while physical mutability lets
+   `deinit` receive the value's address. Nested owner scopes, replacement
+   assignment, non-empty deinitializers, and branch/loop/error cleanup merging
+   remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

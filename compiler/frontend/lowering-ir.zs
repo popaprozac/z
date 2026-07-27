@@ -242,6 +242,57 @@ function attachExitCleanups(
   }
 }
 
+function appendLinearLocalCleanups(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  inout statements: Array<LoweredStatement>,
+  in roots: Array<usize>,
+  inout fallthroughCleanups: Array<LoweredCleanup>
+): void throws String {
+  let live = Array<LoweredCleanup>();
+  let rootIndex: usize = 0;
+  while (rootIndex < declaration.body.roots.length) {
+    const sourceIndex = declaration.body.roots[rootIndex];
+    const loweredIndex = roots[rootIndex];
+    if (declaration.body.nodes[sourceIndex].kind == StatementKind.variableStatement) {
+      match (in declaration.body.nodes[sourceIndex].typeAnnotation) {
+        some(annotation) => {
+          const type = try lowerType(program, annotation);
+          if (typeNeedsCleanup(program, type)) {
+            if (functionHasControlFlow(declaration)) {
+              throw `native cleanup lowering does not support branch or loop flow in ${declaration.name} yet`;
+            }
+            if (!functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)) {
+              live.push(LoweredCleanup({
+                name: declaration.body.nodes[sourceIndex].name.copyBytes(
+                  0,
+                  declaration.body.nodes[sourceIndex].name.byteLength
+                ),
+                type: move type,
+              }));
+            }
+          }
+        }
+        none => {}
+      }
+    } else if (
+      declaration.body.nodes[sourceIndex].kind == StatementKind.assignmentStatement
+      && live.length > 0
+    ) {
+      throw `native cleanup lowering does not support owned replacement in ${declaration.name} yet`;
+    }
+    if (declaration.body.nodes[sourceIndex].kind == StatementKind.returnStatement) {
+      for (const cleanup of live) {
+        statements[loweredIndex].cleanups.push(copyCleanup(cleanup));
+      }
+    }
+    rootIndex = rootIndex + 1;
+  }
+  for (const cleanup of live) {
+    fallthroughCleanups.push(copyCleanup(cleanup));
+  }
+}
+
 function pushExpression(
   inout output: Array<LoweredExpression>,
   kind: LoweredExpressionKind,
@@ -595,6 +646,13 @@ function lowerFunction(
   for (const cleanup of ownedParameters) {
     fallthroughCleanups.push(copyCleanup(cleanup));
   }
+  try appendLinearLocalCleanups(
+    program,
+    declaration,
+    inout statements,
+    roots,
+    inout fallthroughCleanups
+  );
   const returnType = try lowerType(program, declaration.returnType);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),

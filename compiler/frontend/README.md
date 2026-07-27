@@ -147,17 +147,25 @@ construction are semantic lowering decisions, not formatting. Deterministic
 cleanup can now extend the IR with explicit scope-exit plans rather than
 teaching the C printer to rediscover ownership from syntax.
 
-The first cleanup plan is now executable for an ownership-bearing value
-parameter whose custom `deinit` body is empty. A lowered return evaluates its
-result into a temporary, runs reverse exit cleanup, and then returns the saved
-value. This proves the ordering boundary without pretending moves, owned
-locals, non-empty deinitializers, or branch/loop/error flow are complete.
+The first cleanup plans are now executable for ownership-bearing value
+parameters and top-level linear locals whose custom `deinit` body is empty. A
+lowered return evaluates its result into a temporary, runs reverse exit cleanup,
+and then returns the saved value. A local enters the cleanup plan only after its
+initializer; `move local` removes that local cleanup and transfers destruction
+to the final callee. This proves the ordering boundary without pretending
+nested owner scopes, replacement assignment, non-empty deinitializers, or
+branch/loop/error flow are complete.
 
 Linear owned-parameter transfer is executable too. `move resource` becomes an
 explicit lowered ownership operation that emits no C copy wrapper, removes
 cleanup from the transferring function, and leaves destruction with the final
 callee. Cleanup-bearing parameters still reject branch/loop lowering until
 path-sensitive owner-state merging lands.
+
+Z `const` remains binding immutability, not immutable physical storage. The C
+emitter therefore keeps value-struct local storage writable so deterministic
+cleanup may receive its address; source-level reassignment remains a semantic
+error.
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend

@@ -209,8 +209,14 @@ function appendStatement(
       some(type) => try cType(type);
       none => throw "native C emission received an untyped local";
     };
+    const constStorage = match (in declaration.statements[index].type) {
+      some(storageType) => storageType.kind != LoweredTypeKind.structType;
+      none => false;
+    };
     appendIndent(inout output, depth);
-    if (!declaration.statements[index].mutableBinding) output.append("const ");
+    if (!declaration.statements[index].mutableBinding && constStorage) {
+      output.append("const ");
+    }
     output.append(type);
     output.append(" ");
     output.append(declaration.statements[index].name);

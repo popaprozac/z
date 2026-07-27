@@ -571,18 +571,29 @@ source operator strings no longer cross the target-text boundary. Cleanup plans
 remain the next addition, but they now have one explicit representation to join
 instead of another control-flow-specific emitter path.
 
-The first explicit plan now covers an owned cleanup-bearing value parameter in
-linear control flow. Return lowering stores the result, emits the parameter's
-custom deinitializer, and returns the stored value. Restricting the custom
-`deinit` body to empty keeps this a cleanup-order proof rather than silently
-discarding user behavior. Moves, local-owner introduction, and flow merges are
-the next ownership evidence required before this tier broadens.
+The first explicit plan now covers owned cleanup-bearing value parameters and
+top-level locals in linear control flow. Return lowering stores the result,
+emits reverse cleanup, and returns the stored value. A local becomes live only
+after initialization. Restricting the custom `deinit` body to empty keeps this a
+cleanup-order proof rather than silently discarding user behavior.
 
 Linear parameter transfer now has its own proof. A `relay` function passes
 `move resource` to the final owner without emitting a deinitializer; the final
 callee alone cleans it after result evaluation. The lowerer rejects
 cleanup-bearing parameters in `if`/`while` functions for now, rather than
 treating a move discovered on one path as global.
+
+Linear local transfer follows the same rule. An ordinary local is destroyed
+after its return expression is evaluated; `move local` removes that cleanup and
+leaves the receiving function as the final owner. This probe exposed a
+source-to-C distinction that the production compiler must preserve: a Z
+`const` value struct is an immutable binding, not immutable storage. Its emitted
+C slot cannot be `const`, because deterministic destruction legitimately takes
+its address. Z's semantic pass still rejects reassignment.
+
+Nested owner scopes, owned replacement assignment, non-empty deinitializer
+bodies, and path-sensitive branch/loop/error cleanup merging remain the next
+ownership evidence required before this tier broadens.
 
 What the compiler proves:
 

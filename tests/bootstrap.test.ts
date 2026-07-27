@@ -8212,7 +8212,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(structEmission.status, 0, structEmission.stderr);
   assert.match(structEmission.stdout, /typedef struct Z_Point/);
-  assert.match(structEmission.stdout, /const Z_Point point = \(Z_Point\)\{\.x = 20, \.y = 22\};/);
+  assert.match(structEmission.stdout, /Z_Point point = \(Z_Point\)\{\.x = 20, \.y = 22\};/);
   const structExecutable = resolve(directory, "struct");
   const structCompilation = spawnSync(
     "clang",
@@ -8261,6 +8261,31 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(moveCompilation.status, 0, moveCompilation.stderr);
   const moveExecution = spawnSync(moveExecutable, [], { encoding: "utf8" });
   assert.equal(moveExecution.status, 42, moveExecution.stderr);
+
+  const localCleanupInput = resolve(projectRoot, "tests/fixtures/self-host-emit-local-cleanup.zs");
+  const localCleanupEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", localCleanupInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(localCleanupEmission.status, 0, localCleanupEmission.stderr);
+  assert.match(
+    localCleanupEmission.stdout,
+    /observeLocal\(void\).*?_z_stage1_return_\d+ = .*?;\n  Z_Resource_deinit\(&resource\);\n  return/s,
+  );
+  assert.match(
+    localCleanupEmission.stdout,
+    /moveLocal\(void\) \{\n  Z_Resource resource = .*?;\n  return inspect\(resource\);\n\}/s,
+  );
+  const localCleanupExecutable = resolve(directory, "local-cleanup");
+  const localCleanupCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", localCleanupExecutable],
+    { encoding: "utf8", input: localCleanupEmission.stdout },
+  );
+  assert.equal(localCleanupCompilation.status, 0, localCleanupCompilation.stderr);
+  const localCleanupExecution = spawnSync(localCleanupExecutable, [], { encoding: "utf8" });
+  assert.equal(localCleanupExecution.status, 42, localCleanupExecution.stderr);
 
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");
