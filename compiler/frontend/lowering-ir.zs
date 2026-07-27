@@ -294,19 +294,24 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].localName == name
+      || importedTypes[importedIndex].targetName == name
+    ) return LoweredType({
+      kind: importedTypes[importedIndex].kind,
+      name: importedTypes[importedIndex].targetName.copyBytes(
+        0,
+        importedTypes[importedIndex].targetName.byteLength
+      ),
+    });
+  }
   const local = attempt lowerTypeName(program, name);
   match (local) {
     success(type) => return type;
     failure(_) => {}
-  }
-  for (const imported of importedTypes) {
-    if (
-      imported.localName == name
-      || imported.targetName == name
-    ) return LoweredType({
-      kind: imported.kind,
-      name: imported.targetName.copyBytes(0, imported.targetName.byteLength),
-    });
   }
   throw `native lowering does not support type ${name} yet`;
 }
@@ -465,6 +470,30 @@ function moduleEnumNeedsCleanup(
   for (const variant of program.enums[index].variants) {
     match (in variant.payload) {
       some(payload) => {
+        match (structIndex(program, payload.name)) {
+          some(aggregateIndex) => {
+            if (moduleAggregateNeedsCleanup(
+              program,
+              importedTypes,
+              aggregateIndex,
+              depth + 1
+            )) return true;
+            continue;
+          }
+          none => {}
+        }
+        match (enumIndex(program, payload.name)) {
+          some(enumDeclarationIndex) => {
+            if (moduleEnumNeedsCleanup(
+              program,
+              importedTypes,
+              enumDeclarationIndex,
+              depth + 1
+            )) return true;
+            continue;
+          }
+          none => {}
+        }
         const lowered = attempt lowerModuleType(program, importedTypes, payload);
         match (lowered) {
           success(type) => {
@@ -496,6 +525,30 @@ function moduleAggregateNeedsCleanup(
     none => {}
   }
   for (const field of program.aggregates[index].fields) {
+    match (structIndex(program, field.type.name)) {
+      some(aggregateIndex) => {
+        if (moduleAggregateNeedsCleanup(
+          program,
+          importedTypes,
+          aggregateIndex,
+          depth + 1
+        )) return true;
+        continue;
+      }
+      none => {}
+    }
+    match (enumIndex(program, field.type.name)) {
+      some(enumDeclarationIndex) => {
+        if (moduleEnumNeedsCleanup(
+          program,
+          importedTypes,
+          enumDeclarationIndex,
+          depth + 1
+        )) return true;
+        continue;
+      }
+      none => {}
+    }
     const lowered = attempt lowerModuleType(program, importedTypes, field.type);
     match (lowered) {
       success(type) => {
@@ -540,14 +593,16 @@ function moduleTypeNeedsCleanupDepth(
       none => {}
     }
   }
-  for (const imported of importedTypes) {
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
     if (
-      imported.kind == type.kind
+      importedTypes[importedIndex].kind == type.kind
       && (
-        imported.localName == type.name
-        || imported.targetName == type.name
+        importedTypes[importedIndex].localName == type.name
+        || importedTypes[importedIndex].targetName == type.name
       )
-    ) return imported.needsDeinit;
+    ) return importedTypes[importedIndex].needsDeinit;
   }
   return typeNeedsCleanup(program, type);
 }
@@ -1327,23 +1382,28 @@ function importedEnumDeclaration(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> {
-  for (const imported of importedTypes) {
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
     if (
-      imported.kind != LoweredTypeKind.enumType
+      importedTypes[importedIndex].kind != LoweredTypeKind.enumType
       || (
-        imported.localName != name
-        && imported.targetName != name
+        importedTypes[importedIndex].localName != name
+        && importedTypes[importedIndex].targetName != name
       )
     ) continue;
     let variants = Array<LoweredVariant>();
-    for (const variant of imported.variants) {
+    for (const variant of importedTypes[importedIndex].variants) {
       variants.push(copyLoweredVariant(variant));
     }
     return Option.some(LoweredEnum({
-      name: imported.targetName.copyBytes(0, imported.targetName.byteLength),
+      name: importedTypes[importedIndex].targetName.copyBytes(
+        0,
+        importedTypes[importedIndex].targetName.byteLength
+      ),
       variants,
-      payloadBearing: imported.payloadBearing,
-      needsDeinit: imported.needsDeinit,
+      payloadBearing: importedTypes[importedIndex].payloadBearing,
+      needsDeinit: importedTypes[importedIndex].needsDeinit,
     }));
   }
   return Option<LoweredEnum>.none;
@@ -1353,16 +1413,18 @@ function importedStructTarget(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<String> {
-  for (const imported of importedTypes) {
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
     if (
-      imported.kind == LoweredTypeKind.structType
+      importedTypes[importedIndex].kind == LoweredTypeKind.structType
       && (
-        imported.localName == name
-        || imported.targetName == name
+        importedTypes[importedIndex].localName == name
+        || importedTypes[importedIndex].targetName == name
       )
-    ) return Option.some(imported.targetName.copyBytes(
+    ) return Option.some(importedTypes[importedIndex].targetName.copyBytes(
       0,
-      imported.targetName.byteLength
+      importedTypes[importedIndex].targetName.byteLength
     ));
   }
   return Option<String>.none;
@@ -1583,10 +1645,15 @@ function lowerExpression(
                     children.push(payload);
                     let labels = Array<String>();
                     labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+                    const enumType = try lowerModuleTypeName(
+                      program,
+                      importedTypes,
+                      tree.nodes[enumInput].value
+                    );
                     return pushExpression(
                       inout output,
                       LoweredExpressionKind.enumPayloadValue,
-                      tree.nodes[enumInput].value,
+                      enumType.name,
                       children,
                       labels
                     );
@@ -1644,16 +1711,16 @@ function lowerExpression(
       && tree.nodes[index].children.length == 2
     ) {
       let constructionName = "";
-      match (structIndex(program, tree.nodes[calleeInput].value)) {
-        some(_) => constructionName = tree.nodes[calleeInput].value.copyBytes(
-          0,
-          tree.nodes[calleeInput].value.byteLength
-        );
-        none => match (importedStructTarget(
-          importedTypes,
-          tree.nodes[calleeInput].value
-        )) {
-          some(name) => constructionName = name;
+      match (importedStructTarget(
+        importedTypes,
+        tree.nodes[calleeInput].value
+      )) {
+        some(name) => constructionName = name;
+        none => match (structIndex(program, tree.nodes[calleeInput].value)) {
+          some(_) => constructionName = tree.nodes[calleeInput].value.copyBytes(
+            0,
+            tree.nodes[calleeInput].value.byteLength
+          );
           none => {}
         }
       }
@@ -1808,10 +1875,15 @@ function lowerExpression(
               if (enumHasPayload(program, declarationIndex)) {
                 labels.push("tagged");
               }
+              const enumType = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                tree.nodes[receiverInput].value
+              );
               return pushExpression(
                 inout output,
                 LoweredExpressionKind.enumValue,
-                tree.nodes[receiverInput].value,
+                enumType.name,
                 Array<usize>(),
                 labels
               );
@@ -1912,11 +1984,13 @@ function loweredSourceEnum(
       payload,
     }));
   }
+  const loweredName = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    program.enums[index].name
+  );
   return LoweredEnum({
-    name: program.enums[index].name.copyBytes(
-      0,
-      program.enums[index].name.byteLength
-    ),
+    name: loweredName.name.copyBytes(0, loweredName.name.byteLength),
     variants,
     payloadBearing,
     needsDeinit: moduleEnumNeedsCleanup(program, importedTypes, index, 0),
@@ -3197,6 +3271,83 @@ function emittedPrivateFunctionName(
   return `__z_module_${moduleIndex}_${name}`;
 }
 
+function typeIsExported(
+  in program: Program,
+  in name: String
+): boolean {
+  for (const declaration of program.declarations) {
+    if (
+      (
+        declaration.kind == DeclarationKind.structDeclaration
+        || declaration.kind == DeclarationKind.enumDeclaration
+      )
+      && declaration.name == name
+    ) return declaration.exported;
+  }
+  return false;
+}
+
+function programTypeCount(in program: Program, in name: String): usize {
+  let count: usize = 0;
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name == name) count = count + 1;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.name == name) count = count + 1;
+  }
+  return count;
+}
+
+function collisionSafePrivateTypeNames(
+  in parsed: Array<ParsedModule>
+): Array<String> {
+  let names = Array<String>();
+  for (const module of parsed) {
+    for (const declaration of module.program.declarations) {
+      if (
+        declaration.kind != DeclarationKind.structDeclaration
+        && declaration.kind != DeclarationKind.enumDeclaration
+      ) continue;
+      if (containsName(names, declaration.name)) continue;
+      let count: usize = 0;
+      let exportedCount: usize = 0;
+      for (const candidateModule of parsed) {
+        count = count + programTypeCount(
+          candidateModule.program,
+          declaration.name
+        );
+        if (typeIsExported(
+          candidateModule.program,
+          declaration.name
+        )) exportedCount = exportedCount + 1;
+      }
+      if (count > 1 && exportedCount <= 1) {
+        names.push(declaration.name.copyBytes(
+          0,
+          declaration.name.byteLength
+        ));
+      }
+    }
+  }
+  return names;
+}
+
+function privateTypeNeedsMangle(
+  in program: Program,
+  in collisionNames: Array<String>,
+  in name: String
+): boolean {
+  return containsName(collisionNames, name)
+    && !typeIsExported(program, name);
+}
+
+function emittedPrivateTypeName(
+  moduleIndex: usize,
+  in name: String
+): String {
+  return `module_${moduleIndex}_${name}`;
+}
+
 function rewritePrivateCallTargets(
   in program: Program,
   in collisionNames: Array<String>,
@@ -3476,7 +3627,8 @@ function appendLoweredProgram(
   in program: Program,
   inout importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
-  in privateCollisionNames: Array<String>,
+  in privateFunctionCollisionNames: Array<String>,
+  in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
   inout structs: Array<LoweredStruct>,
@@ -3490,11 +3642,60 @@ function appendLoweredProgram(
     throw "native lowering does not support traits or type aliases yet";
   }
 
+  for (const declaration of program.enums) {
+    if (!privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      declaration.name
+    )) continue;
+    const targetName = emittedPrivateTypeName(
+      moduleIndex,
+      declaration.name
+    );
+    importedTypes.push(LoweredImportedType({
+      localName: declaration.name.copyBytes(
+        0,
+        declaration.name.byteLength
+      ),
+      targetName,
+      kind: LoweredTypeKind.enumType,
+      needsDeinit: false,
+      variants: Array<LoweredVariant>(),
+      payloadBearing: false,
+    }));
+  }
+  for (const aggregate of program.aggregates) {
+    if (
+      aggregate.kind != DeclarationKind.structDeclaration
+      || !privateTypeNeedsMangle(
+        program,
+        privateTypeCollisionNames,
+        aggregate.name
+      )
+    ) continue;
+    const targetName = emittedPrivateTypeName(moduleIndex, aggregate.name);
+    importedTypes.push(LoweredImportedType({
+      localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+      targetName,
+      kind: LoweredTypeKind.structType,
+      needsDeinit: false,
+      variants: Array<LoweredVariant>(),
+      payloadBearing: false,
+    }));
+  }
+
   try collectIntrinsicEnums(program, inout enums);
   for (const declaration of program.enums) {
+    const emittedName = privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      declaration.name
+    )
+      ? emittedPrivateTypeName(moduleIndex, declaration.name)
+      : declaration.name.copyBytes(0, declaration.name.byteLength);
     if (
-      containsLoweredEnum(enums, declaration.name)
-      || containsLoweredStruct(structs, declaration.name)
+      containsLoweredEnum(enums, emittedName)
+      || containsLoweredStruct(structs, emittedName)
     ) {
       throw `native module emission requires collision-safe type identity for ${declaration.name}`;
     }
@@ -3519,23 +3720,46 @@ function appendLoweredProgram(
       some(index) => index;
       none => throw `native lowering lost enum ${declaration.name}`;
     };
+    const needsDeinit = moduleEnumNeedsCleanup(
+      program,
+      importedTypes,
+      declarationIndex,
+      0
+    );
+    let importedVariants = Array<LoweredVariant>();
+    for (const variant of variants) {
+      importedVariants.push(copyLoweredVariant(variant));
+    }
     enums.push(LoweredEnum({
-      name: declaration.name.copyBytes(0, declaration.name.byteLength),
+      name: emittedName.copyBytes(0, emittedName.byteLength),
       variants,
       payloadBearing,
-      needsDeinit: moduleEnumNeedsCleanup(
-        program,
-        importedTypes,
-        declarationIndex,
-        0
+      needsDeinit,
+    }));
+    importedTypes.push(LoweredImportedType({
+      localName: declaration.name.copyBytes(
+        0,
+        declaration.name.byteLength
       ),
+      targetName: emittedName,
+      kind: LoweredTypeKind.enumType,
+      needsDeinit,
+      variants: importedVariants,
+      payloadBearing,
     }));
   }
 
   for (const aggregate of program.aggregates) {
+    const emittedName = privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      aggregate.name
+    )
+      ? emittedPrivateTypeName(moduleIndex, aggregate.name)
+      : aggregate.name.copyBytes(0, aggregate.name.byteLength);
     if (
-      containsLoweredStruct(structs, aggregate.name)
-      || containsLoweredEnum(enums, aggregate.name)
+      containsLoweredStruct(structs, emittedName)
+      || containsLoweredEnum(enums, emittedName)
     ) {
       throw `native module emission requires collision-safe type identity for ${aggregate.name}`;
     }
@@ -3565,13 +3789,14 @@ function appendLoweredProgram(
     let deinitializer = Option<LoweredFunction>.none;
     match (in aggregate.deinitializer) {
       some(source) => {
-        const body = try lowerDeinitializer(
+        let body = try lowerDeinitializer(
           program,
           importedTypes,
           evidence,
           aggregate.name,
           source.body
         );
+        body.name = `${emittedName}.deinit`;
         deinitializer = Option.some(move body);
       }
       none => {}
@@ -3587,7 +3812,7 @@ function appendLoweredProgram(
       0
     );
     structs.push(LoweredStruct({
-      name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+      name: emittedName,
       fields,
       needsDeinit,
       deinitializer,
@@ -3595,10 +3820,17 @@ function appendLoweredProgram(
   }
 
   for (const aggregate of program.aggregates) {
-    match (loweredStructCleanup(structs, aggregate.name)) {
+    const emittedName = privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      aggregate.name
+    )
+      ? emittedPrivateTypeName(moduleIndex, aggregate.name)
+      : aggregate.name.copyBytes(0, aggregate.name.byteLength);
+    match (loweredStructCleanup(structs, emittedName)) {
       some(needsDeinit) => importedTypes.push(LoweredImportedType({
         localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
-        targetName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+        targetName: emittedName,
         kind: LoweredTypeKind.structType,
         needsDeinit,
         variants: Array<LoweredVariant>(),
@@ -3611,7 +3843,7 @@ function appendLoweredProgram(
   for (const declaration of program.functions) {
     if (
       containsLoweredFunction(functions, declaration.name)
-      && !containsName(privateCollisionNames, declaration.name)
+      && !containsName(privateFunctionCollisionNames, declaration.name)
     ) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
@@ -3623,14 +3855,14 @@ function appendLoweredProgram(
     );
     rewritePrivateCallTargets(
       program,
-      privateCollisionNames,
+      privateFunctionCollisionNames,
       moduleIndex,
       entryIndex,
       inout loweredFunction
     );
     if (privateFunctionNeedsMangle(
       program,
-      privateCollisionNames,
+      privateFunctionCollisionNames,
       moduleIndex,
       entryIndex,
       declaration.name
@@ -3656,11 +3888,13 @@ export function lowerProgram(
   let functions = Array<LoweredFunction>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
+  const privateTypeCollisionNames = Array<String>();
   try appendLoweredProgram(
     program,
     inout importedTypes,
     evidence,
     privateCollisionNames,
+    privateTypeCollisionNames,
     0,
     0,
     inout structs,
@@ -3677,7 +3911,8 @@ export function lowerModules(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
-  const privateCollisionNames = collisionSafePrivateFunctionNames(parsed);
+  const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
+  const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
     let importedTypes = importedTypesForModule(
@@ -3690,7 +3925,8 @@ export function lowerModules(
       parsed[moduleIndex].program,
       inout importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
-      privateCollisionNames,
+      privateFunctionCollisionNames,
+      privateTypeCollisionNames,
       moduleIndex,
       entryIndex,
       inout structs,

@@ -8253,6 +8253,77 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(collisionExecution.status, 42, collisionExecution.stderr);
 
+  const typeCollisionA = resolve(directory, "type-collision-a.zs");
+  const typeCollisionB = resolve(directory, "type-collision-b.zs");
+  const typeCollisionMain = resolve(directory, "type-collision-main.zs");
+  writeFileSync(
+    typeCollisionA,
+    "struct Value { amount: i32; deinit {} }\n"
+      + "enum State { ready Value, }\n"
+      + "export function first(amount: i32): i32 {\n"
+      + "  const discarded = State.ready(Value({ amount: 0 }));\n"
+      + "  const state = State.ready(Value({ amount }));\n"
+      + "  return match (state) { ready(value) => value.amount; };\n"
+      + "}\n",
+  );
+  writeFileSync(
+    typeCollisionB,
+    "struct Value { amount: i32; deinit {} }\n"
+      + "enum State { ready Value, }\n"
+      + "export function second(amount: i32): i32 {\n"
+      + "  const discarded = State.ready(Value({ amount: 0 }));\n"
+      + "  const state = State.ready(Value({ amount }));\n"
+      + "  return match (state) { ready(value) => value.amount; };\n"
+      + "}\n",
+  );
+  writeFileSync(
+    typeCollisionMain,
+    "import { first } from \"./type-collision-a.zs\";\n"
+      + "import { second } from \"./type-collision-b.zs\";\n"
+      + "function main(): i32 { return first(20) + second(22); }\n",
+  );
+  const typeCollisionEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", typeCollisionMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(typeCollisionEmission.status, 0, typeCollisionEmission.stderr);
+  assert.equal(
+    typeCollisionEmission.stdout.match(
+      /typedef struct Z_module_\d+_Value \{/g,
+    )?.length,
+    2,
+  );
+  assert.equal(
+    typeCollisionEmission.stdout.match(
+      /typedef struct Z_module_\d+_State \{/g,
+    )?.length,
+    2,
+  );
+  assert.doesNotMatch(
+    typeCollisionEmission.stdout,
+    /typedef struct Z_(?:Value|State) \{/,
+  );
+  assert.equal(
+    typeCollisionEmission.stdout.match(
+      /static void Z_module_\d+_State_deinit\(Z_module_\d+_State \*self\)/g,
+    )?.length,
+    4,
+  );
+  const typeCollisionExecutable = resolve(directory, "type-collision-modules");
+  const typeCollisionCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", typeCollisionExecutable],
+    { encoding: "utf8", input: typeCollisionEmission.stdout },
+  );
+  assert.equal(typeCollisionCompilation.status, 0, typeCollisionCompilation.stderr);
+  const typeCollisionExecution = spawnSync(
+    typeCollisionExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(typeCollisionExecution.status, 42, typeCollisionExecution.stderr);
+
   const exportedCollisionA = resolve(directory, "exported-collision-a.zs");
   const exportedCollisionB = resolve(directory, "exported-collision-b.zs");
   const exportedCollisionMain = resolve(directory, "exported-collision-main.zs");
@@ -8279,6 +8350,43 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     exportedCollisionEmission.stderr,
     /native module emission requires collision-safe function identity for duplicate/,
+  );
+
+  const exportedTypeCollisionA = resolve(
+    directory,
+    "exported-type-collision-a.zs",
+  );
+  const exportedTypeCollisionB = resolve(
+    directory,
+    "exported-type-collision-b.zs",
+  );
+  const exportedTypeCollisionMain = resolve(
+    directory,
+    "exported-type-collision-main.zs",
+  );
+  writeFileSync(
+    exportedTypeCollisionA,
+    "export struct Shared { value: i32; }\n",
+  );
+  writeFileSync(
+    exportedTypeCollisionB,
+    "export struct Shared { value: i32; }\n",
+  );
+  writeFileSync(
+    exportedTypeCollisionMain,
+    "import { Shared as First } from \"./exported-type-collision-a.zs\";\n"
+      + "import { Shared as Second } from \"./exported-type-collision-b.zs\";\n"
+      + "function main(): i32 { return 0; }\n",
+  );
+  const exportedTypeCollisionEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", exportedTypeCollisionMain],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(exportedTypeCollisionEmission.status, 0);
+  assert.match(
+    exportedTypeCollisionEmission.stderr,
+    /native module emission requires collision-safe type identity for Shared/,
   );
 
   const controlFlowInput = resolve(projectRoot, "tests/fixtures/self-host-emit-control-flow.zs");

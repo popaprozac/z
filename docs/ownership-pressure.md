@@ -919,6 +919,23 @@ scoped, non-escaping aggregate of borrowed capabilities. That experiment must
 prove last-use release and exclusivity; it should not introduce general stored
 references or Rust-style lifetime syntax by default.
 
+## Private nominal identity across modules
+
+Lowering multiple source modules into one C translation unit exposed a
+different composition problem: two module-private `struct Value` or
+`enum State` declarations cannot share one emitted nominal identity merely
+because their source spellings match. Z now assigns colliding private types a
+module-qualified internal name before lowering fields, payloads, function
+signatures, construction, match, or cleanup. The identity is therefore settled
+once and propagated through the same imported-type catalog used for canonical
+exported types.
+
+The pressure test deliberately combines a private enum with a private struct
+payload in two modules, constructs and consumes both, compiles the result under
+strict C warnings, and executes it. Same-named exported types still fail closed:
+their eventual names are an ABI and library-distribution decision, not an
+internal mangling detail that the compiler should choose invisibly.
+
 ## Loop-carried child-task slots
 
 An adversarial loop exposed a compiler/runtime soundness boundary: one

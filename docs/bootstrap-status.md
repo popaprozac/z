@@ -759,10 +759,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    through selective aliases, direct construction, factory returns, exhaustive
    consuming match, and ordinary scope exit. Selectively aliased imported
    structs also support direct object construction while emitting the canonical
-   target type. Colliding private functions now receive module-qualified
-   internal C identities and local calls follow the renamed symbol; colliding
-   exports remain fail-closed until exported ABI naming is designed. Private
-   type collisions and per-module translation units remain explicit follow-ups.
+   target type. Colliding private functions, structs, and enums now receive
+   module-qualified internal C identities. Local calls, type references,
+   construction, enum payloads, match, and recursive cleanup follow the renamed
+   symbols; colliding exports remain fail-closed until exported ABI naming is
+   designed. Per-module translation units remain an explicit follow-up.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
