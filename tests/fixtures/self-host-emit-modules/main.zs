@@ -32,7 +32,8 @@ function observeEmpty(): void {
 }
 
 function main(): i32 {
-  const point = coordinate(20, 22);
+  const point = coordinate(20, 20);
+  const directPoint = Coordinate({ x: 1, y: 1 });
   const resource = managed(0);
   const session = Session({ resource });
   const current = state(0);
@@ -41,7 +42,10 @@ function main(): i32 {
   observeEmpty();
   return combine(
     combine(
-      combine(sum(point), resourceId(session)),
+      combine(
+        combine(sum(point), sum(directPoint)),
+        resourceId(session)
+      ),
       stateId(current)
     ),
     combine(stateId(direct), stateId(empty))

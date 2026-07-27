@@ -769,6 +769,12 @@ uses the synthesized enum destructor. This is the first multi-module test where
 nominal type identity, variant syntax, control flow, and recursive ownership all
 compose in the native emitter.
 
+The same consumer now constructs `Coordinate({ x: 1, y: 1 })`, where
+`Coordinate` is only a selective local alias for exported `Point`. Lowering
+emits a `Z_Point` compound value directly; the alias produces neither a wrapper
+type nor a conversion call. Imported aggregate identity now composes through
+both factory and constructor paths.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

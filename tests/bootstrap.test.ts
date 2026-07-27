@@ -8184,7 +8184,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?Z_Resource resource = makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
+    /int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 20\);.*?Z_Point directPoint = \(Z_Point\)\{\.x = 1, \.y = 1\};.*?Z_Resource resource = makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
   );
   assert.equal(
     moduleEmission.stdout.match(/Z_Resource_deinit\(&self->resource\);/g)?.length,

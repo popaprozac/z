@@ -1349,6 +1349,25 @@ function importedEnumDeclaration(
   return Option<LoweredEnum>.none;
 }
 
+function importedStructTarget(
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<String> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind == LoweredTypeKind.structType
+      && (
+        imported.localName == name
+        || imported.targetName == name
+      )
+    ) return Option.some(imported.targetName.copyBytes(
+      0,
+      imported.targetName.byteLength
+    ));
+  }
+  return Option<String>.none;
+}
+
 function lowerExpression(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -1624,8 +1643,21 @@ function lowerExpression(
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
     ) {
+      let constructionName = "";
       match (structIndex(program, tree.nodes[calleeInput].value)) {
-        some(_) => {
+        some(_) => constructionName = tree.nodes[calleeInput].value.copyBytes(
+          0,
+          tree.nodes[calleeInput].value.byteLength
+        );
+        none => match (importedStructTarget(
+          importedTypes,
+          tree.nodes[calleeInput].value
+        )) {
+          some(name) => constructionName = name;
+          none => {}
+        }
+      }
+      if (constructionName.byteLength > 0) {
           const objectInput = tree.nodes[index].children[1];
           if (tree.nodes[objectInput].kind != ExpressionKind.objectExpression) {
             throw "native struct construction requires an object initializer";
@@ -1659,12 +1691,10 @@ function lowerExpression(
           return pushExpression(
             inout output,
             LoweredExpressionKind.structValue,
-            tree.nodes[calleeInput].value,
+            constructionName,
             children,
             labels
           );
-        }
-        none => {}
       }
     }
     let callee: usize = 0;

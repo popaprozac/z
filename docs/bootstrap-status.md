@@ -757,8 +757,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    field initialization and owned calls without double destruction. Imported
    enums preserve canonical identity, variants, payload types, and cleanup
    through selective aliases, direct construction, factory returns, exhaustive
-   consuming match, and ordinary scope exit. Direct imported struct
-   construction, symbol mangling for colliding private names, and per-module
+   consuming match, and ordinary scope exit. Selectively aliased imported
+   structs also support direct object construction while emitting the canonical
+   target type. Symbol mangling for colliding private names and per-module
    translation units remain explicit follow-ups.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
