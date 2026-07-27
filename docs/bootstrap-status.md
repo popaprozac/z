@@ -748,8 +748,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    to its exported source symbol without a wrapper, and strict Clang execution
    returns the same result. A duplicate type or function spelling across
    modules is rejected before C emission. Imported aggregate identity, symbol
-   mangling for colliding private names, and per-module translation units remain
-   explicit follow-ups.
+   identity is executable for cleanup-free scalar-field structs: a selective
+   local type alias canonicalizes to the exported struct through factory return,
+   inferred storage, local parameters, and field reads. Cleanup-bearing or
+   nested imported aggregates, direct imported construction, symbol mangling for
+   colliding private names, and per-module translation units remain explicit
+   follow-ups.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

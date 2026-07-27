@@ -8172,11 +8172,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(moduleEmission.status, 0, moduleEmission.stderr);
   assert.match(
     moduleEmission.stdout,
-    /int32_t add\(int32_t first, int32_t second\);.*?int32_t main\(void\);/s,
+    /typedef struct Z_Point.*?int32_t add\(int32_t first, int32_t second\);.*?Z_Point makePoint\(int32_t x, int32_t y\);.*?int32_t sum\(Z_Point point\);.*?int32_t main\(void\);/s,
   );
   assert.match(
     moduleEmission.stdout,
-    /int32_t add\(int32_t first, int32_t second\) \{.*?return z_stage1_checked_add_i32\(first, second\);.*?int32_t main\(void\) \{.*?return add\(20, 22\);/s,
+    /Z_Point makePoint\(int32_t x, int32_t y\) \{.*?return \(Z_Point\)\{\.x = x, \.y = y\};.*?int32_t sum\(Z_Point point\) \{.*?point\.x.*?point\.y.*?int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?return add\(sum\(point\), 0\);/s,
   );
   const moduleExecutable = resolve(directory, "modules");
   const moduleCompilation = spawnSync(

@@ -17,10 +17,14 @@ import {
   StatementKind,
   TypeReference,
 } from "./parser.zs";
-import { ParsedModule } from "./module-symbols.zs";
+import {
+  ParsedModule,
+  moduleSymbolIndex,
+} from "./module-symbols.zs";
 import {
   ModuleGraph,
   ModuleSemanticEvidence,
+  ModuleSymbolKind,
 } from "./semantic-model.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
 
@@ -151,6 +155,12 @@ export struct LoweredProgram {
   functions: Array<LoweredFunction>;
 }
 
+struct LoweredImportedType {
+  localName: String;
+  targetName: String;
+  kind: LoweredTypeKind;
+}
+
 function structIndex(in program: Program, in name: String): Option<usize> {
   let index: usize = 0;
   while (index < program.aggregates.length) {
@@ -276,21 +286,57 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
   return try lowerTypeName(program, type.name);
 }
 
+function lowerModuleTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): LoweredType throws String {
+  const local = attempt lowerTypeName(program, name);
+  match (local) {
+    success(type) => return type;
+    failure(_) => {}
+  }
+  for (const imported of importedTypes) {
+    if (imported.localName == name) return LoweredType({
+      kind: imported.kind,
+      name: imported.targetName.copyBytes(0, imported.targetName.byteLength),
+    });
+  }
+  throw `native lowering does not support type ${name} yet`;
+}
+
+function lowerModuleType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: TypeReference
+): LoweredType throws String {
+  return try lowerModuleTypeName(program, importedTypes, type.name);
+}
+
 function lowerBindingType(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   index: usize
 ): LoweredType throws String {
   match (in arena.nodes[index].typeAnnotation) {
-    some(annotation) => return try lowerType(program, annotation);
+    some(annotation) => return try lowerModuleType(
+      program,
+      importedTypes,
+      annotation
+    );
     none => {}
   }
   for (const binding of evidence.bindingResolutions) {
     if (
       binding.offset == arena.nodes[index].nameOffset
       && binding.name == arena.nodes[index].name
-    ) return try lowerTypeName(program, binding.typeName);
+    ) return try lowerModuleTypeName(
+      program,
+      importedTypes,
+      binding.typeName
+    );
   }
   throw `native lowering could not find the inferred type for local ${arena.nodes[index].name}`;
 }
@@ -1869,6 +1915,7 @@ function lowerValueDestination(
 
 function lowerValueArmStatement(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
@@ -1910,6 +1957,7 @@ function lowerValueArmStatement(
         }
         loweredChild = try lowerValueArmStatement(
           program,
+          importedTypes,
           evidence,
           arena,
           ownerName,
@@ -1922,6 +1970,7 @@ function lowerValueArmStatement(
       } else {
         loweredChild = try lowerStatement(
           program,
+          importedTypes,
           evidence,
           arena,
           ownerName,
@@ -1955,6 +2004,7 @@ function lowerValueArmStatement(
 
 function lowerMatchTree(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
@@ -2032,6 +2082,7 @@ function lowerMatchTree(
       ) payloadTransfersOut = true;
       const loweredBody = try lowerValueArmStatement(
         program,
+        importedTypes,
         evidence,
         arena,
         ownerName,
@@ -2046,6 +2097,7 @@ function lowerMatchTree(
       for (const bodyIndex of tree.nodes[arm].statements) {
         const loweredBody = try lowerStatement(
           program,
+          importedTypes,
           evidence,
           arena,
           ownerName,
@@ -2108,6 +2160,7 @@ function lowerMatchTree(
 
 function lowerStatement(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
@@ -2212,6 +2265,7 @@ function lowerStatement(
               };
               const bindingType = try lowerBindingType(
                 program,
+                importedTypes,
                 evidence,
                 arena,
                 index
@@ -2296,6 +2350,7 @@ function lowerStatement(
                 : "";
               const loweredMatch = try lowerMatchTree(
                 program,
+                importedTypes,
                 evidence,
                 arena,
                 ownerName,
@@ -2311,6 +2366,7 @@ function lowerStatement(
               }
               const bindingType = try lowerBindingType(
                 program,
+                importedTypes,
                 evidence,
                 arena,
                 index
@@ -2371,12 +2427,22 @@ function lowerStatement(
 
   let type = Option<LoweredType>.none;
   if (arena.nodes[index].kind == StatementKind.variableStatement) {
-    const loweredType = try lowerBindingType(program, evidence, arena, index);
+    const loweredType = try lowerBindingType(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      index
+    );
     type = Option.some(move loweredType);
   } else {
     match (in arena.nodes[index].typeAnnotation) {
       some(annotation) => {
-        const loweredType = try lowerType(program, annotation);
+        const loweredType = try lowerModuleType(
+          program,
+          importedTypes,
+          annotation
+        );
         type = Option.some(move loweredType);
       }
       none => {}
@@ -2503,6 +2569,7 @@ function lowerStatement(
   for (const child of arena.nodes[index].children) {
     const loweredChild = try lowerStatement(
       program,
+      importedTypes,
       evidence,
       arena,
       ownerName,
@@ -2532,6 +2599,7 @@ function lowerStatement(
 
 function lowerFunction(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration
 ): LoweredFunction throws String {
@@ -2545,7 +2613,11 @@ function lowerFunction(
     if (parameter.mode != ParameterMode.value) {
       throw `native lowering only supports value parameters in ${declaration.name} yet`;
     }
-    const parameterType = try lowerType(program, parameter.type);
+    const parameterType = try lowerModuleType(
+      program,
+      importedTypes,
+      parameter.type
+    );
     if (typeNeedsCleanup(program, parameterType)) {
       const moved = arenaMovesName(declaration.body, parameter.name);
       if (moved && arenaHasLoop(declaration.body)) {
@@ -2584,6 +2656,7 @@ function lowerFunction(
     sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
+      importedTypes,
       evidence,
       declaration.body,
       declaration.name,
@@ -2610,7 +2683,11 @@ function lowerFunction(
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
   attachMoveLiveFlags(inout expressions, liveFlags);
-  let returnType = try lowerType(program, declaration.returnType);
+  let returnType = try lowerModuleType(
+    program,
+    importedTypes,
+    declaration.returnType
+  );
   const resultType = try throwingFunctionResult(program, declaration.name);
   match (in resultType) {
     some(result) => returnType = LoweredType({
@@ -2633,6 +2710,7 @@ function lowerFunction(
 
 function lowerDeinitializer(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in ownerName: String,
   in body: StatementArena
@@ -2646,6 +2724,7 @@ function lowerDeinitializer(
     sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
+      importedTypes,
       evidence,
       body,
       `${ownerName}.deinit`,
@@ -2824,8 +2903,69 @@ function collectIntrinsicEnums(
   }
 }
 
+function importedStructIsCleanupFree(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  symbolIndex: usize
+): boolean {
+  match (in graph.modules[moduleIndex].symbols[symbolIndex].typeSignature) {
+    some(signature) => {
+      if (
+        signature.customDeinit
+        || signature.typeParameters.length > 0
+        || signature.methods.length > 0
+      ) return false;
+      for (const field of signature.fields) {
+        if (
+          field.typeName != "boolean"
+          && field.typeName != "i32"
+        ) return false;
+      }
+      return true;
+    }
+    none => return false;
+  }
+}
+
+function importedTypesForModule(
+  in graph: ModuleGraph,
+  moduleIndex: usize
+): Array<LoweredImportedType> {
+  let types = Array<LoweredImportedType>();
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    if (symbol.kind != ModuleSymbolKind.importedSymbol) continue;
+    let targetModule = graph.modules.length;
+    match (in symbol.targetModule) {
+      some(index) => targetModule = index;
+      none => {}
+    }
+    if (targetModule >= graph.modules.length) continue;
+    const targetSymbol = moduleSymbolIndex(
+      graph.modules[targetModule],
+      symbol.importedName
+    );
+    if (targetSymbol >= graph.modules[targetModule].symbols.length) continue;
+    if (
+      graph.modules[targetModule].symbols[targetSymbol].kind
+        == ModuleSymbolKind.structSymbol
+      && importedStructIsCleanupFree(graph, targetModule, targetSymbol)
+    ) {
+      types.push(LoweredImportedType({
+        localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+        targetName: graph.modules[targetModule].symbols[targetSymbol].name.copyBytes(
+          0,
+          graph.modules[targetModule].symbols[targetSymbol].name.byteLength
+        ),
+        kind: LoweredTypeKind.structType,
+      }));
+    }
+  }
+  return types;
+}
+
 function appendLoweredProgram(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
@@ -2852,7 +2992,7 @@ function appendLoweredProgram(
       let payload = Option<LoweredType>.none;
       match (in variant.payload) {
         some(type) => {
-          const lowered = try lowerType(program, type);
+          const lowered = try lowerModuleType(program, importedTypes, type);
           payload = Option.some(move lowered);
           payloadBearing = true;
         }
@@ -2895,7 +3035,11 @@ function appendLoweredProgram(
     }
     let fields = Array<LoweredField>();
     for (const field of aggregate.fields) {
-      const fieldType = try lowerType(program, field.type);
+      const fieldType = try lowerModuleType(
+        program,
+        importedTypes,
+        field.type
+      );
       fields.push(LoweredField({
         name: field.name.copyBytes(0, field.name.byteLength),
         type: move fieldType,
@@ -2906,6 +3050,7 @@ function appendLoweredProgram(
       some(source) => {
         const body = try lowerDeinitializer(
           program,
+          importedTypes,
           evidence,
           aggregate.name,
           source.body
@@ -2930,7 +3075,12 @@ function appendLoweredProgram(
     if (containsLoweredFunction(functions, declaration.name)) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
-    const loweredFunction = try lowerFunction(program, evidence, declaration);
+    const loweredFunction = try lowerFunction(
+      program,
+      importedTypes,
+      evidence,
+      declaration
+    );
     functions.push(move loweredFunction);
   }
 }
@@ -2945,8 +3095,10 @@ export function lowerProgram(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  const importedTypes = Array<LoweredImportedType>();
   try appendLoweredProgram(
     program,
+    importedTypes,
     evidence,
     inout structs,
     inout enums,
@@ -2963,8 +3115,10 @@ export function lowerModules(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   for (const moduleIndex of graph.dependencyOrder) {
+    const importedTypes = importedTypesForModule(graph, moduleIndex);
     try appendLoweredProgram(
       parsed[moduleIndex].program,
+      importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
       inout structs,
       inout enums,

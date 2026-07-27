@@ -741,6 +741,16 @@ types and colliding module-private symbols remain the next nominal-identity
 pressure test. Until canonical emitted identities land, duplicate type or
 function spellings fail before C generation instead of silently colliding.
 
+The first nominal aggregate crossing now uses the resolved graph instead of
+source-spelling inference. A dependency exports `Point` and a factory; its
+consumer selectively aliases the type to `Coordinate` and the factory to
+`coordinate`, stores the inferred result, passes it through a local function,
+and reads both fields. Native lowering canonicalizes both aliases back to the
+one emitted `Z_Point` identity and executes unchanged. This tier admits only
+non-generic, cleanup-free structs whose fields are scalar, so imported ownership
+cannot silently lose cleanup while the cross-module cleanup model is still
+being built.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are
