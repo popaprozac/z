@@ -643,6 +643,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    source-to-native path. It is not yet the production emitter: Stage 0 remains
    authoritative for the full language, module linking, ownership cleanup,
    runtime types, foreign interop, and production diagnostics.
+   The scalar tier now emits `u8` and `usize` in addition to `i32`. Checked
+   addition, subtraction, and multiplication use the semantic result type to
+   choose width-correct overflow helpers, which is a prerequisite for native
+   compiler arrays and source offsets rather than an unchecked C convenience.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

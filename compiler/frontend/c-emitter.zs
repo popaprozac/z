@@ -21,6 +21,8 @@ import {
 
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
+  if (type.kind == LoweredTypeKind.u8Type) return "uint8_t";
+  if (type.kind == LoweredTypeKind.usizeType) return "size_t";
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
@@ -76,20 +78,27 @@ function appendExpression(
     return;
   }
   if (
-    declaration.expressions[index].kind == LoweredExpressionKind.checkedAddI32
-    || declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractI32
-    || declaration.expressions[index].kind == LoweredExpressionKind.checkedMultiplyI32
+    declaration.expressions[index].kind == LoweredExpressionKind.checkedAddInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedMultiplyInteger
   ) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed checked binary expression";
     }
-    if (declaration.expressions[index].kind == LoweredExpressionKind.checkedAddI32) {
-      output.append("z_stage1_checked_add_i32(");
-    } else if (
-      declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractI32
+    output.append("z_stage1_checked_");
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedAddInteger
     ) {
-      output.append("z_stage1_checked_subtract_i32(");
-    } else output.append("z_stage1_checked_multiply_i32(");
+      output.append("add_");
+    } else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedSubtractInteger
+    ) {
+      output.append("subtract_");
+    } else output.append("multiply_");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
     const left = declaration.expressions[index].children[0];
     const right = declaration.expressions[index].children[1];
     try appendExpression(inout output, declaration, left);
@@ -98,12 +107,17 @@ function appendExpression(
     output.append(")");
     return;
   }
-  if (declaration.expressions[index].kind == LoweredExpressionKind.checkedNegateI32) {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.checkedNegateInteger
+  ) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed checked negate expression";
     }
     const operand = declaration.expressions[index].children[0];
-    output.append("z_stage1_checked_negate_i32(");
+    output.append("z_stage1_checked_negate_");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
     try appendExpression(inout output, declaration, operand);
     output.append(")");
     return;
@@ -960,6 +974,36 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_negate_i32(int32_t value) {\n");
   output.append("  int32_t result;\n");
   output.append("  if (__builtin_sub_overflow(0, value, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_add_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  uint8_t result;\n");
+  output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_subtract_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  uint8_t result;\n");
+  output.append("  if (__builtin_sub_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_multiply_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  uint8_t result;\n");
+  output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_add_usize(size_t left, size_t right) {\n");
+  output.append("  size_t result;\n");
+  output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_subtract_usize(size_t left, size_t right) {\n");
+  output.append("  size_t result;\n");
+  output.append("  if (__builtin_sub_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_multiply_usize(size_t left, size_t right) {\n");
+  output.append("  size_t result;\n");
+  output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);

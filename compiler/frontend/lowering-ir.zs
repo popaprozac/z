@@ -32,6 +32,8 @@ export enum LoweredTypeKind {
   voidType,
   booleanType,
   i32Type,
+  u8Type,
+  usizeType,
   structType,
   enumType,
 }
@@ -75,10 +77,10 @@ export enum LoweredExpressionKind {
   receiverValue,
   integerValue,
   booleanValue,
-  checkedAddI32,
-  checkedSubtractI32,
-  checkedMultiplyI32,
-  checkedNegateI32,
+  checkedAddInteger,
+  checkedSubtractInteger,
+  checkedMultiplyInteger,
+  checkedNegateInteger,
   moveValue,
   unaryOperation,
   binaryOperation,
@@ -209,6 +211,8 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
+  if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.usizeType) return "usize";
   return type.name.copyBytes(0, type.name.byteLength);
 }
 
@@ -241,6 +245,10 @@ function lowerTypeName(
     return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   }
   if (name == "i32") return LoweredType({ kind: LoweredTypeKind.i32Type, name: "" });
+  if (name == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
+  if (name == "usize") {
+    return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
+  }
   match (intrinsicOptionPayloadName(name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -1363,6 +1371,38 @@ function resolvedCallTarget(
   return Option<String>.none;
 }
 
+function resolvedExpressionTypeName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  for (const resolution of evidence.expressionResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return Option.some(resolution.typeName.copyBytes(
+      0,
+      resolution.typeName.byteLength
+    ));
+  }
+  return Option<String>.none;
+}
+
+function checkedIntegerTypeName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => {
+      if (name == "u8" || name == "usize" || name == "i32") return name;
+    }
+    none => {}
+  }
+  return "i32";
+}
+
 function importedCallTarget(
   in program: Program,
   in localName: String
@@ -1499,7 +1539,9 @@ function lowerExpression(
       inout output
     );
     let kind = LoweredExpressionKind.unaryOperation;
-    if (tree.nodes[index].value == "-") kind = LoweredExpressionKind.checkedNegateI32;
+    if (tree.nodes[index].value == "-") {
+      kind = LoweredExpressionKind.checkedNegateInteger;
+    }
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
     else if (
       tree.nodes[index].value != "!"
@@ -1511,10 +1553,16 @@ function lowerExpression(
     }
     let children = Array<usize>();
     children.push(operand);
+    const operation = kind == LoweredExpressionKind.checkedNegateInteger
+      ? checkedIntegerTypeName(evidence, tree, index)
+      : tree.nodes[index].value.copyBytes(
+        0,
+        tree.nodes[index].value.byteLength
+      );
     return pushExpression(
       inout output,
       kind,
-      tree.nodes[index].value,
+      operation,
       children,
       Array<String>()
     );
@@ -1542,9 +1590,13 @@ function lowerExpression(
       inout output
     );
     let kind = LoweredExpressionKind.binaryOperation;
-    if (tree.nodes[index].value == "+") kind = LoweredExpressionKind.checkedAddI32;
-    else if (tree.nodes[index].value == "-") kind = LoweredExpressionKind.checkedSubtractI32;
-    else if (tree.nodes[index].value == "*") kind = LoweredExpressionKind.checkedMultiplyI32;
+    if (tree.nodes[index].value == "+") {
+      kind = LoweredExpressionKind.checkedAddInteger;
+    } else if (tree.nodes[index].value == "-") {
+      kind = LoweredExpressionKind.checkedSubtractInteger;
+    } else if (tree.nodes[index].value == "*") {
+      kind = LoweredExpressionKind.checkedMultiplyInteger;
+    }
     else if (
       tree.nodes[index].value != "=="
       && tree.nodes[index].value != "!="
@@ -1563,10 +1615,20 @@ function lowerExpression(
     let children = Array<usize>();
     children.push(left);
     children.push(right);
+    const operation = (
+      kind == LoweredExpressionKind.checkedAddInteger
+      || kind == LoweredExpressionKind.checkedSubtractInteger
+      || kind == LoweredExpressionKind.checkedMultiplyInteger
+    )
+      ? checkedIntegerTypeName(evidence, tree, index)
+      : tree.nodes[index].value.copyBytes(
+        0,
+        tree.nodes[index].value.byteLength
+      );
     return pushExpression(
       inout output,
       kind,
-      tree.nodes[index].value,
+      operation,
       children,
       Array<String>()
     );

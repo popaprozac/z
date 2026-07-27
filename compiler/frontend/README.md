@@ -166,7 +166,10 @@ being re-inferred by the emitter.
 `self-host-emit` now consumes the canonical graph's dependency order and lowers
 all discovered modules rather than rejecting an entry import. The first
 executable tier covers selectively imported scalar functions in one generated C
-translation unit. A local selective alias is resolved back to the exported
+translation unit. Native scalar emission includes `i32`, `u8`, and `usize`;
+checked arithmetic selects a width-correct helper from native semantic evidence
+instead of treating every integer expression as `i32`. A local selective alias
+is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

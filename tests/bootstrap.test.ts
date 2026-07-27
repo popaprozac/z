@@ -8408,6 +8408,46 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const controlFlowExecution = spawnSync(controlFlowExecutable, [], { encoding: "utf8" });
   assert.equal(controlFlowExecution.status, 0, controlFlowExecution.stderr);
 
+  const nativeIntegerInput = resolve(directory, "native-integers.zs");
+  writeFileSync(
+    nativeIntegerInput,
+    "function addSize(value: usize): usize { return value + 2; }\n"
+      + "function doubleByte(value: u8): u8 { return value * 2; }\n"
+      + "function main(): i32 {\n"
+      + "  const size: usize = 20;\n"
+      + "  const byte: u8 = 11;\n"
+      + "  if (addSize(size) == 22 && doubleByte(byte) == 22) return 0;\n"
+      + "  return 1;\n"
+      + "}\n",
+  );
+  const nativeIntegerEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", nativeIntegerInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeIntegerEmission.status, 0, nativeIntegerEmission.stderr);
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /size_t addSize\(size_t value\).*?z_stage1_checked_add_usize\(value, 2\)/s,
+  );
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /uint8_t doubleByte\(uint8_t value\).*?z_stage1_checked_multiply_u8\(value, 2\)/s,
+  );
+  const nativeIntegerExecutable = resolve(directory, "native-integers");
+  const nativeIntegerCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", nativeIntegerExecutable],
+    { encoding: "utf8", input: nativeIntegerEmission.stdout },
+  );
+  assert.equal(nativeIntegerCompilation.status, 0, nativeIntegerCompilation.stderr);
+  const nativeIntegerExecution = spawnSync(
+    nativeIntegerExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeIntegerExecution.status, 0, nativeIntegerExecution.stderr);
+
   const overflowInput = resolve(directory, "overflow.zs");
   writeFileSync(
     overflowInput,
