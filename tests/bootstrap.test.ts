@@ -8269,6 +8269,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
     payloadEnumEmission.stdout,
     /return \(Z_Reading\)\{\.tag = Z_ReadingTag_idle\};/,
   );
+  assert.match(
+    payloadEnumEmission.stdout,
+    /switch \(reading\.tag\).*?case Z_ReadingTag_count: \{\n      const int32_t value = reading\.payload\.count;\n      return value;/s,
+  );
   const payloadEnumExecutable = resolve(directory, "payload-enum");
   const payloadEnumCompilation = spawnSync(
     "clang",
@@ -8400,6 +8404,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     cleanupFlowEmission.stdout,
     /conditionalLocal\(bool transfer\).*?Z_Resource resource = .*?;\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+  );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /matchCleanup\(Z_Resource resource, Z_Decision decision\).*?case Z_Decision_keep: \{.*?Z_Resource_deinit\(&resource\);.*?case Z_Decision_use: \{.*?Z_Resource_deinit\(&resource\);/s,
   );
   const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
   const cleanupFlowCompilation = spawnSync(

@@ -407,6 +407,76 @@ function appendStatement(
     output.append(";\n");
     return;
   }
+  if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
+    appendIndent(inout output, depth);
+    output.append("switch (");
+    match (in declaration.statements[index].expression) {
+      some(subject) => {
+        try appendExpression(inout output, declaration, subject);
+        if (declaration.statements[index].labels.length > 0) {
+          output.append(".tag");
+        }
+      }
+      none => throw "native C emission received a match without a subject";
+    }
+    output.append(") {\n");
+    for (const arm of declaration.statements[index].children) {
+      if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
+        throw "native C emission received a malformed match arm";
+      }
+      appendIndent(inout output, depth + 1);
+      output.append("case Z_");
+      output.append(declaration.statements[index].name);
+      if (declaration.statements[index].labels.length > 0) output.append("Tag");
+      output.append("_");
+      output.append(declaration.statements[arm].name);
+      output.append(": {\n");
+      match (in declaration.statements[arm].type) {
+        some(type) => {
+          if (declaration.statements[arm].labels.length != 1) {
+            throw "native C emission received a payload arm without one binding";
+          }
+          appendIndent(inout output, depth + 2);
+          output.append("const ");
+          const payloadType = try cType(type);
+          output.append(payloadType);
+          output.append(" ");
+          output.append(declaration.statements[arm].labels[0]);
+          output.append(" = ");
+          match (in declaration.statements[index].expression) {
+            some(subject) => try appendExpression(
+              inout output,
+              declaration,
+              subject
+            );
+            none => throw "native C emission received a match without a subject";
+          }
+          output.append(".payload.");
+          output.append(declaration.statements[arm].name);
+          output.append(";\n");
+        }
+        none => {}
+      }
+      for (const child of declaration.statements[arm].children) {
+        try appendStatement(inout output, declaration, child, depth + 2);
+      }
+      appendCleanups(
+        inout output,
+        declaration.statements[arm].cleanups,
+        depth + 2
+      );
+      appendIndent(inout output, depth + 2);
+      output.append("break;\n");
+      appendIndent(inout output, depth + 1);
+      output.append("}\n");
+    }
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    return;
+  }
+  if (declaration.statements[index].kind == LoweredStatementKind.matchArmStatement) {
+    throw "native C emission received a detached match arm";
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
     appendIndent(inout output, depth);
     output.append("{\n");

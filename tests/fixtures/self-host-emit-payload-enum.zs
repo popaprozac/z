@@ -11,8 +11,15 @@ function makeIdle(): Reading {
   return Reading.idle;
 }
 
+function read(reading: Reading): i32 {
+  match (reading) {
+    count(value) => return value;
+    idle => return 0;
+  }
+}
+
 function main(): i32 {
-  makeCount(42);
+  const reading: Reading = makeCount(42);
   makeIdle();
-  return 42;
+  return read(reading);
 }

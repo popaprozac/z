@@ -93,6 +93,8 @@ export enum LoweredStatementKind {
   blockStatement,
   ifStatement,
   whileStatement,
+  matchStatement,
+  matchArmStatement,
   breakStatement,
   continueStatement,
 }
@@ -107,6 +109,7 @@ export struct LoweredStatement {
   children: Array<usize>;
   cleanups: Array<LoweredCleanup>;
   liveFlag: String;
+  labels: Array<String>;
 }
 
 export struct LoweredCleanup {
@@ -399,6 +402,53 @@ function planCleanupStatement(
   if (arena.nodes[sourceIndex].kind == StatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
     return;
+  }
+  if (arena.nodes[sourceIndex].kind == StatementKind.matchStatement) {
+    match (in arena.nodes[sourceIndex].expression) {
+      some(syntax) => {
+        match (in syntax.tree) {
+          some(tree) => {
+            const root = tree.root;
+            let armPosition: usize = 1;
+            while (armPosition < tree.nodes[root].children.length) {
+              const arm = tree.nodes[root].children[armPosition];
+              const loweredArm = statements[loweredIndex].children[armPosition - 1];
+              let sourceRoots = Array<usize>();
+              for (const bodyIndex of tree.nodes[arm].statements) {
+                sourceRoots.push(bodyIndex);
+              }
+              let loweredRoots = Array<usize>();
+              for (const bodyIndex of statements[loweredArm].children) {
+                loweredRoots.push(bodyIndex);
+              }
+              const introduced = try planCleanupSequence(
+                program,
+                arena,
+                ownerName,
+                sourceRoots,
+                loweredRoots,
+                live,
+                inout statements,
+                inout liveFlags,
+                insideLoop,
+                loopCleanups
+              );
+              if (sequenceFallsThrough(arena, sourceRoots)) {
+                appendStatementCleanupCopies(
+                  inout statements,
+                  loweredArm,
+                  introduced
+                );
+              }
+              armPosition = armPosition + 1;
+            }
+            return;
+          }
+          none => throw "native cleanup planning received an opaque match";
+        }
+      }
+      none => throw "native cleanup planning received a match without an expression";
+    }
   }
   if (arena.nodes[sourceIndex].kind == StatementKind.blockStatement) {
     let sourceChildren = Array<usize>();
@@ -861,6 +911,41 @@ function lowerExpressionSyntax(
   };
 }
 
+function matchEnumIndex(
+  in program: Program,
+  in tree: ExpressionTree,
+  root: usize
+): usize throws String {
+  let found = Option<usize>.none;
+  let enumPosition: usize = 0;
+  while (enumPosition < program.enums.length) {
+    if (program.enums[enumPosition].variants.length == tree.nodes[root].children.length - 1) {
+      let allPresent = true;
+      let armPosition: usize = 1;
+      while (armPosition < tree.nodes[root].children.length) {
+        const arm = tree.nodes[root].children[armPosition];
+        let present = false;
+        for (const variant of program.enums[enumPosition].variants) {
+          if (variant.name == tree.nodes[arm].value) present = true;
+        }
+        if (!present) allPresent = false;
+        armPosition = armPosition + 1;
+      }
+      if (allPresent) {
+        match (found) {
+          some(_) => throw "native match lowering cannot disambiguate enum variants yet";
+          none => found = Option.some(enumPosition);
+        }
+      }
+    }
+    enumPosition = enumPosition + 1;
+  }
+  return match (found) {
+    some(index) => index;
+    none => throw "native match lowering could not resolve the subject enum";
+  };
+}
+
 function lowerStatement(
   in program: Program,
   in arena: StatementArena,
@@ -868,6 +953,110 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.matchStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => {
+        match (in syntax.tree) {
+          some(tree) => {
+    const root = tree.root;
+    if (
+      tree.nodes[root].kind != ExpressionKind.matchExpression
+      || tree.nodes[root].children.length < 2
+    ) {
+      throw "native match lowering received a malformed match expression";
+    }
+    const subjectInput = tree.nodes[root].children[0];
+    if (tree.nodes[subjectInput].kind != ExpressionKind.identifierExpression) {
+      throw "native match lowering only supports identifier subjects yet";
+    }
+    const subject = try lowerExpression(program, tree, subjectInput, inout expressions);
+    const declarationIndex = try matchEnumIndex(program, tree, root);
+    let armStatements = Array<usize>();
+    let armPosition: usize = 1;
+    while (armPosition < tree.nodes[root].children.length) {
+      const arm = tree.nodes[root].children[armPosition];
+      if (tree.nodes[arm].kind != ExpressionKind.matchArmExpression) {
+        throw "native match lowering received a malformed match arm";
+      }
+      let payloadType = Option<LoweredType>.none;
+      for (const variant of program.enums[declarationIndex].variants) {
+        if (variant.name == tree.nodes[arm].value) {
+          match (in variant.payload) {
+            some(type) => {
+              const lowered = try lowerType(program, type);
+              payloadType = Option.some(move lowered);
+            }
+            none => {}
+          }
+        }
+      }
+      let labels = Array<String>();
+      if (tree.nodes[arm].children.length > 0) {
+        const binding = tree.nodes[arm].children[0];
+        if (tree.nodes[binding].kind != ExpressionKind.matchBindingExpression) {
+          throw "native match lowering only supports one direct payload binding yet";
+        }
+        labels.push(tree.nodes[binding].value.copyBytes(
+          0,
+          tree.nodes[binding].value.byteLength
+        ));
+      }
+      let children = Array<usize>();
+      for (const bodyIndex of tree.nodes[arm].statements) {
+        const loweredBody = try lowerStatement(
+          program,
+          arena,
+          bodyIndex,
+          inout expressions,
+          inout statements
+        );
+        children.push(loweredBody);
+      }
+      const loweredArm = statements.length;
+      statements.push(LoweredStatement({
+        kind: LoweredStatementKind.matchArmStatement,
+        mutableBinding: false,
+        name: tree.nodes[arm].value.copyBytes(
+          0,
+          tree.nodes[arm].value.byteLength
+        ),
+        type: payloadType,
+        expression: Option<usize>.none,
+        secondExpression: Option<usize>.none,
+        children,
+        cleanups: Array<LoweredCleanup>(),
+        liveFlag: "",
+        labels,
+      }));
+      armStatements.push(loweredArm);
+      armPosition = armPosition + 1;
+    }
+    let labels = Array<String>();
+    if (enumHasPayload(program, declarationIndex)) labels.push("tagged");
+    const outputIndex = statements.length;
+    statements.push(LoweredStatement({
+      kind: LoweredStatementKind.matchStatement,
+      mutableBinding: false,
+      name: program.enums[declarationIndex].name.copyBytes(
+        0,
+        program.enums[declarationIndex].name.byteLength
+      ),
+      type: Option<LoweredType>.none,
+      expression: Option.some(subject),
+      secondExpression: Option<usize>.none,
+      children: armStatements,
+      cleanups: Array<LoweredCleanup>(),
+      liveFlag: "",
+      labels,
+    }));
+    return outputIndex;
+          }
+          none => throw "native match lowering received an opaque match";
+        }
+      }
+      none => throw "native match lowering received a match without an expression";
+    }
+  }
   let kind = LoweredStatementKind.expressionStatement;
   if (arena.nodes[index].kind == StatementKind.variableStatement) {
     kind = LoweredStatementKind.localStatement;
@@ -945,6 +1134,7 @@ function lowerStatement(
     children,
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
+    labels: Array<String>(),
   }));
   return outputIndex;
 }

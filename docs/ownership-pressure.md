@@ -653,6 +653,13 @@ Aggregate payloads remain rejected because accepting their layout before
 active-variant cleanup would reintroduce the shallow ownership bug the prior
 struct work just closed.
 
+Exhaustive statement match now makes that representation consumable. An
+identifier subject emits one typed switch; scalar payload arms bind the active
+union field and execute their lowered statement body. Cleanup planning walks
+the parser's arm-to-statement-arena links, so outer owners and branch locals
+clean on arm returns and fallthrough rather than bypassing ownership through a
+new control-flow form.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

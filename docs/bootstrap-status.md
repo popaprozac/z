@@ -690,8 +690,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    tags, including case values, equality, parameters, returns, and storage in
    value structs. Cleanup-free scalar payload enums now lower to a tag plus
    payload union and support payload construction and return transport.
-   Exhaustive match extraction, aggregate/cleanup-bearing payloads, and
-   `Option`/`Result` representation remain the next enum tier.
+   Exhaustive statement match over identifier subjects emits a typed switch,
+   binds scalar payloads, and carries arm returns/locals through cleanup
+   planning. Match expressions, arbitrary subjects, aggregate/cleanup-bearing
+   payloads, and `Option`/`Result` representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

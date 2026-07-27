@@ -17,6 +17,11 @@ struct AuditedEnvelope {
   }
 }
 
+enum Decision {
+  keep,
+  use,
+}
+
 function record(id: i32): void {
   if (id < 0) return;
 }
@@ -121,6 +126,13 @@ function conditionalLocal(transfer: boolean): i32 {
   return resource.id;
 }
 
+function matchCleanup(resource: Resource, decision: Decision): i32 {
+  match (decision) {
+    keep => return resource.id;
+    use => return resource.id + 1;
+  }
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
@@ -141,5 +153,7 @@ function main(): i32 {
     + conditionalLocal(true)
     + conditionalLocal(false)
     - 16
+    + matchCleanup(Resource({ id: 5 }), Decision.keep)
+    - 5
     - 1;
 }
