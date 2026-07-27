@@ -235,6 +235,9 @@ Direct async calls preserve their success and error effects until `await`.
 proves cold generator construction and intrinsic awaited `.next()` results;
 [`async-errors.zs`](../examples/async/async-errors.zs) proves `attempt await`
 and `try await` without falling back for inferred bindings.
+[`async-tasks.zs`](../examples/async/async-tasks.zs) carries those same effects
+through owned `Task<T, E>` handles and consuming joins; all twelve inferred
+locals are native-authoritative.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

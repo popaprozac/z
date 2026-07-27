@@ -1,10 +1,13 @@
 import { parseDynamicArrayType, parseFixedArrayType, parseSliceType } from "./array-types.ts";
+import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseViewType } from "./view-types.ts";
 
 export function canonicalTypeName(name: string): string {
+  const task = parseTaskType(name);
+  if (task) return displayTaskType(task, canonicalTypeName);
   if (isNullableObjCTypeName(name)) return `${canonicalTypeName(publicObjCTypeName(name))} | null`;
   const view = parseViewType(name);
   if (view) return `view ${canonicalTypeName(view.target)}`;

@@ -435,6 +435,15 @@ evidence. A pending async-call shape now carries success and error types until
 now exports and consumes all seven inferred bindings; the scalar async-error
 example does the same for both of its bindings.
 
+The structured-task application then exposed the adjacent boundary: direct
+async effects were known, but `task operation()` discarded them and awaiting a
+named handle could not recover its success or error type. Native inference now
+materializes source-level `Task<T, E>`, treats it as an owned cleanup-bearing
+handle, consumes it on join, and restores the pending error channel for
+`try`/`attempt`. The unchanged application moved from four to all twelve
+inferred bindings under native authority. Self-analysis now exports 960 binding
+and 3,638 root-expression contracts.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

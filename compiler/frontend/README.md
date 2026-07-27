@@ -171,8 +171,10 @@ methods, declared constructors, and synthesized aggregate fields propagate
 settled parameter types through nested calls and ternary, value-producing `if`,
 and expression-`match` branches. Direct Z async calls retain their pending
 success/error effect until `await`; cold `AsyncGenerator` construction and
-intrinsic awaited advancement use the same model. Opaque expression spans,
-generic trait declarations, foreign calls, remaining task/executor effects,
+intrinsic awaited advancement use the same model. Structured `task` creation
+materializes source-level `Task<T, E>` evidence, and awaiting the handle consumes
+it while restoring the pending success/error effect. Opaque expression spans,
+generic trait declarations, foreign calls, remaining executor effects,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
 Concrete generic call evidence retains source-level nested types such as

@@ -1287,6 +1287,36 @@ function inferExpressionNodeType(
       inout evidence
     );
     if (outcome.byteLength == 0) return "";
+    match (genericTypeShape(outcome)) {
+      some(task) => {
+        if (
+          task.base == "Task"
+          && (task.arguments.length == 1 || task.arguments.length == 2)
+        ) {
+          try consumeOwnedExpressionNode(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            children[0],
+            outcome,
+            false,
+            inout bindings
+          );
+          if (task.arguments.length == 2) {
+            return pendingThrowingCallType(
+              task.arguments[0],
+              task.arguments[1]
+            );
+          }
+          return task.arguments[0].copyBytes(
+            0,
+            task.arguments[0].byteLength
+          );
+        }
+      }
+      none => {}
+    }
     match (pendingAsyncCallShape(outcome)) {
       some(call) => {
         if (call.errorType.byteLength > 0) {
@@ -1299,6 +1329,66 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           "await requires an async call or Task value",
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+      }
+    }
+  }
+  if (kind == ExpressionKind.spawnExpression && children.length == 1) {
+    const asyncContext = valueBindingType(
+      bindings,
+      "__z_native_async_context"
+    );
+    if (asyncContext.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "task requires an enclosing async function",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    if (tree.nodes[children[0]].kind != ExpressionKind.callExpression) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "task requires a direct async function or method call",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    const outcome = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      inout bindings,
+      inout evidence
+    );
+    if (outcome.byteLength == 0) return "";
+    match (pendingAsyncCallShape(outcome)) {
+      some(call) => {
+        let arguments = Array<String>();
+        arguments.push(call.successType.copyBytes(
+          0,
+          call.successType.byteLength
+        ));
+        if (call.errorType.byteLength > 0) {
+          arguments.push(call.errorType.copyBytes(
+            0,
+            call.errorType.byteLength
+          ));
+        }
+        return parameterizedTypeName("Task", arguments);
+      }
+      none => {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "task requires a direct async function or method call",
           tree.nodes[index].line,
           tree.nodes[index].column
         );

@@ -516,7 +516,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    paths, and `NativeSemanticIndex` keys it by canonical module and expression
    offset. The semantic bridge accepts a native expression result only when its
    location, concrete type, and every declaration identity match the linked
-   Stage-0 expression. Generated, opaque, foreign, unsupported task/executor,
+   Stage-0 expression. Generated, opaque, foreign, unsupported executor,
    and otherwise absent roots continue through the Stage-0 fallback. Ordinary native checks report
    expression contracts exported, observed, and used authoritatively as separate
    counts.
@@ -558,6 +558,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    awaited `.next()` advancement follows the same pending-effect path. The
    existing async-generator and scalar async-error examples now export and
    consume every inferred binding contract through native authority.
+   Structured `task operation()` now converts the same pending call effect into
+   source-level `Task<T>` or `Task<T, E>` evidence. Awaiting a named handle
+   consumes its ownership and restores the success/error effect for direct,
+   `try`, or `attempt` handling. The existing async-tasks application moves from
+   four to all twelve inferred bindings under native authority.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -577,7 +582,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    explicit function/method calls and aggregate construction; constrained generic
    bodies may call only methods supplied by their declared traits.
    Foreign/intrinsic method lookup, generic trait declarations, foreign call
-   effects, remaining task/executor async effects,
+   effects, remaining executor-placement effects,
    escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability
    enforcement, and full recursive ownership contexts remain stage-zero work.
@@ -697,7 +702,7 @@ When focused self-hosting work resumes, use this order:
    equality result typing now live in `semantic-operators.zs`; short-circuit
    flow and actual ownership consumption remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
-   foreign/intrinsic and remaining task/executor effect boundaries, escaping
+   foreign/intrinsic and remaining executor-placement boundaries, escaping
    closure environments, precise borrow last-use release, receiver-path
    capabilities, and recursive ownership contexts. Do not port a feature merely
    for nominal completeness; add a realistic corpus case first.
