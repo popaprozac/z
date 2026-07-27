@@ -691,8 +691,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    native lowering itself. Complete source-position identity now distinguishes
    nested expression evidence, match payload bindings export their inferred
    contracts, and uniquely named public field types can flow transitively
-   without a redundant source import. The unchanged compiler graph now reaches
-   nested `try` propagation in `lowerExpressionSyntax`.
+   without a redundant source import. Value-producing match arms can now
+   propagate a direct throwing call through the existing typed `Result`
+   representation. The unchanged compiler graph now reaches integer division
+   in `appendCStringLiteral`.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

@@ -3884,12 +3884,107 @@ function lowerValueDestination(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
   in expression: ExpressionSyntax,
   returnValue: boolean,
   in valueBinding: String,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (
+        tree.nodes[root].kind == ExpressionKind.tryExpression
+        && tree.nodes[root].children.length == 1
+      ) {
+        const attempted = tree.nodes[root].children[0];
+        const innerResult = try directThrowingCallResult(
+          program,
+          importedTypes,
+          tree,
+          attempted
+        );
+        const inner = match (innerResult) {
+          some(declaration) => declaration;
+          none => throw "native value-match try lowering requires one direct throwing function call";
+        };
+        const outerResult = try throwingFunctionResult(
+          program,
+          importedTypes,
+          ownerName
+        );
+        const outer = match (outerResult) {
+          some(declaration) => declaration;
+          none => throw "native value-match try lowering requires an enclosing throwing function";
+        };
+        const call = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          attempted,
+          inout expressions
+        );
+        if (returnValue) {
+          if (inner.name != outer.name) {
+            throw "native returning value-match try lowering requires identical propagated Result storage";
+          }
+          const loweredReturn = statements.length;
+          statements.push(LoweredStatement({
+            kind: LoweredStatementKind.returnStatement,
+            mutableBinding: false,
+            name: "",
+            type: Option<LoweredType>.none,
+            expression: Option.some(call),
+            secondExpression: Option<usize>.none,
+            children: Array<usize>(),
+            cleanups: Array<LoweredCleanup>(),
+            liveFlag: "",
+            labels: Array<String>(),
+            matchConsumesSubject: false,
+            matchBindingNeedsCleanup: false,
+          }));
+          return loweredReturn;
+        }
+        let successType = Option<LoweredType>.none;
+        for (const variant of inner.variants) {
+          if (variant.name != "success") continue;
+          match (in variant.payload) {
+            some(payload) => successType = Option.some(LoweredType({
+              kind: payload.kind,
+              name: payload.name.copyBytes(0, payload.name.byteLength),
+            }));
+            none => {}
+          }
+        }
+        const selectedType = match (successType) {
+          some(type) => type;
+          none => throw "native selecting value-match try lowering requires a success payload";
+        };
+        let labels = Array<String>();
+        labels.push(valueBinding.copyBytes(0, valueBinding.byteLength));
+        labels.push(outer.name.copyBytes(0, outer.name.byteLength));
+        const loweredTry = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.tryStatement,
+          mutableBinding: false,
+          name: inner.name.copyBytes(0, inner.name.byteLength),
+          type: Option<LoweredType>.some(move selectedType),
+          expression: Option.some(call),
+          secondExpression: Option<usize>.none,
+          children: Array<usize>(),
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels,
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+        return loweredTry;
+      }
+    }
+    none => {}
+  }
   const value = try lowerExpressionSyntax(
     program,
     importedTypes,
@@ -3899,12 +3994,34 @@ function lowerValueDestination(
   );
   const loweredBody = statements.length;
   if (returnValue) {
+    let returnedValue = value;
+    const outerResult = try throwingFunctionResult(
+      program,
+      importedTypes,
+      ownerName
+    );
+    match (outerResult) {
+      some(declaration) => {
+        let children = Array<usize>();
+        children.push(value);
+        let labels = Array<String>();
+        labels.push("success");
+        returnedValue = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.enumPayloadValue,
+          declaration.name,
+          children,
+          labels
+        );
+      }
+      none => {}
+    }
     statements.push(LoweredStatement({
       kind: LoweredStatementKind.returnStatement,
       mutableBinding: false,
       name: "",
       type: Option<LoweredType>.none,
-      expression: Option.some(value),
+      expression: Option.some(returnedValue),
       secondExpression: Option<usize>.none,
       children: Array<usize>(),
       cleanups: Array<LoweredCleanup>(),
@@ -3975,6 +4092,7 @@ function lowerValueArmStatement(
         program,
         importedTypes,
         evidence,
+        ownerName,
         expression,
         returnValue,
         valueBinding,

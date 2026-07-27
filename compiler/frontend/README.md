@@ -210,9 +210,11 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   Indexed and member expressions now recover their types through complete
   source-position evidence, match payload bindings export their inferred type,
   and uniquely named public types remain usable when they flow transitively
-  through an imported field. The compiler probe now reaches nested `try`
-  propagation while emitting `lowerExpressionSyntax`. A local selective alias
-  is resolved back to the exported
+  through an imported field. A value-producing match arm can now propagate one
+  direct throwing call through `try`, forwarding a returning arm's compatible
+  `Result` or assigning a selecting arm's success payload. The compiler probe
+  now reaches integer division in `appendCStringLiteral`. A local selective
+  alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

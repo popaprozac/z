@@ -8234,6 +8234,34 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(transitiveTypeExecution.status, 42, transitiveTypeExecution.stderr);
 
+  const matchTryInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-match-try.zs",
+  );
+  const matchTryEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", matchTryInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(matchTryEmission.status, 0, matchTryEmission.stderr);
+  assert.match(
+    matchTryEmission.stdout,
+    /case Z___z_Option_i32Tag_some:.*?return readValue\(observed\);/s,
+  );
+  const matchTryExecutable = resolve(directory, "match-try");
+  const matchTryCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", matchTryExecutable],
+    { encoding: "utf8", input: matchTryEmission.stdout },
+  );
+  assert.equal(matchTryCompilation.status, 0, matchTryCompilation.stderr);
+  const matchTryExecution = spawnSync(
+    matchTryExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(matchTryExecution.status, 42, matchTryExecution.stderr);
+
   const moduleInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
