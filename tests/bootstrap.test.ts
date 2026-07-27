@@ -8176,7 +8176,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /Z_Point makePoint\(int32_t x, int32_t y\) \{.*?return \(Z_Point\)\{\.x = x, \.y = y\};.*?int32_t sum\(Z_Point point\) \{.*?point\.x.*?point\.y.*?int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?return add\(sum\(point\), 0\);/s,
+    /Z_Point makePoint\(int32_t x, int32_t y\) \{.*?return \(Z_Point\)\{\.x = x, \.y = y\};.*?int32_t sum\(Z_Point point\) \{.*?point\.x.*?point\.y.*?int32_t resourceId\(Z_Resource resource\) \{.*?Z_Resource_deinit\(&resource\);.*?int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?Z_Resource resource = makeResource\(0\);.*?return add\(sum\(point\), resourceId\(resource\)\);/s,
+  );
+  assert.equal(
+    moduleEmission.stdout.match(/Z_Resource_deinit\(&resource\);/g)?.length,
+    1,
   );
   const moduleExecutable = resolve(directory, "modules");
   const moduleCompilation = spawnSync(

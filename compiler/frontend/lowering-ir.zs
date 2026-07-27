@@ -159,6 +159,7 @@ struct LoweredImportedType {
   localName: String;
   targetName: String;
   kind: LoweredTypeKind;
+  needsDeinit: boolean;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -449,6 +450,24 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
   return false;
 }
 
+function moduleTypeNeedsCleanup(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType
+): boolean {
+  if (typeNeedsCleanup(program, type)) return true;
+  for (const imported of importedTypes) {
+    if (
+      imported.kind == type.kind
+      && (
+        imported.localName == type.name
+        || imported.targetName == type.name
+      )
+    ) return imported.needsDeinit;
+  }
+  return false;
+}
+
 function intrinsicOptionDeclaration(
   in program: Program,
   in name: String
@@ -571,6 +590,7 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
 }
 
 function treeMovesName(
+  in program: Program,
   in tree: ExpressionTree,
   index: usize,
   in name: String
@@ -597,17 +617,45 @@ function treeMovesName(
       && tree.nodes[operand].value == name
     ) return true;
   }
+  if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length > 0
+  ) {
+    const callee = tree.nodes[index].children[0];
+    if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      for (const declaration of program.functions) {
+        if (declaration.name != tree.nodes[callee].value) continue;
+        let parameter: usize = 0;
+        while (
+          parameter < declaration.parameters.length
+          && parameter + 1 < tree.nodes[index].children.length
+        ) {
+          const argument = tree.nodes[index].children[parameter + 1];
+          if (
+            declaration.parameters[parameter].mode == ParameterMode.value
+            && tree.nodes[argument].kind == ExpressionKind.identifierExpression
+            && tree.nodes[argument].value == name
+          ) return true;
+          parameter = parameter + 1;
+        }
+      }
+    }
+  }
   for (const child of tree.nodes[index].children) {
-    if (treeMovesName(tree, child, name)) return true;
+    if (treeMovesName(program, tree, child, name)) return true;
   }
   return false;
 }
 
-function syntaxMovesName(in expression: ExpressionSyntax, in name: String): boolean {
+function syntaxMovesName(
+  in program: Program,
+  in expression: ExpressionSyntax,
+  in name: String
+): boolean {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select treeMovesName(tree, root, name);
+      select treeMovesName(program, tree, root, name);
     }
     none => false;
   };
@@ -626,19 +674,20 @@ function syntaxIsIdentifier(
 }
 
 function arenaMovesName(
+  in program: Program,
   in arena: StatementArena,
   in name: String
 ): boolean {
   for (const statement of arena.nodes) {
     match (in statement.expression) {
       some(expression) => {
-        if (syntaxMovesName(expression, name)) return true;
+        if (syntaxMovesName(program, expression, name)) return true;
       }
       none => {}
     }
     match (in statement.secondExpression) {
       some(expression) => {
-        if (syntaxMovesName(expression, name)) return true;
+        if (syntaxMovesName(program, expression, name)) return true;
       }
       none => {}
     }
@@ -765,6 +814,7 @@ function attachReplacementCleanup(
 
 function planCleanupStatement(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
   in ownerName: String,
   sourceIndex: usize,
@@ -806,6 +856,7 @@ function planCleanupStatement(
     const loweredMatch = statements[loweredIndex].children[0];
     try planCleanupStatement(
       program,
+      importedTypes,
       arena,
       ownerName,
       sourceIndex,
@@ -878,6 +929,7 @@ function planCleanupStatement(
               }
               const introduced = try planCleanupSequence(
                 program,
+                importedTypes,
                 arena,
                 ownerName,
                 sourceRoots,
@@ -925,6 +977,7 @@ function planCleanupStatement(
     }
     const introduced = try planCleanupSequence(
       program,
+      importedTypes,
       arena,
       ownerName,
       sourceChildren,
@@ -964,6 +1017,7 @@ function planCleanupStatement(
       }
       try planCleanupStatement(
         program,
+        importedTypes,
         arena,
         ownerName,
         sourceChild,
@@ -981,6 +1035,7 @@ function planCleanupStatement(
 
 function planCleanupSequence(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
   in ownerName: String,
   in sourceRoots: Array<usize>,
@@ -1015,8 +1070,12 @@ function planCleanupSequence(
             kind: type.kind,
             name: type.name.copyBytes(0, type.name.byteLength),
           });
-          if (typeNeedsCleanup(program, ownedType)) {
-            const moved = arenaMovesName(arena, arena.nodes[sourceIndex].name);
+          if (moduleTypeNeedsCleanup(program, importedTypes, ownedType)) {
+            const moved = arenaMovesName(
+              program,
+              arena,
+              arena.nodes[sourceIndex].name
+            );
             if (moved && arenaHasLoop(arena)) {
               throw `native cleanup lowering does not support path-sensitive transfer of ${arena.nodes[sourceIndex].name} in ${ownerName} yet`;
             }
@@ -1066,6 +1125,7 @@ function planCleanupSequence(
     }
     try planCleanupStatement(
       program,
+      importedTypes,
       arena,
       ownerName,
       sourceIndex,
@@ -2110,7 +2170,7 @@ function lowerMatchTree(
     }
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => tree.nodes[root].value != "in"
-        && typeNeedsCleanup(program, type)
+        && moduleTypeNeedsCleanup(program, importedTypes, type)
         && !payloadTransfersOut;
       none => false;
     };
@@ -2618,8 +2678,12 @@ function lowerFunction(
       importedTypes,
       parameter.type
     );
-    if (typeNeedsCleanup(program, parameterType)) {
-      const moved = arenaMovesName(declaration.body, parameter.name);
+    if (moduleTypeNeedsCleanup(program, importedTypes, parameterType)) {
+      const moved = arenaMovesName(
+        program,
+        declaration.body,
+        parameter.name
+      );
       if (moved && arenaHasLoop(declaration.body)) {
         throw `native cleanup lowering does not support path-sensitive transfer of ${parameter.name} in ${declaration.name} yet`;
       }
@@ -2669,6 +2733,7 @@ function lowerFunction(
   const rootLoopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
+    importedTypes,
     declaration.body,
     declaration.name,
     sourceRoots,
@@ -2738,6 +2803,7 @@ function lowerDeinitializer(
   const loopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
+    importedTypes,
     body,
     `${ownerName}.deinit`,
     sourceRoots,
@@ -2903,32 +2969,21 @@ function collectIntrinsicEnums(
   }
 }
 
-function importedStructIsCleanupFree(
-  in graph: ModuleGraph,
-  moduleIndex: usize,
-  symbolIndex: usize
-): boolean {
-  match (in graph.modules[moduleIndex].symbols[symbolIndex].typeSignature) {
-    some(signature) => {
-      if (
-        signature.customDeinit
-        || signature.typeParameters.length > 0
-        || signature.methods.length > 0
-      ) return false;
-      for (const field of signature.fields) {
-        if (
-          field.typeName != "boolean"
-          && field.typeName != "i32"
-        ) return false;
-      }
-      return true;
+function loweredStructCleanup(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): Option<boolean> {
+  for (const declaration of structs) {
+    if (declaration.name == name) {
+      return Option.some(declaration.needsDeinit);
     }
-    none => return false;
   }
+  return Option<boolean>.none;
 }
 
 function importedTypesForModule(
   in graph: ModuleGraph,
+  in structs: Array<LoweredStruct>,
   moduleIndex: usize
 ): Array<LoweredImportedType> {
   let types = Array<LoweredImportedType>();
@@ -2948,16 +3003,22 @@ function importedTypesForModule(
     if (
       graph.modules[targetModule].symbols[targetSymbol].kind
         == ModuleSymbolKind.structSymbol
-      && importedStructIsCleanupFree(graph, targetModule, targetSymbol)
     ) {
-      types.push(LoweredImportedType({
-        localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-        targetName: graph.modules[targetModule].symbols[targetSymbol].name.copyBytes(
-          0,
-          graph.modules[targetModule].symbols[targetSymbol].name.byteLength
-        ),
-        kind: LoweredTypeKind.structType,
-      }));
+      const targetName = graph.modules[targetModule].symbols[
+        targetSymbol
+      ].name.copyBytes(
+        0,
+        graph.modules[targetModule].symbols[targetSymbol].name.byteLength
+      );
+      match (loweredStructCleanup(structs, targetName)) {
+        some(needsDeinit) => types.push(LoweredImportedType({
+          localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+          targetName,
+          kind: LoweredTypeKind.structType,
+          needsDeinit,
+        }));
+        none => {}
+      }
     }
   }
   return types;
@@ -3115,7 +3176,11 @@ export function lowerModules(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   for (const moduleIndex of graph.dependencyOrder) {
-    const importedTypes = importedTypesForModule(graph, moduleIndex);
+    const importedTypes = importedTypesForModule(
+      graph,
+      structs,
+      moduleIndex
+    );
     try appendLoweredProgram(
       parsed[moduleIndex].program,
       importedTypes,

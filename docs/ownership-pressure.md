@@ -746,10 +746,15 @@ source-spelling inference. A dependency exports `Point` and a factory; its
 consumer selectively aliases the type to `Coordinate` and the factory to
 `coordinate`, stores the inferred result, passes it through a local function,
 and reads both fields. Native lowering canonicalizes both aliases back to the
-one emitted `Z_Point` identity and executes unchanged. This tier admits only
-non-generic, cleanup-free structs whose fields are scalar, so imported ownership
-cannot silently lose cleanup while the cross-module cleanup model is still
-being built.
+one emitted `Z_Point` identity and executes unchanged. A second exported
+`Resource` adds `deinit`; its alias retains cleanup metadata, an inferred local
+owns the factory result, and ordinary owned argument passing transfers it to a
+local consumer. Generated C destroys the consumer parameter exactly once and
+does not repeat cleanup in the caller. This exposed and closed an emitter gap:
+the cleanup planner previously recognized only explicit `move` syntax, although
+ordinary owned parameters also move cleanup-bearing values by language design.
+Local wrappers containing imported owners and imported enum payloads remain the
+next recursive cleanup test.
 
 What the compiler proves:
 

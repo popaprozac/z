@@ -169,12 +169,13 @@ executable tier covers selectively imported scalar functions in one generated C
 translation unit. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
-emission rather than generating an ambiguous translation unit. Cleanup-free
-scalar-field structs now retain canonical graph identity across a selective
-type alias, factory return, inferred local, parameter, and field projection.
-Imported cleanup-bearing/nested aggregates, direct imported construction,
-collision-safe private symbol names, and separate-object emission remain
-explicit follow-ups.
+emission rather than generating an ambiguous translation unit. Value structs
+now retain canonical graph identity and cleanup metadata across a selective type
+alias, factory return, inferred local, parameter, and field projection. An
+implicit owned-argument transfer suppresses caller cleanup and the imported
+callee destroys the parameter exactly once. Local wrappers containing imported
+owners, direct imported construction, imported enums, collision-safe private
+symbol names, and separate-object emission remain explicit follow-ups.
 
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
 branches, loop fallthrough and `break`/`continue`, replacement assignment,
