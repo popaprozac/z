@@ -31,7 +31,7 @@ function inspectResource(option: Option<Resource>): i32 {
 }
 
 function discardResource(): i32 {
-  const held: Option<Resource> = resource(0);
+  const held = resource(0);
   return 0;
 }
 

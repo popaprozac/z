@@ -17,6 +17,7 @@ import {
   StatementKind,
   TypeReference,
 } from "./parser.zs";
+import { ModuleSemanticEvidence } from "./semantic-model.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 export enum LoweredTypeKind {
@@ -269,6 +270,25 @@ function lowerTypeName(
 
 function lowerType(in program: Program, in type: TypeReference): LoweredType throws String {
   return try lowerTypeName(program, type.name);
+}
+
+function lowerBindingType(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize
+): LoweredType throws String {
+  match (in arena.nodes[index].typeAnnotation) {
+    some(annotation) => return try lowerType(program, annotation);
+    none => {}
+  }
+  for (const binding of evidence.bindingResolutions) {
+    if (
+      binding.offset == arena.nodes[index].nameOffset
+      && binding.name == arena.nodes[index].name
+    ) return try lowerTypeName(program, binding.typeName);
+  }
+  throw `native lowering could not find the inferred type for local ${arena.nodes[index].name}`;
 }
 
 function enumNeedsCleanup(
@@ -931,10 +951,21 @@ function planCleanupSequence(
     const sourceIndex = sourceRoots[rootIndex];
     const loweredIndex = loweredRoots[rootIndex];
     if (arena.nodes[sourceIndex].kind == StatementKind.variableStatement) {
-      match (in arena.nodes[sourceIndex].typeAnnotation) {
-        some(annotation) => {
-          const type = try lowerType(program, annotation);
-          if (typeNeedsCleanup(program, type)) {
+      let localType = Option<LoweredType>.none;
+      match (in statements[loweredIndex].type) {
+        some(type) => localType = Option.some(LoweredType({
+          kind: type.kind,
+          name: type.name.copyBytes(0, type.name.byteLength),
+        }));
+        none => {}
+      }
+      match (localType) {
+        some(type) => {
+          const ownedType = LoweredType({
+            kind: type.kind,
+            name: type.name.copyBytes(0, type.name.byteLength),
+          });
+          if (typeNeedsCleanup(program, ownedType)) {
             const moved = arenaMovesName(arena, arena.nodes[sourceIndex].name);
             if (moved && arenaHasLoop(arena)) {
               throw `native cleanup lowering does not support path-sensitive transfer of ${arena.nodes[sourceIndex].name} in ${ownerName} yet`;
@@ -961,7 +992,7 @@ function planCleanupSequence(
                   0,
                   arena.nodes[sourceIndex].name.byteLength
                 ),
-                type: move type,
+                type: move ownedType,
                 guard: move guard,
               });
               live.push(copyCleanup(cleanup));
@@ -1455,6 +1486,7 @@ function directThrowingCallResult(
 
 function matchSubjectTypeName(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   in tree: ExpressionTree,
@@ -1524,7 +1556,19 @@ function matchSubjectTypeName(
             0,
             type.name.byteLength
           ));
-          none => {}
+          none => {
+            for (const binding of evidence.bindingResolutions) {
+              if (
+                binding.offset == statement.nameOffset
+                && binding.name == statement.name
+              ) {
+                return Option.some(binding.typeName.copyBytes(
+                  0,
+                  binding.typeName.byteLength
+                ));
+              }
+            }
+          }
         }
       }
     }
@@ -1562,13 +1606,21 @@ function matchSubjectTypeName(
 
 function matchEnumDeclaration(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   in tree: ExpressionTree,
   root: usize
 ): LoweredEnum throws String {
   const subjectInput = tree.nodes[root].children[0];
-  match (matchSubjectTypeName(program, arena, ownerName, tree, subjectInput)) {
+  match (matchSubjectTypeName(
+    program,
+    evidence,
+    arena,
+    ownerName,
+    tree,
+    subjectInput
+  )) {
     some(name) => {
       const intrinsic = try intrinsicEnumDeclaration(program, name);
       match (intrinsic) {
@@ -1695,6 +1747,7 @@ function lowerValueDestination(
 
 function lowerValueArmStatement(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   index: usize,
@@ -1734,6 +1787,7 @@ function lowerValueArmStatement(
         }
         loweredChild = try lowerValueArmStatement(
           program,
+          evidence,
           arena,
           ownerName,
           sourceChild,
@@ -1745,6 +1799,7 @@ function lowerValueArmStatement(
       } else {
         loweredChild = try lowerStatement(
           program,
+          evidence,
           arena,
           ownerName,
           sourceChild,
@@ -1777,6 +1832,7 @@ function lowerValueArmStatement(
 
 function lowerMatchTree(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   in tree: ExpressionTree,
@@ -1796,6 +1852,7 @@ function lowerMatchTree(
   const subject = try lowerExpression(program, tree, subjectInput, inout expressions);
   const declaration = try matchEnumDeclaration(
     program,
+    evidence,
     arena,
     ownerName,
     tree,
@@ -1846,6 +1903,7 @@ function lowerMatchTree(
       ) payloadTransfersOut = true;
       const loweredBody = try lowerValueArmStatement(
         program,
+        evidence,
         arena,
         ownerName,
         bodyIndex,
@@ -1859,6 +1917,7 @@ function lowerMatchTree(
       for (const bodyIndex of tree.nodes[arm].statements) {
         const loweredBody = try lowerStatement(
           program,
+          evidence,
           arena,
           ownerName,
           bodyIndex,
@@ -1920,6 +1979,7 @@ function lowerMatchTree(
 
 function lowerStatement(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   index: usize,
@@ -2020,10 +2080,12 @@ function lowerStatement(
                 some(declaration) => declaration;
                 none => throw "native try lowering requires an enclosing throwing function";
               };
-              const bindingType = match (in arena.nodes[index].typeAnnotation) {
-                some(annotation) => try lowerType(program, annotation);
-                none => throw `native try lowering requires an explicit type for local ${arena.nodes[index].name}`;
-              };
+              const bindingType = try lowerBindingType(
+                program,
+                evidence,
+                arena,
+                index
+              );
               const call = try lowerExpression(
                 program,
                 tree,
@@ -2103,6 +2165,7 @@ function lowerStatement(
                 : "";
               const loweredMatch = try lowerMatchTree(
                 program,
+                evidence,
                 arena,
                 ownerName,
                 tree,
@@ -2115,10 +2178,12 @@ function lowerStatement(
               if (arena.nodes[index].kind != StatementKind.variableStatement) {
                 return loweredMatch;
               }
-              const bindingType = match (in arena.nodes[index].typeAnnotation) {
-                some(annotation) => try lowerType(program, annotation);
-                none => throw `native lowering requires an explicit type for local ${arena.nodes[index].name} in its first slice`;
-              };
+              const bindingType = try lowerBindingType(
+                program,
+                evidence,
+                arena,
+                index
+              );
               let children = Array<usize>();
               children.push(loweredMatch);
               const localIndex = statements.length;
@@ -2174,15 +2239,16 @@ function lowerStatement(
   }
 
   let type = Option<LoweredType>.none;
-  match (in arena.nodes[index].typeAnnotation) {
-    some(annotation) => {
-      const loweredType = try lowerType(program, annotation);
-      type = Option.some(move loweredType);
-    }
-    none => {
-      if (arena.nodes[index].kind == StatementKind.variableStatement) {
-        throw `native lowering requires an explicit type for local ${arena.nodes[index].name} in its first slice`;
+  if (arena.nodes[index].kind == StatementKind.variableStatement) {
+    const loweredType = try lowerBindingType(program, evidence, arena, index);
+    type = Option.some(move loweredType);
+  } else {
+    match (in arena.nodes[index].typeAnnotation) {
+      some(annotation) => {
+        const loweredType = try lowerType(program, annotation);
+        type = Option.some(move loweredType);
       }
+      none => {}
     }
   }
   let expression = Option<usize>.none;
@@ -2298,6 +2364,7 @@ function lowerStatement(
   for (const child of arena.nodes[index].children) {
     const loweredChild = try lowerStatement(
       program,
+      evidence,
       arena,
       ownerName,
       child,
@@ -2326,6 +2393,7 @@ function lowerStatement(
 
 function lowerFunction(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration
 ): LoweredFunction throws String {
   if (declaration.asynchronous) {
@@ -2377,6 +2445,7 @@ function lowerFunction(
     sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
+      evidence,
       declaration.body,
       declaration.name,
       root,
@@ -2425,6 +2494,7 @@ function lowerFunction(
 
 function lowerDeinitializer(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in ownerName: String,
   in body: StatementArena
 ): LoweredFunction throws String {
@@ -2437,6 +2507,7 @@ function lowerDeinitializer(
     sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
+      evidence,
       body,
       `${ownerName}.deinit`,
       root,
@@ -2593,7 +2664,10 @@ function collectIntrinsicEnums(in program: Program): Array<LoweredEnum> throws S
   return enums;
 }
 
-export function lowerProgram(in program: Program): LoweredProgram throws String {
+export function lowerProgram(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence
+): LoweredProgram throws String {
   if (program.imports.length > 0) {
     throw "native lowering does not support imports in its first slice";
   }
@@ -2659,7 +2733,12 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
     let deinitializer = Option<LoweredFunction>.none;
     match (in aggregate.deinitializer) {
       some(source) => {
-        const body = try lowerDeinitializer(program, aggregate.name, source.body);
+        const body = try lowerDeinitializer(
+          program,
+          evidence,
+          aggregate.name,
+          source.body
+        );
         deinitializer = Option.some(move body);
       }
       none => {}
@@ -2678,7 +2757,7 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
 
   let functions = Array<LoweredFunction>();
   for (const declaration of program.functions) {
-    const loweredFunction = try lowerFunction(program, declaration);
+    const loweredFunction = try lowerFunction(program, evidence, declaration);
     functions.push(move loweredFunction);
   }
   return LoweredProgram({ structs, enums, functions });

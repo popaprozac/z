@@ -723,6 +723,14 @@ Expression-statement `try` on a fallible void call uses the same explicit
 failure edge and cleanup snapshot, with no assignment or placeholder success
 storage on the continuing path.
 
+Inferred ownership-bearing locals now test the semantic-to-lowering boundary.
+The native resolver records each inferred binding's settled source type and
+location; lowering consumes that evidence for storage, match resolution, and
+cleanup classification. Removing annotations from struct construction,
+`Option`, `Result`, local `try`, and owned match-result fixtures leaves their
+generated C and destruction behavior unchanged. This avoids duplicating type
+inference inside code generation.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

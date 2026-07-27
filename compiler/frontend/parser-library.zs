@@ -103,7 +103,10 @@ function stage1Emit(in entryPath: String, in batch: String): String {
     }
   };
   const entry = graph.entry;
-  const emitOutcome = attempt emitC(parsed[entry].program);
+  const emitOutcome = attempt emitC(
+    parsed[entry].program,
+    graph.modules[entry].semanticEvidence
+  );
   return match (emitOutcome) {
     success(emitted) => `ok\n${emitted}`;
     failure(message) => `error\n${entryPath}: ${message}`;

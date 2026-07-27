@@ -8,6 +8,6 @@ function sum(point: Point): i32 {
 }
 
 function main(): i32 {
-  const point: Point = Point({ x: 20, y: 22 });
+  const point = Point({ x: 20, y: 22 });
   return sum(point);
 }

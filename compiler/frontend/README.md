@@ -158,7 +158,10 @@ Compiler `Result<T, E>` likewise keeps Z's surface model: `return` constructs
 success, `throw` constructs failure, `attempt` preserves the result, and `try`
 either extracts success or propagates failure after surrounding cleanup. Both
 payload-free `Result<void, E>` success and cleanup-bearing success/error
-payloads are executable.
+payloads are executable. Inferred local bindings consume the native resolver's
+source-positioned semantic evidence, so struct, Option, Result, `try`, and match
+storage share one authoritative type decision with cleanup planning rather than
+being re-inferred by the emitter.
 
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
 branches, loop fallthrough and `break`/`continue`, replacement assignment,

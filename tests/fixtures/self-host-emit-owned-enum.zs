@@ -28,7 +28,7 @@ function inspectValue(state: ResourceState): i32 {
 }
 
 function inspectLocal(state: ResourceState): i32 {
-  const value: i32 = match (state) {
+  const value = match (state) {
     ready(resource) => resource.id;
     empty => 0;
   };
@@ -44,7 +44,7 @@ function selectResource(state: ResourceState): Resource {
 
 function inspectOwnedLocal(): i32 {
   const state: ResourceState = ResourceState.ready(Resource({ id: 42 }));
-  const selected: Resource = match (state) {
+  const selected = match (state) {
     ready(resource) => resource;
     empty => Resource({ id: 0 });
   };

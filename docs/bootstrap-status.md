@@ -736,7 +736,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and active error cleanup are executable through that representation.
    Procedural `try fallibleVoid();` emits the same single-evaluation failure
    branch, cleans surrounding owners before propagation, and continues without
-   manufacturing a success value.
+   manufacturing a success value. Native lowering now consumes the resolver's
+   authoritative inferred-binding evidence by source offset. Inferred scalar
+   and struct locals, `Option`/`Result` storage, local `try` results, and scalar
+   or owned match-expression destinations therefore retain the same settled
+   type used by semantic checking and cleanup planning; the emitter does not
+   maintain a second inference engine.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

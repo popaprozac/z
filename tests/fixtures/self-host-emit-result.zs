@@ -24,12 +24,12 @@ function relay(shouldFail: boolean): i32 throws Problem {
 
 function adjusted(shouldFail: boolean): i32 throws Problem {
   const audit: Resource = Resource({ id: 1 });
-  const value: i32 = try load(shouldFail);
+  const value = try load(shouldFail);
   return value;
 }
 
 function inspect(shouldFail: boolean): i32 {
-  const result: Result<i32, Problem> = attempt relay(shouldFail);
+  const result = attempt relay(shouldFail);
   return match (result) {
     success(value) => value;
     failure(error) => -error.code;
@@ -37,7 +37,7 @@ function inspect(shouldFail: boolean): i32 {
 }
 
 function inspectAdjusted(shouldFail: boolean): i32 {
-  const result: Result<i32, Problem> = attempt adjusted(shouldFail);
+  const result = attempt adjusted(shouldFail);
   return match (result) {
     success(value) => value;
     failure(error) => -error.code;
@@ -45,7 +45,7 @@ function inspectAdjusted(shouldFail: boolean): i32 {
 }
 
 function discardErrorResult(): i32 {
-  const result: Result<i32, Problem> = attempt load(false);
+  const result = attempt load(false);
   return 0;
 }
 
@@ -63,7 +63,7 @@ function relayVoid(shouldFail: boolean): void throws Problem {
 }
 
 function inspectVoid(shouldFail: boolean): i32 {
-  const result: Result<void, Problem> = attempt relayVoid(shouldFail);
+  const result = attempt relayVoid(shouldFail);
   return match (result) {
     success => 42;
     failure(error) => -error.code;
@@ -71,7 +71,7 @@ function inspectVoid(shouldFail: boolean): i32 {
 }
 
 function discardVoidResult(): i32 {
-  const result: Result<void, Problem> = attempt validate(false);
+  const result = attempt validate(false);
   return 0;
 }
 
@@ -83,7 +83,7 @@ function loadResource(shouldFail: boolean): Resource throws Problem {
 }
 
 function inspectResource(shouldFail: boolean): i32 {
-  const result: Result<Resource, Problem> = attempt loadResource(shouldFail);
+  const result = attempt loadResource(shouldFail);
   return match (result) {
     success(resource) => resource.id;
     failure(error) => -error.code;
@@ -91,7 +91,7 @@ function inspectResource(shouldFail: boolean): i32 {
 }
 
 function discardResult(): i32 {
-  const result: Result<Resource, Problem> = attempt loadResource(false);
+  const result = attempt loadResource(false);
   return 0;
 }
 
