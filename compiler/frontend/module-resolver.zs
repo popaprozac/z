@@ -2798,6 +2798,54 @@ function inferExpressionNodeType(
           }
           none => {}
         }
+        if (!staticMethod) {
+          match (aggregateFieldShape(
+            modules,
+            moduleIndex,
+            ownerType,
+            methodName
+          )) {
+            some(field) => {
+              try requireVisibleField(
+                module,
+                modules,
+                moduleIndex,
+                tree,
+                calleeIndex,
+                bindings,
+                field
+              );
+              match (nativeFunctionSignature(field.typeName)) {
+                some(signature) => {
+                  const substitutions = Array<NativeValueBinding>();
+                  const argumentNodes = callArgumentNodes(children);
+                  return try inferSignatureCallType(
+                    module,
+                    modules,
+                    moduleIndex,
+                    arena,
+                    tree,
+                    calleeIndex,
+                    index,
+                    argumentNodes,
+                    inout bindings,
+                    "",
+                    "",
+                    `${ownerType}.${methodName}`,
+                    signature,
+                    substitutions,
+                    field.ownerModuleIndex,
+                    field.ownerSymbolIndex,
+                    "value",
+                    inout evidence
+                  );
+                }
+                none => {}
+              }
+            }
+            none => {}
+          }
+        }
         match (callableMethodCallShape(
           modules,
           moduleIndex,

@@ -571,6 +571,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    A placement whose capture originates in unavailable foreign or
    `thread.spawn` metadata deliberately defers instead of inventing an
    unknown-capture diagnostic.
+   A wider executable-corpus sweep now also guards semantic compatibility at
+   the native boundary. Trait method signatures preserve `inout this` and
+   `move this`; contextual payload-free generic variants such as
+   `Option.none` are constructors rather than ownership-bearing field moves;
+   and function values compare by capabilities and parameter/result types
+   rather than local parameter names. Function-valued aggregate fields are
+   callable through the same native signature path. The existing classes,
+   Option, owned async-enum, and function-value programs all pass with every
+   Stage-0-observed binding and expression backed by native authority.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -589,7 +598,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    conformance. Native inference enforces those constraints for inferred and
    explicit function/method calls and aggregate construction; constrained generic
    bodies may call only methods supplied by their declared traits.
-   Foreign/intrinsic method lookup, generic trait declarations, foreign call
+   Foreign method lookup, generic trait declarations, foreign call
    effects and executor placements with unavailable foreign/thread metadata,
    escaping closure-environment validation,
    precise closure borrow last-use release, remaining receiver-path capability

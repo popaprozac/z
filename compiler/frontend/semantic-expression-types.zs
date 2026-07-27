@@ -7,7 +7,6 @@ import {
   genericTypeShape,
   isNullableTypeName,
   isNumericTypeName,
-  nativeFunctionDisplayType,
   nativeFunctionSignature,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -114,10 +113,8 @@ export function requireExpressionType(
   in actual: String
 ): void throws ModuleResolveError {
   try requireSettledExpressionType(module, tree, index, actual);
-  const actualFunctionType = nativeFunctionDisplayType(actual);
   if (
-    actualFunctionType.byteLength > 0
-    && nativeFunctionSignaturesCompatible(
+    nativeFunctionSignaturesCompatible(
       modules,
       moduleIndex,
       expected,

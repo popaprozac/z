@@ -391,7 +391,7 @@ The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,874 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 3,922 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
@@ -455,6 +455,19 @@ native source graph; that entire placement now defers rather than producing a
 false native diagnostic. Capture preparation lives in
 `semantic-executor-placement.zs` instead of adding another ownership subsystem
 to the resolver.
+
+A broader application and language-example sweep found four native-only
+compatibility regressions that the smaller parity corpus did not exercise.
+Trait receivers lost their declared capability in signature projection;
+contextual `Option.none` was mistaken for moving a field from `Option`; callable
+types with different parameter names were treated as different types; and a
+function-valued struct field was mistaken for a missing method. The fixes reuse
+the existing receiver, enum-shape, callable-signature, and field-visibility
+models rather than adding special cases to Stage 0. The unchanged classes,
+Option, owned async-enum, and function-value examples now complete under native
+authority. This validates corpus sweeps as a distinct self-hosting gate:
+aggregate counts can be green while a previously unrepresented composition
+still exposes a semantic mismatch.
 
 What the compiler proves:
 

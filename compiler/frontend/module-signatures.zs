@@ -212,7 +212,7 @@ export function programTypeSignature(
           name: method.name.copyBytes(0, method.name.byteLength),
           staticMethod: false,
           visibility: "public",
-          receiverMode: "in",
+          receiverMode: receiverModeName(method.receiverMode),
           signature: functionDeclarationSignature(method),
         }));
       }

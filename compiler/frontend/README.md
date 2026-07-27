@@ -157,8 +157,8 @@ export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
 lex/parse/resolve plus structural handoff, and stage-zero parity work.
 Identifier and expression-level type lookup currently cover materialized
-expression trees. Unknown foreign and intrinsic-member shapes deliberately defer
-instead of guessing. Native signatures retain nominal trait constraints and
+expression trees. Unknown foreign and unsupported intrinsic-member shapes
+deliberately defer instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
 generic construction, and trait-authorized calls inside constrained bodies enforce
 those contracts natively. Standalone Z and intrinsic generic type uses recursively
@@ -178,6 +178,11 @@ generic trait declarations, foreign calls and placements whose upstream capture
 types are absent from the native source graph,
 escaping closure-environment validation, borrow last-use release, and complete
 recursive ownership lowering remain stage-zero work.
+The wider executable corpus additionally checks semantic compatibility that
+aggregate evidence counts alone cannot prove: trait receiver modes, contextual
+payload-free generic variants, structurally compatible function types with
+different parameter names, and invocation through function-valued aggregate
+fields all retain native authority.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

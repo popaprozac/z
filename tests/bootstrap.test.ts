@@ -10437,6 +10437,66 @@ test("keeps native semantic authority composable across a representative Z corpu
   }
 }, 30_000);
 
+test("preserves trait receiver capabilities in the native module graph", () => {
+  const input = resolve(projectRoot, "examples/language/basics/classes.zs");
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /native frontend hybrid matches 1 modules, 0 local edges, and 6 symbols/,
+  );
+  assert.match(
+    result.stdout,
+    /uses 3 inferred local binding native-authoritative contracts/,
+  );
+});
+
+test("does not consume contextual payload-free generic enum variants", () => {
+  const cases = [
+    "examples/language/types/option.zs",
+    "examples/async/async-owned-enums.zs",
+  ];
+  for (const fileName of cases) {
+    const input = resolve(projectRoot, fileName);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${fileName}\n${result.stderr}`);
+    const observedBindings = result.stdout.match(
+      /observes (\d+) inferred local binding stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeBindings = result.stdout.match(
+      /uses (\d+) inferred local binding native-authoritative contracts/,
+    )?.[1];
+    assert.ok(observedBindings, fileName);
+    assert.equal(authoritativeBindings, observedBindings, fileName);
+  }
+});
+
+test("compares native function values by capability and type, not parameter names", () => {
+  const input = resolve(projectRoot, "examples/language/basics/function-values.zs");
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const observedExpressions = result.stdout.match(
+    /observes (\d+) root expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = result.stdout.match(
+    /uses (\d+) root expression native-authoritative contracts/,
+  )?.[1];
+  assert.ok(observedExpressions);
+  assert.equal(authoritativeExpressions, observedExpressions);
+});
+
 test("preserves nominal identities inside linked generic monomorphs", () => {
   const directory = mkdtempSync("/tmp/z-native-generic-identities-");
   const syntaxModule = resolve(directory, "syntax.zs");

@@ -132,7 +132,10 @@ export function consumeOwnedExpressionNode(
     const receiverIndex = tree.nodes[index].children[0];
     const enumType = typeExpressionName(tree, receiverIndex);
     const variantName = identifierLookupName(tree.nodes[index].value);
-    if (isKnownMatchVariant(modules, moduleIndex, enumType, variantName)) return;
+    if (
+      isKnownMatchVariant(modules, moduleIndex, enumType, variantName)
+      || isKnownMatchVariant(modules, moduleIndex, typeName, variantName)
+    ) return;
   }
   if (
     kind == ExpressionKind.memberExpression
