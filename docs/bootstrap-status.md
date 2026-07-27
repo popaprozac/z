@@ -700,9 +700,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    cleanup-bearing payload into its arm binding, suppresses wrapper cleanup,
    and destroys the binding after result evaluation. Conditional consumption
    uses the same live-flag path as `move`, preserving wrapper cleanup only on
-   the path that did not enter the match. Match expressions, arbitrary
-   subjects, and native `Option`/`Result` representation remain the next enum
-   tier.
+   the path that did not enter the match. A direct `return match (...)` with
+   concise expression arms now normalizes to the same statement-match IR and
+   cleanup plan, including owned payload transfer. General match-expression
+   destinations, arbitrary subjects, and native `Option`/`Result`
+   representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

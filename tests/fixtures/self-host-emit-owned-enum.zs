@@ -20,6 +20,13 @@ function inspect(state: ResourceState): i32 {
   }
 }
 
+function inspectValue(state: ResourceState): i32 {
+  return match (state) {
+    ready(resource) => resource.id;
+    empty => 0;
+  };
+}
+
 function inspectIf(
   state: ResourceState,
   inspectNow: boolean
@@ -38,7 +45,7 @@ function observe(): i32 {
   const container: Container = Container({
     state: ResourceState.ready(Resource({ id: 1 })),
   });
-  return inspect(ResourceState.ready(Resource({ id: 42 })));
+  return inspectValue(ResourceState.ready(Resource({ id: 42 })));
 }
 
 function main(): i32 {

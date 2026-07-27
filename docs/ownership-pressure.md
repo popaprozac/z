@@ -666,6 +666,11 @@ binding the arm-local owner, and cleans it after the arm's return value is
 evaluated. When the match is conditional, entering it clears the wrapper's live
 flag; the path that skips it still destroys the wrapper. The emitted C therefore
 does not infer union ownership from syntax and cannot clean both aliases.
+Direct `return match (...)` expressions with concise arms reuse this same IR:
+each selected arm becomes a typed lowered return, evaluates its result, and
+then runs the arm payload cleanup. This first value-producing tier avoids a
+second C-only ownership path while leaving local-binding destinations and
+selecting blocks for the broader match-expression lowering.
 
 What the compiler proves:
 
