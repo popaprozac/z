@@ -716,7 +716,9 @@ initialized through `try` uses an explicit lowering control-flow node: failure
 is rebuilt in the enclosing Result only after the inner error payload is
 captured and existing owners are cleaned; success transfers into the now-live
 local. This keeps propagation visible to cleanup planning rather than relying
-on a C statement-expression extension.
+on a C statement-expression extension. Fallible `void` functions use the same
+shape without inventing a success payload: `return;` sets only the success tag,
+while failure retains and conditionally destroys the real error payload.
 
 What the compiler proves:
 

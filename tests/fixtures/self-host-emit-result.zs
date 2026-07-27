@@ -49,6 +49,26 @@ function discardErrorResult(): i32 {
   return 0;
 }
 
+function validate(shouldFail: boolean): void throws Problem {
+  if (shouldFail) {
+    throw Problem({ code: 7 });
+  }
+  return;
+}
+
+function inspectVoid(shouldFail: boolean): i32 {
+  const result: Result<void, Problem> = attempt validate(shouldFail);
+  return match (result) {
+    success => 42;
+    failure(error) => -error.code;
+  };
+}
+
+function discardVoidResult(): i32 {
+  const result: Result<void, Problem> = attempt validate(false);
+  return 0;
+}
+
 function loadResource(shouldFail: boolean): Resource throws Problem {
   if (shouldFail) {
     throw Problem({ code: 7 });
@@ -76,6 +96,11 @@ function main(): i32 {
     + inspectAdjusted(false)
     + inspectAdjusted(true)
     - 35
+    + inspectVoid(false)
+    - 42
+    + inspectVoid(true)
+    + 7
+    + discardVoidResult()
     + inspectResource(false)
     - 42
     + inspectResource(true)

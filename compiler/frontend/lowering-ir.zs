@@ -424,12 +424,16 @@ function intrinsicResultDeclaration(
       const successType = try lowerTypeName(program, generic.arguments[0]);
       const errorType = try lowerTypeName(program, generic.arguments[1]);
       let variants = Array<LoweredVariant>();
-      variants.push(LoweredVariant({
-        name: "success",
-        payload: Option.some(LoweredType({
+      let successPayload = Option<LoweredType>.none;
+      if (successType.kind != LoweredTypeKind.voidType) {
+        successPayload = Option.some(LoweredType({
           kind: successType.kind,
           name: successType.name.copyBytes(0, successType.name.byteLength),
-        })),
+        }));
+      }
+      variants.push(LoweredVariant({
+        name: "success",
+        payload: successPayload,
       }));
       variants.push(LoweredVariant({
         name: "failure",
@@ -2178,6 +2182,32 @@ function lowerStatement(
       }
     }
     none => {}
+  }
+  const expressionMissing = match (in expression) {
+    some(_) => false;
+    none => true;
+  };
+  if (
+    arena.nodes[index].kind == StatementKind.returnStatement
+    && expressionMissing
+  ) {
+    const result = try throwingFunctionResult(program, ownerName);
+    match (in result) {
+      some(declaration) => {
+        let labels = Array<String>();
+        labels.push("success");
+        labels.push("tagged");
+        const wrapped = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.enumValue,
+          declaration.name,
+          Array<usize>(),
+          labels
+        );
+        expression = Option.some(wrapped);
+      }
+      none => {}
+    }
   }
   let secondExpression = Option<usize>.none;
   match (in arena.nodes[index].secondExpression) {

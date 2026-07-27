@@ -731,6 +731,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    transfers success into the local, or constructs the enclosing failure after
    cleaning already-live owners. Nested expression propagation, inferred Option
    constructors, and inferred match-result bindings remain the next tiers.
+   `Result<void, E>` uses a payload-free `success` case rather than emitting an
+   invalid or placeholder C union field; `return;`, `throw`, `attempt`, match,
+   and active error cleanup are executable through that representation.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
