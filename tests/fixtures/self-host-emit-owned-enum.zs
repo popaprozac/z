@@ -69,6 +69,29 @@ function inspectCall(): i32 {
   };
 }
 
+function inspectReturnBlock(state: ResourceState): i32 {
+  return match (state) {
+    ready(resource) => {
+      const audit: Resource = Resource({ id: resource.id });
+      select audit.id;
+    }
+    empty => 0;
+  };
+}
+
+function inspectLocalBlock(state: ResourceState): i32 {
+  const value: i32 = match (state) {
+    ready(resource) => {
+      const audit: Resource = Resource({ id: resource.id });
+      select audit.id;
+    }
+    empty => {
+      select 0;
+    }
+  };
+  return value;
+}
+
 function inspectIf(
   state: ResourceState,
   inspectNow: boolean
@@ -87,7 +110,7 @@ function observe(): i32 {
   const container: Container = Container({
     state: ResourceState.ready(Resource({ id: 1 })),
   });
-  return inspectCall();
+  return inspectLocalBlock(makeState(42));
 }
 
 function main(): i32 {

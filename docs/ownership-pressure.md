@@ -686,6 +686,12 @@ The wrapper temporary is consumed by dispatch rather than separately cleaned;
 the active payload either cleans in the arm or transfers into its result.
 Borrowed `match (in value)` continues to access the required stored source
 directly instead of manufacturing a copied borrow.
+Selecting block arms compose without a second value channel. Prefix statements
+lower normally and the final `select` becomes the arm's existing return or local
+assignment destination. Cleanup planning follows the source block edges: a
+block-local owner is destroyed after its selected scalar is evaluated and
+before the active payload owner, while a local match result performs the same
+cleanup before arm fallthrough.
 
 What the compiler proves:
 

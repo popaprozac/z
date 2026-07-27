@@ -8359,6 +8359,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
+    /inspectReturnBlock\(Z_ResourceState state\).*?Z_Resource audit = .*?_z_stage1_return_\d+ = audit\.id;\n        Z_Resource_deinit\(&audit\);\n        Z_Resource_deinit\(&resource\);\n        return/s,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /inspectLocalBlock\(Z_ResourceState state\) \{\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&resource\);.*?return value;/s,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
     /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
   );
   assert.match(

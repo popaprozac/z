@@ -710,8 +710,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    cleanup. Consuming constructor and call subjects now move into one typed
    temporary before dispatch, guaranteeing single evaluation while the selected
    payload becomes the arm owner. Borrowed matches remain tied to stored source
-   storage. Inferred match-result bindings, selecting arm blocks, and native
-   `Option`/`Result` representation remain the next enum tier.
+   storage. Selecting block arms now lower prefix statements plus their final
+   `select` into the same result destination. Lexical owners created in the
+   block clean before the selected payload owner on return or arm fallthrough.
+   Inferred match-result bindings and native `Option`/`Result` representation
+   remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

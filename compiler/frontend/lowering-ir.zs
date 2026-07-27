@@ -423,6 +423,9 @@ function loweredSequenceFallsThrough(
     || statements[last].kind == LoweredStatementKind.breakStatement
     || statements[last].kind == LoweredStatementKind.continueStatement
   ) return false;
+  if (statements[last].kind == LoweredStatementKind.blockStatement) {
+    return loweredSequenceFallsThrough(statements, statements[last].children);
+  }
   return true;
 }
 
@@ -625,7 +628,10 @@ function planCleanupStatement(
       insideLoop,
       loopCleanups
     );
-    if (sequenceFallsThrough(arena, sourceChildren)) {
+    if (
+      sequenceFallsThrough(arena, sourceChildren)
+      && loweredSequenceFallsThrough(statements, loweredChildren)
+    ) {
       appendStatementCleanupCopies(inout statements, loweredIndex, introduced);
     }
     return;
@@ -1100,6 +1106,166 @@ function matchEnumIndex(
   };
 }
 
+function valueArmIsIdentifier(
+  in arena: StatementArena,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.expressionStatement
+    || arena.nodes[index].kind == StatementKind.selectStatement
+  ) {
+    return match (in arena.nodes[index].expression) {
+      some(expression) => syntaxIsIdentifier(expression, name);
+      none => false;
+    };
+  }
+  if (
+    arena.nodes[index].kind == StatementKind.blockStatement
+    && arena.nodes[index].children.length > 0
+  ) {
+    const finalChild = arena.nodes[index].children[
+      arena.nodes[index].children.length - 1
+    ];
+    return valueArmIsIdentifier(
+      arena,
+      finalChild,
+      name
+    );
+  }
+  return false;
+}
+
+function lowerValueDestination(
+  in program: Program,
+  in expression: ExpressionSyntax,
+  returnValue: boolean,
+  in valueBinding: String,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  const value = try lowerExpressionSyntax(program, expression, inout expressions);
+  const loweredBody = statements.length;
+  if (returnValue) {
+    statements.push(LoweredStatement({
+      kind: LoweredStatementKind.returnStatement,
+      mutableBinding: false,
+      name: "",
+      type: Option<LoweredType>.none,
+      expression: Option.some(value),
+      secondExpression: Option<usize>.none,
+      children: Array<usize>(),
+      cleanups: Array<LoweredCleanup>(),
+      liveFlag: "",
+      labels: Array<String>(),
+      matchConsumesSubject: false,
+      matchBindingNeedsCleanup: false,
+    }));
+  } else {
+    const target = pushExpression(
+      inout expressions,
+      LoweredExpressionKind.localValue,
+      valueBinding,
+      Array<usize>(),
+      Array<String>()
+    );
+    statements.push(LoweredStatement({
+      kind: LoweredStatementKind.assignmentStatement,
+      mutableBinding: false,
+      name: "",
+      type: Option<LoweredType>.none,
+      expression: Option.some(target),
+      secondExpression: Option.some(value),
+      children: Array<usize>(),
+      cleanups: Array<LoweredCleanup>(),
+      liveFlag: "",
+      labels: Array<String>(),
+      matchConsumesSubject: false,
+      matchBindingNeedsCleanup: false,
+    }));
+  }
+  return loweredBody;
+}
+
+function lowerValueArmStatement(
+  in program: Program,
+  in arena: StatementArena,
+  index: usize,
+  returnValue: boolean,
+  in valueBinding: String,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  if (
+    arena.nodes[index].kind == StatementKind.expressionStatement
+    || arena.nodes[index].kind == StatementKind.selectStatement
+  ) {
+    return match (in arena.nodes[index].expression) {
+      some(expression) => try lowerValueDestination(
+        program,
+        expression,
+        returnValue,
+        valueBinding,
+        inout expressions,
+        inout statements
+      );
+      none => throw "native value-match lowering received an empty arm";
+    };
+  }
+  if (arena.nodes[index].kind == StatementKind.blockStatement) {
+    if (arena.nodes[index].children.length == 0) {
+      throw "native value-match lowering received an empty block arm";
+    }
+    let children = Array<usize>();
+    let childIndex: usize = 0;
+    while (childIndex < arena.nodes[index].children.length) {
+      const sourceChild = arena.nodes[index].children[childIndex];
+      let loweredChild: usize = 0;
+      if (childIndex + 1 == arena.nodes[index].children.length) {
+        if (arena.nodes[sourceChild].kind != StatementKind.selectStatement) {
+          throw "native value-match lowering requires a final select in a block arm";
+        }
+        loweredChild = try lowerValueArmStatement(
+          program,
+          arena,
+          sourceChild,
+          returnValue,
+          valueBinding,
+          inout expressions,
+          inout statements
+        );
+      } else {
+        loweredChild = try lowerStatement(
+          program,
+          arena,
+          sourceChild,
+          inout expressions,
+          inout statements
+        );
+      }
+      children.push(loweredChild);
+      childIndex = childIndex + 1;
+    }
+    const block = statements.length;
+    statements.push(LoweredStatement({
+      kind: LoweredStatementKind.blockStatement,
+      mutableBinding: false,
+      name: "",
+      type: Option<LoweredType>.none,
+      expression: Option<usize>.none,
+      secondExpression: Option<usize>.none,
+      children,
+      cleanups: Array<LoweredCleanup>(),
+      liveFlag: "",
+      labels: Array<String>(),
+      matchConsumesSubject: false,
+      matchBindingNeedsCleanup: false,
+    }));
+    return block;
+  }
+  throw "native value-match lowering requires a concise expression or selecting block arm yet";
+}
+
 function lowerMatchTree(
   in program: Program,
   in arena: StatementArena,
@@ -1153,65 +1319,22 @@ function lowerMatchTree(
     let payloadTransfersOut = false;
     if (returnValueArms || valueBinding.byteLength > 0) {
       if (tree.nodes[arm].statements.length != 1) {
-        throw "native value-match lowering requires one concise expression per arm yet";
+        throw "native value-match lowering requires one value-producing arm body";
       }
       const bodyIndex = tree.nodes[arm].statements[0];
-      if (arena.nodes[bodyIndex].kind != StatementKind.expressionStatement) {
-        throw "native value-match lowering requires concise expression arms yet";
-      }
-      const value = match (in arena.nodes[bodyIndex].expression) {
-        some(source) => {
-          if (
-            labels.length == 1
-            && syntaxIsIdentifier(source, labels[0])
-          ) payloadTransfersOut = true;
-          select try lowerExpressionSyntax(
-            program,
-            source,
-            inout expressions
-          );
-        }
-        none => throw "native return-match lowering received an empty arm";
-      };
-      const loweredBody = statements.length;
-      if (returnValueArms) {
-        statements.push(LoweredStatement({
-          kind: LoweredStatementKind.returnStatement,
-          mutableBinding: false,
-          name: "",
-          type: Option<LoweredType>.none,
-          expression: Option.some(value),
-          secondExpression: Option<usize>.none,
-          children: Array<usize>(),
-          cleanups: Array<LoweredCleanup>(),
-          liveFlag: "",
-          labels: Array<String>(),
-          matchConsumesSubject: false,
-          matchBindingNeedsCleanup: false,
-        }));
-      } else {
-        const target = pushExpression(
-          inout expressions,
-          LoweredExpressionKind.localValue,
-          valueBinding,
-          Array<usize>(),
-          Array<String>()
-        );
-        statements.push(LoweredStatement({
-          kind: LoweredStatementKind.assignmentStatement,
-          mutableBinding: false,
-          name: "",
-          type: Option<LoweredType>.none,
-          expression: Option.some(target),
-          secondExpression: Option.some(value),
-          children: Array<usize>(),
-          cleanups: Array<LoweredCleanup>(),
-          liveFlag: "",
-          labels: Array<String>(),
-          matchConsumesSubject: false,
-          matchBindingNeedsCleanup: false,
-        }));
-      }
+      if (
+        labels.length == 1
+        && valueArmIsIdentifier(arena, bodyIndex, labels[0])
+      ) payloadTransfersOut = true;
+      const loweredBody = try lowerValueArmStatement(
+        program,
+        arena,
+        bodyIndex,
+        returnValueArms,
+        valueBinding,
+        inout expressions,
+        inout statements
+      );
       children.push(loweredBody);
     } else {
       for (const bodyIndex of tree.nodes[arm].statements) {
