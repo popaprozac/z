@@ -681,6 +681,9 @@ When focused self-hosting work resumes, use this order:
    construction/deduplication of generic-call, inferred-binding, and
    root-expression evidence now live in `semantic-evidence.zs`; recursive
    inference still decides what evidence is authoritative in the resolver.
+   Copy/move eligibility plus unary, arithmetic, bitwise, comparison, and
+   equality result typing now live in `semantic-operators.zs`; short-circuit
+   flow and actual ownership consumption remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

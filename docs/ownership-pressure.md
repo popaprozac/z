@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,361 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,523 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -384,22 +384,23 @@ The 2026-07-26 decomposition checkpoint contains 15,361 lines of Z:
 | `semantic-function-contexts.zs` | 183 | function parameter/receiver bindings, generic context, and generator yield/return discovery |
 | `semantic-intrinsics.zs` | 240 | compiler-provided numeric, collection, iteration, and generator callable behavior |
 | `semantic-evidence.zs` | 248 | callable target lookup plus generic-call, binding, and expression evidence construction |
+| `semantic-operators.zs` | 208 | copy/move eligibility plus unary, arithmetic, bitwise, comparison, and equality typing |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,650 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own twenty-four-module frontend graph and currently produces parity evidence for
-815 symbols, 1,630 binding/signature queries, 929 inferred local bindings, and
-3,420 root expression types. The binding and expression counts describe the
+own twenty-five-module frontend graph and currently produces parity evidence for
+832 symbols, 1,664 binding/signature queries, 929 inferred local bindings, and
+3,427 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the semantic-evidence extraction, native lexing, parsing, resolution,
-semantic analysis, and encoding took approximately 155 ms; decoding the
+run after the operator-kernel extraction, native lexing, parsing, resolution,
+semantic analysis, and encoding took approximately 153 ms; decoding the
 temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
 perform identical work and the structural handoff has not replaced the text
@@ -425,7 +426,7 @@ What the compiler proves:
 
 The same code exposes concrete friction:
 
-- `module-resolver.zs` contains 65 explicit `String.copyBytes` calls. Some are
+- `module-resolver.zs` contains 63 explicit `String.copyBytes` calls. Some are
   correct ownership transfers into persistent evidence, but repeated canonical
   type names and identifiers make a compiler-owned string interner and stable
   symbol/type IDs a higher-value optimization than implicit String sharing.
@@ -443,6 +444,10 @@ The same code exposes concrete friction:
   and its projected fields overlapped. Naming and copying the scalar/text field
   values before the call made the ownership proof explicit and safe, but the
   ceremony is useful evidence for future projection and borrow ergonomics.
+- Operator typing provided a useful boundary test: copy/move eligibility and
+  scalar result typing moved behind an ordinary Z module, while short-circuit
+  branch merging and actual `move` consumption remained in the recursive flow
+  engine. No borrowed context object or trait-typed indirection was needed.
 - Splitting private helpers across source modules requires exporting their
   shared implementation types and functions; Z has explicit public exports but
   no package-private visibility tier. This is manageable, but the resulting

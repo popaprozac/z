@@ -111,6 +111,10 @@ import {
   requireVisibleField,
 } from "./semantic-pattern-validation.zs";
 import {
+  binaryOperatorType,
+  unaryOperatorType,
+} from "./semantic-operators.zs";
+import {
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
@@ -124,7 +128,6 @@ import {
   isFloatTypeName,
   isIntegerTypeName,
   isIntrinsicTypeName,
-  isNullableTypeName,
   isNumericTypeName,
   isTypeSymbolKind,
   nativeFunctionDisplayType,
@@ -139,7 +142,6 @@ import {
   typeHasCleanup,
   typeHasCustomConstructor,
   typeMovesOnOwnedUse,
-  typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
@@ -221,21 +223,6 @@ function contextualExpectedType(
 }
 
 
-function invalidOperator(
-  in module: ParsedModule,
-  in tree: ExpressionTree,
-  index: usize,
-  in message: String
-): ModuleResolveError {
-  return resolutionError(
-    ModuleResolveErrorKind.invalidOperator,
-    module.path,
-    message,
-    tree.nodes[index].line,
-    tree.nodes[index].column
-  );
-}
-
 function explicitCallTypeArguments(
   in tree: ExpressionTree,
   calleeIndex: usize
@@ -258,18 +245,6 @@ function addUniqueString(inout values: Array<String>, in value: String): void {
   if (!containsString(values, value)) {
     values.push(value.copyBytes(0, value.byteLength));
   }
-}
-
-function isKnownEnumType(
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in typeName: String
-): boolean {
-  return match (typeSymbolLocation(modules, moduleIndex, typeName)) {
-    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind
-      == ModuleSymbolKind.enumSymbol;
-    none => false;
-  };
 }
 
 function inferMatchArmStatementType(
@@ -1562,27 +1537,16 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.unaryExpression && children.length == 1) {
     const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], operand);
-    if (operand.byteLength == 0) return "";
-    if (value == "copy") {
-      let copiedType = operand.copyBytes(0, operand.byteLength);
-      if (stringStartsWith(copiedType, "view ")) {
-        copiedType = copiedType.copyBytes(5, copiedType.byteLength);
-      }
-      let visiting = Array<String>();
-      const copyable = typeSupportsExplicitCopy(modules, moduleIndex, copiedType, visiting);
-      if (!copyable) {
-        throw invalidOperator(module, tree, index, `type ${copiedType} cannot be explicitly copied`);
-      }
-      return copiedType;
-    }
-    if (value == "move") {
-      if (stringStartsWith(operand, "view ")) {
-        throw invalidOperator(module, tree, index, "cannot move a view because it does not own the referenced value");
-      }
-      let visiting = Array<String>();
-      if (!typeHasCleanup(modules, moduleIndex, operand, visiting)) {
-        throw invalidOperator(module, tree, index, `type ${operand} has no unique ownership to move`);
-      }
+    const result = try unaryOperatorType(
+      module,
+      modules,
+      moduleIndex,
+      tree,
+      index,
+      value,
+      operand
+    );
+    if (value == "move" && result.byteLength > 0) {
       try consumeOwnedExpressionNode(
         module,
         modules,
@@ -1593,15 +1557,8 @@ function inferExpressionNodeType(
         true,
         inout bindings
       );
-      return copiedString(operand);
     }
-    if (value == "!" && operand == "boolean") return "boolean";
-    if ((value == "+" || value == "-") && isNumericTypeName(operand)) return copiedString(operand);
-    if (value == "~" && isIntegerTypeName(operand)) return copiedString(operand);
-    const requirement = value == "!"
-      ? "a boolean operand"
-      : value == "~" ? "an integer operand" : "a numeric operand";
-    throw invalidOperator(module, tree, index, `operator ${value} requires ${requirement}`);
+    return result;
   }
   if (kind == ExpressionKind.binaryExpression && children.length == 2) {
     let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
@@ -1621,41 +1578,32 @@ function inferExpressionNodeType(
       );
       try requireSettledExpressionType(module, tree, children[1], right);
       mergeBindingFlowStates(inout bindings, beforeRight, rightBindings);
-      if (left.byteLength == 0 || right.byteLength == 0) return "";
-      if (left == "boolean" && right == "boolean") return "boolean";
-      throw invalidOperator(module, tree, index, `operator ${value} requires boolean operands`);
+      return try binaryOperatorType(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        index,
+        value,
+        left,
+        right
+      );
     }
     let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
     if (isContextualNumericLiteral(tree, children[1]) && isNumericTypeName(left)) right = left.copyBytes(0, left.byteLength);
     else if (isContextualNumericLiteral(tree, children[0]) && isNumericTypeName(right)) left = right.copyBytes(0, right.byteLength);
-    if (value == "+" || value == "-" || value == "*" || value == "/" || value == "%") {
-      if (left == right && isNumericTypeName(left)) return copiedString(left);
-      throw invalidOperator(module, tree, index, `operator ${value} requires matching numeric operands`);
-    }
-    if (value == "&" || value == "|" || value == "^" || value == "<<" || value == ">>") {
-      if (left == right && isIntegerTypeName(left)) return copiedString(left);
-      throw invalidOperator(module, tree, index, `operator ${value} requires matching integer operands`);
-    }
-    if (value == "<" || value == "<=" || value == ">" || value == ">=") {
-      if (left == right && isNumericTypeName(left)) return "boolean";
-      throw invalidOperator(module, tree, index, `operator ${value} requires matching numeric operands`);
-    }
-    if (value == "==" || value == "!=") {
-      if (
-        equivalentTypes(modules, moduleIndex, left, right)
-        && (
-          isNumericTypeName(left)
-          || left == "boolean"
-          || left == "String"
-          || isKnownEnumType(modules, moduleIndex, left)
-        )
-      ) return "boolean";
-      if ((left == "null" && isNullableTypeName(right)) || (right == "null" && isNullableTypeName(left))) return "boolean";
-      throw invalidOperator(module, tree, index, `operator ${value} requires matching comparable operands`);
-    }
-    return "";
+    return try binaryOperatorType(
+      module,
+      modules,
+      moduleIndex,
+      tree,
+      index,
+      value,
+      left,
+      right
+    );
   }
   if (kind == ExpressionKind.valueBlockExpression) {
     const statements = copyIndices(tree.nodes[index].statements);
@@ -2005,7 +1953,13 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[0], owner);
     try requireSettledExpressionType(module, tree, children[1], offset);
     if (offset.byteLength > 0 && !isIntegerTypeName(offset)) {
-      throw invalidOperator(module, tree, children[1], `index requires an integer, found ${offset}`);
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.invalidOperator,
+        module.path,
+        `index requires an integer, found ${offset}`,
+        tree.nodes[children[1]].line,
+        tree.nodes[children[1]].column
+      );
     }
     return arrayElementType(owner);
   }
