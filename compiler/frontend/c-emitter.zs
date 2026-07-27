@@ -4,6 +4,7 @@ import { TextBuffer } from "std/text";
 import {
   LoweredExpressionKind,
   LoweredFunction,
+  LoweredCleanup,
   LoweredProgram,
   LoweredStatementKind,
   LoweredType,
@@ -25,6 +26,23 @@ function appendIndent(inout output: TextBuffer, depth: usize): void {
   while (current < depth) {
     output.append("  ");
     current = current + 1;
+  }
+}
+
+function appendCleanups(
+  inout output: TextBuffer,
+  in cleanups: Array<LoweredCleanup>,
+  depth: usize
+): void {
+  let remaining = cleanups.length;
+  while (remaining > 0) {
+    remaining = remaining - 1;
+    appendIndent(inout output, depth);
+    output.append("Z_");
+    output.append(cleanups[remaining].type.name);
+    output.append("_deinit(&");
+    output.append(cleanups[remaining].name);
+    output.append(");\n");
   }
 }
 
@@ -199,6 +217,27 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.returnStatement) {
+    if (declaration.statements[index].cleanups.length > 0) {
+      match (in declaration.statements[index].expression) {
+        some(expression) => {
+          appendIndent(inout output, depth);
+          const returnType = try cType(declaration.returnType);
+          output.append(returnType);
+          output.append(` _z_stage1_return_${index} = `);
+          try appendExpression(inout output, declaration, expression);
+          output.append(";\n");
+          appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+          appendIndent(inout output, depth);
+          output.append(`return _z_stage1_return_${index};\n`);
+        }
+        none => {
+          appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+          appendIndent(inout output, depth);
+          output.append("return;\n");
+        }
+      }
+      return;
+    }
     appendIndent(inout output, depth);
     output.append("return");
     match (in declaration.statements[index].expression) {
@@ -328,6 +367,9 @@ function appendFunction(
   for (const root of declaration.roots) {
     try appendStatement(inout output, declaration, root, 1);
   }
+  if (declaration.returnType.kind == LoweredTypeKind.voidType) {
+    appendCleanups(inout output, declaration.fallthroughCleanups, 1);
+  }
   output.append("}\n\n");
 }
 
@@ -369,6 +411,13 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("} Z_");
     output.append(aggregate.name);
     output.append(";\n\n");
+    if (aggregate.customDeinit) {
+      output.append("static void Z_");
+      output.append(aggregate.name);
+      output.append("_deinit(Z_");
+      output.append(aggregate.name);
+      output.append(" *self) {\n  (void)self;\n}\n\n");
+    }
   }
   for (const declaration of program.functions) {
     try appendFunctionSignature(inout output, declaration);

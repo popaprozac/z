@@ -8223,6 +8223,27 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const structExecution = spawnSync(structExecutable, [], { encoding: "utf8" });
   assert.equal(structExecution.status, 42, structExecution.stderr);
 
+  const cleanupInput = resolve(projectRoot, "tests/fixtures/self-host-emit-cleanup.zs");
+  const cleanupEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", cleanupInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(cleanupEmission.status, 0, cleanupEmission.stderr);
+  assert.match(
+    cleanupEmission.stdout,
+    /_z_stage1_return_\d+ = resource\.id;\n  Z_Resource_deinit\(&resource\);\n  return _z_stage1_return_\d+;/,
+  );
+  const cleanupExecutable = resolve(directory, "cleanup");
+  const cleanupCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", cleanupExecutable],
+    { encoding: "utf8", input: cleanupEmission.stdout },
+  );
+  assert.equal(cleanupCompilation.status, 0, cleanupCompilation.stderr);
+  const cleanupExecution = spawnSync(cleanupExecutable, [], { encoding: "utf8" });
+  assert.equal(cleanupExecution.status, 42, cleanupExecution.stderr);
+
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");
   const invalidEmission = spawnSync(

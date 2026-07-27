@@ -38,6 +38,7 @@ export struct LoweredField {
 export struct LoweredStruct {
   name: String;
   fields: Array<LoweredField>;
+  customDeinit: boolean;
 }
 
 export struct LoweredParameter {
@@ -87,6 +88,12 @@ export struct LoweredStatement {
   expression: Option<usize>;
   secondExpression: Option<usize>;
   children: Array<usize>;
+  cleanups: Array<LoweredCleanup>;
+}
+
+export struct LoweredCleanup {
+  name: String;
+  type: LoweredType;
 }
 
 export struct LoweredFunction {
@@ -96,6 +103,7 @@ export struct LoweredFunction {
   expressions: Array<LoweredExpression>;
   statements: Array<LoweredStatement>;
   roots: Array<usize>;
+  fallthroughCleanups: Array<LoweredCleanup>;
 }
 
 export struct LoweredProgram {
@@ -129,6 +137,45 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
     none => {}
   }
   throw `native lowering does not support type ${type.name} yet`;
+}
+
+function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
+  if (type.kind != LoweredTypeKind.structType) return false;
+  match (structIndex(program, type.name)) {
+    some(index) => return match (in program.aggregates[index].deinitializer) {
+      some(_) => true;
+      none => false;
+    };
+    none => return false;
+  }
+}
+
+function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
+  return LoweredCleanup({
+    name: cleanup.name.copyBytes(0, cleanup.name.byteLength),
+    type: LoweredType({
+      kind: cleanup.type.kind,
+      name: cleanup.type.name.copyBytes(0, cleanup.type.name.byteLength),
+    }),
+  });
+}
+
+function attachExitCleanups(
+  inout statements: Array<LoweredStatement>,
+  index: usize,
+  in cleanups: Array<LoweredCleanup>
+): void {
+  if (statements[index].kind == LoweredStatementKind.returnStatement) {
+    for (const cleanup of cleanups) {
+      statements[index].cleanups.push(copyCleanup(cleanup));
+    }
+  }
+  let childIndex: usize = 0;
+  while (childIndex < statements[index].children.length) {
+    const child = statements[index].children[childIndex];
+    attachExitCleanups(inout statements, child, cleanups);
+    childIndex = childIndex + 1;
+  }
 }
 
 function pushExpression(
@@ -422,6 +469,7 @@ function lowerStatement(
     expression,
     secondExpression,
     children,
+    cleanups: Array<LoweredCleanup>(),
   }));
   return outputIndex;
 }
@@ -434,11 +482,21 @@ function lowerFunction(
     throw `native lowering does not support async function ${declaration.name} yet`;
   }
   let parameters = Array<LoweredParameter>();
+  let ownedParameters = Array<LoweredCleanup>();
   for (const parameter of declaration.parameters) {
     if (parameter.mode != ParameterMode.value) {
       throw `native lowering only supports value parameters in ${declaration.name} yet`;
     }
     const parameterType = try lowerType(program, parameter.type);
+    if (typeNeedsCleanup(program, parameterType)) {
+      ownedParameters.push(LoweredCleanup({
+        name: parameter.name.copyBytes(0, parameter.name.byteLength),
+        type: LoweredType({
+          kind: parameterType.kind,
+          name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
+        }),
+      }));
+    }
     parameters.push(LoweredParameter({
       name: parameter.name.copyBytes(0, parameter.name.byteLength),
       type: move parameterType,
@@ -457,6 +515,13 @@ function lowerFunction(
     );
     roots.push(loweredRoot);
   }
+  for (const root of roots) {
+    attachExitCleanups(inout statements, root, ownedParameters);
+  }
+  let fallthroughCleanups = Array<LoweredCleanup>();
+  for (const cleanup of ownedParameters) {
+    fallthroughCleanups.push(copyCleanup(cleanup));
+  }
   const returnType = try lowerType(program, declaration.returnType);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
@@ -465,6 +530,7 @@ function lowerFunction(
     expressions,
     statements,
     roots,
+    fallthroughCleanups,
   });
 }
 
@@ -494,7 +560,11 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
       none => {}
     }
     match (in aggregate.deinitializer) {
-      some(_) => throw `native lowering does not support deinit on ${aggregate.name} yet`;
+      some(deinitializer) => {
+        if (deinitializer.body.roots.length > 0) {
+          throw `native lowering only supports an empty deinit on ${aggregate.name} yet`;
+        }
+      }
       none => {}
     }
     let fields = Array<LoweredField>();
@@ -505,9 +575,14 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
         type: move fieldType,
       }));
     }
+    const customDeinit = match (in aggregate.deinitializer) {
+      some(_) => true;
+      none => false;
+    };
     structs.push(LoweredStruct({
       name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       fields,
+      customDeinit,
     }));
   }
 

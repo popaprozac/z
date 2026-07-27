@@ -571,6 +571,13 @@ source operator strings no longer cross the target-text boundary. Cleanup plans
 remain the next addition, but they now have one explicit representation to join
 instead of another control-flow-specific emitter path.
 
+The first explicit plan now covers an owned cleanup-bearing value parameter in
+linear control flow. Return lowering stores the result, emits the parameter's
+custom deinitializer, and returns the stored value. Restricting the custom
+`deinit` body to empty keeps this a cleanup-order proof rather than silently
+discarding user behavior. Moves, local-owner introduction, and flow merges are
+the next ownership evidence required before this tier broadens.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

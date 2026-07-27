@@ -649,6 +649,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    no longer imports parser nodes or interprets operator strings. Deterministic
    cleanup adds scope/branch/return exit plans, so the next slice extends this
    IR before ownership-bearing structs.
+   The first such extension is implemented for a deliberately linear tier:
+   a data-only struct may declare an empty custom `deinit`, an owned value
+   parameter receives an explicit lowered cleanup plan, and return emission
+   saves the result before destroying the parameter. The executable regression
+   places `Resource_deinit(&resource)` between result evaluation and the C
+   return. Moves, owned locals, non-empty deinitializers, and branch/loop/error
+   cleanup merging remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

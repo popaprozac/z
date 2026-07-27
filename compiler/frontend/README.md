@@ -147,6 +147,12 @@ construction are semantic lowering decisions, not formatting. Deterministic
 cleanup can now extend the IR with explicit scope-exit plans rather than
 teaching the C printer to rediscover ownership from syntax.
 
+The first cleanup plan is now executable for an ownership-bearing value
+parameter whose custom `deinit` body is empty. A lowered return evaluates its
+result into a temporary, runs reverse exit cleanup, and then returns the saved
+value. This proves the ordering boundary without pretending moves, owned
+locals, non-empty deinitializers, or branch/loop/error flow are complete.
+
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend
 analyzes the same canonical module batch, gates command success on exact
