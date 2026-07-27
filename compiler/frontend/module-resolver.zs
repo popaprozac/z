@@ -2739,7 +2739,12 @@ function inferExpressionNodeType(
         );
         return copiedString(base);
       }
-      if (base == "Array" || base == "Map" || base == "Set") {
+      if (
+        base == "Array"
+        || base == "Map"
+        || base == "Set"
+        || base == "TextBuffer"
+      ) {
         try inferUnclassifiedCallArguments(
           module,
           modules,

@@ -628,7 +628,7 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    The first native C-emission proof now consumes the owned Stage 1 `Program`
    directly. `z self-host-emit` lowers a deliberately closed subset—ordinary
    `i32`/`boolean`/`void` functions, value parameters, explicitly typed locals,
-   direct calls, unary/binary expressions, assignment, `if`, `while`,
+   direct calls, unary/binary/ternary expressions, assignment, `if`, `while`,
    `break`/`continue`, returns, and non-generic data-only value structs—to
    portable C. Struct layout, compound construction, value passing, and field
    access are executable. Before emission, the canonical
@@ -667,8 +667,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    locals initialized by intrinsic String operations. Native semantic evidence
    now supplies the exact `byteAt`, `copyBytes`, `byteLength`, and `isEmpty`
    contracts, allowing inferred `u8`, owned `String`, `usize`, and `boolean`
-   bindings to lower without a parallel emitter inference rule. The real probe
-   advances to `TextBuffer` construction.
+   bindings to lower without a parallel emitter inference rule. Native
+   `TextBuffer` now constructs empty owned storage, appends Strings,
+   UTF-8-boundary-checked byte ranges, and ASCII bytes, and consumes that
+   storage through `finish()` into a String without double cleanup. The real
+   compiler probe now advances through its first conditional and stops at
+   template-expression lowering.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

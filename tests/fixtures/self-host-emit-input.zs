@@ -4,5 +4,5 @@ function add(a: i32, b: i32): i32 {
 
 function main(): i32 {
   const answer: i32 = add(20, 22);
-  return answer;
+  return answer == 42 ? answer : 0;
 }

@@ -16,6 +16,7 @@ import {
   StatementArena,
   StatementKind,
   TypeReference,
+  expressionKindName,
 } from "./parser.zs";
 import {
   ParsedModule,
@@ -101,6 +102,7 @@ export enum LoweredExpressionKind {
   moveValue,
   unaryOperation,
   binaryOperation,
+  conditionalValue,
   directCall,
   fieldValue,
   structValue,
@@ -111,6 +113,10 @@ export enum LoweredExpressionKind {
   stringIsEmpty,
   stringByteAt,
   stringCopyBytes,
+  textBufferEmpty,
+  textBufferAppend,
+  textBufferAppendBytes,
+  textBufferAppendAscii,
 }
 
 export struct LoweredExpression {
@@ -278,7 +284,7 @@ function lowerTypeName(
   if (name == "usize") {
     return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
   }
-  if (name == "String") {
+  if (name == "String" || name == "TextBuffer") {
     return LoweredType({
       kind: LoweredTypeKind.stringType,
       name: "String",
@@ -866,6 +872,17 @@ function treeMovesName(
     && tree.nodes[index].children.length > 0
   ) {
     const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "finish"
+      && tree.nodes[callee].children.length == 1
+    ) {
+      const receiver = tree.nodes[callee].children[0];
+      if (
+        tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+        && tree.nodes[receiver].value == name
+      ) return true;
+    }
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
       for (const aggregate of program.aggregates) {
         if (
@@ -1839,11 +1856,48 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.conditionalExpression) {
+    if (tree.nodes[index].children.length != 3) {
+      throw "native lowering received a malformed conditional expression";
+    }
+    let children = Array<usize>();
+    for (const childInput of tree.nodes[index].children) {
+      const child = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        childInput,
+        inout output
+      );
+      children.push(child);
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.conditionalValue,
+      "",
+      children,
+      Array<String>()
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
     if (tree.nodes[index].children.length == 0) {
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[calleeInput].value == "TextBuffer"
+      && tree.nodes[index].children.length == 1
+    ) {
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.textBufferEmpty,
+        "",
+        Array<usize>(),
+        Array<String>()
+      );
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
@@ -1918,6 +1972,64 @@ function lowerExpression(
           );
         }
       }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && (
+        tree.nodes[calleeInput].value == "append"
+        || tree.nodes[calleeInput].value == "appendBytes"
+        || tree.nodes[calleeInput].value == "appendAscii"
+        || tree.nodes[calleeInput].value == "finish"
+      )
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(receiver);
+      let argument: usize = 1;
+      while (argument < tree.nodes[index].children.length) {
+        const argumentInput = tree.nodes[index].children[argument];
+        const value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          inout output
+        );
+        children.push(value);
+        argument = argument + 1;
+      }
+      if (tree.nodes[calleeInput].value == "finish") {
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.moveValue,
+          "",
+          children,
+          Array<String>()
+        );
+      }
+      let kind = LoweredExpressionKind.textBufferAppend;
+      if (tree.nodes[calleeInput].value == "appendBytes") {
+        kind = LoweredExpressionKind.textBufferAppendBytes;
+      } else if (tree.nodes[calleeInput].value == "appendAscii") {
+        kind = LoweredExpressionKind.textBufferAppendAscii;
+      }
+      return pushExpression(
+        inout output,
+        kind,
+        "",
+        children,
+        Array<String>()
+      );
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
@@ -2312,7 +2424,8 @@ function lowerExpression(
       Array<String>()
     );
   }
-  throw "native lowering does not support this expression shape yet";
+  const unsupportedKind = expressionKindName(tree.nodes[index].kind);
+  throw `native lowering does not support ${unsupportedKind} expression at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
 }
 
 function lowerExpressionSyntax(

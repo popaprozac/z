@@ -109,19 +109,37 @@ export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
 ): Option<ModuleFunctionSignature> {
-  if (ownerType == "String") {
+  if (ownerType == "String" || ownerType == "TextBuffer") {
     let parameterModes = Array<String>();
     let parameterTypes = Array<String>();
     let returnType = "";
-    if (methodName == "byteAt") {
+    if (ownerType == "String" && methodName == "byteAt") {
       parameterModes.push("value");
       parameterTypes.push("usize");
       returnType = "u8";
-    } else if (methodName == "copyBytes") {
+    } else if (ownerType == "String" && methodName == "copyBytes") {
       parameterModes.push("value");
       parameterTypes.push("usize");
       parameterModes.push("value");
       parameterTypes.push("usize");
+      returnType = "String";
+    } else if (ownerType == "TextBuffer" && methodName == "append") {
+      parameterModes.push("in");
+      parameterTypes.push("String");
+      returnType = "void";
+    } else if (ownerType == "TextBuffer" && methodName == "appendBytes") {
+      parameterModes.push("in");
+      parameterTypes.push("String");
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      returnType = "void";
+    } else if (ownerType == "TextBuffer" && methodName == "appendAscii") {
+      parameterModes.push("value");
+      parameterTypes.push("u8");
+      returnType = "void";
+    } else if (ownerType == "TextBuffer" && methodName == "finish") {
       returnType = "String";
     }
     if (returnType.byteLength == 0) {
@@ -263,6 +281,12 @@ export function collectionMethodMutates(
   in ownerType: String,
   in methodName: String
 ): boolean {
+  if (ownerType == "TextBuffer") {
+    return methodName == "append"
+      || methodName == "appendBytes"
+      || methodName == "appendAscii"
+      || methodName == "finish";
+  }
   return match (genericTypeShape(ownerType)) {
     some(generic) => generic.base == "Map"
       ? methodName == "set"

@@ -108,7 +108,8 @@ semantic analysis and code generation; the frontend itself is native Z code.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
   ordinary `i32`/`boolean`/`void` functions, value parameters, explicitly typed
   locals, direct calls, arithmetic, assignment, `if`, `while`, loop control,
-  returns, and non-generic data-only value structs from the owned Stage 1 AST.
+  returns, ternary expressions, and non-generic data-only value structs from
+  the owned Stage 1 AST.
   Struct layout, construction, value passing, and field access are executable.
   Signed `i32` addition, subtraction, multiplication, and negation retain Z's
   checked-overflow behavior.
@@ -183,8 +184,11 @@ addresses at calls, and excludes borrowed values from owned cleanup. The probe
 therefore advances again to inferred locals initialized by intrinsic String
 operations. Native semantic evidence now owns the String property/method
 signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
-bindings no longer require emitter-side guessing. The probe now reaches
-`TextBuffer` construction. A local selective alias is resolved back to the exported
+  bindings no longer require emitter-side guessing. Native `TextBuffer`
+  construction, mutation, and consuming `finish()` now reuse owned String
+  storage; appending a String, a checked UTF-8 byte range, or one ASCII byte is
+  executable without an intermediate runtime object. The real compiler probe
+  now reaches template expressions. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

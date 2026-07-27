@@ -122,6 +122,12 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind == LoweredExpressionKind.textBufferEmpty
+  ) {
+    output.append("(Z_String){ NULL, 0, 0 }");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.checkedAddInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedMultiplyInteger
@@ -212,6 +218,25 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.conditionalValue
+  ) {
+    if (declaration.expressions[index].children.length != 3) {
+      throw "native C emission received a malformed conditional expression";
+    }
+    output.append("(");
+    const condition = declaration.expressions[index].children[0];
+    const thenValue = declaration.expressions[index].children[1];
+    const elseValue = declaration.expressions[index].children[2];
+    try appendExpression(inout output, declaration, condition);
+    output.append(" ? ");
+    try appendExpression(inout output, declaration, thenValue);
+    output.append(" : ");
+    try appendExpression(inout output, declaration, elseValue);
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.stringEqual) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed String comparison";
@@ -299,6 +324,44 @@ function appendExpression(
         declaration,
         value
       );
+      child = child + 1;
+    }
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.textBufferAppend
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.textBufferAppendBytes
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.textBufferAppendAscii
+  ) {
+    let expected: usize = 2;
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.textBufferAppendBytes
+    ) expected = 4;
+    if (declaration.expressions[index].children.length != expected) {
+      throw "native C emission received a malformed TextBuffer call";
+    }
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.textBufferAppend
+    ) output.append("z_text_buffer_append(&(");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.textBufferAppendBytes
+    ) output.append("z_text_buffer_append_bytes(&(");
+    else output.append("z_text_buffer_append_ascii(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append(")");
+    let child: usize = 1;
+    while (child < declaration.expressions[index].children.length) {
+      output.append(", ");
+      const value = declaration.expressions[index].children[child];
+      try appendExpression(inout output, declaration, value);
       child = child + 1;
     }
     output.append(")");
@@ -1233,6 +1296,19 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  const char *bytes = value.data != NULL ? value.data + start : \"\";\n");
   output.append("  z_string_append_bytes(&result, bytes, end - start);\n");
   output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_text_buffer_append(Z_String *self, Z_String value) {\n");
+  output.append("  z_string_append_bytes(self, value.data != NULL ? value.data : \"\", value.length);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_text_buffer_append_bytes(Z_String *self, Z_String value, size_t start, size_t end) {\n");
+  output.append("  if (start > end || end > value.length) abort();\n");
+  output.append("  if (!z_string_is_utf8_boundary(value, start) || !z_string_is_utf8_boundary(value, end)) abort();\n");
+  output.append("  z_string_append_bytes(self, value.data != NULL ? value.data + start : \"\", end - start);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_text_buffer_append_ascii(Z_String *self, uint8_t byte) {\n");
+  output.append("  if (byte > 0x7Fu) abort();\n");
+  output.append("  const char value = (char)byte;\n");
+  output.append("  z_string_append_bytes(self, &value, 1);\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
   for (const declaration of program.arrays) {

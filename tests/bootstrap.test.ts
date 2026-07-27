@@ -8456,7 +8456,8 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const nativeStringInput = resolve(directory, "native-string.zs");
   writeFileSync(
     nativeStringInput,
-    "function inspect(value: String): usize {\n"
+    "import { TextBuffer } from \"std/text\";\n"
+      + "function inspect(value: String): usize {\n"
       + "  const middle = value.copyBytes(1, 4);\n"
       + "  if (middle == \"ell\" && value.byteAt(0) == 104 && value.byteLength == 5 && !value.isEmpty) {\n"
       + "    return middle.byteLength;\n"
@@ -8466,11 +8467,19 @@ test("emits and runs the first program directly from the native Z AST", () => {
       + "function borrowedLength(in value: String): usize { return value.byteLength; }\n"
       + "function initialize(out value: usize): void { value = 20; }\n"
       + "function increment(inout value: usize): void { value = value + 2; }\n"
+      + "function build(): String {\n"
+      + "  let output = TextBuffer();\n"
+      + "  output.append(\"he\");\n"
+      + "  output.appendBytes(\"llo!\", 0, 2);\n"
+      + "  output.appendAscii(111);\n"
+      + "  return output.finish();\n"
+      + "}\n"
       + "function main(): i32 {\n"
       + "  let answer: usize;\n"
+      + "  const built = build();\n"
       + "  initialize(out answer);\n"
       + "  increment(inout answer);\n"
-      + "  if (inspect(\"hello\") == 3 && borrowedLength(\"ok\") == 2 && answer == 22) return 0;\n"
+      + "  if (inspect(\"hello\") == 3 && borrowedLength(\"ok\") == 2 && answer == 22 && built == \"hello\") return 0;\n"
       + "  return 1;\n"
       + "}\n",
   );
@@ -8505,6 +8514,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
     nativeStringEmission.stdout,
     /borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
   );
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), 0, 2\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_ascii\(&\(output\), 111\)/);
+  assert.doesNotMatch(
+    nativeStringEmission.stdout,
+    /Z_String_deinit\(&output\)/,
+  );
+  assert.match(nativeStringEmission.stdout, /Z_String_deinit\(&built\)/);
   const nativeStringExecutable = resolve(directory, "native-string");
   const nativeStringCompilation = spawnSync(
     "clang",

@@ -3399,7 +3399,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
   return Program({ declarations, imports, typeAliases, functions, aggregates, traits, enums });
 }
 
-function expressionKindName(kind: ExpressionKind): String {
+export function expressionKindName(kind: ExpressionKind): String {
   return match (kind) {
     identifierExpression => "identifier";
     numberExpression => "number";
