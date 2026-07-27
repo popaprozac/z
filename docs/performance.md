@@ -219,6 +219,13 @@ introducing the ownership-lowering IR for semantic correctness rather than
 trying to preserve a misleading microbenchmark advantage by keeping the native
 emitter underspecified.
 
+Routing all three fixtures through the new typed flat-arena lowering IR measured
+37.8 ms for native struct emission versus 45.3 ms for Stage-0 `emit`. The
+thirty-one-module compiler graph's warm native phase measured 179.30 ms. The IR
+therefore adds an explicit semantic boundary without a meaningful edit-loop
+regression at this scale; ownership cleanup correctness remains the reason for
+the architecture, not this timing.
+
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.
 Native module fingerprints and incremental parse/semantic caches should

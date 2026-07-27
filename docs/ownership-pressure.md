@@ -564,6 +564,13 @@ ownership-bearing values require cleanup plans for normal, branch, loop,
 return, and error exits. The IR should make those plans data before the C
 printer sees them.
 
+That boundary is now executable rather than aspirational. `lowering-ir.zs`
+normalizes the three fixtures into typed flat expression and statement arenas;
+the C emitter consumes only lowered operations and types. Parser enums and
+source operator strings no longer cross the target-text boundary. Cleanup plans
+remain the next addition, but they now have one explicit representation to join
+instead of another control-flow-specific emitter path.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

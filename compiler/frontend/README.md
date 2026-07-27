@@ -112,6 +112,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   Struct layout, construction, value passing, and field access are executable.
   Signed `i32` addition, subtraction, multiplication, and negation retain Z's
   checked-overflow behavior.
+- `lowering-ir.zs` owns the typed flat-arena boundary between parser semantics
+  and target text. Checked arithmetic, direct calls, field reads, and struct
+  construction are settled operations in this IR; the C printer does not
+  rediscover them from source-shaped nodes.
 - `parser-library.zs` is the compiler-facing root compiled into a
   content-addressed dynamic library and loaded in-process by the Bun driver.
 
@@ -137,11 +141,11 @@ Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
 
 Three distinct shapes now run directly—scalar calls, mutable control flow, and
-value structs. Their pressure establishes the next architecture boundary:
-checked operations and aggregate construction are semantic lowering decisions,
-not formatting. Before adding deterministic cleanup, the native path should
-introduce a typed lowering IR with explicit scope-exit cleanup plans rather than
-teach the C printer to rediscover ownership from syntax.
+value structs—and all three pass through the typed lowering IR. Their pressure
+established the architecture boundary: checked operations and aggregate
+construction are semantic lowering decisions, not formatting. Deterministic
+cleanup can now extend the IR with explicit scope-exit plans rather than
+teaching the C printer to rediscover ownership from syntax.
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend

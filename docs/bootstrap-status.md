@@ -643,11 +643,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    source-to-native path. It is not yet the production emitter: Stage 0 remains
    authoritative for the full language, module linking, ownership cleanup,
    runtime types, foreign interop, and production diagnostics.
-   These three shapes establish the native lowering-IR boundary. Checked
-   arithmetic and aggregate construction already require semantic decisions
-   that should not live in a C formatter. Deterministic cleanup adds
-   scope/branch/return exit plans, so the next slice introduces a typed,
-   arena-backed lowering IR before ownership-bearing structs.
+   These three shapes established and now pass through the native lowering-IR
+   boundary. The flat typed arenas normalize checked arithmetic, direct calls,
+   field reads, and struct construction before target emission; the C printer
+   no longer imports parser nodes or interprets operator strings. Deterministic
+   cleanup adds scope/branch/return exit plans, so the next slice extends this
+   IR before ownership-bearing structs.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -808,9 +809,9 @@ Continue focused self-hosting work in this order:
    native representation is justified by real programs.
 5. Grow the now-started native lowering and C-family emitter from its first
    executable scalar, control-flow, and cleanup-free value-struct slices to the
-   compiler subset. The evidence now justifies an explicit typed lowering IR:
-   introduce it before deterministic cleanup and represent scope-exit cleanup
-   plans directly. Add constructs only with an end-to-end fixture. Continue to
+   compiler subset. The explicit typed lowering IR is now implemented; extend
+   it with deterministic scope-exit cleanup plans. Add constructs only with an
+   end-to-end fixture. Continue to
    invoke Clang as an external tool; self-hosting does not require replacing it.
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding
