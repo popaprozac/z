@@ -95,6 +95,7 @@ export enum LoweredStatementKind {
   blockStatement,
   ifStatement,
   whileStatement,
+  tryStatement,
   matchStatement,
   matchArmStatement,
   breakStatement,
@@ -702,6 +703,20 @@ function planCleanupStatement(
 ): void throws String {
   if (statements[loweredIndex].kind == LoweredStatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
+    return;
+  }
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.localStatement
+    && statements[loweredIndex].children.length == 1
+    && statements[statements[loweredIndex].children[0]].kind
+      == LoweredStatementKind.tryStatement
+  ) {
+    const loweredTry = statements[loweredIndex].children[0];
+    for (const cleanup of live) {
+      if (cleanup.name != statements[loweredIndex].name) {
+        statements[loweredTry].cleanups.push(copyCleanup(cleanup));
+      }
+    }
     return;
   }
   if (
@@ -1398,6 +1413,38 @@ function loweredSourceEnum(
   });
 }
 
+function directThrowingCallResult(
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): Option<LoweredEnum> throws String {
+  if (
+    tree.nodes[index].kind != ExpressionKind.callExpression
+    || tree.nodes[index].children.length == 0
+  ) return Option<LoweredEnum>.none;
+  const callee = tree.nodes[index].children[0];
+  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) {
+    return Option<LoweredEnum>.none;
+  }
+  for (const declaration of program.functions) {
+    if (declaration.name == tree.nodes[callee].value) {
+      match (in declaration.errorType) {
+        some(errorType) => {
+          const returnName = declaration.returnType.name.copyBytes(
+            0,
+            declaration.returnType.name.byteLength
+          );
+          const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
+          const resultName = `Result<${returnName}, ${errorName}>`;
+          return try intrinsicResultDeclaration(program, resultName);
+        }
+        none => return Option<LoweredEnum>.none;
+      }
+    }
+  }
+  return Option<LoweredEnum>.none;
+}
+
 function matchSubjectTypeName(
   in program: Program,
   in arena: StatementArena,
@@ -1871,6 +1918,94 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.variableStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => {
+        match (in syntax.tree) {
+          some(tree) => {
+            const root = tree.root;
+            if (
+              tree.nodes[root].kind == ExpressionKind.tryExpression
+              && tree.nodes[root].children.length == 1
+            ) {
+              const attempted = tree.nodes[root].children[0];
+              const innerResult = try directThrowingCallResult(
+                program,
+                tree,
+                attempted
+              );
+              const inner = match (innerResult) {
+                some(declaration) => declaration;
+                none => throw "native try lowering requires one direct throwing function call yet";
+              };
+              const outerResult = try throwingFunctionResult(program, ownerName);
+              const outer = match (outerResult) {
+                some(declaration) => declaration;
+                none => throw "native try lowering requires an enclosing throwing function";
+              };
+              const bindingType = match (in arena.nodes[index].typeAnnotation) {
+                some(annotation) => try lowerType(program, annotation);
+                none => throw `native try lowering requires an explicit type for local ${arena.nodes[index].name}`;
+              };
+              const call = try lowerExpression(
+                program,
+                tree,
+                attempted,
+                inout expressions
+              );
+              let tryLabels = Array<String>();
+              tryLabels.push(arena.nodes[index].name.copyBytes(
+                0,
+                arena.nodes[index].name.byteLength
+              ));
+              tryLabels.push(outer.name.copyBytes(0, outer.name.byteLength));
+              const loweredTry = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.tryStatement,
+                mutableBinding: false,
+                name: inner.name.copyBytes(0, inner.name.byteLength),
+                type: Option.some(LoweredType({
+                  kind: bindingType.kind,
+                  name: bindingType.name.copyBytes(0, bindingType.name.byteLength),
+                })),
+                expression: Option.some(call),
+                secondExpression: Option<usize>.none,
+                children: Array<usize>(),
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: tryLabels,
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              let children = Array<usize>();
+              children.push(loweredTry);
+              const localIndex = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.localStatement,
+                mutableBinding: arena.nodes[index].mutableBinding,
+                name: arena.nodes[index].name.copyBytes(
+                  0,
+                  arena.nodes[index].name.byteLength
+                ),
+                type: Option.some(move bindingType),
+                expression: Option<usize>.none,
+                secondExpression: Option<usize>.none,
+                children,
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: Array<String>(),
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              return localIndex;
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
   if (
     arena.nodes[index].kind == StatementKind.matchStatement
     || arena.nodes[index].kind == StatementKind.returnStatement
@@ -1976,7 +2111,38 @@ function lowerStatement(
   let expression = Option<usize>.none;
   match (in arena.nodes[index].expression) {
     some(source) => {
-      const loweredValue = try lowerExpressionSyntax(program, source, inout expressions);
+      let directTryReturn = false;
+      let loweredValue: usize = 0;
+      if (arena.nodes[index].kind == StatementKind.returnStatement) {
+        match (in source.tree) {
+          some(tree) => {
+            const root = tree.root;
+            if (
+              tree.nodes[root].kind == ExpressionKind.tryExpression
+              && tree.nodes[root].children.length == 1
+            ) {
+              const attempted = tree.nodes[root].children[0];
+              loweredValue = try lowerExpression(
+                program,
+                tree,
+                attempted,
+                inout expressions
+              );
+              directTryReturn = true;
+            } else {
+              loweredValue = try lowerExpression(
+                program,
+                tree,
+                root,
+                inout expressions
+              );
+            }
+          }
+          none => throw "native lowering cannot lower an opaque expression";
+        }
+      } else {
+        loweredValue = try lowerExpressionSyntax(program, source, inout expressions);
+      }
       if (
         arena.nodes[index].kind == StatementKind.returnStatement
         || arena.nodes[index].kind == StatementKind.throwStatement
@@ -1984,22 +2150,26 @@ function lowerStatement(
         const result = try throwingFunctionResult(program, ownerName);
         match (in result) {
           some(declaration) => {
-            let children = Array<usize>();
-            children.push(loweredValue);
-            let labels = Array<String>();
-            if (arena.nodes[index].kind == StatementKind.throwStatement) {
-              labels.push("failure");
+            if (directTryReturn) {
+              expression = Option.some(loweredValue);
             } else {
-              labels.push("success");
+              let children = Array<usize>();
+              children.push(loweredValue);
+              let labels = Array<String>();
+              if (arena.nodes[index].kind == StatementKind.throwStatement) {
+                labels.push("failure");
+              } else {
+                labels.push("success");
+              }
+              const wrapped = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.enumPayloadValue,
+                declaration.name,
+                children,
+                labels
+              );
+              expression = Option.some(wrapped);
             }
-            const wrapped = pushExpression(
-              inout expressions,
-              LoweredExpressionKind.enumPayloadValue,
-              declaration.name,
-              children,
-              labels
-            );
-            expression = Option.some(wrapped);
           }
           none => expression = Option.some(loweredValue);
         }

@@ -709,8 +709,14 @@ tagged result available to `match`. Cleanup-bearing values on either side obey
 the active-variant rule: an uninspected result destroys its stored payload,
 while a consuming match transfers that payload into one arm-local owner and
 cleans it after the arm value is evaluated. Contextually inferred Option
-constructors and propagation through `try` remain the next intrinsic pressure
-points.
+constructors and broader expression composition remain intrinsic pressure
+points. Direct `return try call()` already relays an ABI-identical result after
+evaluating it into a temporary and cleaning surrounding owners. A typed local
+initialized through `try` uses an explicit lowering control-flow node: failure
+is rebuilt in the enclosing Result only after the inner error payload is
+captured and existing owners are cleaned; success transfers into the now-live
+local. This keeps propagation visible to cleanup planning rather than relying
+on a C statement-expression extension.
 
 What the compiler proves:
 

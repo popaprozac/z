@@ -8353,7 +8353,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     resultEmission.stdout,
-    /Z___z_Result_i32_Problem result = load\(shouldFail\);.*?case Z___z_Result_i32_ProblemTag_success:.*?case Z___z_Result_i32_ProblemTag_failure:/s,
+    /Z___z_Result_i32_Problem result = relay\(shouldFail\);.*?case Z___z_Result_i32_ProblemTag_success:.*?case Z___z_Result_i32_ProblemTag_failure:/s,
   );
   assert.match(
     resultEmission.stdout,
@@ -8366,6 +8366,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     resultEmission.stdout,
     /discardResult\(void\).*?Z___z_Result_Resource_Problem result = loadResource\(false\);.*?Z___z_Result_Resource_Problem_deinit\(&result\);/s,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /relay\(bool shouldFail\).*?_z_stage1_return_\d+ = load\(shouldFail\);\n  Z_Resource_deinit\(&audit\);\n  return _z_stage1_return_\d+;/s,
+  );
+  assert.match(
+    resultEmission.stdout,
+    /adjusted\(bool shouldFail\).*?_z_stage1_try_\d+ = load\(shouldFail\);.*?if \(_z_stage1_try_\d+\.tag == Z___z_Result_i32_ProblemTag_failure\).*?Z_Resource_deinit\(&audit\);\n    return _z_stage1_failure_\d+;.*?value = _z_stage1_try_\d+\.payload\.success;/s,
   );
   const resultExecutable = resolve(directory, "result");
   const resultCompilation = spawnSync(

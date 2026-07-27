@@ -17,8 +17,27 @@ function load(shouldFail: boolean): i32 throws Problem {
   return 42;
 }
 
+function relay(shouldFail: boolean): i32 throws Problem {
+  const audit: Resource = Resource({ id: 0 });
+  return try load(shouldFail);
+}
+
+function adjusted(shouldFail: boolean): i32 throws Problem {
+  const audit: Resource = Resource({ id: 1 });
+  const value: i32 = try load(shouldFail);
+  return value;
+}
+
 function inspect(shouldFail: boolean): i32 {
-  const result: Result<i32, Problem> = attempt load(shouldFail);
+  const result: Result<i32, Problem> = attempt relay(shouldFail);
+  return match (result) {
+    success(value) => value;
+    failure(error) => -error.code;
+  };
+}
+
+function inspectAdjusted(shouldFail: boolean): i32 {
+  const result: Result<i32, Problem> = attempt adjusted(shouldFail);
   return match (result) {
     success(value) => value;
     failure(error) => -error.code;
@@ -54,6 +73,9 @@ function main(): i32 {
   return inspect(false)
     + inspect(true)
     + 7
+    + inspectAdjusted(false)
+    + inspectAdjusted(true)
+    - 35
     + inspectResource(false)
     - 42
     + inspectResource(true)

@@ -421,6 +421,63 @@ function appendStatement(
     output.append(";\n");
     return;
   }
+  if (declaration.statements[index].kind == LoweredStatementKind.tryStatement) {
+    if (declaration.statements[index].labels.length != 2) {
+      throw "native C emission received a malformed try statement";
+    }
+    const temporary = `_z_stage1_try_${index}`;
+    const propagated = `_z_stage1_failure_${index}`;
+    appendIndent(inout output, depth);
+    output.append("Z_");
+    output.append(declaration.statements[index].name);
+    output.append(" ");
+    output.append(temporary);
+    output.append(" = ");
+    match (in declaration.statements[index].expression) {
+      some(expression) => try appendExpression(
+        inout output,
+        declaration,
+        expression
+      );
+      none => throw "native C emission received a try statement without a call";
+    }
+    output.append(";\n");
+    appendIndent(inout output, depth);
+    output.append("if (");
+    output.append(temporary);
+    output.append(".tag == Z_");
+    output.append(declaration.statements[index].name);
+    output.append("Tag_failure) {\n");
+    appendIndent(inout output, depth + 1);
+    output.append("Z_");
+    output.append(declaration.statements[index].labels[1]);
+    output.append(" ");
+    output.append(propagated);
+    output.append(" = (Z_");
+    output.append(declaration.statements[index].labels[1]);
+    output.append("){.tag = Z_");
+    output.append(declaration.statements[index].labels[1]);
+    output.append("Tag_failure, .payload.failure = ");
+    output.append(temporary);
+    output.append(".payload.failure};\n");
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth + 1
+    );
+    appendIndent(inout output, depth + 1);
+    output.append("return ");
+    output.append(propagated);
+    output.append(";\n");
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    appendIndent(inout output, depth);
+    output.append(declaration.statements[index].labels[0]);
+    output.append(" = ");
+    output.append(temporary);
+    output.append(".payload.success;\n");
+    return;
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
     if (
       declaration.statements[index].matchConsumesSubject
