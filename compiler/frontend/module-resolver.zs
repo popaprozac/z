@@ -1202,6 +1202,42 @@ function inferExpressionNodeType(
   }
   if (kind == ExpressionKind.booleanExpression) return "boolean";
   if (kind == ExpressionKind.nullExpression) return "null";
+  if (kind == ExpressionKind.weakExpression && children.length == 1) {
+    const target = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      children[0],
+      inout bindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, children[0], target);
+    const location = match (typeSymbolLocation(modules, moduleIndex, target)) {
+      some(location) => location;
+      none => throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `weak expects a class value, found ${target}`,
+        tree.nodes[children[0]].line,
+        tree.nodes[children[0]].column
+      );
+    };
+    if (
+      modules[location.moduleIndex].symbols[location.symbolIndex].kind
+      != ModuleSymbolKind.classSymbol
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `weak expects a class value, found ${target}`,
+        tree.nodes[children[0]].line,
+        tree.nodes[children[0]].column
+      );
+    }
+    return `Weak<${target}>`;
+  }
   if (
     kind == ExpressionKind.identifierExpression
     || kind == ExpressionKind.argumentBindingExpression

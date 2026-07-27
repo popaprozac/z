@@ -189,6 +189,11 @@ contextual or explicitly throwing closure bodies receive the error contract and
 their resulting callable evidence preserves it. Existing synchronous and
 native-thread throwing-closure programs therefore remain native-authoritative
 without requiring foreign thread metadata in the native source graph.
+Compiler-provided weak references are native as well: `WeakExpired` is an
+intrinsic type, `weak value` validates a class target without consuming its
+owner, and `Weak<T>.upgrade()` yields `T throws WeakExpired`. The existing
+weak-reference and weak-capture application therefore remains fully
+native-authoritative.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

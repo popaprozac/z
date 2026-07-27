@@ -46,7 +46,8 @@ export function isIntrinsicTypeName(in name: String): boolean {
     || name == "Option"
     || name == "Result"
     || name == "Task"
-    || name == "Weak";
+    || name == "Weak"
+    || name == "WeakExpired";
 }
 
 export function qualifiedTypeBase(in name: String): String {

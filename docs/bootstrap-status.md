@@ -587,6 +587,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    The ordinary throwing-function application plus both native-thread error
    examples now consume every observed binding and expression through native
    authority.
+   Compiler-provided weak references now cross the same boundary:
+   `WeakExpired` is an intrinsic type, `weak value` requires a Z class without
+   consuming its strong owner, and `Weak<T>.upgrade()` produces a native
+   throwing effect returning `T`. The existing weak-reference and weak-capture
+   application now consumes all ten observed bindings and all twenty-seven
+   observed expressions through native authority.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

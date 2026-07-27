@@ -10530,6 +10530,35 @@ test("preserves throwing closure and transparent callable-alias effects natively
   }
 });
 
+test("preserves weak-reference construction and upgrade effects natively", () => {
+  const input = resolve(
+    projectRoot,
+    "examples/language/ownership/weak-references.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const observedBindings = result.stdout.match(
+    /observes (\d+) inferred local binding stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeBindings = result.stdout.match(
+    /uses (\d+) inferred local binding native-authoritative contracts/,
+  )?.[1];
+  const observedExpressions = result.stdout.match(
+    /observes (\d+) root expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = result.stdout.match(
+    /uses (\d+) root expression native-authoritative contracts/,
+  )?.[1];
+  assert.equal(observedBindings, "10");
+  assert.equal(authoritativeBindings, observedBindings);
+  assert.equal(observedExpressions, "27");
+  assert.equal(authoritativeExpressions, observedExpressions);
+});
+
 test("preserves nominal identities inside linked generic monomorphs", () => {
   const directory = mkdtempSync("/tmp/z-native-generic-identities-");
   const syntaxModule = resolve(directory, "syntax.zs");

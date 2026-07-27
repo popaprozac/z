@@ -116,6 +116,7 @@ export function collectionMethodSignature(
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
   let returnType = "";
+  let errorType = "";
   if (generic.base == "Map" && generic.arguments.length == 2) {
     const keyType = generic.arguments[0].copyBytes(
       0,
@@ -167,6 +168,16 @@ export function collectionMethodSignature(
       returnType = "void";
     }
   } else if (
+    generic.base == "Weak"
+    && generic.arguments.length == 1
+    && methodName == "upgrade"
+  ) {
+    returnType = generic.arguments[0].copyBytes(
+      0,
+      generic.arguments[0].byteLength
+    );
+    errorType = "WeakExpired";
+  } else if (
     (
       generic.base == "Generator"
       || generic.base == "AsyncGenerator"
@@ -187,7 +198,6 @@ export function collectionMethodSignature(
     } else {
       returnType = `GeneratorStep<${elementType}, ${generic.arguments[1]}>`;
     }
-    let errorType = "";
     if (generic.arguments.length == 3) {
       errorType = generic.arguments[2].copyBytes(
         0,
@@ -216,7 +226,7 @@ export function collectionMethodSignature(
     parameterModes,
     parameterTypes,
     returnType,
-    errorType: "",
+    errorType,
   }));
 }
 
