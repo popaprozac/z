@@ -21,6 +21,71 @@ export struct ModuleSymbolLocation {
   symbolIndex: usize;
 }
 
+function unresolvedExternalTypeBase(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): boolean {
+  const base = qualifiedTypeBase(name);
+  const member = qualifiedTypeMember(name);
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], base);
+  if (symbolIndex >= modules[moduleIndex].symbols.length) return false;
+  if (member.byteLength > 0) {
+    if (
+      modules[moduleIndex].symbols[symbolIndex].kind
+      != ModuleSymbolKind.namespaceSymbol
+    ) return false;
+    return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+      some(target) => false;
+      none => true;
+    };
+  }
+  if (
+    modules[moduleIndex].symbols[symbolIndex].kind
+    != ModuleSymbolKind.importedSymbol
+  ) return false;
+  return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
+    some(target) => false;
+    none => true;
+  };
+}
+
+export function isUnresolvedExternalType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): boolean {
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    return isUnresolvedExternalType(modules, moduleIndex, nullableTarget);
+  }
+  if (stringStartsWith(name, "view ")) {
+    const target = name.copyBytes(5, name.byteLength);
+    return isUnresolvedExternalType(modules, moduleIndex, target);
+  }
+  match (fixedArrayShape(name)) {
+    some(array) => return isUnresolvedExternalType(
+      modules,
+      moduleIndex,
+      array.elementType
+    );
+    none => {}
+  }
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (unresolvedExternalTypeBase(modules, moduleIndex, generic.base)) {
+        return true;
+      }
+      for (const argument of generic.arguments) {
+        if (isUnresolvedExternalType(modules, moduleIndex, argument)) return true;
+      }
+      return false;
+    }
+    none => {}
+  }
+  return unresolvedExternalTypeBase(modules, moduleIndex, name);
+}
+
 function exportedTypeLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

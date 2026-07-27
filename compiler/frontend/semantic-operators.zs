@@ -1,5 +1,6 @@
 import {
   equivalentTypes,
+  isUnresolvedExternalType,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -126,6 +127,10 @@ export function binaryOperatorType(
   in right: String
 ): String throws ModuleResolveError {
   if (left.byteLength == 0 || right.byteLength == 0) return "";
+  if (
+    isUnresolvedExternalType(modules, moduleIndex, left)
+    || isUnresolvedExternalType(modules, moduleIndex, right)
+  ) return "";
   if (operator == "&&" || operator == "||") {
     if (left == "boolean" && right == "boolean") return "boolean";
     throw invalidOperator(

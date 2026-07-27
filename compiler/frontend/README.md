@@ -206,6 +206,16 @@ template-style specialization. Stage 0 still validates every concrete
 instantiation; this narrow deferral must be replaced by native specialization
 before the native frontend becomes the sole authority for unconstrained generic
 operators.
+Unresolved external types are identified structurally from imports whose
+target is not a local Z module. Operations that require unavailable Clang,
+Objective-C, C++, or Swift type facts—numeric typedef classification,
+contextual foreign literals and closures, or foreign getter ownership—defer to
+Stage 0 rather than producing a speculative native diagnostic. A sweep of all
+155 executable example roots leaves no partial binding/expression-authority
+gap among the 154 roots understood by the native parser. The remaining root is
+the raw native function-body grammar, not a semantic mismatch. This deferral is
+a bootstrap boundary, not a claim that Stage 1 understands the foreign ABI;
+native FIIR ingestion must eventually replace it before the host can disappear.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

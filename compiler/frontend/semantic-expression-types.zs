@@ -2,6 +2,7 @@ import { requireSettledExpressionType } from "./semantic-call-contracts.zs";
 import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
 import {
   equivalentTypes,
+  isUnresolvedExternalType,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
@@ -149,6 +150,10 @@ export function requireExpressionType(
   if (
     isNumericTypeName(expected)
     && isNumericTypeName(actual)
+    && isContextualNumericLiteral(tree, index)
+  ) return;
+  if (
+    isUnresolvedExternalType(modules, moduleIndex, expected)
     && isContextualNumericLiteral(tree, index)
   ) return;
   if (

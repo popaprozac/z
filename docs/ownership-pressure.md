@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
+The 2026-07-27 decomposition checkpoint contains 15,983 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -375,34 +375,34 @@ The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 | `module-graph.zs` | 200 | parsing, dependency edges, graph skeletons, and ordering |
 | `semantic-names.zs` | 406 | lexical scopes, pattern bindings, and unknown-name diagnostics |
 | `semantic-type-shapes.zs` | 376 | intrinsic, array-element, and compound type-shape parsing shared by validation and inference |
-| `semantic-type-identities.zs` | 399 | canonical symbol identity, cross-module spelling, transparent aliases, and trait conformance lookup |
+| `semantic-type-identities.zs` | 464 | canonical symbol identity, cross-module spelling, transparent aliases, unresolved-external classification, and trait conformance lookup |
 | `semantic-type-validation.zs` | 723 | declaration and annotated-expression type-name, arity, and constraint validation |
 | `semantic-call-contracts.zs` | 156 | per-call capability conflicts plus pending throwing/async-call encoding and diagnostics |
-| `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
-| `semantic-expression-types.zs` | 215 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
+| `semantic-expression-ownership.zs` | 193 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
+| `semantic-expression-types.zs` | 218 | expected/actual compatibility for functions, literals, nullability, Slices, views, and unavailable foreign types |
 | `semantic-closures.zs` | 484 | closure parameter/effect contextualization, callable-shape construction, and lexical capture discovery |
 | `semantic-executor-placement.zs` | 116 | placed-task type effects plus explicit capture capability and move-state preparation |
-| `semantic-function-contexts.zs` | 183 | function parameter/receiver bindings, generic context, and generator yield/return discovery |
+| `semantic-function-contexts.zs` | 186 | function parameter/receiver bindings, generic context, and generator yield/return discovery |
 | `semantic-intrinsics.zs` | 250 | compiler-provided numeric, collection, iteration, generator, and weak-reference callable behavior |
 | `semantic-evidence.zs` | 248 | callable target lookup plus generic-call, binding, and expression evidence construction |
-| `semantic-operators.zs` | 208 | copy/move eligibility plus unary, arithmetic, bitwise, comparison, and equality typing |
+| `semantic-operators.zs` | 213 | copy/move eligibility plus unary, arithmetic, bitwise, comparison, equality typing, and foreign-boundary deferral |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,999 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 4,020 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-nine-module frontend graph and currently produces parity evidence
-for 913 symbols, 1,826 binding/signature queries, 985 inferred local bindings,
-and 3,727 root expression types. The binding and expression counts describe the
+for 917 symbols, 1,834 binding/signature queries, 991 inferred local bindings,
+and 3,750 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-174 ms. One bulk fixed-width fill carries all 913 symbol identities, kinds, export
+175 ms. One bulk fixed-width fill carries all 917 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -413,8 +413,8 @@ base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
 canonical graph returned by the versioned phase API directly. The latest
-whole-process samples were 245.2 ms for Stage 1, 250.0 ms for Stage 0, and
-1.119 s for the hybrid parity path. All three remain inside the established
+whole-process samples were 250.3 ms for Stage 1, 247.2 ms for Stage 0, and
+1.130 s for the hybrid parity path. All three remain inside the established
 band. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
@@ -510,6 +510,23 @@ generic call contracts, four inferred bindings, and six observed expressions.
 This is an honest migration seam, not the final generic rule: Stage 0 continues
 to reject invalid concrete specializations, and native specialization must
 eventually perform that proof before Stage 1 stands alone.
+
+A sweep of all 155 executable example roots then exposed five false native
+diagnostics at foreign boundaries. The source-only native graph cannot know
+whether an imported C typedef is numeric, which contextual function type an
+Objective-C adapter expects, or whether a foreign property getter copies an
+owned `String`. The resolver now classifies only imports whose local-module
+target is absent as unresolved external types. Numeric operations, contextual
+literals, unannotated foreign closures, and ownership transfer that require
+that unavailable metadata defer to Stage 0 instead of guessing. The unchanged
+C typedef, selective-import, Objective-C property, and target/action examples
+now check with every Stage-0-observed binding and expression still backed by
+native authority where Z has enough information. All 154 parseable executable
+roots complete without a partial native-evidence gap; the remaining root uses
+the `function ... = raw c {}` grammar that the native parser has not yet
+adopted. This is intentionally a migration seam: importing Clang/Swift FIIR
+into the native compiler remains future work, and the fallback does not claim
+that opaque foreign semantics are understood.
 
 What the compiler proves:
 

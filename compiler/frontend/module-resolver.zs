@@ -1112,6 +1112,23 @@ function inferUnclassifiedCallArguments(
     const nodeIndex = children[argumentIndex];
     let awaitsForeignContext = false;
     if (tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression) {
+      let bodyKind = "expression";
+      let returnType = "";
+      if (tree.nodes[nodeIndex].labels.length > 0) {
+        returnType = tree.nodes[nodeIndex].labels[0].copyBytes(
+          0,
+          tree.nodes[nodeIndex].labels[0].byteLength
+        );
+      }
+      if (tree.nodes[nodeIndex].labels.length > 2) {
+        bodyKind = tree.nodes[nodeIndex].labels[2].copyBytes(
+          0,
+          tree.nodes[nodeIndex].labels[2].byteLength
+        );
+      }
+      if (bodyKind == "block" && returnType.byteLength == 0) {
+        awaitsForeignContext = true;
+      }
       for (const child of tree.nodes[nodeIndex].children) {
         if (
           tree.nodes[child].kind == ExpressionKind.closureParameterExpression
@@ -3236,14 +3253,18 @@ function inferStatement(
       }
     }
     match (in arena.nodes[index].expression) {
-      some(expression) => try consumeOwnedExpressionSyntax(
-        module,
-        modules,
-        moduleIndex,
-        expression,
-        stored,
-        inout bindings
-      );
+      some(expression) => {
+        if (inferred.byteLength > 0) {
+          try consumeOwnedExpressionSyntax(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            stored,
+            inout bindings
+          );
+        }
+      }
       none => {}
     }
     if (arena.nodes[index].mutableBinding) {

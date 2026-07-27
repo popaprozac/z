@@ -10615,6 +10615,41 @@ test("defers dependent generic comparisons to concrete specialization", () => {
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
+test("defers unavailable foreign ABI semantics without inventing native diagnostics", () => {
+  const cases = [
+    "examples/interop/c/apple-groundwork.zs",
+    "examples/interop/c/foreign-types.zs",
+    "examples/interop/c/selective-declarations.zs",
+    "examples/interop/objc/desktop-ownership/main.zs",
+    "examples/interop/objc/target-action.zs",
+  ];
+  for (const fileName of cases) {
+    const input = resolve(projectRoot, fileName);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `${fileName}\n${result.stderr}`);
+    const observedBindings = result.stdout.match(
+      /observes (\d+) inferred local binding stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeBindings = result.stdout.match(
+      /uses (\d+) inferred local binding native-authoritative contracts/,
+    )?.[1];
+    const observedExpressions = result.stdout.match(
+      /observes (\d+) root expression stage-0 Z resolutions/,
+    )?.[1];
+    const authoritativeExpressions = result.stdout.match(
+      /uses (\d+) root expression native-authoritative contracts/,
+    )?.[1];
+    assert.ok(observedBindings, fileName);
+    assert.ok(observedExpressions, fileName);
+    assert.equal(authoritativeBindings, observedBindings, fileName);
+    assert.equal(authoritativeExpressions, observedExpressions, fileName);
+  }
+}, 30_000);
+
 test("preserves nominal identities inside linked generic monomorphs", () => {
   const directory = mkdtempSync("/tmp/z-native-generic-identities-");
   const syntaxModule = resolve(directory, "syntax.zs");

@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-26.
+Last reviewed: 2026-07-27.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current full parser arenas, module graph, function/type/method signatures, lexical/type lookup, initial primitive/generic/cross-module-match/field/method expression typing, and the first definite-initialization/ownership flow tier with parity commands; complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial frontend | Stage 0 remains TypeScript/Bun; native Z owns the lexer, current parser arenas, module graph, structural phase API, function/type/method signatures, lexical/type lookup, primitive/generic/async/cross-module expression typing, definite-initialization and ownership flow, and structured diagnostics for that subset. All 154 currently parseable executable examples pass the hybrid native gate without partial binding/expression authority; foreign ABI-only judgments deliberately defer. Raw-function parser parity, complete semantics, lowering, code generation, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -610,6 +610,17 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    specialization; native specialization must replace this narrow deferral
    before Stage 1 can become the sole authority for unconstrained generic
    operators.
+   A 155-root executable-example sweep found five false native diagnostics where
+   the source-only graph lacked Clang/Objective-C metadata: numeric C typedef
+   operations, contextual foreign literals, copied foreign property results,
+   and contextual block closures. Imports with no local Z module target are now
+   explicitly classified as unresolved external types. Only judgments that need
+   the missing ABI facts defer to Stage 0; surrounding Z calls, aggregates,
+   bindings, expressions, and ownership remain native-authoritative. The five
+   unchanged interop examples now check, bringing all 154 examples understood by
+   the native parser through the hybrid gate without a partial
+   binding/expression-authority gap. The remaining executable root uses a raw
+   native function-body grammar that still needs parser parity.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
