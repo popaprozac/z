@@ -200,6 +200,12 @@ substitution, preserving ownership through exported aggregates whose nested
 field types are intentionally not imported by the caller. The project-index
 application exercises that path through `IndexReport -> FileRecord -> String`
 and remains fully native-authoritative.
+Dependent relational comparisons between an active type parameter and a
+contextual numeric literal are provisionally accepted to match current
+template-style specialization. Stage 0 still validates every concrete
+instantiation; this narrow deferral must be replaced by native specialization
+before the native frontend becomes the sole authority for unconstrained generic
+operators.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

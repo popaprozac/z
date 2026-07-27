@@ -1899,8 +1899,30 @@ function inferExpressionNodeType(
     let right = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[1], right);
     if (left.byteLength == 0 || right.byteLength == 0) return "";
-    if (isContextualNumericLiteral(tree, children[1]) && isNumericTypeName(left)) right = left.copyBytes(0, left.byteLength);
-    else if (isContextualNumericLiteral(tree, children[0]) && isNumericTypeName(right)) left = right.copyBytes(0, right.byteLength);
+    if (
+      isContextualNumericLiteral(tree, children[1])
+      && (
+        isNumericTypeName(left)
+        || isActiveTypeParameter(bindings, left)
+      )
+    ) right = left.copyBytes(0, left.byteLength);
+    else if (
+      isContextualNumericLiteral(tree, children[0])
+      && (
+        isNumericTypeName(right)
+        || isActiveTypeParameter(bindings, right)
+      )
+    ) left = right.copyBytes(0, right.byteLength);
+    if (
+      left == right
+      && isActiveTypeParameter(bindings, left)
+      && (
+        value == "<"
+        || value == "<="
+        || value == ">"
+        || value == ">="
+      )
+    ) return "boolean";
     return try binaryOperatorType(
       module,
       modules,

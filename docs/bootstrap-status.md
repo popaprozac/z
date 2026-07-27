@@ -601,6 +601,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    observed bindings and all twenty-four observed expressions through native
    authority, including its explicit move of an `IndexReport` whose nested
    `FileRecord` owns Strings.
+   Dependent relational comparisons in generic bodies now accept a contextual
+   numeric literal provisionally when the other operand is an active type
+   parameter. This mirrors Z's existing template-style behavior for the
+   concrete `Pair<i32>` specialization and restores native authority for all
+   five calls, four inferred bindings, and six observed expressions in the
+   existing generics example. Stage 0 still proves each concrete
+   specialization; native specialization must replace this narrow deferral
+   before Stage 1 can become the sole authority for unconstrained generic
+   operators.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

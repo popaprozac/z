@@ -391,18 +391,18 @@ The 2026-07-27 decomposition checkpoint contains 15,638 lines of Z:
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 3,977 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
+| `module-resolver.zs` | 3,999 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
 | protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-nine-module frontend graph and currently produces parity evidence
 for 913 symbols, 1,826 binding/signature queries, 985 inferred local bindings,
-and 3,726 root expression types. The binding and expression counts describe the
+and 3,727 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
 run after phase API version 1 landed, native lexing, parsing, resolution,
 semantic analysis, structural validation, and graph adoption took approximately
-172 ms. One bulk fixed-width fill carries all 913 symbol identities, kinds, export
+174 ms. One bulk fixed-width fill carries all 913 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -413,9 +413,9 @@ base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
 canonical graph returned by the versioned phase API directly. The latest
-whole-process samples were 245.4 ms for Stage 1, 248.7 ms for Stage 0, and
-1.116 s for the hybrid parity path. The Stage-0 sample contained a statistical
-outlier; all three remain inside the established band. These are
+whole-process samples were 245.2 ms for Stage 1, 250.0 ms for Stage 0, and
+1.119 s for the hybrid parity path. All three remain inside the established
+band. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
 
@@ -499,6 +499,17 @@ module; only concrete generic arguments cross into that namespace before
 substitution. The unchanged two-module application now consumes all seven
 observed bindings and all twenty-four observed expressions through native
 authority.
+
+The original generic `Pair<T>` example exposed the boundary between declaration
+analysis and template-style specialization. Its body compares `T` with a
+contextual `0`; Stage 0 accepts the concrete `Pair<i32>` specialization, while
+Stage 1 eagerly demanded that abstract `T` already be numeric. Native inference
+now treats only this dependent relational shape as provisional and returns a
+boolean condition. The existing example regains full native authority for five
+generic call contracts, four inferred bindings, and six observed expressions.
+This is an honest migration seam, not the final generic rule: Stage 0 continues
+to reject invalid concrete specializations, and native specialization must
+eventually perform that proof before Stage 1 stands alone.
 
 What the compiler proves:
 
