@@ -9016,11 +9016,24 @@ test("emits and runs the first program directly from the native Z AST", () => {
     [cli, "self-host-emit", loopTransferInput],
     { encoding: "utf8" },
   );
-  assert.notEqual(loopTransferEmission.status, 0);
+  assert.equal(loopTransferEmission.status, 0, loopTransferEmission.stderr);
   assert.match(
-    loopTransferEmission.stderr,
-    /native cleanup lowering does not support path-sensitive transfer of resource in inspect yet/,
+    loopTransferEmission.stdout,
+    /inspect\(Z_Resource resource, int32_t limit\) \{\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
   );
+  const loopTransferExecutable = resolve(directory, "loop-transfer");
+  const loopTransferCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", loopTransferExecutable],
+    { encoding: "utf8", input: loopTransferEmission.stdout },
+  );
+  assert.equal(loopTransferCompilation.status, 0, loopTransferCompilation.stderr);
+  const loopTransferExecution = spawnSync(
+    loopTransferExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(loopTransferExecution.status, 42, loopTransferExecution.stderr);
 
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");

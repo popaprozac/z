@@ -1214,6 +1214,14 @@ function inferExpressionNodeType(
         inout evidence
       );
       try requireSettledExpressionType(module, tree, child, embedded);
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        child,
+        embedded,
+        inout evidence
+      );
     }
     return "String";
   }

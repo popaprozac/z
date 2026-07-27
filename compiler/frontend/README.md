@@ -187,8 +187,14 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   bindings no longer require emitter-side guessing. Native `TextBuffer`
   construction, mutation, and consuming `finish()` now reuse owned String
   storage; appending a String, a checked UTF-8 byte range, or one ASCII byte is
-  executable without an intermediate runtime object. The real compiler probe
-  now reaches template expressions. A local selective alias is resolved back to the exported
+  executable without an intermediate runtime object. Owned template strings
+  lower to one typed-part traversal and one growing result allocation rather
+  than chained temporary Strings; String, boolean, `i32`, `u8`, and `usize`
+  interpolation are executable. Runtime live flags now cover ownership
+  transfer inside loops, including transfer followed by reinitialization before
+  a back edge. Imported generic arguments retain their canonical type identity,
+  so `Array<Token>` can be formed in a module importing `Token`. The real
+  compiler probe now reaches array indexing. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs
@@ -232,8 +238,9 @@ loop control never destroys an outer-iteration owner.
 Conditional owner transfer through `if` now joins through an explicit generated
 live flag. The move clears it before handoff and every later cleanup is guarded;
 the untouched path leaves it set. Straight-line moves remain flag-free.
-Loop-carried conditional transfer remains fail-closed until the back-edge joins
-the live state.
+Loop-carried transfer uses the same runtime live flag. Moves clear it,
+replacement restores it, and cleanup consults it at each exit, while native
+semantics continue rejecting source paths that actually read a moved value.
 
 Whole-binding owned replacement is executable as well. The emitter evaluates
 the replacement into a temporary before destroying the previous value, then

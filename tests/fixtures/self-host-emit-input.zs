@@ -2,7 +2,20 @@ function add(a: i32, b: i32): i32 {
   return a + b;
 }
 
+function describe(
+  answer: i32,
+  byte: u8,
+  size: usize,
+  ready: boolean
+): String {
+  return `answer=${answer},byte=${byte},size=${size},ready=${ready}`;
+}
+
 function main(): i32 {
   const answer: i32 = add(20, 22);
-  return answer == 42 ? answer : 0;
+  const message = describe(answer, 7, 9, true);
+  return answer == 42
+    && message == "answer=42,byte=7,size=9,ready=true"
+    ? answer
+    : 0;
 }

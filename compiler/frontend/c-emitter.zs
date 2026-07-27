@@ -122,6 +122,48 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind == LoweredExpressionKind.templateValue
+  ) {
+    if (
+      declaration.expressions[index].children.length
+        != declaration.expressions[index].labels.length
+    ) {
+      throw "native C emission received a malformed template expression";
+    }
+    output.append("z_string_template((Z_TemplatePart[]){");
+    let part: usize = 0;
+    while (part < declaration.expressions[index].children.length) {
+      if (part > 0) output.append(", ");
+      output.append("{ .kind = ");
+      if (
+        declaration.expressions[index].labels[part] == "text"
+        || declaration.expressions[index].labels[part] == "String"
+      ) {
+        output.append("Z_TEMPLATE_STRING, .value.string_value = ");
+      } else if (
+        declaration.expressions[index].labels[part] == "boolean"
+      ) {
+        output.append("Z_TEMPLATE_BOOLEAN, .value.boolean_value = ");
+      } else if (declaration.expressions[index].labels[part] == "i32") {
+        output.append("Z_TEMPLATE_I32, .value.i32_value = ");
+      } else if (declaration.expressions[index].labels[part] == "u8") {
+        output.append("Z_TEMPLATE_U8, .value.u8_value = ");
+      } else if (declaration.expressions[index].labels[part] == "usize") {
+        output.append("Z_TEMPLATE_USIZE, .value.usize_value = ");
+      } else {
+        throw "native C emission cannot format this template value type";
+      }
+      const value = declaration.expressions[index].children[part];
+      try appendExpression(inout output, declaration, value);
+      output.append(" }");
+      part = part + 1;
+    }
+    output.append("}, ");
+    output.append(`${declaration.expressions[index].children.length}`);
+    output.append(")");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.textBufferEmpty
   ) {
     output.append("(Z_String){ NULL, 0, 0 }");
@@ -1245,6 +1287,23 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  size_t length;\n");
   output.append("  size_t capacity;\n");
   output.append("} Z_String;\n\n");
+  output.append("typedef enum Z_TemplatePartKind {\n");
+  output.append("  Z_TEMPLATE_STRING,\n");
+  output.append("  Z_TEMPLATE_BOOLEAN,\n");
+  output.append("  Z_TEMPLATE_I32,\n");
+  output.append("  Z_TEMPLATE_U8,\n");
+  output.append("  Z_TEMPLATE_USIZE\n");
+  output.append("} Z_TemplatePartKind;\n\n");
+  output.append("typedef struct Z_TemplatePart {\n");
+  output.append("  Z_TemplatePartKind kind;\n");
+  output.append("  union {\n");
+  output.append("    Z_String string_value;\n");
+  output.append("    bool boolean_value;\n");
+  output.append("    int32_t i32_value;\n");
+  output.append("    uint8_t u8_value;\n");
+  output.append("    size_t usize_value;\n");
+  output.append("  } value;\n");
+  output.append("} Z_TemplatePart;\n\n");
   output.append("#define Z_STRING_LITERAL(value) ((Z_String){ .data = (value), .length = sizeof(value) - 1, .capacity = 0 })\n\n");
   output.append("static inline __attribute__((unused)) void Z_String_deinit(Z_String *self) {\n");
   output.append("  if (self->capacity > 0) free((void *)self->data);\n");
@@ -1309,6 +1368,41 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (byte > 0x7Fu) abort();\n");
   output.append("  const char value = (char)byte;\n");
   output.append("  z_string_append_bytes(self, &value, 1);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_string_append_unsigned_decimal(Z_String *self, uint64_t value) {\n");
+  output.append("  char digits[20];\n");
+  output.append("  size_t length = 0;\n");
+  output.append("  do {\n");
+  output.append("    digits[length++] = (char)('0' + (value % 10));\n");
+  output.append("    value /= 10;\n");
+  output.append("  } while (value > 0);\n");
+  output.append("  while (length > 0) {\n");
+  output.append("    length -= 1;\n");
+  output.append("    z_string_append_bytes(self, &digits[length], 1);\n");
+  output.append("  }\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) Z_String z_string_template(const Z_TemplatePart *parts, size_t count) {\n");
+  output.append("  Z_String result = { NULL, 0, 0 };\n");
+  output.append("  for (size_t index = 0; index < count; index += 1) {\n");
+  output.append("    const Z_TemplatePart part = parts[index];\n");
+  output.append("    if (part.kind == Z_TEMPLATE_STRING) {\n");
+  output.append("      z_string_append_bytes(&result, part.value.string_value.data != NULL ? part.value.string_value.data : \"\", part.value.string_value.length);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_BOOLEAN) {\n");
+  output.append("      if (part.value.boolean_value) z_string_append_bytes(&result, \"true\", 4);\n");
+  output.append("      else z_string_append_bytes(&result, \"false\", 5);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_I32) {\n");
+  output.append("      const int32_t value = part.value.i32_value;\n");
+  output.append("      if (value < 0) {\n");
+  output.append("        z_string_append_bytes(&result, \"-\", 1);\n");
+  output.append("        z_string_append_unsigned_decimal(&result, (uint64_t)(-(int64_t)value));\n");
+  output.append("      } else z_string_append_unsigned_decimal(&result, (uint64_t)value);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_U8) {\n");
+  output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.u8_value);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_USIZE) {\n");
+  output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.usize_value);\n");
+  output.append("    }\n");
+  output.append("  }\n");
+  output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
   for (const declaration of program.arrays) {

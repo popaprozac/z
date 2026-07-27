@@ -670,9 +670,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    bindings to lower without a parallel emitter inference rule. Native
    `TextBuffer` now constructs empty owned storage, appends Strings,
    UTF-8-boundary-checked byte ranges, and ASCII bytes, and consumes that
-   storage through `finish()` into a String without double cleanup. The real
-   compiler probe now advances through its first conditional and stops at
-   template-expression lowering.
+   storage through `finish()` into a String without double cleanup. Templates
+   now allocate one result and traverse typed parts directly rather than
+   building chained String temporaries; String, boolean, `i32`, `u8`, and
+   `usize` interpolation execute. The same runtime live flag used by
+   conditional moves now safely covers moves inside loops, including
+   reinitialization before a back edge. Generic intrinsic discovery resolves
+   imported component types, allowing parser-side `Array<Token>` storage. The
+   real compiler probe now advances through templates and stops at array
+   indexing.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

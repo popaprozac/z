@@ -113,6 +113,7 @@ export enum LoweredExpressionKind {
   stringIsEmpty,
   stringByteAt,
   stringCopyBytes,
+  templateValue,
   textBufferEmpty,
   textBufferAppend,
   textBufferAppendBytes,
@@ -350,6 +351,49 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        const payload = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.enumType,
+          name: intrinsicOptionName(payload),
+        });
+      }
+      if (generic.base == "Array" && generic.arguments.length == 1) {
+        const elementType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.arrayType,
+          name: intrinsicArrayName(elementType),
+        });
+      }
+      if (generic.base == "Result" && generic.arguments.length == 2) {
+        const successType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        const errorType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[1]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.enumType,
+          name: intrinsicResultName(successType, errorType),
+        });
+      }
+    }
+    none => {}
+  }
   let importedIndex = importedTypes.length;
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
@@ -701,6 +745,7 @@ function moduleTypeNeedsCleanup(
 
 function intrinsicArrayDeclaration(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredArray> throws String {
   match (genericTypeShape(name)) {
@@ -708,7 +753,11 @@ function intrinsicArrayDeclaration(
       if (generic.base != "Array" || generic.arguments.length != 1) {
         return Option<LoweredArray>.none;
       }
-      const elementType = try lowerTypeName(program, generic.arguments[0]);
+      const elementType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
       return Option.some(LoweredArray({
         name: intrinsicArrayName(elementType),
         elementType,
@@ -720,6 +769,7 @@ function intrinsicArrayDeclaration(
 
 function intrinsicOptionDeclaration(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
   match (genericTypeShape(name)) {
@@ -727,7 +777,11 @@ function intrinsicOptionDeclaration(
       if (generic.base != "Option" || generic.arguments.length != 1) {
         return Option<LoweredEnum>.none;
       }
-      const payload = try lowerTypeName(program, generic.arguments[0]);
+      const payload = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
       let variants = Array<LoweredVariant>();
       variants.push(LoweredVariant({
         name: "some",
@@ -744,7 +798,7 @@ function intrinsicOptionDeclaration(
         name: intrinsicOptionName(payload),
         variants,
         payloadBearing: true,
-        needsDeinit: typeNeedsCleanup(program, payload),
+        needsDeinit: moduleTypeNeedsCleanup(program, importedTypes, payload),
       }));
     }
     none => return Option<LoweredEnum>.none;
@@ -753,6 +807,7 @@ function intrinsicOptionDeclaration(
 
 function intrinsicResultDeclaration(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
   match (genericTypeShape(name)) {
@@ -760,8 +815,16 @@ function intrinsicResultDeclaration(
       if (generic.base != "Result" || generic.arguments.length != 2) {
         return Option<LoweredEnum>.none;
       }
-      const successType = try lowerTypeName(program, generic.arguments[0]);
-      const errorType = try lowerTypeName(program, generic.arguments[1]);
+      const successType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
+      const errorType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[1]
+      );
       let variants = Array<LoweredVariant>();
       let successPayload = Option<LoweredType>.none;
       if (successType.kind != LoweredTypeKind.voidType) {
@@ -785,8 +848,11 @@ function intrinsicResultDeclaration(
         name: intrinsicResultName(successType, errorType),
         variants,
         payloadBearing: true,
-        needsDeinit: typeNeedsCleanup(program, successType)
-          || typeNeedsCleanup(program, errorType),
+        needsDeinit: moduleTypeNeedsCleanup(
+          program,
+          importedTypes,
+          successType
+        ) || moduleTypeNeedsCleanup(program, importedTypes, errorType),
       }));
     }
     none => return Option<LoweredEnum>.none;
@@ -795,18 +861,24 @@ function intrinsicResultDeclaration(
 
 function intrinsicEnumDeclaration(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
-  const option = try intrinsicOptionDeclaration(program, name);
+  const option = try intrinsicOptionDeclaration(
+    program,
+    importedTypes,
+    name
+  );
   match (option) {
     some(declaration) => return Option.some(move declaration);
     none => {}
   }
-  return try intrinsicResultDeclaration(program, name);
+  return try intrinsicResultDeclaration(program, importedTypes, name);
 }
 
 function throwingFunctionResult(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in ownerName: String
 ): Option<LoweredEnum> throws String {
   for (const declaration of program.functions) {
@@ -819,7 +891,11 @@ function throwingFunctionResult(
           );
           const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
           const resultName = `Result<${returnName}, ${errorName}>`;
-          return try intrinsicResultDeclaration(program, resultName);
+          return try intrinsicResultDeclaration(
+            program,
+            importedTypes,
+            resultName
+          );
         }
         none => return Option<LoweredEnum>.none;
       }
@@ -978,13 +1054,6 @@ function arenaHasControlFlow(in arena: StatementArena): boolean {
       statement.kind == StatementKind.ifStatement
       || statement.kind == StatementKind.whileStatement
     ) return true;
-  }
-  return false;
-}
-
-function arenaHasLoop(in arena: StatementArena): boolean {
-  for (const statement of arena.nodes) {
-    if (statement.kind == StatementKind.whileStatement) return true;
   }
   return false;
 }
@@ -1353,9 +1422,6 @@ function planCleanupSequence(
               arena,
               arena.nodes[sourceIndex].name
             );
-            if (moved && arenaHasLoop(arena)) {
-              throw `native cleanup lowering does not support path-sensitive transfer of ${arena.nodes[sourceIndex].name} in ${ownerName} yet`;
-            }
             let guard = "";
             if (moved && arenaHasControlFlow(arena)) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
@@ -1712,6 +1778,66 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.templateExpression) {
+    let children = Array<usize>();
+    let labels = Array<String>();
+    for (const childInput of tree.nodes[index].children) {
+      if (
+        tree.nodes[childInput].kind == ExpressionKind.templateTextExpression
+      ) {
+        children.push(pushExpression(
+          inout output,
+          LoweredExpressionKind.stringValue,
+          tree.nodes[childInput].value,
+          Array<usize>(),
+          Array<String>()
+        ));
+        labels.push("text");
+        continue;
+      }
+      const child = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        childInput,
+        inout output
+      );
+      children.push(child);
+      let typeName = "";
+      match (resolvedExpressionTypeName(evidence, tree, childInput)) {
+        some(resolved) => typeName = resolved;
+        none => {
+          if (
+            tree.nodes[childInput].kind == ExpressionKind.stringExpression
+          ) typeName = "String";
+          else if (
+            tree.nodes[childInput].kind == ExpressionKind.booleanExpression
+          ) typeName = "boolean";
+          else if (
+            tree.nodes[childInput].kind == ExpressionKind.numberExpression
+          ) typeName = "i32";
+        }
+      }
+      if (
+        typeName != "String"
+        && typeName != "boolean"
+        && typeName != "i32"
+        && typeName != "u8"
+        && typeName != "usize"
+      ) {
+        throw `native template lowering does not support interpolation of ${typeName}`;
+      }
+      labels.push(typeName);
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.templateValue,
+      "",
+      children,
+      labels
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.booleanExpression) {
     return pushExpression(
       inout output,
@@ -2039,6 +2165,7 @@ function lowerExpression(
       if (tree.nodes[enumInput].kind == ExpressionKind.identifierExpression) {
         const intrinsic = try intrinsicOptionDeclaration(
           program,
+          importedTypes,
           tree.nodes[enumInput].value
         );
         match (in intrinsic) {
@@ -2325,6 +2452,7 @@ function lowerExpression(
     if (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {
       const intrinsic = try intrinsicOptionDeclaration(
         program,
+        importedTypes,
         tree.nodes[receiverInput].value
       );
       match (in intrinsic) {
@@ -2488,6 +2616,7 @@ function loweredSourceEnum(
 
 function directThrowingCallResult(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in tree: ExpressionTree,
   index: usize
 ): Option<LoweredEnum> throws String {
@@ -2509,7 +2638,11 @@ function directThrowingCallResult(
           );
           const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
           const resultName = `Result<${returnName}, ${errorName}>`;
-          return try intrinsicResultDeclaration(program, resultName);
+          return try intrinsicResultDeclaration(
+            program,
+            importedTypes,
+            resultName
+          );
         }
         none => return Option<LoweredEnum>.none;
       }
@@ -2657,7 +2790,11 @@ function matchEnumDeclaration(
     subjectInput
   )) {
     some(name) => {
-      const intrinsic = try intrinsicEnumDeclaration(program, name);
+      const intrinsic = try intrinsicEnumDeclaration(
+        program,
+        importedTypes,
+        name
+      );
       match (intrinsic) {
         some(declaration) => return declaration;
         none => {}
@@ -3067,6 +3204,7 @@ function lowerStatement(
               const attempted = tree.nodes[root].children[0];
               const innerResult = try directThrowingCallResult(
                 program,
+                importedTypes,
                 tree,
                 attempted
               );
@@ -3082,7 +3220,11 @@ function lowerStatement(
                   }
                 }
               }
-              const outerResult = try throwingFunctionResult(program, ownerName);
+              const outerResult = try throwingFunctionResult(
+                program,
+                importedTypes,
+                ownerName
+              );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
                 none => throw "native try lowering requires an enclosing throwing function";
@@ -3138,6 +3280,7 @@ function lowerStatement(
               const attempted = tree.nodes[root].children[0];
               const innerResult = try directThrowingCallResult(
                 program,
+                importedTypes,
                 tree,
                 attempted
               );
@@ -3145,7 +3288,11 @@ function lowerStatement(
                 some(declaration) => declaration;
                 none => throw "native try lowering requires one direct throwing function call yet";
               };
-              const outerResult = try throwingFunctionResult(program, ownerName);
+              const outerResult = try throwingFunctionResult(
+                program,
+                importedTypes,
+                ownerName
+              );
               const outer = match (outerResult) {
                 some(declaration) => declaration;
                 none => throw "native try lowering requires an enclosing throwing function";
@@ -3385,7 +3532,11 @@ function lowerStatement(
         arena.nodes[index].kind == StatementKind.returnStatement
         || arena.nodes[index].kind == StatementKind.throwStatement
       ) {
-        const result = try throwingFunctionResult(program, ownerName);
+        const result = try throwingFunctionResult(
+          program,
+          importedTypes,
+          ownerName
+        );
         match (in result) {
           some(declaration) => {
             if (directTryReturn) {
@@ -3425,7 +3576,11 @@ function lowerStatement(
     arena.nodes[index].kind == StatementKind.returnStatement
     && expressionMissing
   ) {
-    const result = try throwingFunctionResult(program, ownerName);
+    const result = try throwingFunctionResult(
+      program,
+      importedTypes,
+      ownerName
+    );
     match (in result) {
       some(declaration) => {
         let labels = Array<String>();
@@ -3516,9 +3671,6 @@ function lowerFunction(
         declaration.body,
         parameter.name
       );
-      if (moved && arenaHasLoop(declaration.body)) {
-        throw `native cleanup lowering does not support path-sensitive transfer of ${parameter.name} in ${declaration.name} yet`;
-      }
       let guard = "";
       if (moved && arenaHasControlFlow(declaration.body)) {
         guard = ownerLiveFlag(parameter.name);
@@ -3587,7 +3739,11 @@ function lowerFunction(
     importedTypes,
     declaration.returnType
   );
-  const resultType = try throwingFunctionResult(program, declaration.name);
+  const resultType = try throwingFunctionResult(
+    program,
+    importedTypes,
+    declaration.name
+  );
   match (in resultType) {
     some(result) => returnType = LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -3896,6 +4052,7 @@ function rewritePrivateCallTargets(
 
 function collectIntrinsicTypeName(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in name: String,
   inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
@@ -3905,12 +4062,17 @@ function collectIntrinsicTypeName(
       for (const argument of generic.arguments) {
         try collectIntrinsicTypeName(
           program,
+          importedTypes,
           argument,
           inout arrays,
           inout enums
         );
       }
-      const array = try intrinsicArrayDeclaration(program, name);
+      const array = try intrinsicArrayDeclaration(
+        program,
+        importedTypes,
+        name
+      );
       match (array) {
         some(declaration) => {
           if (!containsLoweredArray(arrays, declaration.name)) {
@@ -3919,7 +4081,11 @@ function collectIntrinsicTypeName(
         }
         none => {}
       }
-      const intrinsic = try intrinsicEnumDeclaration(program, name);
+      const intrinsic = try intrinsicEnumDeclaration(
+        program,
+        importedTypes,
+        name
+      );
       match (intrinsic) {
         some(declaration) => {
           if (!containsLoweredEnum(enums, declaration.name)) {
@@ -3935,6 +4101,7 @@ function collectIntrinsicTypeName(
 
 function collectArenaIntrinsicEnums(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
   inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
@@ -3943,6 +4110,7 @@ function collectArenaIntrinsicEnums(
     match (in statement.typeAnnotation) {
       some(type) => try collectIntrinsicTypeName(
         program,
+        importedTypes,
         type.name,
         inout arrays,
         inout enums
@@ -3956,6 +4124,7 @@ function collectArenaIntrinsicEnums(
             for (const node of tree.nodes) {
               try collectIntrinsicTypeName(
                 program,
+                importedTypes,
                 node.value,
                 inout arrays,
                 inout enums
@@ -3974,6 +4143,7 @@ function collectArenaIntrinsicEnums(
             for (const node of tree.nodes) {
               try collectIntrinsicTypeName(
                 program,
+                importedTypes,
                 node.value,
                 inout arrays,
                 inout enums
@@ -3990,6 +4160,7 @@ function collectArenaIntrinsicEnums(
 
 function collectIntrinsicEnums(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
@@ -3997,6 +4168,7 @@ function collectIntrinsicEnums(
     for (const field of aggregate.fields) {
       try collectIntrinsicTypeName(
         program,
+        importedTypes,
         field.type.name,
         inout arrays,
         inout enums
@@ -4005,6 +4177,7 @@ function collectIntrinsicEnums(
     match (in aggregate.deinitializer) {
       some(deinitializer) => try collectArenaIntrinsicEnums(
         program,
+        importedTypes,
         deinitializer.body,
         inout arrays,
         inout enums
@@ -4017,6 +4190,7 @@ function collectIntrinsicEnums(
       match (in variant.payload) {
         some(type) => try collectIntrinsicTypeName(
           program,
+          importedTypes,
           type.name,
           inout arrays,
           inout enums
@@ -4029,6 +4203,7 @@ function collectIntrinsicEnums(
     for (const parameter of declaration.parameters) {
       try collectIntrinsicTypeName(
         program,
+        importedTypes,
         parameter.type.name,
         inout arrays,
         inout enums
@@ -4036,6 +4211,7 @@ function collectIntrinsicEnums(
     }
     try collectIntrinsicTypeName(
       program,
+      importedTypes,
       declaration.returnType.name,
       inout arrays,
       inout enums
@@ -4044,6 +4220,7 @@ function collectIntrinsicEnums(
       some(type) => {
         try collectIntrinsicTypeName(
           program,
+          importedTypes,
           type.name,
           inout arrays,
           inout enums
@@ -4056,6 +4233,7 @@ function collectIntrinsicEnums(
         const resultName = `Result<${returnName}, ${errorName}>`;
         try collectIntrinsicTypeName(
           program,
+          importedTypes,
           resultName,
           inout arrays,
           inout enums
@@ -4065,6 +4243,7 @@ function collectIntrinsicEnums(
     }
     try collectArenaIntrinsicEnums(
       program,
+      importedTypes,
       declaration.body,
       inout arrays,
       inout enums
@@ -4254,7 +4433,12 @@ function appendLoweredProgram(
     }));
   }
 
-  try collectIntrinsicEnums(program, inout arrays, inout enums);
+  try collectIntrinsicEnums(
+    program,
+    importedTypes,
+    inout arrays,
+    inout enums
+  );
   for (const declaration of program.enums) {
     const emittedName = privateTypeNeedsMangle(
       program,
