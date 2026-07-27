@@ -3444,6 +3444,30 @@ export function expressionKindName(kind: ExpressionKind): String {
   };
 }
 
+export function statementKindName(kind: StatementKind): String {
+  return match (kind) {
+    variableStatement => "variable";
+    destructureStatement => "destructure";
+    assignmentStatement => "assignment";
+    returnStatement => "return";
+    throwStatement => "throw";
+    yieldStatement => "yield";
+    selectStatement => "select";
+    expressionStatement => "expression";
+    blockStatement => "block";
+    ifStatement => "if";
+    whileStatement => "while";
+    forStatement => "for";
+    forAwaitStatement => "for await";
+    forTryAwaitStatement => "try for await";
+    matchStatement => "match";
+    unsafeStatement => "unsafe";
+    asyncScopeStatement => "async scope";
+    breakStatement => "break";
+    continueStatement => "continue";
+  };
+}
+
 function expressionTreeText(in tree: ExpressionTree, in arena: StatementArena): String {
   let output = TextBuffer();
   output.append(`root:${tree.root};`);

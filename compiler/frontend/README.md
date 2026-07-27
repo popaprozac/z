@@ -170,10 +170,12 @@ executable tier covers selectively imported scalar functions in one generated C
 translation unit. Native scalar emission includes `i32`, `u8`, and `usize`;
 checked arithmetic selects a width-correct helper from native semantic evidence
 instead of treating every integer expression as `i32`. The first dynamic-array
-storage tier monomorphizes `Array<T>` into owned data/length/capacity storage,
-passes it through signatures, and destroys its elements recursively before
-freeing storage. Construction, growth, indexing, and iteration remain the next
-array slices. Owned `String` now has its native data/length/capacity
+  storage tier monomorphizes `Array<T>` into owned data/length/capacity storage,
+  passes it through signatures, and destroys its elements recursively before
+  freeing storage. Empty construction, amortized growth through `push`,
+  `.length`, and checked indexing now execute for scalar and aggregate element
+  types; `for...of` iteration remains the next array slice. Owned `String` now
+  has its native data/length/capacity
 representation, static UTF-8 literals, byte equality, `byteAt`, `byteLength`,
 `isEmpty`, owned `copyBytes`, and deterministic cleanup. Cleanup-bearing `const`
 bindings use writable C storage without permitting Z rebinding. With these

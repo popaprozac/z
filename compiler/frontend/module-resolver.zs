@@ -1816,6 +1816,14 @@ function inferExpressionNodeType(
       inout evidence
     );
     try requireSettledExpressionType(module, tree, children[0], receiverType);
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      children[0],
+      receiverType,
+      inout evidence
+    );
     const memberName = identifierLookupName(value);
     if (receiverType.byteLength == 0) {
       const candidateType = typeExpressionName(tree, children[0]);
@@ -1835,7 +1843,11 @@ function inferExpressionNodeType(
       some(generic) => {
         if (
           memberName == "length"
-          && (generic.base == "Map" || generic.base == "Set")
+          && (
+            generic.base == "Array"
+            || generic.base == "Map"
+            || generic.base == "Set"
+          )
         ) return "usize";
       }
       none => {}
@@ -2310,6 +2322,14 @@ function inferExpressionNodeType(
     const offset = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[1], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], owner);
     try requireSettledExpressionType(module, tree, children[1], offset);
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      children[0],
+      owner,
+      inout evidence
+    );
     if (offset.byteLength > 0 && !isIntegerTypeName(offset)) {
       throw moduleResolutionError(
         ModuleResolveErrorKind.invalidOperator,
@@ -2840,6 +2860,14 @@ function inferExpressionNodeType(
         inout evidence
       );
       try requireSettledExpressionType(module, tree, receiverIndex, ownerType);
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        receiverIndex,
+        ownerType,
+        inout evidence
+      );
       let staticMethod = false;
       if (ownerType.byteLength == 0) {
         const candidate = typeExpressionName(tree, receiverIndex);

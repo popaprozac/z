@@ -17,6 +17,7 @@ import {
   StatementKind,
   TypeReference,
   expressionKindName,
+  statementKindName,
 } from "./parser.zs";
 import {
   ParsedModule,
@@ -114,6 +115,10 @@ export enum LoweredExpressionKind {
   stringByteAt,
   stringCopyBytes,
   templateValue,
+  arrayEmpty,
+  arrayLength,
+  arrayIndex,
+  arrayPush,
   textBufferEmpty,
   textBufferAppend,
   textBufferAppendBytes,
@@ -957,6 +962,17 @@ function treeMovesName(
       if (
         tree.nodes[receiver].kind == ExpressionKind.identifierExpression
         && tree.nodes[receiver].value == name
+      ) return true;
+    }
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "push"
+      && tree.nodes[index].children.length == 2
+    ) {
+      const argument = tree.nodes[index].children[1];
+      if (
+        tree.nodes[argument].kind == ExpressionKind.identifierExpression
+        && tree.nodes[argument].value == name
       ) return true;
     }
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
@@ -2013,6 +2029,30 @@ function lowerExpression(
     const calleeInput = tree.nodes[index].children[0];
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[index].children.length == 1
+    ) {
+      match (genericTypeShape(tree.nodes[calleeInput].value)) {
+        some(generic) => {
+          if (generic.base == "Array" && generic.arguments.length == 1) {
+            const arrayType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              tree.nodes[calleeInput].value
+            );
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.arrayEmpty,
+              arrayType.name,
+              Array<usize>(),
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[calleeInput].value == "TextBuffer"
       && tree.nodes[index].children.length == 1
     ) {
@@ -2097,6 +2137,62 @@ function lowerExpression(
             Array<String>()
           );
         }
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "push"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 2
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.arrayType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            const argumentInput = tree.nodes[index].children[1];
+            const argument = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              argumentInput,
+              inout output
+            );
+            let moveChildren = Array<usize>();
+            moveChildren.push(argument);
+            const movedArgument = pushExpression(
+              inout output,
+              LoweredExpressionKind.moveValue,
+              "",
+              moveChildren,
+              Array<String>()
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            children.push(movedArgument);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.arrayPush,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
       }
     }
     if (
@@ -2411,11 +2507,89 @@ function lowerExpression(
       resolvedCallParameterModes(program, evidence, tree, index)
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.indexExpression) {
+    if (tree.nodes[index].children.length != 2) {
+      throw "native lowering received a malformed index expression";
+    }
+    const receiverInput = tree.nodes[index].children[0];
+    const receiverTypeName = match (
+      resolvedExpressionTypeName(evidence, tree, receiverInput)
+    ) {
+      some(name) => name;
+      none => throw "native lowering could not resolve indexed storage";
+    };
+    const receiverType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      receiverTypeName
+    );
+    if (receiverType.kind != LoweredTypeKind.arrayType) {
+      throw `native lowering does not support indexing ${receiverTypeName} yet`;
+    }
+    const receiver = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput,
+      inout output
+    );
+    const offsetInput = tree.nodes[index].children[1];
+    const offset = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      offsetInput,
+      inout output
+    );
+    let children = Array<usize>();
+    children.push(receiver);
+    children.push(offset);
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.arrayIndex,
+      receiverType.name,
+      children,
+      Array<String>()
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.memberExpression) {
     if (tree.nodes[index].children.length != 1) {
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    if (tree.nodes[index].value == "length") {
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.arrayType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.arrayLength,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
     if (
       tree.nodes[index].value == "byteLength"
       || tree.nodes[index].value == "isEmpty"
@@ -3457,7 +3631,8 @@ function lowerStatement(
   } else if (arena.nodes[index].kind == StatementKind.continueStatement) {
     kind = LoweredStatementKind.continueStatement;
   } else {
-    throw "native lowering does not support this statement shape yet";
+    const unsupportedKind = statementKindName(arena.nodes[index].kind);
+    throw `native lowering does not support ${unsupportedKind} statement at ${arena.nodes[index].line}:${arena.nodes[index].column} in ${ownerName} yet`;
   }
 
   let type = Option<LoweredType>.none;

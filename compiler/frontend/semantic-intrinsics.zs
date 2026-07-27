@@ -164,7 +164,17 @@ export function collectionMethodSignature(
   let parameterTypes = Array<String>();
   let returnType = "";
   let errorType = "";
-  if (generic.base == "Map" && generic.arguments.length == 2) {
+  if (generic.base == "Array" && generic.arguments.length == 1) {
+    const elementType = generic.arguments[0].copyBytes(
+      0,
+      generic.arguments[0].byteLength
+    );
+    if (methodName == "push") {
+      parameterModes.push("value");
+      parameterTypes.push(elementType);
+      returnType = "void";
+    }
+  } else if (generic.base == "Map" && generic.arguments.length == 2) {
     const keyType = generic.arguments[0].copyBytes(
       0,
       generic.arguments[0].byteLength
@@ -288,7 +298,9 @@ export function collectionMethodMutates(
       || methodName == "finish";
   }
   return match (genericTypeShape(ownerType)) {
-    some(generic) => generic.base == "Map"
+    some(generic) => generic.base == "Array"
+      ? methodName == "push"
+      : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"
         || methodName == "clear"

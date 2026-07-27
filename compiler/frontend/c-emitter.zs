@@ -164,6 +164,60 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayEmpty
+  ) {
+    output.append("(Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){ NULL, 0, 0 }");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayLength
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed Array.length";
+    }
+    output.append("(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append(").length");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayIndex
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed Array index";
+    }
+    output.append("(*Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_at(&(");
+    const receiver = declaration.expressions[index].children[0];
+    const offset = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    try appendExpression(inout output, declaration, offset);
+    output.append("))");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayPush
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed Array.push";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_push(&(");
+    const receiver = declaration.expressions[index].children[0];
+    const value = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    try appendExpression(inout output, declaration, value);
+    output.append(")");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.textBufferEmpty
   ) {
     output.append("(Z_String){ NULL, 0, 0 }");
@@ -1405,6 +1459,49 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
+  for (const declaration of program.arrays) {
+    const elementType = try cType(declaration.elementType);
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  if (index >= self->length) abort();\n");
+    output.append("  return &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_push(Z_");
+    output.append(declaration.name);
+    output.append(" *self, ");
+    output.append(elementType);
+    output.append(" value) {\n");
+    output.append("  if (self->length == self->capacity) {\n");
+    output.append("    size_t next = self->capacity == 0 ? 8 : self->capacity;\n");
+    output.append("    if (self->capacity != 0) {\n");
+    output.append("      if (next > SIZE_MAX / 2) abort();\n");
+    output.append("      next *= 2;\n");
+    output.append("    }\n");
+    output.append("    if (next > SIZE_MAX / sizeof(");
+    output.append(elementType);
+    output.append(")) abort();\n");
+    output.append("    void *storage = realloc(self->data, next * sizeof(");
+    output.append(elementType);
+    output.append("));\n");
+    output.append("    if (storage == NULL) abort();\n");
+    output.append("    self->data = storage;\n");
+    output.append("    self->capacity = next;\n");
+    output.append("  }\n");
+    output.append("  ((");
+    output.append(elementType);
+    output.append(" *)self->data)[self->length] = value;\n");
+    output.append("  self->length += 1;\n");
+    output.append("}\n\n");
+  }
   for (const declaration of program.arrays) {
     output.append("static void Z_");
     output.append(declaration.name);
