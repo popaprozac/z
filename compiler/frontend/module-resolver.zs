@@ -1832,6 +1832,10 @@ function inferExpressionNodeType(
       }
       none => {}
     }
+    if (receiverType == "String") {
+      if (memberName == "byteLength") return "usize";
+      if (memberName == "isEmpty") return "boolean";
+    }
     match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
       some(field) => {
         try requireVisibleField(

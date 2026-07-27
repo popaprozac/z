@@ -8457,7 +8457,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   writeFileSync(
     nativeStringInput,
     "function inspect(value: String): usize {\n"
-      + "  const middle: String = value.copyBytes(1, 4);\n"
+      + "  const middle = value.copyBytes(1, 4);\n"
       + "  if (middle == \"ell\" && value.byteAt(0) == 104 && value.byteLength == 5 && !value.isEmpty) {\n"
       + "    return middle.byteLength;\n"
       + "  }\n"

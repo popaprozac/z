@@ -664,7 +664,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    those pointers, forwards addresses at calls, and never schedules borrowed
    values for owned cleanup. Its executable fixture covers borrowed String plus
    scalar initialization and mutation. The compiler probe now reaches inferred
-   locals initialized by intrinsic String operations.
+   locals initialized by intrinsic String operations. Native semantic evidence
+   now supplies the exact `byteAt`, `copyBytes`, `byteLength`, and `isEmpty`
+   contracts, allowing inferred `u8`, owned `String`, `usize`, and `boolean`
+   bindings to lower without a parallel emitter inference rule. The real probe
+   advances to `TextBuffer` construction.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

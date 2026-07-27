@@ -109,6 +109,35 @@ export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
 ): Option<ModuleFunctionSignature> {
+  if (ownerType == "String") {
+    let parameterModes = Array<String>();
+    let parameterTypes = Array<String>();
+    let returnType = "";
+    if (methodName == "byteAt") {
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      returnType = "u8";
+    } else if (methodName == "copyBytes") {
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      parameterModes.push("value");
+      parameterTypes.push("usize");
+      returnType = "String";
+    }
+    if (returnType.byteLength == 0) {
+      return Option<ModuleFunctionSignature>.none;
+    }
+    return Option.some(ModuleFunctionSignature({
+      asynchronous: false,
+      executorAffinity: "",
+      typeParameters: Array<String>(),
+      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      parameterModes,
+      parameterTypes,
+      returnType,
+      errorType: "",
+    }));
+  }
   const generic = match (genericTypeShape(ownerType)) {
     some(generic) => generic;
     none => return Option<ModuleFunctionSignature>.none;
