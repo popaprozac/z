@@ -8,6 +8,18 @@ struct Envelope {
   resource: Resource;
 }
 
+struct AuditedEnvelope {
+  resource: Resource;
+
+  deinit {
+    record(this.resource.id);
+  }
+}
+
+function record(id: i32): void {
+  if (id < 0) return;
+}
+
 function inspectBranch(resource: Resource, chooseFirst: boolean): i32 {
   if (chooseFirst) {
     return resource.id;
@@ -86,6 +98,13 @@ function nestedCleanup(): i32 {
   return envelope.resource.id;
 }
 
+function customCleanup(): i32 {
+  const envelope: AuditedEnvelope = AuditedEnvelope({
+    resource: Resource({ id: 42 }),
+  });
+  return envelope.resource.id;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
@@ -97,6 +116,8 @@ function main(): i32 {
     + replaceOwner(5, true)
     - 9
     + nestedCleanup()
+    - 42
+    + customCleanup()
     - 42
     - 1;
 }

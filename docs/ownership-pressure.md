@@ -620,8 +620,16 @@ cleanup-bearing fields in reverse declaration order, and routes the outer local
 through the ordinary return cleanup plan. This prerequisite prevents
 user-written deinitializer bodies from landing on a shallow ownership model.
 
-Non-empty deinitializer bodies and path-sensitive transfer/error cleanup
-merging remain the next ownership evidence required before this tier broadens.
+The first non-empty custom deinitializer then reuses the typed expression and
+statement IR. `this.resource.id` lowers as receiver-pointer field access, an
+ordinary Z helper call executes before the generated reverse-field epilogue,
+and forward prototypes keep the C translation unit strict. Cleanup-bearing
+locals inside a custom deinitializer reject for now rather than bypassing the
+scope planner.
+
+Path-sensitive transfer, cleanup-bearing deinitializer locals, and error
+cleanup merging remain the next ownership evidence required before this tier
+broadens.
 
 What the compiler proves:
 

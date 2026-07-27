@@ -177,6 +177,12 @@ no custom `deinit` still receives generated reverse field cleanup when it
 contains a cleanup-bearing struct, and locals of that outer type participate in
 the same scope plans.
 
+Non-empty custom `deinit` bodies now lower through the typed statement and
+expression IR. They may execute ordinary synchronous Z control flow and calls
+and access receiver fields through `this`; the user body runs before generated
+reverse field cleanup. Cleanup-bearing locals inside `deinit` remain
+fail-closed until this body shares the complete lexical owner planner.
+
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic
 cleanup may receive its address; source-level reassignment remains a semantic

@@ -39,7 +39,7 @@ export struct LoweredStruct {
   name: String;
   fields: Array<LoweredField>;
   needsDeinit: boolean;
-  customDeinit: boolean;
+  deinitializer: Option<LoweredFunction>;
 }
 
 export struct LoweredParameter {
@@ -49,6 +49,7 @@ export struct LoweredParameter {
 
 export enum LoweredExpressionKind {
   localValue,
+  receiverValue,
   integerValue,
   booleanValue,
   checkedAddI32,
@@ -490,9 +491,12 @@ function lowerExpression(
   inout output: Array<LoweredExpression>
 ): usize throws String {
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    const kind = tree.nodes[index].value == "this"
+      ? LoweredExpressionKind.receiverValue
+      : LoweredExpressionKind.localValue;
     return pushExpression(
       inout output,
-      LoweredExpressionKind.localValue,
+      kind,
       tree.nodes[index].value,
       Array<usize>(),
       Array<String>()
@@ -837,6 +841,48 @@ function lowerFunction(
   });
 }
 
+function lowerDeinitializer(
+  in program: Program,
+  in ownerName: String,
+  in body: StatementArena
+): LoweredFunction throws String {
+  for (const statement of body.nodes) {
+    if (statement.kind == StatementKind.variableStatement) {
+      match (in statement.typeAnnotation) {
+        some(annotation) => {
+          const type = try lowerType(program, annotation);
+          if (typeNeedsCleanup(program, type)) {
+            throw `native lowering does not support cleanup-bearing local ${statement.name} in ${ownerName}.deinit yet`;
+          }
+        }
+        none => {}
+      }
+    }
+  }
+  let expressions = Array<LoweredExpression>();
+  let statements = Array<LoweredStatement>();
+  let roots = Array<usize>();
+  for (const root of body.roots) {
+    const loweredRoot = try lowerStatement(
+      program,
+      body,
+      root,
+      inout expressions,
+      inout statements
+    );
+    roots.push(loweredRoot);
+  }
+  return LoweredFunction({
+    name: `${ownerName}.deinit`,
+    parameters: Array<LoweredParameter>(),
+    returnType: LoweredType({ kind: LoweredTypeKind.voidType, name: "" }),
+    expressions,
+    statements,
+    roots,
+    fallthroughCleanups: Array<LoweredCleanup>(),
+  });
+}
+
 export function lowerProgram(in program: Program): LoweredProgram throws String {
   if (program.imports.length > 0) {
     throw "native lowering does not support imports in its first slice";
@@ -862,14 +908,6 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
       some(_) => throw `native lowering does not support constructor on ${aggregate.name} yet`;
       none => {}
     }
-    match (in aggregate.deinitializer) {
-      some(deinitializer) => {
-        if (deinitializer.body.roots.length > 0) {
-          throw `native lowering only supports an empty deinit on ${aggregate.name} yet`;
-        }
-      }
-      none => {}
-    }
     let fields = Array<LoweredField>();
     for (const field of aggregate.fields) {
       const fieldType = try lowerType(program, field.type);
@@ -878,10 +916,14 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
         type: move fieldType,
       }));
     }
-    const customDeinit = match (in aggregate.deinitializer) {
-      some(_) => true;
-      none => false;
-    };
+    let deinitializer = Option<LoweredFunction>.none;
+    match (in aggregate.deinitializer) {
+      some(source) => {
+        const body = try lowerDeinitializer(program, aggregate.name, source.body);
+        deinitializer = Option.some(move body);
+      }
+      none => {}
+    }
     const aggregateIndex = match (structIndex(program, aggregate.name)) {
       some(index) => index;
       none => throw `native lowering lost aggregate ${aggregate.name}`;
@@ -890,7 +932,7 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
       name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       fields,
       needsDeinit: aggregateNeedsCleanup(program, aggregateIndex, 0),
-      customDeinit,
+      deinitializer,
     }));
   }
 

@@ -678,8 +678,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    while retaining the binding's later exit cleanup. Cleanup classification now
    recurses through value-struct fields; generated outer deinitializers destroy
    cleanup-bearing fields in reverse order even when the outer struct has no
-   custom `deinit`. Non-empty deinitializer bodies, conditional transfer, and
-   error cleanup merging remain future slices.
+   custom `deinit`. Custom deinitializer bodies now lower ordinary synchronous
+   statements, calls, and `this` field reads before the generated reverse-field
+   epilogue. Cleanup-bearing deinitializer locals remain rejected until those
+   bodies share the full scope planner. Conditional transfer and error cleanup
+   merging remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

@@ -51,6 +51,10 @@ function appendExpression(
   in declaration: LoweredFunction,
   index: usize
 ): void throws String {
+  if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
+    output.append("(*self)");
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.localValue
     || declaration.expressions[index].kind == LoweredExpressionKind.integerValue
@@ -152,6 +156,13 @@ function appendExpression(
       throw "native C emission received a malformed field read";
     }
     const receiver = declaration.expressions[index].children[0];
+    if (
+      declaration.expressions[receiver].kind == LoweredExpressionKind.receiverValue
+    ) {
+      output.append("self->");
+      output.append(declaration.expressions[index].value);
+      return;
+    }
     try appendExpression(inout output, declaration, receiver);
     output.append(".");
     output.append(declaration.expressions[index].value);
@@ -486,7 +497,34 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       output.append(aggregate.name);
       output.append("_deinit(Z_");
       output.append(aggregate.name);
+      output.append(" *self);\n");
+    }
+  }
+  for (const declaration of program.functions) {
+    try appendFunctionSignature(inout output, declaration);
+    output.append(";\n");
+  }
+  output.append("\n");
+  for (const aggregate of program.structs) {
+    if (aggregate.needsDeinit) {
+      output.append("static void Z_");
+      output.append(aggregate.name);
+      output.append("_deinit(Z_");
+      output.append(aggregate.name);
       output.append(" *self) {\n  (void)self;\n");
+      match (in aggregate.deinitializer) {
+        some(deinitializer) => {
+          for (const root of deinitializer.roots) {
+            try appendStatement(inout output, deinitializer, root, 1);
+          }
+          appendCleanups(
+            inout output,
+            deinitializer.fallthroughCleanups,
+            1
+          );
+        }
+        none => {}
+      }
       let fieldIndex = aggregate.fields.length;
       while (fieldIndex > 0) {
         fieldIndex = fieldIndex - 1;
@@ -504,11 +542,6 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       output.append("}\n\n");
     }
   }
-  for (const declaration of program.functions) {
-    try appendFunctionSignature(inout output, declaration);
-    output.append(";\n");
-  }
-  output.append("\n");
   for (const declaration of program.functions) {
     try appendFunction(inout output, declaration);
   }
