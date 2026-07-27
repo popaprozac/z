@@ -1511,6 +1511,20 @@ typedef struct {
   Z_Stage1ResolveResponse result;
 } Z_Stage1ResolveHandle;
 
+typedef struct {
+  uint64_t name_data;
+  uint64_t name_length;
+  uint64_t imported_name_data;
+  uint64_t imported_name_length;
+  uint64_t kind;
+  uint64_t exported;
+  uint64_t has_target;
+  uint64_t target;
+  uint64_t offset;
+  uint64_t line;
+  uint64_t column;
+} Z_Stage1SymbolRecord;
+
 Z_STAGE1_EXPORT void *z_stage1_parse(
   const uint8_t *path_data,
   uintptr_t path_length,
@@ -1625,6 +1639,71 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_order(
   const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
   if (order_index >= response->result.graph.resolved.dependencyOrder.length) return 0;
   return response->result.graph.resolved.dependencyOrder.data[order_index];
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_symbol_count(
+  const void *pointer,
+  uintptr_t module_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (module_index >= response->result.graph.resolved.modules.length) return 0;
+  return response->result.graph.resolved.modules.data[module_index].symbols.length;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_symbol_records(
+  const void *pointer,
+  Z_Stage1SymbolRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t symbol_index = 0;
+      symbol_index
+        < response->result.graph.resolved.modules.data[module_index].symbols.length;
+      symbol_index += 1
+    ) {
+      if (written >= capacity) return written;
+      const uintptr_t symbol_offset = symbol_index;
+      records[written] = (Z_Stage1SymbolRecord){
+        .name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].name.data,
+        .name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].name.length,
+        .imported_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].importedName.data,
+        .imported_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].importedName.length,
+        .kind = (uint64_t)stage1SymbolKindCode(
+          &response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_offset]
+        ),
+        .exported = response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].exported ? 1 : 0,
+        .has_target = stage1SymbolHasTarget(
+          &response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_offset]
+        ) ? 1 : 0,
+        .target = (uint64_t)stage1SymbolTarget(
+          &response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_offset]
+        ),
+        .offset = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].offset,
+        .line = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].line,
+        .column = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].column,
+      };
+      written += 1;
+    }
+  }
+  return written;
 }
 
 Z_STAGE1_EXPORT void z_stage1_resolve_free(void *pointer) {

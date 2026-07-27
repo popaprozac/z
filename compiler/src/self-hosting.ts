@@ -201,6 +201,16 @@ export type Stage1ModuleGraphStructure = {
   readonly modules: readonly {
     readonly path: string;
     readonly dependencies: readonly number[];
+    readonly symbols?: readonly {
+      readonly name: string;
+      readonly kind: Stage1ModuleSymbolKind;
+      readonly exported: boolean;
+      readonly targetModule: number | null;
+      readonly importedName: string;
+      readonly offset: number;
+      readonly line: number;
+      readonly column: number;
+    }[];
   }[];
   readonly dependencyOrder: readonly number[];
 };
@@ -232,7 +242,20 @@ export function decodeStage1ModuleGraphStream(
     ? structure.modules.map((module) => ({
         path: module.path,
         dependencies: [...module.dependencies],
-        symbols: [],
+        symbols: module.symbols?.map((symbol): Stage1ModuleSymbol => ({
+          name: symbol.name,
+          kind: symbol.kind,
+          exported: symbol.exported,
+          targetModule: symbol.targetModule,
+          importedName: symbol.importedName,
+          functionSignature: null,
+          typeSignature: null,
+          location: {
+            offset: symbol.offset,
+            line: symbol.line,
+            column: symbol.column,
+          },
+        })) ?? [],
         callResolutions: [],
         bindingResolutions: [],
         expressionResolutions: [],

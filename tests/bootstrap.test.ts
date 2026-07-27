@@ -10051,8 +10051,34 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const structuralTopology = decodeStage1ModuleGraphStream("", {
     entry: 1,
     modules: [
-      { path: "/dependency.zs", dependencies: [] },
-      { path: "/main.zs", dependencies: [0] },
+      {
+        path: "/dependency.zs",
+        dependencies: [],
+        symbols: [{
+          name: "value",
+          kind: "function",
+          exported: true,
+          targetModule: null,
+          importedName: "",
+          offset: 0,
+          line: 1,
+          column: 1,
+        }],
+      },
+      {
+        path: "/main.zs",
+        dependencies: [0],
+        symbols: [{
+          name: "renamed",
+          kind: "imported",
+          exported: false,
+          targetModule: 0,
+          importedName: "value",
+          offset: 7,
+          line: 1,
+          column: 8,
+        }],
+      },
     ],
     dependencyOrder: [0, 1],
   });
@@ -10068,6 +10094,16 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     ],
   );
   assert.deepEqual(structuralTopology.dependencyOrder, [0, 1]);
+  assert.deepEqual(structuralTopology.modules[1].symbols[0], {
+    name: "renamed",
+    kind: "imported",
+    exported: false,
+    targetModule: 0,
+    importedName: "value",
+    functionSignature: null,
+    typeSignature: null,
+    location: { offset: 7, line: 1, column: 8 },
+  });
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
   assert.throws(
     () => decodeStage1ModuleGraphStream("entry\t0000000000000001\nmodule\t2f612e7a73\norder\t0000000000000000\n"),

@@ -14,7 +14,6 @@ import {
   ResolvedModule,
 } from "./semantic-model.zs";
 import { resolveModules } from "./module-resolver.zs";
-import { moduleSymbolKindName } from "./module-symbols.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
 export struct RenderedModuleGraph {
@@ -142,35 +141,6 @@ function appendTarget(inout output: TextBuffer, in target: Option<usize>): void 
     some(index) => appendHexUsize(inout output, index);
     none => output.append("-");
   }
-}
-
-function appendSymbol(
-  inout output: TextBuffer,
-  moduleIndex: usize,
-  in symbol: ModuleSymbol
-): void {
-  output.append("symbol");
-  output.appendAscii(9);
-  appendHexUsize(inout output, moduleIndex);
-  output.appendAscii(9);
-  const kind = moduleSymbolKindName(symbol.kind);
-  output.append(kind);
-  output.appendAscii(9);
-  appendHexText(inout output, symbol.name);
-  output.appendAscii(9);
-  if (symbol.exported) output.appendAscii(49);
-  else output.appendAscii(48);
-  output.appendAscii(9);
-  appendTarget(inout output, symbol.targetModule);
-  output.appendAscii(9);
-  appendHexText(inout output, symbol.importedName);
-  output.appendAscii(9);
-  appendHexUsize(inout output, symbol.offset);
-  output.appendAscii(9);
-  appendHexUsize(inout output, symbol.line);
-  output.appendAscii(9);
-  appendHexUsize(inout output, symbol.column);
-  output.appendAscii(10);
 }
 
 function appendFunctionSignature(
@@ -567,7 +537,6 @@ export function renderModuleGraph(
       + module.semanticEvidence.expressionResolutions.length;
     let symbolIndex: usize = 0;
     for (const symbol of module.symbols) {
-      appendSymbol(inout output, moduleIndex, symbol);
       appendFunctionSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendTypeSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendConstructorSignature(inout output, moduleIndex, symbolIndex, symbol);

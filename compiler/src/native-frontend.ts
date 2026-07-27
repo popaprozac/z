@@ -19,6 +19,18 @@ export type NativeFrontendGraphSummary = {
 export type NativeFrontendModuleStructure = {
   readonly path: string;
   readonly dependencies: readonly number[];
+  readonly symbols: readonly NativeFrontendSymbolStructure[];
+};
+
+export type NativeFrontendSymbolStructure = {
+  readonly name: string;
+  readonly kind: "function" | "struct" | "class" | "trait" | "type" | "enum" | "namespace" | "imported";
+  readonly exported: boolean;
+  readonly targetModule: number | null;
+  readonly importedName: string;
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
 };
 
 export type NativeFrontendGraphStructure = {
@@ -142,6 +154,14 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr, FFIType.u64],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_module_symbol_count: {
+      args: [FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_symbol_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_free: {
       args: [FFIType.ptr],
       returns: FFIType.void,
@@ -198,7 +218,12 @@ export function resolveWithNativeFrontendLibrary(
           "expression-resolution count",
         ),
       };
-      const modules: NativeFrontendModuleStructure[] = [];
+      const modules: {
+        path: string;
+        dependencies: number[];
+        symbols: NativeFrontendSymbolStructure[];
+      }[] = [];
+      const moduleSymbolCounts: number[] = [];
       for (let moduleIndex = 0; moduleIndex < summary.moduleCount; moduleIndex += 1) {
         const pathLength = nativeUsize(
           library.symbols.z_stage1_resolve_module_path_length(responsePointer, moduleIndex),
@@ -238,7 +263,15 @@ export function resolveWithNativeFrontendLibrary(
             ? new CString(pathPointer, 0, pathLength).toString()
             : "",
           dependencies,
+          symbols: [],
         });
+        moduleSymbolCounts.push(nativeUsize(
+          library.symbols.z_stage1_resolve_module_symbol_count(
+            responsePointer,
+            moduleIndex,
+          ),
+          `module ${moduleIndex} symbol count`,
+        ));
       }
       const dependencyOrder: number[] = [];
       for (
@@ -254,6 +287,63 @@ export function resolveWithNativeFrontendLibrary(
           `dependency-order entry ${orderIndex}`,
         ));
       }
+      const structuralSymbolCount = moduleSymbolCounts.reduce(
+        (count, moduleCount) => count + moduleCount,
+        0,
+      );
+      if (structuralSymbolCount !== summary.symbolCount) {
+        throw new Error("the native frontend symbol counts do not match its structural summary");
+      }
+      const symbolRecordWidth = 11 * 8;
+      const symbolRecords = Buffer.alloc(
+        Math.max(1, structuralSymbolCount * symbolRecordWidth),
+      );
+      const writtenSymbols = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_symbol_records(
+          responsePointer,
+          ptr(symbolRecords),
+          structuralSymbolCount,
+        ),
+        "written symbol-record count",
+      );
+      if (writtenSymbols !== structuralSymbolCount) {
+        throw new Error("the native frontend returned an incomplete structural symbol batch");
+      }
+      let recordIndex = 0;
+      for (let moduleIndex = 0; moduleIndex < modules.length; moduleIndex += 1) {
+        const symbolCount = moduleSymbolCounts[moduleIndex];
+        for (let symbolIndex = 0; symbolIndex < symbolCount; symbolIndex += 1) {
+          const recordOffset = recordIndex * symbolRecordWidth;
+          const field = (index: number, description: string): number => nativeUsize(
+            symbolRecords.readBigUInt64LE(recordOffset + (index * 8)),
+            `module ${moduleIndex} symbol ${symbolIndex} ${description}`,
+          );
+          const namePointer = field(0, "name pointer");
+          const nameLength = field(1, "name length");
+          const importedNamePointer = field(2, "imported-name pointer");
+          const importedNameLength = field(3, "imported-name length");
+          const exported = field(5, "export state");
+          const hasTarget = field(6, "target state");
+          if (exported > 1 || hasTarget > 1) {
+            throw new Error(`the native frontend returned invalid symbol flags for module ${moduleIndex}`);
+          }
+          modules[moduleIndex].symbols.push({
+            name: nativeString(namePointer, nameLength, "symbol name"),
+            kind: nativeSymbolKind(field(4, "kind")),
+            exported: exported === 1,
+            targetModule: hasTarget === 1 ? field(7, "target module") : null,
+            importedName: nativeString(
+              importedNamePointer,
+              importedNameLength,
+              "imported symbol name",
+            ),
+            offset: field(8, "offset"),
+            line: field(9, "line"),
+            column: field(10, "column"),
+          });
+          recordIndex += 1;
+        }
+      }
       return {
         stream: payload,
         summary,
@@ -265,6 +355,30 @@ export function resolveWithNativeFrontendLibrary(
   } finally {
     library.close();
   }
+}
+
+function nativeString(pointer: number, length: number, description: string): string {
+  if (pointer === 0) {
+    if (length === 0) return "";
+    throw new Error(`the native frontend returned a null ${description}`);
+  }
+  return new CString(pointer, 0, length).toString();
+}
+
+function nativeSymbolKind(code: number): NativeFrontendSymbolStructure["kind"] {
+  const kinds = [
+    "function",
+    "struct",
+    "class",
+    "trait",
+    "type",
+    "enum",
+    "namespace",
+    "imported",
+  ] as const;
+  const kind = kinds[code];
+  if (!kind) throw new Error(`the native frontend returned invalid symbol kind ${code}`);
+  return kind;
 }
 
 function nativeUsize(value: number | bigint, description: string): number {

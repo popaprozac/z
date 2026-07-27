@@ -128,14 +128,17 @@ measuring equivalent work and finding semantic composition gaps.
 `--timings` is available only with this bridge.
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
-The first structural replacement slice now returns one owned native response
-handle from the resolver. Entry identity, module paths, dependency lists,
-dependency order, and graph/evidence counts are queried directly through that
-handle and consumed by the host. Those topology records are no longer emitted
-through the compatibility stream, which remains temporarily for symbols,
-signatures, and semantic evidence. The retained handle owns the resolved Z graph
-until the host releases it, so later indexed queries can replace those records
-without a second native resolution or borrowed lifetime escape.
+The structural replacement now returns one owned native response handle from
+the resolver. Entry identity, module paths, dependency lists, dependency order,
+graph/evidence counts, and symbol identity are queried directly through that
+handle and consumed by the host. One bulk fixed-width record fill carries every
+symbol's kind, export state, imported name, local target, and source location;
+topology and `symbol` records are no longer emitted through the compatibility
+stream. Callable/type signatures and semantic evidence remain temporarily in
+that stream. The retained handle owns the resolved Z graph and all borrowed
+symbol strings until the host releases it, so later structural queries can
+replace the remaining records without a second native resolution or borrowed
+lifetime escape.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. A
 shared stage-zero loader discovers that canonical source batch once for both the
