@@ -39,6 +39,7 @@ export enum LoweredTypeKind {
   stringType,
   arrayType,
   mapType,
+  setType,
   structType,
   enumType,
 }
@@ -69,6 +70,11 @@ export struct LoweredMap {
   name: String;
   keyType: LoweredType;
   valueType: LoweredType;
+}
+
+export struct LoweredSet {
+  name: String;
+  elementType: LoweredType;
 }
 
 export struct LoweredEnum {
@@ -134,6 +140,10 @@ export enum LoweredExpressionKind {
   mapHas,
   mapGet,
   mapSet,
+  setEmpty,
+  setLength,
+  setHas,
+  setAdd,
   textBufferEmpty,
   textBufferAppend,
   textBufferAppendBytes,
@@ -204,6 +214,7 @@ export struct LoweredFunction {
 export struct LoweredProgram {
   arrays: Array<LoweredArray>;
   maps: Array<LoweredMap>;
+  sets: Array<LoweredSet>;
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
@@ -289,6 +300,11 @@ function intrinsicMapName(
   return `__z_Map_${keyIdentity.byteLength}_${keyIdentity}${valueIdentity}`;
 }
 
+function intrinsicSetName(in elementType: LoweredType): String {
+  const identity = loweredTypeIdentity(elementType);
+  return `__z_Set_${identity}`;
+}
+
 function intrinsicResultName(
   in successType: LoweredType,
   in errorType: LoweredType
@@ -335,6 +351,12 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (stringStartsWith(name, "__z_Set_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.setType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
   if (stringStartsWith(name, "view ")) {
     const targetName = name.copyBytes(5, name.byteLength);
     return try lowerTypeName(program, targetName);
@@ -368,6 +390,13 @@ function lowerTypeName(
         return LoweredType({
           kind: LoweredTypeKind.mapType,
           name: intrinsicMapName(keyType, valueType),
+        });
+      }
+      if (generic.base == "Set" && generic.arguments.length == 1) {
+        const elementType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.setType,
+          name: intrinsicSetName(elementType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -453,6 +482,17 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.mapType,
           name: intrinsicMapName(keyType, valueType),
+        });
+      }
+      if (generic.base == "Set" && generic.arguments.length == 1) {
+        const elementType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.setType,
+          name: intrinsicSetName(elementType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -639,6 +679,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
   if (
     type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.mapType
+    || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
@@ -805,6 +846,7 @@ function moduleTypeNeedsCleanupDepth(
   if (
     type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.mapType
+    || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
@@ -902,6 +944,30 @@ function intrinsicMapDeclaration(
       }));
     }
     none => return Option<LoweredMap>.none;
+  }
+}
+
+function intrinsicSetDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<LoweredSet> throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Set" || generic.arguments.length != 1) {
+        return Option<LoweredSet>.none;
+      }
+      const elementType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
+      return Option.some(LoweredSet({
+        name: intrinsicSetName(elementType),
+        elementType,
+      }));
+    }
+    none => return Option<LoweredSet>.none;
   }
 }
 
@@ -2481,6 +2547,20 @@ function lowerExpression(
               Array<String>()
             );
           }
+          if (generic.base == "Set" && generic.arguments.length == 1) {
+            const setType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              tree.nodes[calleeInput].value
+            );
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.setEmpty,
+              setType.name,
+              Array<usize>(),
+              Array<String>()
+            );
+          }
         }
         none => {}
       }
@@ -2571,6 +2651,58 @@ function lowerExpression(
             Array<String>()
           );
         }
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && (
+        tree.nodes[calleeInput].value == "has"
+        || tree.nodes[calleeInput].value == "add"
+      )
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.setType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            const argumentInput = tree.nodes[index].children[1];
+            const argument = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              argumentInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            children.push(argument);
+            const kind = tree.nodes[calleeInput].value == "add"
+              ? LoweredExpressionKind.setAdd
+              : LoweredExpressionKind.setHas;
+            return pushExpression(
+              inout output,
+              kind,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
       }
     }
     if (
@@ -2702,6 +2834,28 @@ function lowerExpression(
             return pushExpression(
               inout output,
               LoweredExpressionKind.mapLength,
+              receiverType.name,
+              children,
+              Array<String>()
+            );
+          }
+          if (
+            receiverType.kind == LoweredTypeKind.setType
+            && tree.nodes[index].value == "length"
+          ) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.setLength,
               receiverType.name,
               children,
               Array<String>()
@@ -3032,7 +3186,7 @@ function lowerExpression(
       resolvedExpressionTypeName(evidence, tree, receiverInput)
     ) {
       some(name) => name;
-      none => throw "native lowering could not resolve indexed storage";
+      none => throw `native lowering could not resolve indexed storage at ${tree.nodes[receiverInput].line}:${tree.nodes[receiverInput].column}`;
     };
     const receiverType = try lowerModuleTypeName(
       program,
@@ -4842,6 +4996,16 @@ function containsLoweredMap(
   return false;
 }
 
+function containsLoweredSet(
+  in sets: Array<LoweredSet>,
+  in name: String
+): boolean {
+  for (const declaration of sets) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function containsLoweredFunction(
   in functions: Array<LoweredFunction>,
   in name: String
@@ -5049,6 +5213,7 @@ function collectIntrinsicTypeName(
   in name: String,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   match (genericTypeShape(name)) {
@@ -5060,6 +5225,7 @@ function collectIntrinsicTypeName(
           argument,
           inout arrays,
           inout maps,
+          inout sets,
           inout enums
         );
       }
@@ -5089,6 +5255,19 @@ function collectIntrinsicTypeName(
         }
         none => {}
       }
+      const set = try intrinsicSetDeclaration(
+        program,
+        importedTypes,
+        name
+      );
+      match (set) {
+        some(declaration) => {
+          if (!containsLoweredSet(sets, declaration.name)) {
+            sets.push(move declaration);
+          }
+        }
+        none => {}
+      }
       const intrinsic = try intrinsicEnumDeclaration(
         program,
         importedTypes,
@@ -5113,6 +5292,7 @@ function collectArenaIntrinsicEnums(
   in arena: StatementArena,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   for (const statement of arena.nodes) {
@@ -5123,6 +5303,7 @@ function collectArenaIntrinsicEnums(
         type.name,
         inout arrays,
         inout maps,
+        inout sets,
         inout enums
       );
       none => {}
@@ -5138,6 +5319,7 @@ function collectArenaIntrinsicEnums(
                 node.value,
                 inout arrays,
                 inout maps,
+                inout sets,
                 inout enums
               );
             }
@@ -5158,6 +5340,7 @@ function collectArenaIntrinsicEnums(
                 node.value,
                 inout arrays,
                 inout maps,
+                inout sets,
                 inout enums
               );
             }
@@ -5176,6 +5359,7 @@ function collectIntrinsicEnums(
   in evidence: ModuleSemanticEvidence,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   for (const binding of evidence.bindingResolutions) {
@@ -5185,6 +5369,7 @@ function collectIntrinsicEnums(
       binding.typeName,
       inout arrays,
       inout maps,
+      inout sets,
       inout enums
     );
   }
@@ -5195,6 +5380,7 @@ function collectIntrinsicEnums(
       expression.typeName,
       inout arrays,
       inout maps,
+      inout sets,
       inout enums
     );
   }
@@ -5206,6 +5392,7 @@ function collectIntrinsicEnums(
         field.type.name,
         inout arrays,
         inout maps,
+        inout sets,
         inout enums
       );
     }
@@ -5216,6 +5403,7 @@ function collectIntrinsicEnums(
         deinitializer.body,
         inout arrays,
         inout maps,
+        inout sets,
         inout enums
       );
       none => {}
@@ -5230,6 +5418,7 @@ function collectIntrinsicEnums(
           type.name,
           inout arrays,
           inout maps,
+          inout sets,
           inout enums
         );
         none => {}
@@ -5244,6 +5433,7 @@ function collectIntrinsicEnums(
         parameter.type.name,
         inout arrays,
         inout maps,
+        inout sets,
         inout enums
       );
     }
@@ -5253,6 +5443,7 @@ function collectIntrinsicEnums(
       declaration.returnType.name,
       inout arrays,
       inout maps,
+      inout sets,
       inout enums
     );
     match (in declaration.errorType) {
@@ -5263,6 +5454,7 @@ function collectIntrinsicEnums(
           type.name,
           inout arrays,
           inout maps,
+          inout sets,
           inout enums
         );
         const returnName = declaration.returnType.name.copyBytes(
@@ -5277,6 +5469,7 @@ function collectIntrinsicEnums(
           resultName,
           inout arrays,
           inout maps,
+          inout sets,
           inout enums
         );
       }
@@ -5288,6 +5481,7 @@ function collectIntrinsicEnums(
       declaration.body,
       inout arrays,
       inout maps,
+      inout sets,
       inout enums
     );
   }
@@ -5500,6 +5694,7 @@ function appendLoweredProgram(
   entryIndex: usize,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
@@ -5561,6 +5756,7 @@ function appendLoweredProgram(
     evidence,
     inout arrays,
     inout maps,
+    inout sets,
     inout enums
   );
   for (const declaration of program.enums) {
@@ -5781,6 +5977,7 @@ export function lowerProgram(
   let functions = Array<LoweredFunction>();
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
+  let sets = Array<LoweredSet>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -5794,11 +5991,12 @@ export function lowerProgram(
     0,
     inout arrays,
     inout maps,
+    inout sets,
     inout structs,
     inout enums,
     inout functions
   );
-  return LoweredProgram({ arrays, maps, structs, enums, functions });
+  return LoweredProgram({ arrays, maps, sets, structs, enums, functions });
 }
 
 export function lowerModules(
@@ -5810,6 +6008,7 @@ export function lowerModules(
   let functions = Array<LoweredFunction>();
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
+  let sets = Array<LoweredSet>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
@@ -5830,6 +6029,7 @@ export function lowerModules(
       entryIndex,
       inout arrays,
       inout maps,
+      inout sets,
       inout structs,
       inout enums,
       inout functions
@@ -5845,5 +6045,5 @@ export function lowerModules(
       }
     }
   }
-  return LoweredProgram({ arrays, maps, structs, enums, functions });
+  return LoweredProgram({ arrays, maps, sets, structs, enums, functions });
 }

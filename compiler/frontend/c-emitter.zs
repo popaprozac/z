@@ -27,6 +27,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.mapType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.setType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
@@ -270,6 +271,48 @@ function appendExpression(
       const value = declaration.expressions[index].children[2];
       try appendExpression(inout output, declaration, value);
     }
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.setEmpty
+  ) {
+    output.append("(Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){ NULL, 0, 0, NULL, 0, 0 }");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.setLength
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed Set.length";
+    }
+    output.append("(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append(").length");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.setHas
+    || declaration.expressions[index].kind == LoweredExpressionKind.setAdd
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed Set method call";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    if (
+      declaration.expressions[index].kind == LoweredExpressionKind.setAdd
+    ) output.append("_add");
+    else output.append("_has");
+    output.append("(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    const value = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, value);
     output.append(")");
     return;
   }
@@ -1218,6 +1261,7 @@ function loweredTypeNeedsDeinit(
   if (
     type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.mapType
+    || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
@@ -1445,6 +1489,25 @@ function appendTypeDefinitions(
     output.append(declaration.name);
     output.append(";\n\n");
   }
+  for (const declaration of program.sets) {
+    if (declaration.elementType.kind != LoweredTypeKind.stringType) {
+      throw "native C emission only supports String Set elements in the first self-hosting tier";
+    }
+    const elementType = try cType(declaration.elementType);
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" {\n  ");
+    output.append(elementType);
+    output.append(" *values;\n");
+    output.append("  size_t length;\n");
+    output.append("  size_t capacity;\n");
+    output.append("  size_t *buckets;\n");
+    output.append("  size_t bucketCount;\n");
+    output.append("  size_t tombstones;\n");
+    output.append("} Z_");
+    output.append(declaration.name);
+    output.append(";\n\n");
+  }
   let structStates = Array<u8>();
   let enumStates = Array<u8>();
   let stateIndex: usize = 0;
@@ -1643,6 +1706,109 @@ function appendMapRuntime(
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("}\n\n");
+  }
+}
+
+function appendSetRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  for (const declaration of program.sets) {
+    output.append("static inline __attribute__((unused)) size_t Z_");
+    output.append(declaration.name);
+    output.append("_hash(Z_String value) {\n");
+    output.append("  uint64_t hash = UINT64_C(14695981039346656037);\n");
+    output.append("  for (size_t index = 0; index < value.length; index += 1) {\n");
+    output.append("    hash ^= (unsigned char)value.data[index];\n");
+    output.append("    hash *= UINT64_C(1099511628211);\n");
+    output.append("  }\n  return (size_t)hash;\n}\n\n");
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_rehash(Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t capacity) {\n");
+    output.append("  if (capacity < 8) capacity = 8;\n");
+    output.append("  if (capacity > SIZE_MAX / sizeof(size_t)) abort();\n");
+    output.append("  size_t *buckets = (size_t *)calloc(capacity, sizeof(size_t));\n");
+    output.append("  if (buckets == NULL) abort();\n");
+    output.append("  for (size_t index = 0; index < self->length; index += 1) {\n");
+    output.append("    size_t slot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(self->values[index]) & (capacity - 1);\n");
+    output.append("    while (buckets[slot] != 0) slot = (slot + 1) & (capacity - 1);\n");
+    output.append("    buckets[slot] = index + 1;\n");
+    output.append("  }\n");
+    output.append("  free(self->buckets);\n");
+    output.append("  self->buckets = buckets;\n");
+    output.append("  self->bucketCount = capacity;\n");
+    output.append("  self->tombstones = 0;\n}\n\n");
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_ensure_capacity(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    output.append("  if (self->bucketCount == 0) {\n    Z_");
+    output.append(declaration.name);
+    output.append("_rehash(self, 8);\n    return;\n  }\n");
+    output.append("  if (self->length + self->tombstones < self->bucketCount - self->bucketCount / 4) return;\n");
+    output.append("  if (self->bucketCount > SIZE_MAX / 2) abort();\n");
+    output.append("  Z_");
+    output.append(declaration.name);
+    output.append("_rehash(self, self->bucketCount * 2);\n}\n\n");
+    output.append("static inline __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_has(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, Z_String value) {\n");
+    output.append("  if (self->bucketCount == 0) return false;\n");
+    output.append("  size_t slot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(value) & (self->bucketCount - 1);\n");
+    output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+    output.append("    const size_t stored = self->buckets[slot];\n");
+    output.append("    if (stored == 0) return false;\n");
+    output.append("    if (stored != SIZE_MAX && z_string_equal(self->values[stored - 1], value)) return true;\n");
+    output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+    output.append("  }\n  return false;\n}\n\n");
+    output.append("static __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_add(Z_");
+    output.append(declaration.name);
+    output.append(" *self, Z_String value) {\n");
+    output.append("  Z_");
+    output.append(declaration.name);
+    output.append("_ensure_capacity(self);\n");
+    output.append("  size_t slot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(value) & (self->bucketCount - 1);\n");
+    output.append("  size_t available = SIZE_MAX;\n");
+    output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+    output.append("    const size_t stored = self->buckets[slot];\n");
+    output.append("    if (stored == 0) break;\n");
+    output.append("    if (stored == SIZE_MAX) {\n");
+    output.append("      if (available == SIZE_MAX) available = slot;\n");
+    output.append("    } else if (z_string_equal(self->values[stored - 1], value)) {\n");
+    output.append("      Z_String_deinit(&value);\n");
+    output.append("      return false;\n    }\n");
+    output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+    output.append("  }\n");
+    output.append("  if (available != SIZE_MAX) {\n");
+    output.append("    slot = available;\n");
+    output.append("    self->tombstones -= 1;\n  }\n");
+    output.append("  if (self->length == self->capacity) {\n");
+    output.append("    size_t next = self->capacity == 0 ? 8 : self->capacity;\n");
+    output.append("    if (self->capacity != 0) {\n");
+    output.append("      if (next > SIZE_MAX / 2) abort();\n");
+    output.append("      next *= 2;\n    }\n");
+    output.append("    if (next > SIZE_MAX / sizeof(Z_String)) abort();\n");
+    output.append("    void *storage = realloc(self->values, next * sizeof(Z_String));\n");
+    output.append("    if (storage == NULL) abort();\n");
+    output.append("    self->values = (Z_String *)storage;\n");
+    output.append("    self->capacity = next;\n  }\n");
+    output.append("  self->values[self->length] = value;\n");
+    output.append("  self->length += 1;\n");
+    output.append("  self->buckets[slot] = self->length;\n");
+    output.append("  return true;\n}\n\n");
   }
 }
 
@@ -1899,6 +2065,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("}\n\n");
   }
   try appendMapRuntime(inout output, program);
+  appendSetRuntime(inout output, program);
   for (const declaration of program.arrays) {
     output.append("static void Z_");
     output.append(declaration.name);
@@ -1907,6 +2074,13 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append(" *self);\n");
   }
   for (const declaration of program.maps) {
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
+  for (const declaration of program.sets) {
     output.append("static void Z_");
     output.append(declaration.name);
     output.append("_deinit(Z_");
@@ -1975,6 +2149,25 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("  free(self->entries);\n");
     output.append("  free(self->buckets);\n");
     output.append("  self->entries = NULL;\n");
+    output.append("  self->capacity = 0;\n");
+    output.append("  self->buckets = NULL;\n");
+    output.append("  self->bucketCount = 0;\n");
+    output.append("  self->tombstones = 0;\n");
+    output.append("}\n\n");
+  }
+  for (const declaration of program.sets) {
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    output.append("  while (self->length > 0) {\n");
+    output.append("    self->length -= 1;\n");
+    output.append("    Z_String_deinit(&self->values[self->length]);\n");
+    output.append("  }\n");
+    output.append("  free(self->values);\n");
+    output.append("  free(self->buckets);\n");
+    output.append("  self->values = NULL;\n");
     output.append("  self->capacity = 0;\n");
     output.append("  self->buckets = NULL;\n");
     output.append("  self->bucketCount = 0;\n");

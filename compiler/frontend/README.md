@@ -206,8 +206,9 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   shifts compose through the same IR. Native `Map<String, scalar>` lowering
   now emits owned String keys, open-addressed hashed lookup, `set`, `has`,
   `get`, and deterministic cleanup. The real compiler probe advances through
-  `Map<String, usize>` and now reaches `Set<String>` in module binding
-  validation. A local selective alias is resolved back to the exported
+  `Map<String, usize>` and `Set<String>`, then enters native lowering itself.
+  Its next boundary is statically resolving `generic.arguments[0]` while
+  emitting `lowerTypeName`. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs
