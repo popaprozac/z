@@ -141,6 +141,54 @@ export function typeSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+export function inferredTypeSymbolLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in sourceType: String
+): Option<ModuleSymbolLocation> {
+  match (typeSymbolLocation(modules, moduleIndex, sourceType)) {
+    some(location) => return Option.some(location);
+    none => {}
+  }
+  let typeName = sourceType.copyBytes(0, sourceType.byteLength);
+  match (genericTypeShape(sourceType)) {
+    some(generic) => typeName = generic.base.copyBytes(
+      0,
+      generic.base.byteLength
+    );
+    none => {}
+  }
+  const qualifiedMember = qualifiedTypeMember(typeName);
+  if (qualifiedMember.byteLength > 0) {
+    return Option<ModuleSymbolLocation>.none;
+  }
+  let found = Option<ModuleSymbolLocation>.none;
+  let candidateModuleIndex: usize = 0;
+  while (candidateModuleIndex < modules.length) {
+    const candidateSymbolIndex = moduleSymbolIndex(
+      modules[candidateModuleIndex],
+      typeName
+    );
+    if (
+      candidateSymbolIndex < modules[candidateModuleIndex].symbols.length
+      && modules[candidateModuleIndex].symbols[candidateSymbolIndex].exported
+      && isTypeSymbolKind(
+        modules[candidateModuleIndex].symbols[candidateSymbolIndex].kind
+      )
+    ) {
+      match (found) {
+        some(_) => return Option<ModuleSymbolLocation>.none;
+        none => found = Option.some(ModuleSymbolLocation({
+          moduleIndex: candidateModuleIndex,
+          symbolIndex: candidateSymbolIndex,
+        }));
+      }
+    }
+    candidateModuleIndex = candidateModuleIndex + 1;
+  }
+  return found;
+}
+
 function childTypeIdentityPath(in path: String, in segment: String): String {
   if (path.byteLength == 0) return segment.copyBytes(0, segment.byteLength);
   return `${path}/${segment}`;

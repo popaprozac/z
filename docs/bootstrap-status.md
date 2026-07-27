@@ -688,8 +688,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    open-addressed table with `set`, `has`, `get`, and deterministic cleanup;
    its generated C fixture compiles and returns 42. The real compiler probe
    advances through both `Map<String, usize>` and `Set<String>`, then enters
-   native lowering itself. Its next boundary is statically resolving the
-   indexed `generic.arguments[0]` expression while emitting `lowerTypeName`.
+   native lowering itself. Complete source-position identity now distinguishes
+   nested expression evidence, match payload bindings export their inferred
+   contracts, and uniquely named public field types can flow transitively
+   without a redundant source import. The unchanged compiler graph now reaches
+   nested `try` propagation in `lowerExpressionSyntax`.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

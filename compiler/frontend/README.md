@@ -207,8 +207,12 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   now emits owned String keys, open-addressed hashed lookup, `set`, `has`,
   `get`, and deterministic cleanup. The real compiler probe advances through
   `Map<String, usize>` and `Set<String>`, then enters native lowering itself.
-  Its next boundary is statically resolving `generic.arguments[0]` while
-  emitting `lowerTypeName`. A local selective alias is resolved back to the exported
+  Indexed and member expressions now recover their types through complete
+  source-position evidence, match payload bindings export their inferred type,
+  and uniquely named public types remain usable when they flow transitively
+  through an imported field. The compiler probe now reaches nested `try`
+  propagation while emitting `lowerExpressionSyntax`. A local selective alias
+  is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

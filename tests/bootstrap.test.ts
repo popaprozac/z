@@ -8206,6 +8206,34 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const setExecution = spawnSync(setExecutable, [], { encoding: "utf8" });
   assert.equal(setExecution.status, 42, setExecution.stderr);
 
+  const transitiveTypeInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-transitive-types/main.zs",
+  );
+  const transitiveTypeEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", transitiveTypeInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(transitiveTypeEmission.status, 0, transitiveTypeEmission.stderr);
+  assert.match(
+    transitiveTypeEmission.stdout,
+    /int32_t readValue\(const Z_Wrapper \*wrapper\).*?payload\.value/s,
+  );
+  const transitiveTypeExecutable = resolve(directory, "transitive-types");
+  const transitiveTypeCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", transitiveTypeExecutable],
+    { encoding: "utf8", input: transitiveTypeEmission.stdout },
+  );
+  assert.equal(transitiveTypeCompilation.status, 0, transitiveTypeCompilation.stderr);
+  const transitiveTypeExecution = spawnSync(
+    transitiveTypeExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(transitiveTypeExecution.status, 42, transitiveTypeExecution.stderr);
+
   const moduleInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
@@ -9165,7 +9193,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(inferredBindingEvidence.status, 0, inferredBindingEvidence.stderr);
-  assert.match(inferredBindingEvidence.stdout, /exports 3 inferred local binding contracts/);
+  assert.match(inferredBindingEvidence.stdout, /exports 4 inferred local binding contracts/);
   assert.match(inferredBindingEvidence.stdout, /observes 3 inferred local binding stage-0 Z resolutions/);
   assert.match(inferredBindingEvidence.stdout, /uses 3 inferred local binding native-authoritative contracts/);
   const inferredObservedExpressions = inferredBindingEvidence.stdout.match(
@@ -9201,7 +9229,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     { encoding: "utf8" },
   );
   assert.equal(wrappedBindingEvidence.status, 0, wrappedBindingEvidence.stderr);
-  assert.match(wrappedBindingEvidence.stdout, /exports 1 inferred local binding contract/);
+  assert.match(wrappedBindingEvidence.stdout, /exports 2 inferred local binding contracts/);
   assert.match(wrappedBindingEvidence.stdout, /observes 1 inferred local binding stage-0 Z resolutions/);
   assert.match(wrappedBindingEvidence.stdout, /uses 1 inferred local binding native-authoritative contracts/);
   const wrappedObservedExpressions = wrappedBindingEvidence.stdout.match(
@@ -11604,7 +11632,7 @@ test("preserves recursive ownership through unimported aggregate field types", (
   )?.[1];
   assert.equal(observedBindings, "7");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "78");
+  assert.equal(observedExpressions, "87");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11736,10 +11764,14 @@ test("preserves nominal identities inside linked generic monomorphs", () => {
 
 test("preserves direct and intrinsic async effects in native semantic evidence", () => {
   const cases = [
-    ["examples/language/control-flow/async-generators.zs", "7"],
-    ["examples/async/async-errors.zs", "2"],
+    ["examples/language/control-flow/async-generators.zs", "13", "7"],
+    ["examples/async/async-errors.zs", "2", "2"],
   ] as const;
-  for (const [fileName, expectedBindings] of cases) {
+  for (const [
+    fileName,
+    expectedExportedBindings,
+    expectedObservedBindings,
+  ] of cases) {
     const input = resolve(projectRoot, fileName);
     const result = spawnSync(
       process.execPath,
@@ -11762,8 +11794,8 @@ test("preserves direct and intrinsic async effects in native semantic evidence",
     const authoritativeExpressions = result.stdout.match(
       /uses (\d+) expression native-authoritative contracts/,
     )?.[1];
-    assert.equal(exportedBindings, expectedBindings, fileName);
-    assert.equal(observedBindings, exportedBindings, fileName);
+    assert.equal(exportedBindings, expectedExportedBindings, fileName);
+    assert.equal(observedBindings, expectedObservedBindings, fileName);
     assert.equal(authoritativeBindings, observedBindings, fileName);
     assert.ok(observedExpressions, fileName);
     assert.equal(authoritativeExpressions, observedExpressions, fileName);

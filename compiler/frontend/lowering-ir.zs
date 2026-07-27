@@ -1872,7 +1872,11 @@ function resolvedExpressionTypeName(
   index: usize
 ): Option<String> {
   for (const resolution of evidence.expressionResolutions) {
-    if (resolution.offset == tree.nodes[index].offset) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) {
       return Option.some(resolution.typeName.copyBytes(
       0,
       resolution.typeName.byteLength
@@ -2072,7 +2076,12 @@ function staticallyResolvedExpressionTypeName(
   index: usize
 ): Option<String> {
   match (resolvedExpressionTypeName(evidence, tree, index)) {
-    some(name) => return Option.some(move name);
+    some(name) => {
+      if (
+        tree.nodes[index].kind != ExpressionKind.memberExpression
+        || name != tree.nodes[index].value
+      ) return Option.some(move name);
+    }
     none => {}
   }
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
@@ -2153,6 +2162,44 @@ function staticallyResolvedExpressionTypeName(
     return Option<String>.none;
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.indexExpression
+    && tree.nodes[index].children.length == 2
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    match (staticallyResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      tree,
+      receiver
+    )) {
+      some(receiverTypeName) => {
+        match (genericTypeShape(receiverTypeName)) {
+          some(generic) => {
+            if (
+              generic.base == "Array"
+              && generic.arguments.length == 1
+            ) return Option.some(generic.arguments[0].copyBytes(
+              0,
+              generic.arguments[0].byteLength
+            ));
+          }
+          none => {}
+        }
+        if (
+          stringStartsWith(receiverTypeName, "__z_Array_")
+          && receiverTypeName.byteLength > 10
+        ) return Option.some(receiverTypeName.copyBytes(
+          10,
+          receiverTypeName.byteLength
+        ));
+      }
+      none => {}
+    }
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.memberExpression
     && tree.nodes[index].children.length == 1
   ) {
@@ -2167,6 +2214,94 @@ function staticallyResolvedExpressionTypeName(
       evidence,
       arena,
       ownerName,
+      tree,
+      receiver
+    )) {
+      some(ownerTypeName) => return fieldTypeNameForOwner(
+        program,
+        importedTypes,
+        ownerTypeName,
+        fieldName
+      );
+      none => {}
+    }
+  }
+  return Option<String>.none;
+}
+
+function evidenceResolvedExpressionTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => {
+      if (
+        tree.nodes[index].kind != ExpressionKind.memberExpression
+        || name != tree.nodes[index].value
+      ) return Option.some(move name);
+    }
+    none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    const name = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    const offset = tree.nodes[index].offset;
+    return namedValueTypeName(program, evidence, "", name, offset);
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.indexExpression
+    && tree.nodes[index].children.length == 2
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiver
+    )) {
+      some(receiverTypeName) => {
+        match (genericTypeShape(receiverTypeName)) {
+          some(generic) => {
+            if (
+              generic.base == "Array"
+              && generic.arguments.length == 1
+            ) return Option.some(generic.arguments[0].copyBytes(
+              0,
+              generic.arguments[0].byteLength
+            ));
+          }
+          none => {}
+        }
+        if (
+          stringStartsWith(receiverTypeName, "__z_Array_")
+          && receiverTypeName.byteLength > 10
+        ) return Option.some(receiverTypeName.copyBytes(
+          10,
+          receiverTypeName.byteLength
+        ));
+      }
+      none => {}
+    }
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    const fieldName = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
       tree,
       receiver
     )) {
@@ -3182,9 +3317,13 @@ function lowerExpression(
       throw "native lowering received a malformed index expression";
     }
     const receiverInput = tree.nodes[index].children[0];
-    const receiverTypeName = match (
-      resolvedExpressionTypeName(evidence, tree, receiverInput)
-    ) {
+    const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput
+    )) {
       some(name) => name;
       none => throw `native lowering could not resolve indexed storage at ${tree.nodes[receiverInput].line}:${tree.nodes[receiverInput].column}`;
     };
@@ -3514,10 +3653,6 @@ function matchSubjectTypeName(
     index
   )) {
     some(name) => return Option.some(move name);
-    none => {}
-  }
-  match (resolvedExpressionTypeName(evidence, tree, index)) {
-    some(name) => return Option.some(name);
     none => {}
   }
   let subject = index;

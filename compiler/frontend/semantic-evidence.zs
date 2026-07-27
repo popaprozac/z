@@ -198,7 +198,11 @@ export function recordExpressionResolution(
 ): void {
   if (typeName.byteLength == 0 || typeName == "__z_never") return;
   for (const existing of evidence.expressionResolutions) {
-    if (existing.offset == tree.nodes[index].offset) return;
+    if (
+      existing.offset == tree.nodes[index].offset
+      && existing.line == tree.nodes[index].line
+      && existing.column == tree.nodes[index].column
+    ) return;
   }
   let typeIdentities = Array<ModuleTypeIdentity>();
   collectTypeIdentities(

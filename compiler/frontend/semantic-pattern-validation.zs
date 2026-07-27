@@ -17,12 +17,14 @@ import {
   isNumericTypeName,
 } from "./semantic-type-shapes.zs";
 import {
+  ModuleSemanticEvidence,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSymbolKind,
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
+import { recordBindingResolution } from "./semantic-evidence.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { ExpressionTree } from "./parser.zs";
 
@@ -117,7 +119,8 @@ export function addMatchArmValueBindings(
   armIndex: usize,
   in variant: NativeMatchVariant,
   borrowedMatch: boolean,
-  inout bindings: Array<NativeValueBinding>
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
   let patternKind = "none";
   if (tree.nodes[armIndex].labels.length > 0) {
@@ -159,6 +162,24 @@ export function addMatchArmValueBindings(
         variant.payloadType
       );
     }
+    const bindingOffset = tree.nodes[patterns[0]].offset;
+    const bindingLine = tree.nodes[patterns[0]].line;
+    const bindingColumn = tree.nodes[patterns[0]].column;
+    const bindingName = tree.nodes[patterns[0]].value.copyBytes(
+      0,
+      tree.nodes[patterns[0]].value.byteLength
+    );
+    recordBindingResolution(
+      modules,
+      moduleIndex,
+      bindingOffset,
+      bindingLine,
+      bindingColumn,
+      bindingName,
+      false,
+      variant.payloadType,
+      inout evidence
+    );
     return;
   }
   if (patternKind != "object") return;
@@ -230,6 +251,24 @@ export function addMatchArmValueBindings(
           fieldType
         );
       }
+      const bindingOffset = tree.nodes[fieldChildren[0]].offset;
+      const bindingLine = tree.nodes[fieldChildren[0]].line;
+      const bindingColumn = tree.nodes[fieldChildren[0]].column;
+      const bindingName = tree.nodes[fieldChildren[0]].value.copyBytes(
+        0,
+        tree.nodes[fieldChildren[0]].value.byteLength
+      );
+      recordBindingResolution(
+        modules,
+        moduleIndex,
+        bindingOffset,
+        bindingLine,
+        bindingColumn,
+        bindingName,
+        false,
+        fieldType,
+        inout evidence
+      );
     }
   }
 }

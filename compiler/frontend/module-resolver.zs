@@ -666,7 +666,8 @@ function inferMatchExpressionNodeType(
       armIndex,
       shape.variants[variantIndex],
       borrowedMatch,
-      inout armBindings
+      inout armBindings,
+      inout evidence
     );
     const statements = copyIndices(tree.nodes[armIndex].statements);
     let armType = "";

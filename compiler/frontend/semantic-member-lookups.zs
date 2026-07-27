@@ -4,6 +4,7 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  inferredTypeSymbolLocation,
   rebaseTypeName,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
@@ -117,7 +118,7 @@ export function matchShape(
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, subjectType)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, subjectType)) {
     some(location) => {
       if (
         modules[location.moduleIndex].symbols[location.symbolIndex].kind
@@ -196,7 +197,7 @@ export function aggregateFieldShape(
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
         some(signature) => {
@@ -252,7 +253,7 @@ export function activeOwnerMatches(
 ): boolean {
   const ownerType = valueBindingType(bindings, "__z_native_owner_type");
   if (ownerType.byteLength == 0) return false;
-  return match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => location.moduleIndex == field.ownerModuleIndex
       && location.symbolIndex == field.ownerSymbolIndex;
     none => false;
@@ -264,7 +265,7 @@ export function aggregateConstructionShape(
   moduleIndex: usize,
   in typeName: String
 ): Option<NativeAggregateConstructionShape> {
-  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
         some(signature) => {
@@ -389,7 +390,7 @@ export function methodCallShape(
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => {
       match (
         in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
@@ -549,7 +550,7 @@ export function activeOwnerMatchesMethod(
 ): boolean {
   const ownerType = valueBindingType(bindings, "__z_native_owner_type");
   if (ownerType.byteLength == 0) return false;
-  return match (typeSymbolLocation(modules, moduleIndex, ownerType)) {
+  return match (inferredTypeSymbolLocation(modules, moduleIndex, ownerType)) {
     some(location) => location.moduleIndex == method.ownerModuleIndex
       && location.symbolIndex == method.ownerSymbolIndex;
     none => false;
@@ -625,7 +626,7 @@ export function hasKnownAggregate(
   moduleIndex: usize,
   in typeName: String
 ): boolean {
-  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
       return kind == ModuleSymbolKind.structSymbol || kind == ModuleSymbolKind.classSymbol;
