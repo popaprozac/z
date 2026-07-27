@@ -143,62 +143,6 @@ function appendTarget(inout output: TextBuffer, in target: Option<usize>): void 
   }
 }
 
-function appendFunctionSignature(
-  inout output: TextBuffer,
-  moduleIndex: usize,
-  symbolIndex: usize,
-  in symbol: ModuleSymbol
-): void {
-  match (in symbol.functionSignature) {
-    some(signature) => {
-      output.append("signature");
-      output.appendAscii(9);
-      appendHexUsize(inout output, moduleIndex);
-      output.appendAscii(9);
-      appendHexUsize(inout output, symbolIndex);
-      output.appendAscii(9);
-      if (signature.asynchronous) output.appendAscii(49);
-      else output.appendAscii(48);
-      output.appendAscii(9);
-      appendHexText(inout output, signature.returnType);
-      output.appendAscii(9);
-      appendHexText(inout output, signature.errorType);
-      output.appendAscii(9);
-      appendHexText(inout output, signature.executorAffinity);
-      output.appendAscii(9);
-      appendHexUsize(inout output, signature.typeParameters.length);
-      output.appendAscii(9);
-      appendHexUsize(inout output, signature.parameterTypes.length);
-      for (const typeParameter of signature.typeParameters) {
-        output.appendAscii(9);
-        appendHexText(inout output, typeParameter);
-      }
-      let parameterIndex: usize = 0;
-      while (parameterIndex < signature.parameterTypes.length) {
-        output.appendAscii(9);
-        appendHexText(inout output, signature.parameterModes[parameterIndex]);
-        output.appendAscii(9);
-        appendHexText(inout output, signature.parameterTypes[parameterIndex]);
-        parameterIndex = parameterIndex + 1;
-      }
-      output.appendAscii(10);
-      for (const constraint of signature.typeParameterConstraints) {
-        output.append("functionConstraint");
-        output.appendAscii(9);
-        appendHexUsize(inout output, moduleIndex);
-        output.appendAscii(9);
-        appendHexUsize(inout output, symbolIndex);
-        output.appendAscii(9);
-        appendHexText(inout output, constraint.parameter);
-        output.appendAscii(9);
-        appendHexText(inout output, constraint.traitName);
-        output.appendAscii(10);
-      }
-    }
-    none => {}
-  }
-}
-
 function appendTypeSignature(
   inout output: TextBuffer,
   moduleIndex: usize,
@@ -537,7 +481,6 @@ export function renderModuleGraph(
       + module.semanticEvidence.expressionResolutions.length;
     let symbolIndex: usize = 0;
     for (const symbol of module.symbols) {
-      appendFunctionSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendTypeSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendConstructorSignature(inout output, moduleIndex, symbolIndex, symbol);
       appendMethodSignatures(inout output, moduleIndex, symbolIndex, symbol);

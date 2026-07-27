@@ -42,6 +42,13 @@ function stage1SymbolTarget(in symbol: ModuleSymbol): usize {
   };
 }
 
+function stage1SymbolHasFunctionSignature(in symbol: ModuleSymbol): boolean {
+  return match (in symbol.functionSignature) {
+    some(_) => true;
+    none => false;
+  };
+}
+
 function stage1Parse(in path: String, in source: String): String {
   const outcome = attempt renderProgram(path, source);
   return match (outcome) {

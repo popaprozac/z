@@ -695,8 +695,10 @@ When focused self-hosting work resumes, use this order:
    ownership for the resolved graph. Topology records and `symbol` records have
    been removed from the stream; one bulk fixed-width query carries symbol
    identity, kind, export/import relationships, targets, and source locations.
-   Move callable/type signatures next, followed by semantic evidence, preserving
-   canonical module-local source locations and the guarded Stage-0 fallback.
+   Top-level function signatures and constraints are also structural. Move
+   aggregate type signatures, constructors, and methods next, followed by
+   semantic evidence, preserving canonical module-local source locations and
+   the guarded Stage-0 fallback.
    Measure cold library preparation, warm native work, compatibility/handoff
    cost, and Stage-0 parity separately.
 4. Finish the native semantic subset required to compile the compiler itself.

@@ -28,9 +28,24 @@ export type NativeFrontendSymbolStructure = {
   readonly exported: boolean;
   readonly targetModule: number | null;
   readonly importedName: string;
+  readonly functionSignature: NativeFrontendFunctionSignatureStructure | null;
   readonly offset: number;
   readonly line: number;
   readonly column: number;
+};
+
+export type NativeFrontendFunctionSignatureStructure = {
+  readonly asynchronous: boolean;
+  readonly executorAffinity: string | null;
+  readonly typeParameters: readonly string[];
+  readonly typeParameterConstraints: readonly {
+    readonly parameter: string;
+    readonly traitName: string;
+  }[];
+  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
+  readonly parameterTypes: readonly string[];
+  readonly returnType: string;
+  readonly errorType: string | null;
 };
 
 export type NativeFrontendGraphStructure = {
@@ -122,6 +137,14 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_function_signature_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_function_signature_item_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_call_resolution_count: {
       args: [FFIType.ptr],
       returns: FFIType.u64,
@@ -159,6 +182,14 @@ export function resolveWithNativeFrontendLibrary(
       returns: FFIType.u64,
     },
     z_stage1_resolve_copy_symbol_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_function_signature_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_function_signature_item_records: {
       args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
       returns: FFIType.u64,
     },
@@ -337,11 +368,219 @@ export function resolveWithNativeFrontendLibrary(
               importedNameLength,
               "imported symbol name",
             ),
+            functionSignature: null,
             offset: field(8, "offset"),
             line: field(9, "line"),
             column: field(10, "column"),
           });
           recordIndex += 1;
+        }
+      }
+      const functionSignatureCount = nativeUsize(
+        library.symbols.z_stage1_resolve_function_signature_count(responsePointer),
+        "function-signature count",
+      );
+      const functionSignatureItemCount = nativeUsize(
+        library.symbols.z_stage1_resolve_function_signature_item_count(responsePointer),
+        "function-signature item count",
+      );
+      const signatureRecordWidth = 12 * 8;
+      const signatureRecords = Buffer.alloc(
+        Math.max(1, functionSignatureCount * signatureRecordWidth),
+      );
+      const writtenSignatures = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_function_signature_records(
+          responsePointer,
+          ptr(signatureRecords),
+          functionSignatureCount,
+        ),
+        "written function-signature count",
+      );
+      if (writtenSignatures !== functionSignatureCount) {
+        throw new Error("the native frontend returned an incomplete function-signature batch");
+      }
+      type SignatureExpectation = {
+        readonly signature: {
+          typeParameters: string[];
+          typeParameterConstraints: {
+            parameter: string;
+            traitName: string;
+          }[];
+          parameterModes: ("value" | "in" | "inout" | "out")[];
+          parameterTypes: string[];
+        };
+        readonly typeParameterCount: number;
+        readonly parameterCount: number;
+        readonly constraintCount: number;
+        typeParametersWritten: number;
+        parametersWritten: number;
+        constraintsWritten: number;
+      };
+      const signatureExpectations = new Map<string, SignatureExpectation>();
+      let expectedSignatureItemCount = 0;
+      for (
+        let signatureIndex = 0;
+        signatureIndex < functionSignatureCount;
+        signatureIndex += 1
+      ) {
+        const recordOffset = signatureIndex * signatureRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          signatureRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `function signature ${signatureIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const symbol = modules[moduleIndex]?.symbols[symbolIndex];
+        if (!symbol || symbol.kind !== "function" || symbol.functionSignature !== null) {
+          throw new Error("the native frontend returned a function signature for an invalid symbol");
+        }
+        const asynchronous = field(2, "async state");
+        if (asynchronous > 1) {
+          throw new Error("the native frontend returned an invalid function async state");
+        }
+        const returnType = nativeString(
+          field(3, "return-type pointer"),
+          field(4, "return-type length"),
+          "function return type",
+        );
+        const errorType = nativeString(
+          field(5, "error-type pointer"),
+          field(6, "error-type length"),
+          "function error type",
+        );
+        const executorAffinity = nativeString(
+          field(7, "executor-affinity pointer"),
+          field(8, "executor-affinity length"),
+          "function executor affinity",
+        );
+        const typeParameterCount = field(9, "type-parameter count");
+        const parameterCount = field(10, "parameter count");
+        const constraintCount = field(11, "constraint count");
+        const signature = {
+          asynchronous: asynchronous === 1,
+          executorAffinity: executorAffinity.length === 0 ? null : executorAffinity,
+          typeParameters: new Array<string>(typeParameterCount),
+          typeParameterConstraints: new Array<{
+            parameter: string;
+            traitName: string;
+          }>(constraintCount),
+          parameterModes: new Array<"value" | "in" | "inout" | "out">(parameterCount),
+          parameterTypes: new Array<string>(parameterCount),
+          returnType,
+          errorType: errorType.length === 0 ? null : errorType,
+        };
+        (symbol as {
+          functionSignature: NativeFrontendFunctionSignatureStructure | null;
+        }).functionSignature = signature;
+        const key = `${moduleIndex}:${symbolIndex}`;
+        if (signatureExpectations.has(key)) {
+          throw new Error("the native frontend returned duplicate function signatures");
+        }
+        signatureExpectations.set(key, {
+          signature,
+          typeParameterCount,
+          parameterCount,
+          constraintCount,
+          typeParametersWritten: 0,
+          parametersWritten: 0,
+          constraintsWritten: 0,
+        });
+        expectedSignatureItemCount += typeParameterCount + parameterCount + constraintCount;
+      }
+      if (expectedSignatureItemCount !== functionSignatureItemCount) {
+        throw new Error("the native frontend function-signature item counts do not match");
+      }
+      const signatureItemRecordWidth = 8 * 8;
+      const signatureItemRecords = Buffer.alloc(
+        Math.max(1, functionSignatureItemCount * signatureItemRecordWidth),
+      );
+      const writtenSignatureItems = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_function_signature_item_records(
+          responsePointer,
+          ptr(signatureItemRecords),
+          functionSignatureItemCount,
+        ),
+        "written function-signature item count",
+      );
+      if (writtenSignatureItems !== functionSignatureItemCount) {
+        throw new Error("the native frontend returned an incomplete function-signature item batch");
+      }
+      for (
+        let itemRecordIndex = 0;
+        itemRecordIndex < functionSignatureItemCount;
+        itemRecordIndex += 1
+      ) {
+        const recordOffset = itemRecordIndex * signatureItemRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          signatureItemRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `function signature item ${itemRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const symbolIndex = field(1, "symbol index");
+        const kind = field(2, "kind");
+        const itemIndex = field(3, "index");
+        const first = nativeString(
+          field(4, "first pointer"),
+          field(5, "first length"),
+          "function-signature item",
+        );
+        const second = nativeString(
+          field(6, "second pointer"),
+          field(7, "second length"),
+          "function-signature item",
+        );
+        const expectation = signatureExpectations.get(`${moduleIndex}:${symbolIndex}`);
+        if (!expectation) {
+          throw new Error("the native frontend returned an item without a function signature");
+        }
+        if (kind === 0) {
+          if (
+            itemIndex >= expectation.typeParameterCount
+            || itemIndex in expectation.signature.typeParameters
+            || second.length !== 0
+          ) {
+            throw new Error("the native frontend returned an invalid function type parameter");
+          }
+          expectation.signature.typeParameters[itemIndex] = first;
+          expectation.typeParametersWritten += 1;
+          continue;
+        }
+        if (kind === 1) {
+          if (
+            itemIndex >= expectation.parameterCount
+            || itemIndex in expectation.signature.parameterModes
+            || !isNativeParameterMode(first)
+          ) {
+            throw new Error("the native frontend returned an invalid function parameter");
+          }
+          expectation.signature.parameterModes[itemIndex] = first;
+          expectation.signature.parameterTypes[itemIndex] = second;
+          expectation.parametersWritten += 1;
+          continue;
+        }
+        if (kind === 2) {
+          if (
+            itemIndex >= expectation.constraintCount
+            || itemIndex in expectation.signature.typeParameterConstraints
+          ) {
+            throw new Error("the native frontend returned an invalid function constraint");
+          }
+          expectation.signature.typeParameterConstraints[itemIndex] = {
+            parameter: first,
+            traitName: second,
+          };
+          expectation.constraintsWritten += 1;
+          continue;
+        }
+        throw new Error(`the native frontend returned invalid function-signature item kind ${kind}`);
+      }
+      for (const expectation of signatureExpectations.values()) {
+        if (
+          expectation.typeParametersWritten !== expectation.typeParameterCount
+          || expectation.parametersWritten !== expectation.parameterCount
+          || expectation.constraintsWritten !== expectation.constraintCount
+        ) {
+          throw new Error("the native frontend returned a sparse function signature");
         }
       }
       return {
@@ -358,10 +597,8 @@ export function resolveWithNativeFrontendLibrary(
 }
 
 function nativeString(pointer: number, length: number, description: string): string {
-  if (pointer === 0) {
-    if (length === 0) return "";
-    throw new Error(`the native frontend returned a null ${description}`);
-  }
+  if (length === 0) return "";
+  if (pointer === 0) throw new Error(`the native frontend returned a null ${description}`);
   return new CString(pointer, 0, length).toString();
 }
 
@@ -379,6 +616,12 @@ function nativeSymbolKind(code: number): NativeFrontendSymbolStructure["kind"] {
   const kind = kinds[code];
   if (!kind) throw new Error(`the native frontend returned invalid symbol kind ${code}`);
   return kind;
+}
+
+function isNativeParameterMode(
+  value: string,
+): value is "value" | "in" | "inout" | "out" {
+  return value === "value" || value === "in" || value === "inout" || value === "out";
 }
 
 function nativeUsize(value: number | bigint, description: string): number {

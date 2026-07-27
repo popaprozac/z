@@ -10060,6 +10060,16 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
           exported: true,
           targetModule: null,
           importedName: "",
+          functionSignature: {
+            asynchronous: true,
+            executorAffinity: "thread.main",
+            typeParameters: ["T"],
+            typeParameterConstraints: [{ parameter: "T", traitName: "Named" }],
+            parameterModes: ["in"],
+            parameterTypes: ["T"],
+            returnType: "T",
+            errorType: "LookupError",
+          },
           offset: 0,
           line: 1,
           column: 1,
@@ -10094,6 +10104,16 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     ],
   );
   assert.deepEqual(structuralTopology.dependencyOrder, [0, 1]);
+  assert.deepEqual(structuralTopology.modules[0].symbols[0].functionSignature, {
+    asynchronous: true,
+    executorAffinity: "thread.main",
+    typeParameters: ["T"],
+    typeParameterConstraints: [{ parameter: "T", traitName: "Named" }],
+    parameterModes: ["in"],
+    parameterTypes: ["T"],
+    returnType: "T",
+    errorType: "LookupError",
+  });
   assert.deepEqual(structuralTopology.modules[1].symbols[0], {
     name: "renamed",
     kind: "imported",

@@ -207,6 +207,7 @@ export type Stage1ModuleGraphStructure = {
       readonly exported: boolean;
       readonly targetModule: number | null;
       readonly importedName: string;
+      readonly functionSignature?: Stage1ModuleFunctionSignature | null;
       readonly offset: number;
       readonly line: number;
       readonly column: number;
@@ -248,7 +249,19 @@ export function decodeStage1ModuleGraphStream(
           exported: symbol.exported,
           targetModule: symbol.targetModule,
           importedName: symbol.importedName,
-          functionSignature: null,
+          functionSignature: symbol.functionSignature
+            ? {
+                asynchronous: symbol.functionSignature.asynchronous,
+                executorAffinity: symbol.functionSignature.executorAffinity,
+                typeParameters: [...symbol.functionSignature.typeParameters],
+                typeParameterConstraints: symbol.functionSignature.typeParameterConstraints
+                  .map((constraint) => ({ ...constraint })),
+                parameterModes: [...symbol.functionSignature.parameterModes],
+                parameterTypes: [...symbol.functionSignature.parameterTypes],
+                returnType: symbol.functionSignature.returnType,
+                errorType: symbol.functionSignature.errorType,
+              }
+            : null,
           typeSignature: null,
           location: {
             offset: symbol.offset,

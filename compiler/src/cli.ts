@@ -1525,6 +1525,32 @@ typedef struct {
   uint64_t column;
 } Z_Stage1SymbolRecord;
 
+typedef struct {
+  uint64_t module_index;
+  uint64_t symbol_index;
+  uint64_t asynchronous;
+  uint64_t return_type_data;
+  uint64_t return_type_length;
+  uint64_t error_type_data;
+  uint64_t error_type_length;
+  uint64_t executor_affinity_data;
+  uint64_t executor_affinity_length;
+  uint64_t type_parameter_count;
+  uint64_t parameter_count;
+  uint64_t constraint_count;
+} Z_Stage1FunctionSignatureRecord;
+
+typedef struct {
+  uint64_t module_index;
+  uint64_t symbol_index;
+  uint64_t kind;
+  uint64_t index;
+  uint64_t first_data;
+  uint64_t first_length;
+  uint64_t second_data;
+  uint64_t second_length;
+} Z_Stage1FunctionSignatureItemRecord;
+
 Z_STAGE1_EXPORT void *z_stage1_parse(
   const uint8_t *path_data,
   uintptr_t path_length,
@@ -1578,6 +1604,67 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_order_count(const void *po
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_symbol_count(const void *pointer) {
   return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.symbolCount;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_function_signature_count(
+  const void *pointer
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t count = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t symbol_index = 0;
+      symbol_index
+        < response->result.graph.resolved.modules.data[module_index].symbols.length;
+      symbol_index += 1
+    ) {
+      if (stage1SymbolHasFunctionSignature(
+        &response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+      )) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_function_signature_item_count(
+  const void *pointer
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t count = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t symbol_index = 0;
+      symbol_index
+        < response->result.graph.resolved.modules.data[module_index].symbols.length;
+      symbol_index += 1
+    ) {
+      if (!stage1SymbolHasFunctionSignature(
+        &response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+      )) {
+        continue;
+      }
+      count += response->result.graph.resolved.modules.data[module_index]
+        .symbols.data[symbol_index].functionSignature.data.some.typeParameters.length;
+      count += response->result.graph.resolved.modules.data[module_index]
+        .symbols.data[symbol_index].functionSignature.data.some.parameterTypes.length;
+      count += response->result.graph.resolved.modules.data[module_index]
+        .symbols.data[symbol_index].functionSignature.data.some
+        .typeParameterConstraints.length;
+    }
+  }
+  return count;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_call_resolution_count(const void *pointer) {
@@ -1701,6 +1788,181 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_symbol_records(
           .modules.data[module_index].symbols.data[symbol_offset].column,
       };
       written += 1;
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_function_signature_records(
+  const void *pointer,
+  Z_Stage1FunctionSignatureRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t symbol_index = 0;
+      symbol_index
+        < response->result.graph.resolved.modules.data[module_index].symbols.length;
+      symbol_index += 1
+    ) {
+      if (!stage1SymbolHasFunctionSignature(
+        &response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+      )) {
+        continue;
+      }
+      if (written >= capacity) return written;
+      records[written] = (Z_Stage1FunctionSignatureRecord){
+        .module_index = (uint64_t)module_index,
+        .symbol_index = (uint64_t)symbol_index,
+        .asynchronous = response->result.graph.resolved.modules.data[module_index]
+          .symbols.data[symbol_index].functionSignature.data.some.asynchronous ? 1 : 0,
+        .return_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.returnType.data,
+        .return_type_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.returnType.length,
+        .error_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.errorType.data,
+        .error_type_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.errorType.length,
+        .executor_affinity_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.executorAffinity.data,
+        .executor_affinity_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.executorAffinity.length,
+        .type_parameter_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.typeParameters.length,
+        .parameter_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.parameterTypes.length,
+        .constraint_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .functionSignature.data.some.typeParameterConstraints.length,
+      };
+      written += 1;
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_function_signature_item_records(
+  const void *pointer,
+  Z_Stage1FunctionSignatureItemRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t symbol_index = 0;
+      symbol_index
+        < response->result.graph.resolved.modules.data[module_index].symbols.length;
+      symbol_index += 1
+    ) {
+      if (!stage1SymbolHasFunctionSignature(
+        &response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+      )) {
+        continue;
+      }
+      for (
+        uintptr_t item_index = 0;
+        item_index < response->result.graph.resolved.modules.data[module_index]
+          .symbols.data[symbol_index].functionSignature.data.some.typeParameters.length;
+        item_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1FunctionSignatureItemRecord){
+          .module_index = (uint64_t)module_index,
+          .symbol_index = (uint64_t)symbol_index,
+          .kind = 0,
+          .index = (uint64_t)item_index,
+          .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameters.data[item_index].data,
+          .first_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameters.data[item_index].length,
+          .second_data = 0,
+          .second_length = 0,
+        };
+        written += 1;
+      }
+      for (
+        uintptr_t item_index = 0;
+        item_index < response->result.graph.resolved.modules.data[module_index]
+          .symbols.data[symbol_index].functionSignature.data.some.parameterTypes.length;
+        item_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1FunctionSignatureItemRecord){
+          .module_index = (uint64_t)module_index,
+          .symbol_index = (uint64_t)symbol_index,
+          .kind = 1,
+          .index = (uint64_t)item_index,
+          .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.parameterModes.data[item_index].data,
+          .first_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.parameterModes.data[item_index].length,
+          .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.parameterTypes.data[item_index].data,
+          .second_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.parameterTypes.data[item_index].length,
+        };
+        written += 1;
+      }
+      for (
+        uintptr_t item_index = 0;
+        item_index < response->result.graph.resolved.modules.data[module_index]
+          .symbols.data[symbol_index].functionSignature.data.some
+          .typeParameterConstraints.length;
+        item_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1FunctionSignatureItemRecord){
+          .module_index = (uint64_t)module_index,
+          .symbol_index = (uint64_t)symbol_index,
+          .kind = 2,
+          .index = (uint64_t)item_index,
+          .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameterConstraints
+            .data[item_index].parameter.data,
+          .first_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameterConstraints
+            .data[item_index].parameter.length,
+          .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameterConstraints
+            .data[item_index].traitName.data,
+          .second_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .functionSignature.data.some.typeParameterConstraints
+            .data[item_index].traitName.length,
+        };
+        written += 1;
+      }
     }
   }
   return written;

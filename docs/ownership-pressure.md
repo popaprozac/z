@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,581 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,531 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -391,7 +391,7 @@ The 2026-07-26 decomposition checkpoint contains 15,581 lines of Z:
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
 | `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
-| protocol/library modules | 835 | structural response handle, structural symbol projection, narrowed compatibility stream, and in-process entry points |
+| protocol/library modules | 785 | structural response handle, structural symbol/signature projection, narrowed compatibility stream, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-five-module frontend graph and currently produces parity evidence for
@@ -399,17 +399,19 @@ own twenty-five-module frontend graph and currently produces parity evidence for
 3,427 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the structural-symbol slice, native lexing, parsing, resolution,
-semantic analysis, encoding, and response-handle creation took approximately
-159 ms; decoding the remaining compatibility stream took another 7 ms. One bulk
-fixed-width fill now carries all 832 symbol identities, kinds, export states,
-imported names, local targets, and source locations. The strings remain borrowed
-from the owned graph handle until the host releases it, avoiding thousands of
-per-field FFI calls while making that lifetime contract meaningful. A controlled
-side-by-side benchmark found no whole-process regression from the preceding
-structural-topology checkpoint. These are checkpoint figures, not a
-TypeScript-versus-Z speed claim: the two frontends do not yet perform identical
-work and structural queries have not yet replaced callable/type signatures or
+run after the structural-function-signature slice, native lexing, parsing,
+resolution, semantic analysis, encoding, and response-handle creation took
+approximately 167 ms; decoding the remaining compatibility stream took another
+6 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
+states, imported names, local targets, and source locations. Two more bulk
+batches carry top-level function signature bases and their flattened generic,
+constraint, and parameter items. The strings remain borrowed from the owned
+graph handle until the host releases it, avoiding per-field FFI calls while
+making that lifetime contract meaningful. The corresponding whole-process
+samples were 236.6 ms for Stage 1, 248.8 ms for Stage 0, and 1.045 s for the
+hybrid parity path. These are checkpoint figures, not a TypeScript-versus-Z
+speed claim: the two frontends do not yet perform identical work and structural
+queries have not yet replaced aggregate, constructor, method, or
 semantic-evidence records.
 
 What the compiler proves:
