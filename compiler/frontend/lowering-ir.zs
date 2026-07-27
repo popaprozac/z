@@ -47,6 +47,7 @@ export struct LoweredEnum {
   name: String;
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
+  needsDeinit: boolean;
 }
 
 export struct LoweredVariant {
@@ -195,12 +196,42 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
   throw `native lowering does not support type ${type.name} yet`;
 }
 
+function enumNeedsCleanup(
+  in program: Program,
+  index: usize,
+  depth: usize
+): boolean {
+  if (depth > program.aggregates.length + program.enums.length) return false;
+  for (const variant of program.enums[index].variants) {
+    match (in variant.payload) {
+      some(payload) => {
+        match (structIndex(program, payload.name)) {
+          some(aggregateIndex) => {
+            if (aggregateNeedsCleanup(program, aggregateIndex, depth + 1)) {
+              return true;
+            }
+          }
+          none => {}
+        }
+        match (enumIndex(program, payload.name)) {
+          some(enumPosition) => {
+            if (enumNeedsCleanup(program, enumPosition, depth + 1)) return true;
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
 function aggregateNeedsCleanup(
   in program: Program,
   index: usize,
   depth: usize
 ): boolean {
-  if (depth > program.aggregates.length) return false;
+  if (depth > program.aggregates.length + program.enums.length) return false;
   match (in program.aggregates[index].deinitializer) {
     some(_) => return true;
     none => {}
@@ -212,16 +243,30 @@ function aggregateNeedsCleanup(
       }
       none => {}
     }
+    match (enumIndex(program, field.type.name)) {
+      some(fieldIndex) => {
+        if (enumNeedsCleanup(program, fieldIndex, depth + 1)) return true;
+      }
+      none => {}
+    }
   }
   return false;
 }
 
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
-  if (type.kind != LoweredTypeKind.structType) return false;
-  match (structIndex(program, type.name)) {
-    some(index) => return aggregateNeedsCleanup(program, index, 0);
-    none => return false;
+  if (type.kind == LoweredTypeKind.structType) {
+    match (structIndex(program, type.name)) {
+      some(index) => return aggregateNeedsCleanup(program, index, 0);
+      none => return false;
+    }
   }
+  if (type.kind == LoweredTypeKind.enumType) {
+    match (enumIndex(program, type.name)) {
+      some(index) => return enumNeedsCleanup(program, index, 0);
+      none => return false;
+    }
+  }
+  return false;
 }
 
 function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
@@ -1299,12 +1344,6 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
       match (in variant.payload) {
         some(type) => {
           const lowered = try lowerType(program, type);
-          if (
-            lowered.kind == LoweredTypeKind.structType
-            || lowered.kind == LoweredTypeKind.enumType
-          ) {
-            throw `native lowering does not support cleanup-capable payload enum ${declaration.name} yet`;
-          }
           payload = Option.some(move lowered);
           payloadBearing = true;
         }
@@ -1315,10 +1354,15 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
         payload,
       }));
     }
+    const declarationIndex = match (enumIndex(program, declaration.name)) {
+      some(index) => index;
+      none => throw `native lowering lost enum ${declaration.name}`;
+    };
     enums.push(LoweredEnum({
       name: declaration.name.copyBytes(0, declaration.name.byteLength),
       variants,
       payloadBearing,
+      needsDeinit: enumNeedsCleanup(program, declarationIndex, 0),
     }));
   }
 

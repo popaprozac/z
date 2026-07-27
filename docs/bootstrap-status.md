@@ -692,8 +692,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    payload union and support payload construction and return transport.
    Exhaustive statement match over identifier subjects emits a typed switch,
    binds scalar payloads, and carries arm returns/locals through cleanup
-   planning. Match expressions, arbitrary subjects, aggregate/cleanup-bearing
-   payloads, and `Option`/`Result` representation remain the next enum tier.
+   planning. Cleanup-bearing payload enums now use dependency-ordered C
+   definitions and synthesize an active-variant deinitializer. An enum may own
+   a resource struct, a struct may own that enum, and reverse scope cleanup
+   reaches the active payload exactly once even when source declarations are
+   not dependency ordered. Consuming payload transfer through match, match
+   expressions, arbitrary subjects, and native `Option`/`Result`
+   representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

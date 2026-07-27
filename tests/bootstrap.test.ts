@@ -8283,6 +8283,42 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const payloadEnumExecution = spawnSync(payloadEnumExecutable, [], { encoding: "utf8" });
   assert.equal(payloadEnumExecution.status, 42, payloadEnumExecution.stderr);
 
+  const ownedEnumInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-owned-enum.zs",
+  );
+  const ownedEnumEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", ownedEnumInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(ownedEnumEmission.status, 0, ownedEnumEmission.stderr);
+  assert.match(
+    ownedEnumEmission.stdout,
+    /typedef struct Z_Resource \{[\s\S]*typedef enum Z_ResourceStateTag[\s\S]*typedef struct Z_Container \{/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /static void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{[\s\S]*case Z_ResourceStateTag_ready:[\s\S]*Z_Resource_deinit\(&self->payload\.ready\);/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /static void Z_Container_deinit\(Z_Container \*self\) \{[\s\S]*Z_ResourceState_deinit\(&self->state\);/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /observe\(void\).*?Z_Container_deinit\(&container\);\n  Z_ResourceState_deinit\(&state\);\n  return/s,
+  );
+  const ownedEnumExecutable = resolve(directory, "owned-enum");
+  const ownedEnumCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", ownedEnumExecutable],
+    { encoding: "utf8", input: ownedEnumEmission.stdout },
+  );
+  assert.equal(ownedEnumCompilation.status, 0, ownedEnumCompilation.stderr);
+  const ownedEnumExecution = spawnSync(ownedEnumExecutable, [], { encoding: "utf8" });
+  assert.equal(ownedEnumExecution.status, 42, ownedEnumExecution.stderr);
+
   const cleanupInput = resolve(projectRoot, "tests/fixtures/self-host-emit-cleanup.zs");
   const cleanupEmission = spawnSync(
     process.execPath,

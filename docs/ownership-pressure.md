@@ -642,23 +642,28 @@ evidence required before this tier broadens.
 The native emitter then begins the enum representation needed by errors without
 coupling both changes. Payload-free enums lower to nominal C enums with
 namespaced constants and retain their type through parameters, comparisons,
-returns, and value-struct fields. Cleanup-bearing payload variants still reject;
-they require recursive active-variant cleanup before `Option`, `Result`, or
-typed `throw` can honestly use them.
+returns, and value-struct fields.
 
 The first tagged representation is now executable for cleanup-free scalar
 payloads. A dedicated nominal tag plus C union carries payload constructors,
 payload-free cases, and returned enum values without erasing their Z type.
-Aggregate payloads remain rejected because accepting their layout before
-active-variant cleanup would reintroduce the shallow ownership bug the prior
-struct work just closed.
+Aggregate payloads landed only after active-variant cleanup. C definitions are
+dependency ordered across structs and enums, so an enum may own a resource
+declared later and a containing struct may in turn own that enum. A synthesized
+enum deinitializer switches on the nominal tag and destroys only the active
+payload; recursive struct cleanup then composes through that enum. The
+out-of-source-order executable probe destroys two resources through a direct
+enum local and a containing struct, exactly once each.
 
 Exhaustive statement match now makes that representation consumable. An
 identifier subject emits one typed switch; scalar payload arms bind the active
 union field and execute their lowered statement body. Cleanup planning walks
 the parser's arm-to-statement-arena links, so outer owners and branch locals
 clean on arm returns and fallthrough rather than bypassing ownership through a
-new control-flow form.
+new control-flow form. Consuming a cleanup-bearing payload still requires an
+explicit transfer plan for both the subject's live state and the arm binding;
+that remains the next match slice rather than silently copying an owner out of
+the union.
 
 What the compiler proves:
 

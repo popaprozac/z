@@ -295,7 +295,10 @@ function appendStatement(
       none => throw "native C emission received an untyped local";
     };
     const constStorage = match (in declaration.statements[index].type) {
-      some(storageType) => storageType.kind != LoweredTypeKind.structType;
+      some(storageType) => {
+        select storageType.kind != LoweredTypeKind.structType
+          && storageType.kind != LoweredTypeKind.enumType;
+      }
       none => false;
     };
     appendIndent(inout output, depth);
@@ -601,6 +604,228 @@ function loweredStructNeedsDeinit(
   return false;
 }
 
+function loweredEnumNeedsDeinit(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.enums) {
+    if (declaration.name == name) return declaration.needsDeinit;
+  }
+  return false;
+}
+
+function loweredTypeNeedsDeinit(
+  in program: LoweredProgram,
+  in type: LoweredType
+): boolean {
+  if (type.kind == LoweredTypeKind.structType) {
+    return loweredStructNeedsDeinit(program, type.name);
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    return loweredEnumNeedsDeinit(program, type.name);
+  }
+  return false;
+}
+
+function loweredStructIndex(
+  in program: LoweredProgram,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < program.structs.length) {
+    if (program.structs[index].name == name) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function loweredEnumIndex(
+  in program: LoweredProgram,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < program.enums.length) {
+    if (program.enums[index].name == name) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function appendEnumDefinition(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  index: usize,
+  inout structStates: Array<u8>,
+  inout enumStates: Array<u8>
+): void throws String {
+  if (enumStates[index] == 2) return;
+  if (enumStates[index] == 1) {
+    throw `native C emission found a by-value type cycle through ${program.enums[index].name}`;
+  }
+  enumStates[index] = 1;
+  for (const item of program.enums[index].variants) {
+    match (in item.payload) {
+      some(type) => {
+        match (loweredStructIndex(program, type.name)) {
+          some(dependency) => try appendStructDefinition(
+            inout output,
+            program,
+            dependency,
+            inout structStates,
+            inout enumStates
+          );
+          none => {}
+        }
+        match (loweredEnumIndex(program, type.name)) {
+          some(dependency) => try appendEnumDefinition(
+            inout output,
+            program,
+            dependency,
+            inout structStates,
+            inout enumStates
+          );
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
+  output.append("typedef enum Z_");
+  output.append(program.enums[index].name);
+  if (program.enums[index].payloadBearing) output.append("Tag");
+  output.append(" {\n");
+  let variant: usize = 0;
+  while (variant < program.enums[index].variants.length) {
+    output.append("  Z_");
+    output.append(program.enums[index].name);
+    if (program.enums[index].payloadBearing) output.append("Tag");
+    output.append("_");
+    output.append(program.enums[index].variants[variant].name);
+    if (variant + 1 < program.enums[index].variants.length) output.append(",");
+    output.append("\n");
+    variant = variant + 1;
+  }
+  output.append("} Z_");
+  output.append(program.enums[index].name);
+  if (program.enums[index].payloadBearing) output.append("Tag");
+  output.append(";\n\n");
+  if (program.enums[index].payloadBearing) {
+    output.append("typedef struct Z_");
+    output.append(program.enums[index].name);
+    output.append(" {\n  Z_");
+    output.append(program.enums[index].name);
+    output.append("Tag tag;\n  union {\n");
+    for (const item of program.enums[index].variants) {
+      match (in item.payload) {
+        some(type) => {
+          const payloadType = try cType(type);
+          output.append("    ");
+          output.append(payloadType);
+          output.append(" ");
+          output.append(item.name);
+          output.append(";\n");
+        }
+        none => {}
+      }
+    }
+    output.append("  } payload;\n} Z_");
+    output.append(program.enums[index].name);
+    output.append(";\n\n");
+  }
+  enumStates[index] = 2;
+}
+
+function appendStructDefinition(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  index: usize,
+  inout structStates: Array<u8>,
+  inout enumStates: Array<u8>
+): void throws String {
+  if (structStates[index] == 2) return;
+  if (structStates[index] == 1) {
+    throw `native C emission found a by-value type cycle through ${program.structs[index].name}`;
+  }
+  structStates[index] = 1;
+  for (const field of program.structs[index].fields) {
+    match (loweredStructIndex(program, field.type.name)) {
+      some(dependency) => try appendStructDefinition(
+        inout output,
+        program,
+        dependency,
+        inout structStates,
+        inout enumStates
+      );
+      none => {}
+    }
+    match (loweredEnumIndex(program, field.type.name)) {
+      some(dependency) => try appendEnumDefinition(
+        inout output,
+        program,
+        dependency,
+        inout structStates,
+        inout enumStates
+      );
+      none => {}
+    }
+  }
+  output.append("typedef struct Z_");
+  output.append(program.structs[index].name);
+  output.append(" {\n");
+  for (const field of program.structs[index].fields) {
+    const fieldType = try cType(field.type);
+    output.append("  ");
+    output.append(fieldType);
+    output.append(" ");
+    output.append(field.name);
+    output.append(";\n");
+  }
+  output.append("} Z_");
+  output.append(program.structs[index].name);
+  output.append(";\n\n");
+  structStates[index] = 2;
+}
+
+function appendTypeDefinitions(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  let structStates = Array<u8>();
+  let enumStates = Array<u8>();
+  let stateIndex: usize = 0;
+  while (stateIndex < program.structs.length) {
+    structStates.push(0);
+    stateIndex = stateIndex + 1;
+  }
+  stateIndex = 0;
+  while (stateIndex < program.enums.length) {
+    enumStates.push(0);
+    stateIndex = stateIndex + 1;
+  }
+  let enumIndex: usize = 0;
+  while (enumIndex < program.enums.length) {
+    try appendEnumDefinition(
+      inout output,
+      program,
+      enumIndex,
+      inout structStates,
+      inout enumStates
+    );
+    enumIndex = enumIndex + 1;
+  }
+  let structIndex: usize = 0;
+  while (structIndex < program.structs.length) {
+    try appendStructDefinition(
+      inout output,
+      program,
+      structIndex,
+      inout structStates,
+      inout enumStates
+    );
+    structIndex = structIndex + 1;
+  }
+}
+
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n\n");
@@ -624,66 +849,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (__builtin_sub_overflow(0, value, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
-  for (const declaration of program.enums) {
-    output.append("typedef enum Z_");
-    output.append(declaration.name);
-    if (declaration.payloadBearing) output.append("Tag");
-    output.append(" {\n");
-    let variant: usize = 0;
-    while (variant < declaration.variants.length) {
-      output.append("  Z_");
-      output.append(declaration.name);
-      if (declaration.payloadBearing) output.append("Tag");
-      output.append("_");
-      output.append(declaration.variants[variant].name);
-      if (variant + 1 < declaration.variants.length) output.append(",");
-      output.append("\n");
-      variant = variant + 1;
-    }
-    output.append("} Z_");
-    output.append(declaration.name);
-    if (declaration.payloadBearing) output.append("Tag");
-    output.append(";\n\n");
-    if (declaration.payloadBearing) {
-      output.append("typedef struct Z_");
-      output.append(declaration.name);
-      output.append(" {\n  Z_");
-      output.append(declaration.name);
-      output.append("Tag tag;\n  union {\n");
-      for (const item of declaration.variants) {
-        match (in item.payload) {
-          some(type) => {
-            const payloadType = try cType(type);
-            output.append("    ");
-            output.append(payloadType);
-            output.append(" ");
-            output.append(item.name);
-            output.append(";\n");
-          }
-          none => {}
-        }
-      }
-      output.append("  } payload;\n} Z_");
-      output.append(declaration.name);
-      output.append(";\n\n");
-    }
-  }
-  for (const aggregate of program.structs) {
-    output.append("typedef struct Z_");
-    output.append(aggregate.name);
-    output.append(" {\n");
-    for (const field of aggregate.fields) {
-      const fieldType = try cType(field.type);
-      output.append("  ");
-      output.append(fieldType);
-      output.append(" ");
-      output.append(field.name);
-      output.append(";\n");
-    }
-    output.append("} Z_");
-    output.append(aggregate.name);
-    output.append(";\n\n");
-  }
+  try appendTypeDefinitions(inout output, program);
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit) {
       output.append("static void Z_");
@@ -693,11 +859,49 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       output.append(" *self);\n");
     }
   }
+  for (const declaration of program.enums) {
+    if (declaration.needsDeinit) {
+      output.append("static void Z_");
+      output.append(declaration.name);
+      output.append("_deinit(Z_");
+      output.append(declaration.name);
+      output.append(" *self);\n");
+    }
+  }
   for (const declaration of program.functions) {
     try appendFunctionSignature(inout output, declaration);
     output.append(";\n");
   }
   output.append("\n");
+  for (const declaration of program.enums) {
+    if (declaration.needsDeinit) {
+      output.append("static void Z_");
+      output.append(declaration.name);
+      output.append("_deinit(Z_");
+      output.append(declaration.name);
+      output.append(" *self) {\n  switch (self->tag) {\n");
+      for (const variant of declaration.variants) {
+        output.append("    case Z_");
+        output.append(declaration.name);
+        output.append("Tag_");
+        output.append(variant.name);
+        output.append(":");
+        match (in variant.payload) {
+          some(type) => {
+            if (loweredTypeNeedsDeinit(program, type)) {
+              output.append("\n      Z_");
+              output.append(type.name);
+              output.append("_deinit(&self->payload.");
+              output.append(variant.name);
+              output.append(");\n      break;\n");
+            } else output.append(" break;\n");
+          }
+          none => output.append(" break;\n");
+        }
+      }
+      output.append("  }\n}\n\n");
+    }
+  }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit) {
       output.append("static void Z_");
@@ -721,10 +925,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       let fieldIndex = aggregate.fields.length;
       while (fieldIndex > 0) {
         fieldIndex = fieldIndex - 1;
-        if (
-          aggregate.fields[fieldIndex].type.kind == LoweredTypeKind.structType
-          && loweredStructNeedsDeinit(program, aggregate.fields[fieldIndex].type.name)
-        ) {
+        if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_");
           output.append(aggregate.fields[fieldIndex].type.name);
           output.append("_deinit(&self->");
