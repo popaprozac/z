@@ -213,11 +213,11 @@ function syntaxMovesName(in expression: ExpressionSyntax, in name: String): bool
   };
 }
 
-function functionMovesName(
-  in declaration: FunctionDeclaration,
+function arenaMovesName(
+  in arena: StatementArena,
   in name: String
 ): boolean {
-  for (const statement of declaration.body.nodes) {
+  for (const statement of arena.nodes) {
     match (in statement.expression) {
       some(expression) => {
         if (syntaxMovesName(expression, name)) return true;
@@ -234,8 +234,8 @@ function functionMovesName(
   return false;
 }
 
-function functionHasControlFlow(in declaration: FunctionDeclaration): boolean {
-  for (const statement of declaration.body.nodes) {
+function arenaHasControlFlow(in arena: StatementArena): boolean {
+  for (const statement of arena.nodes) {
     if (
       statement.kind == StatementKind.ifStatement
       || statement.kind == StatementKind.whileStatement
@@ -324,7 +324,8 @@ function attachReplacementCleanup(
 
 function planCleanupStatement(
   in program: Program,
-  in declaration: FunctionDeclaration,
+  in arena: StatementArena,
+  in ownerName: String,
   sourceIndex: usize,
   loweredIndex: usize,
   in live: Array<LoweredCleanup>,
@@ -332,62 +333,63 @@ function planCleanupStatement(
   insideLoop: boolean,
   in loopCleanups: Array<LoweredCleanup>
 ): void throws String {
-  if (declaration.body.nodes[sourceIndex].kind == StatementKind.returnStatement) {
+  if (arena.nodes[sourceIndex].kind == StatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
     return;
   }
-  if (declaration.body.nodes[sourceIndex].kind == StatementKind.blockStatement) {
+  if (arena.nodes[sourceIndex].kind == StatementKind.blockStatement) {
+    let sourceChildren = Array<usize>();
+    for (const child of arena.nodes[sourceIndex].children) {
+      sourceChildren.push(child);
+    }
     let loweredChildren = Array<usize>();
     for (const child of statements[loweredIndex].children) {
       loweredChildren.push(child);
     }
     const introduced = try planCleanupSequence(
       program,
-      declaration,
-      declaration.body.nodes[sourceIndex].children,
+      arena,
+      ownerName,
+      sourceChildren,
       loweredChildren,
       live,
       inout statements,
       insideLoop,
       loopCleanups
     );
-    if (
-      sequenceFallsThrough(
-        declaration.body,
-        declaration.body.nodes[sourceIndex].children
-      )
-    ) {
+    if (sequenceFallsThrough(arena, sourceChildren)) {
       appendStatementCleanupCopies(inout statements, loweredIndex, introduced);
     }
     return;
   }
   if (
-    declaration.body.nodes[sourceIndex].kind == StatementKind.breakStatement
-    || declaration.body.nodes[sourceIndex].kind == StatementKind.continueStatement
+    arena.nodes[sourceIndex].kind == StatementKind.breakStatement
+    || arena.nodes[sourceIndex].kind == StatementKind.continueStatement
   ) {
     appendStatementCleanupCopies(inout statements, loweredIndex, loopCleanups);
     return;
   }
   if (
-    declaration.body.nodes[sourceIndex].kind == StatementKind.ifStatement
-    || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement
+    arena.nodes[sourceIndex].kind == StatementKind.ifStatement
+    || arena.nodes[sourceIndex].kind == StatementKind.whileStatement
   ) {
     let childIndex: usize = 0;
-    while (childIndex < declaration.body.nodes[sourceIndex].children.length) {
-      const sourceChild = declaration.body.nodes[sourceIndex].children[childIndex];
+    while (childIndex < arena.nodes[sourceIndex].children.length) {
+      const sourceChild = arena.nodes[sourceIndex].children[childIndex];
       const loweredChild = statements[loweredIndex].children[childIndex];
       let childLoopCleanups = Array<LoweredCleanup>();
-      if (declaration.body.nodes[sourceIndex].kind == StatementKind.ifStatement) {
+      if (arena.nodes[sourceIndex].kind == StatementKind.ifStatement) {
         appendCleanupCopies(inout childLoopCleanups, loopCleanups);
       }
       try planCleanupStatement(
         program,
-        declaration,
+        arena,
+        ownerName,
         sourceChild,
         loweredChild,
         live,
         inout statements,
-        insideLoop || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement,
+        insideLoop || arena.nodes[sourceIndex].kind == StatementKind.whileStatement,
         childLoopCleanups
       );
       childIndex = childIndex + 1;
@@ -397,7 +399,8 @@ function planCleanupStatement(
 
 function planCleanupSequence(
   in program: Program,
-  in declaration: FunctionDeclaration,
+  in arena: StatementArena,
+  in ownerName: String,
   in sourceRoots: Array<usize>,
   in loweredRoots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
@@ -414,22 +417,22 @@ function planCleanupSequence(
   while (rootIndex < sourceRoots.length) {
     const sourceIndex = sourceRoots[rootIndex];
     const loweredIndex = loweredRoots[rootIndex];
-    if (declaration.body.nodes[sourceIndex].kind == StatementKind.variableStatement) {
-      match (in declaration.body.nodes[sourceIndex].typeAnnotation) {
+    if (arena.nodes[sourceIndex].kind == StatementKind.variableStatement) {
+      match (in arena.nodes[sourceIndex].typeAnnotation) {
         some(annotation) => {
           const type = try lowerType(program, annotation);
           if (typeNeedsCleanup(program, type)) {
             if (
-              functionHasControlFlow(declaration)
-              && functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)
+              arenaHasControlFlow(arena)
+              && arenaMovesName(arena, arena.nodes[sourceIndex].name)
             ) {
-              throw `native cleanup lowering does not support path-sensitive transfer of ${declaration.body.nodes[sourceIndex].name} in ${declaration.name} yet`;
+              throw `native cleanup lowering does not support path-sensitive transfer of ${arena.nodes[sourceIndex].name} in ${ownerName} yet`;
             }
-            if (!functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)) {
+            if (!arenaMovesName(arena, arena.nodes[sourceIndex].name)) {
               const cleanup = LoweredCleanup({
-                name: declaration.body.nodes[sourceIndex].name.copyBytes(
+                name: arena.nodes[sourceIndex].name.copyBytes(
                   0,
-                  declaration.body.nodes[sourceIndex].name.byteLength
+                  arena.nodes[sourceIndex].name.byteLength
                 ),
                 type: move type,
               });
@@ -442,10 +445,10 @@ function planCleanupSequence(
         none => {}
       }
     } else if (
-      declaration.body.nodes[sourceIndex].kind == StatementKind.assignmentStatement
+      arena.nodes[sourceIndex].kind == StatementKind.assignmentStatement
     ) {
       attachReplacementCleanup(
-        declaration.body,
+        arena,
         sourceIndex,
         live,
         inout statements,
@@ -454,7 +457,8 @@ function planCleanupSequence(
     }
     try planCleanupStatement(
       program,
-      declaration,
+      arena,
+      ownerName,
       sourceIndex,
       loweredIndex,
       live,
@@ -783,8 +787,8 @@ function lowerFunction(
     }
     const parameterType = try lowerType(program, parameter.type);
     if (typeNeedsCleanup(program, parameterType)) {
-      const moved = functionMovesName(declaration, parameter.name);
-      if (moved && functionHasControlFlow(declaration)) {
+      const moved = arenaMovesName(declaration.body, parameter.name);
+      if (moved && arenaHasControlFlow(declaration.body)) {
         throw `native cleanup lowering does not support path-sensitive transfer of ${parameter.name} in ${declaration.name} yet`;
       }
       if (!moved) {
@@ -804,8 +808,10 @@ function lowerFunction(
   }
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
+  let sourceRoots = Array<usize>();
   let roots = Array<usize>();
   for (const root of declaration.body.roots) {
+    sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
       declaration.body,
@@ -818,8 +824,9 @@ function lowerFunction(
   const rootLoopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
-    declaration,
-    declaration.body.roots,
+    declaration.body,
+    declaration.name,
+    sourceRoots,
     roots,
     ownedParameters,
     inout statements,
@@ -846,23 +853,12 @@ function lowerDeinitializer(
   in ownerName: String,
   in body: StatementArena
 ): LoweredFunction throws String {
-  for (const statement of body.nodes) {
-    if (statement.kind == StatementKind.variableStatement) {
-      match (in statement.typeAnnotation) {
-        some(annotation) => {
-          const type = try lowerType(program, annotation);
-          if (typeNeedsCleanup(program, type)) {
-            throw `native lowering does not support cleanup-bearing local ${statement.name} in ${ownerName}.deinit yet`;
-          }
-        }
-        none => {}
-      }
-    }
-  }
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
+  let sourceRoots = Array<usize>();
   let roots = Array<usize>();
   for (const root of body.roots) {
+    sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
       program,
       body,
@@ -872,6 +868,21 @@ function lowerDeinitializer(
     );
     roots.push(loweredRoot);
   }
+  const inherited = Array<LoweredCleanup>();
+  const loopCleanups = Array<LoweredCleanup>();
+  const introduced = try planCleanupSequence(
+    program,
+    body,
+    `${ownerName}.deinit`,
+    sourceRoots,
+    roots,
+    inherited,
+    inout statements,
+    false,
+    loopCleanups
+  );
+  let fallthroughCleanups = Array<LoweredCleanup>();
+  appendCleanupCopies(inout fallthroughCleanups, introduced);
   return LoweredFunction({
     name: `${ownerName}.deinit`,
     parameters: Array<LoweredParameter>(),
@@ -879,7 +890,7 @@ function lowerDeinitializer(
     expressions,
     statements,
     roots,
-    fallthroughCleanups: Array<LoweredCleanup>(),
+    fallthroughCleanups,
   });
 }
 

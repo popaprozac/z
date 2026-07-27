@@ -680,9 +680,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    cleanup-bearing fields in reverse order even when the outer struct has no
    custom `deinit`. Custom deinitializer bodies now lower ordinary synchronous
    statements, calls, and `this` field reads before the generated reverse-field
-   epilogue. Cleanup-bearing deinitializer locals remain rejected until those
-   bodies share the full scope planner. Conditional transfer and error cleanup
-   merging remain future slices.
+   epilogue. Their cleanup-bearing locals use the same arena-based lexical,
+   loop-edge, replacement, and fallthrough planner as ordinary function bodies,
+   and clean before stored receiver fields. Conditional transfer and error
+   cleanup merging remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

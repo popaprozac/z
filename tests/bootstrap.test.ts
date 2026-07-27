@@ -8327,7 +8327,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /static void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  record\(self->resource\.id\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+    /static void Z_AuditedEnvelope_deinit\(Z_AuditedEnvelope \*self\) \{\n  \(void\)self;\n  Z_Resource audit = \(Z_Resource\)\{\.id = self->resource\.id\};\n  record\(audit\.id\);\n  Z_Resource_deinit\(&audit\);\n  Z_Resource_deinit\(&self->resource\);\n\}/,
   );
   assert.match(
     cleanupFlowEmission.stdout,
@@ -8375,38 +8375,6 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     pathSensitiveMoveEmission.stderr,
     /native cleanup lowering does not support path-sensitive transfer of resource in choose yet/,
-  );
-
-  const deinitLocalOwnerInput = resolve(directory, "deinit-local-owner.zs");
-  writeFileSync(
-    deinitLocalOwnerInput,
-    [
-      "struct Resource {",
-      "  id: i32;",
-      "  deinit {}",
-      "}",
-      "struct Owner {",
-      "  id: i32;",
-      "  deinit {",
-      "    const nested: Resource = Resource({ id: this.id });",
-      "  }",
-      "}",
-      "function main(): i32 {",
-      "  const owner: Owner = Owner({ id: 42 });",
-      "  return owner.id;",
-      "}",
-      "",
-    ].join("\n"),
-  );
-  const deinitLocalOwnerEmission = spawnSync(
-    process.execPath,
-    [cli, "self-host-emit", deinitLocalOwnerInput],
-    { encoding: "utf8" },
-  );
-  assert.notEqual(deinitLocalOwnerEmission.status, 0);
-  assert.match(
-    deinitLocalOwnerEmission.stderr,
-    /native lowering does not support cleanup-bearing local nested in Owner\.deinit yet/,
   );
 
   const invalidInput = resolve(directory, "invalid.zs");

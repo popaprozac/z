@@ -12,7 +12,8 @@ struct AuditedEnvelope {
   resource: Resource;
 
   deinit {
-    record(this.resource.id);
+    const audit: Resource = Resource({ id: this.resource.id });
+    record(audit.id);
   }
 }
 

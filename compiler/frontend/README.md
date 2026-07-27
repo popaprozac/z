@@ -180,8 +180,10 @@ the same scope plans.
 Non-empty custom `deinit` bodies now lower through the typed statement and
 expression IR. They may execute ordinary synchronous Z control flow and calls
 and access receiver fields through `this`; the user body runs before generated
-reverse field cleanup. Cleanup-bearing locals inside `deinit` remain
-fail-closed until this body shares the complete lexical owner planner.
+reverse field cleanup. Cleanup planning now consumes a statement arena rather
+than a function-only shape, so cleanup-bearing deinitializer locals reuse the
+same lexical, loop-edge, replacement, and fallthrough machinery as ordinary
+functions.
 
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic

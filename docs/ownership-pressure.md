@@ -623,13 +623,16 @@ user-written deinitializer bodies from landing on a shallow ownership model.
 The first non-empty custom deinitializer then reuses the typed expression and
 statement IR. `this.resource.id` lowers as receiver-pointer field access, an
 ordinary Z helper call executes before the generated reverse-field epilogue,
-and forward prototypes keep the C translation unit strict. Cleanup-bearing
-locals inside a custom deinitializer reject for now rather than bypassing the
-scope planner.
+and forward prototypes keep the C translation unit strict.
 
-Path-sensitive transfer, cleanup-bearing deinitializer locals, and error
-cleanup merging remain the next ownership evidence required before this tier
-broadens.
+The cleanup planner now accepts a statement arena plus an owner label instead of
+depending on `FunctionDeclaration`. Custom deinitializers therefore reuse the
+same lexical and loop-edge machinery: an owned audit local cleans after the
+user body and before the receiver's stored resource. This is both less code and
+stronger evidence than a parallel deinit-only implementation.
+
+Path-sensitive transfer and error cleanup merging remain the next ownership
+evidence required before this tier broadens.
 
 What the compiler proves:
 
