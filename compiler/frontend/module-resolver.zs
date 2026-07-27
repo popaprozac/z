@@ -29,6 +29,14 @@ import {
   prepareFunctionBindings,
 } from "./semantic-function-contexts.zs";
 import {
+  collectionMethodMutates,
+  collectionMethodSignature,
+  iterationElementType,
+  iterationObjectFieldType,
+  numberLiteralType,
+  throwingGeneratorHandleType,
+} from "./semantic-intrinsics.zs";
+import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
@@ -213,16 +221,6 @@ function contextualExpectedType(
 }
 
 
-function numberLiteralType(in value: String): String {
-  let index: usize = 0;
-  while (index < value.byteLength) {
-    const byte = value.byteAt(index);
-    if (byte == 46 || byte == 69 || byte == 101) return "f64";
-    index = index + 1;
-  }
-  return "i32";
-}
-
 function invalidOperator(
   in module: ParsedModule,
   in tree: ExpressionTree,
@@ -236,76 +234,6 @@ function invalidOperator(
     tree.nodes[index].line,
     tree.nodes[index].column
   );
-}
-
-function iterationElementType(in name: String): String {
-  match (genericTypeShape(name)) {
-    some(generic) => {
-      if (
-        (
-          generic.base == "Array"
-          || generic.base == "Slice"
-          || generic.base == "Set"
-          || generic.base == "Iterator"
-          || generic.base == "Generator"
-          || generic.base == "AsyncGenerator"
-        )
-        && generic.arguments.length == 1
-      ) return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
-      if (generic.base == "Map" && generic.arguments.length == 2) {
-        return `Map.Entry<${generic.arguments[0]}, ${generic.arguments[1]}>`;
-      }
-    }
-    none => {}
-  }
-  return arrayElementType(name);
-}
-
-function iterationObjectFieldType(
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in iterableType: String,
-  in fieldName: String
-): String {
-  match (genericTypeShape(iterableType)) {
-    some(generic) => {
-      if (generic.base == "Map" && generic.arguments.length == 2) {
-        if (fieldName == "key") return generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
-        if (fieldName == "value") return generic.arguments[1].copyBytes(0, generic.arguments[1].byteLength);
-        return "";
-      }
-    }
-    none => {}
-  }
-  const elementType = iterationElementType(iterableType);
-  return match (aggregateFieldShape(modules, moduleIndex, elementType, fieldName)) {
-    some(field) => field.typeName.copyBytes(0, field.typeName.byteLength);
-    none => "";
-  };
-}
-
-function throwingGeneratorHandleType(
-  in returnType: String,
-  in errorType: String
-): Option<String> {
-  return match (genericTypeShape(returnType)) {
-    some(generator) => {
-      if (
-        generator.base != "Generator"
-        && generator.base != "AsyncGenerator"
-      ) return Option<String>.none;
-      let arguments = Array<String>();
-      for (const argument of generator.arguments) {
-        arguments.push(argument.copyBytes(0, argument.byteLength));
-      }
-      if (arguments.length == 1) arguments.push("void");
-      if (arguments.length == 2) {
-        arguments.push(errorType.copyBytes(0, errorType.byteLength));
-      }
-      return Option.some(parameterizedTypeName(generator.base, arguments));
-    }
-    none => Option<String>.none;
-  };
 }
 
 function explicitCallTypeArguments(
@@ -1344,124 +1272,6 @@ function inferUnclassifiedCallArguments(
     argumentTypes.push(argumentType);
     argumentIndex = argumentIndex + 1;
   }
-}
-
-function collectionMethodSignature(
-  in ownerType: String,
-  in methodName: String
-): Option<ModuleFunctionSignature> {
-  const generic = match (genericTypeShape(ownerType)) {
-    some(generic) => generic;
-    none => return Option<ModuleFunctionSignature>.none;
-  };
-  let parameterModes = Array<String>();
-  let parameterTypes = Array<String>();
-  let returnType = "";
-  if (generic.base == "Map" && generic.arguments.length == 2) {
-    const keyType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
-    const valueType = generic.arguments[1].copyBytes(0, generic.arguments[1].byteLength);
-    if (methodName == "has") {
-      parameterModes.push("in");
-      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
-      returnType = "boolean";
-    } else if (methodName == "get") {
-      parameterModes.push("in");
-      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
-      returnType = `Option<view ${valueType}>`;
-    } else if (methodName == "set") {
-      parameterModes.push("value");
-      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
-      parameterModes.push("value");
-      parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
-      returnType = "void";
-    } else if (methodName == "remove") {
-      parameterModes.push("in");
-      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
-      returnType = `Option<${valueType}>`;
-    } else if (methodName == "clear") {
-      returnType = "void";
-    }
-  } else if (generic.base == "Set" && generic.arguments.length == 1) {
-    const elementType = generic.arguments[0].copyBytes(0, generic.arguments[0].byteLength);
-    if (methodName == "has") {
-      parameterModes.push("in");
-      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
-      returnType = "boolean";
-    } else if (methodName == "add") {
-      parameterModes.push("value");
-      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
-      returnType = "boolean";
-    } else if (methodName == "remove") {
-      parameterModes.push("in");
-      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
-      returnType = `Option<${elementType}>`;
-    } else if (methodName == "clear") {
-      returnType = "void";
-    }
-  } else if (
-    (
-      generic.base == "Generator"
-      || generic.base == "AsyncGenerator"
-    )
-    && (
-      generic.arguments.length == 1
-      || generic.arguments.length == 2
-      || generic.arguments.length == 3
-    )
-    && methodName == "next"
-  ) {
-    const elementType = generic.arguments[0].copyBytes(
-      0,
-      generic.arguments[0].byteLength
-    );
-    if (generic.arguments.length == 1 || generic.arguments[1] == "void") {
-      returnType = `Option<${elementType}>`;
-    } else {
-      returnType = `GeneratorStep<${elementType}, ${generic.arguments[1]}>`;
-    }
-    let errorType = "";
-    if (generic.arguments.length == 3) {
-      errorType = generic.arguments[2].copyBytes(
-        0,
-        generic.arguments[2].byteLength
-      );
-    }
-    if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
-    return Option.some(ModuleFunctionSignature({
-      asynchronous: generic.base == "AsyncGenerator",
-      executorAffinity: "",
-      typeParameters: Array<String>(),
-      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-      parameterModes,
-      parameterTypes,
-      returnType,
-      errorType,
-    }));
-  }
-  if (returnType.byteLength == 0) return Option<ModuleFunctionSignature>.none;
-  return Option.some(ModuleFunctionSignature({
-    asynchronous: false,
-    executorAffinity: "",
-    typeParameters: Array<String>(),
-    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
-    parameterModes,
-    parameterTypes,
-    returnType,
-    errorType: "",
-  }));
-}
-
-function collectionMethodMutates(
-  in ownerType: String,
-  in methodName: String
-): boolean {
-  return match (genericTypeShape(ownerType)) {
-    some(generic) => generic.base == "Map"
-      ? methodName == "set" || methodName == "remove" || methodName == "clear"
-      : generic.base == "Set"
-        && (methodName == "add" || methodName == "remove" || methodName == "clear");
-    none => false;
-  };
 }
 
 function inferExpressionNodeType(
