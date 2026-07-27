@@ -3862,24 +3862,26 @@ function inferStatement(
     }
     if (arena.nodes[index].name.byteLength > 0) {
       addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
-      const bindingName = arena.nodes[index].name.copyBytes(
-        0,
-        arena.nodes[index].name.byteLength
-      );
-      const bindingOffset = arena.nodes[index].nameOffset;
-      const bindingLine = arena.nodes[index].nameLine;
-      const bindingColumn = arena.nodes[index].nameColumn;
-      recordBindingResolution(
-        modules,
-        moduleIndex,
-        bindingOffset,
-        bindingLine,
-        bindingColumn,
-        bindingName,
-        false,
-        elementType,
-        inout evidence
-      );
+      if (elementType.byteLength > 0) {
+        const bindingName = arena.nodes[index].name.copyBytes(
+          0,
+          arena.nodes[index].name.byteLength
+        );
+        const bindingOffset = arena.nodes[index].nameOffset;
+        const bindingLine = arena.nodes[index].nameLine;
+        const bindingColumn = arena.nodes[index].nameColumn;
+        recordBindingResolution(
+          modules,
+          moduleIndex,
+          bindingOffset,
+          bindingLine,
+          bindingColumn,
+          bindingName,
+          false,
+          elementType,
+          inout evidence
+        );
+      }
     }
     for (const binding of arena.nodes[index].objectBindings) {
       const fieldType = iterationObjectFieldType(
@@ -3889,21 +3891,23 @@ function inferStatement(
         binding.fieldName
       );
       addValueBinding(inout loopBindings, binding.bindingName, fieldType);
-      const bindingName = binding.bindingName.copyBytes(
-        0,
-        binding.bindingName.byteLength
-      );
-      recordBindingResolution(
-        modules,
-        moduleIndex,
-        binding.bindingOffset,
-        binding.bindingLine,
-        binding.bindingColumn,
-        bindingName,
-        false,
-        fieldType,
-        inout evidence
-      );
+      if (fieldType.byteLength > 0) {
+        const bindingName = binding.bindingName.copyBytes(
+          0,
+          binding.bindingName.byteLength
+        );
+        recordBindingResolution(
+          modules,
+          moduleIndex,
+          binding.bindingOffset,
+          binding.bindingLine,
+          binding.bindingColumn,
+          bindingName,
+          false,
+          fieldType,
+          inout evidence
+        );
+      }
     }
     const loopContinues = try inferStatementSequence(
       module,

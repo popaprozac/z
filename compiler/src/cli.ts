@@ -224,18 +224,18 @@ function reportStage1Resolver(
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   console.log(`${subject} exports ${genericCallContracts} concrete generic call ${genericCallContractLabel}`);
   console.log(`${subject} exports ${bindingContracts} inferred local binding ${bindingContractLabel}`);
-  console.log(`${subject} exports ${expressionContracts} root expression type ${expressionContractLabel}`);
+  console.log(`${subject} exports ${expressionContracts} expression type ${expressionContractLabel}`);
   if (callResolutionCount !== null) {
     console.log(`${subject} observes ${callResolutionCount} function, ${methodResolutionCount} method, and ${constructorResolutionCount} constructor stage-0 Z resolutions`);
     console.log(`${subject} observes ${aggregateResolutionCount} aggregate, ${fieldResolutionCount} field, and ${enumVariantResolutionCount} enum-variant stage-0 Z resolutions`);
     console.log(`${subject} observes ${typeResolutionCount} explicit type-use stage-0 Z resolutions`);
     console.log(`${subject} observes ${bindingResolutionCount} inferred local binding stage-0 Z resolutions`);
-    console.log(`${subject} observes ${expressionResolutionCount} root expression stage-0 Z resolutions`);
+    console.log(`${subject} observes ${expressionResolutionCount} expression stage-0 Z resolutions`);
     console.log(`${subject} uses ${authoritativeFunctionResolutionCount} function, ${authoritativeMethodResolutionCount} method, and ${authoritativeConstructorResolutionCount} constructor native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeAggregateResolutionCount} aggregate, ${authoritativeFieldResolutionCount} field, and ${authoritativeEnumVariantResolutionCount} enum-variant native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeTypeResolutionCount} explicit type-use native-authoritative contracts`);
     console.log(`${subject} uses ${authoritativeBindingResolutionCount} inferred local binding native-authoritative contracts`);
-    console.log(`${subject} uses ${authoritativeExpressionResolutionCount} root expression native-authoritative contracts`);
+    console.log(`${subject} uses ${authoritativeExpressionResolutionCount} expression native-authoritative contracts`);
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";

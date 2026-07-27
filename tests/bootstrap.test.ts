@@ -8112,10 +8112,10 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   );
   assert.equal(native.status, 0, native.stderr);
   const observedExpressions = native.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = native.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(observedExpressions, "3");
   assert.equal(authoritativeExpressions, observedExpressions);
@@ -9078,17 +9078,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 7 root expression type contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 18 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 7 root expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 18 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 7 root expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 18 expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -9122,9 +9122,15 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(inferredBindingEvidence.stdout, /exports 3 inferred local binding contracts/);
   assert.match(inferredBindingEvidence.stdout, /observes 3 inferred local binding stage-0 Z resolutions/);
   assert.match(inferredBindingEvidence.stdout, /uses 3 inferred local binding native-authoritative contracts/);
-  assert.match(inferredBindingEvidence.stdout, /exports 8 root expression type contracts/);
-  assert.match(inferredBindingEvidence.stdout, /observes 6 root expression stage-0 Z resolutions/);
-  assert.match(inferredBindingEvidence.stdout, /uses 6 root expression native-authoritative contracts/);
+  const inferredObservedExpressions = inferredBindingEvidence.stdout.match(
+    /observes (\d+) expression stage-0 Z resolutions/,
+  )?.[1];
+  const inferredAuthoritativeExpressions = inferredBindingEvidence.stdout.match(
+    /uses (\d+) expression native-authoritative contracts/,
+  )?.[1];
+  assert.match(inferredBindingEvidence.stdout, /exports [1-9]\d* expression type contracts/);
+  assert.ok(inferredObservedExpressions);
+  assert.equal(inferredAuthoritativeExpressions, inferredObservedExpressions);
 
   const wrappedBindingMain = resolve(invalidDirectory, "wrapped-binding-main.zs");
   const wrappedBindingModel = resolve(invalidDirectory, "wrapped-binding-model.zs");
@@ -9152,9 +9158,15 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(wrappedBindingEvidence.stdout, /exports 1 inferred local binding contract/);
   assert.match(wrappedBindingEvidence.stdout, /observes 1 inferred local binding stage-0 Z resolutions/);
   assert.match(wrappedBindingEvidence.stdout, /uses 1 inferred local binding native-authoritative contracts/);
-  assert.match(wrappedBindingEvidence.stdout, /exports 4 root expression type contracts/);
-  assert.match(wrappedBindingEvidence.stdout, /observes 3 root expression stage-0 Z resolutions/);
-  assert.match(wrappedBindingEvidence.stdout, /uses 3 root expression native-authoritative contracts/);
+  const wrappedObservedExpressions = wrappedBindingEvidence.stdout.match(
+    /observes (\d+) expression stage-0 Z resolutions/,
+  )?.[1];
+  const wrappedAuthoritativeExpressions = wrappedBindingEvidence.stdout.match(
+    /uses (\d+) expression native-authoritative contracts/,
+  )?.[1];
+  assert.match(wrappedBindingEvidence.stdout, /exports [1-9]\d* expression type contracts/);
+  assert.ok(wrappedObservedExpressions);
+  assert.equal(wrappedAuthoritativeExpressions, wrappedObservedExpressions);
 
   const genericEvidenceMain = resolve(invalidDirectory, "generic-evidence-main.zs");
   const genericEvidenceModel = resolve(invalidDirectory, "generic-evidence-model.zs");
@@ -11378,8 +11390,8 @@ test("keeps native semantic authority composable across a representative Z corpu
       /uses (\d+) inferred local binding native-authoritative contracts/,
     ],
     [
-      /observes (\d+) root expression stage-0 Z resolutions/,
-      /uses (\d+) root expression native-authoritative contracts/,
+      /observes (\d+) expression stage-0 Z resolutions/,
+      /uses (\d+) expression native-authoritative contracts/,
     ],
   ] as const;
 
@@ -11389,7 +11401,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       encoding: "utf8",
     });
     assert.equal(result.status, 0, `${entry}\n${result.stderr}`);
-    assert.match(result.stdout, /exports [1-9]\d* root expression type contracts/);
+    assert.match(result.stdout, /exports [1-9]\d* expression type contracts/);
     for (const [observedPattern, authoritativePattern] of parityPatterns) {
       const observed = result.stdout.match(observedPattern)?.slice(1);
       const authoritative = result.stdout.match(authoritativePattern)?.slice(1);
@@ -11450,10 +11462,10 @@ test("compares native function values by capability and type, not parameter name
   );
   assert.equal(result.status, 0, result.stderr);
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.ok(observedExpressions);
   assert.equal(authoritativeExpressions, observedExpressions);
@@ -11480,10 +11492,10 @@ test("preserves throwing closure and transparent callable-alias effects natively
       /uses (\d+) inferred local binding native-authoritative contracts/,
     )?.[1];
     const observedExpressions = result.stdout.match(
-      /observes (\d+) root expression stage-0 Z resolutions/,
+      /observes (\d+) expression stage-0 Z resolutions/,
     )?.[1];
     const authoritativeExpressions = result.stdout.match(
-      /uses (\d+) root expression native-authoritative contracts/,
+      /uses (\d+) expression native-authoritative contracts/,
     )?.[1];
     assert.ok(observedBindings, fileName);
     assert.ok(observedExpressions, fileName);
@@ -11510,14 +11522,14 @@ test("preserves weak-reference construction and upgrade effects natively", () =>
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(observedBindings, "10");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "27");
+  assert.equal(observedExpressions, "56");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11539,14 +11551,14 @@ test("preserves recursive ownership through unimported aggregate field types", (
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(observedBindings, "7");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "24");
+  assert.equal(observedExpressions, "78");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11566,14 +11578,14 @@ test("defers dependent generic comparisons to concrete specialization", () => {
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(observedBindings, "4");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "6");
+  assert.equal(observedExpressions, "15");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11600,10 +11612,10 @@ test("defers unavailable foreign ABI semantics without inventing native diagnost
       /uses (\d+) inferred local binding native-authoritative contracts/,
     )?.[1];
     const observedExpressions = result.stdout.match(
-      /observes (\d+) root expression stage-0 Z resolutions/,
+      /observes (\d+) expression stage-0 Z resolutions/,
     )?.[1];
     const authoritativeExpressions = result.stdout.match(
-      /uses (\d+) root expression native-authoritative contracts/,
+      /uses (\d+) expression native-authoritative contracts/,
     )?.[1];
     assert.ok(observedBindings, fileName);
     assert.ok(observedExpressions, fileName);
@@ -11663,10 +11675,10 @@ test("preserves nominal identities inside linked generic monomorphs", () => {
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(exportedBindings, "6");
   assert.ok(observedBindings);
@@ -11699,10 +11711,10 @@ test("preserves direct and intrinsic async effects in native semantic evidence",
       /uses (\d+) inferred local binding native-authoritative contracts/,
     )?.[1];
     const observedExpressions = result.stdout.match(
-      /observes (\d+) root expression stage-0 Z resolutions/,
+      /observes (\d+) expression stage-0 Z resolutions/,
     )?.[1];
     const authoritativeExpressions = result.stdout.match(
-      /uses (\d+) root expression native-authoritative contracts/,
+      /uses (\d+) expression native-authoritative contracts/,
     )?.[1];
     assert.equal(exportedBindings, expectedBindings, fileName);
     assert.equal(observedBindings, exportedBindings, fileName);
@@ -11730,10 +11742,10 @@ test("preserves structured task creation and joins in native semantic evidence",
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(exportedBindings, "12");
   assert.equal(observedBindings, exportedBindings);
@@ -11760,10 +11772,10 @@ test("preserves executor placement and capture effects in native semantic eviden
     /uses (\d+) inferred local binding native-authoritative contracts/,
   )?.[1];
   const observedExpressions = result.stdout.match(
-    /observes (\d+) root expression stage-0 Z resolutions/,
+    /observes (\d+) expression stage-0 Z resolutions/,
   )?.[1];
   const authoritativeExpressions = result.stdout.match(
-    /uses (\d+) root expression native-authoritative contracts/,
+    /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
   assert.equal(exportedBindings, "6");
   assert.equal(observedBindings, exportedBindings);
