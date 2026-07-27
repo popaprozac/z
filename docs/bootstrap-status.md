@@ -691,12 +691,12 @@ When focused self-hosting work resumes, use this order:
    feature merely for nominal completeness; add a realistic corpus case first.
 3. Continue replacing the temporary compatibility stream with the structural
    in-process phase handoff. One owned native response handle now supplies entry,
-   module/dependency/order/symbol counts, and all semantic-evidence counts from
-   the same resolver pass; the host cross-checks them against the stream. Add
-   indexed module, dependency, symbol, signature, and evidence queries next,
-   preserving canonical module-local source locations and the guarded Stage-0
-   fallback. Measure cold library preparation, warm native work,
-   compatibility/handoff cost, and Stage-0 parity separately.
+   module paths, dependency lists/order, symbol/evidence counts, and lifetime
+   ownership for the resolved graph. Topology records have been removed from the
+   stream. Add indexed symbol, signature, and evidence queries next, preserving
+   canonical module-local source locations and the guarded Stage-0 fallback.
+   Measure cold library preparation, warm native work, compatibility/handoff
+   cost, and Stage-0 parity separately.
 4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.

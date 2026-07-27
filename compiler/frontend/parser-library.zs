@@ -4,6 +4,7 @@
 import { renderProgram } from "./parser-protocol.zs";
 import {
   RenderedModuleGraph,
+  emptyRenderedModuleGraph,
   renderModuleGraph,
 } from "./module-resolver-protocol.zs";
 
@@ -32,17 +33,7 @@ function stage1Resolve(
     });
     failure(message) => Stage1ResolveResponse({
       success: false,
-      graph: RenderedModuleGraph({
-        stream: move message,
-        entry: 0,
-        moduleCount: 0,
-        dependencyCount: 0,
-        dependencyOrderCount: 0,
-        symbolCount: 0,
-        callResolutionCount: 0,
-        bindingResolutionCount: 0,
-        expressionResolutionCount: 0,
-      }),
+      graph: emptyRenderedModuleGraph(move message),
     });
   };
 }

@@ -129,12 +129,13 @@ measuring equivalent work and finding semantic composition gaps.
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
 The first structural replacement slice now returns one owned native response
-handle from the resolver. Entry identity plus module, dependency, dependency
-order, symbol, and semantic-evidence counts are queried directly through that
-handle and consumed by the host; the compatibility stream remains temporarily
-for nested module, symbol, signature, and evidence records. The host compares
-both representations on every run, so later indexed queries can replace those
-records incrementally without a second native resolution.
+handle from the resolver. Entry identity, module paths, dependency lists,
+dependency order, and graph/evidence counts are queried directly through that
+handle and consumed by the host. Those topology records are no longer emitted
+through the compatibility stream, which remains temporarily for symbols,
+signatures, and semantic evidence. The retained handle owns the resolved Z graph
+until the host releases it, so later indexed queries can replace those records
+without a second native resolution or borrowed lifetime escape.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. A
 shared stage-zero loader discovers that canonical source batch once for both the

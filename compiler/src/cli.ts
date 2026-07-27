@@ -15,6 +15,7 @@ import {
   parseWithNativeFrontendLibrary,
   resolveWithNativeFrontendLibrary,
   type NativeFrontendGraphSummary,
+  type NativeFrontendGraphStructure,
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
@@ -131,6 +132,7 @@ type Stage1ResolverRun = {
   readonly sourceBatch: SourceModuleBatch;
   readonly graph: Stage1ModuleGraph;
   readonly summary: NativeFrontendGraphSummary;
+  readonly structure: NativeFrontendGraphStructure;
   readonly boundary: PreparedStage1ParserLibrary;
   readonly loadingMilliseconds: number;
   readonly batchMilliseconds: number;
@@ -168,14 +170,23 @@ function runStage1Resolver(
   );
   const executionMilliseconds = performance.now() - executionStarted;
   const decodeStarted = performance.now();
-  const graph = decodeStage1ModuleGraphStream(nativeResponse.stream);
+  const graph = decodeStage1ModuleGraphStream(nativeResponse.stream, {
+    entry: nativeResponse.summary.entry,
+    modules: nativeResponse.structure.modules,
+    dependencyOrder: nativeResponse.structure.dependencyOrder,
+  });
   const decodeMilliseconds = performance.now() - decodeStarted;
-  requireStructuralSummary(graph, nativeResponse.summary);
+  requireStructuralGraph(
+    graph,
+    nativeResponse.summary,
+    nativeResponse.structure,
+  );
   return {
     entryPath,
     sourceBatch,
     graph,
     summary: nativeResponse.summary,
+    structure: nativeResponse.structure,
     boundary,
     loadingMilliseconds,
     batchMilliseconds,
@@ -211,7 +222,9 @@ function reportStage1Resolver(
 ): void {
   const edges = run.summary.dependencyCount;
   const symbols = run.summary.symbolCount;
-  const order = run.graph.dependencyOrder.map((index) => basename(run.graph.modules[index].path)).join(" -> ");
+  const order = run.structure.dependencyOrder
+    .map((index) => basename(run.structure.modules[index].path))
+    .join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
   const genericCallContracts = run.summary.callResolutionCount;
@@ -250,9 +263,10 @@ function reportStage1Resolver(
   }
 }
 
-function requireStructuralSummary(
+function requireStructuralGraph(
   graph: Stage1ModuleGraph,
   summary: NativeFrontendGraphSummary,
+  structure: NativeFrontendGraphStructure,
 ): void {
   const dependencyCount = graph.modules.reduce(
     (count, module) => count + module.dependencies.length,
@@ -283,8 +297,32 @@ function requireStructuralSummary(
     || summary.callResolutionCount !== callResolutionCount
     || summary.bindingResolutionCount !== bindingResolutionCount
     || summary.expressionResolutionCount !== expressionResolutionCount
+    || structure.modules.length !== graph.modules.length
+    || structure.dependencyOrder.length !== graph.dependencyOrder.length
   ) {
-    throw new Error("the native structural summary does not match the compatibility graph stream");
+    throw new Error("the native structural graph does not match the compatibility graph stream");
+  }
+  for (let moduleIndex = 0; moduleIndex < graph.modules.length; moduleIndex += 1) {
+    const nativeModule = structure.modules[moduleIndex];
+    const compatibilityModule = graph.modules[moduleIndex];
+    if (
+      nativeModule.path !== compatibilityModule.path
+      || nativeModule.dependencies.length !== compatibilityModule.dependencies.length
+      || nativeModule.dependencies.some(
+        (dependency, dependencyIndex) => (
+          dependency !== compatibilityModule.dependencies[dependencyIndex]
+        ),
+      )
+    ) {
+      throw new Error("the native structural graph does not match the compatibility graph stream");
+    }
+  }
+  if (
+    structure.dependencyOrder.some(
+      (moduleIndex, orderIndex) => moduleIndex !== graph.dependencyOrder[orderIndex],
+    )
+  ) {
+    throw new Error("the native structural graph does not match the compatibility graph stream");
   }
 }
 
@@ -1470,15 +1508,7 @@ static void *z_stage1_copy_string(Z_String result) {
 
 typedef struct {
   char *payload;
-  uint8_t success;
-  uintptr_t entry;
-  uintptr_t module_count;
-  uintptr_t dependency_count;
-  uintptr_t dependency_order_count;
-  uintptr_t symbol_count;
-  uintptr_t call_resolution_count;
-  uintptr_t binding_resolution_count;
-  uintptr_t expression_resolution_count;
+  Z_Stage1ResolveResponse result;
 } Z_Stage1ResolveHandle;
 
 Z_STAGE1_EXPORT void *z_stage1_parse(
@@ -1504,21 +1534,12 @@ Z_STAGE1_EXPORT void *z_stage1_resolve(
   Z_Stage1ResolveHandle *response = (Z_Stage1ResolveHandle *)malloc(sizeof(Z_Stage1ResolveHandle));
   if (response == NULL) abort();
   response->payload = (char *)z_stage1_clone_string(result.graph.stream);
-  response->success = result.success ? 1 : 0;
-  response->entry = result.graph.entry;
-  response->module_count = result.graph.moduleCount;
-  response->dependency_count = result.graph.dependencyCount;
-  response->dependency_order_count = result.graph.dependencyOrderCount;
-  response->symbol_count = result.graph.symbolCount;
-  response->call_resolution_count = result.graph.callResolutionCount;
-  response->binding_resolution_count = result.graph.bindingResolutionCount;
-  response->expression_resolution_count = result.graph.expressionResolutionCount;
-  Z_Stage1ResolveResponse_deinit(&result);
+  response->result = result;
   return response;
 }
 
 Z_STAGE1_EXPORT uint8_t z_stage1_resolve_success(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->success;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.success ? 1 : 0;
 }
 
 Z_STAGE1_EXPORT const void *z_stage1_resolve_payload(const void *pointer) {
@@ -1526,40 +1547,90 @@ Z_STAGE1_EXPORT const void *z_stage1_resolve_payload(const void *pointer) {
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_entry(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->entry;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.entry;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->module_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.moduleCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->dependency_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.dependencyCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_order_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->dependency_order_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.dependencyOrderCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_symbol_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->symbol_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.symbolCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_call_resolution_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->call_resolution_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.callResolutionCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_binding_resolution_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->binding_resolution_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.bindingResolutionCount;
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_expression_resolution_count(const void *pointer) {
-  return ((const Z_Stage1ResolveHandle *)pointer)->expression_resolution_count;
+  return ((const Z_Stage1ResolveHandle *)pointer)->result.graph.expressionResolutionCount;
+}
+
+Z_STAGE1_EXPORT const void *z_stage1_resolve_module_path_data(
+  const void *pointer,
+  uintptr_t module_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (module_index >= response->result.graph.resolved.modules.length) return NULL;
+  return response->result.graph.resolved.modules.data[module_index].path.data;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_path_length(
+  const void *pointer,
+  uintptr_t module_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (module_index >= response->result.graph.resolved.modules.length) return 0;
+  return response->result.graph.resolved.modules.data[module_index].path.length;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_dependency_count(
+  const void *pointer,
+  uintptr_t module_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (module_index >= response->result.graph.resolved.modules.length) return 0;
+  return response->result.graph.resolved.modules.data[module_index].dependencies.length;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_dependency(
+  const void *pointer,
+  uintptr_t module_index,
+  uintptr_t dependency_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (module_index >= response->result.graph.resolved.modules.length) return 0;
+  const Z_DynamicArray___z_dynamic_array_3a_usize *dependencies =
+    &response->result.graph.resolved.modules.data[module_index].dependencies;
+  if (dependency_index >= dependencies->length) return 0;
+  return dependencies->data[dependency_index];
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_order(
+  const void *pointer,
+  uintptr_t order_index
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  if (order_index >= response->result.graph.resolved.dependencyOrder.length) return 0;
+  return response->result.graph.resolved.dependencyOrder.data[order_index];
 }
 
 Z_STAGE1_EXPORT void z_stage1_resolve_free(void *pointer) {
   Z_Stage1ResolveHandle *response = (Z_Stage1ResolveHandle *)pointer;
   free(response->payload);
+  Z_Stage1ResolveResponse_deinit(&response->result);
   free(response);
 }
 

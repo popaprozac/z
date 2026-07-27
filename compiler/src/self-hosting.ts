@@ -196,6 +196,15 @@ export type Stage1ModuleGraph = {
   readonly entry: number;
 };
 
+export type Stage1ModuleGraphStructure = {
+  readonly entry: number;
+  readonly modules: readonly {
+    readonly path: string;
+    readonly dependencies: readonly number[];
+  }[];
+  readonly dependencyOrder: readonly number[];
+};
+
 export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]): Buffer {
   const records: Buffer[] = [];
   for (const source of sources) {
@@ -211,10 +220,24 @@ export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]):
   return Buffer.concat(records);
 }
 
-export function decodeStage1ModuleGraphStream(output: string): Stage1ModuleGraph {
-  let entry: number | null = null;
-  let dependencyOrder: number[] | null = null;
-  const modules: Stage1ResolvedModule[] = [];
+export function decodeStage1ModuleGraphStream(
+  output: string,
+  structure?: Stage1ModuleGraphStructure,
+): Stage1ModuleGraph {
+  let entry: number | null = structure?.entry ?? null;
+  let dependencyOrder: number[] | null = structure
+    ? [...structure.dependencyOrder]
+    : null;
+  const modules: Stage1ResolvedModule[] = structure
+    ? structure.modules.map((module) => ({
+        path: module.path,
+        dependencies: [...module.dependencies],
+        symbols: [],
+        callResolutions: [],
+        bindingResolutions: [],
+        expressionResolutions: [],
+      }))
+    : [];
   for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {
     const fields = line.split("\t");
     if (fields[0] === "entry") {

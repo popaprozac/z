@@ -10048,6 +10048,26 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     typeName: "i32",
     typeIdentities: [],
   }]);
+  const structuralTopology = decodeStage1ModuleGraphStream("", {
+    entry: 1,
+    modules: [
+      { path: "/dependency.zs", dependencies: [] },
+      { path: "/main.zs", dependencies: [0] },
+    ],
+    dependencyOrder: [0, 1],
+  });
+  assert.equal(structuralTopology.entry, 1);
+  assert.deepEqual(
+    structuralTopology.modules.map((module) => ({
+      path: module.path,
+      dependencies: module.dependencies,
+    })),
+    [
+      { path: "/dependency.zs", dependencies: [] },
+      { path: "/main.zs", dependencies: [0] },
+    ],
+  );
+  assert.deepEqual(structuralTopology.dependencyOrder, [0, 1]);
   assert.throws(() => decodeStage1ModuleGraphStream("order\n"), /did not contain an entry/);
   assert.throws(
     () => decodeStage1ModuleGraphStream("entry\t0000000000000001\nmodule\t2f612e7a73\norder\t0000000000000000\n"),

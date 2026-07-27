@@ -16,9 +16,20 @@ export type NativeFrontendGraphSummary = {
   readonly expressionResolutionCount: number;
 };
 
+export type NativeFrontendModuleStructure = {
+  readonly path: string;
+  readonly dependencies: readonly number[];
+};
+
+export type NativeFrontendGraphStructure = {
+  readonly modules: readonly NativeFrontendModuleStructure[];
+  readonly dependencyOrder: readonly number[];
+};
+
 export type NativeFrontendResolverResponse = {
   readonly stream: string;
   readonly summary: NativeFrontendGraphSummary;
+  readonly structure: NativeFrontendGraphStructure;
 };
 
 export function parseWithNativeFrontendLibrary(libraryPath: string, inputPaths: readonly string[]): string {
@@ -111,6 +122,26 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_module_path_data: {
+      args: [FFIType.ptr, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    z_stage1_resolve_module_path_length: {
+      args: [FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_module_dependency_count: {
+      args: [FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_module_dependency: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_dependency_order: {
+      args: [FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_free: {
       args: [FFIType.ptr],
       returns: FFIType.void,
@@ -136,39 +167,97 @@ export function resolveWithNativeFrontendLibrary(
       if (library.symbols.z_stage1_resolve_success(responsePointer) !== 1) {
         throw decodeNativeResolverError(payload);
       }
+      const summary: NativeFrontendGraphSummary = {
+        entry: nativeUsize(library.symbols.z_stage1_resolve_entry(responsePointer), "entry"),
+        moduleCount: nativeUsize(
+          library.symbols.z_stage1_resolve_module_count(responsePointer),
+          "module count",
+        ),
+        dependencyCount: nativeUsize(
+          library.symbols.z_stage1_resolve_dependency_count(responsePointer),
+          "dependency count",
+        ),
+        dependencyOrderCount: nativeUsize(
+          library.symbols.z_stage1_resolve_dependency_order_count(responsePointer),
+          "dependency-order count",
+        ),
+        symbolCount: nativeUsize(
+          library.symbols.z_stage1_resolve_symbol_count(responsePointer),
+          "symbol count",
+        ),
+        callResolutionCount: nativeUsize(
+          library.symbols.z_stage1_resolve_call_resolution_count(responsePointer),
+          "call-resolution count",
+        ),
+        bindingResolutionCount: nativeUsize(
+          library.symbols.z_stage1_resolve_binding_resolution_count(responsePointer),
+          "binding-resolution count",
+        ),
+        expressionResolutionCount: nativeUsize(
+          library.symbols.z_stage1_resolve_expression_resolution_count(responsePointer),
+          "expression-resolution count",
+        ),
+      };
+      const modules: NativeFrontendModuleStructure[] = [];
+      for (let moduleIndex = 0; moduleIndex < summary.moduleCount; moduleIndex += 1) {
+        const pathLength = nativeUsize(
+          library.symbols.z_stage1_resolve_module_path_length(responsePointer, moduleIndex),
+          `module ${moduleIndex} path length`,
+        );
+        const pathPointer = library.symbols.z_stage1_resolve_module_path_data(
+          responsePointer,
+          moduleIndex,
+        );
+        if (!pathPointer && pathLength > 0) {
+          throw new Error(`the native frontend returned a null path for module ${moduleIndex}`);
+        }
+        const dependencyCount = nativeUsize(
+          library.symbols.z_stage1_resolve_module_dependency_count(
+            responsePointer,
+            moduleIndex,
+          ),
+          `module ${moduleIndex} dependency count`,
+        );
+        const dependencies: number[] = [];
+        for (
+          let dependencyIndex = 0;
+          dependencyIndex < dependencyCount;
+          dependencyIndex += 1
+        ) {
+          dependencies.push(nativeUsize(
+            library.symbols.z_stage1_resolve_module_dependency(
+              responsePointer,
+              moduleIndex,
+              dependencyIndex,
+            ),
+            `module ${moduleIndex} dependency ${dependencyIndex}`,
+          ));
+        }
+        modules.push({
+          path: pathPointer
+            ? new CString(pathPointer, 0, pathLength).toString()
+            : "",
+          dependencies,
+        });
+      }
+      const dependencyOrder: number[] = [];
+      for (
+        let orderIndex = 0;
+        orderIndex < summary.dependencyOrderCount;
+        orderIndex += 1
+      ) {
+        dependencyOrder.push(nativeUsize(
+          library.symbols.z_stage1_resolve_dependency_order(
+            responsePointer,
+            orderIndex,
+          ),
+          `dependency-order entry ${orderIndex}`,
+        ));
+      }
       return {
         stream: payload,
-        summary: {
-          entry: nativeUsize(library.symbols.z_stage1_resolve_entry(responsePointer), "entry"),
-          moduleCount: nativeUsize(
-            library.symbols.z_stage1_resolve_module_count(responsePointer),
-            "module count",
-          ),
-          dependencyCount: nativeUsize(
-            library.symbols.z_stage1_resolve_dependency_count(responsePointer),
-            "dependency count",
-          ),
-          dependencyOrderCount: nativeUsize(
-            library.symbols.z_stage1_resolve_dependency_order_count(responsePointer),
-            "dependency-order count",
-          ),
-          symbolCount: nativeUsize(
-            library.symbols.z_stage1_resolve_symbol_count(responsePointer),
-            "symbol count",
-          ),
-          callResolutionCount: nativeUsize(
-            library.symbols.z_stage1_resolve_call_resolution_count(responsePointer),
-            "call-resolution count",
-          ),
-          bindingResolutionCount: nativeUsize(
-            library.symbols.z_stage1_resolve_binding_resolution_count(responsePointer),
-            "binding-resolution count",
-          ),
-          expressionResolutionCount: nativeUsize(
-            library.symbols.z_stage1_resolve_expression_resolution_count(responsePointer),
-            "expression-resolution count",
-          ),
-        },
+        summary,
+        structure: { modules, dependencyOrder },
       };
     } finally {
       library.symbols.z_stage1_resolve_free(responsePointer);
