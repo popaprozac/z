@@ -686,6 +686,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `move` clears the flag before handoff and cleanup is guarded on every exit.
    Linear moves remain flag-free. Loop-carried transfer still rejects until its
    back-edge state can join; error cleanup merging remains a future slice.
+   Payload-free nominal enums are now executable through this path as C enum
+   tags, including case values, equality, parameters, returns, and storage in
+   value structs. Payload-bearing enums, exhaustive match lowering, and
+   `Option`/`Result` representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

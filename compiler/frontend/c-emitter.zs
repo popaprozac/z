@@ -18,6 +18,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
   throw "native C emission received an unsupported lowered type";
 }
 
@@ -202,6 +203,16 @@ function appendExpression(
       field = field + 1;
     }
     output.append("}");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.enumValue) {
+    if (declaration.expressions[index].labels.length != 1) {
+      throw "native C emission received a malformed enum value";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_");
+    output.append(declaration.expressions[index].labels[0]);
     return;
   }
   throw "native C emission does not support this lowered expression yet";
@@ -507,6 +518,24 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (__builtin_sub_overflow(0, value, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  for (const declaration of program.enums) {
+    output.append("typedef enum Z_");
+    output.append(declaration.name);
+    output.append(" {\n");
+    let variant: usize = 0;
+    while (variant < declaration.variants.length) {
+      output.append("  Z_");
+      output.append(declaration.name);
+      output.append("_");
+      output.append(declaration.variants[variant]);
+      if (variant + 1 < declaration.variants.length) output.append(",");
+      output.append("\n");
+      variant = variant + 1;
+    }
+    output.append("} Z_");
+    output.append(declaration.name);
+    output.append(";\n\n");
+  }
   for (const aggregate of program.structs) {
     output.append("typedef struct Z_");
     output.append(aggregate.name);

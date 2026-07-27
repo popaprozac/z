@@ -23,6 +23,7 @@ export enum LoweredTypeKind {
   booleanType,
   i32Type,
   structType,
+  enumType,
 }
 
 export struct LoweredType {
@@ -40,6 +41,11 @@ export struct LoweredStruct {
   fields: Array<LoweredField>;
   needsDeinit: boolean;
   deinitializer: Option<LoweredFunction>;
+}
+
+export struct LoweredEnum {
+  name: String;
+  variants: Array<String>;
 }
 
 export struct LoweredParameter {
@@ -62,6 +68,7 @@ export enum LoweredExpressionKind {
   directCall,
   fieldValue,
   structValue,
+  enumValue,
 }
 
 export struct LoweredExpression {
@@ -120,6 +127,7 @@ export struct LoweredFunction {
 
 export struct LoweredProgram {
   structs: Array<LoweredStruct>;
+  enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
 }
 
@@ -135,6 +143,15 @@ function structIndex(in program: Program, in name: String): Option<usize> {
   return Option<usize>.none;
 }
 
+function enumIndex(in program: Program, in name: String): Option<usize> {
+  let index: usize = 0;
+  while (index < program.enums.length) {
+    if (program.enums[index].name == name) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function lowerType(in program: Program, in type: TypeReference): LoweredType throws String {
   if (type.name == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (type.name == "boolean") {
@@ -144,6 +161,13 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
   match (structIndex(program, type.name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.structType,
+      name: type.name.copyBytes(0, type.name.byteLength),
+    });
+    none => {}
+  }
+  match (enumIndex(program, type.name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.enumType,
       name: type.name.copyBytes(0, type.name.byteLength),
     });
     none => {}
@@ -722,6 +746,30 @@ function lowerExpression(
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    if (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {
+      match (enumIndex(program, tree.nodes[receiverInput].value)) {
+        some(declarationIndex) => {
+          for (const variant of program.enums[declarationIndex].variants) {
+            if (variant.name == tree.nodes[index].value) {
+              match (in variant.payload) {
+                some(_) => throw `native lowering does not support payload enum variant ${tree.nodes[receiverInput].value}.${variant.name} yet`;
+                none => {}
+              }
+              let labels = Array<String>();
+              labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.enumValue,
+                tree.nodes[receiverInput].value,
+                Array<usize>(),
+                labels
+              );
+            }
+          }
+        }
+        none => {}
+      }
+    }
     const receiver = try lowerExpression(program, tree, receiverInput, inout output);
     let children = Array<usize>();
     children.push(receiver);
@@ -984,10 +1032,25 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
   }
   if (
     program.traits.length > 0
-    || program.enums.length > 0
     || program.typeAliases.length > 0
   ) {
-    throw "native lowering does not support traits, enums, or type aliases yet";
+    throw "native lowering does not support traits or type aliases yet";
+  }
+
+  let enums = Array<LoweredEnum>();
+  for (const declaration of program.enums) {
+    let variants = Array<String>();
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(_) => throw `native lowering does not support payload enum ${declaration.name} yet`;
+        none => {}
+      }
+      variants.push(variant.name.copyBytes(0, variant.name.byteLength));
+    }
+    enums.push(LoweredEnum({
+      name: declaration.name.copyBytes(0, declaration.name.byteLength),
+      variants,
+    }));
   }
 
   let structs = Array<LoweredStruct>();
@@ -1036,5 +1099,5 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
     const loweredFunction = try lowerFunction(program, declaration);
     functions.push(move loweredFunction);
   }
-  return LoweredProgram({ structs, functions });
+  return LoweredProgram({ structs, enums, functions });
 }

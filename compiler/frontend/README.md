@@ -141,8 +141,10 @@ Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
 
 Three distinct shapes now run directly—scalar calls, mutable control flow, and
-value structs—and all three pass through the typed lowering IR. Their pressure
-established the architecture boundary: checked operations and aggregate
+value structs—and all three pass through the typed lowering IR. Payload-free
+nominal enums now join them: cases emit as namespaced C enum constants and
+compose through function parameters, equality, and value-struct fields. Their
+pressure established the architecture boundary: checked operations and aggregate
 construction are semantic lowering decisions, not formatting. Deterministic
 cleanup can now extend the IR with explicit scope-exit plans rather than
 teaching the C printer to rediscover ownership from syntax.

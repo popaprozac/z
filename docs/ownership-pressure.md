@@ -639,6 +639,13 @@ Loop-carried conditional transfer still rejects because its state must be
 proven at the back-edge. Error cleanup merging remains the next ownership
 evidence required before this tier broadens.
 
+The native emitter then begins the enum representation needed by errors without
+coupling both changes. Payload-free enums lower to nominal C enums with
+namespaced constants and retain their type through parameters, comparisons,
+returns, and value-struct fields. Payload variants still reject; they require a
+tagged payload representation and recursive cleanup before `Option`, `Result`,
+or typed `throw` can honestly use them.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

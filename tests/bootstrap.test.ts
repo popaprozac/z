@@ -8223,6 +8223,29 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const structExecution = spawnSync(structExecutable, [], { encoding: "utf8" });
   assert.equal(structExecution.status, 42, structExecution.stderr);
 
+  const enumInput = resolve(projectRoot, "tests/fixtures/self-host-emit-enum.zs");
+  const enumEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", enumInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(enumEmission.status, 0, enumEmission.stderr);
+  assert.match(enumEmission.stdout, /typedef enum Z_Mode/);
+  assert.match(enumEmission.stdout, /Z_Mode_active/);
+  assert.match(
+    enumEmission.stdout,
+    /Z_Snapshot snapshot = \(Z_Snapshot\)\{\.mode = Z_Mode_active, \.count = 2\};/,
+  );
+  const enumExecutable = resolve(directory, "enum");
+  const enumCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", enumExecutable],
+    { encoding: "utf8", input: enumEmission.stdout },
+  );
+  assert.equal(enumCompilation.status, 0, enumCompilation.stderr);
+  const enumExecution = spawnSync(enumExecutable, [], { encoding: "utf8" });
+  assert.equal(enumExecution.status, 42, enumExecution.stderr);
+
   const cleanupInput = resolve(projectRoot, "tests/fixtures/self-host-emit-cleanup.zs");
   const cleanupEmission = spawnSync(
     process.execPath,
