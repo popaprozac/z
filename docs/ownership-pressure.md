@@ -543,13 +543,21 @@ The first native emitter then tested a different composition boundary: whether
 the owned parser AST is usable for code generation without translating it back
 through TypeScript. A small Z emitter now walks function, statement, and
 expression arenas directly and emits C for scalar functions, value parameters,
-typed locals, calls, arithmetic, and returns. Its regression compiles the
-result with Clang and executes it with exit status 42. The deliberately narrow
-surface is useful evidence: direct AST consumption works, recursive expression
-walking is ergonomic with index arenas, and an emission failure can remain a
-typed Z error. It does not yet prove ownership lowering, runtime support,
-multi-module linking, or foreign emission; expanding those honestly is the next
-pressure test.
+typed locals, calls, arithmetic, assignment, `if`, `while`, loop control, and
+returns. The emitter reuses native module resolution and semantic analysis
+before code generation; a deliberately invalid name is rejected there rather
+than delegated to Clang. Regressions compile and execute a scalar call program
+with exit status 42 plus a mutable factorial/control-flow program. The narrow
+surface also immediately exposed a semantic trap: direct signed C arithmetic
+would make overflow undefined even though Z requires a checked failure. The
+native emitter now uses checked `i32` helpers and an overflow regression proves
+that the generated program terminates. The narrow surface is useful evidence:
+direct AST consumption works, recursive expression and statement walking is
+ergonomic with index arenas, and an emission failure can remain a typed Z
+error. It does not yet prove ownership lowering, runtime support, multi-module
+linking, or foreign emission. The first ownership-bearing aggregate slice
+should decide whether direct AST traversal remains sufficient or an explicit
+lowering IR has earned its cost.
 
 What the compiler proves:
 

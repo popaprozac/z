@@ -8159,6 +8159,60 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
+
+  const controlFlowInput = resolve(projectRoot, "tests/fixtures/self-host-emit-control-flow.zs");
+  const controlFlowEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", controlFlowInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(controlFlowEmission.status, 0, controlFlowEmission.stderr);
+  assert.match(controlFlowEmission.stdout, /while \(\(current <= limit\)\)/);
+  assert.match(controlFlowEmission.stdout, /if \(\(answer == 120\)\)/);
+  const controlFlowExecutable = resolve(directory, "control-flow");
+  const controlFlowCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", controlFlowExecutable],
+    { encoding: "utf8", input: controlFlowEmission.stdout },
+  );
+  assert.equal(controlFlowCompilation.status, 0, controlFlowCompilation.stderr);
+  const controlFlowExecution = spawnSync(controlFlowExecutable, [], { encoding: "utf8" });
+  assert.equal(controlFlowExecution.status, 0, controlFlowExecution.stderr);
+
+  const overflowInput = resolve(directory, "overflow.zs");
+  writeFileSync(
+    overflowInput,
+    "function main(): i32 {\n"
+      + "  const maximum: i32 = 2147483647;\n"
+      + "  return maximum + 1;\n"
+      + "}\n",
+  );
+  const overflowEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", overflowInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(overflowEmission.status, 0, overflowEmission.stderr);
+  assert.match(overflowEmission.stdout, /z_stage1_checked_add_i32\(maximum, 1\)/);
+  const overflowExecutable = resolve(directory, "overflow");
+  const overflowCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", overflowExecutable],
+    { encoding: "utf8", input: overflowEmission.stdout },
+  );
+  assert.equal(overflowCompilation.status, 0, overflowCompilation.stderr);
+  const overflowExecution = spawnSync(overflowExecutable, [], { encoding: "utf8" });
+  assert.notEqual(overflowExecution.status, 0);
+
+  const invalidInput = resolve(directory, "invalid.zs");
+  writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");
+  const invalidEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", invalidInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidEmission.status, 1);
+  assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 20_000);
 
 test("resolves a canonical module graph directly from native Z ASTs", () => {

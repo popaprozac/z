@@ -74,7 +74,7 @@ function readHexUsize(in batch: String, offset: usize): usize throws String {
   return value;
 }
 
-function decodeModuleSources(in batch: String): Array<ModuleSource> throws String {
+export function decodeModuleSources(in batch: String): Array<ModuleSource> throws String {
   let sources = Array<ModuleSource>();
   let offset: usize = 0;
   while (offset < batch.byteLength) {
@@ -111,7 +111,7 @@ function resolverErrorKindName(kind: ModuleResolveErrorKind): String {
   };
 }
 
-function resolverMessage(in error: ModuleResolveError): String {
+export function resolverMessage(in error: ModuleResolveError): String {
   let output = TextBuffer();
   output.append("diagnostic");
   output.appendAscii(9);

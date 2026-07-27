@@ -627,12 +627,20 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    semantic validation.
    The first native C-emission proof now consumes the owned Stage 1 `Program`
    directly. `z self-host-emit` lowers a deliberately closed subset—ordinary
-   `i32`/`void` functions, value parameters, explicitly typed locals, direct
-   calls, arithmetic, and returns—to portable C. The regression compiles that C
-   with Clang and executes it, returning 42. This removes TypeScript AST
-   reconstruction from one complete source-to-native path. It is not yet the
-   production emitter: Stage 0 remains authoritative for full semantics,
-   modules, ownership cleanup, runtime types, foreign interop, and diagnostics.
+   `i32`/`boolean`/`void` functions, value parameters, explicitly typed locals,
+   direct calls, unary/binary expressions, assignment, `if`, `while`,
+   `break`/`continue`, and returns—to portable C. Before emission, the canonical
+   batch passes through the same native module resolver and semantic analyzer
+   used by the parity bridge; an invalid name is rejected natively rather than
+   left for Clang. Regressions compile and execute both a scalar call program
+   returning 42 and a mutable factorial/control-flow program. Raw signed C
+   arithmetic is not substituted for Z semantics: emitted `i32`
+   addition, subtraction, multiplication, and negation use checked helpers, and
+   an overflow regression terminates instead of invoking C signed-overflow
+   behavior. This removes TypeScript AST reconstruction from one complete
+   source-to-native path. It is not yet the production emitter: Stage 0 remains
+   authoritative for the full language, module linking, ownership cleanup,
+   runtime types, foreign interop, and production diagnostics.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

@@ -338,9 +338,18 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
 
 function emitWithStage1(inputPath: string): void {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
+  const entryPath = realpathSync(inputPath);
+  const entrySource = readFileSync(entryPath, "utf8");
+  const entryProgram = parse(lex(entrySource, entryPath), entryPath);
+  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+  const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
+    path: module.fileName,
+    source: module.source,
+  }));
+  const batch = encodeStage1ModuleBatch(sources);
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
-  process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, inputPath));
+  process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch));
 }
 
 function stage0ImportShapes(program: Program, fileName: string): readonly Stage1ImportShape[] {
@@ -1628,14 +1637,14 @@ Z_STAGE1_EXPORT void *z_stage1_parse(
 }
 
 Z_STAGE1_EXPORT void *z_stage1_emit(
-  const uint8_t *path_data,
-  uintptr_t path_length,
-  const uint8_t *source_data,
-  uintptr_t source_length
+  const uint8_t *entry_data,
+  uintptr_t entry_length,
+  const uint8_t *batch_data,
+  uintptr_t batch_length
 ) {
-  Z_String path = { (const char *)path_data, path_length, 0 };
-  Z_String source = { (const char *)source_data, source_length, 0 };
-  return z_stage1_copy_string(stage1Emit(&path, &source));
+  Z_String entry = { (const char *)entry_data, entry_length, 0 };
+  Z_String batch = { (const char *)batch_data, batch_length, 0 };
+  return z_stage1_copy_string(stage1Emit(&entry, &batch));
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_api_version(void) {

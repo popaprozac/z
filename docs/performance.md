@@ -202,6 +202,15 @@ comparison is useful as an edit-loop baseline, not a speedup claim: the native
 proof does not yet perform Stage 0's complete semantic analysis, runtime
 lowering, or module/interop work.
 
+Routing native emission through native module resolution and semantic analysis,
+then adding checked scalar arithmetic and control flow, measured 36.9 ms on the
+factorial fixture versus 44.8 ms for production Stage-0 `emit`. This remains a non-equivalent
+subset comparison—the native path still omits runtime and ownership lowering—
+but semantic validation is now inside the measured path rather than deferred to
+Clang. The thirty-module compiler graph measured 178.84 ms for its warm native
+phase; whole-process resolver samples were 249.6 ms for Stage 1, 249.5 ms for
+Stage 0, and 1.140 s for the hybrid gate.
+
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.
 Native module fingerprints and incremental parse/semantic caches should

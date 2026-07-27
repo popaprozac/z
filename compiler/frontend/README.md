@@ -106,8 +106,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
-  ordinary `i32`/`void` functions, value parameters, explicitly typed locals,
-  direct calls, arithmetic, and returns from the owned Stage 1 AST.
+  ordinary `i32`/`boolean`/`void` functions, value parameters, explicitly typed
+  locals, direct calls, arithmetic, assignment, `if`, `while`, loop control,
+  and returns from the owned Stage 1 AST. Signed `i32` addition, subtraction,
+  multiplication, and negation retain Z's checked-overflow behavior.
 - `parser-library.zs` is the compiler-facing root compiled into a
   content-addressed dynamic library and loaded in-process by the Bun driver.
 
@@ -125,9 +127,12 @@ bun run z check examples/language/modules/main.zs --native-frontend --timings
 
 `self-host-emit` is an end-to-end bootstrap proof rather than an alternate
 production backend. Its output compiles and runs without rebuilding a
-TypeScript AST, proving that native lexing, parsing, and C emission compose.
-Stage 0 still owns full semantic analysis, lowering, module linking, runtime
-support, foreign interop, and production `emit`/`run`.
+TypeScript AST. The command passes its canonical source batch through native
+module resolution and semantic analysis before emission, so invalid names and
+types fail before Clang. Scalar and control-flow fixtures prove that native
+lexing, parsing, semantic validation, and C emission compose.
+Stage 0 still owns full-language semantic analysis, lowering, module linking,
+runtime support, foreign interop, and production `emit`/`run`.
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend

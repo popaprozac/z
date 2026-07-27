@@ -3,11 +3,13 @@
 
 import { renderProgram } from "./parser-protocol.zs";
 import { emitC } from "./c-emitter.zs";
-import { tokenize } from "./lexer.zs";
-import { parseProgram } from "./parser.zs";
+import { parseModuleSources } from "./module-graph.zs";
+import { resolveParsedModules } from "./module-resolver.zs";
 import {
   Stage1ModuleGraphResult,
+  decodeModuleSources,
   emptyStage1ModuleGraphResult,
+  resolverMessage,
   resolveModuleGraphPhase,
 } from "./module-resolver-protocol.zs";
 import {
@@ -78,21 +80,33 @@ function stage1Parse(in path: String, in source: String): String {
   };
 }
 
-function stage1Emit(in path: String, in source: String): String {
-  const tokenOutcome = attempt tokenize(source);
-  const tokens = match (tokenOutcome) {
-    success(tokens) => tokens;
-    failure(error) => return `error\nlexer error at ${error.line}:${error.column}: ${error.message}`;
+function stage1Emit(in entryPath: String, in batch: String): String {
+  const sourceOutcome = attempt decodeModuleSources(batch);
+  const sources = match (sourceOutcome) {
+    success(sources) => sources;
+    failure(message) => return `error\n${message}`;
   };
-  const parseOutcome = attempt parseProgram(tokens);
-  const program = match (parseOutcome) {
-    success(program) => program;
-    failure(error) => return `error\nparser error at ${error.line}:${error.column}: ${error.message}`;
+  const parseOutcome = attempt parseModuleSources(sources);
+  const parsed = match (parseOutcome) {
+    success(parsed) => parsed;
+    failure(error) => {
+      const message = resolverMessage(error);
+      return `error\n${message}`;
+    }
   };
-  const emitOutcome = attempt emitC(program);
+  const resolveOutcome = attempt resolveParsedModules(parsed, entryPath);
+  const graph = match (resolveOutcome) {
+    success(graph) => graph;
+    failure(error) => {
+      const message = resolverMessage(error);
+      return `error\n${message}`;
+    }
+  };
+  const entry = graph.entry;
+  const emitOutcome = attempt emitC(parsed[entry].program);
   return match (emitOutcome) {
     success(emitted) => `ok\n${emitted}`;
-    failure(message) => `error\n${path}: ${message}`;
+    failure(message) => `error\n${entryPath}: ${message}`;
   };
 }
 

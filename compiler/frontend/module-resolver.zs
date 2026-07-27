@@ -4005,6 +4005,13 @@ export function resolveModules(
   in entryPath: String
 ): ModuleGraph throws ModuleResolveError {
   const parsed = try parseModuleSources(sources);
+  return try resolveParsedModules(parsed, entryPath);
+}
+
+export function resolveParsedModules(
+  in parsed: Array<ParsedModule>,
+  in entryPath: String
+): ModuleGraph throws ModuleResolveError {
   const entry = try findEntryModule(parsed, entryPath);
   let modules = try buildResolvedModules(parsed);
   let index: usize = 0;
