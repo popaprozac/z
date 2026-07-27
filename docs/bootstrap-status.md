@@ -696,9 +696,13 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    definitions and synthesize an active-variant deinitializer. An enum may own
    a resource struct, a struct may own that enum, and reverse scope cleanup
    reaches the active payload exactly once even when source declarations are
-   not dependency ordered. Consuming payload transfer through match, match
-   expressions, arbitrary subjects, and native `Option`/`Result`
-   representation remain the next enum tier.
+   not dependency ordered. Consuming statement match now transfers an active
+   cleanup-bearing payload into its arm binding, suppresses wrapper cleanup,
+   and destroys the binding after result evaluation. Conditional consumption
+   uses the same live-flag path as `move`, preserving wrapper cleanup only on
+   the path that did not enter the match. Match expressions, arbitrary
+   subjects, and native `Option`/`Result` representation remain the next enum
+   tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

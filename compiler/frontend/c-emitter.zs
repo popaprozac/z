@@ -411,6 +411,14 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
+    if (
+      declaration.statements[index].matchConsumesSubject
+      && declaration.statements[index].liveFlag.byteLength > 0
+    ) {
+      appendIndent(inout output, depth);
+      output.append(declaration.statements[index].liveFlag);
+      output.append(" = false;\n");
+    }
     appendIndent(inout output, depth);
     output.append("switch (");
     match (in declaration.statements[index].expression) {
@@ -440,7 +448,9 @@ function appendStatement(
             throw "native C emission received a payload arm without one binding";
           }
           appendIndent(inout output, depth + 2);
-          output.append("const ");
+          if (!declaration.statements[arm].matchBindingNeedsCleanup) {
+            output.append("const ");
+          }
           const payloadType = try cType(type);
           output.append(payloadType);
           output.append(" ");

@@ -8307,6 +8307,22 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
+    /inspect\(Z_ResourceState state\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = state\.payload\.ready;.*?_z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+  );
+  const inspectDefinition = ownedEnumEmission.stdout.slice(
+    ownedEnumEmission.stdout.indexOf("int32_t inspect(Z_ResourceState state) {"),
+    ownedEnumEmission.stdout.indexOf("int32_t inspectIf(Z_ResourceState state"),
+  );
+  assert.doesNotMatch(
+    inspectDefinition,
+    /Z_ResourceState_deinit\(&state\)/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    switch \(state\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
     /observe\(void\).*?Z_Container_deinit\(&container\);\n  Z_ResourceState_deinit\(&state\);\n  return/s,
   );
   const ownedEnumExecutable = resolve(directory, "owned-enum");

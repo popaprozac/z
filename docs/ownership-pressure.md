@@ -660,10 +660,12 @@ identifier subject emits one typed switch; scalar payload arms bind the active
 union field and execute their lowered statement body. Cleanup planning walks
 the parser's arm-to-statement-arena links, so outer owners and branch locals
 clean on arm returns and fallthrough rather than bypassing ownership through a
-new control-flow form. Consuming a cleanup-bearing payload still requires an
-explicit transfer plan for both the subject's live state and the arm binding;
-that remains the next match slice rather than silently copying an owner out of
-the union.
+new control-flow form. Cleanup-bearing payloads now have that explicit transfer
+plan too: a consuming match removes the wrapper owner, makes the active payload
+binding the arm-local owner, and cleans it after the arm's return value is
+evaluated. When the match is conditional, entering it clears the wrapper's live
+flag; the path that skips it still destroys the wrapper. The emitted C therefore
+does not infer union ownership from syntax and cannot clean both aliases.
 
 What the compiler proves:
 

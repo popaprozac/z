@@ -111,6 +111,8 @@ export struct LoweredStatement {
   cleanups: Array<LoweredCleanup>;
   liveFlag: String;
   labels: Array<String>;
+  matchConsumesSubject: boolean;
+  matchBindingNeedsCleanup: boolean;
 }
 
 export struct LoweredCleanup {
@@ -286,6 +288,17 @@ function treeMovesName(
   in name: String
 ): boolean {
   if (
+    tree.nodes[index].kind == ExpressionKind.matchExpression
+    && tree.nodes[index].value != "in"
+    && tree.nodes[index].children.length > 0
+  ) {
+    const subject = tree.nodes[index].children[0];
+    if (
+      tree.nodes[subject].kind == ExpressionKind.identifierExpression
+      && tree.nodes[subject].value == name
+    ) return true;
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.unaryExpression
     && tree.nodes[index].value == "move"
     && tree.nodes[index].children.length == 1
@@ -454,6 +467,21 @@ function planCleanupStatement(
         match (in syntax.tree) {
           some(tree) => {
             const root = tree.root;
+            const consuming = tree.nodes[root].value != "in";
+            const subject = tree.nodes[root].children[0];
+            if (
+              consuming
+              && tree.nodes[subject].kind == ExpressionKind.identifierExpression
+            ) {
+              for (const cleanup of live) {
+                if (cleanup.name == tree.nodes[subject].value) {
+                  statements[loweredIndex].liveFlag = cleanup.guard.copyBytes(
+                    0,
+                    cleanup.guard.byteLength
+                  );
+                }
+              }
+            }
             let armPosition: usize = 1;
             while (armPosition < tree.nodes[root].children.length) {
               const arm = tree.nodes[root].children[armPosition];
@@ -466,19 +494,50 @@ function planCleanupStatement(
               for (const bodyIndex of statements[loweredArm].children) {
                 loweredRoots.push(bodyIndex);
               }
+              let armLive = Array<LoweredCleanup>();
+              appendCleanupCopies(inout armLive, live);
+              let payloadCleanup = Option<LoweredCleanup>.none;
+              if (statements[loweredArm].matchBindingNeedsCleanup) {
+                const payloadType = match (in statements[loweredArm].type) {
+                  some(type) => LoweredType({
+                    kind: type.kind,
+                    name: type.name.copyBytes(0, type.name.byteLength),
+                  });
+                  none => throw "native cleanup planning lost a match payload type";
+                };
+                if (statements[loweredArm].labels.length != 1) {
+                  throw "native cleanup planning lost a match payload binding";
+                }
+                const cleanup = LoweredCleanup({
+                  name: statements[loweredArm].labels[0].copyBytes(
+                    0,
+                    statements[loweredArm].labels[0].byteLength
+                  ),
+                  type: move payloadType,
+                  guard: "",
+                });
+                armLive.push(copyCleanup(cleanup));
+                payloadCleanup = Option.some(move cleanup);
+              }
               const introduced = try planCleanupSequence(
                 program,
                 arena,
                 ownerName,
                 sourceRoots,
                 loweredRoots,
-                live,
+                armLive,
                 inout statements,
                 inout liveFlags,
                 insideLoop,
                 loopCleanups
               );
               if (sequenceFallsThrough(arena, sourceRoots)) {
+                match (in payloadCleanup) {
+                  some(cleanup) => statements[loweredArm].cleanups.push(
+                    copyCleanup(cleanup)
+                  );
+                  none => {}
+                }
                 appendStatementCleanupCopies(
                   inout statements,
                   loweredArm,
@@ -1057,6 +1116,11 @@ function lowerStatement(
         );
         children.push(loweredBody);
       }
+      const matchBindingNeedsCleanup = match (in payloadType) {
+        some(type) => tree.nodes[root].value != "in"
+          && typeNeedsCleanup(program, type);
+        none => false;
+      };
       const loweredArm = statements.length;
       statements.push(LoweredStatement({
         kind: LoweredStatementKind.matchArmStatement,
@@ -1072,6 +1136,8 @@ function lowerStatement(
         cleanups: Array<LoweredCleanup>(),
         liveFlag: "",
         labels,
+        matchConsumesSubject: false,
+        matchBindingNeedsCleanup,
       }));
       armStatements.push(loweredArm);
       armPosition = armPosition + 1;
@@ -1093,6 +1159,8 @@ function lowerStatement(
       cleanups: Array<LoweredCleanup>(),
       liveFlag: "",
       labels,
+      matchConsumesSubject: tree.nodes[root].value != "in",
+      matchBindingNeedsCleanup: false,
     }));
     return outputIndex;
           }
@@ -1180,6 +1248,8 @@ function lowerStatement(
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
     labels: Array<String>(),
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
   }));
   return outputIndex;
 }
