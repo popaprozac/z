@@ -172,6 +172,11 @@ the replacement into a temporary before destroying the previous value, then
 transfers the temporary into the still-live binding. This preserves RHS access
 to the old value without leaking or destroying the replacement twice.
 
+Cleanup classification is recursive across value-struct fields. A struct with
+no custom `deinit` still receives generated reverse field cleanup when it
+contains a cleanup-bearing struct, and locals of that outer type participate in
+the same scope plans.
+
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic
 cleanup may receive its address; source-level reassignment remains a semantic

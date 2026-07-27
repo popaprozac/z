@@ -38,6 +38,7 @@ export struct LoweredField {
 export struct LoweredStruct {
   name: String;
   fields: Array<LoweredField>;
+  needsDeinit: boolean;
   customDeinit: boolean;
 }
 
@@ -140,13 +141,31 @@ function lowerType(in program: Program, in type: TypeReference): LoweredType thr
   throw `native lowering does not support type ${type.name} yet`;
 }
 
+function aggregateNeedsCleanup(
+  in program: Program,
+  index: usize,
+  depth: usize
+): boolean {
+  if (depth > program.aggregates.length) return false;
+  match (in program.aggregates[index].deinitializer) {
+    some(_) => return true;
+    none => {}
+  }
+  for (const field of program.aggregates[index].fields) {
+    match (structIndex(program, field.type.name)) {
+      some(fieldIndex) => {
+        if (aggregateNeedsCleanup(program, fieldIndex, depth + 1)) return true;
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
   if (type.kind != LoweredTypeKind.structType) return false;
   match (structIndex(program, type.name)) {
-    some(index) => return match (in program.aggregates[index].deinitializer) {
-      some(_) => true;
-      none => false;
-    };
+    some(index) => return aggregateNeedsCleanup(program, index, 0);
     none => return false;
   }
 }
@@ -863,9 +882,14 @@ export function lowerProgram(in program: Program): LoweredProgram throws String 
       some(_) => true;
       none => false;
     };
+    const aggregateIndex = match (structIndex(program, aggregate.name)) {
+      some(index) => index;
+      none => throw `native lowering lost aggregate ${aggregate.name}`;
+    };
     structs.push(LoweredStruct({
       name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       fields,
+      needsDeinit: aggregateNeedsCleanup(program, aggregateIndex, 0),
       customDeinit,
     }));
   }

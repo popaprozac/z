@@ -4,6 +4,10 @@ struct Resource {
   deinit {}
 }
 
+struct Envelope {
+  resource: Resource;
+}
+
 function inspectBranch(resource: Resource, chooseFirst: boolean): i32 {
   if (chooseFirst) {
     return resource.id;
@@ -75,6 +79,13 @@ function replaceOwner(next: i32, replace: boolean): i32 {
   return resource.id;
 }
 
+function nestedCleanup(): i32 {
+  const envelope: Envelope = Envelope({
+    resource: Resource({ id: 42 }),
+  });
+  return envelope.resource.id;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
@@ -85,5 +96,7 @@ function main(): i32 {
     - 23
     + replaceOwner(5, true)
     - 9
+    + nestedCleanup()
+    - 42
     - 1;
 }

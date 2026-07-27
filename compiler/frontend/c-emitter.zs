@@ -431,6 +431,16 @@ function appendFunction(
   output.append("}\n\n");
 }
 
+function loweredStructNeedsDeinit(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const aggregate of program.structs) {
+    if (aggregate.name == name) return aggregate.needsDeinit;
+  }
+  return false;
+}
+
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n\n");
@@ -469,12 +479,29 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("} Z_");
     output.append(aggregate.name);
     output.append(";\n\n");
-    if (aggregate.customDeinit) {
+  }
+  for (const aggregate of program.structs) {
+    if (aggregate.needsDeinit) {
       output.append("static void Z_");
       output.append(aggregate.name);
       output.append("_deinit(Z_");
       output.append(aggregate.name);
-      output.append(" *self) {\n  (void)self;\n}\n\n");
+      output.append(" *self) {\n  (void)self;\n");
+      let fieldIndex = aggregate.fields.length;
+      while (fieldIndex > 0) {
+        fieldIndex = fieldIndex - 1;
+        if (
+          aggregate.fields[fieldIndex].type.kind == LoweredTypeKind.structType
+          && loweredStructNeedsDeinit(program, aggregate.fields[fieldIndex].type.name)
+        ) {
+          output.append("  Z_");
+          output.append(aggregate.fields[fieldIndex].type.name);
+          output.append("_deinit(&self->");
+          output.append(aggregate.fields[fieldIndex].name);
+          output.append(");\n");
+        }
+      }
+      output.append("}\n\n");
     }
   }
   for (const declaration of program.functions) {

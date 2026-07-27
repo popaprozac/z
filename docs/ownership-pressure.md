@@ -613,6 +613,13 @@ initializer may therefore read the old owner without use-after-free, while the
 old allocation cannot leak and the replacement remains covered by the ordinary
 scope-exit plan.
 
+Cleanup classification also now follows nested value storage. A data-only
+`Envelope` containing `Resource` is cleanup-bearing despite declaring no custom
+deinitializer. The native emitter synthesizes `Envelope_deinit`, destroys
+cleanup-bearing fields in reverse declaration order, and routes the outer local
+through the ordinary return cleanup plan. This prerequisite prevents
+user-written deinitializer bodies from landing on a shallow ownership model.
+
 Non-empty deinitializer bodies and path-sensitive transfer/error cleanup
 merging remain the next ownership evidence required before this tier broadens.
 

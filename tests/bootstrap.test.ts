@@ -8321,6 +8321,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
     cleanupFlowEmission.stdout,
     /replaceOwner\(int32_t next, bool replace\).*?_z_stage1_assignment_\d+ = \(Z_Resource\)\{\.id = z_stage1_checked_add_i32\(resource\.id, next\)\};\n    Z_Resource_deinit\(&resource\);\n    resource = _z_stage1_assignment_\d+;.*?Z_Resource_deinit\(&resource\);/s,
   );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /static void Z_Envelope_deinit\(Z_Envelope \*self\) \{\n  \(void\)self;\n  Z_Resource_deinit\(&self->resource\);\n\}/,
+  );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /nestedCleanup\(void\).*?_z_stage1_return_\d+ = envelope\.resource\.id;\n  Z_Envelope_deinit\(&envelope\);\n  return/s,
+  );
   const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
   const cleanupFlowCompilation = spawnSync(
     "clang",
