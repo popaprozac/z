@@ -669,7 +669,10 @@ When focused self-hosting work resumes, use this order:
    whole-value consumption now live in `semantic-expression-ownership.zs`.
    Expected/actual compatibility for callable values, contextual literals,
    nullability, Slices, and receiver-tied views now lives in
-   `semantic-expression-types.zs`.
+   `semantic-expression-types.zs`. Closure parameter contextualization,
+   callable-shape construction, and lexical capture discovery now live in
+   `semantic-closures.zs`; move/borrow effects and recursive closure-body
+   inference remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

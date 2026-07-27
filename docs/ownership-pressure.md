@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 14,978 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,111 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -380,21 +380,22 @@ The 2026-07-26 decomposition checkpoint contains 14,978 lines of Z:
 | `semantic-call-contracts.zs` | 114 | per-call capability conflicts plus pending throwing-call encoding and diagnostics |
 | `semantic-expression-ownership.zs` | 190 | initialization, storage-root discovery, use-after-move checks, and whole-value consumption |
 | `semantic-expression-types.zs` | 196 | expected/actual compatibility for functions, literals, nullability, Slices, and views |
+| `semantic-closures.zs` | 452 | closure parameter contextualization, callable-shape construction, and lexical capture discovery |
 | `semantic-flow-state.zs` | 361 | initialization/ownership binding state, capability flags, and branch merges |
 | `semantic-type-ownership.zs` | 376 | generic substitution plus cleanup, move, copy, and construction properties |
 | `semantic-generic-inference.zs` | 285 | recursive generic unification, contextual substitution, constraint checks, and type-name materialization |
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
-| `module-resolver.zs` | 4,390 | recursive expression inference, ownership-flow merging, and semantic orchestration |
+| `module-resolver.zs` | 4,071 | recursive expression inference, closure ownership effects, ownership-flow merging, and semantic orchestration |
 | protocol/library modules | 777 | temporary host boundary and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
-own twenty-module frontend graph and currently produces parity evidence for
-743 symbols, 1,486 binding/signature queries, 926 inferred local bindings, and
-3,422 root expression types. The binding and expression counts describe the
+own twenty-one-module frontend graph and currently produces parity evidence for
+769 symbols, 1,538 binding/signature queries, 929 inferred local bindings, and
+3,431 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the expression-type extraction, native lexing, parsing, resolution,
+run after the closure extraction, native lexing, parsing, resolution,
 semantic analysis, and encoding took approximately 161 ms; decoding the
 temporary text protocol took another 9 ms. These are checkpoint
 figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
@@ -421,7 +422,7 @@ What the compiler proves:
 
 The same code exposes concrete friction:
 
-- `module-resolver.zs` contains 283 explicit `String.copyBytes` calls. Some are
+- `module-resolver.zs` contains 101 explicit `String.copyBytes` calls. Some are
   correct ownership transfers into persistent evidence, but repeated canonical
   type names and identifiers make a compiler-owned string interner and stable
   symbol/type IDs a higher-value optimization than implicit String sharing.
