@@ -92,11 +92,19 @@ export struct LoweredStatement {
   secondExpression: Option<usize>;
   children: Array<usize>;
   cleanups: Array<LoweredCleanup>;
+  liveFlag: String;
 }
 
 export struct LoweredCleanup {
   name: String;
   type: LoweredType;
+  guard: String;
+}
+
+export struct LoweredLiveFlag {
+  owner: String;
+  name: String;
+  parameter: boolean;
 }
 
 export struct LoweredFunction {
@@ -107,6 +115,7 @@ export struct LoweredFunction {
   statements: Array<LoweredStatement>;
   roots: Array<usize>;
   fallthroughCleanups: Array<LoweredCleanup>;
+  liveFlags: Array<LoweredLiveFlag>;
 }
 
 export struct LoweredProgram {
@@ -178,6 +187,7 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
       kind: cleanup.type.kind,
       name: cleanup.type.name.copyBytes(0, cleanup.type.name.byteLength),
     }),
+    guard: cleanup.guard.copyBytes(0, cleanup.guard.byteLength),
   });
 }
 
@@ -242,6 +252,17 @@ function arenaHasControlFlow(in arena: StatementArena): boolean {
     ) return true;
   }
   return false;
+}
+
+function arenaHasLoop(in arena: StatementArena): boolean {
+  for (const statement of arena.nodes) {
+    if (statement.kind == StatementKind.whileStatement) return true;
+  }
+  return false;
+}
+
+function ownerLiveFlag(in name: String): String {
+  return `_z_stage1_live_${name}`;
 }
 
 function statementFallsThrough(in arena: StatementArena, index: usize): boolean {
@@ -330,6 +351,7 @@ function planCleanupStatement(
   loweredIndex: usize,
   in live: Array<LoweredCleanup>,
   inout statements: Array<LoweredStatement>,
+  inout liveFlags: Array<LoweredLiveFlag>,
   insideLoop: boolean,
   in loopCleanups: Array<LoweredCleanup>
 ): void throws String {
@@ -354,6 +376,7 @@ function planCleanupStatement(
       loweredChildren,
       live,
       inout statements,
+      inout liveFlags,
       insideLoop,
       loopCleanups
     );
@@ -389,6 +412,7 @@ function planCleanupStatement(
         loweredChild,
         live,
         inout statements,
+        inout liveFlags,
         insideLoop || arena.nodes[sourceIndex].kind == StatementKind.whileStatement,
         childLoopCleanups
       );
@@ -405,6 +429,7 @@ function planCleanupSequence(
   in loweredRoots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
   inout statements: Array<LoweredStatement>,
+  inout liveFlags: Array<LoweredLiveFlag>,
   insideLoop: boolean,
   in inheritedLoopCleanups: Array<LoweredCleanup>
 ): Array<LoweredCleanup> throws String {
@@ -422,19 +447,34 @@ function planCleanupSequence(
         some(annotation) => {
           const type = try lowerType(program, annotation);
           if (typeNeedsCleanup(program, type)) {
-            if (
-              arenaHasControlFlow(arena)
-              && arenaMovesName(arena, arena.nodes[sourceIndex].name)
-            ) {
+            const moved = arenaMovesName(arena, arena.nodes[sourceIndex].name);
+            if (moved && arenaHasLoop(arena)) {
               throw `native cleanup lowering does not support path-sensitive transfer of ${arena.nodes[sourceIndex].name} in ${ownerName} yet`;
             }
-            if (!arenaMovesName(arena, arena.nodes[sourceIndex].name)) {
+            let guard = "";
+            if (moved && arenaHasControlFlow(arena)) {
+              guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
+              statements[loweredIndex].liveFlag = guard.copyBytes(
+                0,
+                guard.byteLength
+              );
+              liveFlags.push(LoweredLiveFlag({
+                owner: arena.nodes[sourceIndex].name.copyBytes(
+                  0,
+                  arena.nodes[sourceIndex].name.byteLength
+                ),
+                name: guard.copyBytes(0, guard.byteLength),
+                parameter: false,
+              }));
+            }
+            if (!moved || guard.byteLength > 0) {
               const cleanup = LoweredCleanup({
                 name: arena.nodes[sourceIndex].name.copyBytes(
                   0,
                   arena.nodes[sourceIndex].name.byteLength
                 ),
                 type: move type,
+                guard: move guard,
               });
               live.push(copyCleanup(cleanup));
               if (insideLoop) loopCleanups.push(copyCleanup(cleanup));
@@ -463,12 +503,37 @@ function planCleanupSequence(
       loweredIndex,
       live,
       inout statements,
+      inout liveFlags,
       insideLoop,
       loopCleanups
     );
     rootIndex = rootIndex + 1;
   }
   return introduced;
+}
+
+function attachMoveLiveFlags(
+  inout expressions: Array<LoweredExpression>,
+  in liveFlags: Array<LoweredLiveFlag>
+): void {
+  let index: usize = 0;
+  while (index < expressions.length) {
+    if (
+      expressions[index].kind == LoweredExpressionKind.moveValue
+      && expressions[index].children.length == 1
+    ) {
+      const operand = expressions[index].children[0];
+      expressions[index].value = "";
+      if (expressions[operand].kind == LoweredExpressionKind.localValue) {
+        for (const flag of liveFlags) {
+          if (flag.owner == expressions[operand].value) {
+            expressions[index].value = flag.name.copyBytes(0, flag.name.byteLength);
+          }
+        }
+      }
+    }
+    index = index + 1;
+  }
 }
 
 function pushExpression(
@@ -768,6 +833,7 @@ function lowerStatement(
     secondExpression,
     children,
     cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
   }));
   return outputIndex;
 }
@@ -781,6 +847,7 @@ function lowerFunction(
   }
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
+  let liveFlags = Array<LoweredLiveFlag>();
   for (const parameter of declaration.parameters) {
     if (parameter.mode != ParameterMode.value) {
       throw `native lowering only supports value parameters in ${declaration.name} yet`;
@@ -788,16 +855,26 @@ function lowerFunction(
     const parameterType = try lowerType(program, parameter.type);
     if (typeNeedsCleanup(program, parameterType)) {
       const moved = arenaMovesName(declaration.body, parameter.name);
-      if (moved && arenaHasControlFlow(declaration.body)) {
+      if (moved && arenaHasLoop(declaration.body)) {
         throw `native cleanup lowering does not support path-sensitive transfer of ${parameter.name} in ${declaration.name} yet`;
       }
-      if (!moved) {
+      let guard = "";
+      if (moved && arenaHasControlFlow(declaration.body)) {
+        guard = ownerLiveFlag(parameter.name);
+        liveFlags.push(LoweredLiveFlag({
+          owner: parameter.name.copyBytes(0, parameter.name.byteLength),
+          name: guard.copyBytes(0, guard.byteLength),
+          parameter: true,
+        }));
+      }
+      if (!moved || guard.byteLength > 0) {
         ownedParameters.push(LoweredCleanup({
           name: parameter.name.copyBytes(0, parameter.name.byteLength),
           type: LoweredType({
             kind: parameterType.kind,
             name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
           }),
+          guard: move guard,
         }));
       }
     }
@@ -830,12 +907,14 @@ function lowerFunction(
     roots,
     ownedParameters,
     inout statements,
+    inout liveFlags,
     false,
     rootLoopCleanups
   );
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
+  attachMoveLiveFlags(inout expressions, liveFlags);
   const returnType = try lowerType(program, declaration.returnType);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
@@ -845,6 +924,7 @@ function lowerFunction(
     statements,
     roots,
     fallthroughCleanups,
+    liveFlags,
   });
 }
 
@@ -855,6 +935,7 @@ function lowerDeinitializer(
 ): LoweredFunction throws String {
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
+  let liveFlags = Array<LoweredLiveFlag>();
   let sourceRoots = Array<usize>();
   let roots = Array<usize>();
   for (const root of body.roots) {
@@ -878,11 +959,13 @@ function lowerDeinitializer(
     roots,
     inherited,
     inout statements,
+    inout liveFlags,
     false,
     loopCleanups
   );
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, introduced);
+  attachMoveLiveFlags(inout expressions, liveFlags);
   return LoweredFunction({
     name: `${ownerName}.deinit`,
     parameters: Array<LoweredParameter>(),
@@ -891,6 +974,7 @@ function lowerDeinitializer(
     statements,
     roots,
     fallthroughCleanups,
+    liveFlags,
   });
 }
 

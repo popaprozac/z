@@ -106,6 +106,21 @@ function customCleanup(): i32 {
   return envelope.resource.id;
 }
 
+function conditionalParameter(resource: Resource, transfer: boolean): i32 {
+  if (transfer) {
+    return inspectBranch(move resource, true);
+  }
+  return resource.id;
+}
+
+function conditionalLocal(transfer: boolean): i32 {
+  const resource: Resource = Resource({ id: 8 });
+  if (transfer) {
+    return inspectBranch(move resource, true);
+  }
+  return resource.id;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
@@ -120,5 +135,11 @@ function main(): i32 {
     - 42
     + customCleanup()
     - 42
+    + conditionalParameter(Resource({ id: 6 }), true)
+    + conditionalParameter(Resource({ id: 6 }), false)
+    - 12
+    + conditionalLocal(true)
+    + conditionalLocal(false)
+    - 16
     - 1;
 }

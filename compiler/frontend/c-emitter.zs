@@ -38,6 +38,11 @@ function appendCleanups(
   while (remaining > 0) {
     remaining = remaining - 1;
     appendIndent(inout output, depth);
+    if (cleanups[remaining].guard.byteLength > 0) {
+      output.append("if (");
+      output.append(cleanups[remaining].guard);
+      output.append(") ");
+    }
     output.append("Z_");
     output.append(cleanups[remaining].type.name);
     output.append("_deinit(&");
@@ -101,6 +106,14 @@ function appendExpression(
       throw "native C emission received a malformed move expression";
     }
     const operand = declaration.expressions[index].children[0];
+    if (declaration.expressions[index].value.byteLength > 0) {
+      output.append("(");
+      output.append(declaration.expressions[index].value);
+      output.append(" = false, ");
+      try appendExpression(inout output, declaration, operand);
+      output.append(")");
+      return;
+    }
     try appendExpression(inout output, declaration, operand);
     return;
   }
@@ -253,6 +266,12 @@ function appendStatement(
       none => {}
     }
     output.append(";\n");
+    if (declaration.statements[index].liveFlag.byteLength > 0) {
+      appendIndent(inout output, depth);
+      output.append("bool ");
+      output.append(declaration.statements[index].liveFlag);
+      output.append(" = true;\n");
+    }
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.returnStatement) {
@@ -312,6 +331,11 @@ function appendStatement(
         none => throw "native C emission received an assignment without a target";
       }
       output.append(` = _z_stage1_assignment_${index};\n`);
+      if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
+        appendIndent(inout output, depth);
+        output.append(declaration.statements[index].cleanups[0].guard);
+        output.append(" = true;\n");
+      }
       return;
     }
     appendIndent(inout output, depth);
@@ -433,6 +457,14 @@ function appendFunction(
 ): void throws String {
   try appendFunctionSignature(inout output, declaration);
   output.append(" {\n");
+  for (const flag of declaration.liveFlags) {
+    if (flag.parameter) {
+      appendIndent(inout output, 1);
+      output.append("bool ");
+      output.append(flag.name);
+      output.append(" = true;\n");
+    }
+  }
   for (const root of declaration.roots) {
     try appendStatement(inout output, declaration, root, 1);
   }

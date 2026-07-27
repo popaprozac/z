@@ -666,9 +666,8 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    `deinit` receive the value's address. A control-flow follow-up carries
    still-live outer parameters and locals through `if`/`while`; nested returns
    receive the current cleanup snapshot and fallthrough retains the owners.
-   Conditional transfer remains fail-closed because its divergent live states
-   need an explicit join representation. Cleanup-bearing locals within `if`
-   branches now clean at branch fallthrough and before early return; a
+   Cleanup-bearing locals within `if` branches now clean at branch fallthrough
+   and before early return; a
    fallthrough analysis omits unreachable duplicate cleanup after a terminating
    block. Loop-local owners now clean at normal iteration fallthrough and on
    explicit `break`/`continue` edges. Cleanup tracking resets at the innermost
@@ -682,8 +681,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    statements, calls, and `this` field reads before the generated reverse-field
    epilogue. Their cleanup-bearing locals use the same arena-based lexical,
    loop-edge, replacement, and fallthrough planner as ordinary function bodies,
-   and clean before stored receiver fields. Conditional transfer and error
-   cleanup merging remain future slices.
+   and clean before stored receiver fields. Conditional transfer through `if`
+   is executable for owned parameters and locals through generated live flags:
+   `move` clears the flag before handoff and cleanup is guarded on every exit.
+   Linear moves remain flag-free. Loop-carried transfer still rejects until its
+   back-edge state can join; error cleanup merging remains a future slice.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

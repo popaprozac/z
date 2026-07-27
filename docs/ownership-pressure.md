@@ -591,10 +591,8 @@ its address. Z's semantic pass still rejects reassignment.
 
 The first control-flow cleanup probe keeps an outer owner live through `if` and
 `while`. Every nested return evaluates its result and then runs the same cleanup
-snapshot; ordinary fallthrough retains the owner. A conditional move is not
-treated as a whole-function move: the lowerer rejects it until the IR can join
-divergent live states, likely through an explicit runtime live bit. Nested
-cleanup-bearing locals within `if` branches now enter a lexical cleanup plan:
+snapshot; ordinary fallthrough retains the owner. Nested cleanup-bearing locals
+within `if` branches now enter a lexical cleanup plan:
 normal branch fallthrough destroys them, and early function return receives the
 full outer-plus-inner cleanup snapshot. A small fallthrough analysis avoids
 emitting a second unreachable cleanup after a branch that always transfers
@@ -631,7 +629,14 @@ same lexical and loop-edge machinery: an owned audit local cleans after the
 user body and before the receiver's stored resource. This is both less code and
 stronger evidence than a parallel deinit-only implementation.
 
-Path-sensitive transfer and error cleanup merging remain the next ownership
+Path-sensitive transfer through `if` now uses the same live-flag principle as
+the production backend. A parameter or local that may move on one path starts
+live; the move clears its flag before the handoff; return and fallthrough
+cleanup test the flag. The untouched branch therefore destroys the owner while
+the moved branch cannot. Linear moves retain their zero-flag lowering.
+
+Loop-carried conditional transfer still rejects because its state must be
+proven at the back-edge. Error cleanup merging remains the next ownership
 evidence required before this tier broadens.
 
 What the compiler proves:

@@ -161,11 +161,18 @@ explicit lowered ownership operation that emits no C copy wrapper, removes
 cleanup from the transferring function, and leaves destruction with the final
 callee. Owners that remain live through `if` and `while` now receive cleanup on
 nested returns and ordinary fallthrough. A move combined with control flow is
-still rejected until divergent owner states can join explicitly. Owners local
-to `if` branches now clean on branch fallthrough and before early return.
+handled through `if` as described below; loop-carried transfer remains
+fail-closed. Owners local to `if` branches now clean on branch fallthrough and
+before early return.
 Loop-local owners now clean at ordinary iteration fallthrough and on the exact
 `break`/`continue` edge. The plan resets at each nested loop boundary so inner
 loop control never destroys an outer-iteration owner.
+
+Conditional owner transfer through `if` now joins through an explicit generated
+live flag. The move clears it before handoff and every later cleanup is guarded;
+the untouched path leaves it set. Straight-line moves remain flag-free.
+Loop-carried conditional transfer remains fail-closed until the back-edge joins
+the live state.
 
 Whole-binding owned replacement is executable as well. The emitter evaluates
 the replacement into a temporary before destroying the previous value, then

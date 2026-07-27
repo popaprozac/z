@@ -8337,6 +8337,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
     cleanupFlowEmission.stdout,
     /customCleanup\(void\).*?_z_stage1_return_\d+ = envelope\.resource\.id;\n  Z_AuditedEnvelope_deinit\(&envelope\);\n  return/s,
   );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /conditionalParameter\(Z_Resource resource, bool transfer\) \{\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);.*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+  );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /conditionalLocal\(bool transfer\).*?Z_Resource resource = .*?;\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+  );
   const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
   const cleanupFlowCompilation = spawnSync(
     "clang",
@@ -8347,34 +8355,36 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const cleanupFlowExecution = spawnSync(cleanupFlowExecutable, [], { encoding: "utf8" });
   assert.equal(cleanupFlowExecution.status, 42, cleanupFlowExecution.stderr);
 
-  const pathSensitiveMoveInput = resolve(directory, "path-sensitive-move.zs");
+  const loopTransferInput = resolve(directory, "loop-transfer.zs");
   writeFileSync(
-    pathSensitiveMoveInput,
+    loopTransferInput,
     [
       "struct Resource {",
       "  id: i32;",
       "  deinit {}",
       "}",
       "function consume(resource: Resource): i32 { return resource.id; }",
-      "function choose(resource: Resource, condition: boolean): i32 {",
-      "  if (condition) {",
-      "    return consume(move resource);",
+      "function inspect(resource: Resource, limit: i32): i32 {",
+      "  let index: i32 = 0;",
+      "  while (index < limit) {",
+      "    if (index == 0) return consume(move resource);",
+      "    index = index + 1;",
       "  }",
       "  return resource.id;",
       "}",
-      "function main(): i32 { return choose(Resource({ id: 42 }), false); }",
+      "function main(): i32 { return inspect(Resource({ id: 42 }), 0); }",
       "",
     ].join("\n"),
   );
-  const pathSensitiveMoveEmission = spawnSync(
+  const loopTransferEmission = spawnSync(
     process.execPath,
-    [cli, "self-host-emit", pathSensitiveMoveInput],
+    [cli, "self-host-emit", loopTransferInput],
     { encoding: "utf8" },
   );
-  assert.notEqual(pathSensitiveMoveEmission.status, 0);
+  assert.notEqual(loopTransferEmission.status, 0);
   assert.match(
-    pathSensitiveMoveEmission.stderr,
-    /native cleanup lowering does not support path-sensitive transfer of resource in choose yet/,
+    loopTransferEmission.stderr,
+    /native cleanup lowering does not support path-sensitive transfer of resource in inspect yet/,
   );
 
   const invalidInput = resolve(directory, "invalid.zs");
