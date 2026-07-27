@@ -8271,7 +8271,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     payloadEnumEmission.stdout,
-    /switch \(reading\.tag\).*?case Z_ReadingTag_count: \{\n      const int32_t value = reading\.payload\.count;\n      return value;/s,
+    /Z_Reading _z_stage1_match_\d+ = reading;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ReadingTag_count: \{\n      const int32_t value = _z_stage1_match_\d+\.payload\.count;\n      return value;/s,
   );
   const payloadEnumExecutable = resolve(directory, "payload-enum");
   const payloadEnumCompilation = spawnSync(
@@ -8307,11 +8307,17 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspect\(Z_ResourceState state\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = state\.payload\.ready;.*?_z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+    /inspect\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;.*?_z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+  );
+  const inspectStart = ownedEnumEmission.stdout.indexOf(
+    "int32_t inspect(Z_ResourceState state) {",
   );
   const inspectDefinition = ownedEnumEmission.stdout.slice(
-    ownedEnumEmission.stdout.indexOf("int32_t inspect(Z_ResourceState state) {"),
-    ownedEnumEmission.stdout.indexOf("int32_t inspectIf(Z_ResourceState state"),
+    inspectStart,
+    ownedEnumEmission.stdout.indexOf(
+      "int32_t inspectValue(Z_ResourceState state)",
+      inspectStart,
+    ),
   );
   assert.doesNotMatch(
     inspectDefinition,
@@ -8319,15 +8325,15 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectValue\(Z_ResourceState state\).*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = state\.payload\.ready;\n      int32_t _z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
+    /inspectValue\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;\n      int32_t _z_stage1_return_\d+ = resource\.id;\n      Z_Resource_deinit\(&resource\);\n      return/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  switch \(state\.tag\).*?value = resource\.id;\n      Z_Resource_deinit\(&resource\);.*?return value;/s,
+    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = resource\.id;\n      Z_Resource_deinit\(&resource\);.*?return value;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /selectResource\(Z_ResourceState state\).*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource resource = state\.payload\.ready;\n      return resource;/s,
+    /selectResource\(Z_ResourceState state\).*?Z_ResourceState _z_stage1_match_\d+ = state;.*?case Z_ResourceStateTag_ready: \{\n      const Z_Resource resource = _z_stage1_match_\d+\.payload\.ready;\n      return resource;/s,
   );
   const ownedLocalStart = ownedEnumEmission.stdout.indexOf(
     "int32_t inspectOwnedLocal(void) {",
@@ -8335,7 +8341,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const ownedLocalDefinition = ownedEnumEmission.stdout.slice(
     ownedLocalStart,
     ownedEnumEmission.stdout.indexOf(
-      "int32_t inspectIf(Z_ResourceState state",
+      "Z_ResourceState makeState(int32_t id)",
       ownedLocalStart,
     ),
   );
@@ -8349,7 +8355,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    switch \(state\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
+    /inspectCall\(void\) \{\n  Z_ResourceState _z_stage1_match_\d+ = makeState\(42\);\n  switch \(_z_stage1_match_\d+\.tag\)/,
+  );
+  assert.match(
+    ownedEnumEmission.stdout,
+    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&resource\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
   );
   assert.match(
     ownedEnumEmission.stdout,

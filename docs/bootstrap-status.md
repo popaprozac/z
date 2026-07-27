@@ -707,9 +707,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    exhaustive arm assignments. Cleanup-bearing arm values may transfer directly
    into either a return or the local result; scalar projections instead clean
    the payload at arm exit, and owned local results join ordinary reverse scope
-   cleanup. Inferred match-result bindings, selecting arm blocks, arbitrary
-   subjects, and native `Option`/`Result` representation remain the next enum
-   tier.
+   cleanup. Consuming constructor and call subjects now move into one typed
+   temporary before dispatch, guaranteeing single evaluation while the selected
+   payload becomes the arm owner. Borrowed matches remain tied to stored source
+   storage. Inferred match-result bindings, selecting arm blocks, and native
+   `Option`/`Result` representation remain the next enum tier.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

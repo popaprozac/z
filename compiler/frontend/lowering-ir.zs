@@ -1117,9 +1117,6 @@ function lowerMatchTree(
     throw "native match lowering received a malformed match expression";
   }
   const subjectInput = tree.nodes[root].children[0];
-  if (tree.nodes[subjectInput].kind != ExpressionKind.identifierExpression) {
-    throw "native match lowering only supports identifier subjects yet";
-  }
   const subject = try lowerExpression(program, tree, subjectInput, inout expressions);
   const declarationIndex = try matchEnumIndex(program, tree, root);
   let armStatements = Array<usize>();
@@ -1265,7 +1262,13 @@ function lowerMatchTree(
       0,
       program.enums[declarationIndex].name.byteLength
     ),
-    type: Option<LoweredType>.none,
+    type: Option.some(LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: program.enums[declarationIndex].name.copyBytes(
+        0,
+        program.enums[declarationIndex].name.byteLength
+      ),
+    })),
     expression: Option.some(subject),
     secondExpression: Option<usize>.none,
     children: armStatements,

@@ -430,17 +430,40 @@ function appendStatement(
       output.append(declaration.statements[index].liveFlag);
       output.append(" = false;\n");
     }
+    const matchTemporary = `_z_stage1_match_${index}`;
+    if (declaration.statements[index].matchConsumesSubject) {
+      const subjectType = match (in declaration.statements[index].type) {
+        some(type) => try cType(type);
+        none => throw "native C emission received an untyped match subject";
+      };
+      appendIndent(inout output, depth);
+      output.append(subjectType);
+      output.append(" ");
+      output.append(matchTemporary);
+      output.append(" = ");
+      match (in declaration.statements[index].expression) {
+        some(subject) => try appendExpression(
+          inout output,
+          declaration,
+          subject
+        );
+        none => throw "native C emission received a match without a subject";
+      }
+      output.append(";\n");
+    }
     appendIndent(inout output, depth);
     output.append("switch (");
-    match (in declaration.statements[index].expression) {
-      some(subject) => {
-        try appendExpression(inout output, declaration, subject);
-        if (declaration.statements[index].labels.length > 0) {
-          output.append(".tag");
+    if (declaration.statements[index].matchConsumesSubject) {
+      output.append(matchTemporary);
+    } else {
+      match (in declaration.statements[index].expression) {
+        some(subject) => {
+          try appendExpression(inout output, declaration, subject);
         }
+        none => throw "native C emission received a match without a subject";
       }
-      none => throw "native C emission received a match without a subject";
     }
+    if (declaration.statements[index].labels.length > 0) output.append(".tag");
     output.append(") {\n");
     for (const arm of declaration.statements[index].children) {
       if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
@@ -467,13 +490,17 @@ function appendStatement(
           output.append(" ");
           output.append(declaration.statements[arm].labels[0]);
           output.append(" = ");
-          match (in declaration.statements[index].expression) {
-            some(subject) => try appendExpression(
-              inout output,
-              declaration,
-              subject
-            );
-            none => throw "native C emission received a match without a subject";
+          if (declaration.statements[index].matchConsumesSubject) {
+            output.append(matchTemporary);
+          } else {
+            match (in declaration.statements[index].expression) {
+              some(subject) => try appendExpression(
+                inout output,
+                declaration,
+                subject
+              );
+              none => throw "native C emission received a match without a subject";
+            }
           }
           output.append(".payload.");
           output.append(declaration.statements[arm].name);

@@ -679,6 +679,13 @@ ownership transfers into the result and the arm does not clean the old name;
 if the arm only projects a scalar, the payload remains arm-local and cleans
 after assignment. The resulting owned local then follows the ordinary
 scope-exit plan.
+Consuming match subjects now always normalize through one typed temporary.
+That makes a constructor or function-call subject evaluate exactly once before
+the tag switch and gives the union storage a stable identity for arm binding.
+The wrapper temporary is consumed by dispatch rather than separately cleaned;
+the active payload either cleans in the arm or transfers into its result.
+Borrowed `match (in value)` continues to access the required stored source
+directly instead of manufacturing a copied borrow.
 
 What the compiler proves:
 

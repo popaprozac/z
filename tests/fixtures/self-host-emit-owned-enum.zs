@@ -51,6 +51,24 @@ function inspectOwnedLocal(): i32 {
   return selected.id;
 }
 
+function makeState(id: i32): ResourceState {
+  return ResourceState.ready(Resource({ id }));
+}
+
+function inspectTemporary(): i32 {
+  return match (ResourceState.ready(Resource({ id: 42 }))) {
+    ready(resource) => resource.id;
+    empty => 0;
+  };
+}
+
+function inspectCall(): i32 {
+  return match (makeState(42)) {
+    ready(resource) => resource.id;
+    empty => 0;
+  };
+}
+
 function inspectIf(
   state: ResourceState,
   inspectNow: boolean
@@ -69,7 +87,7 @@ function observe(): i32 {
   const container: Container = Container({
     state: ResourceState.ready(Resource({ id: 1 })),
   });
-  return inspectOwnedLocal();
+  return inspectCall();
 }
 
 function main(): i32 {
