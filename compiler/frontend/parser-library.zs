@@ -3,9 +3,9 @@
 
 import { renderProgram } from "./parser-protocol.zs";
 import {
-  RenderedModuleGraph,
-  emptyRenderedModuleGraph,
-  renderModuleGraph,
+  Stage1ModuleGraphResult,
+  emptyStage1ModuleGraphResult,
+  resolveModuleGraphPhase,
 } from "./module-resolver-protocol.zs";
 import {
   ModuleSymbol,
@@ -14,7 +14,8 @@ import {
 
 struct Stage1ResolveResponse {
   success: boolean;
-  graph: RenderedModuleGraph;
+  error: String;
+  graph: Stage1ModuleGraphResult;
 }
 
 function stage1SymbolKindCode(in symbol: ModuleSymbol): usize {
@@ -78,15 +79,17 @@ function stage1Resolve(
   in entryPath: String,
   in batch: String
 ): Stage1ResolveResponse {
-  const outcome = attempt renderModuleGraph(entryPath, batch);
+  const outcome = attempt resolveModuleGraphPhase(entryPath, batch);
   return match (outcome) {
     success(graph) => Stage1ResolveResponse({
       success: true,
-      graph: move graph,
+      error: "",
+      graph,
     });
     failure(message) => Stage1ResolveResponse({
       success: false,
-      graph: emptyRenderedModuleGraph(move message),
+      error: move message,
+      graph: emptyStage1ModuleGraphResult(),
     });
   };
 }

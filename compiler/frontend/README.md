@@ -127,9 +127,9 @@ supported semantic subset. The opt-in bridge keeps diagnostics stable while
 measuring equivalent work and finding semantic composition gaps.
 `--timings` is available only with this bridge.
 
-The text protocol is a bootstrap boundary, not the intended final frontend API.
-The structural replacement now returns one owned native response handle from
-the resolver. Entry identity, module paths, dependency lists, dependency order,
+The parser text protocol remains a bootstrap boundary. Resolver phase API
+version 1 now returns one owned native result handle. Entry identity, module
+paths, dependency lists, dependency order,
 graph/evidence counts, and symbol identity are queried directly through that
 handle and consumed by the host. One bulk fixed-width record fill carries every
 symbol's kind, export state, imported name, local target, and source location.
@@ -141,12 +141,13 @@ Together they preserve fields, variants, visibility, read-only state, trait
 conformance, receiver capabilities, async/error effects, and executor affinity.
 Call-resolution bases/items, inferred-binding records, root-expression records,
 and their flattened nominal-identity paths complete the same structural
-handoff. The successful compatibility stream is now empty: topology, symbols,
-signatures, and semantic evidence all come from bulk fixed-width queries over
-the retained graph. Resolver failures still use the temporary framed diagnostic
-payload. The retained handle owns the resolved Z graph and all borrowed strings
-until the host releases it, so the host never needs a second native resolution
-or an escaping borrowed lifetime.
+handoff. Success has no text payload: topology, symbols, signatures, and semantic
+evidence all come from bulk fixed-width queries over the retained graph.
+Resolver failures alone use the temporary framed diagnostic payload. The
+retained handle owns the resolved Z graph and all borrowed strings until the
+host releases it, so the host never needs a second native resolution or an
+escaping borrowed lifetime. The host rejects unknown API versions before
+creating a result.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. A
 shared stage-zero loader discovers that canonical source batch once for both the
@@ -154,8 +155,8 @@ current linker and native parity boundary. The in-process command compares its
 module indexes, lexical edges, entry, dependency-first order, symbol kinds,
 export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
-lex/parse/resolve/symbol/name/type work, compatibility-stream decode, and
-stage-zero parity work. Identifier and expression-level type lookup currently cover materialized
+lex/parse/resolve plus structural handoff, and stage-zero parity work.
+Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
@@ -211,8 +212,7 @@ A representative ordinary-check corpus now covers the native frontend itself,
 two application-shaped multi-module programs, `Result`, arenas, owned closures,
 generic constraints, async ownership, and C++-backed resource fields. Every
 Stage-0 semantic resolution observed on that corpus has a validated native
-authority contract. Stabilizing this retained-graph query surface as a native
-phase API and migrating the remaining unsupported ownership/effect contexts are
-later self-hosting layers.
+authority contract. Migrating the remaining unsupported ownership/effect
+contexts is the next self-hosting layer.
 The ordered continuation plan and resume criteria live in
 [`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-resume-point).

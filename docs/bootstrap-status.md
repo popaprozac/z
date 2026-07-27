@@ -689,18 +689,17 @@ When focused self-hosting work resumes, use this order:
    boundaries, escaping closure environments, precise borrow last-use release,
    receiver-path capabilities, and recursive ownership contexts. Do not port a
    feature merely for nominal completeness; add a realistic corpus case first.
-3. Stabilize the completed structural in-process phase handoff. One owned native
-   response handle supplies entry, module paths, dependency lists/order,
+3. Keep the completed version-1 structural phase API green. One owned native
+   result handle supplies entry, module paths, dependency lists/order,
    symbols, every signature shape, and all call/binding/expression evidence.
    Bulk fixed-width base/item batches preserve generic constraints, fields,
    variants, trait conformance, capabilities, effects, source locations, and
-   flattened nominal-identity paths. The successful compatibility stream is
-   empty; only resolver failures retain the temporary framed diagnostic payload.
-   Preserve canonical module-local locations and the guarded Stage-0 fallback
-   while turning this retained-graph query surface into the stable native phase
-   API.
-   Measure cold library preparation, warm native work, compatibility/handoff
-   cost, and Stage-0 parity separately.
+   flattened nominal-identity paths. Success has no text payload; only resolver
+   failures retain the temporary framed diagnostic payload. The host validates
+   the API version, structural cardinalities, references, and owned-handle
+   lifecycle before adopting the canonical graph directly. Preserve canonical
+   module-local locations and the guarded Stage-0 fallback. Measure cold library
+   preparation, warm native work/handoff, and Stage-0 parity separately.
 4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.

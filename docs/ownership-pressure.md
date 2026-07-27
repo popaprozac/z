@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,210 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,207 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -391,7 +391,7 @@ The 2026-07-26 decomposition checkpoint contains 15,210 lines of Z:
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
 | `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
-| protocol/library modules | 464 | structural response handle, complete structural graph/evidence projection, and in-process entry points |
+| protocol/library modules | 461 | versioned structural phase result, complete graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-five-module frontend graph and currently produces parity evidence for
@@ -399,10 +399,9 @@ own twenty-five-module frontend graph and currently produces parity evidence for
 3,427 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the complete structural-evidence slice, native lexing, parsing,
-resolution, semantic analysis, and response-handle creation took approximately
-168 ms; validating the now-empty successful compatibility stream took another
-1.39 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
+run after phase API version 1 landed, native lexing, parsing, resolution,
+semantic analysis, structural validation, and graph adoption took approximately
+166 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
@@ -410,10 +409,12 @@ variant, conformance, capability, and effect details. The strings remain
 borrowed from the owned graph handle until the host releases it, avoiding
 per-field FFI calls while making that lifetime contract meaningful. Additional
 base/item batches carry call targets and substitutions; binding/expression
-batches carry inferred types and flattened nominal identities. The successful
-text stream is empty. The corresponding whole-process samples were 262.2 ms for
-Stage 1, 278.1 ms for Stage 0, and 1.159 s for the hybrid parity path. Stage 1
-was 1.06 times faster than the ordinary Stage-0 check in this sample. These are
+batches carry inferred types and flattened nominal identities. Success no
+longer creates, returns, copies, or decodes a text payload; the host adopts the
+canonical graph returned by the versioned phase API directly. The corresponding
+whole-process samples were 261.0 ms for Stage 1, 278.9 ms for Stage 0, and
+1.143 s for the hybrid parity path. Stage 1 was 1.07 times faster than the
+ordinary Stage-0 check in this sample. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
 
@@ -455,15 +456,21 @@ The same code exposes concrete friction:
   and its projected fields overlapped. Naming and copying the scalar/text field
   values before the call made the ownership proof explicit and safe, but the
   ceremony is useful evidence for future projection and borrow ergonomics.
+- Building the versioned phase response exposed a narrower parity edge: Stage 0
+  accepted an explicit `move` on a consuming match payload while native
+  authority classified that spelling as non-unique. Passing the payload directly
+  into its owned aggregate field is the intended contextual move and checks
+  identically in both frontends. The redundant explicit spelling remains a
+  native-ownership diagnostic gap to revisit; it does not require new syntax.
 - Operator typing provided a useful boundary test: copy/move eligibility and
   scalar result typing moved behind an ordinary Z module, while short-circuit
   branch merging and actual `move` consumption remained in the recursive flow
   engine. No borrowed context object or trait-typed indirection was needed.
 - The output-side structural handoff keeps one native result alive while the
-  host queries graph/evidence cardinalities, module paths, dependency lists, and
-  dependency order. It adds no second resolver pass, gives later symbol queries
-  an explicit lifetime owner, and has already removed topology records from the
-  compatibility stream.
+  host queries every graph/signature/evidence batch. API version 1 adds no
+  second resolver pass, gives borrowed strings an explicit lifetime owner,
+  validates references before graph adoption, and reserves text payloads for
+  failures only.
 - Splitting private helpers across source modules requires exporting their
   shared implementation types and functions; Z has explicit public exports but
   no package-private visibility tier. This is manageable, but the resulting

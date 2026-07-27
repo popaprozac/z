@@ -12,8 +12,7 @@ import {
 import { resolveModules } from "./module-resolver.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
-export struct RenderedModuleGraph {
-  stream: String;
+export struct Stage1ModuleGraphResult {
   entry: usize;
   moduleCount: usize;
   dependencyCount: usize;
@@ -25,11 +24,8 @@ export struct RenderedModuleGraph {
   resolved: ModuleGraph;
 }
 
-export function emptyRenderedModuleGraph(
-  stream: String
-): RenderedModuleGraph {
-  return RenderedModuleGraph({
-    stream,
+export function emptyStage1ModuleGraphResult(): Stage1ModuleGraphResult {
+  return Stage1ModuleGraphResult({
     entry: 0,
     moduleCount: 0,
     dependencyCount: 0,
@@ -132,10 +128,10 @@ function resolverMessage(in error: ModuleResolveError): String {
   return output.finish();
 }
 
-export function renderModuleGraph(
+export function resolveModuleGraphPhase(
   in entryPath: String,
   in batch: String
-): RenderedModuleGraph throws String {
+): Stage1ModuleGraphResult throws String {
   const sources = try decodeModuleSources(batch);
   const outcome = attempt resolveModules(sources, entryPath);
   const graph = match (outcome) {
@@ -143,7 +139,6 @@ export function renderModuleGraph(
     failure(error) => throw resolverMessage(error);
   };
 
-  let output = TextBuffer();
   let dependencyCount: usize = 0;
   let symbolCount: usize = 0;
   let callResolutionCount: usize = 0;
@@ -159,8 +154,7 @@ export function renderModuleGraph(
     expressionResolutionCount = expressionResolutionCount
       + module.semanticEvidence.expressionResolutions.length;
   }
-  return RenderedModuleGraph({
-    stream: output.finish(),
+  return Stage1ModuleGraphResult({
     entry: graph.entry,
     moduleCount: graph.modules.length,
     dependencyCount,

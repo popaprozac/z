@@ -4,6 +4,16 @@ import {
   isNativeFrontendDiagnosticKind,
   NativeFrontendDiagnosticError,
 } from "./native-frontend-diagnostics.ts";
+import type {
+  Stage1ModuleBindingResolution,
+  Stage1ModuleCallResolution,
+  Stage1ModuleExpressionResolution,
+  Stage1ModuleFunctionSignature,
+  Stage1ModuleGraph,
+  Stage1ModuleSymbol,
+  Stage1ModuleTypeIdentity,
+  Stage1ModuleTypeSignature,
+} from "./self-hosting.ts";
 
 export type NativeFrontendGraphSummary = {
   readonly entry: number;
@@ -16,123 +26,25 @@ export type NativeFrontendGraphSummary = {
   readonly expressionResolutionCount: number;
 };
 
-export type NativeFrontendModuleStructure = {
-  readonly path: string;
-  readonly dependencies: readonly number[];
-  readonly symbols: readonly NativeFrontendSymbolStructure[];
-  readonly callResolutions: readonly NativeFrontendCallResolutionStructure[];
-  readonly bindingResolutions: readonly NativeFrontendBindingResolutionStructure[];
-  readonly expressionResolutions: readonly NativeFrontendExpressionResolutionStructure[];
-};
-
-export type NativeFrontendSymbolStructure = {
-  readonly name: string;
-  readonly kind: "function" | "struct" | "class" | "trait" | "type" | "enum" | "namespace" | "imported";
-  readonly exported: boolean;
-  readonly targetModule: number | null;
-  readonly importedName: string;
-  readonly functionSignature: NativeFrontendFunctionSignatureStructure | null;
-  readonly typeSignature: NativeFrontendTypeSignatureStructure | null;
-  readonly offset: number;
-  readonly line: number;
-  readonly column: number;
-};
-
-export type NativeFrontendFunctionSignatureStructure = {
-  readonly asynchronous: boolean;
-  readonly executorAffinity: string | null;
-  readonly typeParameters: readonly string[];
-  readonly typeParameterConstraints: readonly {
-    readonly parameter: string;
-    readonly traitName: string;
-  }[];
-  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
-  readonly parameterTypes: readonly string[];
-  readonly returnType: string;
-  readonly errorType: string | null;
-};
-
-export type NativeFrontendTypeSignatureStructure = {
-  readonly typeParameters: readonly string[];
-  readonly typeParameterConstraints: readonly {
-    readonly parameter: string;
-    readonly traitName: string;
-  }[];
-  readonly executorAffinity: string | null;
-  readonly implementedTraits: readonly string[];
-  readonly fields: readonly {
-    readonly name: string;
-    readonly typeName: string;
-    readonly visibility: "public" | "private";
-    readonly readonlyField: boolean;
-  }[];
-  readonly methods: readonly {
-    readonly name: string;
-    readonly staticMethod: boolean;
-    readonly visibility: "public" | "private";
-    readonly receiverMode: "in" | "inout" | "move";
-    readonly signature: NativeFrontendFunctionSignatureStructure;
-  }[];
-  readonly variants: readonly {
-    readonly name: string;
-    readonly payloadType: string | null;
-  }[];
-  readonly customDeinit: boolean;
-  readonly customConstructor: boolean;
-  readonly constructorSignature: NativeFrontendFunctionSignatureStructure | null;
-};
-
-export type NativeFrontendTypeIdentityStructure = {
-  readonly path: string;
-  readonly targetModule: number;
-  readonly targetSymbol: number;
-};
-
-export type NativeFrontendCallResolutionStructure = {
-  readonly offset: number;
-  readonly line: number;
-  readonly column: number;
-  readonly targetModule: number;
-  readonly targetSymbol: number;
-  readonly kind: "function" | "method" | "constructor";
-  readonly targetName: string;
-  readonly asynchronous: boolean;
-  readonly receiverMode: string;
-  readonly typeParameters: readonly string[];
-  readonly typeArguments: readonly string[];
-  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
-  readonly parameterTypes: readonly string[];
-  readonly returnType: string;
-  readonly errorType: string | null;
-};
-
-export type NativeFrontendBindingResolutionStructure = {
-  readonly offset: number;
-  readonly line: number;
-  readonly column: number;
-  readonly name: string;
-  readonly mutableBinding: boolean;
-  readonly typeName: string;
-  readonly typeIdentities: readonly NativeFrontendTypeIdentityStructure[];
-};
-
-export type NativeFrontendExpressionResolutionStructure = {
-  readonly offset: number;
-  readonly line: number;
-  readonly column: number;
-  readonly typeName: string;
-  readonly typeIdentities: readonly NativeFrontendTypeIdentityStructure[];
-};
-
-export type NativeFrontendGraphStructure = {
-  readonly modules: readonly NativeFrontendModuleStructure[];
-  readonly dependencyOrder: readonly number[];
-};
-
-export type NativeFrontendResolverResponse = {
-  readonly stream: string;
+export type NativeFrontendPhaseResult = {
   readonly summary: NativeFrontendGraphSummary;
-  readonly structure: NativeFrontendGraphStructure;
+  readonly graph: Stage1ModuleGraph;
+};
+
+type NativeFrontendSymbolStructure = Stage1ModuleSymbol;
+type NativeFrontendFunctionSignatureStructure = Stage1ModuleFunctionSignature;
+type NativeFrontendTypeSignatureStructure = Stage1ModuleTypeSignature;
+type NativeFrontendTypeIdentityStructure = Stage1ModuleTypeIdentity;
+type NativeFrontendCallResolutionStructure = Stage1ModuleCallResolution;
+type NativeFrontendBindingResolutionStructure = Stage1ModuleBindingResolution;
+type NativeFrontendExpressionResolutionStructure = Stage1ModuleExpressionResolution;
+type MutableNativeFrontendModule = {
+  path: string;
+  dependencies: number[];
+  symbols: NativeFrontendSymbolStructure[];
+  callResolutions: NativeFrontendCallResolutionStructure[];
+  bindingResolutions: NativeFrontendBindingResolutionStructure[];
+  expressionResolutions: NativeFrontendExpressionResolutionStructure[];
 };
 
 export function parseWithNativeFrontendLibrary(libraryPath: string, inputPaths: readonly string[]): string {
@@ -179,8 +91,11 @@ export function resolveWithNativeFrontendLibrary(
   libraryPath: string,
   entryPath: string,
   batch: Buffer,
-): NativeFrontendResolverResponse {
+): NativeFrontendPhaseResult {
   const library = dlopen(libraryPath, {
+    z_stage1_resolve_api_version: {
+      returns: FFIType.u64,
+    },
     z_stage1_resolve: {
       args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
       returns: FFIType.ptr,
@@ -189,7 +104,7 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr],
       returns: FFIType.u8,
     },
-    z_stage1_resolve_payload: {
+    z_stage1_resolve_error_payload: {
       args: [FFIType.ptr],
       returns: FFIType.ptr,
     },
@@ -335,6 +250,13 @@ export function resolveWithNativeFrontendLibrary(
     },
   });
   try {
+    const apiVersion = nativeUsize(
+      library.symbols.z_stage1_resolve_api_version(),
+      "resolver API version",
+    );
+    if (apiVersion !== 1) {
+      throw new Error(`unsupported native frontend resolver API version ${apiVersion}`);
+    }
     const entryBytes = Buffer.from(entryPath, "utf8");
     const entryStorage = entryBytes.byteLength > 0 ? entryBytes : Buffer.alloc(1);
     const batchStorage = batch.byteLength > 0 ? batch : Buffer.alloc(1);
@@ -346,13 +268,12 @@ export function resolveWithNativeFrontendLibrary(
     );
     if (!responsePointer) throw new Error("the native frontend library returned a null resolver response");
     try {
-      const payloadPointer = library.symbols.z_stage1_resolve_payload(responsePointer);
-      if (!payloadPointer) {
-        throw new Error("the native frontend library returned a null resolver payload");
-      }
-      const payload = new CString(payloadPointer).toString();
       if (library.symbols.z_stage1_resolve_success(responsePointer) !== 1) {
-        throw decodeNativeResolverError(payload);
+        const payloadPointer = library.symbols.z_stage1_resolve_error_payload(responsePointer);
+        if (!payloadPointer) {
+          throw new Error("the native frontend library returned a null resolver error payload");
+        }
+        throw decodeNativeResolverError(new CString(payloadPointer).toString());
       }
       const summary: NativeFrontendGraphSummary = {
         entry: nativeUsize(library.symbols.z_stage1_resolve_entry(responsePointer), "entry"),
@@ -385,14 +306,7 @@ export function resolveWithNativeFrontendLibrary(
           "expression-resolution count",
         ),
       };
-      const modules: {
-        path: string;
-        dependencies: number[];
-        symbols: NativeFrontendSymbolStructure[];
-        callResolutions: NativeFrontendCallResolutionStructure[];
-        bindingResolutions: NativeFrontendBindingResolutionStructure[];
-        expressionResolutions: NativeFrontendExpressionResolutionStructure[];
-      }[] = [];
+      const modules: MutableNativeFrontendModule[] = [];
       const moduleSymbolCounts: number[] = [];
       for (let moduleIndex = 0; moduleIndex < summary.moduleCount; moduleIndex += 1) {
         const pathLength = nativeUsize(
@@ -512,9 +426,11 @@ export function resolveWithNativeFrontendLibrary(
             ),
             functionSignature: null,
             typeSignature: null,
-            offset: field(8, "offset"),
-            line: field(9, "line"),
-            column: field(10, "column"),
+            location: {
+              offset: field(8, "offset"),
+              line: field(9, "line"),
+              column: field(10, "column"),
+            },
           });
           recordIndex += 1;
         }
@@ -1665,16 +1581,83 @@ export function resolveWithNativeFrontendLibrary(
           throw new Error("the native frontend returned sparse type identities");
         }
       }
+      validateNativeFrontendPhaseGraph(summary, modules, dependencyOrder);
       return {
-        stream: payload,
         summary,
-        structure: { modules, dependencyOrder },
+        graph: {
+          modules,
+          dependencyOrder,
+          entry: summary.entry,
+        },
       };
     } finally {
       library.symbols.z_stage1_resolve_free(responsePointer);
     }
   } finally {
     library.close();
+  }
+}
+
+function validateNativeFrontendPhaseGraph(
+  summary: NativeFrontendGraphSummary,
+  modules: readonly MutableNativeFrontendModule[],
+  dependencyOrder: readonly number[],
+): void {
+  const dependencyCount = modules.reduce(
+    (count, module) => count + module.dependencies.length,
+    0,
+  );
+  const symbolCount = modules.reduce(
+    (count, module) => count + module.symbols.length,
+    0,
+  );
+  const callResolutionCount = modules.reduce(
+    (count, module) => count + module.callResolutions.length,
+    0,
+  );
+  const bindingResolutionCount = modules.reduce(
+    (count, module) => count + module.bindingResolutions.length,
+    0,
+  );
+  const expressionResolutionCount = modules.reduce(
+    (count, module) => count + module.expressionResolutions.length,
+    0,
+  );
+  if (
+    summary.entry >= modules.length
+    || summary.moduleCount !== modules.length
+    || summary.dependencyCount !== dependencyCount
+    || summary.dependencyOrderCount !== dependencyOrder.length
+    || summary.symbolCount !== symbolCount
+    || summary.callResolutionCount !== callResolutionCount
+    || summary.bindingResolutionCount !== bindingResolutionCount
+    || summary.expressionResolutionCount !== expressionResolutionCount
+  ) {
+    throw new Error("the native frontend phase summary does not match its graph");
+  }
+  for (const module of modules) {
+    if (module.dependencies.some((dependency) => dependency >= modules.length)) {
+      throw new Error("the native frontend returned an invalid module dependency");
+    }
+    if (module.symbols.some((symbol) => (
+      symbol.targetModule !== null && symbol.targetModule >= modules.length
+    ))) {
+      throw new Error("the native frontend returned an invalid symbol target");
+    }
+    if (module.callResolutions.some((resolution) => (
+      !modules[resolution.targetModule]?.symbols[resolution.targetSymbol]
+    ))) {
+      throw new Error("the native frontend returned an invalid call-resolution target");
+    }
+    if (module.symbols.some((symbol) => (
+      symbol.typeSignature?.customConstructor === true
+      && symbol.typeSignature.constructorSignature === null
+    ))) {
+      throw new Error("the native frontend returned a type without its custom constructor");
+    }
+  }
+  if (dependencyOrder.some((moduleIndex) => moduleIndex >= modules.length)) {
+    throw new Error("the native frontend returned an invalid dependency order");
   }
 }
 
