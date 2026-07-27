@@ -193,6 +193,7 @@ function appendBranch(
     for (const child of declaration.statements[index].children) {
       try appendStatement(inout output, declaration, child, depth);
     }
+    appendCleanups(inout output, declaration.statements[index].cleanups, depth);
     return;
   }
   try appendStatement(inout output, declaration, index, depth);
@@ -306,6 +307,11 @@ function appendStatement(
     for (const child of declaration.statements[index].children) {
       try appendStatement(inout output, declaration, child, depth + 1);
     }
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth + 1
+    );
     appendIndent(inout output, depth);
     output.append("}\n");
     return;

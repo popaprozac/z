@@ -30,9 +30,31 @@ function localBranch(chooseFirst: boolean): i32 {
   return resource.id + 2;
 }
 
+function branchLocal(chooseFirst: boolean): i32 {
+  let observed: i32 = 0;
+  if (chooseFirst) {
+    const branch: Resource = Resource({ id: 3 });
+    observed = branch.id;
+  } else {
+    const alternate: Resource = Resource({ id: 30 });
+    observed = alternate.id;
+  }
+  return observed;
+}
+
+function earlyBranch(chooseFirst: boolean): i32 {
+  if (chooseFirst) {
+    const branch: Resource = Resource({ id: 4 });
+    return branch.id;
+  }
+  return 0;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
     + localBranch(false)
-    + 6;
+    + branchLocal(true)
+    + earlyBranch(true)
+    - 1;
 }

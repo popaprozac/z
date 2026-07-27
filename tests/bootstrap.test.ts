@@ -8305,6 +8305,14 @@ test("emits and runs the first program directly from the native Z AST", () => {
     cleanupFlowEmission.stdout,
     /localBranch\(bool chooseFirst\).*?if \(chooseFirst\).*?Z_Resource_deinit\(&resource\);.*?Z_Resource_deinit\(&resource\);/s,
   );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /branchLocal\(bool chooseFirst\).*?observed = branch\.id;\n    Z_Resource_deinit\(&branch\);.*?observed = alternate\.id;\n    Z_Resource_deinit\(&alternate\);/s,
+  );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /earlyBranch\(bool chooseFirst\).*?_z_stage1_return_\d+ = branch\.id;\n    Z_Resource_deinit\(&branch\);\n    return/s,
+  );
   const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
   const cleanupFlowCompilation = spawnSync(
     "clang",
@@ -8343,6 +8351,38 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     pathSensitiveMoveEmission.stderr,
     /native cleanup lowering does not support path-sensitive transfer of resource in choose yet/,
+  );
+
+  const loopLocalOwnerInput = resolve(directory, "loop-local-owner.zs");
+  writeFileSync(
+    loopLocalOwnerInput,
+    [
+      "struct Resource {",
+      "  id: i32;",
+      "  deinit {}",
+      "}",
+      "function inspect(limit: i32): i32 {",
+      "  let index: i32 = 0;",
+      "  while (index < limit) {",
+      "    const resource: Resource = Resource({ id: index });",
+      "    if (index == 2) return resource.id;",
+      "    index = index + 1;",
+      "  }",
+      "  return 0;",
+      "}",
+      "function main(): i32 { return inspect(3); }",
+      "",
+    ].join("\n"),
+  );
+  const loopLocalOwnerEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", loopLocalOwnerInput],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(loopLocalOwnerEmission.status, 0);
+  assert.match(
+    loopLocalOwnerEmission.stderr,
+    /native cleanup lowering does not support loop-local owner resource in inspect yet/,
   );
 
   const invalidInput = resolve(directory, "invalid.zs");

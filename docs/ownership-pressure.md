@@ -594,12 +594,16 @@ The first control-flow cleanup probe keeps an outer owner live through `if` and
 snapshot; ordinary fallthrough retains the owner. A conditional move is not
 treated as a whole-function move: the lowerer rejects it until the IR can join
 divergent live states, likely through an explicit runtime live bit. Nested
-cleanup-bearing locals also reject rather than silently escape their lexical
-scope.
+cleanup-bearing locals within `if` branches now enter a lexical cleanup plan:
+normal branch fallthrough destroys them, and early function return receives the
+full outer-plus-inner cleanup snapshot. A small fallthrough analysis avoids
+emitting a second unreachable cleanup after a branch that always transfers
+control.
 
-Nested owner-scope cleanup, owned replacement assignment, non-empty
-deinitializer bodies, and path-sensitive transfer/error cleanup merging remain
-the next ownership evidence required before this tier broadens.
+Loop-local owners still reject because `break` and `continue` leave different
+scope sets. Owned replacement assignment, non-empty deinitializer bodies, and
+path-sensitive transfer/error cleanup merging remain the next ownership
+evidence required before this tier broadens.
 
 What the compiler proves:
 

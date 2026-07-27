@@ -161,8 +161,10 @@ explicit lowered ownership operation that emits no C copy wrapper, removes
 cleanup from the transferring function, and leaves destruction with the final
 callee. Owners that remain live through `if` and `while` now receive cleanup on
 nested returns and ordinary fallthrough. A move combined with control flow is
-still rejected until divergent owner states can join explicitly; nested owner
-declarations remain fail-closed until lexical scope-exit cleanup lands.
+still rejected until divergent owner states can join explicitly. Owners local
+to `if` branches now clean on branch fallthrough and before early return.
+Loop-local owners remain fail-closed until `break`/`continue` carry explicit
+scope-exit plans.
 
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic

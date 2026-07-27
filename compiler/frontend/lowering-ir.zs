@@ -224,73 +224,163 @@ function functionHasControlFlow(in declaration: FunctionDeclaration): boolean {
   return false;
 }
 
-function isRootStatement(in arena: StatementArena, index: usize): boolean {
-  for (const root of arena.roots) {
-    if (root == index) return true;
-  }
-  return false;
-}
-
-function rejectNestedCleanupLocals(
-  in program: Program,
-  in declaration: FunctionDeclaration
-): void throws String {
-  let index: usize = 0;
-  while (index < declaration.body.nodes.length) {
-    if (
-      declaration.body.nodes[index].kind == StatementKind.variableStatement
-      && !isRootStatement(declaration.body, index)
-    ) {
-      match (in declaration.body.nodes[index].typeAnnotation) {
-        some(annotation) => {
-          const type = try lowerType(program, annotation);
-          if (typeNeedsCleanup(program, type)) {
-            throw `native cleanup lowering does not support nested owner scope for ${declaration.body.nodes[index].name} in ${declaration.name} yet`;
-          }
-        }
-        none => {}
-      }
+function statementFallsThrough(in arena: StatementArena, index: usize): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.returnStatement
+    || arena.nodes[index].kind == StatementKind.breakStatement
+    || arena.nodes[index].kind == StatementKind.continueStatement
+  ) return false;
+  if (arena.nodes[index].kind == StatementKind.blockStatement) {
+    let children = Array<usize>();
+    for (const child of arena.nodes[index].children) {
+      children.push(child);
     }
-    index = index + 1;
+    return sequenceFallsThrough(arena, children);
+  }
+  if (arena.nodes[index].kind == StatementKind.ifStatement) {
+    if (arena.nodes[index].children.length < 2) return true;
+    const thenBranch = arena.nodes[index].children[0];
+    const elseBranch = arena.nodes[index].children[1];
+    return statementFallsThrough(arena, thenBranch)
+      || statementFallsThrough(arena, elseBranch);
+  }
+  return true;
+}
+
+function sequenceFallsThrough(
+  in arena: StatementArena,
+  in roots: Array<usize>
+): boolean {
+  for (const root of roots) {
+    if (!statementFallsThrough(arena, root)) return false;
+  }
+  return true;
+}
+
+function appendCleanupCopies(
+  inout output: Array<LoweredCleanup>,
+  in cleanups: Array<LoweredCleanup>
+): void {
+  for (const cleanup of cleanups) {
+    output.push(copyCleanup(cleanup));
   }
 }
 
-function attachExitCleanups(
+function appendStatementCleanupCopies(
   inout statements: Array<LoweredStatement>,
   index: usize,
   in cleanups: Array<LoweredCleanup>
 ): void {
-  if (statements[index].kind == LoweredStatementKind.returnStatement) {
-    for (const cleanup of cleanups) {
-      statements[index].cleanups.push(copyCleanup(cleanup));
-    }
-  }
-  let childIndex: usize = 0;
-  while (childIndex < statements[index].children.length) {
-    const child = statements[index].children[childIndex];
-    attachExitCleanups(inout statements, child, cleanups);
-    childIndex = childIndex + 1;
+  for (const cleanup of cleanups) {
+    statements[index].cleanups.push(copyCleanup(cleanup));
   }
 }
 
-function appendLinearLocalCleanups(
+function assignmentTargetsCleanup(
+  in arena: StatementArena,
+  index: usize,
+  in cleanups: Array<LoweredCleanup>
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(expression) => return match (in expression.tree) {
+      some(tree) => {
+        if (tree.nodes[tree.root].kind != ExpressionKind.identifierExpression) {
+          return false;
+        }
+        for (const cleanup of cleanups) {
+          if (tree.nodes[tree.root].value == cleanup.name) return true;
+        }
+        return false;
+      }
+      none => false;
+    };
+    none => return false;
+  }
+}
+
+function planCleanupStatement(
   in program: Program,
   in declaration: FunctionDeclaration,
+  sourceIndex: usize,
+  loweredIndex: usize,
+  in live: Array<LoweredCleanup>,
   inout statements: Array<LoweredStatement>,
-  in roots: Array<usize>,
-  inout fallthroughCleanups: Array<LoweredCleanup>
+  insideLoop: boolean
 ): void throws String {
-  try rejectNestedCleanupLocals(program, declaration);
+  if (declaration.body.nodes[sourceIndex].kind == StatementKind.returnStatement) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, live);
+    return;
+  }
+  if (declaration.body.nodes[sourceIndex].kind == StatementKind.blockStatement) {
+    let loweredChildren = Array<usize>();
+    for (const child of statements[loweredIndex].children) {
+      loweredChildren.push(child);
+    }
+    const introduced = try planCleanupSequence(
+      program,
+      declaration,
+      declaration.body.nodes[sourceIndex].children,
+      loweredChildren,
+      live,
+      inout statements,
+      insideLoop
+    );
+    if (
+      sequenceFallsThrough(
+        declaration.body,
+        declaration.body.nodes[sourceIndex].children
+      )
+    ) {
+      appendStatementCleanupCopies(inout statements, loweredIndex, introduced);
+    }
+    return;
+  }
+  if (
+    declaration.body.nodes[sourceIndex].kind == StatementKind.ifStatement
+    || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement
+  ) {
+    let childIndex: usize = 0;
+    while (childIndex < declaration.body.nodes[sourceIndex].children.length) {
+      const sourceChild = declaration.body.nodes[sourceIndex].children[childIndex];
+      const loweredChild = statements[loweredIndex].children[childIndex];
+      try planCleanupStatement(
+        program,
+        declaration,
+        sourceChild,
+        loweredChild,
+        live,
+        inout statements,
+        insideLoop || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement
+      );
+      childIndex = childIndex + 1;
+    }
+  }
+}
+
+function planCleanupSequence(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  in sourceRoots: Array<usize>,
+  in loweredRoots: Array<usize>,
+  in inherited: Array<LoweredCleanup>,
+  inout statements: Array<LoweredStatement>,
+  insideLoop: boolean
+): Array<LoweredCleanup> throws String {
   let live = Array<LoweredCleanup>();
+  appendCleanupCopies(inout live, inherited);
+  let introduced = Array<LoweredCleanup>();
   let rootIndex: usize = 0;
-  while (rootIndex < declaration.body.roots.length) {
-    const sourceIndex = declaration.body.roots[rootIndex];
-    const loweredIndex = roots[rootIndex];
+  while (rootIndex < sourceRoots.length) {
+    const sourceIndex = sourceRoots[rootIndex];
+    const loweredIndex = loweredRoots[rootIndex];
     if (declaration.body.nodes[sourceIndex].kind == StatementKind.variableStatement) {
       match (in declaration.body.nodes[sourceIndex].typeAnnotation) {
         some(annotation) => {
           const type = try lowerType(program, annotation);
           if (typeNeedsCleanup(program, type)) {
+            if (insideLoop) {
+              throw `native cleanup lowering does not support loop-local owner ${declaration.body.nodes[sourceIndex].name} in ${declaration.name} yet`;
+            }
             if (
               functionHasControlFlow(declaration)
               && functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)
@@ -298,13 +388,15 @@ function appendLinearLocalCleanups(
               throw `native cleanup lowering does not support path-sensitive transfer of ${declaration.body.nodes[sourceIndex].name} in ${declaration.name} yet`;
             }
             if (!functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)) {
-              live.push(LoweredCleanup({
+              const cleanup = LoweredCleanup({
                 name: declaration.body.nodes[sourceIndex].name.copyBytes(
                   0,
                   declaration.body.nodes[sourceIndex].name.byteLength
                 ),
                 type: move type,
-              }));
+              });
+              live.push(copyCleanup(cleanup));
+              introduced.push(move cleanup);
             }
           }
         }
@@ -312,16 +404,22 @@ function appendLinearLocalCleanups(
       }
     } else if (
       declaration.body.nodes[sourceIndex].kind == StatementKind.assignmentStatement
-      && live.length > 0
+      && assignmentTargetsCleanup(declaration.body, sourceIndex, live)
     ) {
       throw `native cleanup lowering does not support owned replacement in ${declaration.name} yet`;
     }
-    attachExitCleanups(inout statements, loweredIndex, live);
+    try planCleanupStatement(
+      program,
+      declaration,
+      sourceIndex,
+      loweredIndex,
+      live,
+      inout statements,
+      insideLoop
+    );
     rootIndex = rootIndex + 1;
   }
-  for (const cleanup of live) {
-    fallthroughCleanups.push(copyCleanup(cleanup));
-  }
+  return introduced;
 }
 
 function pushExpression(
@@ -669,20 +767,18 @@ function lowerFunction(
     );
     roots.push(loweredRoot);
   }
-  for (const root of roots) {
-    attachExitCleanups(inout statements, root, ownedParameters);
-  }
-  let fallthroughCleanups = Array<LoweredCleanup>();
-  for (const cleanup of ownedParameters) {
-    fallthroughCleanups.push(copyCleanup(cleanup));
-  }
-  try appendLinearLocalCleanups(
+  const introduced = try planCleanupSequence(
     program,
     declaration,
-    inout statements,
+    declaration.body.roots,
     roots,
-    inout fallthroughCleanups
+    ownedParameters,
+    inout statements,
+    false
   );
+  let fallthroughCleanups = Array<LoweredCleanup>();
+  appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
+  appendCleanupCopies(inout fallthroughCleanups, introduced);
   const returnType = try lowerType(program, declaration.returnType);
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),

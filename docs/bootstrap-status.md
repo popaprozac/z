@@ -667,9 +667,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    still-live outer parameters and locals through `if`/`while`; nested returns
    receive the current cleanup snapshot and fallthrough retains the owners.
    Conditional transfer remains fail-closed because its divergent live states
-   need an explicit join representation. Nested owner scopes, replacement
-   assignment, non-empty deinitializers, and error cleanup merging remain
-   future slices.
+   need an explicit join representation. Cleanup-bearing locals within `if`
+   branches now clean at branch fallthrough and before early return; a
+   fallthrough analysis omits unreachable duplicate cleanup after a terminating
+   block. Loop-local owners remain rejected until `break`/`continue` record the
+   exact scopes they exit. Replacement assignment, non-empty deinitializers,
+   conditional transfer, and error cleanup merging remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
