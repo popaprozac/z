@@ -656,6 +656,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    places `Resource_deinit(&resource)` between result evaluation and the C
    return. Moves, owned locals, non-empty deinitializers, and branch/loop/error
    cleanup merging remain future slices.
+   A linear parameter-transfer follow-up lowers `move resource` explicitly.
+   The relay function emits the value handoff without deinitializing it, while
+   the final owner retains the return-exit cleanup. Any cleanup-bearing
+   parameter combined with branch/loop control is rejected in this tier,
+   preventing a path-insensitive transfer from suppressing cleanup elsewhere.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

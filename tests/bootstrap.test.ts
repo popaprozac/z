@@ -8244,6 +8244,24 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const cleanupExecution = spawnSync(cleanupExecutable, [], { encoding: "utf8" });
   assert.equal(cleanupExecution.status, 42, cleanupExecution.stderr);
 
+  const moveInput = resolve(projectRoot, "tests/fixtures/self-host-emit-move.zs");
+  const moveEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", moveInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(moveEmission.status, 0, moveEmission.stderr);
+  assert.match(moveEmission.stdout, /int32_t relay\(Z_Resource resource\) \{\n  return inspect\(resource\);\n\}/);
+  const moveExecutable = resolve(directory, "move");
+  const moveCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", moveExecutable],
+    { encoding: "utf8", input: moveEmission.stdout },
+  );
+  assert.equal(moveCompilation.status, 0, moveCompilation.stderr);
+  const moveExecution = spawnSync(moveExecutable, [], { encoding: "utf8" });
+  assert.equal(moveExecution.status, 42, moveExecution.stderr);
+
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");
   const invalidEmission = spawnSync(

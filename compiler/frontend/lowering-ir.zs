@@ -54,6 +54,7 @@ export enum LoweredExpressionKind {
   checkedSubtractI32,
   checkedMultiplyI32,
   checkedNegateI32,
+  moveValue,
   unaryOperation,
   binaryOperation,
   directCall,
@@ -160,6 +161,69 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
   });
 }
 
+function treeMovesName(
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].value == "move"
+    && tree.nodes[index].children.length == 1
+  ) {
+    const operand = tree.nodes[index].children[0];
+    if (
+      tree.nodes[operand].kind == ExpressionKind.identifierExpression
+      && tree.nodes[operand].value == name
+    ) return true;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (treeMovesName(tree, child, name)) return true;
+  }
+  return false;
+}
+
+function syntaxMovesName(in expression: ExpressionSyntax, in name: String): boolean {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      select treeMovesName(tree, root, name);
+    }
+    none => false;
+  };
+}
+
+function functionMovesName(
+  in declaration: FunctionDeclaration,
+  in name: String
+): boolean {
+  for (const statement of declaration.body.nodes) {
+    match (in statement.expression) {
+      some(expression) => {
+        if (syntaxMovesName(expression, name)) return true;
+      }
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(expression) => {
+        if (syntaxMovesName(expression, name)) return true;
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
+function functionHasControlFlow(in declaration: FunctionDeclaration): boolean {
+  for (const statement of declaration.body.nodes) {
+    if (
+      statement.kind == StatementKind.ifStatement
+      || statement.kind == StatementKind.whileStatement
+    ) return true;
+  }
+  return false;
+}
+
 function attachExitCleanups(
   inout statements: Array<LoweredStatement>,
   index: usize,
@@ -236,10 +300,12 @@ function lowerExpression(
     const operand = try lowerExpression(program, tree, operandInput, inout output);
     let kind = LoweredExpressionKind.unaryOperation;
     if (tree.nodes[index].value == "-") kind = LoweredExpressionKind.checkedNegateI32;
+    else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
     else if (
       tree.nodes[index].value != "!"
       && tree.nodes[index].value != "+"
       && tree.nodes[index].value != "~"
+      && tree.nodes[index].value != "move"
     ) {
       throw `native lowering does not support unary operator ${tree.nodes[index].value} yet`;
     }
@@ -483,24 +549,31 @@ function lowerFunction(
   }
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
+  let cleanupBearingParameterCount: usize = 0;
   for (const parameter of declaration.parameters) {
     if (parameter.mode != ParameterMode.value) {
       throw `native lowering only supports value parameters in ${declaration.name} yet`;
     }
     const parameterType = try lowerType(program, parameter.type);
     if (typeNeedsCleanup(program, parameterType)) {
-      ownedParameters.push(LoweredCleanup({
-        name: parameter.name.copyBytes(0, parameter.name.byteLength),
-        type: LoweredType({
-          kind: parameterType.kind,
-          name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
-        }),
-      }));
+      cleanupBearingParameterCount = cleanupBearingParameterCount + 1;
+      if (!functionMovesName(declaration, parameter.name)) {
+        ownedParameters.push(LoweredCleanup({
+          name: parameter.name.copyBytes(0, parameter.name.byteLength),
+          type: LoweredType({
+            kind: parameterType.kind,
+            name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
+          }),
+        }));
+      }
     }
     parameters.push(LoweredParameter({
       name: parameter.name.copyBytes(0, parameter.name.byteLength),
       type: move parameterType,
     }));
+  }
+  if (cleanupBearingParameterCount > 0 && functionHasControlFlow(declaration)) {
+    throw `native cleanup lowering does not support branch or loop flow in ${declaration.name} yet`;
   }
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();

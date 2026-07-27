@@ -578,6 +578,12 @@ custom deinitializer, and returns the stored value. Restricting the custom
 discarding user behavior. Moves, local-owner introduction, and flow merges are
 the next ownership evidence required before this tier broadens.
 
+Linear parameter transfer now has its own proof. A `relay` function passes
+`move resource` to the final owner without emitting a deinitializer; the final
+callee alone cleans it after result evaluation. The lowerer rejects
+cleanup-bearing parameters in `if`/`while` functions for now, rather than
+treating a move discovered on one path as global.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

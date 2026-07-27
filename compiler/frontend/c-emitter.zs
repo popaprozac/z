@@ -92,6 +92,14 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.moveValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed move expression";
+    }
+    const operand = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, operand);
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.unaryOperation
   ) {

@@ -153,6 +153,12 @@ result into a temporary, runs reverse exit cleanup, and then returns the saved
 value. This proves the ordering boundary without pretending moves, owned
 locals, non-empty deinitializers, or branch/loop/error flow are complete.
 
+Linear owned-parameter transfer is executable too. `move resource` becomes an
+explicit lowered ownership operation that emits no C copy wrapper, removes
+cleanup from the transferring function, and leaves destruction with the final
+callee. Cleanup-bearing parameters still reject branch/loop lowering until
+path-sensitive owner-state merging lands.
+
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend
 analyzes the same canonical module batch, gates command success on exact
