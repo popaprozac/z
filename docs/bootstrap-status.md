@@ -672,7 +672,10 @@ When focused self-hosting work resumes, use this order:
    `semantic-expression-types.zs`. Closure parameter contextualization,
    callable-shape construction, and lexical capture discovery now live in
    `semantic-closures.zs`; move/borrow effects and recursive closure-body
-   inference remain in the resolver.
+   inference remain in the resolver. Function parameter and receiver bindings,
+   generic context, and generator yield/return discovery now live in
+   `semantic-function-contexts.zs`; statement traversal and final output
+   initialization proofs remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,
