@@ -298,7 +298,10 @@ function lowerModuleTypeName(
     failure(_) => {}
   }
   for (const imported of importedTypes) {
-    if (imported.localName == name) return LoweredType({
+    if (
+      imported.localName == name
+      || imported.targetName == name
+    ) return LoweredType({
       kind: imported.kind,
       name: imported.targetName.copyBytes(0, imported.targetName.byteLength),
     });
@@ -450,12 +453,91 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
   return false;
 }
 
-function moduleTypeNeedsCleanup(
+function moduleEnumNeedsCleanup(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
-  in type: LoweredType
+  index: usize,
+  depth: usize
 ): boolean {
-  if (typeNeedsCleanup(program, type)) return true;
+  if (depth > program.aggregates.length + program.enums.length) return false;
+  for (const variant of program.enums[index].variants) {
+    match (in variant.payload) {
+      some(payload) => {
+        const lowered = attempt lowerModuleType(program, importedTypes, payload);
+        match (lowered) {
+          success(type) => {
+            if (moduleTypeNeedsCleanupDepth(
+              program,
+              importedTypes,
+              type,
+              depth + 1
+            )) return true;
+          }
+          failure(_) => {}
+        }
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
+function moduleAggregateNeedsCleanup(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  index: usize,
+  depth: usize
+): boolean {
+  if (depth > program.aggregates.length + program.enums.length) return false;
+  match (in program.aggregates[index].deinitializer) {
+    some(_) => return true;
+    none => {}
+  }
+  for (const field of program.aggregates[index].fields) {
+    const lowered = attempt lowerModuleType(program, importedTypes, field.type);
+    match (lowered) {
+      success(type) => {
+        if (moduleTypeNeedsCleanupDepth(
+          program,
+          importedTypes,
+          type,
+          depth + 1
+        )) return true;
+      }
+      failure(_) => {}
+    }
+  }
+  return false;
+}
+
+function moduleTypeNeedsCleanupDepth(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType,
+  depth: usize
+): boolean {
+  if (type.kind == LoweredTypeKind.structType) {
+    match (structIndex(program, type.name)) {
+      some(index) => return moduleAggregateNeedsCleanup(
+        program,
+        importedTypes,
+        index,
+        depth
+      );
+      none => {}
+    }
+  }
+  if (type.kind == LoweredTypeKind.enumType) {
+    match (enumIndex(program, type.name)) {
+      some(index) => return moduleEnumNeedsCleanup(
+        program,
+        importedTypes,
+        index,
+        depth
+      );
+      none => {}
+    }
+  }
   for (const imported of importedTypes) {
     if (
       imported.kind == type.kind
@@ -465,7 +547,15 @@ function moduleTypeNeedsCleanup(
       )
     ) return imported.needsDeinit;
   }
-  return false;
+  return typeNeedsCleanup(program, type);
+}
+
+function moduleTypeNeedsCleanup(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType
+): boolean {
+  return moduleTypeNeedsCleanupDepth(program, importedTypes, type, 0);
 }
 
 function intrinsicOptionDeclaration(
@@ -623,6 +713,22 @@ function treeMovesName(
   ) {
     const callee = tree.nodes[index].children[0];
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      for (const aggregate of program.aggregates) {
+        if (
+          aggregate.name != tree.nodes[callee].value
+          || tree.nodes[index].children.length != 2
+        ) continue;
+        const initializer = tree.nodes[index].children[1];
+        if (tree.nodes[initializer].kind != ExpressionKind.objectExpression) {
+          continue;
+        }
+        for (const field of tree.nodes[initializer].children) {
+          if (
+            tree.nodes[field].kind == ExpressionKind.identifierExpression
+            && tree.nodes[field].value == name
+          ) return true;
+        }
+      }
       for (const declaration of program.functions) {
         if (declaration.name != tree.nodes[callee].value) continue;
         let parameter: usize = 0;
@@ -3026,7 +3132,7 @@ function importedTypesForModule(
 
 function appendLoweredProgram(
   in program: Program,
-  in importedTypes: Array<LoweredImportedType>,
+  inout importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
@@ -3124,12 +3230,30 @@ function appendLoweredProgram(
       some(index) => index;
       none => throw `native lowering lost aggregate ${aggregate.name}`;
     };
+    const needsDeinit = moduleAggregateNeedsCleanup(
+      program,
+      importedTypes,
+      aggregateIndex,
+      0
+    );
     structs.push(LoweredStruct({
       name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       fields,
-      needsDeinit: aggregateNeedsCleanup(program, aggregateIndex, 0),
+      needsDeinit,
       deinitializer,
     }));
+  }
+
+  for (const aggregate of program.aggregates) {
+    match (loweredStructCleanup(structs, aggregate.name)) {
+      some(needsDeinit) => importedTypes.push(LoweredImportedType({
+        localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+        targetName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+        kind: LoweredTypeKind.structType,
+        needsDeinit,
+      }));
+      none => {}
+    }
   }
 
   for (const declaration of program.functions) {
@@ -3156,10 +3280,10 @@ export function lowerProgram(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
-  const importedTypes = Array<LoweredImportedType>();
+  let importedTypes = Array<LoweredImportedType>();
   try appendLoweredProgram(
     program,
-    importedTypes,
+    inout importedTypes,
     evidence,
     inout structs,
     inout enums,
@@ -3176,14 +3300,14 @@ export function lowerModules(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   for (const moduleIndex of graph.dependencyOrder) {
-    const importedTypes = importedTypesForModule(
+    let importedTypes = importedTypesForModule(
       graph,
       structs,
       moduleIndex
     );
     try appendLoweredProgram(
       parsed[moduleIndex].program,
-      importedTypes,
+      inout importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
       inout structs,
       inout enums,

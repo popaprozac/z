@@ -753,8 +753,11 @@ local consumer. Generated C destroys the consumer parameter exactly once and
 does not repeat cleanup in the caller. This exposed and closed an emitter gap:
 the cleanup planner previously recognized only explicit `move` syntax, although
 ordinary owned parameters also move cleanup-bearing values by language design.
-Local wrappers containing imported owners and imported enum payloads remain the
-next recursive cleanup test.
+A local `Session` then stores the imported `Resource`. Recursive cleanup marks
+the wrapper as ownership-bearing, implicit field initialization transfers the
+resource, and consuming the session destroys its imported field once. The
+generated caller destroys neither the emptied resource binding nor the moved
+session. Imported enum payloads remain the next recursive cleanup test.
 
 What the compiler proves:
 
