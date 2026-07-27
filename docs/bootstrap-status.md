@@ -673,9 +673,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    block. Loop-local owners now clean at normal iteration fallthrough and on
    explicit `break`/`continue` edges. Cleanup tracking resets at the innermost
    loop boundary, preserving owners introduced by an outer iteration when an
-   inner loop transfers control. Replacement assignment, non-empty
-   deinitializers, conditional transfer, and error cleanup merging remain
-   future slices.
+   inner loop transfers control. Whole-binding replacement evaluates the new
+   owner into a temporary, destroys the old value, and installs the temporary
+   while retaining the binding's later exit cleanup. Non-empty deinitializers,
+   conditional transfer, and error cleanup merging remain future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

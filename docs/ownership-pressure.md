@@ -606,9 +606,15 @@ carry the exact cleanup list for the scopes they exit. Entering a nested loop
 resets that edge list while retaining outer owners in the return snapshot, so
 an inner-loop transfer cannot destroy an outer-iteration value.
 
-Owned replacement assignment, non-empty deinitializer bodies, and
-path-sensitive transfer/error cleanup merging remain the next ownership
-evidence required before this tier broadens.
+Owned replacement assignment now proves the overwrite boundary too. The RHS is
+fully evaluated into an owned temporary before the previous binding is
+destroyed; only then is the temporary transferred into the binding. An
+initializer may therefore read the old owner without use-after-free, while the
+old allocation cannot leak and the replacement remains covered by the ordinary
+scope-exit plan.
+
+Non-empty deinitializer bodies and path-sensitive transfer/error cleanup
+merging remain the next ownership evidence required before this tier broadens.
 
 What the compiler proves:
 

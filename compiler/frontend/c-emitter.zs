@@ -279,6 +279,30 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.assignmentStatement) {
+    if (declaration.statements[index].cleanups.length > 0) {
+      if (declaration.statements[index].cleanups.length != 1) {
+        throw "native C emission received ambiguous owned replacement cleanup";
+      }
+      appendIndent(inout output, depth);
+      const replacementType = try cType(
+        declaration.statements[index].cleanups[0].type
+      );
+      output.append(replacementType);
+      output.append(` _z_stage1_assignment_${index} = `);
+      match (in declaration.statements[index].secondExpression) {
+        some(value) => try appendExpression(inout output, declaration, value);
+        none => throw "native C emission received an assignment without a value";
+      }
+      output.append(";\n");
+      appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+      appendIndent(inout output, depth);
+      match (in declaration.statements[index].expression) {
+        some(target) => try appendExpression(inout output, declaration, target);
+        none => throw "native C emission received an assignment without a target";
+      }
+      output.append(` = _z_stage1_assignment_${index};\n`);
+      return;
+    }
     appendIndent(inout output, depth);
     match (in declaration.statements[index].expression) {
       some(target) => try appendExpression(inout output, declaration, target);

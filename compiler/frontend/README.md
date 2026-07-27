@@ -167,6 +167,11 @@ Loop-local owners now clean at ordinary iteration fallthrough and on the exact
 `break`/`continue` edge. The plan resets at each nested loop boundary so inner
 loop control never destroys an outer-iteration owner.
 
+Whole-binding owned replacement is executable as well. The emitter evaluates
+the replacement into a temporary before destroying the previous value, then
+transfers the temporary into the still-live binding. This preserves RHS access
+to the old value without leaking or destroying the replacement twice.
+
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic
 cleanup may receive its address; source-level reassignment remains a semantic

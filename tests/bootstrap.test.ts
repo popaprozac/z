@@ -8317,6 +8317,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
     cleanupFlowEmission.stdout,
     /loopLocal\(int32_t limit\).*?Z_Resource_deinit\(&resource\);\n      continue;.*?Z_Resource_deinit\(&resource\);\n      break;.*?Z_Resource_deinit\(&resource\);\n  \}/s,
   );
+  assert.match(
+    cleanupFlowEmission.stdout,
+    /replaceOwner\(int32_t next, bool replace\).*?_z_stage1_assignment_\d+ = \(Z_Resource\)\{\.id = z_stage1_checked_add_i32\(resource\.id, next\)\};\n    Z_Resource_deinit\(&resource\);\n    resource = _z_stage1_assignment_\d+;.*?Z_Resource_deinit\(&resource\);/s,
+  );
   const cleanupFlowExecutable = resolve(directory, "cleanup-flow");
   const cleanupFlowCompilation = spawnSync(
     "clang",

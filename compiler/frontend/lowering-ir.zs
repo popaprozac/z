@@ -276,25 +276,29 @@ function appendStatementCleanupCopies(
   }
 }
 
-function assignmentTargetsCleanup(
+function attachReplacementCleanup(
   in arena: StatementArena,
   index: usize,
-  in cleanups: Array<LoweredCleanup>
-): boolean {
+  in cleanups: Array<LoweredCleanup>,
+  inout statements: Array<LoweredStatement>,
+  loweredIndex: usize
+): void {
   match (in arena.nodes[index].expression) {
-    some(expression) => return match (in expression.tree) {
+    some(expression) => match (in expression.tree) {
       some(tree) => {
         if (tree.nodes[tree.root].kind != ExpressionKind.identifierExpression) {
-          return false;
+          return;
         }
         for (const cleanup of cleanups) {
-          if (tree.nodes[tree.root].value == cleanup.name) return true;
+          if (tree.nodes[tree.root].value == cleanup.name) {
+            statements[loweredIndex].cleanups.push(copyCleanup(cleanup));
+            return;
+          }
         }
-        return false;
       }
-      none => false;
-    };
-    none => return false;
+      none => {}
+    }
+    none => {}
   }
 }
 
@@ -419,9 +423,14 @@ function planCleanupSequence(
       }
     } else if (
       declaration.body.nodes[sourceIndex].kind == StatementKind.assignmentStatement
-      && assignmentTargetsCleanup(declaration.body, sourceIndex, live)
     ) {
-      throw `native cleanup lowering does not support owned replacement in ${declaration.name} yet`;
+      attachReplacementCleanup(
+        declaration.body,
+        sourceIndex,
+        live,
+        inout statements,
+        loweredIndex
+      );
     }
     try planCleanupStatement(
       program,

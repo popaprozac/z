@@ -67,6 +67,14 @@ function loopLocal(limit: i32): i32 {
   return observed;
 }
 
+function replaceOwner(next: i32, replace: boolean): i32 {
+  let resource: Resource = Resource({ id: 4 });
+  if (replace) {
+    resource = Resource({ id: resource.id + next });
+  }
+  return resource.id;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
@@ -75,5 +83,7 @@ function main(): i32 {
     + earlyBranch(true)
     + loopLocal(5)
     - 23
+    + replaceOwner(5, true)
+    - 9
     - 1;
 }
