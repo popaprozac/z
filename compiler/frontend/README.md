@@ -140,31 +140,35 @@ lexing, parsing, semantic validation, and C emission compose.
 Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
 
-Three distinct shapes now run directly—scalar calls, mutable control flow, and
-value structs—and all three pass through the typed lowering IR. Payload-free
-nominal enums now join them: cases emit as namespaced C enum constants and
-compose through function parameters, equality, and value-struct fields. Their
-pressure established the architecture boundary: checked operations and aggregate
-construction are semantic lowering decisions, not formatting. Deterministic
-cleanup can now extend the IR with explicit scope-exit plans rather than
-teaching the C printer to rediscover ownership from syntax.
+Scalar calls, mutable control flow, value structs, owned enums, `Option<T>`,
+and `Result<T, E>` now run directly through the typed lowering IR. Checked
+operations, aggregate construction, ownership transfer, and error propagation
+are settled lowering operations rather than formatting decisions rediscovered
+by the C printer.
 
-Enums with cleanup-free scalar payloads now use a separate tag enum plus C
-payload union. Payload constructors and payload-free cases both preserve the
-nominal enum through function return. Exhaustive statement match over an
-identifier subject lowers to a typed switch with direct scalar payload binding.
-Match-arm returns and locals share the ordinary cleanup planner. Aggregate
-payloads remain fail-closed until active-variant cleanup shares that
-representation.
+Payload enums use a nominal tag plus C union. Dependency-ordered definitions
+allow aggregate payloads, and synthesized active-variant deinitializers destroy
+only the selected cleanup-bearing payload. Exhaustive consuming match transfers
+that payload into exactly one arm owner. Direct return matches, typed local
+match results, call/constructor subjects, and selecting block arms share the
+ordinary cleanup planner.
 
-The first cleanup plans are now executable for ownership-bearing value
-parameters and top-level linear locals whose custom `deinit` body is empty. A
+Compiler `Option<T>` reuses that representation without allocation.
+Compiler `Result<T, E>` likewise keeps Z's surface model: `return` constructs
+success, `throw` constructs failure, `attempt` preserves the result, and `try`
+either extracts success or propagates failure after surrounding cleanup. Both
+payload-free `Result<void, E>` success and cleanup-bearing success/error
+payloads are executable.
+
+Cleanup plans cover owned parameters and locals, nested lexical scopes,
+branches, loop fallthrough and `break`/`continue`, replacement assignment,
+recursive aggregate fields, non-empty custom deinitializers, conditional
+transfer live flags, consuming match, and the implemented error exits. A
 lowered return evaluates its result into a temporary, runs reverse exit cleanup,
 and then returns the saved value. A local enters the cleanup plan only after its
-initializer; `move local` removes that local cleanup and transfers destruction
-to the final callee. This proves the ordering boundary without pretending
-nested owner scopes, replacement assignment, non-empty deinitializers, or
-branch/loop/error flow are complete.
+initializer; `move local` removes that cleanup and transfers destruction to the
+final owner. Loop-carried conditional transfer and broader nested-expression
+`try` remain fail-closed.
 
 Linear owned-parameter transfer is executable too. `move resource` becomes an
 explicit lowered ownership operation that emits no C copy wrapper, removes
