@@ -731,6 +731,14 @@ cleanup classification. Removing annotations from struct construction,
 generated C and destruction behavior unchanged. This avoids duplicating type
 inference inside code generation.
 
+The emitter now also consumes the resolver's dependency order instead of
+discarding every module except the entry. A two-module scalar fixture exports a
+function, imports it selectively, lowers both module programs into one typed IR,
+and emits one direct C call. This first tier intentionally does not claim that
+source spelling alone is enough for imported aggregate identity; imported value
+types and colliding module-private symbols remain the next nominal-identity
+pressure test.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

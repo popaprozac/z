@@ -163,6 +163,12 @@ source-positioned semantic evidence, so struct, Option, Result, `try`, and match
 storage share one authoritative type decision with cleanup planning rather than
 being re-inferred by the emitter.
 
+`self-host-emit` now consumes the canonical graph's dependency order and lowers
+all discovered modules rather than rejecting an entry import. The first
+executable tier covers selectively imported scalar functions in one generated C
+translation unit. Imported aggregate identity, collision-safe private symbol
+names, and separate-object emission remain explicit follow-ups.
+
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
 branches, loop fallthrough and `break`/`continue`, replacement assignment,
 recursive aggregate fields, non-empty custom deinitializers, conditional

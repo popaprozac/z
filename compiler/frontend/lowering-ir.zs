@@ -17,7 +17,11 @@ import {
   StatementKind,
   TypeReference,
 } from "./parser.zs";
-import { ModuleSemanticEvidence } from "./semantic-model.zs";
+import { ParsedModule } from "./module-symbols.zs";
+import {
+  ModuleGraph,
+  ModuleSemanticEvidence,
+} from "./semantic-model.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 export enum LoweredTypeKind {
@@ -2618,8 +2622,10 @@ function collectArenaIntrinsicEnums(
   }
 }
 
-function collectIntrinsicEnums(in program: Program): Array<LoweredEnum> throws String {
-  let enums = Array<LoweredEnum>();
+function collectIntrinsicEnums(
+  in program: Program,
+  inout enums: Array<LoweredEnum>
+): void throws String {
   for (const aggregate of program.aggregates) {
     for (const field of aggregate.fields) {
       try collectIntrinsicTypeName(program, field.type.name, inout enums);
@@ -2661,16 +2667,15 @@ function collectIntrinsicEnums(in program: Program): Array<LoweredEnum> throws S
     }
     try collectArenaIntrinsicEnums(program, declaration.body, inout enums);
   }
-  return enums;
 }
 
-export function lowerProgram(
+function appendLoweredProgram(
   in program: Program,
-  in evidence: ModuleSemanticEvidence
-): LoweredProgram throws String {
-  if (program.imports.length > 0) {
-    throw "native lowering does not support imports in its first slice";
-  }
+  in evidence: ModuleSemanticEvidence,
+  inout structs: Array<LoweredStruct>,
+  inout enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void throws String {
   if (
     program.traits.length > 0
     || program.typeAliases.length > 0
@@ -2678,7 +2683,7 @@ export function lowerProgram(
     throw "native lowering does not support traits or type aliases yet";
   }
 
-  let enums = try collectIntrinsicEnums(program);
+  try collectIntrinsicEnums(program, inout enums);
   for (const declaration of program.enums) {
     let variants = Array<LoweredVariant>();
     let payloadBearing = false;
@@ -2709,7 +2714,6 @@ export function lowerProgram(
     }));
   }
 
-  let structs = Array<LoweredStruct>();
   for (const aggregate of program.aggregates) {
     if (
       aggregate.kind != DeclarationKind.structDeclaration
@@ -2755,10 +2759,47 @@ export function lowerProgram(
     }));
   }
 
-  let functions = Array<LoweredFunction>();
   for (const declaration of program.functions) {
     const loweredFunction = try lowerFunction(program, evidence, declaration);
     functions.push(move loweredFunction);
+  }
+}
+
+export function lowerProgram(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence
+): LoweredProgram throws String {
+  if (program.imports.length > 0) {
+    throw "native single-module lowering cannot resolve imports";
+  }
+  let structs = Array<LoweredStruct>();
+  let enums = Array<LoweredEnum>();
+  let functions = Array<LoweredFunction>();
+  try appendLoweredProgram(
+    program,
+    evidence,
+    inout structs,
+    inout enums,
+    inout functions
+  );
+  return LoweredProgram({ structs, enums, functions });
+}
+
+export function lowerModules(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): LoweredProgram throws String {
+  let structs = Array<LoweredStruct>();
+  let enums = Array<LoweredEnum>();
+  let functions = Array<LoweredFunction>();
+  for (const moduleIndex of graph.dependencyOrder) {
+    try appendLoweredProgram(
+      parsed[moduleIndex].program,
+      graph.modules[moduleIndex].semanticEvidence,
+      inout structs,
+      inout enums,
+      inout functions
+    );
   }
   return LoweredProgram({ structs, enums, functions });
 }

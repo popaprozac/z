@@ -2,7 +2,7 @@
 // stage1Parse to the Bun host without making Z module exports imply a C ABI.
 
 import { renderProgram } from "./parser-protocol.zs";
-import { emitC } from "./c-emitter.zs";
+import { emitModulesC } from "./c-emitter.zs";
 import { parseModuleSources } from "./module-graph.zs";
 import { resolveParsedModules } from "./module-resolver.zs";
 import {
@@ -103,10 +103,7 @@ function stage1Emit(in entryPath: String, in batch: String): String {
     }
   };
   const entry = graph.entry;
-  const emitOutcome = attempt emitC(
-    parsed[entry].program,
-    graph.modules[entry].semanticEvidence
-  );
+  const emitOutcome = attempt emitModulesC(parsed, graph);
   return match (emitOutcome) {
     success(emitted) => `ok\n${emitted}`;
     failure(message) => `error\n${entryPath}: ${message}`;

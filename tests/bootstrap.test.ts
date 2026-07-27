@@ -8160,6 +8160,34 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
 
+  const moduleInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-modules/main.zs",
+  );
+  const moduleEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", moduleInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleEmission.status, 0, moduleEmission.stderr);
+  assert.match(
+    moduleEmission.stdout,
+    /int32_t add\(int32_t first, int32_t second\);.*?int32_t main\(void\);/s,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /int32_t add\(int32_t first, int32_t second\) \{.*?return z_stage1_checked_add_i32\(first, second\);.*?int32_t main\(void\) \{.*?return add\(20, 22\);/s,
+  );
+  const moduleExecutable = resolve(directory, "modules");
+  const moduleCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", moduleExecutable],
+    { encoding: "utf8", input: moduleEmission.stdout },
+  );
+  assert.equal(moduleCompilation.status, 0, moduleCompilation.stderr);
+  const moduleExecution = spawnSync(moduleExecutable, [], { encoding: "utf8" });
+  assert.equal(moduleExecution.status, 42, moduleExecution.stderr);
+
   const controlFlowInput = resolve(projectRoot, "tests/fixtures/self-host-emit-control-flow.zs");
   const controlFlowEmission = spawnSync(
     process.execPath,

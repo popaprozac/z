@@ -741,7 +741,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and struct locals, `Option`/`Result` storage, local `try` results, and scalar
    or owned match-expression destinations therefore retain the same settled
    type used by semantic checking and cleanup planning; the emitter does not
-   maintain a second inference engine.
+   maintain a second inference engine. The first multi-module emission tier is
+   executable for dependency-ordered scalar modules: the canonical native graph
+   drives lowering of every discovered module into one C translation unit, an
+   imported function remains one direct call, and strict Clang execution returns
+   the same result. Imported aggregate identity, symbol mangling for colliding
+   private names, and per-module translation units remain fail-closed follow-ups.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

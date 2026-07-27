@@ -9,10 +9,15 @@ import {
   LoweredStatementKind,
   LoweredType,
   LoweredTypeKind,
+  lowerModules,
   lowerProgram,
 } from "./lowering-ir.zs";
+import { ParsedModule } from "./module-symbols.zs";
 import { Program } from "./parser.zs";
-import { ModuleSemanticEvidence } from "./semantic-model.zs";
+import {
+  ModuleGraph,
+  ModuleSemanticEvidence,
+} from "./semantic-model.zs";
 
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
@@ -1055,5 +1060,13 @@ export function emitC(
   in evidence: ModuleSemanticEvidence
 ): String throws String {
   const lowered = try lowerProgram(program, evidence);
+  return try emitLoweredC(lowered);
+}
+
+export function emitModulesC(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): String throws String {
+  const lowered = try lowerModules(parsed, graph);
   return try emitLoweredC(lowered);
 }
