@@ -227,6 +227,8 @@ function appendExpression(
     declaration.expressions[index].kind == LoweredExpressionKind.checkedAddInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedSubtractInteger
     || declaration.expressions[index].kind == LoweredExpressionKind.checkedMultiplyInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedShiftLeftInteger
+    || declaration.expressions[index].kind == LoweredExpressionKind.checkedShiftRightInteger
   ) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed checked binary expression";
@@ -242,7 +244,15 @@ function appendExpression(
         == LoweredExpressionKind.checkedSubtractInteger
     ) {
       output.append("subtract_");
-    } else output.append("multiply_");
+    } else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedMultiplyInteger
+    ) output.append("multiply_");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.checkedShiftLeftInteger
+    ) output.append("shift_left_");
+    else output.append("shift_right_");
     output.append(declaration.expressions[index].value);
     output.append("(");
     const left = declaration.expressions[index].children[0];
@@ -282,6 +292,16 @@ function appendExpression(
       return;
     }
     try appendExpression(inout output, declaration, operand);
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.copyValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed copy expression";
+    }
+    output.append("z_string_copy(");
+    const operand = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, operand);
+    output.append(")");
     return;
   }
   if (
@@ -755,7 +775,10 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.tryStatement) {
-    if (declaration.statements[index].labels.length != 2) {
+    if (
+      declaration.statements[index].labels.length < 2
+      || declaration.statements[index].labels.length > 3
+    ) {
       throw "native C emission received a malformed try statement";
     }
     const temporary = `_z_stage1_try_${index}`;
@@ -805,6 +828,28 @@ function appendStatement(
     appendIndent(inout output, depth);
     output.append("}\n");
     if (declaration.statements[index].labels[0].byteLength > 0) {
+      if (
+        declaration.statements[index].labels.length == 3
+        && declaration.statements[index].labels[2] == "replace"
+      ) {
+        let replacementName = "";
+        match (in declaration.statements[index].type) {
+          some(type) => replacementName = type.name.copyBytes(
+            0,
+            type.name.byteLength
+          );
+          none => {}
+        }
+        if (replacementName.byteLength == 0) {
+          throw "native C emission lost an owned try replacement type";
+        }
+        appendIndent(inout output, depth);
+        output.append("Z_");
+        output.append(replacementName);
+        output.append("_deinit(&");
+        output.append(declaration.statements[index].labels[0]);
+        output.append(");\n");
+      }
       appendIndent(inout output, depth);
       output.append(declaration.statements[index].labels[0]);
       output.append(" = ");
@@ -969,6 +1014,60 @@ function appendStatement(
     if (declaration.statements[index].children.length != 1) {
       throw "native C emission received a while without one body";
     }
+    const body = declaration.statements[index].children[0];
+    try appendBranch(inout output, declaration, body, depth + 1);
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    return;
+  }
+  if (declaration.statements[index].kind == LoweredStatementKind.forStatement) {
+    if (
+      declaration.statements[index].children.length != 1
+      || declaration.statements[index].labels.length != 1
+    ) {
+      throw "native C emission received a malformed for statement";
+    }
+    const elementType = match (in declaration.statements[index].type) {
+      some(type) => try cType(type);
+      none => throw "native C emission received an untyped for binding";
+    };
+    const position = `_z_stage1_for_${index}`;
+    appendIndent(inout output, depth);
+    output.append("for (size_t ");
+    output.append(position);
+    output.append(" = 0; ");
+    output.append(position);
+    output.append(" < (");
+    match (in declaration.statements[index].expression) {
+      some(iterable) => try appendExpression(
+        inout output,
+        declaration,
+        iterable
+      );
+      none => throw "native C emission received a for without an iterable";
+    }
+    output.append(").length; ");
+    output.append(position);
+    output.append(" += 1) {\n");
+    appendIndent(inout output, depth + 1);
+    output.append("const ");
+    output.append(elementType);
+    output.append(" ");
+    output.append(declaration.statements[index].name);
+    output.append(" = *Z_");
+    output.append(declaration.statements[index].labels[0]);
+    output.append("_at(&(");
+    match (in declaration.statements[index].expression) {
+      some(iterable) => try appendExpression(
+        inout output,
+        declaration,
+        iterable
+      );
+      none => throw "native C emission received a for without an iterable";
+    }
+    output.append("), ");
+    output.append(position);
+    output.append(");\n");
     const body = declaration.statements[index].children[0];
     try appendBranch(inout output, declaration, body, depth + 1);
     appendIndent(inout output, depth);
@@ -1336,6 +1435,36 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_shift_left_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  if (right >= 8 || left > (uint8_t)(UINT8_MAX >> right)) abort();\n");
+  output.append("  return (uint8_t)(left << right);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_shift_right_u8(uint8_t left, uint8_t right) {\n");
+  output.append("  if (right >= 8) abort();\n");
+  output.append("  return (uint8_t)(left >> right);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_shift_left_usize(size_t left, size_t right) {\n");
+  output.append("  if (right >= sizeof(size_t) * 8 || left > (SIZE_MAX >> right)) abort();\n");
+  output.append("  return left << right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_shift_right_usize(size_t left, size_t right) {\n");
+  output.append("  if (right >= sizeof(size_t) * 8) abort();\n");
+  output.append("  return left >> right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_shift_left_i32(int32_t left, int32_t right) {\n");
+  output.append("  if (right < 0 || right >= 32) abort();\n");
+  output.append("  const int64_t factor = ((int64_t)1) << right;\n");
+  output.append("  const int64_t result = (int64_t)left * factor;\n");
+  output.append("  if (result < INT32_MIN || result > INT32_MAX) abort();\n");
+  output.append("  return (int32_t)result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_shift_right_i32(int32_t left, int32_t right) {\n");
+  output.append("  if (right < 0 || right >= 32) abort();\n");
+  output.append("  const int64_t divisor = ((int64_t)1) << right;\n");
+  output.append("  if (left >= 0) return (int32_t)((int64_t)left / divisor);\n");
+  output.append("  const int64_t magnitude = -(int64_t)left;\n");
+  output.append("  return (int32_t)(-((magnitude + divisor - 1) / divisor));\n");
+  output.append("}\n\n");
   output.append("typedef struct Z_String {\n");
   output.append("  const char *data;\n");
   output.append("  size_t length;\n");
@@ -1409,6 +1538,9 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  const char *bytes = value.data != NULL ? value.data + start : \"\";\n");
   output.append("  z_string_append_bytes(&result, bytes, end - start);\n");
   output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) Z_String z_string_copy(Z_String value) {\n");
+  output.append("  return z_string_copy_bytes(value, 0, value.length);\n");
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) void z_text_buffer_append(Z_String *self, Z_String value) {\n");
   output.append("  z_string_append_bytes(self, value.data != NULL ? value.data : \"\", value.length);\n");

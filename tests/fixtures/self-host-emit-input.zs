@@ -16,7 +16,12 @@ function arraySum(): i32 {
   values.push(20);
   values.push(22);
   if (values.length != 2) return 0;
-  return values[0] + values[1];
+  if (values[0] != 20 || values[1] != 22) return 0;
+  let total: i32 = 0;
+  for (const value of values) {
+    total = total + value;
+  }
+  return total;
 }
 
 function main(): i32 {

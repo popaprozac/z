@@ -99,8 +99,11 @@ export enum LoweredExpressionKind {
   checkedAddInteger,
   checkedSubtractInteger,
   checkedMultiplyInteger,
+  checkedShiftLeftInteger,
+  checkedShiftRightInteger,
   checkedNegateInteger,
   moveValue,
+  copyValue,
   unaryOperation,
   binaryOperation,
   conditionalValue,
@@ -140,6 +143,7 @@ export enum LoweredStatementKind {
   blockStatement,
   ifStatement,
   whileStatement,
+  forStatement,
   tryStatement,
   matchStatement,
   matchArmStatement,
@@ -197,6 +201,7 @@ struct LoweredImportedType {
   targetName: String;
   kind: LoweredTypeKind;
   needsDeinit: boolean;
+  fields: Array<LoweredField>;
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
 }
@@ -296,6 +301,12 @@ function lowerTypeName(
       name: "String",
     });
   }
+  if (stringStartsWith(name, "__z_Array_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.arrayType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
   match (intrinsicOptionPayloadName(name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -344,7 +355,7 @@ function lowerTypeName(
     });
     none => {}
   }
-  throw `native lowering does not support type ${name} yet`;
+  throw `native local lowering could not resolve type ${name}`;
 }
 
 function lowerType(in program: Program, in type: TypeReference): LoweredType throws String {
@@ -418,7 +429,7 @@ function lowerModuleTypeName(
     success(type) => return type;
     failure(_) => {}
   }
-  throw `native lowering does not support type ${name} yet`;
+  throw `native module lowering could not resolve type ${name} against ${program.aggregates.length} local aggregate(s), ${program.enums.length} local enum(s), and ${importedTypes.length} imported type(s)`;
 }
 
 function lowerModuleType(
@@ -1368,6 +1379,7 @@ function planCleanupStatement(
   if (
     arena.nodes[sourceIndex].kind == StatementKind.ifStatement
     || arena.nodes[sourceIndex].kind == StatementKind.whileStatement
+    || arena.nodes[sourceIndex].kind == StatementKind.forStatement
   ) {
     let childIndex: usize = 0;
     while (childIndex < arena.nodes[sourceIndex].children.length) {
@@ -1387,7 +1399,9 @@ function planCleanupStatement(
         live,
         inout statements,
         inout liveFlags,
-        insideLoop || arena.nodes[sourceIndex].kind == StatementKind.whileStatement,
+        insideLoop
+          || arena.nodes[sourceIndex].kind == StatementKind.whileStatement
+          || arena.nodes[sourceIndex].kind == StatementKind.forStatement,
         childLoopCleanups
       );
       childIndex = childIndex + 1;
@@ -1638,14 +1652,12 @@ function resolvedExpressionTypeName(
   index: usize
 ): Option<String> {
   for (const resolution of evidence.expressionResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) return Option.some(resolution.typeName.copyBytes(
+    if (resolution.offset == tree.nodes[index].offset) {
+      return Option.some(resolution.typeName.copyBytes(
       0,
       resolution.typeName.byteLength
-    ));
+      ));
+    }
   }
   return Option<String>.none;
 }
@@ -1729,6 +1741,37 @@ function importedStructTarget(
     ));
   }
   return Option<String>.none;
+}
+
+function uniquelyResolvedFieldTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in fieldName: String
+): Option<String> {
+  let resolved = "";
+  for (const aggregate of program.aggregates) {
+    for (const field of aggregate.fields) {
+      if (field.name != fieldName) continue;
+      if (resolved.byteLength == 0) {
+        resolved = field.type.name.copyBytes(0, field.type.name.byteLength);
+      } else if (resolved != field.type.name) {
+        return Option<String>.none;
+      }
+    }
+  }
+  for (const imported of importedTypes) {
+    for (const field of imported.fields) {
+      if (field.name != fieldName) continue;
+      const candidate = loweredTypeIdentity(field.type);
+      if (resolved.byteLength == 0) {
+        resolved = move candidate;
+      } else if (resolved != candidate) {
+        return Option<String>.none;
+      }
+    }
+  }
+  if (resolved.byteLength == 0) return Option<String>.none;
+  return Option.some(move resolved);
 }
 
 function lowerExpression(
@@ -1836,13 +1879,27 @@ function lowerExpression(
         }
       }
       if (
+        typeName.byteLength == 0
+        && tree.nodes[childInput].kind == ExpressionKind.memberExpression
+      ) {
+        match (uniquelyResolvedFieldTypeName(
+          program,
+          importedTypes,
+          tree.nodes[childInput].value
+        )) {
+          some(resolved) => typeName = resolved;
+          none => {}
+        }
+      }
+      if (
         typeName != "String"
         && typeName != "boolean"
         && typeName != "i32"
         && typeName != "u8"
         && typeName != "usize"
       ) {
-        throw `native template lowering does not support interpolation of ${typeName}`;
+        const childKind = expressionKindName(tree.nodes[childInput].kind);
+        throw `native template lowering does not support ${childKind} interpolation of ${typeName} at ${tree.nodes[childInput].line}:${tree.nodes[childInput].column}`;
       }
       labels.push(typeName);
     }
@@ -1878,7 +1935,7 @@ function lowerExpression(
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.tryExpression) {
-    throw "native lowering does not support try propagation yet";
+    throw `native lowering does not support nested try propagation at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
   }
   if (tree.nodes[index].kind == ExpressionKind.unaryExpression) {
     if (tree.nodes[index].children.length != 1) {
@@ -1898,13 +1955,26 @@ function lowerExpression(
       kind = LoweredExpressionKind.checkedNegateInteger;
     }
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
+    else if (tree.nodes[index].value == "copy") {
+      const operandType = match (
+        resolvedExpressionTypeName(evidence, tree, operandInput)
+      ) {
+        some(name) => name;
+        none => throw "native copy lowering could not resolve its operand type";
+      };
+      if (operandType != "String") {
+        throw `native copy lowering does not support ${operandType} yet`;
+      }
+      kind = LoweredExpressionKind.copyValue;
+    }
     else if (
       tree.nodes[index].value != "!"
       && tree.nodes[index].value != "+"
       && tree.nodes[index].value != "~"
       && tree.nodes[index].value != "move"
+      && tree.nodes[index].value != "copy"
     ) {
-      throw `native lowering does not support unary operator ${tree.nodes[index].value} yet`;
+      throw `native lowering does not support unary operator ${tree.nodes[index].value} at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
     }
     let children = Array<usize>();
     children.push(operand);
@@ -1961,6 +2031,10 @@ function lowerExpression(
       kind = LoweredExpressionKind.checkedSubtractInteger;
     } else if (tree.nodes[index].value == "*") {
       kind = LoweredExpressionKind.checkedMultiplyInteger;
+    } else if (tree.nodes[index].value == "<<") {
+      kind = LoweredExpressionKind.checkedShiftLeftInteger;
+    } else if (tree.nodes[index].value == ">>") {
+      kind = LoweredExpressionKind.checkedShiftRightInteger;
     }
     else if (
       tree.nodes[index].value != "=="
@@ -1974,6 +2048,8 @@ function lowerExpression(
       && tree.nodes[index].value != "&"
       && tree.nodes[index].value != "|"
       && tree.nodes[index].value != "^"
+      && tree.nodes[index].value != "<<"
+      && tree.nodes[index].value != ">>"
     ) {
       throw `native lowering does not support binary operator ${tree.nodes[index].value} yet`;
     }
@@ -1984,6 +2060,8 @@ function lowerExpression(
       kind == LoweredExpressionKind.checkedAddInteger
       || kind == LoweredExpressionKind.checkedSubtractInteger
       || kind == LoweredExpressionKind.checkedMultiplyInteger
+      || kind == LoweredExpressionKind.checkedShiftLeftInteger
+      || kind == LoweredExpressionKind.checkedShiftRightInteger
     )
       ? checkedIntegerTypeName(evidence, tree, index)
       : tree.nodes[index].value.copyBytes(
@@ -2833,6 +2911,10 @@ function matchSubjectTypeName(
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(name) => return Option.some(name);
+    none => {}
+  }
   let subject = index;
   if (
     tree.nodes[subject].kind == ExpressionKind.attemptExpression
@@ -3014,7 +3096,11 @@ function matchEnumDeclaration(
   }
   return match (found) {
     some(index) => try loweredSourceEnum(program, importedTypes, index);
-    none => throw "native match lowering could not resolve the subject enum";
+    none => {
+      const subject = tree.nodes[root].children[0];
+      const subjectKind = expressionKindName(tree.nodes[subject].kind);
+      throw `native match lowering could not resolve ${subjectKind} subject at ${tree.nodes[subject].line}:${tree.nodes[subject].column}`;
+    }
   };
 }
 
@@ -3120,6 +3206,21 @@ function lowerValueArmStatement(
   inout statements: Array<LoweredStatement>
 ): usize throws String {
   if (
+    arena.nodes[index].kind == StatementKind.returnStatement
+    || arena.nodes[index].kind == StatementKind.throwStatement
+  ) {
+    return try lowerStatement(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      index,
+      inout expressions,
+      inout statements
+    );
+  }
+  if (
     arena.nodes[index].kind == StatementKind.expressionStatement
     || arena.nodes[index].kind == StatementKind.selectStatement
   ) {
@@ -3147,7 +3248,11 @@ function lowerValueArmStatement(
       const sourceChild = arena.nodes[index].children[childIndex];
       let loweredChild: usize = 0;
       if (childIndex + 1 == arena.nodes[index].children.length) {
-        if (arena.nodes[sourceChild].kind != StatementKind.selectStatement) {
+        if (
+          arena.nodes[sourceChild].kind != StatementKind.selectStatement
+          && arena.nodes[sourceChild].kind != StatementKind.returnStatement
+          && arena.nodes[sourceChild].kind != StatementKind.throwStatement
+        ) {
           throw "native value-match lowering requires a final select in a block arm";
         }
         loweredChild = try lowerValueArmStatement(
@@ -3365,6 +3470,118 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
+    match (in arena.nodes[index].secondExpression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (
+            tree.nodes[root].kind == ExpressionKind.tryExpression
+            && tree.nodes[root].children.length == 1
+          ) {
+            const attempted = tree.nodes[root].children[0];
+            const innerResult = try directThrowingCallResult(
+              program,
+              importedTypes,
+              tree,
+              attempted
+            );
+            const inner = match (innerResult) {
+              some(declaration) => declaration;
+              none => throw "native assignment try lowering requires one direct throwing function call";
+            };
+            const outerResult = try throwingFunctionResult(
+              program,
+              importedTypes,
+              ownerName
+            );
+            const outer = match (outerResult) {
+              some(declaration) => declaration;
+              none => throw "native assignment try lowering requires an enclosing throwing function";
+            };
+            let targetName = "";
+            let targetTypeName = "";
+            match (in arena.nodes[index].expression) {
+              some(targetSyntax) => match (in targetSyntax.tree) {
+                some(targetTree) => {
+                  const targetRoot = targetTree.root;
+                  if (
+                    targetTree.nodes[targetRoot].kind
+                      != ExpressionKind.identifierExpression
+                  ) {
+                    throw "native assignment try lowering requires a direct binding target";
+                  }
+                  targetName = targetTree.nodes[targetRoot].value.copyBytes(
+                    0,
+                    targetTree.nodes[targetRoot].value.byteLength
+                  );
+                  match (matchSubjectTypeName(
+                    program,
+                    evidence,
+                    arena,
+                    ownerName,
+                    targetTree,
+                    targetRoot
+                  )) {
+                    some(name) => targetTypeName = name;
+                    none => {}
+                  }
+                }
+                none => {}
+              }
+              none => {}
+            }
+            if (targetName.byteLength == 0) {
+              throw "native assignment try lowering requires a named target";
+            }
+            if (targetTypeName.byteLength == 0) {
+              throw `native assignment try lowering could not resolve ${targetName}`;
+            }
+            const targetType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              targetTypeName
+            );
+            const replacesOwner = moduleTypeNeedsCleanup(
+              program,
+              importedTypes,
+              targetType
+            );
+            const call = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              attempted,
+              inout expressions
+            );
+            let labels = Array<String>();
+            labels.push(move targetName);
+            labels.push(outer.name.copyBytes(0, outer.name.byteLength));
+            if (replacesOwner) labels.push("replace");
+            const loweredTry = statements.length;
+            statements.push(LoweredStatement({
+              kind: LoweredStatementKind.tryStatement,
+              mutableBinding: false,
+              name: inner.name.copyBytes(0, inner.name.byteLength),
+              type: Option.some(move targetType),
+              expression: Option.some(call),
+              secondExpression: Option<usize>.none,
+              children: Array<usize>(),
+              cleanups: Array<LoweredCleanup>(),
+              liveFlag: "",
+              labels,
+              matchConsumesSubject: false,
+              matchBindingNeedsCleanup: false,
+            }));
+            return loweredTry;
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   if (arena.nodes[index].kind == StatementKind.expressionStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => {
@@ -3626,6 +3843,17 @@ function lowerStatement(
     kind = LoweredStatementKind.ifStatement;
   } else if (arena.nodes[index].kind == StatementKind.whileStatement) {
     kind = LoweredStatementKind.whileStatement;
+  } else if (arena.nodes[index].kind == StatementKind.forStatement) {
+    if (arena.nodes[index].mutableBinding) {
+      throw "native lowering does not support `for (const value of inout values)` yet";
+    }
+    if (
+      arena.nodes[index].name.byteLength == 0
+      || arena.nodes[index].objectBindings.length > 0
+    ) {
+      throw "native lowering does not support destructuring for bindings yet";
+    }
+    kind = LoweredStatementKind.forStatement;
   } else if (arena.nodes[index].kind == StatementKind.breakStatement) {
     kind = LoweredStatementKind.breakStatement;
   } else if (arena.nodes[index].kind == StatementKind.continueStatement) {
@@ -3645,6 +3873,21 @@ function lowerStatement(
       index
     );
     type = Option.some(move loweredType);
+  } else if (arena.nodes[index].kind == StatementKind.forStatement) {
+    for (const binding of evidence.bindingResolutions) {
+      if (
+        binding.offset == arena.nodes[index].nameOffset
+        && binding.name == arena.nodes[index].name
+        && binding.typeName.byteLength > 0
+      ) {
+        const loweredType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          binding.typeName
+        );
+        type = Option.some(move loweredType);
+      }
+    }
   } else {
     match (in arena.nodes[index].typeAnnotation) {
       some(annotation) => {
@@ -3801,6 +4044,94 @@ function lowerStatement(
     );
     children.push(loweredChild);
   }
+  let labels = Array<String>();
+  if (arena.nodes[index].kind == StatementKind.forStatement) {
+    match (in arena.nodes[index].expression) {
+      some(iterable) => match (in iterable.tree) {
+        some(tree) => {
+          const root = tree.root;
+          let typeName = "";
+          match (resolvedExpressionTypeName(evidence, tree, root)) {
+            some(resolved) => typeName = resolved;
+            none => {}
+          }
+          if (
+            typeName.byteLength == 0
+            && tree.nodes[root].kind == ExpressionKind.memberExpression
+          ) {
+            match (uniquelyResolvedFieldTypeName(
+              program,
+              importedTypes,
+              tree.nodes[root].value
+            )) {
+              some(resolved) => typeName = resolved;
+              none => {}
+            }
+          }
+          if (typeName.byteLength == 0) {
+            throw "native lowering could not resolve the for iterable type";
+          }
+          const iterableType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            typeName
+          );
+          if (iterableType.kind != LoweredTypeKind.arrayType) {
+            throw `native lowering only supports Array for iteration, found ${typeName}`;
+          }
+          const missingElementType = match (in type) {
+            some(_) => false;
+            none => true;
+          };
+          if (missingElementType) {
+            match (genericTypeShape(typeName)) {
+              some(generic) => {
+                if (
+                  generic.base == "Array"
+                  && generic.arguments.length == 1
+                ) {
+                  const elementType = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    generic.arguments[0]
+                  );
+                  type = Option.some(move elementType);
+                }
+              }
+              none => {}
+            }
+            if (
+              stringStartsWith(typeName, "__z_Array_")
+              && typeName.byteLength > 10
+            ) {
+              const elementName = typeName.copyBytes(
+                10,
+                typeName.byteLength
+              );
+              const elementType = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                elementName
+              );
+              type = Option.some(move elementType);
+            }
+          }
+          labels.push(iterableType.name.copyBytes(
+            0,
+            iterableType.name.byteLength
+          ));
+        }
+        none => throw "native lowering cannot iterate an opaque expression";
+      }
+      none => throw "native lowering received a for statement without an iterable";
+    }
+  }
+  if (arena.nodes[index].kind == StatementKind.forStatement) {
+    match (in type) {
+      some(_) => {}
+      none => throw `native lowering could not find the element type for ${arena.nodes[index].name}`;
+    }
+  }
   const outputIndex = statements.length;
   statements.push(LoweredStatement({
     kind,
@@ -3812,7 +4143,7 @@ function lowerStatement(
     children,
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
-    labels: Array<String>(),
+    labels,
     matchConsumesSubject: false,
     matchBindingNeedsCleanup: false,
   }));
@@ -4438,6 +4769,26 @@ function loweredStructCleanup(
   return Option<boolean>.none;
 }
 
+function loweredStructFields(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): Array<LoweredField> {
+  let fields = Array<LoweredField>();
+  for (const declaration of structs) {
+    if (declaration.name != name) continue;
+    for (const field of declaration.fields) {
+      fields.push(LoweredField({
+        name: field.name.copyBytes(0, field.name.byteLength),
+        type: LoweredType({
+          kind: field.type.kind,
+          name: field.type.name.copyBytes(0, field.type.name.byteLength),
+        }),
+      }));
+    }
+  }
+  return fields;
+}
+
 function copyLoweredVariant(in variant: LoweredVariant): LoweredVariant {
   let payload = Option<LoweredType>.none;
   match (in variant.payload) {
@@ -4504,14 +4855,18 @@ function importedTypesForModule(
         graph.modules[targetModule].symbols[targetSymbol].name.byteLength
       );
       match (loweredStructCleanup(structs, targetName)) {
-        some(needsDeinit) => types.push(LoweredImportedType({
-          localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-          targetName,
-          kind: LoweredTypeKind.structType,
-          needsDeinit,
-          variants: Array<LoweredVariant>(),
-          payloadBearing: false,
-        }));
+        some(needsDeinit) => {
+          const fields = loweredStructFields(structs, targetName);
+          types.push(LoweredImportedType({
+            localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+            targetName,
+            kind: LoweredTypeKind.structType,
+            needsDeinit,
+            fields,
+            variants: Array<LoweredVariant>(),
+            payloadBearing: false,
+          }));
+        }
         none => {}
       }
     } else if (
@@ -4535,11 +4890,64 @@ function importedTypesForModule(
             targetName,
             kind: LoweredTypeKind.enumType,
             needsDeinit: declaration.needsDeinit,
+            fields: Array<LoweredField>(),
             variants,
             payloadBearing: declaration.payloadBearing,
           }));
         }
         none => {}
+      }
+    }
+  }
+  // Public types can flow through an imported function signature without a
+  // second explicit type import in the consuming module. Keep their canonical
+  // lowered identity available for inferred locals and intrinsic containers.
+  for (const candidateModule of graph.modules) {
+    for (const symbol of candidateModule.symbols) {
+      if (!symbol.exported) continue;
+      let present = false;
+      for (const type of types) {
+        if (
+          type.localName == symbol.name
+          || type.targetName == symbol.name
+        ) present = true;
+      }
+      if (present) continue;
+      if (symbol.kind == ModuleSymbolKind.structSymbol) {
+        match (loweredStructCleanup(structs, symbol.name)) {
+          some(needsDeinit) => {
+            const fields = loweredStructFields(structs, symbol.name);
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              kind: LoweredTypeKind.structType,
+              needsDeinit,
+              fields,
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+            }));
+          }
+          none => {}
+        }
+      } else if (symbol.kind == ModuleSymbolKind.enumSymbol) {
+        match (loweredEnumCopy(enums, symbol.name)) {
+          some(declaration) => {
+            let variants = Array<LoweredVariant>();
+            for (const variant of declaration.variants) {
+              variants.push(copyLoweredVariant(variant));
+            }
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              kind: LoweredTypeKind.enumType,
+              needsDeinit: declaration.needsDeinit,
+              fields: Array<LoweredField>(),
+              variants,
+              payloadBearing: declaration.payloadBearing,
+            }));
+          }
+          none => {}
+        }
       }
     }
   }
@@ -4584,6 +4992,7 @@ function appendLoweredProgram(
       targetName,
       kind: LoweredTypeKind.enumType,
       needsDeinit: false,
+      fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
     }));
@@ -4603,6 +5012,7 @@ function appendLoweredProgram(
       targetName,
       kind: LoweredTypeKind.structType,
       needsDeinit: false,
+      fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
     }));
@@ -4673,6 +5083,7 @@ function appendLoweredProgram(
       targetName: emittedName,
       kind: LoweredTypeKind.enumType,
       needsDeinit,
+      fields: Array<LoweredField>(),
       variants: importedVariants,
       payloadBearing,
     }));
@@ -4757,14 +5168,18 @@ function appendLoweredProgram(
       ? emittedPrivateTypeName(moduleIndex, aggregate.name)
       : aggregate.name.copyBytes(0, aggregate.name.byteLength);
     match (loweredStructCleanup(structs, emittedName)) {
-      some(needsDeinit) => importedTypes.push(LoweredImportedType({
-        localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
-        targetName: emittedName,
-        kind: LoweredTypeKind.structType,
-        needsDeinit,
-        variants: Array<LoweredVariant>(),
-        payloadBearing: false,
-      }));
+      some(needsDeinit) => {
+        const fields = loweredStructFields(structs, emittedName);
+        importedTypes.push(LoweredImportedType({
+          localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
+          targetName: emittedName,
+          kind: LoweredTypeKind.structType,
+          needsDeinit,
+          fields,
+          variants: Array<LoweredVariant>(),
+          payloadBearing: false,
+        }));
+      }
       none => {}
     }
   }
@@ -4776,12 +5191,22 @@ function appendLoweredProgram(
     ) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
-    let loweredFunction = try lowerFunction(
+    const loweredFunctionOutcome = attempt lowerFunction(
       program,
       importedTypes,
       evidence,
       declaration
     );
+    let loweredFunction = match (loweredFunctionOutcome) {
+      success(lowered) => lowered;
+      failure(message) => {
+        const functionName = declaration.name.copyBytes(
+          0,
+          declaration.name.byteLength
+        );
+        throw `function ${functionName}: ${message}`;
+      }
+    };
     rewritePrivateCallTargets(
       program,
       privateFunctionCollisionNames,
@@ -4853,7 +5278,7 @@ export function lowerModules(
       enums,
       moduleIndex
     );
-    try appendLoweredProgram(
+    const moduleOutcome = attempt appendLoweredProgram(
       parsed[moduleIndex].program,
       inout importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
@@ -4866,6 +5291,16 @@ export function lowerModules(
       inout enums,
       inout functions
     );
+    match (moduleOutcome) {
+      success => {}
+      failure(message) => {
+        const path = parsed[moduleIndex].path.copyBytes(
+          0,
+          parsed[moduleIndex].path.byteLength
+        );
+        throw `${path}: ${message}`;
+      }
+    }
   }
   return LoweredProgram({ arrays, structs, enums, functions });
 }

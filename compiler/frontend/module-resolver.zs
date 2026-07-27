@@ -575,6 +575,14 @@ function inferMatchExpressionNodeType(
   try requireSettledExpressionType(module, tree, children[0], subjectType);
   if (subjectType.byteLength == 0) return "";
   const subjectIndex = children[0];
+  recordExpressionResolution(
+    modules,
+    moduleIndex,
+    tree,
+    subjectIndex,
+    subjectType,
+    inout evidence
+  );
   const subjectRoot = expressionStorageRootName(tree, subjectIndex);
   const subjectRootType = valueBindingType(bindings, subjectRoot);
   let borrowedMatch = tree.nodes[index].value == "in";
@@ -1867,7 +1875,19 @@ function inferExpressionNodeType(
           bindings,
           field
         );
-        return field.typeName.copyBytes(0, field.typeName.byteLength);
+        const fieldType = field.typeName.copyBytes(
+          0,
+          field.typeName.byteLength
+        );
+        recordExpressionResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          fieldType,
+          inout evidence
+        );
+        return fieldType;
       }
       none => {}
     }
@@ -1885,6 +1905,14 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.unaryExpression && children.length == 1) {
     const operand = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], operand);
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      children[0],
+      operand,
+      inout evidence
+    );
     const result = try unaryOperatorType(
       module,
       modules,
@@ -3834,6 +3862,24 @@ function inferStatement(
     }
     if (arena.nodes[index].name.byteLength > 0) {
       addValueBinding(inout loopBindings, arena.nodes[index].name, elementType);
+      const bindingName = arena.nodes[index].name.copyBytes(
+        0,
+        arena.nodes[index].name.byteLength
+      );
+      const bindingOffset = arena.nodes[index].nameOffset;
+      const bindingLine = arena.nodes[index].nameLine;
+      const bindingColumn = arena.nodes[index].nameColumn;
+      recordBindingResolution(
+        modules,
+        moduleIndex,
+        bindingOffset,
+        bindingLine,
+        bindingColumn,
+        bindingName,
+        false,
+        elementType,
+        inout evidence
+      );
     }
     for (const binding of arena.nodes[index].objectBindings) {
       const fieldType = iterationObjectFieldType(
@@ -3843,6 +3889,21 @@ function inferStatement(
         binding.fieldName
       );
       addValueBinding(inout loopBindings, binding.bindingName, fieldType);
+      const bindingName = binding.bindingName.copyBytes(
+        0,
+        binding.bindingName.byteLength
+      );
+      recordBindingResolution(
+        modules,
+        moduleIndex,
+        binding.bindingOffset,
+        binding.bindingLine,
+        binding.bindingColumn,
+        bindingName,
+        false,
+        fieldType,
+        inout evidence
+      );
     }
     const loopContinues = try inferStatementSequence(
       module,

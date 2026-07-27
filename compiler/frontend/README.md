@@ -174,7 +174,9 @@ instead of treating every integer expression as `i32`. The first dynamic-array
   passes it through signatures, and destroys its elements recursively before
   freeing storage. Empty construction, amortized growth through `push`,
   `.length`, and checked indexing now execute for scalar and aggregate element
-  types; `for...of` iteration remains the next array slice. Owned `String` now
+  types. Read-only `for...of` now walks stable Array storage with a bounds-safe
+  borrowed element binding; mutable iteration and object-pattern bindings
+  remain later slices. Owned `String` now
   has its native data/length/capacity
 representation, static UTF-8 literals, byte equality, `byteAt`, `byteLength`,
 `isEmpty`, owned `copyBytes`, and deterministic cleanup. Cleanup-bearing `const`
@@ -195,8 +197,14 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   interpolation are executable. Runtime live flags now cover ownership
   transfer inside loops, including transfer followed by reinitialization before
   a back edge. Imported generic arguments retain their canonical type identity,
-  so `Array<Token>` can be formed in a module importing `Token`. The real
-  compiler probe now reaches array indexing. A local selective alias is resolved back to the exported
+  so `Array<Token>` can be formed in a module importing `Token`. Public value
+  types that flow transitively through an imported function result also retain
+  structural field metadata for downstream lowering. Direct assignment-form
+  `try` now propagates failure and replaces scalar or cleanup-bearing storage
+  only after success, destroying the previous owner exactly once. Terminating
+  `return`/`throw` match arms, explicit String `copy`, and checked integer
+  shifts compose through the same IR. The real compiler probe now reaches
+  `Map<String, usize>` in the semantic model. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

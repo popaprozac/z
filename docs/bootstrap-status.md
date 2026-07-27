@@ -651,8 +651,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    data/length/capacity storage in signatures and deterministic destruction.
    Cleanup-bearing elements are destroyed in reverse order before storage is
    freed. Empty construction, amortized `push`, `.length`, and bounds-checked
-   indexing now execute for scalar and aggregate elements. `for...of`
-   iteration remains fail-closed. With this tier present, the real compiler emission probe advances
+   indexing now execute for scalar and aggregate elements. Read-only
+   `for...of` over stable Array storage is executable with a borrowed element
+   binding; mutable and object-pattern iteration remain fail-closed. With this
+   tier present, the real compiler emission probe advances
    from `Array<Token>` to owned `String` as its first unsupported type. The
    following owned-String tier emits data/length/capacity storage, static UTF-8
    literals, exact byte equality, checked byte access, byte length/emptiness,
@@ -678,8 +680,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    conditional moves now safely covers moves inside loops, including
    reinitialization before a back edge. Generic intrinsic discovery resolves
    imported component types, allowing parser-side `Array<Token>` storage. The
-   real compiler probe now advances through templates, array construction,
-   growth, and indexing, then stops at its first `for...of` statement.
+   lowering graph also carries public value types that flow transitively through
+   imported function results. Direct assignment-form `try` propagates failure
+   and replaces scalar or cleanup-bearing storage only after success, while
+   terminating match arms, explicit String `copy`, and checked shifts are
+   executable. The real compiler probe now advances through parser/lexer
+   collection use and stops at `Map<String, usize>` in the semantic model.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer
