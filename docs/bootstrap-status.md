@@ -754,9 +754,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    boundary, and an implicit owned-argument transfer destroys an imported
    cleanup-bearing value exactly once in its callee. Local wrappers containing
    imported owners now recursively inherit that cleanup and transfer it through
-   field initialization and owned calls without double destruction. Direct
-   imported construction, imported enums, symbol mangling for colliding private
-   names, and per-module translation units remain explicit follow-ups.
+   field initialization and owned calls without double destruction. Imported
+   enums preserve canonical identity, variants, payload types, and cleanup
+   through selective aliases, direct construction, factory returns, exhaustive
+   consuming match, and ordinary scope exit. Direct imported struct
+   construction, symbol mangling for colliding private names, and per-module
+   translation units remain explicit follow-ups.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

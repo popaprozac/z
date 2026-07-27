@@ -175,9 +175,11 @@ alias, factory return, inferred local, parameter, and field projection. An
 implicit owned-argument transfer suppresses caller cleanup and the imported
 callee destroys the parameter exactly once. Recursive cleanup also survives a
 local Z struct wrapping that imported owner, including implicit transfer into
-the field and then into a consuming function. Direct imported construction,
-imported enums, collision-safe private symbol names, and separate-object
-emission remain explicit follow-ups.
+the field and then into a consuming function. Imported enum identity now
+includes aliased payload/payload-free construction, factory returns, exhaustive
+match, owned payload transfer, and scope cleanup. Direct imported struct
+construction, collision-safe private symbol names, and separate-object emission
+remain explicit follow-ups.
 
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
 branches, loop fallthrough and `break`/`continue`, replacement assignment,

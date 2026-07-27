@@ -8176,13 +8176,24 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     moduleEmission.stdout,
-    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?Z_Point makePoint\(int32_t x, int32_t y\) \{.*?return \(Z_Point\)\{\.x = x, \.y = y\};.*?int32_t sum\(Z_Point point\) \{.*?point\.x.*?point\.y.*?int32_t resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);.*?int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?Z_Resource resource = makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?return add\(sum\(point\), resourceId\(session\)\);/s,
+    /typedef struct Z_Session \{.*?Z_Resource resource;.*?static void Z_Session_deinit\(Z_Session \*self\) \{.*?Z_Resource_deinit\(&self->resource\);.*?int32_t resourceId\(Z_Session session\) \{.*?Z_Session_deinit\(&session\);/s,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /typedef struct Z_ResourceState \{.*?Z_Resource ready;.*?static void Z_ResourceState_deinit\(Z_ResourceState \*self\) \{.*?Z_Resource_deinit\(&self->payload\.ready\);.*?int32_t stateId\(Z_ResourceState value\) \{.*?case Z_ResourceStateTag_ready:.*?Z_Resource_deinit\(&resource\);/s,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /int32_t main\(void\) \{.*?Z_Point point = makePoint\(20, 22\);.*?Z_Resource resource = makeResource\(0\);.*?Z_Session session = \(Z_Session\)\{\.resource = resource\};.*?Z_ResourceState current = makeState\(0\);.*?Z_ResourceState direct = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_ready, \.payload\.ready = makeResource\(0\)\};.*?Z_ResourceState empty = \(Z_ResourceState\)\{\.tag = Z_ResourceStateTag_empty\};/s,
   );
   assert.equal(
     moduleEmission.stdout.match(/Z_Resource_deinit\(&self->resource\);/g)?.length,
     1,
   );
-  assert.doesNotMatch(moduleEmission.stdout, /Z_Resource_deinit\(&resource\);/);
+  const moduleMainBody = moduleEmission.stdout.slice(
+    moduleEmission.stdout.indexOf("int32_t main(void) {"),
+  );
+  assert.doesNotMatch(moduleMainBody, /Z_Resource_deinit\(&resource\);/);
   const moduleExecutable = resolve(directory, "modules");
   const moduleCompilation = spawnSync(
     "clang",

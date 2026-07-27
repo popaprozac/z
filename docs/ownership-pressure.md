@@ -757,7 +757,17 @@ A local `Session` then stores the imported `Resource`. Recursive cleanup marks
 the wrapper as ownership-bearing, implicit field initialization transfers the
 resource, and consuming the session destroys its imported field once. The
 generated caller destroys neither the emptied resource binding nor the moved
-session. Imported enum payloads remain the next recursive cleanup test.
+session.
+
+An exported `ResourceState` then carries the same resource as a payload. The
+consumer aliases the type to `State`, constructs `State.ready(...)` and
+`State.empty` directly, receives another state from an imported factory, and
+matches it exhaustively. Native lowering carries the canonical variant table
+and payload type through the graph: consuming `ready(resource)` transfers and
+destroys the payload exactly once, while an unmatched scope-owned empty state
+uses the synthesized enum destructor. This is the first multi-module test where
+nominal type identity, variant syntax, control flow, and recursive ownership all
+compose in the native emitter.
 
 What the compiler proves:
 

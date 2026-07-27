@@ -160,6 +160,8 @@ struct LoweredImportedType {
   targetName: String;
   kind: LoweredTypeKind;
   needsDeinit: boolean;
+  variants: Array<LoweredVariant>;
+  payloadBearing: boolean;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -1321,8 +1323,35 @@ function importedCallTarget(
   return Option<String>.none;
 }
 
+function importedEnumDeclaration(
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<LoweredEnum> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind != LoweredTypeKind.enumType
+      || (
+        imported.localName != name
+        && imported.targetName != name
+      )
+    ) continue;
+    let variants = Array<LoweredVariant>();
+    for (const variant of imported.variants) {
+      variants.push(copyLoweredVariant(variant));
+    }
+    return Option.some(LoweredEnum({
+      name: imported.targetName.copyBytes(0, imported.targetName.byteLength),
+      variants,
+      payloadBearing: imported.payloadBearing,
+      needsDeinit: imported.needsDeinit,
+    }));
+  }
+  return Option<LoweredEnum>.none;
+}
+
 function lowerExpression(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
@@ -1365,6 +1394,7 @@ function lowerExpression(
     const attempted = tree.nodes[index].children[0];
     return try lowerExpression(
       program,
+      importedTypes,
       evidence,
       tree,
       attempted,
@@ -1381,6 +1411,7 @@ function lowerExpression(
     const operandInput = tree.nodes[index].children[0];
     const operand = try lowerExpression(
       program,
+      importedTypes,
       evidence,
       tree,
       operandInput,
@@ -1415,6 +1446,7 @@ function lowerExpression(
     const rightInput = tree.nodes[index].children[1];
     const left = try lowerExpression(
       program,
+      importedTypes,
       evidence,
       tree,
       leftInput,
@@ -1422,6 +1454,7 @@ function lowerExpression(
     );
     const right = try lowerExpression(
       program,
+      importedTypes,
       evidence,
       tree,
       rightInput,
@@ -1484,6 +1517,7 @@ function lowerExpression(
                     const payloadInput = tree.nodes[index].children[1];
                     const payload = try lowerExpression(
                       program,
+                      importedTypes,
                       evidence,
                       tree,
                       payloadInput,
@@ -1520,6 +1554,7 @@ function lowerExpression(
                     const payloadInput = tree.nodes[index].children[1];
                     const payload = try lowerExpression(
                       program,
+                      importedTypes,
                       evidence,
                       tree,
                       payloadInput,
@@ -1539,6 +1574,45 @@ function lowerExpression(
                   }
                   none => {}
                 }
+              }
+            }
+          }
+          none => {}
+        }
+        match (importedEnumDeclaration(
+          importedTypes,
+          tree.nodes[enumInput].value
+        )) {
+          some(declaration) => {
+            for (const variant of declaration.variants) {
+              if (variant.name != tree.nodes[calleeInput].value) continue;
+              match (in variant.payload) {
+                some(_) => {
+                  if (tree.nodes[index].children.length != 2) {
+                    throw `native enum payload construction for ${tree.nodes[enumInput].value}.${variant.name} requires one value`;
+                  }
+                  const payloadInput = tree.nodes[index].children[1];
+                  const payload = try lowerExpression(
+                    program,
+                    importedTypes,
+                    evidence,
+                    tree,
+                    payloadInput,
+                    inout output
+                  );
+                  let children = Array<usize>();
+                  children.push(payload);
+                  let labels = Array<String>();
+                  labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+                  return pushExpression(
+                    inout output,
+                    LoweredExpressionKind.enumPayloadValue,
+                    declaration.name,
+                    children,
+                    labels
+                  );
+                }
+                none => {}
               }
             }
           }
@@ -1569,6 +1643,7 @@ function lowerExpression(
             const valueInput = tree.nodes[objectInput].children[field];
             const value = try lowerExpression(
               program,
+              importedTypes,
               evidence,
               tree,
               valueInput,
@@ -1615,6 +1690,7 @@ function lowerExpression(
           );
           none => callee = try lowerExpression(
             program,
+            importedTypes,
             evidence,
             tree,
             calleeInput,
@@ -1625,6 +1701,7 @@ function lowerExpression(
     } else {
       callee = try lowerExpression(
         program,
+        importedTypes,
         evidence,
         tree,
         calleeInput,
@@ -1638,6 +1715,7 @@ function lowerExpression(
       const argumentInput = tree.nodes[index].children[argument];
       const value = try lowerExpression(
         program,
+        importedTypes,
         evidence,
         tree,
         argumentInput,
@@ -1712,9 +1790,35 @@ function lowerExpression(
         }
         none => {}
       }
+      match (importedEnumDeclaration(
+        importedTypes,
+        tree.nodes[receiverInput].value
+      )) {
+        some(declaration) => {
+          for (const variant of declaration.variants) {
+            if (variant.name != tree.nodes[index].value) continue;
+            match (in variant.payload) {
+              some(_) => throw `native lowering does not support payload enum variant ${tree.nodes[receiverInput].value}.${variant.name} without a value`;
+              none => {}
+            }
+            let labels = Array<String>();
+            labels.push(variant.name.copyBytes(0, variant.name.byteLength));
+            if (declaration.payloadBearing) labels.push("tagged");
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.enumValue,
+              declaration.name,
+              Array<usize>(),
+              labels
+            );
+          }
+        }
+        none => {}
+      }
     }
     const receiver = try lowerExpression(
       program,
+      importedTypes,
       evidence,
       tree,
       receiverInput,
@@ -1735,6 +1839,7 @@ function lowerExpression(
 
 function lowerExpressionSyntax(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   inout output: Array<LoweredExpression>
@@ -1742,7 +1847,14 @@ function lowerExpressionSyntax(
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select try lowerExpression(program, evidence, tree, root, inout output);
+      select try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        root,
+        inout output
+      );
     }
     none => throw "native lowering cannot lower an opaque expression";
   };
@@ -1750,6 +1862,7 @@ function lowerExpressionSyntax(
 
 function loweredSourceEnum(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   index: usize
 ): LoweredEnum throws String {
   let variants = Array<LoweredVariant>();
@@ -1758,7 +1871,7 @@ function loweredSourceEnum(
     let payload = Option<LoweredType>.none;
     match (in variant.payload) {
       some(type) => {
-        const lowered = try lowerType(program, type);
+        const lowered = try lowerModuleType(program, importedTypes, type);
         payload = Option.some(move lowered);
         payloadBearing = true;
       }
@@ -1776,7 +1889,7 @@ function loweredSourceEnum(
     ),
     variants,
     payloadBearing,
-    needsDeinit: enumNeedsCleanup(program, index, 0),
+    needsDeinit: moduleEnumNeedsCleanup(program, importedTypes, index, 0),
   });
 }
 
@@ -1934,6 +2047,7 @@ function matchSubjectTypeName(
 
 function matchEnumDeclaration(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
@@ -1956,7 +2070,15 @@ function matchEnumDeclaration(
         none => {}
       }
       match (enumIndex(program, name)) {
-        some(index) => return try loweredSourceEnum(program, index);
+        some(index) => return try loweredSourceEnum(
+          program,
+          importedTypes,
+          index
+        );
+        none => {}
+      }
+      match (importedEnumDeclaration(importedTypes, name)) {
+        some(declaration) => return declaration;
         none => {}
       }
     }
@@ -1987,7 +2109,7 @@ function matchEnumDeclaration(
     enumPosition = enumPosition + 1;
   }
   return match (found) {
-    some(index) => try loweredSourceEnum(program, index);
+    some(index) => try loweredSourceEnum(program, importedTypes, index);
     none => throw "native match lowering could not resolve the subject enum";
   };
 }
@@ -2024,6 +2146,7 @@ function valueArmIsIdentifier(
 
 function lowerValueDestination(
   in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   returnValue: boolean,
@@ -2033,6 +2156,7 @@ function lowerValueDestination(
 ): usize throws String {
   const value = try lowerExpressionSyntax(
     program,
+    importedTypes,
     evidence,
     expression,
     inout expressions
@@ -2098,6 +2222,7 @@ function lowerValueArmStatement(
     return match (in arena.nodes[index].expression) {
       some(expression) => try lowerValueDestination(
         program,
+        importedTypes,
         evidence,
         expression,
         returnValue,
@@ -2190,6 +2315,7 @@ function lowerMatchTree(
   const subjectInput = tree.nodes[root].children[0];
   const subject = try lowerExpression(
     program,
+    importedTypes,
     evidence,
     tree,
     subjectInput,
@@ -2197,6 +2323,7 @@ function lowerMatchTree(
   );
   const declaration = try matchEnumDeclaration(
     program,
+    importedTypes,
     evidence,
     arena,
     ownerName,
@@ -2369,6 +2496,7 @@ function lowerStatement(
               };
               const call = try lowerExpression(
                 program,
+                importedTypes,
                 evidence,
                 tree,
                 attempted,
@@ -2438,6 +2566,7 @@ function lowerStatement(
               );
               const call = try lowerExpression(
                 program,
+                importedTypes,
                 evidence,
                 tree,
                 attempted,
@@ -2630,6 +2759,7 @@ function lowerStatement(
               const attempted = tree.nodes[root].children[0];
               loweredValue = try lowerExpression(
                 program,
+                importedTypes,
                 evidence,
                 tree,
                 attempted,
@@ -2639,6 +2769,7 @@ function lowerStatement(
             } else {
               loweredValue = try lowerExpression(
                 program,
+                importedTypes,
                 evidence,
                 tree,
                 root,
@@ -2651,6 +2782,7 @@ function lowerStatement(
       } else {
         loweredValue = try lowerExpressionSyntax(
           program,
+          importedTypes,
           evidence,
           source,
           inout expressions
@@ -2723,6 +2855,7 @@ function lowerStatement(
     some(source) => {
       const loweredExpression = try lowerExpressionSyntax(
         program,
+        importedTypes,
         evidence,
         source,
         inout expressions
@@ -3087,9 +3220,45 @@ function loweredStructCleanup(
   return Option<boolean>.none;
 }
 
+function copyLoweredVariant(in variant: LoweredVariant): LoweredVariant {
+  let payload = Option<LoweredType>.none;
+  match (in variant.payload) {
+    some(type) => payload = Option.some(LoweredType({
+      kind: type.kind,
+      name: type.name.copyBytes(0, type.name.byteLength),
+    }));
+    none => {}
+  }
+  return LoweredVariant({
+    name: variant.name.copyBytes(0, variant.name.byteLength),
+    payload,
+  });
+}
+
+function loweredEnumCopy(
+  in enums: Array<LoweredEnum>,
+  in name: String
+): Option<LoweredEnum> {
+  for (const declaration of enums) {
+    if (declaration.name != name) continue;
+    let variants = Array<LoweredVariant>();
+    for (const variant of declaration.variants) {
+      variants.push(copyLoweredVariant(variant));
+    }
+    return Option.some(LoweredEnum({
+      name: declaration.name.copyBytes(0, declaration.name.byteLength),
+      variants,
+      payloadBearing: declaration.payloadBearing,
+      needsDeinit: declaration.needsDeinit,
+    }));
+  }
+  return Option<LoweredEnum>.none;
+}
+
 function importedTypesForModule(
   in graph: ModuleGraph,
   in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
   moduleIndex: usize
 ): Array<LoweredImportedType> {
   let types = Array<LoweredImportedType>();
@@ -3122,7 +3291,36 @@ function importedTypesForModule(
           targetName,
           kind: LoweredTypeKind.structType,
           needsDeinit,
+          variants: Array<LoweredVariant>(),
+          payloadBearing: false,
         }));
+        none => {}
+      }
+    } else if (
+      graph.modules[targetModule].symbols[targetSymbol].kind
+        == ModuleSymbolKind.enumSymbol
+    ) {
+      const targetName = graph.modules[targetModule].symbols[
+        targetSymbol
+      ].name.copyBytes(
+        0,
+        graph.modules[targetModule].symbols[targetSymbol].name.byteLength
+      );
+      match (loweredEnumCopy(enums, targetName)) {
+        some(declaration) => {
+          let variants = Array<LoweredVariant>();
+          for (const variant of declaration.variants) {
+            variants.push(copyLoweredVariant(variant));
+          }
+          types.push(LoweredImportedType({
+            localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+            targetName,
+            kind: LoweredTypeKind.enumType,
+            needsDeinit: declaration.needsDeinit,
+            variants,
+            payloadBearing: declaration.payloadBearing,
+          }));
+        }
         none => {}
       }
     }
@@ -3178,7 +3376,12 @@ function appendLoweredProgram(
       name: declaration.name.copyBytes(0, declaration.name.byteLength),
       variants,
       payloadBearing,
-      needsDeinit: enumNeedsCleanup(program, declarationIndex, 0),
+      needsDeinit: moduleEnumNeedsCleanup(
+        program,
+        importedTypes,
+        declarationIndex,
+        0
+      ),
     }));
   }
 
@@ -3251,6 +3454,8 @@ function appendLoweredProgram(
         targetName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
         kind: LoweredTypeKind.structType,
         needsDeinit,
+        variants: Array<LoweredVariant>(),
+        payloadBearing: false,
       }));
       none => {}
     }
@@ -3303,6 +3508,7 @@ export function lowerModules(
     let importedTypes = importedTypesForModule(
       graph,
       structs,
+      enums,
       moduleIndex
     );
     try appendLoweredProgram(
