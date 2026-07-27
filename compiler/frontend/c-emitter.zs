@@ -360,6 +360,7 @@ function appendStatement(
     declaration.statements[index].kind == LoweredStatementKind.breakStatement
     || declaration.statements[index].kind == LoweredStatementKind.continueStatement
   ) {
+    appendCleanups(inout output, declaration.statements[index].cleanups, depth);
     appendIndent(inout output, depth);
     if (declaration.statements[index].kind == LoweredStatementKind.breakStatement) {
       output.append("break;\n");

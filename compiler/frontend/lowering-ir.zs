@@ -305,7 +305,8 @@ function planCleanupStatement(
   loweredIndex: usize,
   in live: Array<LoweredCleanup>,
   inout statements: Array<LoweredStatement>,
-  insideLoop: boolean
+  insideLoop: boolean,
+  in loopCleanups: Array<LoweredCleanup>
 ): void throws String {
   if (declaration.body.nodes[sourceIndex].kind == StatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
@@ -323,7 +324,8 @@ function planCleanupStatement(
       loweredChildren,
       live,
       inout statements,
-      insideLoop
+      insideLoop,
+      loopCleanups
     );
     if (
       sequenceFallsThrough(
@@ -336,6 +338,13 @@ function planCleanupStatement(
     return;
   }
   if (
+    declaration.body.nodes[sourceIndex].kind == StatementKind.breakStatement
+    || declaration.body.nodes[sourceIndex].kind == StatementKind.continueStatement
+  ) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, loopCleanups);
+    return;
+  }
+  if (
     declaration.body.nodes[sourceIndex].kind == StatementKind.ifStatement
     || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement
   ) {
@@ -343,6 +352,10 @@ function planCleanupStatement(
     while (childIndex < declaration.body.nodes[sourceIndex].children.length) {
       const sourceChild = declaration.body.nodes[sourceIndex].children[childIndex];
       const loweredChild = statements[loweredIndex].children[childIndex];
+      let childLoopCleanups = Array<LoweredCleanup>();
+      if (declaration.body.nodes[sourceIndex].kind == StatementKind.ifStatement) {
+        appendCleanupCopies(inout childLoopCleanups, loopCleanups);
+      }
       try planCleanupStatement(
         program,
         declaration,
@@ -350,7 +363,8 @@ function planCleanupStatement(
         loweredChild,
         live,
         inout statements,
-        insideLoop || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement
+        insideLoop || declaration.body.nodes[sourceIndex].kind == StatementKind.whileStatement,
+        childLoopCleanups
       );
       childIndex = childIndex + 1;
     }
@@ -364,10 +378,13 @@ function planCleanupSequence(
   in loweredRoots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
   inout statements: Array<LoweredStatement>,
-  insideLoop: boolean
+  insideLoop: boolean,
+  in inheritedLoopCleanups: Array<LoweredCleanup>
 ): Array<LoweredCleanup> throws String {
   let live = Array<LoweredCleanup>();
   appendCleanupCopies(inout live, inherited);
+  let loopCleanups = Array<LoweredCleanup>();
+  appendCleanupCopies(inout loopCleanups, inheritedLoopCleanups);
   let introduced = Array<LoweredCleanup>();
   let rootIndex: usize = 0;
   while (rootIndex < sourceRoots.length) {
@@ -378,9 +395,6 @@ function planCleanupSequence(
         some(annotation) => {
           const type = try lowerType(program, annotation);
           if (typeNeedsCleanup(program, type)) {
-            if (insideLoop) {
-              throw `native cleanup lowering does not support loop-local owner ${declaration.body.nodes[sourceIndex].name} in ${declaration.name} yet`;
-            }
             if (
               functionHasControlFlow(declaration)
               && functionMovesName(declaration, declaration.body.nodes[sourceIndex].name)
@@ -396,6 +410,7 @@ function planCleanupSequence(
                 type: move type,
               });
               live.push(copyCleanup(cleanup));
+              if (insideLoop) loopCleanups.push(copyCleanup(cleanup));
               introduced.push(move cleanup);
             }
           }
@@ -415,7 +430,8 @@ function planCleanupSequence(
       loweredIndex,
       live,
       inout statements,
-      insideLoop
+      insideLoop,
+      loopCleanups
     );
     rootIndex = rootIndex + 1;
   }
@@ -767,6 +783,7 @@ function lowerFunction(
     );
     roots.push(loweredRoot);
   }
+  const rootLoopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
     declaration,
@@ -774,7 +791,8 @@ function lowerFunction(
     roots,
     ownedParameters,
     inout statements,
-    false
+    false,
+    rootLoopCleanups
   );
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);

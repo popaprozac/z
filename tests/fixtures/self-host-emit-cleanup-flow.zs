@@ -50,11 +50,30 @@ function earlyBranch(chooseFirst: boolean): i32 {
   return 0;
 }
 
+function loopLocal(limit: i32): i32 {
+  let index: i32 = 0;
+  let observed: i32 = 0;
+  while (index < limit) {
+    const resource: Resource = Resource({ id: index + 10 });
+    index = index + 1;
+    if (index == 1) {
+      continue;
+    }
+    observed = observed + resource.id;
+    if (index == 3) {
+      break;
+    }
+  }
+  return observed;
+}
+
 function main(): i32 {
   return inspectBranch(Resource({ id: 5 }), true)
     + inspectLoop(Resource({ id: 7 }), 3)
     + localBranch(false)
     + branchLocal(true)
     + earlyBranch(true)
+    + loopLocal(5)
+    - 23
     - 1;
 }

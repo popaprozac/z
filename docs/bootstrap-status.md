@@ -670,9 +670,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    need an explicit join representation. Cleanup-bearing locals within `if`
    branches now clean at branch fallthrough and before early return; a
    fallthrough analysis omits unreachable duplicate cleanup after a terminating
-   block. Loop-local owners remain rejected until `break`/`continue` record the
-   exact scopes they exit. Replacement assignment, non-empty deinitializers,
-   conditional transfer, and error cleanup merging remain future slices.
+   block. Loop-local owners now clean at normal iteration fallthrough and on
+   explicit `break`/`continue` edges. Cleanup tracking resets at the innermost
+   loop boundary, preserving owners introduced by an outer iteration when an
+   inner loop transfers control. Replacement assignment, non-empty
+   deinitializers, conditional transfer, and error cleanup merging remain
+   future slices.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

@@ -600,8 +600,13 @@ full outer-plus-inner cleanup snapshot. A small fallthrough analysis avoids
 emitting a second unreachable cleanup after a branch that always transfers
 control.
 
-Loop-local owners still reject because `break` and `continue` leave different
-scope sets. Owned replacement assignment, non-empty deinitializer bodies, and
+Loop-local owners now provide the next proof. Normal body fallthrough destroys
+the current iteration's owners before the back-edge; `continue` and `break`
+carry the exact cleanup list for the scopes they exit. Entering a nested loop
+resets that edge list while retaining outer owners in the return snapshot, so
+an inner-loop transfer cannot destroy an outer-iteration value.
+
+Owned replacement assignment, non-empty deinitializer bodies, and
 path-sensitive transfer/error cleanup merging remain the next ownership
 evidence required before this tier broadens.
 

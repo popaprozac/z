@@ -163,8 +163,9 @@ callee. Owners that remain live through `if` and `while` now receive cleanup on
 nested returns and ordinary fallthrough. A move combined with control flow is
 still rejected until divergent owner states can join explicitly. Owners local
 to `if` branches now clean on branch fallthrough and before early return.
-Loop-local owners remain fail-closed until `break`/`continue` carry explicit
-scope-exit plans.
+Loop-local owners now clean at ordinary iteration fallthrough and on the exact
+`break`/`continue` edge. The plan resets at each nested loop boundary so inner
+loop control never destroys an outer-iteration owner.
 
 Z `const` remains binding immutability, not immutable physical storage. The C
 emitter therefore keeps value-struct local storage writable so deterministic
