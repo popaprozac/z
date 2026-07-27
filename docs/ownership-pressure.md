@@ -693,6 +693,16 @@ block-local owner is destroyed after its selected scalar is evaluated and
 before the active payload owner, while a local match result performs the same
 cleanup before arm fallthrough.
 
+The first compiler-provided sum type now crosses the same lowering path.
+`Option<i32>` is a monomorphized tag plus scalar union with no allocation;
+`Option<Resource>` derives cleanup from `Resource`, destroys only `some`, and
+hands a consuming match's active payload to one arm-local owner. Explicit
+constructors, `none`, parameters, returns, typed locals, and direct-call match
+subjects all compile and execute unchanged. This is stronger evidence than a
+parallel built-in emitter path: Option representation and ownership are ordinary
+lowered enum operations. Contextually inferred constructors and `Result<T, E>`
+remain the next intrinsic pressure points.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

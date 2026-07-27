@@ -713,8 +713,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    storage. Selecting block arms now lower prefix statements plus their final
    `select` into the same result destination. Lexical owners created in the
    block clean before the selected payload owner on return or arm fallthrough.
-   Inferred match-result bindings and native `Option`/`Result` representation
-   remain the next enum tier.
+   Compiler-provided `Option<T>` now reuses this enum machinery in the native
+   emitter. Explicit `Option<T>.some(value)` and `Option<T>.none` lower to one
+   monomorphized tag-plus-union value; parameters, returns, explicitly typed
+   locals, direct-call subjects, and consuming matches are executable.
+   Cleanup-bearing payloads synthesize an active-variant deinitializer and
+   transfer into match bindings exactly once. The `Option<i32>` path adds no
+   allocation, while `Option<Resource>` inherits the resource's deterministic
+   cleanup. Inferred Option constructors and match-result bindings plus native
+   `Result<T, E>` representation remain the next enum tiers.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -873,11 +880,11 @@ Continue focused self-hosting work in this order:
 4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.
-5. Grow the now-started native lowering and C-family emitter from its first
-   executable scalar, control-flow, and cleanup-free value-struct slices to the
-   compiler subset. The explicit typed lowering IR is now implemented; extend
-   it with deterministic scope-exit cleanup plans. Add constructs only with an
-   end-to-end fixture. Continue to
+5. Grow the now-started native lowering and C-family emitter from its executable
+   scalar, control-flow, value-struct, owned enum, and intrinsic `Option<T>`
+   slices to the compiler subset. The explicit typed lowering IR and
+   deterministic scope-exit cleanup plans are implemented. Add constructs only
+   with an end-to-end fixture. Continue to
    invoke Clang as an external tool; self-hosting does not require replacing it.
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding

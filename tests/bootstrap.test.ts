@@ -8283,6 +8283,55 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const payloadEnumExecution = spawnSync(payloadEnumExecutable, [], { encoding: "utf8" });
   assert.equal(payloadEnumExecution.status, 42, payloadEnumExecution.stderr);
 
+  const optionInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-option.zs",
+  );
+  const optionEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", optionInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(optionEmission.status, 0, optionEmission.stderr);
+  assert.match(optionEmission.stdout, /typedef enum Z___z_Option_i32Tag/);
+  assert.match(
+    optionEmission.stdout,
+    /Z___z_Option_i32Tag_some,.*?Z___z_Option_i32Tag_none/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = value\};/,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /return \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_none\};/,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /inspect\(Z___z_Option_i32 option\).*?switch \(_z_stage1_match_\d+\.tag\)/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /static void Z___z_Option_Resource_deinit\(Z___z_Option_Resource \*self\) \{.*?case Z___z_Option_ResourceTag_some:.*?Z_Resource_deinit\(&self->payload\.some\);/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /inspectResource\(Z___z_Option_Resource option\).*?Z_Resource resource = _z_stage1_match_\d+\.payload\.some;.*?Z_Resource_deinit\(&resource\);/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /discardResource\(void\).*?Z___z_Option_Resource held = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
+  );
+  const optionExecutable = resolve(directory, "option");
+  const optionCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", optionExecutable],
+    { encoding: "utf8", input: optionEmission.stdout },
+  );
+  assert.equal(optionCompilation.status, 0, optionCompilation.stderr);
+  const optionExecution = spawnSync(optionExecutable, [], { encoding: "utf8" });
+  assert.equal(optionExecution.status, 42, optionExecution.stderr);
+
   const ownedEnumInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-owned-enum.zs",
