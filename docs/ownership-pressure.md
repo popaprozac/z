@@ -556,8 +556,13 @@ direct AST consumption works, recursive expression and statement walking is
 ergonomic with index arenas, and an emission failure can remain a typed Z
 error. It does not yet prove ownership lowering, runtime support, multi-module
 linking, or foreign emission. The first ownership-bearing aggregate slice
-should decide whether direct AST traversal remains sufficient or an explicit
-lowering IR has earned its cost.
+must not extend direct AST emission. A third executable probe now lays out,
+constructs, passes, and reads a cleanup-free `Point` value struct. Together the
+three shapes show that an explicit lowering IR has earned its cost: checked
+operators and aggregate construction are already semantic operations, while
+ownership-bearing values require cleanup plans for normal, branch, loop,
+return, and error exits. The IR should make those plans data before the C
+printer sees them.
 
 What the compiler proves:
 

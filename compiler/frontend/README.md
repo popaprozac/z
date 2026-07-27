@@ -108,8 +108,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
   ordinary `i32`/`boolean`/`void` functions, value parameters, explicitly typed
   locals, direct calls, arithmetic, assignment, `if`, `while`, loop control,
-  and returns from the owned Stage 1 AST. Signed `i32` addition, subtraction,
-  multiplication, and negation retain Z's checked-overflow behavior.
+  returns, and non-generic data-only value structs from the owned Stage 1 AST.
+  Struct layout, construction, value passing, and field access are executable.
+  Signed `i32` addition, subtraction, multiplication, and negation retain Z's
+  checked-overflow behavior.
 - `parser-library.zs` is the compiler-facing root compiled into a
   content-addressed dynamic library and loaded in-process by the Bun driver.
 
@@ -133,6 +135,13 @@ types fail before Clang. Scalar and control-flow fixtures prove that native
 lexing, parsing, semantic validation, and C emission compose.
 Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
+
+Three distinct shapes now run directly—scalar calls, mutable control flow, and
+value structs. Their pressure establishes the next architecture boundary:
+checked operations and aggregate construction are semantic lowering decisions,
+not formatting. Before adding deterministic cleanup, the native path should
+introduce a typed lowering IR with explicit scope-exit cleanup plans rather than
+teach the C printer to rediscover ownership from syntax.
 
 `check --native-frontend` is the first ordinary-command integration. Stage 0
 still owns diagnostics and unsupported semantic shapes; the native frontend

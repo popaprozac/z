@@ -8204,6 +8204,25 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const overflowExecution = spawnSync(overflowExecutable, [], { encoding: "utf8" });
   assert.notEqual(overflowExecution.status, 0);
 
+  const structInput = resolve(projectRoot, "tests/fixtures/self-host-emit-struct.zs");
+  const structEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", structInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(structEmission.status, 0, structEmission.stderr);
+  assert.match(structEmission.stdout, /typedef struct Z_Point/);
+  assert.match(structEmission.stdout, /const Z_Point point = \(Z_Point\)\{\.x = 20, \.y = 22\};/);
+  const structExecutable = resolve(directory, "struct");
+  const structCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", structExecutable],
+    { encoding: "utf8", input: structEmission.stdout },
+  );
+  assert.equal(structCompilation.status, 0, structCompilation.stderr);
+  const structExecution = spawnSync(structExecutable, [], { encoding: "utf8" });
+  assert.equal(structExecution.status, 42, structExecution.stderr);
+
   const invalidInput = resolve(directory, "invalid.zs");
   writeFileSync(invalidInput, "function main(): i32 { return missing; }\n");
   const invalidEmission = spawnSync(

@@ -629,7 +629,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    directly. `z self-host-emit` lowers a deliberately closed subset—ordinary
    `i32`/`boolean`/`void` functions, value parameters, explicitly typed locals,
    direct calls, unary/binary expressions, assignment, `if`, `while`,
-   `break`/`continue`, and returns—to portable C. Before emission, the canonical
+   `break`/`continue`, returns, and non-generic data-only value structs—to
+   portable C. Struct layout, compound construction, value passing, and field
+   access are executable. Before emission, the canonical
    batch passes through the same native module resolver and semantic analyzer
    used by the parity bridge; an invalid name is rejected natively rather than
    left for Clang. Regressions compile and execute both a scalar call program
@@ -641,6 +643,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    source-to-native path. It is not yet the production emitter: Stage 0 remains
    authoritative for the full language, module linking, ownership cleanup,
    runtime types, foreign interop, and production diagnostics.
+   These three shapes establish the native lowering-IR boundary. Checked
+   arithmetic and aggregate construction already require semantic decisions
+   that should not live in a C formatter. Deterministic cleanup adds
+   scope/branch/return exit plans, so the next slice introduces a typed,
+   arena-backed lowering IR before ownership-bearing structs.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures
@@ -800,9 +807,10 @@ Continue focused self-hosting work in this order:
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.
 5. Grow the now-started native lowering and C-family emitter from its first
-   executable scalar/function slice to the compiler subset. Add constructs only
-   with an end-to-end fixture and decide on an explicit lowering IR once the
-   second and third nontrivial shapes reveal stable requirements. Continue to
+   executable scalar, control-flow, and cleanup-free value-struct slices to the
+   compiler subset. The evidence now justifies an explicit typed lowering IR:
+   introduce it before deterministic cleanup and represent scope-exit cleanup
+   plans directly. Add constructs only with an end-to-end fixture. Continue to
    invoke Clang as an external tool; self-hosting does not require replacing it.
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding

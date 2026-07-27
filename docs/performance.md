@@ -211,6 +211,14 @@ Clang. The thirty-module compiler graph measured 178.84 ms for its warm native
 phase; whole-process resolver samples were 249.6 ms for Stage 1, 249.5 ms for
 Stage 0, and 1.140 s for the hybrid gate.
 
+Adding cleanup-free value-struct layout, construction, passing, and field access
+measured 36.6 ms for native emission versus 44.3 ms for production Stage-0
+`emit` on the struct fixture. As above, this is an edit-loop baseline for a
+strict subset, not an equal-work backend comparison. The stable result supports
+introducing the ownership-lowering IR for semantic correctness rather than
+trying to preserve a misleading microbenchmark advantage by keeping the native
+emitter underspecified.
+
 The earlier small ordinary Stage-0 increase demonstrated that loading more
 modules is not free, so the direction is not guaranteed for every split.
 Native module fingerprints and incremental parse/semantic caches should
