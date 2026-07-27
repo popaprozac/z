@@ -8101,6 +8101,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.match(integrated.stdout, /stage-1 resolver compiler index matches \d+ binding\/signature queries/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /native in-process \(FFI \+ lex \+ parse \+ resolve \+ symbols \+ signatures \+ names \+ types \+ expressions \+ encode\): \d+\.\d{2} ms/);
+  assert.match(integrated.stdout, /compatibility stream decode: \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /compiler parity \+ semantic queries \(reused AST\): \d+\.\d{2} ms/);
 
   const ordinaryCheck = spawnSync(

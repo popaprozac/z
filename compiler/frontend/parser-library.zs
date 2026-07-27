@@ -2,7 +2,15 @@
 // stage1Parse to the Bun host without making Z module exports imply a C ABI.
 
 import { renderProgram } from "./parser-protocol.zs";
-import { renderModuleGraph } from "./module-resolver-protocol.zs";
+import {
+  RenderedModuleGraph,
+  renderModuleGraph,
+} from "./module-resolver-protocol.zs";
+
+struct Stage1ResolveResponse {
+  success: boolean;
+  graph: RenderedModuleGraph;
+}
 
 function stage1Parse(in path: String, in source: String): String {
   const outcome = attempt renderProgram(path, source);
@@ -12,11 +20,30 @@ function stage1Parse(in path: String, in source: String): String {
   };
 }
 
-function stage1Resolve(in entryPath: String, in batch: String): String {
+function stage1Resolve(
+  in entryPath: String,
+  in batch: String
+): Stage1ResolveResponse {
   const outcome = attempt renderModuleGraph(entryPath, batch);
   return match (outcome) {
-    success(stream) => `ok\n${stream}`;
-    failure(message) => `error\n${message}`;
+    success(graph) => Stage1ResolveResponse({
+      success: true,
+      graph: move graph,
+    });
+    failure(message) => Stage1ResolveResponse({
+      success: false,
+      graph: RenderedModuleGraph({
+        stream: move message,
+        entry: 0,
+        moduleCount: 0,
+        dependencyCount: 0,
+        dependencyOrderCount: 0,
+        symbolCount: 0,
+        callResolutionCount: 0,
+        bindingResolutionCount: 0,
+        expressionResolutionCount: 0,
+      }),
+    });
   };
 }
 

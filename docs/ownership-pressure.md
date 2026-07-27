@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,523 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,585 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -391,7 +391,7 @@ The 2026-07-26 decomposition checkpoint contains 15,523 lines of Z:
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
 | `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
-| protocol/library modules | 777 | temporary host boundary and in-process entry points |
+| protocol/library modules | 839 | structural response handle, temporary compatibility stream, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-five-module frontend graph and currently produces parity evidence for
@@ -399,12 +399,12 @@ own twenty-five-module frontend graph and currently produces parity evidence for
 3,427 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the operator-kernel extraction, native lexing, parsing, resolution,
-semantic analysis, and encoding took approximately 153 ms; decoding the
-temporary text protocol took another 9 ms. These are checkpoint
-figures, not a TypeScript-versus-Z speed claim: the two frontends do not yet
-perform identical work and the structural handoff has not replaced the text
-protocol.
+run after the first structural-handoff slice, native lexing, parsing, resolution,
+semantic analysis, encoding, and response-handle creation took approximately
+154 ms; decoding the remaining compatibility stream took another 9 ms. These
+are checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends
+do not yet perform identical work and indexed structural queries have not yet
+replaced the nested compatibility records.
 
 What the compiler proves:
 
@@ -448,6 +448,11 @@ The same code exposes concrete friction:
   scalar result typing moved behind an ordinary Z module, while short-circuit
   branch merging and actual `move` consumption remained in the recursive flow
   engine. No borrowed context object or trait-typed indirection was needed.
+- The first output-side structural handoff keeps one native result alive while
+  the host queries graph and evidence cardinalities. It adds no second resolver
+  pass, gives later module/symbol queries an explicit lifetime owner, and
+  cross-checks every structural field against the compatibility stream during
+  migration.
 - Splitting private helpers across source modules requires exporting their
   shared implementation types and functions; Z has explicit public exports but
   no package-private visibility tier. This is manageable, but the resulting

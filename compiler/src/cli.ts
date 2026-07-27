@@ -11,7 +11,11 @@ import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
 import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
-import { parseWithNativeFrontendLibrary, resolveWithNativeFrontendLibrary } from "./native-frontend.ts";
+import {
+  parseWithNativeFrontendLibrary,
+  resolveWithNativeFrontendLibrary,
+  type NativeFrontendGraphSummary,
+} from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
 import { deploymentTargetFlags } from "./project.ts";
@@ -126,6 +130,7 @@ type Stage1ResolverRun = {
   readonly entryPath: string;
   readonly sourceBatch: SourceModuleBatch;
   readonly graph: Stage1ModuleGraph;
+  readonly summary: NativeFrontendGraphSummary;
   readonly boundary: PreparedStage1ParserLibrary;
   readonly loadingMilliseconds: number;
   readonly batchMilliseconds: number;
@@ -156,15 +161,21 @@ function runStage1Resolver(
   const batch = encodeStage1ModuleBatch(sources);
   const batchMilliseconds = performance.now() - batchStarted;
   const executionStarted = performance.now();
-  const nativeStream = resolveWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch);
+  const nativeResponse = resolveWithNativeFrontendLibrary(
+    boundary.libraryPath,
+    entryPath,
+    batch,
+  );
   const executionMilliseconds = performance.now() - executionStarted;
   const decodeStarted = performance.now();
-  const graph = decodeStage1ModuleGraphStream(nativeStream);
+  const graph = decodeStage1ModuleGraphStream(nativeResponse.stream);
   const decodeMilliseconds = performance.now() - decodeStarted;
+  requireStructuralSummary(graph, nativeResponse.summary);
   return {
     entryPath,
     sourceBatch,
     graph,
+    summary: nativeResponse.summary,
     boundary,
     loadingMilliseconds,
     batchMilliseconds,
@@ -198,28 +209,19 @@ function reportStage1Resolver(
   authoritativeBindingResolutionCount = 0,
   authoritativeExpressionResolutionCount = 0,
 ): void {
-  const edges = run.graph.modules.reduce((count, module) => count + module.dependencies.length, 0);
-  const symbols = run.graph.modules.reduce((count, module) => count + module.symbols.length, 0);
+  const edges = run.summary.dependencyCount;
+  const symbols = run.summary.symbolCount;
   const order = run.graph.dependencyOrder.map((index) => basename(run.graph.modules[index].path)).join(" -> ");
   const edgeLabel = edges === 1 ? "edge" : "edges";
   const symbolLabel = symbols === 1 ? "symbol" : "symbols";
-  const genericCallContracts = run.graph.modules.reduce(
-    (count, module) => count + module.callResolutions.length,
-    0,
-  );
+  const genericCallContracts = run.summary.callResolutionCount;
   const genericCallContractLabel = genericCallContracts === 1 ? "contract" : "contracts";
-  const bindingContracts = run.graph.modules.reduce(
-    (count, module) => count + module.bindingResolutions.length,
-    0,
-  );
+  const bindingContracts = run.summary.bindingResolutionCount;
   const bindingContractLabel = bindingContracts === 1 ? "contract" : "contracts";
-  const expressionContracts = run.graph.modules.reduce(
-    (count, module) => count + module.expressionResolutions.length,
-    0,
-  );
+  const expressionContracts = run.summary.expressionResolutionCount;
   const expressionContractLabel = expressionContracts === 1 ? "contract" : "contracts";
   const subject = presentation === "check-hybrid" ? "native frontend hybrid" : "stage-1 resolver";
-  console.log(`${run.entryPath}: ${subject} matches ${run.graph.modules.length} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
+  console.log(`${run.entryPath}: ${subject} matches ${run.summary.moduleCount} modules, ${edges} local ${edgeLabel}, and ${symbols} ${symbolLabel} (${order})`);
   console.log(`${subject} compiler index matches ${queryCount} binding/signature queries`);
   console.log(`${subject} exports ${genericCallContracts} concrete generic call ${genericCallContractLabel}`);
   console.log(`${subject} exports ${bindingContracts} inferred local binding ${bindingContractLabel}`);
@@ -238,13 +240,51 @@ function reportStage1Resolver(
   }
   if (timings) {
     const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
-    console.log(`${subject} timing (${run.graph.modules.length} modules, ${cacheState})`);
+    console.log(`${subject} timing (${run.summary.moduleCount} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(run.boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(run.loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(run.batchMilliseconds)}`);
     console.log(`  native in-process (FFI + lex + parse + resolve + symbols + signatures + names + types + expressions + encode): ${formatMilliseconds(run.executionMilliseconds)}`);
-    console.log(`  protocol decode: ${formatMilliseconds(run.decodeMilliseconds)}`);
+    console.log(`  compatibility stream decode: ${formatMilliseconds(run.decodeMilliseconds)}`);
     console.log(`  compiler parity + semantic queries (reused AST): ${formatMilliseconds(parityMilliseconds)}`);
+  }
+}
+
+function requireStructuralSummary(
+  graph: Stage1ModuleGraph,
+  summary: NativeFrontendGraphSummary,
+): void {
+  const dependencyCount = graph.modules.reduce(
+    (count, module) => count + module.dependencies.length,
+    0,
+  );
+  const symbolCount = graph.modules.reduce(
+    (count, module) => count + module.symbols.length,
+    0,
+  );
+  const callResolutionCount = graph.modules.reduce(
+    (count, module) => count + module.callResolutions.length,
+    0,
+  );
+  const bindingResolutionCount = graph.modules.reduce(
+    (count, module) => count + module.bindingResolutions.length,
+    0,
+  );
+  const expressionResolutionCount = graph.modules.reduce(
+    (count, module) => count + module.expressionResolutions.length,
+    0,
+  );
+  if (
+    summary.entry !== graph.entry
+    || summary.moduleCount !== graph.modules.length
+    || summary.dependencyCount !== dependencyCount
+    || summary.dependencyOrderCount !== graph.dependencyOrder.length
+    || summary.symbolCount !== symbolCount
+    || summary.callResolutionCount !== callResolutionCount
+    || summary.bindingResolutionCount !== bindingResolutionCount
+    || summary.expressionResolutionCount !== expressionResolutionCount
+  ) {
+    throw new Error("the native structural summary does not match the compatibility graph stream");
   }
 }
 
@@ -1414,14 +1454,32 @@ function stage1ParserLibraryWrapper(): string {
 #define Z_STAGE1_EXPORT __attribute__((visibility("default")))
 #endif
 
-static void *z_stage1_copy_string(Z_String result) {
+static void *z_stage1_clone_string(Z_String result) {
   char *copy = (char *)malloc(result.length + 1);
   if (copy == NULL) abort();
   if (result.length > 0) memcpy(copy, result.data, result.length);
   copy[result.length] = '\\0';
+  return copy;
+}
+
+static void *z_stage1_copy_string(Z_String result) {
+  void *copy = z_stage1_clone_string(result);
   if (result.capacity > 0) free((void *)result.data);
   return copy;
 }
+
+typedef struct {
+  char *payload;
+  uint8_t success;
+  uintptr_t entry;
+  uintptr_t module_count;
+  uintptr_t dependency_count;
+  uintptr_t dependency_order_count;
+  uintptr_t symbol_count;
+  uintptr_t call_resolution_count;
+  uintptr_t binding_resolution_count;
+  uintptr_t expression_resolution_count;
+} Z_Stage1ResolveHandle;
 
 Z_STAGE1_EXPORT void *z_stage1_parse(
   const uint8_t *path_data,
@@ -1442,7 +1500,67 @@ Z_STAGE1_EXPORT void *z_stage1_resolve(
 ) {
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
-  return z_stage1_copy_string(stage1Resolve(&entry, &batch));
+  Z_Stage1ResolveResponse result = stage1Resolve(&entry, &batch);
+  Z_Stage1ResolveHandle *response = (Z_Stage1ResolveHandle *)malloc(sizeof(Z_Stage1ResolveHandle));
+  if (response == NULL) abort();
+  response->payload = (char *)z_stage1_clone_string(result.graph.stream);
+  response->success = result.success ? 1 : 0;
+  response->entry = result.graph.entry;
+  response->module_count = result.graph.moduleCount;
+  response->dependency_count = result.graph.dependencyCount;
+  response->dependency_order_count = result.graph.dependencyOrderCount;
+  response->symbol_count = result.graph.symbolCount;
+  response->call_resolution_count = result.graph.callResolutionCount;
+  response->binding_resolution_count = result.graph.bindingResolutionCount;
+  response->expression_resolution_count = result.graph.expressionResolutionCount;
+  Z_Stage1ResolveResponse_deinit(&result);
+  return response;
+}
+
+Z_STAGE1_EXPORT uint8_t z_stage1_resolve_success(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->success;
+}
+
+Z_STAGE1_EXPORT const void *z_stage1_resolve_payload(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->payload;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_entry(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->entry;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_module_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->module_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->dependency_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_dependency_order_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->dependency_order_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_symbol_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->symbol_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_call_resolution_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->call_resolution_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_binding_resolution_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->binding_resolution_count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_expression_resolution_count(const void *pointer) {
+  return ((const Z_Stage1ResolveHandle *)pointer)->expression_resolution_count;
+}
+
+Z_STAGE1_EXPORT void z_stage1_resolve_free(void *pointer) {
+  Z_Stage1ResolveHandle *response = (Z_Stage1ResolveHandle *)pointer;
+  free(response->payload);
+  free(response);
 }
 
 Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {

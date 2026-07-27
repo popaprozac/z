@@ -128,6 +128,13 @@ measuring equivalent work and finding semantic composition gaps.
 `--timings` is available only with this bridge.
 
 The text protocol is a bootstrap boundary, not the intended final frontend API.
+The first structural replacement slice now returns one owned native response
+handle from the resolver. Entry identity plus module, dependency, dependency
+order, symbol, and semantic-evidence counts are queried directly through that
+handle and consumed by the host; the compatibility stream remains temporarily
+for nested module, symbol, signature, and evidence records. The host compares
+both representations on every run, so later indexed queries can replace those
+records incrementally without a second native resolution.
 The resolver intentionally receives host-canonicalized paths and source text in
 its first tier, keeping filesystem loading separate from graph semantics. A
 shared stage-zero loader discovers that canonical source batch once for both the
@@ -135,8 +142,8 @@ current linker and native parity boundary. The in-process command compares its
 module indexes, lexical edges, entry, dependency-first order, symbol kinds,
 export state, aliases, local targets, and source coordinates with stage 0. Its
 timing report separates library preparation, host discovery, framing, native
-lex/parse/resolve/symbol/name/type work, protocol decode, and stage-zero parity
-work. Identifier and expression-level type lookup currently cover materialized
+lex/parse/resolve/symbol/name/type work, compatibility-stream decode, and
+stage-zero parity work. Identifier and expression-level type lookup currently cover materialized
 expression trees. Unknown foreign/intrinsic-member/async shapes deliberately defer
 instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
@@ -192,7 +199,8 @@ A representative ordinary-check corpus now covers the native frontend itself,
 two application-shaped multi-module programs, `Result`, arenas, owned closures,
 generic constraints, async ownership, and C++-backed resource fields. Every
 Stage-0 semantic resolution observed on that corpus has a validated native
-authority contract. Removing the temporary text protocol and migrating the
-remaining unsupported ownership/effect contexts are later self-hosting layers.
+authority contract. Replacing the remaining compatibility records with
+structural indexed queries and migrating the remaining unsupported
+ownership/effect contexts are later self-hosting layers.
 The ordered continuation plan and resume criteria live in
 [`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-resume-point).

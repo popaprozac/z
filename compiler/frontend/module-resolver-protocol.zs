@@ -15,6 +15,18 @@ import { resolveModules } from "./module-resolver.zs";
 import { moduleSymbolKindName } from "./module-symbols.zs";
 import { appendHexText, appendHexUsize } from "./parser-protocol.zs";
 
+export struct RenderedModuleGraph {
+  stream: String;
+  entry: usize;
+  moduleCount: usize;
+  dependencyCount: usize;
+  dependencyOrderCount: usize;
+  symbolCount: usize;
+  callResolutionCount: usize;
+  bindingResolutionCount: usize;
+  expressionResolutionCount: usize;
+}
+
 function hexValue(byte: u8): usize throws String {
   if (byte == 48) return 0;
   if (byte == 49) return 1;
@@ -505,7 +517,7 @@ function appendExpressionResolution(
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
-): String throws String {
+): RenderedModuleGraph throws String {
   const sources = try decodeModuleSources(batch);
   const outcome = attempt resolveModules(sources, entryPath);
   const graph = match (outcome) {
@@ -514,12 +526,25 @@ export function renderModuleGraph(
   };
 
   let output = TextBuffer();
+  let dependencyCount: usize = 0;
+  let symbolCount: usize = 0;
+  let callResolutionCount: usize = 0;
+  let bindingResolutionCount: usize = 0;
+  let expressionResolutionCount: usize = 0;
   output.append("entry");
   output.appendAscii(9);
   appendHexUsize(inout output, graph.entry);
   output.appendAscii(10);
   let moduleIndex: usize = 0;
   for (const module of graph.modules) {
+    dependencyCount = dependencyCount + module.dependencies.length;
+    symbolCount = symbolCount + module.symbols.length;
+    callResolutionCount = callResolutionCount
+      + module.semanticEvidence.callResolutions.length;
+    bindingResolutionCount = bindingResolutionCount
+      + module.semanticEvidence.bindingResolutions.length;
+    expressionResolutionCount = expressionResolutionCount
+      + module.semanticEvidence.expressionResolutions.length;
     output.append("module");
     output.appendAscii(9);
     appendHexText(inout output, module.path);
@@ -554,5 +579,15 @@ export function renderModuleGraph(
     appendHexUsize(inout output, index);
   }
   output.appendAscii(10);
-  return output.finish();
+  return RenderedModuleGraph({
+    stream: output.finish(),
+    entry: graph.entry,
+    moduleCount: graph.modules.length,
+    dependencyCount,
+    dependencyOrderCount: graph.dependencyOrder.length,
+    symbolCount,
+    callResolutionCount,
+    bindingResolutionCount,
+    expressionResolutionCount,
+  });
 }
