@@ -168,8 +168,11 @@ all discovered modules rather than rejecting an entry import. The first
 executable tier covers selectively imported scalar functions in one generated C
 translation unit. Native scalar emission includes `i32`, `u8`, and `usize`;
 checked arithmetic selects a width-correct helper from native semantic evidence
-instead of treating every integer expression as `i32`. A local selective alias
-is resolved back to the exported
+instead of treating every integer expression as `i32`. The first dynamic-array
+storage tier monomorphizes `Array<T>` into owned data/length/capacity storage,
+passes it through signatures, and destroys its elements recursively before
+freeing storage. Construction, growth, indexing, and iteration remain the next
+array slices. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
 wrapper. Duplicate type or function spellings across modules now fail before C
 emission rather than generating an ambiguous translation unit. Value structs

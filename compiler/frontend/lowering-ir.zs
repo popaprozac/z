@@ -34,6 +34,7 @@ export enum LoweredTypeKind {
   i32Type,
   u8Type,
   usizeType,
+  arrayType,
   structType,
   enumType,
 }
@@ -53,6 +54,11 @@ export struct LoweredStruct {
   fields: Array<LoweredField>;
   needsDeinit: boolean;
   deinitializer: Option<LoweredFunction>;
+}
+
+export struct LoweredArray {
+  name: String;
+  elementType: LoweredType;
 }
 
 export struct LoweredEnum {
@@ -152,6 +158,7 @@ export struct LoweredFunction {
 }
 
 export struct LoweredProgram {
+  arrays: Array<LoweredArray>;
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
@@ -221,6 +228,11 @@ function intrinsicOptionName(in payload: LoweredType): String {
   return `__z_Option_${identity}`;
 }
 
+function intrinsicArrayName(in elementType: LoweredType): String {
+  const identity = loweredTypeIdentity(elementType);
+  return `__z_Array_${identity}`;
+}
+
 function intrinsicResultName(
   in successType: LoweredType,
   in errorType: LoweredType
@@ -263,6 +275,13 @@ function lowerTypeName(
         return LoweredType({
           kind: LoweredTypeKind.enumType,
           name: intrinsicOptionName(payload),
+        });
+      }
+      if (generic.base == "Array" && generic.arguments.length == 1) {
+        const elementType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.arrayType,
+          name: intrinsicArrayName(elementType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -369,6 +388,13 @@ function enumNeedsCleanup(
   for (const variant of program.enums[index].variants) {
     match (in variant.payload) {
       some(payload) => {
+        const loweredPayload = attempt lowerType(program, payload);
+        match (loweredPayload) {
+          success(type) => {
+            if (type.kind == LoweredTypeKind.arrayType) return true;
+          }
+          failure(_) => {}
+        }
         match (structIndex(program, payload.name)) {
           some(aggregateIndex) => {
             if (aggregateNeedsCleanup(program, aggregateIndex, depth + 1)) {
@@ -401,6 +427,13 @@ function aggregateNeedsCleanup(
     none => {}
   }
   for (const field of program.aggregates[index].fields) {
+    const loweredField = attempt lowerType(program, field.type);
+    match (loweredField) {
+      success(type) => {
+        if (type.kind == LoweredTypeKind.arrayType) return true;
+      }
+      failure(_) => {}
+    }
     match (structIndex(program, field.type.name)) {
       some(fieldIndex) => {
         if (aggregateNeedsCleanup(program, fieldIndex, depth + 1)) return true;
@@ -418,6 +451,7 @@ function aggregateNeedsCleanup(
 }
 
 function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
+  if (type.kind == LoweredTypeKind.arrayType) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return aggregateNeedsCleanup(program, index, 0);
@@ -579,6 +613,7 @@ function moduleTypeNeedsCleanupDepth(
   in type: LoweredType,
   depth: usize
 ): boolean {
+  if (type.kind == LoweredTypeKind.arrayType) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return moduleAggregateNeedsCleanup(
@@ -621,6 +656,25 @@ function moduleTypeNeedsCleanup(
   in type: LoweredType
 ): boolean {
   return moduleTypeNeedsCleanupDepth(program, importedTypes, type, 0);
+}
+
+function intrinsicArrayDeclaration(
+  in program: Program,
+  in name: String
+): Option<LoweredArray> throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Array" || generic.arguments.length != 1) {
+        return Option<LoweredArray>.none;
+      }
+      const elementType = try lowerTypeName(program, generic.arguments[0]);
+      return Option.some(LoweredArray({
+        name: intrinsicArrayName(elementType),
+        elementType,
+      }));
+    }
+    none => return Option<LoweredArray>.none;
+  }
 }
 
 function intrinsicOptionDeclaration(
@@ -3254,6 +3308,16 @@ function containsLoweredStruct(
   return false;
 }
 
+function containsLoweredArray(
+  in arrays: Array<LoweredArray>,
+  in name: String
+): boolean {
+  for (const declaration of arrays) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function containsLoweredFunction(
   in functions: Array<LoweredFunction>,
   in name: String
@@ -3458,12 +3522,27 @@ function rewritePrivateCallTargets(
 function collectIntrinsicTypeName(
   in program: Program,
   in name: String,
+  inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   match (genericTypeShape(name)) {
     some(generic) => {
       for (const argument of generic.arguments) {
-        try collectIntrinsicTypeName(program, argument, inout enums);
+        try collectIntrinsicTypeName(
+          program,
+          argument,
+          inout arrays,
+          inout enums
+        );
+      }
+      const array = try intrinsicArrayDeclaration(program, name);
+      match (array) {
+        some(declaration) => {
+          if (!containsLoweredArray(arrays, declaration.name)) {
+            arrays.push(move declaration);
+          }
+        }
+        none => {}
       }
       const intrinsic = try intrinsicEnumDeclaration(program, name);
       match (intrinsic) {
@@ -3482,11 +3561,17 @@ function collectIntrinsicTypeName(
 function collectArenaIntrinsicEnums(
   in program: Program,
   in arena: StatementArena,
+  inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   for (const statement of arena.nodes) {
     match (in statement.typeAnnotation) {
-      some(type) => try collectIntrinsicTypeName(program, type.name, inout enums);
+      some(type) => try collectIntrinsicTypeName(
+        program,
+        type.name,
+        inout arrays,
+        inout enums
+      );
       none => {}
     }
     match (in statement.expression) {
@@ -3494,7 +3579,12 @@ function collectArenaIntrinsicEnums(
         match (in expression.tree) {
           some(tree) => {
             for (const node of tree.nodes) {
-              try collectIntrinsicTypeName(program, node.value, inout enums);
+              try collectIntrinsicTypeName(
+                program,
+                node.value,
+                inout arrays,
+                inout enums
+              );
             }
           }
           none => {}
@@ -3507,7 +3597,12 @@ function collectArenaIntrinsicEnums(
         match (in expression.tree) {
           some(tree) => {
             for (const node of tree.nodes) {
-              try collectIntrinsicTypeName(program, node.value, inout enums);
+              try collectIntrinsicTypeName(
+                program,
+                node.value,
+                inout arrays,
+                inout enums
+              );
             }
           }
           none => {}
@@ -3520,16 +3615,23 @@ function collectArenaIntrinsicEnums(
 
 function collectIntrinsicEnums(
   in program: Program,
+  inout arrays: Array<LoweredArray>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
   for (const aggregate of program.aggregates) {
     for (const field of aggregate.fields) {
-      try collectIntrinsicTypeName(program, field.type.name, inout enums);
+      try collectIntrinsicTypeName(
+        program,
+        field.type.name,
+        inout arrays,
+        inout enums
+      );
     }
     match (in aggregate.deinitializer) {
       some(deinitializer) => try collectArenaIntrinsicEnums(
         program,
         deinitializer.body,
+        inout arrays,
         inout enums
       );
       none => {}
@@ -3538,30 +3640,60 @@ function collectIntrinsicEnums(
   for (const declaration of program.enums) {
     for (const variant of declaration.variants) {
       match (in variant.payload) {
-        some(type) => try collectIntrinsicTypeName(program, type.name, inout enums);
+        some(type) => try collectIntrinsicTypeName(
+          program,
+          type.name,
+          inout arrays,
+          inout enums
+        );
         none => {}
       }
     }
   }
   for (const declaration of program.functions) {
     for (const parameter of declaration.parameters) {
-      try collectIntrinsicTypeName(program, parameter.type.name, inout enums);
+      try collectIntrinsicTypeName(
+        program,
+        parameter.type.name,
+        inout arrays,
+        inout enums
+      );
     }
-    try collectIntrinsicTypeName(program, declaration.returnType.name, inout enums);
+    try collectIntrinsicTypeName(
+      program,
+      declaration.returnType.name,
+      inout arrays,
+      inout enums
+    );
     match (in declaration.errorType) {
       some(type) => {
-        try collectIntrinsicTypeName(program, type.name, inout enums);
+        try collectIntrinsicTypeName(
+          program,
+          type.name,
+          inout arrays,
+          inout enums
+        );
         const returnName = declaration.returnType.name.copyBytes(
           0,
           declaration.returnType.name.byteLength
         );
         const errorName = type.name.copyBytes(0, type.name.byteLength);
         const resultName = `Result<${returnName}, ${errorName}>`;
-        try collectIntrinsicTypeName(program, resultName, inout enums);
+        try collectIntrinsicTypeName(
+          program,
+          resultName,
+          inout arrays,
+          inout enums
+        );
       }
       none => {}
     }
-    try collectArenaIntrinsicEnums(program, declaration.body, inout enums);
+    try collectArenaIntrinsicEnums(
+      program,
+      declaration.body,
+      inout arrays,
+      inout enums
+    );
   }
 }
 
@@ -3693,6 +3825,7 @@ function appendLoweredProgram(
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
+  inout arrays: Array<LoweredArray>,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
@@ -3746,7 +3879,7 @@ function appendLoweredProgram(
     }));
   }
 
-  try collectIntrinsicEnums(program, inout enums);
+  try collectIntrinsicEnums(program, inout arrays, inout enums);
   for (const declaration of program.enums) {
     const emittedName = privateTypeNeedsMangle(
       program,
@@ -3948,6 +4081,7 @@ export function lowerProgram(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  let arrays = Array<LoweredArray>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -3959,11 +4093,12 @@ export function lowerProgram(
     privateTypeCollisionNames,
     0,
     0,
+    inout arrays,
     inout structs,
     inout enums,
     inout functions
   );
-  return LoweredProgram({ structs, enums, functions });
+  return LoweredProgram({ arrays, structs, enums, functions });
 }
 
 export function lowerModules(
@@ -3973,6 +4108,7 @@ export function lowerModules(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  let arrays = Array<LoweredArray>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
@@ -3991,10 +4127,11 @@ export function lowerModules(
       privateTypeCollisionNames,
       moduleIndex,
       entryIndex,
+      inout arrays,
       inout structs,
       inout enums,
       inout functions
     );
   }
-  return LoweredProgram({ structs, enums, functions });
+  return LoweredProgram({ arrays, structs, enums, functions });
 }

@@ -23,6 +23,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
   if (type.kind == LoweredTypeKind.u8Type) return "uint8_t";
   if (type.kind == LoweredTypeKind.usizeType) return "size_t";
+  if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
@@ -745,6 +746,7 @@ function loweredTypeNeedsDeinit(
   in program: LoweredProgram,
   in type: LoweredType
 ): boolean {
+  if (type.kind == LoweredTypeKind.arrayType) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
   }
@@ -917,6 +919,17 @@ function appendTypeDefinitions(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
+  for (const declaration of program.arrays) {
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" {\n");
+    output.append("  void *data;\n");
+    output.append("  size_t length;\n");
+    output.append("  size_t capacity;\n");
+    output.append("} Z_");
+    output.append(declaration.name);
+    output.append(";\n\n");
+  }
   let structStates = Array<u8>();
   let enumStates = Array<u8>();
   let stateIndex: usize = 0;
@@ -1007,6 +1020,13 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
+  for (const declaration of program.arrays) {
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit) {
       output.append("static void Z_");
@@ -1030,6 +1050,32 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append(";\n");
   }
   output.append("\n");
+  for (const declaration of program.arrays) {
+    output.append("static void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      const elementType = try cType(declaration.elementType);
+      output.append("  ");
+      output.append(elementType);
+      output.append(" *items = (");
+      output.append(elementType);
+      output.append(" *)self->data;\n");
+      output.append("  while (self->length > 0) {\n");
+      output.append("    self->length -= 1;\n");
+      output.append("    Z_");
+      output.append(declaration.elementType.name);
+      output.append("_deinit(&items[self->length]);\n");
+      output.append("  }\n");
+    }
+    output.append("  free(self->data);\n");
+    output.append("  self->data = NULL;\n");
+    output.append("  self->length = 0;\n");
+    output.append("  self->capacity = 0;\n");
+    output.append("}\n\n");
+  }
   for (const declaration of program.enums) {
     if (declaration.needsDeinit) {
       output.append("static void Z_");

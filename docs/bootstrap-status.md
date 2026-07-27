@@ -647,6 +647,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    addition, subtraction, and multiplication use the semantic result type to
    choose width-correct overflow helpers, which is a prerequisite for native
    compiler arrays and source offsets rather than an unchecked C convenience.
+   The first `Array<T>` lowering tier now emits monomorphized owned
+   data/length/capacity storage in signatures and deterministic destruction.
+   Cleanup-bearing elements are destroyed in reverse order before storage is
+   freed. Construction, growth, indexing, and iteration are deliberately still
+   fail-closed. With this tier present, the real compiler emission probe advances
+   from `Array<Token>` to owned `String` as its first unsupported type.
    These three shapes established and now pass through the native lowering-IR
    boundary. The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer

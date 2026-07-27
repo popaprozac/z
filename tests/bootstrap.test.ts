@@ -8413,6 +8413,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
     nativeIntegerInput,
     "function addSize(value: usize): usize { return value + 2; }\n"
       + "function doubleByte(value: u8): u8 { return value * 2; }\n"
+      + "function discard(values: Array<i32>): usize { return 0; }\n"
       + "function main(): i32 {\n"
       + "  const size: usize = 20;\n"
       + "  const byte: u8 = 11;\n"
@@ -8433,6 +8434,10 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(
     nativeIntegerEmission.stdout,
     /uint8_t doubleByte\(uint8_t value\).*?z_stage1_checked_multiply_u8\(value, 2\)/s,
+  );
+  assert.match(
+    nativeIntegerEmission.stdout,
+    /typedef struct Z___z_Array_i32 \{.*?void \*data;.*?size_t length;.*?size_t capacity;.*?static void Z___z_Array_i32_deinit\(Z___z_Array_i32 \*self\).*?size_t discard\(Z___z_Array_i32 values\).*?Z___z_Array_i32_deinit\(&values\);/s,
   );
   const nativeIntegerExecutable = resolve(directory, "native-integers");
   const nativeIntegerCompilation = spawnSync(
