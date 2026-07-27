@@ -677,7 +677,10 @@ When focused self-hosting work resumes, use this order:
    `semantic-function-contexts.zs`; statement traversal and final output
    initialization proofs remain in the resolver. Compiler-provided numeric
    literal, collection method, iterable projection, and throwing-generator
-   behavior now lives in `semantic-intrinsics.zs`.
+   behavior now lives in `semantic-intrinsics.zs`. Callable target identity and
+   construction/deduplication of generic-call, inferred-binding, and
+   root-expression evidence now live in `semantic-evidence.zs`; recursive
+   inference still decides what evidence is authoritative in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
    user-defined generic-monomorph identities, foreign/intrinsic and async effect
    boundaries, escaping closure environments, precise borrow last-use release,

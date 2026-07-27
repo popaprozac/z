@@ -8,7 +8,6 @@ import {
 import {
   ParsedModule,
   moduleBindingName as bindingName,
-  moduleSymbolIndex,
 } from "./module-symbols.zs";
 import { validateModuleNames } from "./semantic-names.zs";
 import {
@@ -28,6 +27,13 @@ import {
   functionValueBindings,
   prepareFunctionBindings,
 } from "./semantic-function-contexts.zs";
+import {
+  callableSymbolLocation,
+  emptySemanticEvidence,
+  recordBindingResolution,
+  recordExpressionResolution,
+  recordGenericCallResolution,
+} from "./semantic-evidence.zs";
 import {
   collectionMethodMutates,
   collectionMethodSignature,
@@ -105,8 +111,6 @@ import {
   requireVisibleField,
 } from "./semantic-pattern-validation.zs";
 import {
-  ModuleSymbolLocation,
-  collectTypeIdentities,
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
@@ -138,9 +142,6 @@ import {
   typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
 import {
-  ModuleBindingResolution,
-  ModuleCallResolution,
-  ModuleExpressionResolution,
   ModuleFunctionSignature,
   ModuleGraph,
   ModuleResolveError,
@@ -149,7 +150,6 @@ import {
   ModuleSource,
   ModuleSymbol,
   ModuleSymbolKind,
-  ModuleTypeIdentity,
   ModuleTypeParameterConstraint,
   ModuleTypeSignature,
   ResolvedModule,
@@ -739,81 +739,6 @@ function inferMatchExpressionNodeType(
   return resultType;
 }
 
-function exportedFunctionLocation(
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in name: String
-): Option<ModuleSymbolLocation> {
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
-  if (
-    symbolIndex < modules[moduleIndex].symbols.length
-    && modules[moduleIndex].symbols[symbolIndex].exported
-    && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol
-  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
-  return Option<ModuleSymbolLocation>.none;
-}
-
-function callableSymbolLocation(
-  in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
-  in tree: ExpressionTree,
-  calleeIndex: usize
-): Option<ModuleSymbolLocation> {
-  if (tree.nodes[calleeIndex].kind == ExpressionKind.identifierExpression) {
-    const sourceName = tree.nodes[calleeIndex].value.copyBytes(
-      0,
-      tree.nodes[calleeIndex].value.byteLength
-    );
-    const name = identifierLookupName(sourceName);
-    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
-    if (symbolIndex < modules[moduleIndex].symbols.length) {
-      if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.functionSymbol) {
-        return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
-      }
-      if (modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.importedSymbol) {
-        const importedName = modules[moduleIndex].symbols[symbolIndex].importedName.copyBytes(
-          0,
-          modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
-        );
-        return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-          some(target) => exportedFunctionLocation(modules, target, importedName);
-          none => Option<ModuleSymbolLocation>.none;
-        };
-      }
-    }
-    return Option<ModuleSymbolLocation>.none;
-  }
-  if (
-    tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
-    && tree.nodes[calleeIndex].children.length == 1
-  ) {
-    const receiverIndex = tree.nodes[calleeIndex].children[0];
-    if (tree.nodes[receiverIndex].kind != ExpressionKind.identifierExpression) {
-      return Option<ModuleSymbolLocation>.none;
-    }
-    const namespace = tree.nodes[receiverIndex].value.copyBytes(
-      0,
-      tree.nodes[receiverIndex].value.byteLength
-    );
-    const member = tree.nodes[calleeIndex].value.copyBytes(
-      0,
-      tree.nodes[calleeIndex].value.byteLength
-    );
-    const memberName = identifierLookupName(member);
-    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], namespace);
-    if (
-      symbolIndex < modules[moduleIndex].symbols.length
-      && modules[moduleIndex].symbols[symbolIndex].kind == ModuleSymbolKind.namespaceSymbol
-    ) {
-      return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-        some(target) => exportedFunctionLocation(modules, target, memberName);
-        none => Option<ModuleSymbolLocation>.none;
-      };
-    }
-  }
-  return Option<ModuleSymbolLocation>.none;
-}
-
 function callArgumentNodes(in children: Array<usize>): Array<usize> {
   let arguments = Array<usize>();
   let index: usize = 1;
@@ -1154,43 +1079,20 @@ function inferSignatureCallType(
     }
   }
   if (substitutions.length > 0 && callKind != "value") {
-    let typeParameters = Array<String>();
-    let typeArguments = Array<String>();
-    for (const substitution of substitutions) {
-      typeParameters.push(substitution.name.copyBytes(0, substitution.name.byteLength));
-      typeArguments.push(substitution.typeName.copyBytes(0, substitution.typeName.byteLength));
-    }
-    let parameterModes = Array<String>();
-    let parameterTypes = Array<String>();
-    let concreteIndex: usize = 0;
-    while (concreteIndex < signature.parameterTypes.length) {
-      parameterModes.push(signature.parameterModes[concreteIndex].copyBytes(
-        0,
-        signature.parameterModes[concreteIndex].byteLength
-      ));
-      parameterTypes.push(substituteGenericType(
-        signature.parameterTypes[concreteIndex],
-        substitutions
-      ));
-      concreteIndex = concreteIndex + 1;
-    }
-    evidence.callResolutions.push(ModuleCallResolution({
-      offset: tree.nodes[callIndex].offset,
-      line: tree.nodes[callIndex].line,
-      column: tree.nodes[callIndex].column,
+    recordGenericCallResolution(
+      tree,
+      callIndex,
       targetModuleIndex,
       targetSymbolIndex,
-      kind: callKind.copyBytes(0, callKind.byteLength),
-      targetName: functionName.copyBytes(0, functionName.byteLength),
-      asynchronous: signature.asynchronous,
-      receiverMode: receiverMode.copyBytes(0, receiverMode.byteLength),
-      typeParameters,
-      typeArguments,
-      parameterModes,
-      parameterTypes,
-      returnType: returnType.copyBytes(0, returnType.byteLength),
-      errorType: errorType.copyBytes(0, errorType.byteLength),
-    }));
+      callKind,
+      functionName,
+      signature,
+      substitutions,
+      receiverMode,
+      returnType,
+      errorType,
+      inout evidence
+    );
   }
   if (signature.asynchronous) return "";
   if (errorType.byteLength > 0) {
@@ -2868,25 +2770,14 @@ function inferExpressionTypeExpected(
         inout evidence
       );
       try requireSettledExpressionType(module, tree, root, inferred);
-      let existingIndex: usize = 0;
-      let recorded = false;
-      while (existingIndex < evidence.expressionResolutions.length) {
-        if (evidence.expressionResolutions[existingIndex].offset == tree.nodes[root].offset) {
-          recorded = true;
-        }
-        existingIndex = existingIndex + 1;
-      }
-      if (!recorded && inferred.byteLength > 0 && inferred != "__z_never") {
-        let typeIdentities = Array<ModuleTypeIdentity>();
-        collectTypeIdentities(modules, moduleIndex, inferred, "", inout typeIdentities);
-        evidence.expressionResolutions.push(ModuleExpressionResolution({
-          offset: tree.nodes[root].offset,
-          line: tree.nodes[root].line,
-          column: tree.nodes[root].column,
-          typeName: inferred.copyBytes(0, inferred.byteLength),
-          typeIdentities,
-        }));
-      }
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        root,
+        inferred,
+        inout evidence
+      );
       copyBindingFlowStates(inout bindings, expressionBindings);
       select inferred;
     }
@@ -2970,17 +2861,25 @@ function inferStatement(
         match (in arena.nodes[index].expression) {
           some(expression) => {
             if (expression.offset >= arena.nodes[index].offset && stored.byteLength > 0) {
-              let typeIdentities = Array<ModuleTypeIdentity>();
-              collectTypeIdentities(modules, moduleIndex, stored, "", inout typeIdentities);
-              evidence.bindingResolutions.push(ModuleBindingResolution({
-                offset: arena.nodes[index].nameOffset,
-                line: arena.nodes[index].nameLine,
-                column: arena.nodes[index].nameColumn,
-                name: arena.nodes[index].name.copyBytes(0, arena.nodes[index].name.byteLength),
-                mutableBinding: arena.nodes[index].mutableBinding,
-                typeName: stored.copyBytes(0, stored.byteLength),
-                typeIdentities,
-              }));
+              const bindingOffset = arena.nodes[index].nameOffset;
+              const bindingLine = arena.nodes[index].nameLine;
+              const bindingColumn = arena.nodes[index].nameColumn;
+              const bindingName = arena.nodes[index].name.copyBytes(
+                0,
+                arena.nodes[index].name.byteLength
+              );
+              const mutableBinding = arena.nodes[index].mutableBinding;
+              recordBindingResolution(
+                modules,
+                moduleIndex,
+                bindingOffset,
+                bindingLine,
+                bindingColumn,
+                bindingName,
+                mutableBinding,
+                stored,
+                inout evidence
+              );
             }
           }
           none => {}
@@ -3065,21 +2964,29 @@ function inferStatement(
         some(field) => fieldType = field.typeName.copyBytes(0, field.typeName.byteLength);
         none => {}
       }
-      let typeIdentities = Array<ModuleTypeIdentity>();
-      collectTypeIdentities(modules, moduleIndex, fieldType, "", inout typeIdentities);
-      evidence.bindingResolutions.push(ModuleBindingResolution({
-        offset: binding.bindingOffset,
-        line: binding.bindingLine,
-        column: binding.bindingColumn,
-        name: binding.bindingName.copyBytes(0, binding.bindingName.byteLength),
-        mutableBinding: arena.nodes[index].mutableBinding,
-        typeName: fieldType.copyBytes(0, fieldType.byteLength),
-        typeIdentities,
-      }));
-      if (arena.nodes[index].mutableBinding) {
-        addMutableValueBinding(inout bindings, binding.bindingName, fieldType);
+      const bindingOffset = binding.bindingOffset;
+      const bindingLine = binding.bindingLine;
+      const bindingColumn = binding.bindingColumn;
+      const bindingName = binding.bindingName.copyBytes(
+        0,
+        binding.bindingName.byteLength
+      );
+      const mutableBinding = arena.nodes[index].mutableBinding;
+      recordBindingResolution(
+        modules,
+        moduleIndex,
+        bindingOffset,
+        bindingLine,
+        bindingColumn,
+        bindingName,
+        mutableBinding,
+        fieldType,
+        inout evidence
+      );
+      if (mutableBinding) {
+        addMutableValueBinding(inout bindings, bindingName, fieldType);
       } else {
-        addValueBinding(inout bindings, binding.bindingName, fieldType);
+        addValueBinding(inout bindings, bindingName, fieldType);
       }
     }
     return true;
@@ -3641,11 +3548,7 @@ function validateExpressionTypesAndLocals(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
 ): ModuleSemanticEvidence throws ModuleResolveError {
-  let evidence = ModuleSemanticEvidence({
-    callResolutions: Array<ModuleCallResolution>(),
-    bindingResolutions: Array<ModuleBindingResolution>(),
-    expressionResolutions: Array<ModuleExpressionResolution>(),
-  });
+  let evidence = emptySemanticEvidence();
   const noTypeParameters = Array<TypeParameter>();
   for (const declaration of module.program.functions) {
     try inferFunctionExpressions(
