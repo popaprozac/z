@@ -27,11 +27,17 @@ import {
   parseGeneratorType,
 } from "./generator-types.ts";
 
+export type GenericAggregateMaterialization = {
+  readonly declaration: StructDeclaration;
+  readonly arguments: readonly string[];
+};
+
 export function materializeGenerics(
   program: Program,
   fileName: string,
   typeDisplayNames: Map<string, string> = new Map(),
   foreignIdentityTypes: ReadonlySet<string> = new Set(),
+  aggregateMaterializations: Map<string, GenericAggregateMaterialization> = new Map(),
 ): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
@@ -373,6 +379,10 @@ export function materializeGenerics(
     if (existing) return existing;
     const name = monomorphizedName(base, args);
     structInstances.set(key, name);
+    aggregateMaterializations.set(name, {
+      declaration: template,
+      arguments: [...args],
+    });
     typeDisplayNames.set(name, `${base}<${args.map(displayName).join(", ")}>`);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
     const concrete = {

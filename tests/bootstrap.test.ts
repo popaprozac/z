@@ -10437,6 +10437,70 @@ test("keeps native semantic authority composable across a representative Z corpu
   }
 }, 30_000);
 
+test("preserves nominal identities inside linked generic monomorphs", () => {
+  const directory = mkdtempSync("/tmp/z-native-generic-identities-");
+  const syntaxModule = resolve(directory, "syntax.zs");
+  const semanticModule = resolve(directory, "semantic.zs");
+  const modelModule = resolve(directory, "model.zs");
+  const main = resolve(directory, "main.zs");
+  writeFileSync(
+    syntaxModule,
+    "export struct Node { width: i32; }\n",
+  );
+  writeFileSync(
+    semanticModule,
+    "export struct Node { code: i32; }\n",
+  );
+  writeFileSync(
+    modelModule,
+    "export struct Slot<T> { value: T; }\n"
+      + "export struct Envelope<T> { value: T; }\n",
+  );
+  writeFileSync(
+    main,
+    "import { Node as SyntaxNode } from \"./syntax.zs\";\n"
+      + "import { Node as SemanticNode } from \"./semantic.zs\";\n"
+      + "import { Envelope, Slot } from \"./model.zs\";\n"
+      + "function main(): i32 {\n"
+      + "  const syntaxNode = SyntaxNode({ width: 20 });\n"
+      + "  const semanticNode = SemanticNode({ code: 22 });\n"
+      + "  const syntaxSlot = Slot<SyntaxNode>({ value: syntaxNode });\n"
+      + "  const semanticSlot = Slot<SemanticNode>({ value: semanticNode });\n"
+      + "  const syntaxEnvelope = Envelope<Slot<SyntaxNode>>({ value: syntaxSlot });\n"
+      + "  const semanticEnvelope = Envelope<Slot<SemanticNode>>({ value: semanticSlot });\n"
+      + "  return syntaxEnvelope.value.value.width + semanticEnvelope.value.value.code;\n"
+      + "}\n",
+  );
+
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", main, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const exportedBindings = result.stdout.match(
+    /exports (\d+) inferred local binding contracts/,
+  )?.[1];
+  const observedBindings = result.stdout.match(
+    /observes (\d+) inferred local binding stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeBindings = result.stdout.match(
+    /uses (\d+) inferred local binding native-authoritative contracts/,
+  )?.[1];
+  const observedExpressions = result.stdout.match(
+    /observes (\d+) root expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = result.stdout.match(
+    /uses (\d+) root expression native-authoritative contracts/,
+  )?.[1];
+  assert.equal(exportedBindings, "6");
+  assert.ok(observedBindings);
+  assert.ok(observedExpressions);
+  assert.equal(observedBindings, exportedBindings);
+  assert.equal(authoritativeBindings, observedBindings);
+  assert.equal(authoritativeExpressions, observedExpressions);
+});
+
 test("builds owned UTF-8 String values through explicit std/text TextBuffer", () => {
   const directory = mkdtempSync("/tmp/z-text-buffer-");
   const fileName = resolve(directory, "main.zs");

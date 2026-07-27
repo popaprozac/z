@@ -505,9 +505,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    selective-import, and namespace-qualified spellings to prove the same type
    identity without string heuristics. Path-keyed identities now recurse through
    compiler-known wrappers including `Option`, arrays and slices, views, `Weak`,
-   tasks, function signatures, and materialized `Result` payloads. Arguments of
-   user-defined generic monomorphs retain the stage-zero fallback because their
-   source substitutions are not preserved directly after materialization.
+   tasks, function signatures, and materialized `Result` payloads. User-defined
+   generic aggregate materialization retains its source template and ordered
+   source arguments, so nominal identities survive nested monomorphs such as
+   `Envelope<Slot<SyntaxNode>>`. The bridge validates those identities at their
+   exact generic paths and no longer lets equal-looking type text bypass nominal
+   proof.
    Settled root expressions now export their own source-located evidence stream.
    Each record carries the inferred source type plus recursive nominal identity
    paths, and `NativeSemanticIndex` keys it by canonical module and expression
@@ -685,10 +688,10 @@ When focused self-hosting work resumes, use this order:
    equality result typing now live in `semantic-operators.zs`; short-circuit
    flow and actual ownership consumption remain in the resolver.
 2. Extend native semantics from demonstrated corpus gaps, prioritizing
-   user-defined generic-monomorph identities, foreign/intrinsic and async effect
-   boundaries, escaping closure environments, precise borrow last-use release,
-   receiver-path capabilities, and recursive ownership contexts. Do not port a
-   feature merely for nominal completeness; add a realistic corpus case first.
+   foreign/intrinsic and async effect boundaries, escaping closure environments,
+   precise borrow last-use release, receiver-path capabilities, and recursive
+   ownership contexts. Do not port a feature merely for nominal completeness;
+   add a realistic corpus case first.
 3. Keep the completed version-1 structural phase API green. One owned native
    result handle supplies entry, module paths, dependency lists/order,
    symbols, every signature shape, and all call/binding/expression evidence.

@@ -226,6 +226,10 @@ owners and inferred or explicit generic-class construction without decoding
 stage-zero monomorph names; `check --native-frontend` reports both exported and consumed
 native evidence. Generic aggregate literals, fields, and explicit type uses also
 consume their native template metadata through a source-keyed structural rebase.
+Cross-module aliases with the same visible declaration name remain distinct
+inside nested user-defined monomorphs such as `Envelope<Slot<Node>>`; the native
+bridge proves each source-template identity and generic path before accepting
+the inferred binding or expression type.
 The frontend remains stage-zero-compiled, while the example directory is now a
 small educational consumer rather than the implementation home.
 

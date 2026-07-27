@@ -411,12 +411,20 @@ per-field FFI calls while making that lifetime contract meaningful. Additional
 base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
-canonical graph returned by the versioned phase API directly. The corresponding
-whole-process samples were 261.0 ms for Stage 1, 278.9 ms for Stage 0, and
-1.143 s for the hybrid parity path. Stage 1 was 1.07 times faster than the
+canonical graph returned by the versioned phase API directly. The latest
+whole-process samples were 261.1 ms for Stage 1, 273.2 ms for Stage 0, and
+1.147 s for the hybrid parity path. Stage 1 was 1.05 times faster than the
 ordinary Stage-0 check in this sample. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
+
+A four-module generic-identity probe imports two distinct declarations named
+`Node` through aliases, then nests each inside `Envelope<Slot<T>>`. It exposed
+that Stage 0's materialized aggregate names had discarded the ordered source
+arguments needed to reconstruct nominal evidence. Materialization now retains
+the source template and arguments, and the semantic bridge compares their exact
+identity-path shape. Equal-looking type text can no longer authorize a linked
+generic value whose declarations differ.
 
 What the compiler proves:
 

@@ -184,8 +184,11 @@ comparison. Direct aggregate bindings additionally carry their resolved module
 and symbol, so local, selective-import, and namespace-qualified spellings share
 one identity. Identity paths now recurse through compiler-known wrappers such as
 `Option`, arrays and slices, views, `Weak`, tasks, function signatures, and
-materialized `Result` payloads. Arguments of user-defined generic monomorphs
-still defer because Stage 0 does not retain their source substitutions directly.
+materialized `Result` payloads. User-defined generic aggregate materialization
+now retains the source template plus ordered source arguments. Binding and
+expression evidence therefore carries nominal identities through nested shapes
+such as `Envelope<Slot<SyntaxNode>>`, while the bridge validates the matching
+identity path shape instead of accepting equal-looking type text.
 Settled root expressions now form a third source-located evidence stream. Each
 record carries its source type and the same recursive declaration identities as
 binding evidence. The compiler indexes these records by canonical module and

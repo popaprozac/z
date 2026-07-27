@@ -305,8 +305,9 @@ export function createNativeSemanticBridge(
     linkedIdentities: readonly SemanticTypeIdentity[],
   ): boolean => {
     const linkedDisplayType = typeDisplayNames.get(linkedType) ?? linkedType;
-    if (concreteNativeTypeMatches(nativeType, linkedDisplayType)) return true;
-    if (nativeIdentities.length === 0) return false;
+    if (nativeIdentities.length === 0) {
+      return concreteNativeTypeMatches(nativeType, linkedDisplayType);
+    }
     if (nativeIdentities.length !== linkedIdentities.length) return false;
     const nativeNames: string[] = [];
     const linkedNames: string[] = [];
@@ -327,8 +328,12 @@ export function createNativeSemanticBridge(
       nativeNames.push(target.name);
       linkedNames.push(source.declaration.name);
     }
-    return erasedNominalTypeShape(nativeType, nativeNames)
-      === erasedNominalTypeShape(linkedDisplayType, linkedNames);
+    const nativePaths = new Set(nativeIdentities.map((identity) => identity.path));
+    const linkedPaths = new Set(linkedIdentities.map((identity) => identity.path));
+    return nominalIdentityTypeShape(nativeType, nativePaths)
+      === nominalIdentityTypeShape(linkedDisplayType, linkedPaths)
+      || erasedNominalTypeShape(nativeType, nativeNames)
+        === erasedNominalTypeShape(linkedDisplayType, linkedNames);
   };
   const nativeExpression = (
     location: FunctionDeclaration["location"],
@@ -968,6 +973,86 @@ function erasedNominalTypeShape(typeName: string, nominalNames: readonly string[
     );
   }
   return shape;
+}
+
+function nominalIdentityTypeShape(
+  typeName: string,
+  identityPaths: ReadonlySet<string>,
+  path = "",
+): string {
+  const childPath = (segment: string): string => (
+    path.length === 0 ? segment : `${path}/${segment}`
+  );
+  const type = typeName.trim();
+  if (type.endsWith(" | null")) {
+    return `${nominalIdentityTypeShape(
+      type.slice(0, -" | null".length),
+      identityPaths,
+      childPath("0"),
+    )}|null`;
+  }
+  if (type.startsWith("view ")) {
+    return `view ${nominalIdentityTypeShape(
+      type.slice("view ".length),
+      identityPaths,
+      childPath("0"),
+    )}`;
+  }
+  const fixedArray = type.match(/^(.*)\[(\d+)\]$/);
+  if (fixedArray) {
+    return `${nominalIdentityTypeShape(
+      fixedArray[1],
+      identityPaths,
+      childPath("0"),
+    )}[${fixedArray[2]}]`;
+  }
+  const generic = parseSourceGenericTypeShape(type);
+  if (generic) {
+    const base = identityPaths.has(path)
+      ? "#"
+      : normalizeNativeType(generic.base);
+    return `${base}<${generic.arguments.map((argument, index) => (
+      nominalIdentityTypeShape(argument, identityPaths, childPath(String(index)))
+    )).join(",")}>`;
+  }
+  return identityPaths.has(path)
+    ? "#"
+    : normalizeNativeType(canonicalTypeName(type));
+}
+
+function parseSourceGenericTypeShape(
+  typeName: string,
+): { readonly base: string; readonly arguments: readonly string[] } | null {
+  const opening = typeName.indexOf("<");
+  if (opening < 1 || !typeName.endsWith(">")) return null;
+  const arguments_: string[] = [];
+  let angleDepth = 0;
+  let parenthesisDepth = 0;
+  let bracketDepth = 0;
+  let start = opening + 1;
+  for (let index = start; index < typeName.length - 1; index += 1) {
+    const character = typeName[index];
+    if (character === "<") angleDepth += 1;
+    else if (character === ">") angleDepth -= 1;
+    else if (character === "(") parenthesisDepth += 1;
+    else if (character === ")") parenthesisDepth -= 1;
+    else if (character === "[") bracketDepth += 1;
+    else if (character === "]") bracketDepth -= 1;
+    else if (
+      character === ","
+      && angleDepth === 0
+      && parenthesisDepth === 0
+      && bracketDepth === 0
+    ) {
+      arguments_.push(typeName.slice(start, index).trim());
+      start = index + 1;
+    }
+  }
+  arguments_.push(typeName.slice(start, -1).trim());
+  return {
+    base: typeName.slice(0, opening).trim(),
+    arguments: arguments_,
+  };
 }
 
 function typeParameterAffectsCallableContract(declaration: FunctionDeclaration, parameter: string): boolean {

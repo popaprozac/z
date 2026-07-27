@@ -3,7 +3,10 @@ import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import { analyze } from "./sema.ts";
 import { materializeResultTypes } from "./results.ts";
-import { materializeGenerics } from "./generics.ts";
+import {
+  materializeGenerics,
+  type GenericAggregateMaterialization,
+} from "./generics.ts";
 import { inferGenericCalls } from "./generic-inference.ts";
 import { resolveForeignModules } from "./foreign.ts";
 import {
@@ -123,6 +126,10 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   );
   validateRawNativeDeclarationShapes(resolvedProgram, fileName);
   const inferredProgram = inferGenericCalls(resolvedProgram, fileName, foreignModules);
+  const genericAggregateMaterializations = new Map<
+    string,
+    GenericAggregateMaterialization
+  >();
   const foreignIdentityTypes = new Set(
     [...foreignModules.values()].flatMap((module) => [...module.interfaces.values()].map((type) => type.typeName)),
   );
@@ -132,6 +139,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       fileName,
       typeDisplayNames,
       foreignIdentityTypes,
+      genericAggregateMaterializations,
     )),
     foreignModules,
   );
@@ -173,6 +181,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     options.requireMain ?? true,
     projectBuild.deploymentTarget,
     nativeSemanticBridge?.observer ?? null,
+    genericAggregateMaterializations,
   );
   if (hasRawNativeBodies(program)) {
     const asyncDeclaration = [
