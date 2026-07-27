@@ -3128,6 +3128,120 @@ function containsLoweredFunction(
   return false;
 }
 
+function functionIsExported(
+  in program: Program,
+  in name: String
+): boolean {
+  for (const declaration of program.declarations) {
+    if (
+      declaration.kind == DeclarationKind.functionDeclaration
+      && declaration.name == name
+    ) return declaration.exported;
+  }
+  return false;
+}
+
+function containsName(in names: Array<String>, in name: String): boolean {
+  for (const candidate of names) {
+    if (candidate == name) return true;
+  }
+  return false;
+}
+
+function collisionSafePrivateFunctionNames(
+  in parsed: Array<ParsedModule>
+): Array<String> {
+  let names = Array<String>();
+  for (const module of parsed) {
+    for (const declaration of module.program.functions) {
+      if (containsName(names, declaration.name)) continue;
+      let count: usize = 0;
+      let exportedCount: usize = 0;
+      for (const candidateModule of parsed) {
+        for (const candidate of candidateModule.program.functions) {
+          if (candidate.name != declaration.name) continue;
+          count = count + 1;
+          if (functionIsExported(
+            candidateModule.program,
+            candidate.name
+          )) exportedCount = exportedCount + 1;
+        }
+      }
+      if (count > 1 && exportedCount <= 1) {
+        names.push(declaration.name.copyBytes(
+          0,
+          declaration.name.byteLength
+        ));
+      }
+    }
+  }
+  return names;
+}
+
+function privateFunctionNeedsMangle(
+  in program: Program,
+  in collisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
+  in name: String
+): boolean {
+  if (!containsName(collisionNames, name)) return false;
+  if (functionIsExported(program, name)) return false;
+  return moduleIndex != entryIndex || name != "main";
+}
+
+function emittedPrivateFunctionName(
+  moduleIndex: usize,
+  in name: String
+): String {
+  return `__z_module_${moduleIndex}_${name}`;
+}
+
+function rewritePrivateCallTargets(
+  in program: Program,
+  in collisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
+  inout lowered: LoweredFunction
+): void {
+  let index: usize = 0;
+  while (index < lowered.expressions.length) {
+    if (
+      lowered.expressions[index].kind == LoweredExpressionKind.directCall
+      && lowered.expressions[index].children.length > 0
+    ) {
+      const callee = lowered.expressions[index].children[0];
+      if (
+        lowered.expressions[callee].kind == LoweredExpressionKind.localValue
+      ) {
+        for (const declaration of program.functions) {
+          if (
+            declaration.name == lowered.expressions[callee].value
+            && privateFunctionNeedsMangle(
+              program,
+              collisionNames,
+              moduleIndex,
+              entryIndex,
+              declaration.name
+            )
+          ) {
+            lowered.expressions[callee] = LoweredExpression({
+              kind: LoweredExpressionKind.localValue,
+              value: emittedPrivateFunctionName(
+                moduleIndex,
+                declaration.name
+              ),
+              children: Array<usize>(),
+              labels: Array<String>(),
+            });
+          }
+        }
+      }
+    }
+    index = index + 1;
+  }
+}
+
 function collectIntrinsicTypeName(
   in program: Program,
   in name: String,
@@ -3362,6 +3476,9 @@ function appendLoweredProgram(
   in program: Program,
   inout importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
+  in privateCollisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
@@ -3492,15 +3609,37 @@ function appendLoweredProgram(
   }
 
   for (const declaration of program.functions) {
-    if (containsLoweredFunction(functions, declaration.name)) {
+    if (
+      containsLoweredFunction(functions, declaration.name)
+      && !containsName(privateCollisionNames, declaration.name)
+    ) {
       throw `native module emission requires collision-safe function identity for ${declaration.name}`;
     }
-    const loweredFunction = try lowerFunction(
+    let loweredFunction = try lowerFunction(
       program,
       importedTypes,
       evidence,
       declaration
     );
+    rewritePrivateCallTargets(
+      program,
+      privateCollisionNames,
+      moduleIndex,
+      entryIndex,
+      inout loweredFunction
+    );
+    if (privateFunctionNeedsMangle(
+      program,
+      privateCollisionNames,
+      moduleIndex,
+      entryIndex,
+      declaration.name
+    )) {
+      loweredFunction.name = emittedPrivateFunctionName(
+        moduleIndex,
+        declaration.name
+      );
+    }
     functions.push(move loweredFunction);
   }
 }
@@ -3516,10 +3655,14 @@ export function lowerProgram(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   let importedTypes = Array<LoweredImportedType>();
+  const privateCollisionNames = Array<String>();
   try appendLoweredProgram(
     program,
     inout importedTypes,
     evidence,
+    privateCollisionNames,
+    0,
+    0,
     inout structs,
     inout enums,
     inout functions
@@ -3534,6 +3677,8 @@ export function lowerModules(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  const privateCollisionNames = collisionSafePrivateFunctionNames(parsed);
+  const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
     let importedTypes = importedTypesForModule(
       graph,
@@ -3545,6 +3690,9 @@ export function lowerModules(
       parsed[moduleIndex].program,
       inout importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
+      privateCollisionNames,
+      moduleIndex,
+      entryIndex,
       inout structs,
       inout enums,
       inout functions

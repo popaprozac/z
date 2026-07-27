@@ -8228,10 +8228,57 @@ test("emits and runs the first program directly from the native Z AST", () => {
     [cli, "self-host-emit", collisionMain],
     { encoding: "utf8" },
   );
-  assert.notEqual(collisionEmission.status, 0);
+  assert.equal(collisionEmission.status, 0, collisionEmission.stderr);
+  assert.equal(
+    collisionEmission.stdout.match(
+      /int32_t __z_module_\d+_helper\(int32_t value\)/g,
+    )?.length,
+    4,
+  );
+  assert.doesNotMatch(
+    collisionEmission.stdout,
+    /(?:^|\n)int32_t helper\(int32_t value\)/,
+  );
+  const collisionExecutable = resolve(directory, "collision-modules");
+  const collisionCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", collisionExecutable],
+    { encoding: "utf8", input: collisionEmission.stdout },
+  );
+  assert.equal(collisionCompilation.status, 0, collisionCompilation.stderr);
+  const collisionExecution = spawnSync(
+    collisionExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(collisionExecution.status, 42, collisionExecution.stderr);
+
+  const exportedCollisionA = resolve(directory, "exported-collision-a.zs");
+  const exportedCollisionB = resolve(directory, "exported-collision-b.zs");
+  const exportedCollisionMain = resolve(directory, "exported-collision-main.zs");
+  writeFileSync(
+    exportedCollisionA,
+    "export function duplicate(value: i32): i32 { return value; }\n",
+  );
+  writeFileSync(
+    exportedCollisionB,
+    "export function duplicate(value: i32): i32 { return value; }\n",
+  );
+  writeFileSync(
+    exportedCollisionMain,
+    "import { duplicate as first } from \"./exported-collision-a.zs\";\n"
+      + "import { duplicate as second } from \"./exported-collision-b.zs\";\n"
+      + "function main(): i32 { return first(20) + second(22); }\n",
+  );
+  const exportedCollisionEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", exportedCollisionMain],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(exportedCollisionEmission.status, 0);
   assert.match(
-    collisionEmission.stderr,
-    /native module emission requires collision-safe function identity for helper/,
+    exportedCollisionEmission.stderr,
+    /native module emission requires collision-safe function identity for duplicate/,
   );
 
   const controlFlowInput = resolve(projectRoot, "tests/fixtures/self-host-emit-control-flow.zs");

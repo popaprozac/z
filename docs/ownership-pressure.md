@@ -775,6 +775,14 @@ emits a `Z_Point` compound value directly; the alias produces neither a wrapper
 type nor a conversion call. Imported aggregate identity now composes through
 both factory and constructor paths.
 
+Two dependencies may now each define a private `helper` function. Native
+lowering detects the source-name collision before emission, assigns each helper
+an internal module-qualified C identity, and rewrites only calls originating in
+that helper's module. The combined strict-Clang executable returns the same
+result. Two same-named exported functions remain a deliberate error: choosing
+their externally visible identity belongs with Z-to-C export and ABI design,
+not an accidental private-name mangling rule.
+
 What the compiler proves:
 
 - owned `String`, `Array`, `Map`, `Set`, `Option`, enums, and typed errors are

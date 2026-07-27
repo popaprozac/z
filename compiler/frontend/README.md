@@ -179,7 +179,10 @@ the field and then into a consuming function. Imported enum identity now
 includes aliased payload/payload-free construction, factory returns, exhaustive
 match, owned payload transfer, and scope cleanup. Selective struct aliases now
 construct the canonical exported value directly from object initializers.
-Collision-safe private symbol names and separate-object emission remain explicit
+Colliding module-private functions receive internal module-qualified C names,
+and their local call sites are rewritten to the same identity. Same-named
+exports still fail closed pending an exported-symbol/ABI naming policy;
+collision-safe private type names and separate-object emission remain explicit
 follow-ups.
 
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
