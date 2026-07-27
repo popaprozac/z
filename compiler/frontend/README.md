@@ -194,6 +194,12 @@ intrinsic type, `weak value` validates a class target without consuming its
 owner, and `Weak<T>.upgrade()` yields `T throws WeakExpired`. The existing
 weak-reference and weak-capture application therefore remains fully
 native-authoritative.
+Recursive cleanup and explicit-copy analysis also stay in each aggregate's
+defining module. Concrete generic arguments are rebased there before
+substitution, preserving ownership through exported aggregates whose nested
+field types are intentionally not imported by the caller. The project-index
+application exercises that path through `IndexReport -> FileRecord -> String`
+and remains fully native-authoritative.
 Concrete generic call evidence retains source-level nested types such as
 `Option<i32>` and is rebased onto Stage 0's temporary materialized lowering
 types only after source-template substitution proves the contracts equivalent.

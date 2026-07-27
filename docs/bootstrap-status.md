@@ -593,6 +593,14 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    throwing effect returning `T`. The existing weak-reference and weak-capture
    application now consumes all ten observed bindings and all twenty-seven
    observed expressions through native authority.
+   Recursive cleanup and explicit-copy analysis now remain in an aggregate's
+   defining module. Only concrete generic arguments are rebased into that
+   module before substitution, so an exported struct cannot lose ownership
+   merely because one of its nested field types is not separately imported by
+   the caller. The unchanged project-index application now consumes all seven
+   observed bindings and all twenty-four observed expressions through native
+   authority, including its explicit move of an `IndexReport` whose nested
+   `FileRecord` owns Strings.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

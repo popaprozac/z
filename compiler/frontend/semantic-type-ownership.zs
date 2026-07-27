@@ -168,40 +168,40 @@ export function typeHasCleanup(
             typeIndex < signature.typeParameters.length
             && typeIndex < arguments.length
           ) {
+            const argument = rebaseTypeName(
+              modules,
+              moduleIndex,
+              location.moduleIndex,
+              arguments[typeIndex]
+            );
             addValueBinding(
               inout substitutions,
               signature.typeParameters[typeIndex],
-              arguments[typeIndex]
+              argument
             );
             typeIndex = typeIndex + 1;
           }
           for (const field of signature.fields) {
-            const localType = rebaseTypeName(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              field.typeName
+            const fieldType = substituteGenericType(
+              field.typeName,
+              substitutions
             );
-            const fieldType = substituteGenericType(localType, substitutions);
             if (typeHasCleanup(
               modules,
-              moduleIndex,
+              location.moduleIndex,
               fieldType,
               nextVisiting
             )) return true;
           }
           for (const variant of signature.variants) {
             if (variant.payloadType.byteLength == 0) continue;
-            const localType = rebaseTypeName(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              variant.payloadType
+            const payloadType = substituteGenericType(
+              variant.payloadType,
+              substitutions
             );
-            const payloadType = substituteGenericType(localType, substitutions);
             if (typeHasCleanup(
               modules,
-              moduleIndex,
+              location.moduleIndex,
               payloadType,
               nextVisiting
             )) return true;
@@ -309,40 +309,40 @@ export function typeSupportsExplicitCopy(
             typeIndex < signature.typeParameters.length
             && typeIndex < arguments.length
           ) {
+            const argument = rebaseTypeName(
+              modules,
+              moduleIndex,
+              location.moduleIndex,
+              arguments[typeIndex]
+            );
             addValueBinding(
               inout substitutions,
               signature.typeParameters[typeIndex],
-              arguments[typeIndex]
+              argument
             );
             typeIndex = typeIndex + 1;
           }
           for (const field of signature.fields) {
-            const localType = rebaseTypeName(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              field.typeName
+            const fieldType = substituteGenericType(
+              field.typeName,
+              substitutions
             );
-            const fieldType = substituteGenericType(localType, substitutions);
             if (!typeSupportsExplicitCopy(
               modules,
-              moduleIndex,
+              location.moduleIndex,
               fieldType,
               nextVisiting
             )) return false;
           }
           for (const variant of signature.variants) {
             if (variant.payloadType.byteLength == 0) continue;
-            const localType = rebaseTypeName(
-              modules,
-              location.moduleIndex,
-              moduleIndex,
-              variant.payloadType
+            const payloadType = substituteGenericType(
+              variant.payloadType,
+              substitutions
             );
-            const payloadType = substituteGenericType(localType, substitutions);
             if (!typeSupportsExplicitCopy(
               modules,
-              moduleIndex,
+              location.moduleIndex,
               payloadType,
               nextVisiting
             )) return false;

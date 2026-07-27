@@ -413,9 +413,9 @@ base/item batches carry call targets and substitutions; binding/expression
 batches carry inferred types and flattened nominal identities. Success no
 longer creates, returns, copies, or decodes a text payload; the host adopts the
 canonical graph returned by the versioned phase API directly. The latest
-whole-process samples were 246.3 ms for Stage 1, 245.7 ms for Stage 0, and
-1.119 s for the hybrid parity path. The Stage-1 and Stage-0 samples were
-effectively equal in this run. These are
+whole-process samples were 245.4 ms for Stage 1, 248.7 ms for Stage 0, and
+1.116 s for the hybrid parity path. The Stage-0 sample contained a statistical
+outlier; all three remain inside the established band. These are
 checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
 not yet perform identical work and the hybrid path deliberately performs both.
 
@@ -488,6 +488,17 @@ strong owner's availability, and return `T throws WeakExpired` from upgrade.
 The unchanged weak-reference application—including an owned closure that
 captures a weak controller—now consumes all ten observed bindings and all
 twenty-seven observed expressions through native authority.
+
+Project Index exposed a cross-module recursive-ownership bug. Its exported
+`IndexReport` contains a `FileRecord`, but the caller imports only
+`IndexReport`. Native cleanup analysis rebased the internal field spelling into
+the caller, could not resolve the deliberately unimported `FileRecord`, and
+therefore rejected `move report` as moving a cleanup-free value. Cleanup and
+explicit-copy recursion now walk field and variant types in the defining
+module; only concrete generic arguments cross into that namespace before
+substitution. The unchanged two-module application now consumes all seven
+observed bindings and all twenty-four observed expressions through native
+authority.
 
 What the compiler proves:
 
