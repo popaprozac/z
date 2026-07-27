@@ -689,17 +689,16 @@ When focused self-hosting work resumes, use this order:
    boundaries, escaping closure environments, precise borrow last-use release,
    receiver-path capabilities, and recursive ownership contexts. Do not port a
    feature merely for nominal completeness; add a realistic corpus case first.
-3. Continue replacing the temporary compatibility stream with the structural
-   in-process phase handoff. One owned native response handle now supplies entry,
-   module paths, dependency lists/order, symbol/evidence counts, and lifetime
-   ownership for the resolved graph. Topology records and `symbol` records have
-   been removed from the stream; one bulk fixed-width query carries symbol
-   identity, kind, export/import relationships, targets, and source locations.
-   All function, aggregate, constructor, and method signatures are also
-   structural, including generic constraints, fields, variants, trait
-   conformance, capabilities, and effects. Move semantic evidence next,
-   preserving canonical module-local source locations and the guarded Stage-0
-   fallback.
+3. Stabilize the completed structural in-process phase handoff. One owned native
+   response handle supplies entry, module paths, dependency lists/order,
+   symbols, every signature shape, and all call/binding/expression evidence.
+   Bulk fixed-width base/item batches preserve generic constraints, fields,
+   variants, trait conformance, capabilities, effects, source locations, and
+   flattened nominal-identity paths. The successful compatibility stream is
+   empty; only resolver failures retain the temporary framed diagnostic payload.
+   Preserve canonical module-local locations and the guarded Stage-0 fallback
+   while turning this retained-graph query surface into the stable native phase
+   API.
    Measure cold library preparation, warm native work, compatibility/handoff
    cost, and Stage-0 parity separately.
 4. Finish the native semantic subset required to compile the compiler itself.

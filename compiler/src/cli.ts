@@ -1617,6 +1617,76 @@ typedef struct {
   uint64_t second_length;
 } Z_Stage1MemberSignatureItemRecord;
 
+typedef struct {
+  uint64_t module_index;
+  uint64_t resolution_index;
+  uint64_t offset;
+  uint64_t line;
+  uint64_t column;
+  uint64_t target_module;
+  uint64_t target_symbol;
+  uint64_t kind_data;
+  uint64_t kind_length;
+  uint64_t target_name_data;
+  uint64_t target_name_length;
+  uint64_t asynchronous;
+  uint64_t receiver_mode_data;
+  uint64_t receiver_mode_length;
+  uint64_t return_type_data;
+  uint64_t return_type_length;
+  uint64_t error_type_data;
+  uint64_t error_type_length;
+  uint64_t type_count;
+  uint64_t parameter_count;
+} Z_Stage1CallResolutionRecord;
+
+typedef struct {
+  uint64_t module_index;
+  uint64_t resolution_index;
+  uint64_t kind;
+  uint64_t index;
+  uint64_t first_data;
+  uint64_t first_length;
+  uint64_t second_data;
+  uint64_t second_length;
+} Z_Stage1CallResolutionItemRecord;
+
+typedef struct {
+  uint64_t module_index;
+  uint64_t resolution_index;
+  uint64_t offset;
+  uint64_t line;
+  uint64_t column;
+  uint64_t name_data;
+  uint64_t name_length;
+  uint64_t mutable_binding;
+  uint64_t type_name_data;
+  uint64_t type_name_length;
+  uint64_t identity_count;
+} Z_Stage1BindingResolutionRecord;
+
+typedef struct {
+  uint64_t module_index;
+  uint64_t resolution_index;
+  uint64_t offset;
+  uint64_t line;
+  uint64_t column;
+  uint64_t type_name_data;
+  uint64_t type_name_length;
+  uint64_t identity_count;
+} Z_Stage1ExpressionResolutionRecord;
+
+typedef struct {
+  uint64_t module_index;
+  uint64_t evidence_kind;
+  uint64_t resolution_index;
+  uint64_t identity_index;
+  uint64_t path_data;
+  uint64_t path_length;
+  uint64_t target_module;
+  uint64_t target_symbol;
+} Z_Stage1TypeIdentityRecord;
+
 Z_STAGE1_EXPORT void *z_stage1_parse(
   const uint8_t *path_data,
   uintptr_t path_length,
@@ -1885,6 +1955,64 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_member_signature_item_count(
           .symbols.data[symbol_index].typeSignature.data.some
           .methods.data[method_index].signature.typeParameterConstraints.length;
       }
+    }
+  }
+  return count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_call_resolution_item_count(
+  const void *pointer
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t count = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.callResolutions.length;
+      resolution_index += 1
+    ) {
+      count += response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.callResolutions.data[resolution_index].typeParameters.length;
+      count += response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.callResolutions.data[resolution_index].parameterTypes.length;
+    }
+  }
+  return count;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_type_identity_count(
+  const void *pointer
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t count = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.bindingResolutions.length;
+      resolution_index += 1
+    ) {
+      count += response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.bindingResolutions.data[resolution_index].typeIdentities.length;
+    }
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.expressionResolutions.length;
+      resolution_index += 1
+    ) {
+      count += response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.expressionResolutions.data[resolution_index]
+        .typeIdentities.length;
     }
   }
   return count;
@@ -2818,6 +2946,352 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_member_signature_item_records(
           };
           written += 1;
         }
+      }
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_call_resolution_records(
+  const void *pointer,
+  Z_Stage1CallResolutionRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.callResolutions.length;
+      resolution_index += 1
+    ) {
+      if (written >= capacity) return written;
+      records[written] = (Z_Stage1CallResolutionRecord){
+        .module_index = (uint64_t)module_index,
+        .resolution_index = (uint64_t)resolution_index,
+        .offset = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].offset,
+        .line = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].line,
+        .column = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].column,
+        .target_module = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].targetModuleIndex,
+        .target_symbol = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].targetSymbolIndex,
+        .kind_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].kind.data,
+        .kind_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].kind.length,
+        .target_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].targetName.data,
+        .target_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].targetName.length,
+        .asynchronous = response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].asynchronous ? 1 : 0,
+        .receiver_mode_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].receiverMode.data,
+        .receiver_mode_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].receiverMode.length,
+        .return_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].returnType.data,
+        .return_type_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].returnType.length,
+        .error_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].errorType.data,
+        .error_type_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].errorType.length,
+        .type_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].typeParameters.length,
+        .parameter_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].parameterTypes.length,
+      };
+      written += 1;
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_call_resolution_item_records(
+  const void *pointer,
+  Z_Stage1CallResolutionItemRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.callResolutions.length;
+      resolution_index += 1
+    ) {
+      for (
+        uintptr_t item_index = 0;
+        item_index < response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].typeParameters.length;
+        item_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1CallResolutionItemRecord){
+          .module_index = (uint64_t)module_index,
+          .resolution_index = (uint64_t)resolution_index,
+          .kind = 0,
+          .index = (uint64_t)item_index,
+          .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].typeParameters.data[item_index].data,
+          .first_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].typeParameters.data[item_index].length,
+          .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].typeArguments.data[item_index].data,
+          .second_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].typeArguments.data[item_index].length,
+        };
+        written += 1;
+      }
+      for (
+        uintptr_t item_index = 0;
+        item_index < response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.callResolutions.data[resolution_index].parameterTypes.length;
+        item_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1CallResolutionItemRecord){
+          .module_index = (uint64_t)module_index,
+          .resolution_index = (uint64_t)resolution_index,
+          .kind = 1,
+          .index = (uint64_t)item_index,
+          .first_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].parameterModes.data[item_index].data,
+          .first_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].parameterModes.data[item_index].length,
+          .second_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].parameterTypes.data[item_index].data,
+          .second_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .callResolutions.data[resolution_index].parameterTypes.data[item_index].length,
+        };
+        written += 1;
+      }
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_binding_resolution_records(
+  const void *pointer,
+  Z_Stage1BindingResolutionRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.bindingResolutions.length;
+      resolution_index += 1
+    ) {
+      if (written >= capacity) return written;
+      records[written] = (Z_Stage1BindingResolutionRecord){
+        .module_index = (uint64_t)module_index,
+        .resolution_index = (uint64_t)resolution_index,
+        .offset = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.bindingResolutions.data[resolution_index].offset,
+        .line = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.bindingResolutions.data[resolution_index].line,
+        .column = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.bindingResolutions.data[resolution_index].column,
+        .name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .bindingResolutions.data[resolution_index].name.data,
+        .name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .bindingResolutions.data[resolution_index].name.length,
+        .mutable_binding = response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.bindingResolutions.data[resolution_index].mutableBinding ? 1 : 0,
+        .type_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .bindingResolutions.data[resolution_index].typeName.data,
+        .type_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .bindingResolutions.data[resolution_index].typeName.length,
+        .identity_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .bindingResolutions.data[resolution_index].typeIdentities.length,
+      };
+      written += 1;
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_expression_resolution_records(
+  const void *pointer,
+  Z_Stage1ExpressionResolutionRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.expressionResolutions.length;
+      resolution_index += 1
+    ) {
+      if (written >= capacity) return written;
+      records[written] = (Z_Stage1ExpressionResolutionRecord){
+        .module_index = (uint64_t)module_index,
+        .resolution_index = (uint64_t)resolution_index,
+        .offset = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.expressionResolutions.data[resolution_index].offset,
+        .line = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.expressionResolutions.data[resolution_index].line,
+        .column = (uint64_t)response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.expressionResolutions.data[resolution_index].column,
+        .type_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .expressionResolutions.data[resolution_index].typeName.data,
+        .type_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .expressionResolutions.data[resolution_index].typeName.length,
+        .identity_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .expressionResolutions.data[resolution_index].typeIdentities.length,
+      };
+      written += 1;
+    }
+  }
+  return written;
+}
+
+Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_identity_records(
+  const void *pointer,
+  Z_Stage1TypeIdentityRecord *records,
+  uintptr_t capacity
+) {
+  const Z_Stage1ResolveHandle *response = (const Z_Stage1ResolveHandle *)pointer;
+  uintptr_t written = 0;
+  for (
+    uintptr_t module_index = 0;
+    module_index < response->result.graph.resolved.modules.length;
+    module_index += 1
+  ) {
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.bindingResolutions.length;
+      resolution_index += 1
+    ) {
+      for (
+        uintptr_t identity_index = 0;
+        identity_index < response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.bindingResolutions.data[resolution_index]
+          .typeIdentities.length;
+        identity_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1TypeIdentityRecord){
+          .module_index = (uint64_t)module_index,
+          .evidence_kind = 0,
+          .resolution_index = (uint64_t)resolution_index,
+          .identity_index = (uint64_t)identity_index,
+          .path_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .bindingResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].path.data,
+          .path_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .bindingResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].path.length,
+          .target_module = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .bindingResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].targetModuleIndex,
+          .target_symbol = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .bindingResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].targetSymbolIndex,
+        };
+        written += 1;
+      }
+    }
+    for (
+      uintptr_t resolution_index = 0;
+      resolution_index < response->result.graph.resolved.modules.data[module_index]
+        .semanticEvidence.expressionResolutions.length;
+      resolution_index += 1
+    ) {
+      for (
+        uintptr_t identity_index = 0;
+        identity_index < response->result.graph.resolved.modules.data[module_index]
+          .semanticEvidence.expressionResolutions.data[resolution_index]
+          .typeIdentities.length;
+        identity_index += 1
+      ) {
+        if (written >= capacity) return written;
+        records[written] = (Z_Stage1TypeIdentityRecord){
+          .module_index = (uint64_t)module_index,
+          .evidence_kind = 1,
+          .resolution_index = (uint64_t)resolution_index,
+          .identity_index = (uint64_t)identity_index,
+          .path_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .expressionResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].path.data,
+          .path_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .expressionResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].path.length,
+          .target_module = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .expressionResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].targetModuleIndex,
+          .target_symbol = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].semanticEvidence
+            .expressionResolutions.data[resolution_index]
+            .typeIdentities.data[identity_index].targetSymbolIndex,
+        };
+        written += 1;
       }
     }
   }

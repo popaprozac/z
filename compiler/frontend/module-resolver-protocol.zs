@@ -5,9 +5,6 @@ import { TextBuffer } from "std/text";
 import {
   ModuleResolveError,
   ModuleResolveErrorKind,
-  ModuleBindingResolution,
-  ModuleCallResolution,
-  ModuleExpressionResolution,
   ModuleGraph,
   ModuleSource,
   ResolvedModule,
@@ -135,130 +132,6 @@ function resolverMessage(in error: ModuleResolveError): String {
   return output.finish();
 }
 
-function appendTarget(inout output: TextBuffer, in target: Option<usize>): void {
-  match (in target) {
-    some(index) => appendHexUsize(inout output, index);
-    none => output.append("-");
-  }
-}
-
-function appendCallResolution(
-  inout output: TextBuffer,
-  moduleIndex: usize,
-  in resolution: ModuleCallResolution
-): void {
-  output.append("callResolution");
-  output.appendAscii(9);
-  appendHexUsize(inout output, moduleIndex);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.offset);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.line);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.column);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.targetModuleIndex);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.targetSymbolIndex);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.kind);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.targetName);
-  output.appendAscii(9);
-  if (resolution.asynchronous) output.appendAscii(49);
-  else output.appendAscii(48);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.receiverMode);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.returnType);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.errorType);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.typeParameters.length);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.parameterTypes.length);
-  let typeIndex: usize = 0;
-  while (typeIndex < resolution.typeParameters.length) {
-    output.appendAscii(9);
-    appendHexText(inout output, resolution.typeParameters[typeIndex]);
-    output.appendAscii(9);
-    appendHexText(inout output, resolution.typeArguments[typeIndex]);
-    typeIndex = typeIndex + 1;
-  }
-  let parameterIndex: usize = 0;
-  while (parameterIndex < resolution.parameterTypes.length) {
-    output.appendAscii(9);
-    appendHexText(inout output, resolution.parameterModes[parameterIndex]);
-    output.appendAscii(9);
-    appendHexText(inout output, resolution.parameterTypes[parameterIndex]);
-    parameterIndex = parameterIndex + 1;
-  }
-  output.appendAscii(10);
-}
-
-function appendBindingResolution(
-  inout output: TextBuffer,
-  moduleIndex: usize,
-  in resolution: ModuleBindingResolution
-): void {
-  output.append("bindingResolution");
-  output.appendAscii(9);
-  appendHexUsize(inout output, moduleIndex);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.offset);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.line);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.column);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.name);
-  output.appendAscii(9);
-  if (resolution.mutableBinding) output.appendAscii(49);
-  else output.appendAscii(48);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.typeName);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.typeIdentities.length);
-  for (const identity of resolution.typeIdentities) {
-    output.appendAscii(9);
-    appendHexText(inout output, identity.path);
-    output.appendAscii(9);
-    appendHexUsize(inout output, identity.targetModuleIndex);
-    output.appendAscii(9);
-    appendHexUsize(inout output, identity.targetSymbolIndex);
-  }
-  output.appendAscii(10);
-}
-
-function appendExpressionResolution(
-  inout output: TextBuffer,
-  moduleIndex: usize,
-  in resolution: ModuleExpressionResolution
-): void {
-  output.append("expressionResolution");
-  output.appendAscii(9);
-  appendHexUsize(inout output, moduleIndex);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.offset);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.line);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.column);
-  output.appendAscii(9);
-  appendHexText(inout output, resolution.typeName);
-  output.appendAscii(9);
-  appendHexUsize(inout output, resolution.typeIdentities.length);
-  for (const identity of resolution.typeIdentities) {
-    output.appendAscii(9);
-    appendHexText(inout output, identity.path);
-    output.appendAscii(9);
-    appendHexUsize(inout output, identity.targetModuleIndex);
-    output.appendAscii(9);
-    appendHexUsize(inout output, identity.targetSymbolIndex);
-  }
-  output.appendAscii(10);
-}
-
 export function renderModuleGraph(
   in entryPath: String,
   in batch: String
@@ -276,7 +149,6 @@ export function renderModuleGraph(
   let callResolutionCount: usize = 0;
   let bindingResolutionCount: usize = 0;
   let expressionResolutionCount: usize = 0;
-  let moduleIndex: usize = 0;
   for (const module of graph.modules) {
     dependencyCount = dependencyCount + module.dependencies.length;
     symbolCount = symbolCount + module.symbols.length;
@@ -286,16 +158,6 @@ export function renderModuleGraph(
       + module.semanticEvidence.bindingResolutions.length;
     expressionResolutionCount = expressionResolutionCount
       + module.semanticEvidence.expressionResolutions.length;
-    for (const resolution of module.semanticEvidence.callResolutions) {
-      appendCallResolution(inout output, moduleIndex, resolution);
-    }
-    for (const resolution of module.semanticEvidence.bindingResolutions) {
-      appendBindingResolution(inout output, moduleIndex, resolution);
-    }
-    for (const resolution of module.semanticEvidence.expressionResolutions) {
-      appendExpressionResolution(inout output, moduleIndex, resolution);
-    }
-    moduleIndex = moduleIndex + 1;
   }
   return RenderedModuleGraph({
     stream: output.finish(),

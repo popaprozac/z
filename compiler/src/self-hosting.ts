@@ -213,6 +213,9 @@ export type Stage1ModuleGraphStructure = {
       readonly line: number;
       readonly column: number;
     }[];
+    readonly callResolutions?: readonly Stage1ModuleCallResolution[];
+    readonly bindingResolutions?: readonly Stage1ModuleBindingResolution[];
+    readonly expressionResolutions?: readonly Stage1ModuleExpressionResolution[];
   }[];
   readonly dependencyOrder: readonly number[];
 };
@@ -274,6 +277,34 @@ function copyStage1ModuleTypeSignature(
   };
 }
 
+function copyStage1TypeIdentities(
+  identities: readonly Stage1ModuleTypeIdentity[],
+): Stage1ModuleTypeIdentity[] {
+  return identities.map((identity) => ({ ...identity }));
+}
+
+function copyStage1CallResolution(
+  resolution: Stage1ModuleCallResolution,
+): Stage1ModuleCallResolution {
+  return {
+    offset: resolution.offset,
+    line: resolution.line,
+    column: resolution.column,
+    targetModule: resolution.targetModule,
+    targetSymbol: resolution.targetSymbol,
+    kind: resolution.kind,
+    targetName: resolution.targetName,
+    asynchronous: resolution.asynchronous,
+    receiverMode: resolution.receiverMode,
+    typeParameters: [...resolution.typeParameters],
+    typeArguments: [...resolution.typeArguments],
+    parameterModes: [...resolution.parameterModes],
+    parameterTypes: [...resolution.parameterTypes],
+    returnType: resolution.returnType,
+    errorType: resolution.errorType,
+  };
+}
+
 export function decodeStage1ModuleGraphStream(
   output: string,
   structure?: Stage1ModuleGraphStructure,
@@ -304,9 +335,15 @@ export function decodeStage1ModuleGraphStream(
             column: symbol.column,
           },
         })) ?? [],
-        callResolutions: [],
-        bindingResolutions: [],
-        expressionResolutions: [],
+        callResolutions: module.callResolutions?.map(copyStage1CallResolution) ?? [],
+        bindingResolutions: module.bindingResolutions?.map((resolution) => ({
+          ...resolution,
+          typeIdentities: copyStage1TypeIdentities(resolution.typeIdentities),
+        })) ?? [],
+        expressionResolutions: module.expressionResolutions?.map((resolution) => ({
+          ...resolution,
+          typeIdentities: copyStage1TypeIdentities(resolution.typeIdentities),
+        })) ?? [],
       }))
     : [];
   for (const line of output.split("\n").filter((candidate) => candidate.length > 0)) {

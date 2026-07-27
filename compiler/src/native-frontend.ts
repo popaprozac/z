@@ -20,6 +20,9 @@ export type NativeFrontendModuleStructure = {
   readonly path: string;
   readonly dependencies: readonly number[];
   readonly symbols: readonly NativeFrontendSymbolStructure[];
+  readonly callResolutions: readonly NativeFrontendCallResolutionStructure[];
+  readonly bindingResolutions: readonly NativeFrontendBindingResolutionStructure[];
+  readonly expressionResolutions: readonly NativeFrontendExpressionResolutionStructure[];
 };
 
 export type NativeFrontendSymbolStructure = {
@@ -77,6 +80,48 @@ export type NativeFrontendTypeSignatureStructure = {
   readonly customDeinit: boolean;
   readonly customConstructor: boolean;
   readonly constructorSignature: NativeFrontendFunctionSignatureStructure | null;
+};
+
+export type NativeFrontendTypeIdentityStructure = {
+  readonly path: string;
+  readonly targetModule: number;
+  readonly targetSymbol: number;
+};
+
+export type NativeFrontendCallResolutionStructure = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly targetModule: number;
+  readonly targetSymbol: number;
+  readonly kind: "function" | "method" | "constructor";
+  readonly targetName: string;
+  readonly asynchronous: boolean;
+  readonly receiverMode: string;
+  readonly typeParameters: readonly string[];
+  readonly typeArguments: readonly string[];
+  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
+  readonly parameterTypes: readonly string[];
+  readonly returnType: string;
+  readonly errorType: string | null;
+};
+
+export type NativeFrontendBindingResolutionStructure = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly name: string;
+  readonly mutableBinding: boolean;
+  readonly typeName: string;
+  readonly typeIdentities: readonly NativeFrontendTypeIdentityStructure[];
+};
+
+export type NativeFrontendExpressionResolutionStructure = {
+  readonly offset: number;
+  readonly line: number;
+  readonly column: number;
+  readonly typeName: string;
+  readonly typeIdentities: readonly NativeFrontendTypeIdentityStructure[];
 };
 
 export type NativeFrontendGraphStructure = {
@@ -192,6 +237,14 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_call_resolution_item_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_type_identity_count: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_call_resolution_count: {
       args: [FFIType.ptr],
       returns: FFIType.u64,
@@ -256,6 +309,26 @@ export function resolveWithNativeFrontendLibrary(
       args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
       returns: FFIType.u64,
     },
+    z_stage1_resolve_copy_call_resolution_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_call_resolution_item_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_binding_resolution_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_expression_resolution_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
+    z_stage1_resolve_copy_type_identity_records: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+      returns: FFIType.u64,
+    },
     z_stage1_resolve_free: {
       args: [FFIType.ptr],
       returns: FFIType.void,
@@ -316,6 +389,9 @@ export function resolveWithNativeFrontendLibrary(
         path: string;
         dependencies: number[];
         symbols: NativeFrontendSymbolStructure[];
+        callResolutions: NativeFrontendCallResolutionStructure[];
+        bindingResolutions: NativeFrontendBindingResolutionStructure[];
+        expressionResolutions: NativeFrontendExpressionResolutionStructure[];
       }[] = [];
       const moduleSymbolCounts: number[] = [];
       for (let moduleIndex = 0; moduleIndex < summary.moduleCount; moduleIndex += 1) {
@@ -358,6 +434,9 @@ export function resolveWithNativeFrontendLibrary(
             : "",
           dependencies,
           symbols: [],
+          callResolutions: [],
+          bindingResolutions: [],
+          expressionResolutions: [],
         });
         moduleSymbolCounts.push(nativeUsize(
           library.symbols.z_stage1_resolve_module_symbol_count(
@@ -1208,6 +1287,384 @@ export function resolveWithNativeFrontendLibrary(
           throw new Error("the native frontend returned incomplete aggregate members");
         }
       }
+      type CallResolutionExpectation = {
+        readonly resolution: {
+          typeParameters: string[];
+          typeArguments: string[];
+          parameterModes: ("value" | "in" | "inout" | "out")[];
+          parameterTypes: string[];
+        };
+        readonly typeCount: number;
+        readonly parameterCount: number;
+        typesWritten: number;
+        parametersWritten: number;
+      };
+      const callResolutionItemCount = nativeUsize(
+        library.symbols.z_stage1_resolve_call_resolution_item_count(responsePointer),
+        "call-resolution item count",
+      );
+      const callResolutionRecordWidth = 20 * 8;
+      const callResolutionRecords = Buffer.alloc(
+        Math.max(1, summary.callResolutionCount * callResolutionRecordWidth),
+      );
+      const writtenCallResolutions = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_call_resolution_records(
+          responsePointer,
+          ptr(callResolutionRecords),
+          summary.callResolutionCount,
+        ),
+        "written call-resolution count",
+      );
+      if (writtenCallResolutions !== summary.callResolutionCount) {
+        throw new Error("the native frontend returned an incomplete call-resolution batch");
+      }
+      const callResolutionExpectations = new Map<string, CallResolutionExpectation>();
+      let expectedCallResolutionItemCount = 0;
+      for (
+        let callRecordIndex = 0;
+        callRecordIndex < summary.callResolutionCount;
+        callRecordIndex += 1
+      ) {
+        const recordOffset = callRecordIndex * callResolutionRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          callResolutionRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `call resolution ${callRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const resolutionIndex = field(1, "resolution index");
+        const module = modules[moduleIndex];
+        if (!module || resolutionIndex !== module.callResolutions.length) {
+          throw new Error("the native frontend returned an out-of-order call resolution");
+        }
+        const kind = nativeString(
+          field(7, "kind pointer"),
+          field(8, "kind length"),
+          "call-resolution kind",
+        );
+        if (!isNativeCallResolutionKind(kind)) {
+          throw new Error(`the native frontend returned invalid call-resolution kind ${kind}`);
+        }
+        const asynchronous = field(11, "async state");
+        if (asynchronous > 1) {
+          throw new Error("the native frontend returned invalid call-resolution async state");
+        }
+        const errorType = nativeString(
+          field(16, "error-type pointer"),
+          field(17, "error-type length"),
+          "call-resolution error type",
+        );
+        const typeCount = field(18, "type count");
+        const parameterCount = field(19, "parameter count");
+        const resolution = {
+          offset: field(2, "offset"),
+          line: field(3, "line"),
+          column: field(4, "column"),
+          targetModule: field(5, "target module"),
+          targetSymbol: field(6, "target symbol"),
+          kind,
+          targetName: nativeString(
+            field(9, "target-name pointer"),
+            field(10, "target-name length"),
+            "call-resolution target name",
+          ),
+          asynchronous: asynchronous === 1,
+          receiverMode: nativeString(
+            field(12, "receiver-mode pointer"),
+            field(13, "receiver-mode length"),
+            "call-resolution receiver mode",
+          ),
+          typeParameters: new Array<string>(typeCount),
+          typeArguments: new Array<string>(typeCount),
+          parameterModes: new Array<"value" | "in" | "inout" | "out">(parameterCount),
+          parameterTypes: new Array<string>(parameterCount),
+          returnType: nativeString(
+            field(14, "return-type pointer"),
+            field(15, "return-type length"),
+            "call-resolution return type",
+          ),
+          errorType: errorType.length === 0 ? null : errorType,
+        };
+        module.callResolutions.push(resolution);
+        const key = `${moduleIndex}:${resolutionIndex}`;
+        if (callResolutionExpectations.has(key)) {
+          throw new Error("the native frontend returned duplicate call resolutions");
+        }
+        callResolutionExpectations.set(key, {
+          resolution,
+          typeCount,
+          parameterCount,
+          typesWritten: 0,
+          parametersWritten: 0,
+        });
+        expectedCallResolutionItemCount += typeCount + parameterCount;
+      }
+      if (expectedCallResolutionItemCount !== callResolutionItemCount) {
+        throw new Error("the native frontend call-resolution item counts do not match");
+      }
+      const callResolutionItemRecordWidth = 8 * 8;
+      const callResolutionItemRecords = Buffer.alloc(
+        Math.max(1, callResolutionItemCount * callResolutionItemRecordWidth),
+      );
+      const writtenCallResolutionItems = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_call_resolution_item_records(
+          responsePointer,
+          ptr(callResolutionItemRecords),
+          callResolutionItemCount,
+        ),
+        "written call-resolution item count",
+      );
+      if (writtenCallResolutionItems !== callResolutionItemCount) {
+        throw new Error("the native frontend returned an incomplete call-resolution item batch");
+      }
+      for (
+        let itemRecordIndex = 0;
+        itemRecordIndex < callResolutionItemCount;
+        itemRecordIndex += 1
+      ) {
+        const recordOffset = itemRecordIndex * callResolutionItemRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          callResolutionItemRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `call resolution item ${itemRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const resolutionIndex = field(1, "resolution index");
+        const kind = field(2, "kind");
+        const itemIndex = field(3, "index");
+        const first = nativeString(
+          field(4, "first pointer"),
+          field(5, "first length"),
+          "call-resolution item",
+        );
+        const second = nativeString(
+          field(6, "second pointer"),
+          field(7, "second length"),
+          "call-resolution item",
+        );
+        const expectation = callResolutionExpectations.get(`${moduleIndex}:${resolutionIndex}`);
+        if (!expectation) {
+          throw new Error("the native frontend returned an item without a call resolution");
+        }
+        if (kind === 0) {
+          if (
+            itemIndex >= expectation.typeCount
+            || itemIndex in expectation.resolution.typeParameters
+          ) {
+            throw new Error("the native frontend returned an invalid call type argument");
+          }
+          expectation.resolution.typeParameters[itemIndex] = first;
+          expectation.resolution.typeArguments[itemIndex] = second;
+          expectation.typesWritten += 1;
+          continue;
+        }
+        if (kind === 1) {
+          if (
+            itemIndex >= expectation.parameterCount
+            || itemIndex in expectation.resolution.parameterModes
+            || !isNativeParameterMode(first)
+          ) {
+            throw new Error("the native frontend returned an invalid call parameter");
+          }
+          expectation.resolution.parameterModes[itemIndex] = first;
+          expectation.resolution.parameterTypes[itemIndex] = second;
+          expectation.parametersWritten += 1;
+          continue;
+        }
+        throw new Error(`the native frontend returned invalid call-resolution item kind ${kind}`);
+      }
+      for (const expectation of callResolutionExpectations.values()) {
+        if (
+          expectation.typesWritten !== expectation.typeCount
+          || expectation.parametersWritten !== expectation.parameterCount
+        ) {
+          throw new Error("the native frontend returned a sparse call resolution");
+        }
+      }
+      type IdentityExpectation = {
+        readonly identities: NativeFrontendTypeIdentityStructure[];
+        readonly count: number;
+        written: number;
+      };
+      const identityExpectations = new Map<string, IdentityExpectation>();
+      let expectedTypeIdentityCount = 0;
+      const bindingResolutionRecordWidth = 11 * 8;
+      const bindingResolutionRecords = Buffer.alloc(
+        Math.max(1, summary.bindingResolutionCount * bindingResolutionRecordWidth),
+      );
+      const writtenBindingResolutions = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_binding_resolution_records(
+          responsePointer,
+          ptr(bindingResolutionRecords),
+          summary.bindingResolutionCount,
+        ),
+        "written binding-resolution count",
+      );
+      if (writtenBindingResolutions !== summary.bindingResolutionCount) {
+        throw new Error("the native frontend returned an incomplete binding-resolution batch");
+      }
+      for (
+        let bindingRecordIndex = 0;
+        bindingRecordIndex < summary.bindingResolutionCount;
+        bindingRecordIndex += 1
+      ) {
+        const recordOffset = bindingRecordIndex * bindingResolutionRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          bindingResolutionRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `binding resolution ${bindingRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const resolutionIndex = field(1, "resolution index");
+        const module = modules[moduleIndex];
+        if (!module || resolutionIndex !== module.bindingResolutions.length) {
+          throw new Error("the native frontend returned an out-of-order binding resolution");
+        }
+        const mutableBinding = field(7, "mutability");
+        if (mutableBinding > 1) {
+          throw new Error("the native frontend returned invalid binding mutability");
+        }
+        const identityCount = field(10, "identity count");
+        const identities = new Array<NativeFrontendTypeIdentityStructure>(identityCount);
+        module.bindingResolutions.push({
+          offset: field(2, "offset"),
+          line: field(3, "line"),
+          column: field(4, "column"),
+          name: nativeString(
+            field(5, "name pointer"),
+            field(6, "name length"),
+            "binding-resolution name",
+          ),
+          mutableBinding: mutableBinding === 1,
+          typeName: nativeString(
+            field(8, "type-name pointer"),
+            field(9, "type-name length"),
+            "binding-resolution type name",
+          ),
+          typeIdentities: identities,
+        });
+        identityExpectations.set(`0:${moduleIndex}:${resolutionIndex}`, {
+          identities,
+          count: identityCount,
+          written: 0,
+        });
+        expectedTypeIdentityCount += identityCount;
+      }
+      const expressionResolutionRecordWidth = 8 * 8;
+      const expressionResolutionRecords = Buffer.alloc(
+        Math.max(1, summary.expressionResolutionCount * expressionResolutionRecordWidth),
+      );
+      const writtenExpressionResolutions = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_expression_resolution_records(
+          responsePointer,
+          ptr(expressionResolutionRecords),
+          summary.expressionResolutionCount,
+        ),
+        "written expression-resolution count",
+      );
+      if (writtenExpressionResolutions !== summary.expressionResolutionCount) {
+        throw new Error("the native frontend returned an incomplete expression-resolution batch");
+      }
+      for (
+        let expressionRecordIndex = 0;
+        expressionRecordIndex < summary.expressionResolutionCount;
+        expressionRecordIndex += 1
+      ) {
+        const recordOffset = expressionRecordIndex * expressionResolutionRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          expressionResolutionRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `expression resolution ${expressionRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const resolutionIndex = field(1, "resolution index");
+        const module = modules[moduleIndex];
+        if (!module || resolutionIndex !== module.expressionResolutions.length) {
+          throw new Error("the native frontend returned an out-of-order expression resolution");
+        }
+        const identityCount = field(7, "identity count");
+        const identities = new Array<NativeFrontendTypeIdentityStructure>(identityCount);
+        module.expressionResolutions.push({
+          offset: field(2, "offset"),
+          line: field(3, "line"),
+          column: field(4, "column"),
+          typeName: nativeString(
+            field(5, "type-name pointer"),
+            field(6, "type-name length"),
+            "expression-resolution type name",
+          ),
+          typeIdentities: identities,
+        });
+        identityExpectations.set(`1:${moduleIndex}:${resolutionIndex}`, {
+          identities,
+          count: identityCount,
+          written: 0,
+        });
+        expectedTypeIdentityCount += identityCount;
+      }
+      const typeIdentityCount = nativeUsize(
+        library.symbols.z_stage1_resolve_type_identity_count(responsePointer),
+        "type-identity count",
+      );
+      if (expectedTypeIdentityCount !== typeIdentityCount) {
+        throw new Error("the native frontend type-identity counts do not match");
+      }
+      const typeIdentityRecordWidth = 8 * 8;
+      const typeIdentityRecords = Buffer.alloc(
+        Math.max(1, typeIdentityCount * typeIdentityRecordWidth),
+      );
+      const writtenTypeIdentities = nativeUsize(
+        library.symbols.z_stage1_resolve_copy_type_identity_records(
+          responsePointer,
+          ptr(typeIdentityRecords),
+          typeIdentityCount,
+        ),
+        "written type-identity count",
+      );
+      if (writtenTypeIdentities !== typeIdentityCount) {
+        throw new Error("the native frontend returned an incomplete type-identity batch");
+      }
+      for (
+        let identityRecordIndex = 0;
+        identityRecordIndex < typeIdentityCount;
+        identityRecordIndex += 1
+      ) {
+        const recordOffset = identityRecordIndex * typeIdentityRecordWidth;
+        const field = (index: number, description: string): number => nativeUsize(
+          typeIdentityRecords.readBigUInt64LE(recordOffset + (index * 8)),
+          `type identity ${identityRecordIndex} ${description}`,
+        );
+        const moduleIndex = field(0, "module index");
+        const evidenceKind = field(1, "evidence kind");
+        const resolutionIndex = field(2, "resolution index");
+        const identityIndex = field(3, "identity index");
+        const targetModule = field(6, "target module");
+        const targetSymbol = field(7, "target symbol");
+        if (!modules[targetModule]?.symbols[targetSymbol]) {
+          throw new Error("the native frontend returned an invalid type-identity target");
+        }
+        const expectation = identityExpectations.get(
+          `${evidenceKind}:${moduleIndex}:${resolutionIndex}`,
+        );
+        if (
+          !expectation
+          || identityIndex >= expectation.count
+          || identityIndex in expectation.identities
+        ) {
+          throw new Error("the native frontend returned an invalid type identity");
+        }
+        expectation.identities[identityIndex] = {
+          path: nativeString(
+            field(4, "path pointer"),
+            field(5, "path length"),
+            "type-identity path",
+          ),
+          targetModule,
+          targetSymbol,
+        };
+        expectation.written += 1;
+      }
+      for (const expectation of identityExpectations.values()) {
+        if (expectation.written !== expectation.count) {
+          throw new Error("the native frontend returned sparse type identities");
+        }
+      }
       return {
         stream: payload,
         summary,
@@ -1247,6 +1704,12 @@ function isNativeAggregateSymbolKind(
   value: NativeFrontendSymbolStructure["kind"],
 ): value is "struct" | "class" | "trait" | "enum" {
   return value === "struct" || value === "class" || value === "trait" || value === "enum";
+}
+
+function isNativeCallResolutionKind(
+  value: string,
+): value is "function" | "method" | "constructor" {
+  return value === "function" || value === "method" || value === "constructor";
 }
 
 function isNativeVisibility(value: string): value is "public" | "private" {

@@ -362,7 +362,7 @@ scaffolding must therefore fail closed instead of inventing them.
 
 Source: [`compiler/frontend`](../compiler/frontend)
 
-The 2026-07-26 decomposition checkpoint contains 15,348 lines of Z:
+The 2026-07-26 decomposition checkpoint contains 15,210 lines of Z:
 
 | Component | Lines | Responsibility |
 | --- | ---: | --- |
@@ -391,7 +391,7 @@ The 2026-07-26 decomposition checkpoint contains 15,348 lines of Z:
 | `semantic-member-lookups.zs` | 636 | enum-match shapes, aggregate construction, fields, method signatures, and generic constraint lookup |
 | `semantic-pattern-validation.zs` | 235 | match payload bindings, object patterns, field visibility, and pattern diagnostics |
 | `module-resolver.zs` | 3,604 | recursive expression inference, closure ownership effects, statement traversal, output proofs, and semantic orchestration |
-| protocol/library modules | 602 | structural response handle, complete structural signature projection, narrowed evidence stream, and in-process entry points |
+| protocol/library modules | 464 | structural response handle, complete structural graph/evidence projection, and in-process entry points |
 
 This is the largest ownership pressure test in the repository. It parses its
 own twenty-five-module frontend graph and currently produces parity evidence for
@@ -399,21 +399,23 @@ own twenty-five-module frontend graph and currently produces parity evidence for
 3,427 root expression types. The binding and expression counts describe the
 now-smaller resolver entry module; declarations moved into the new semantic
 modules no longer appear in that entry module's evidence totals. On a warm local
-run after the complete structural-signature slice, native lexing, parsing,
-resolution, semantic analysis, encoding, and response-handle creation took
-approximately 149 ms; decoding the remaining compatibility stream took another
-5 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
+run after the complete structural-evidence slice, native lexing, parsing,
+resolution, semantic analysis, and response-handle creation took approximately
+168 ms; validating the now-empty successful compatibility stream took another
+1.39 ms. One bulk fixed-width fill carries all 832 symbol identities, kinds, export
 states, imported names, local targets, and source locations. Three paired
 base/item batches carry top-level functions, aggregate types, and
 constructor/method callables, including their generic, constraint, field,
 variant, conformance, capability, and effect details. The strings remain
 borrowed from the owned graph handle until the host releases it, avoiding
-per-field FFI calls while making that lifetime contract meaningful. The
-corresponding whole-process samples were 239.9 ms for Stage 1, 250.2 ms for
-Stage 0, and 1.045 s for the hybrid parity path—equivalent to the preceding
-checkpoint within measurement noise. These are checkpoint figures, not a
-TypeScript-versus-Z speed claim: the two frontends do not yet perform identical
-work and structural queries have not yet replaced semantic-evidence records.
+per-field FFI calls while making that lifetime contract meaningful. Additional
+base/item batches carry call targets and substitutions; binding/expression
+batches carry inferred types and flattened nominal identities. The successful
+text stream is empty. The corresponding whole-process samples were 262.2 ms for
+Stage 1, 278.1 ms for Stage 0, and 1.159 s for the hybrid parity path. Stage 1
+was 1.06 times faster than the ordinary Stage-0 check in this sample. These are
+checkpoint figures, not a TypeScript-versus-Z speed claim: the two frontends do
+not yet perform identical work and the hybrid path deliberately performs both.
 
 What the compiler proves:
 
@@ -531,18 +533,16 @@ Protocol code similarly imports data from the model module and behavior from
 the resolver/symbol modules because Z has no re-export surface. This is genuine
 ceremony, but not yet enough evidence to add either feature.
 
-The remaining self-hosting step is a controlled decomposition using the
-language as it exists:
+The remaining decomposition sequence continues using the language as it exists:
 
-1. separate semantic evidence/model types from algorithms;
-2. restore `module-resolver.zs` to a small public algorithm facade alongside
-   the explicit model module;
-3. move expression and ownership-flow analysis behind internal implementation
-   modules;
-4. keep the complete parity corpus and timing report unchanged;
-5. record exactly where explicit parameter threading remains awkward.
+1. keep restoring `module-resolver.zs` to a small public algorithm facade
+   alongside the extracted model and semantic modules;
+2. move the remaining recursive expression and ownership-flow orchestration
+   behind internal implementation modules where the dependency graph permits;
+3. keep the complete parity corpus and timing report unchanged;
+4. record exactly where explicit parameter threading remains awkward.
 
-Only if step 5 repeatedly blocks useful decomposition should Z prototype a
+Only if step 4 repeatedly blocks useful decomposition should Z prototype a
 scoped, non-escaping aggregate of borrowed capabilities. That experiment must
 prove last-use release and exclusivity; it should not introduce general stored
 references or Rust-style lifetime syntax by default.
