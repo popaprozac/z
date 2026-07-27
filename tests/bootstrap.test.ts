@@ -8188,6 +8188,36 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const moduleExecution = spawnSync(moduleExecutable, [], { encoding: "utf8" });
   assert.equal(moduleExecution.status, 42, moduleExecution.stderr);
 
+  const collisionA = resolve(directory, "collision-a.zs");
+  const collisionB = resolve(directory, "collision-b.zs");
+  const collisionMain = resolve(directory, "collision-main.zs");
+  writeFileSync(
+    collisionA,
+    "function helper(value: i32): i32 { return value; }\n"
+      + "export function first(value: i32): i32 { return helper(value); }\n",
+  );
+  writeFileSync(
+    collisionB,
+    "function helper(value: i32): i32 { return value; }\n"
+      + "export function second(value: i32): i32 { return helper(value); }\n",
+  );
+  writeFileSync(
+    collisionMain,
+    "import { first } from \"./collision-a.zs\";\n"
+      + "import { second } from \"./collision-b.zs\";\n"
+      + "function main(): i32 { return first(20) + second(22); }\n",
+  );
+  const collisionEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", collisionMain],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(collisionEmission.status, 0);
+  assert.match(
+    collisionEmission.stderr,
+    /native module emission requires collision-safe function identity for helper/,
+  );
+
   const controlFlowInput = resolve(projectRoot, "tests/fixtures/self-host-emit-control-flow.zs");
   const controlFlowEmission = spawnSync(
     process.execPath,

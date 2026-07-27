@@ -746,9 +746,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    drives lowering of every discovered module into one C translation unit, an
    imported function remains one direct call, a selective local alias resolves
    to its exported source symbol without a wrapper, and strict Clang execution
-   returns the same result. Imported aggregate identity, symbol mangling for
-   colliding private names, and per-module translation units remain fail-closed
-   follow-ups.
+   returns the same result. A duplicate type or function spelling across
+   modules is rejected before C emission. Imported aggregate identity, symbol
+   mangling for colliding private names, and per-module translation units remain
+   explicit follow-ups.
    Native resolver failures now cross the bootstrap boundary as structured kind,
    file, line, column, and message records. Unknown-name, unknown-type,
    unknown-member, type-mismatch, invalid-operator, and invalid-match failures

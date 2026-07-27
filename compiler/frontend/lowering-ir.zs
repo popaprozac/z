@@ -2694,6 +2694,26 @@ function containsLoweredEnum(
   return false;
 }
 
+function containsLoweredStruct(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): boolean {
+  for (const declaration of structs) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
+function containsLoweredFunction(
+  in functions: Array<LoweredFunction>,
+  in name: String
+): boolean {
+  for (const declaration of functions) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function collectIntrinsicTypeName(
   in program: Program,
   in name: String,
@@ -2820,6 +2840,12 @@ function appendLoweredProgram(
 
   try collectIntrinsicEnums(program, inout enums);
   for (const declaration of program.enums) {
+    if (
+      containsLoweredEnum(enums, declaration.name)
+      || containsLoweredStruct(structs, declaration.name)
+    ) {
+      throw `native module emission requires collision-safe type identity for ${declaration.name}`;
+    }
     let variants = Array<LoweredVariant>();
     let payloadBearing = false;
     for (const variant of declaration.variants) {
@@ -2850,6 +2876,12 @@ function appendLoweredProgram(
   }
 
   for (const aggregate of program.aggregates) {
+    if (
+      containsLoweredStruct(structs, aggregate.name)
+      || containsLoweredEnum(enums, aggregate.name)
+    ) {
+      throw `native module emission requires collision-safe type identity for ${aggregate.name}`;
+    }
     if (
       aggregate.kind != DeclarationKind.structDeclaration
       || aggregate.typeParameters.length > 0
@@ -2895,6 +2927,9 @@ function appendLoweredProgram(
   }
 
   for (const declaration of program.functions) {
+    if (containsLoweredFunction(functions, declaration.name)) {
+      throw `native module emission requires collision-safe function identity for ${declaration.name}`;
+    }
     const loweredFunction = try lowerFunction(program, evidence, declaration);
     functions.push(move loweredFunction);
   }

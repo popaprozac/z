@@ -738,7 +738,8 @@ typed IR, resolves that alias back to the exported source symbol, and emits one
 direct C call with no wrapper. This first tier intentionally does not claim that
 source spelling alone is enough for imported aggregate identity; imported value
 types and colliding module-private symbols remain the next nominal-identity
-pressure test.
+pressure test. Until canonical emitted identities land, duplicate type or
+function spellings fail before C generation instead of silently colliding.
 
 What the compiler proves:
 

@@ -168,8 +168,10 @@ all discovered modules rather than rejecting an entry import. The first
 executable tier covers selectively imported scalar functions in one generated C
 translation unit. A local selective alias is resolved back to the exported
 source symbol before emission, so alias ergonomics do not invent an ABI-level
-wrapper. Imported aggregate identity, collision-safe private symbol names, and
-separate-object emission remain explicit follow-ups.
+wrapper. Duplicate type or function spellings across modules now fail before C
+emission rather than generating an ambiguous translation unit. Imported
+aggregate identity, collision-safe private symbol names, and separate-object
+emission remain explicit follow-ups.
 
 Cleanup plans cover owned parameters and locals, nested lexical scopes,
 branches, loop fallthrough and `break`/`continue`, replacement assignment,
