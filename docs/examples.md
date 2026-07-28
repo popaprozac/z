@@ -175,6 +175,9 @@ from dense storage to hashed buckets without changing application source.
 self-hosting-groundwork tool. It reads a source path from `process.args()`,
 copies that source through `std/fs`, invokes Clang directly through
 `process.run`, and handles the typed failure path without exceptions or a shell.
+The native self-hosting emitter now compiles this same application into a
+standalone binary; Bun is needed to build the current bootstrap artifact, not
+to execute the emitted stager.
 
 [`compiler/frontend`](../compiler/frontend) now owns the reusable stage-1 Z
 lexer and parser; [`source-inspector`](../examples/applications/source-inspector)

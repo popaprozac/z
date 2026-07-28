@@ -151,9 +151,12 @@ library's bootstrap entry point. Native semantic evidence recognizes imported
 `process.args()` plus checked UTF-8 `fs.readText()` runtime support. Its emitted
 C strict-compiles into a binary that distinguishes missing arguments,
 successful reads, OS failures, and invalid UTF-8 without Bun at runtime.
-Writing files, launching child processes, console output, recursive project
-discovery, and the complete compiler command surface remain subsequent driver
-slices.
+The application-shaped source stager now extends that path through
+`fs.writeText`, no-shell `process.run`, and flushed interpolated console output.
+Its emitted executable copies a source file, invokes Clang, and handles typed
+filesystem/process failures without Bun at runtime. Fixed-array-to-Slice
+lowering, general console formatting, recursive project discovery, and the
+complete compiler command surface remain subsequent driver slices.
 
 Scalar calls, mutable control flow, value structs, owned enums, `Option<T>`,
 and `Result<T, E>` now run directly through the typed lowering IR. Checked

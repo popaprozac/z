@@ -9176,6 +9176,7 @@ test("emits and runs a standalone native Z driver with arguments and checked fil
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /int32_t main\(int argc, char \*\*argv\);/);
   assert.match(emission.stdout, /z_stage1_process_args\(\)/);
+  assert.match(emission.stdout, /z_stage1_fs_exists\(/);
   assert.match(emission.stdout, /z_stage1_fs_read_text\(/);
 
   const directory = mkdtempSync("/tmp/z-self-host-native-driver-");
@@ -9201,6 +9202,48 @@ test("emits and runs a standalone native Z driver with arguments and checked fil
   writeFileSync(invalidUtf8, Buffer.from([0xc3, 0x28]));
   const invalid = spawnSync(executable, [invalidUtf8], { encoding: "utf8" });
   assert.equal(invalid.status, 1, invalid.stderr);
+}, 15_000);
+
+test("runs the source stager through native file, process, and console runtimes", () => {
+  const input = resolve(
+    projectRoot,
+    "examples/applications/source-stager/main.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /z_stage1_fs_write_text\(/);
+  assert.match(emission.stdout, /z_stage1_process_run\(/);
+  assert.match(emission.stdout, /z_stage1_console_log\(/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-source-stager-");
+  const executable = resolve(directory, "source-stager");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  mkdirSync(resolve(directory, ".z-cache"));
+  const source = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-parser-input.zs",
+  );
+  const execution = spawnSync(
+    executable,
+    [source],
+    { cwd: directory, encoding: "utf8" },
+  );
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.match(execution.stdout, /Apple clang version|clang version/);
+  assert.match(execution.stdout, /staged .*self-host-parser-input\.zs.*clang exited 0/);
+  assert.equal(
+    readFileSync(resolve(directory, ".z-cache/self-host-input.zs"), "utf8"),
+    readFileSync(source, "utf8"),
+  );
 }, 15_000);
 
 test("lowers the complete native frontend graph to C", () => {
@@ -9272,17 +9315,17 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 22 expression type contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 23 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 22 expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 23 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 22 expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 23 expression native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
@@ -11723,7 +11766,7 @@ test("preserves weak-reference construction and upgrade effects natively", () =>
   )?.[1];
   assert.equal(observedBindings, "10");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "76");
+  assert.equal(observedExpressions, "80");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
@@ -11752,7 +11795,7 @@ test("preserves recursive ownership through unimported aggregate field types", (
   )?.[1];
   assert.equal(observedBindings, "10");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "105");
+  assert.equal(observedExpressions, "109");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

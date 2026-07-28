@@ -1083,11 +1083,19 @@ growing the resolver monolith. Lowering maps semantic names to runtime entry
 points, and runtime emission is demand-driven so programs that do not use
 process arguments retain an ordinary `main(void)` ABI.
 
-The broader `source-stager` application deliberately remains the next pressure
-target. It reaches fixed `Array<String>` to `Slice<String>` coercion at
-`process.run`, followed by native `fs.writeText` and console lowering. Those are
-composition gaps to close, not reasons to weaken the typed standard-library
-contract.
+The broader `source-stager` application is now executable through this path as
+well. It reads one source, writes it into a cache directory, launches
+`clang --version` without a shell, propagates typed filesystem/process
+failures, and flushes interpolated console output before exit. Its process
+arguments use an explicit growable `Array<String>`; fixed
+`Array<String, N>`-to-`Slice<String>` lowering remains a separate composition
+gap rather than a bootstrap-only coercion hidden in the C printer.
+
+Console authority is deliberately narrow in this tier. One syntactic String or
+template argument lowers as an immutable borrow and cleanup-bearing templates
+use the existing borrowed-temporary lifetime. Multi-value calls and non-String
+formatting continue through Stage 0, preventing the native subset from
+rejecting already-valid console programs while richer formatting is added.
 
 ## Not tested yet
 

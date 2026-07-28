@@ -635,6 +635,26 @@ function appendExpression(
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "process.run"
     ) output.append("z_stage1_process_run");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "console.log"
+    ) output.append("z_stage1_console_log");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "console.write"
+    ) output.append("z_stage1_console_write");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "console.error"
+    ) output.append("z_stage1_console_error");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "console.debug"
+    ) output.append("z_stage1_console_debug");
     else try appendExpression(inout output, declaration, callee);
     output.append("(");
     let argument: usize = 1;
@@ -2153,8 +2173,21 @@ function appendSystemStandardRuntime(
   in program: LoweredProgram
 ): void {
   const usesReadText = programUsesStandardCall(program, "fs.readText");
+  const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesProcessArgs = programUsesStandardCall(program, "process.args");
-  if (usesReadText || usesProcessArgs) {
+  const usesProcessRun = programUsesStandardCall(program, "process.run");
+  const usesConsoleLog = programUsesStandardCall(program, "console.log");
+  const usesConsoleWrite = programUsesStandardCall(program, "console.write");
+  const usesConsoleError = programUsesStandardCall(program, "console.error");
+  const usesConsoleDebug = programUsesStandardCall(program, "console.debug");
+  if (
+    usesReadText
+    || usesWriteText
+    || usesExists
+    || usesProcessArgs
+    || usesProcessRun
+  ) {
     output.append("static __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
     output.append("  size_t index = 0;\n");
     output.append("  while (index < length) {\n");
@@ -2237,6 +2270,35 @@ function appendSystemStandardRuntime(
     output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = contents };\n");
     output.append("}\n\n");
   }
+  if (usesWriteText) {
+    output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_write_text(const Z_String *path, const Z_String *contents) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
+    output.append("  FILE *file = fopen(native_path, \"wb\");\n");
+    output.append("  if (file == NULL) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  const char *data = contents != NULL && contents->data != NULL ? contents->data : \"\";\n");
+    output.append("  const size_t length = contents != NULL ? contents->length : 0;\n");
+    output.append("  if (length > 0 && fwrite(data, 1, length, file) != length) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
+    output.append("}\n\n");
+  }
+  if (usesExists) {
+    output.append("static __attribute__((unused)) bool z_stage1_fs_exists(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) return false;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  return _access(path->data != NULL ? path->data : \"\", 0) == 0;\n");
+    output.append("#else\n");
+    output.append("  return access(path->data != NULL ? path->data : \"\", F_OK) == 0;\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+  }
   if (usesProcessArgs) {
     output.append("static __attribute__((unused)) Z___z_Array_String z_stage1_process_args(void) {\n");
     output.append("  Z___z_Array_String result = { NULL, 0, 0 };\n");
@@ -2250,6 +2312,85 @@ function appendSystemStandardRuntime(
     output.append("  return result;\n");
     output.append("}\n\n");
   }
+  if (usesProcessRun) {
+    output.append("static __attribute__((unused)) Z___z_Result_i32_String z_stage1_process_run(const Z_String *program, Z___z_Array_String arguments) {\n");
+    output.append("  if (program == NULL || (program->length > 0 && memchr(program->data, '\\0', program->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"program contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  Z_String *items = (Z_String *)arguments.data;\n");
+    output.append("  for (size_t index = 0; index < arguments.length; index += 1) {\n");
+    output.append("    if (items[index].length > 0 && memchr(items[index].data, '\\0', items[index].length) != NULL) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"process argument contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  char **native_argv = calloc(arguments.length + 2, sizeof(char *));\n");
+    output.append("  if (native_argv == NULL) abort();\n");
+    output.append("  native_argv[0] = (char *)(program->data != NULL ? program->data : \"\");\n");
+    output.append("  for (size_t index = 0; index < arguments.length; index += 1) native_argv[index + 1] = (char *)(items[index].data != NULL ? items[index].data : \"\");\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  const intptr_t status = _spawnvp(_P_WAIT, native_argv[0], (const char * const *)native_argv);\n");
+    output.append("  if (status == -1) {\n");
+    output.append("    const int code = errno; free(native_argv);\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  free(native_argv);\n");
+    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload.success = (int32_t)status };\n");
+    output.append("#else\n");
+    output.append("  int error_pipe[2];\n");
+    output.append("  if (pipe(error_pipe) != 0) {\n");
+    output.append("    const int code = errno; free(native_argv);\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {\n");
+    output.append("    const int code = errno; close(error_pipe[0]); close(error_pipe[1]); free(native_argv);\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  const pid_t child = fork();\n");
+    output.append("  if (child < 0) {\n");
+    output.append("    const int code = errno; close(error_pipe[0]); close(error_pipe[1]); free(native_argv);\n");
+    output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  if (child == 0) {\n");
+    output.append("    close(error_pipe[0]); execvp(native_argv[0], native_argv);\n");
+    output.append("    const int code = errno; (void)write(error_pipe[1], &code, sizeof(code)); close(error_pipe[1]); _exit(127);\n");
+    output.append("  }\n");
+    output.append("  close(error_pipe[1]);\n");
+    output.append("  int exec_error = 0; ssize_t error_bytes;\n");
+    output.append("  do { error_bytes = read(error_pipe[0], &exec_error, sizeof(exec_error)); } while (error_bytes < 0 && errno == EINTR);\n");
+    output.append("  const int pipe_error = error_bytes < 0 ? errno : 0; close(error_pipe[0]);\n");
+    output.append("  int status = 0; pid_t waited;\n");
+    output.append("  do { waited = waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);\n");
+    output.append("  free(native_argv);\n");
+    output.append("  if (waited < 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (pipe_error != 0) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(pipe_error)) };\n");
+    output.append("  if (error_bytes == (ssize_t)sizeof(exec_error)) return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(exec_error)) };\n");
+    output.append("  const int32_t exit_code = WIFEXITED(status) ? (int32_t)WEXITSTATUS(status) : WIFSIGNALED(status) ? (int32_t)(128 + WTERMSIG(status)) : 1;\n");
+    output.append("  return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_success, .payload.success = exit_code };\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+  }
+  if (
+    usesConsoleLog
+    || usesConsoleWrite
+    || usesConsoleError
+    || usesConsoleDebug
+  ) {
+    output.append("static __attribute__((unused)) void z_stage1_console_emit(const Z_String *value, FILE *stream, bool newline) {\n");
+    output.append("  if (value != NULL && value->length > 0) (void)fwrite(value->data, 1, value->length, stream);\n");
+    output.append("  if (newline) fputc('\\n', stream);\n");
+    output.append("  fflush(stream);\n");
+    output.append("}\n\n");
+  }
+  if (usesConsoleLog) {
+    output.append("static __attribute__((unused)) void z_stage1_console_log(const Z_String *value) { z_stage1_console_emit(value, stdout, true); }\n\n");
+  }
+  if (usesConsoleWrite) {
+    output.append("static __attribute__((unused)) void z_stage1_console_write(const Z_String *value) { z_stage1_console_emit(value, stdout, false); }\n\n");
+  }
+  if (usesConsoleError) {
+    output.append("static __attribute__((unused)) void z_stage1_console_error(const Z_String *value) { z_stage1_console_emit(value, stderr, true); }\n\n");
+  }
+  if (usesConsoleDebug) {
+    output.append("static __attribute__((unused)) void z_stage1_console_debug(const Z_String *value) { z_stage1_console_emit(value, stderr, true); }\n\n");
+  }
 }
 
 function emitLoweredC(in program: LoweredProgram): String throws String {
@@ -2258,7 +2399,26 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     program,
     "process.args"
   );
-  output.append("#include <stdbool.h>\n#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+  const usesReadText = programUsesStandardCall(program, "fs.readText");
+  const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesExists = programUsesStandardCall(program, "fs.exists");
+  const usesProcessRun = programUsesStandardCall(program, "process.run");
+  const usesConsole =
+    programUsesStandardCall(program, "console.log")
+    || programUsesStandardCall(program, "console.write")
+    || programUsesStandardCall(program, "console.error")
+    || programUsesStandardCall(program, "console.debug");
+  output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  if (usesReadText || usesWriteText || usesProcessRun) {
+    output.append("#include <errno.h>\n");
+  }
+  if (usesReadText || usesWriteText || usesConsole) {
+    output.append("#include <stdio.h>\n");
+  }
+  if (usesExists || usesProcessRun) {
+    output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
+  }
+  output.append("\n");
   if (usesProcessArguments) {
     output.append("static int z_stage1_process_argc = 0;\n");
     output.append("static char **z_stage1_process_argv = NULL;\n\n");

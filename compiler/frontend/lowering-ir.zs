@@ -3503,6 +3503,10 @@ function lowerExpression(
           || target == "fs.exists"
           || target == "process.args"
           || target == "process.run"
+          || target == "console.log"
+          || target == "console.write"
+          || target == "console.error"
+          || target == "console.debug"
         ) standardTarget = move target;
       }
       none => {}
@@ -6272,6 +6276,19 @@ function collectIntrinsicEnums(
       program,
       importedTypes,
       expression.typeName,
+      inout arrays,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+  }
+  for (const call of evidence.callResolutions) {
+    if (call.errorType.byteLength == 0) continue;
+    const resultName = `Result<${call.returnType}, ${call.errorType}>`;
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      resultName,
       inout arrays,
       inout maps,
       inout sets,

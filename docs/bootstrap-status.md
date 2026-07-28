@@ -991,11 +991,13 @@ Continue focused self-hosting work in this order:
    command-line orchestration into the Z driver, then remove the corresponding
    TypeScript/Bun paths only after parity. This step has started: native
    standard-call evidence now covers `std/fs` and `std/process`, and an emitted
-   executable receives owned `Array<String>` arguments, performs checked UTF-8
-   file reads, and handles `Result<String, String>` entirely outside Bun.
-   `fs.writeText`, `fs.exists`, `process.run`, fixed-array-to-Slice coercion,
-   console output, recursive project discovery, and the actual compiler command
-   protocol remain.
+   executable receives owned `Array<String>` arguments, checks and reads UTF-8
+   files, and handles `Result<String, String>` entirely outside Bun. The
+   application-shaped source stager also writes the owned source, launches
+   Clang without a shell, handles typed process failures, and flushes
+   interpolated console output from the native executable. Fixed-array-to-Slice
+   lowering, general console formatting, recursive project discovery, and the
+   actual compiler command protocol remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact

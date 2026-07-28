@@ -2940,10 +2940,19 @@ function inferExpressionNodeType(
         const memberName = identifierLookupName(
           tree.nodes[calleeIndex].value
         );
+        let stringArgumentSyntax = false;
+        if (children.length == 2) {
+          stringArgumentSyntax =
+            tree.nodes[children[1]].kind == ExpressionKind.stringExpression
+            || tree.nodes[children[1]].kind
+              == ExpressionKind.templateExpression;
+        }
         match (nativeStandardCall(
           module.program,
           namespaceName,
-          memberName
+          memberName,
+          children.length - 1,
+          stringArgumentSyntax
         )) {
           some(standard) => {
             const namespaceSymbol = moduleSymbolIndex(

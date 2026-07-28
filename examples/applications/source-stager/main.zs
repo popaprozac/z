@@ -7,7 +7,8 @@ function stageCompilerInput(in path: String): i32 throws String {
   const stagedPath = ".z-cache/self-host-input.zs";
   try fs.writeText(stagedPath, source);
 
-  const compilerArguments = ["--version"];
+  let compilerArguments = Array<String>();
+  compilerArguments.push("--version");
   const compilerExitCode = try process.run("clang", compilerArguments);
   console.log(`staged ${path} at ${stagedPath}; clang exited ${compilerExitCode}`);
   return compilerExitCode;

@@ -122,13 +122,44 @@ function processCall(in memberName: String): Option<NativeStandardCallShape> {
   return Option<NativeStandardCallShape>.none;
 }
 
+function consoleCall(
+  in memberName: String
+): Option<NativeStandardCallShape> {
+  if (
+    memberName != "log"
+    && memberName != "write"
+    && memberName != "error"
+    && memberName != "debug"
+  ) return Option<NativeStandardCallShape>.none;
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  parameterModes.push("in");
+  parameterTypes.push("String");
+  return Option.some(NativeStandardCallShape({
+    name: `console.${memberName}`,
+    signature: standardSignature(
+      move parameterModes,
+      move parameterTypes,
+      "void",
+      ""
+    ),
+  }));
+}
+
 export function nativeStandardCall(
   in program: Program,
   in namespaceName: String,
-  in memberName: String
+  in memberName: String,
+  argumentCount: usize,
+  stringArgumentSyntax: boolean
 ): Option<NativeStandardCallShape> {
   const header = namespaceHeader(program, namespaceName);
   if (header == "std/fs") return fsCall(memberName);
   if (header == "std/process") return processCall(memberName);
+  if (
+    header == "std/console"
+    && argumentCount == 1
+    && stringArgumentSyntax
+  ) return consoleCall(memberName);
   return Option<NativeStandardCallShape>.none;
 }
