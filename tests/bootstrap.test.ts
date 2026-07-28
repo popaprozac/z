@@ -247,6 +247,38 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
 });
 
+test("builds the Z-to-C example project and runs its handwritten C consumer", () => {
+  const project = resolve(projectRoot, "examples/interop/c/z-export");
+  const build = spawnSync(process.execPath, [cli, "build"], {
+    cwd: project,
+    encoding: "utf8",
+  });
+  assert.equal(build.status, 0, build.stderr);
+  assert.match(build.stdout, /build\/libzmath\.a/);
+  assert.match(build.stdout, /build\/zmath\.h/);
+
+  const generated = readFileSync(resolve(project, ".z-cache/build/zmath.c"), "utf8");
+  assert.match(generated, /static int32_t z_double\(int32_t value\)/);
+  assert.match(generated, /__z_c_impl_0_z_math_add\(z_double\(10\), 22\)/);
+  assert.doesNotMatch(generated, /static int32_t double\(/);
+
+  const consumer = resolve(project, "build/consumer");
+  const compileConsumer = spawnSync("clang", [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-I", resolve(project, "build"),
+    resolve(project, "consumer.c"),
+    resolve(project, "build/libzmath.a"),
+    "-o", consumer,
+  ], { encoding: "utf8" });
+  assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
+  const run = spawnSync(consumer, [], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, "sum=42 answer=42 even=true\n");
+});
+
 test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
   const example = resolve(projectRoot, "examples/interop/raw/native-boundary.zs");
   const source = readFileSync(example, "utf8");

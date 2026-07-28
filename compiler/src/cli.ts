@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -20,7 +20,7 @@ import {
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
-import { deploymentTargetFlags } from "./project.ts";
+import { deploymentTargetFlags, prepareProject } from "./project.ts";
 import {
   decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
@@ -34,16 +34,24 @@ import {
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 
-const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
+const [command, suppliedInputArgument, ...suppliedTrailingArguments] = process.argv.slice(2);
+const buildUsesCurrentDirectory = command === "build"
+  && (suppliedInputArgument === undefined || suppliedInputArgument.startsWith("--"));
+const inputArgument = buildUsesCurrentDirectory ? "." : suppliedInputArgument;
+const trailingArguments = buildUsesCurrentDirectory
+  ? process.argv.slice(3)
+  : suppliedTrailingArguments;
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
-if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
+if (!command || !inputArgument || !["build", "check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
   const inputPath = resolve(inputArgument);
   try {
-    if (command === "self-host-lex") {
+    if (command === "build") {
+      buildStaticLibraryProject(inputPath, trailingArguments);
+    } else if (command === "self-host-lex") {
       verifyStage1Lexer([inputPath, ...trailingArguments.map((argument) => resolve(argument))]);
     } else if (command === "self-host-parse") {
       const timings = trailingArguments.includes("--timings");
@@ -1376,6 +1384,87 @@ function buildNative(inputPath: string, artifact: NativeArtifact, outputStem?: s
     throw new Error(compilation.stderr || "Clang failed");
   }
   return executablePath;
+}
+
+function buildStaticLibraryProject(
+  projectArgument: string,
+  options: readonly string[],
+): void {
+  const unexpected = options.filter((argument) => argument !== "--release");
+  if (unexpected.length > 0) throw new Error(`unknown build option ${JSON.stringify(unexpected[0])}`);
+  const release = options.includes("--release");
+  const probePath = (() => {
+    if (!existsSync(projectArgument)) {
+      throw new Error(`project path ${JSON.stringify(projectArgument)} does not exist`);
+    }
+    const stats = statSync(projectArgument);
+    if (stats.isDirectory()) return join(projectArgument, "__z_project_probe.zs");
+    if (basename(projectArgument) === "z.json") return join(dirname(projectArgument), "__z_project_probe.zs");
+    if (projectArgument.endsWith(".zs")) return projectArgument;
+    throw new Error("z build expects a project directory, z.json manifest, or .zs project entry");
+  })();
+  const project = prepareProject(probePath);
+  if (!project.manifestPath) {
+    throw new Error(`z build could not find z.json from ${JSON.stringify(projectArgument)}`);
+  }
+  if (project.targetKind !== "static-library") {
+    throw new Error('z build project target.kind must be "static-library" in the first project artifact tier');
+  }
+  if (!project.entryPath || !project.targetName) {
+    throw new Error("static-library project configuration is missing its checked entry or name");
+  }
+
+  const source = readFileSync(project.entryPath, "utf8");
+  const artifact = compileToNative(source, project.entryPath);
+  if (!artifact.header) {
+    throw new Error("a static-library project must declare at least one `export c function`");
+  }
+  const projectDirectory = dirname(project.manifestPath);
+  const outputDirectory = join(projectDirectory, "build");
+  const cacheDirectory = join(projectDirectory, ".z-cache", "build");
+  mkdirSync(outputDirectory, { recursive: true });
+  mkdirSync(cacheDirectory, { recursive: true });
+
+  const sourcePath = join(cacheDirectory, `${project.targetName}.${nativeExtension(artifact.language)}`);
+  const objectPath = join(cacheDirectory, `${project.targetName}${process.platform === "win32" ? ".obj" : ".o"}`);
+  const libraryName = process.platform === "win32"
+    ? `${project.targetName}.lib`
+    : `lib${project.targetName}.a`;
+  const libraryPath = join(outputDirectory, libraryName);
+  const headerPath = join(outputDirectory, `${project.targetName}.h`);
+  writeFileSync(sourcePath, artifact.source);
+
+  const compiler = nativeCompiler(artifact.language);
+  const compilerArguments = [
+    ...nativeLanguageFlags(artifact.language),
+    ...deploymentTargetFlags(artifact.deploymentTarget),
+    release ? "-O2" : "-O0",
+    ...(release ? ["-DNDEBUG"] : ["-g"]),
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    ...(artifact.deploymentTarget ? ["-Wno-deprecated-declarations"] : []),
+    "-I", dirname(project.entryPath),
+    ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
+    "-c",
+    sourcePath,
+    "-o",
+    objectPath,
+  ];
+  const compilation = process.platform === "darwin"
+    ? spawnSync("xcrun", [compiler, ...compilerArguments], { encoding: "utf8" })
+    : spawnSync(compiler, compilerArguments, { encoding: "utf8" });
+  if (compilation.error) throw compilation.error;
+  if (compilation.status !== 0) throw new Error(compilation.stderr || "Clang failed");
+
+  const archive = process.platform === "darwin"
+    ? spawnSync("xcrun", ["ar", "rcs", libraryPath, objectPath], { encoding: "utf8" })
+    : spawnSync(process.platform === "win32" ? "llvm-ar" : "ar", ["rcs", libraryPath, objectPath], { encoding: "utf8" });
+  if (archive.error) throw archive.error;
+  if (archive.status !== 0) throw new Error(archive.stderr || "native archiver failed");
+  writeFileSync(headerPath, artifact.header);
+  console.log(`built ${libraryPath}`);
+  console.log(`generated ${headerPath}`);
 }
 
 type PreparedStage1ParserLibrary = {
@@ -3531,6 +3620,7 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
+  console.error("usage: z build [project-directory] [--release]");
   console.error("usage: z check <file.zs> [--native-frontend] [--timings]");
   console.error("       z <emit|run> <file.zs> [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");

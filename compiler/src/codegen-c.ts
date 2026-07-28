@@ -668,7 +668,7 @@ function generateNativeExportDefinitions(
 ): string {
   const definitions = declarations.map((declaration) => {
     const arguments_ = declaration.parameters.map((parameter) => cBindingName(parameter.name)).join(", ");
-    const invocation = `${declaration.name}(${arguments_})`;
+    const invocation = `${cFunctionName(declaration.name)}(${arguments_})`;
     const body = declaration.returnType.name === "void"
       ? `  ${invocation};`
       : `  return ${invocation};`;
@@ -1653,7 +1653,7 @@ function generateFunctionAdapter(
     ? resultTypeName(type.returnType, type.errorType)
     : type.returnType;
   const result = mapType(effectiveReturnType, structs, enums, foreignNamedTypes);
-  const invoke = `${declaration.name}(${names.join(", ") || ""})`;
+  const invoke = `${cFunctionName(declaration.name)}(${names.join(", ") || ""})`;
   const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
   return `static __attribute__((unused)) ${result} ${functionAdapterName(declaration.name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
   (void)context;
@@ -1712,7 +1712,7 @@ function generateClosureAdapter(
   } else {
     prefix.push("(void)context;");
   }
-  const invoke = `${closure.declaration.name}(${[...hidden, ...visible].join(", ")})`;
+  const invoke = `${cFunctionName(closure.declaration.name)}(${[...hidden, ...visible].join(", ")})`;
   const effectiveReturnType = type.errorType
     ? resultTypeName(type.returnType, type.errorType)
     : type.returnType;
@@ -3649,7 +3649,7 @@ function generateFunctionSignature(
   const storage = receiver || declaration.name !== "main"
     ? `static ${moduleGenerated ? "__attribute__((unused)) " : ""}`
     : "";
-  const name = receiver ? methodName(receiver.name, declaration.name) : declaration.name;
+  const name = receiver ? methodName(receiver.name, declaration.name) : cFunctionName(declaration.name);
   const parameters = declaration.parameters.map((parameter) => {
     const name = cBindingName(parameter.name);
     const type = mapType(parameter.type.name, structs, enums, foreignNamedTypes);
@@ -7022,10 +7022,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             return `&(${stored})`;
           });
           const args = [...hidden, ...expression.arguments.map((argument) => generateCallArgument(argument, context))];
-          return `${closure.declaration.name}(${args.join(", ") || ""})`;
+          return `${cFunctionName(closure.declaration.name)}(${args.join(", ") || ""})`;
         }
         if (context.functions.has(expression.callee.name)) {
-          return `${expression.callee.name}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
+          return `${cFunctionName(expression.callee.name)}(${expression.arguments.map((argument) => generateCallArgument(argument, context)).join(", ")})`;
         }
         const functionType = parseFunctionType(context.localTypes.get(expression.callee.name) ?? "");
         if (functionType) {
@@ -8661,6 +8661,10 @@ const cReservedWords = new Set(`
 
 function cBindingName(name: string): string {
   return cReservedWords.has(name) ? `z_${name}` : name;
+}
+
+function cFunctionName(name: string): string {
+  return cBindingName(name);
 }
 
 function hasCleanupType(

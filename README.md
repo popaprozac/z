@@ -121,10 +121,17 @@ are normalized.
 The reverse boundary now has an executable scalar compiler slice:
 `export c function` remains callable from Z while publishing an exact checked
 C ABI symbol and generated C/C++-compatible header. A strict handwritten C
-consumer is compiled and linked against the emitted static archive in the test
-suite. The public project build/output command remains the final packaging seam
-for this first tier. See [the C export design](docs/c-exports.md) for the
-implemented boundary and its ownership-aware growth path.
+consumer is compiled and linked against the emitted static archive in both the
+test suite and a readable example:
+
+```sh
+bun run z build examples/interop/c/z-export
+```
+
+That project publishes `build/libzmath.a` and `build/zmath.h`. See
+[the example](examples/interop/c/z-export) and
+[the C export design](docs/c-exports.md) for the implemented boundary, current
+scalar restriction, and ownership-aware growth path.
 
 The first native application composition probe is Z Notes:
 

@@ -54,7 +54,10 @@ tooling commonly recognizes it as a compressed archive.
 The repository Stage-0 command currently exposes:
 
 ```text
-usage: z <check|emit|run> <file.zs>
+z build [project-directory] [--release]
+z check <file.zs> [--native-frontend] [--timings]
+z emit <file.zs>
+z run <file.zs> [-- program arguments]
 ```
 
 | Command | Purpose |
@@ -63,9 +66,24 @@ usage: z <check|emit|run> <file.zs>
 | `bun run z check file.zs --native-frontend --timings` | Run the opt-in hybrid native frontend and report parity timings |
 | `bun run z emit file.zs` | Print the generated C-family source for inspection |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
+| `bun run z build path/to/project` | Build a `static-library` project into its public `build/` directory |
+| `bun run z build path/to/project --release` | Build the same C-facing library with optimization enabled |
 
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
+
+The first project build tier accepts a `z.json` target with
+`"kind": "static-library"` and one or more scalar `export c function`
+declarations. It publishes a guarded C/C++ header and native archive:
+
+```sh
+bun run z build examples/interop/c/z-export
+```
+
+See [Calling Z from C](../examples/interop/c/z-export/README.md) for the
+handwritten consumer. This project-artifact command currently belongs to Stage
+0; the standalone native compiler's existing `build` form still builds one
+executable from an explicit entry and output path.
 
 ## Local native compiler
 
@@ -263,8 +281,9 @@ bun run lsp
 - Run the curated programs in [the examples guide](examples.md).
 - Read [the language reference](language-reference.md) for accepted syntax and
   semantics.
-- Read the [C export design](c-exports.md) for the executable scalar
-  bidirectional interop slice and the pending project artifact command.
+- Read the [C export design](c-exports.md) and run the
+  [Z-to-C example](../examples/interop/c/z-export) for the executable scalar
+  bidirectional interop slice.
 - Check [bootstrap status](bootstrap-status.md) before assuming a designed form
   is executable in stage 0.
 - Use `bun run z emit ...` when learning how a Z construct maps to native code.

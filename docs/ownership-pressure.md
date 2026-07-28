@@ -1413,6 +1413,29 @@ resolution outside explicit link directories, foreign-cache locking/eviction,
 incremental frontend reuse, and
 production command options remain to cross independently.
 
+## Interop probe: exporting a Z library to C
+
+Source:
+[`examples/interop/c/z-export`](../examples/interop/c/z-export)
+
+The reverse-boundary probe builds a scalar Z library through a checked
+`static-library` manifest, publishes a guarded header and native archive, then
+links and runs a handwritten strict-C consumer. Exported functions remain
+ordinary Z functions internally: one export calls another and also calls a
+private helper.
+
+That private helper deliberately uses the valid Z name `double`. The first
+generated translation unit emitted it verbatim and collided with C's `double`
+keyword. Z parameters already passed through backend identifier escaping, but
+free function definitions and calls did not. The Stage-0 backend now applies
+the same C/C++ reserved-word mapping consistently to private function symbols.
+The public `export c` spelling remains an exact ABI contract rather than a
+compiler-mangled name.
+
+This is useful composition evidence: source-language identifier freedom has to
+survive every backend position, and readable native examples expose hygiene
+holes that compiler-internal fixtures can miss.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

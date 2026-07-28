@@ -1,6 +1,6 @@
 # C Export Design
 
-Status: first scalar compiler slice implemented; project artifact command pending.
+Status: first scalar Stage-0 compiler and project-artifact slice implemented.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -130,8 +130,7 @@ Swift without implementing the Swift ABI.
 
 ## Artifacts
 
-Library output remains project configuration rather than declaration syntax.
-The intended manifest direction is:
+Library output is project configuration rather than declaration syntax:
 
 ```json
 {
@@ -143,15 +142,32 @@ The intended manifest direction is:
 }
 ```
 
-The first build slice should publish `libzmath.a` and `zmath.h`. `z emit`
-should publish inspectable C and header source without compiling them. A later
-`shared-library` kind produces the platform dynamic-library spelling plus the
-same public header. Executables remain the default target kind. A library entry
-is an export-only module graph and does not require `function main()`.
+Build the project from the repository root or from inside its directory:
 
-Exact output-directory and command-line override spelling will be reviewed
-against the existing native driver during implementation; the artifact kinds
-and generated-header requirement are settled.
+```sh
+bun run z build path/to/project
+bun run z build path/to/project --release
+```
+
+The first command produces a debuggable library. `--release` selects optimized
+code. The public artifacts are:
+
+```text
+build/libzmath.a
+build/zmath.h
+```
+
+On Windows the archive uses `zmath.lib`. Compiler-owned generated source and
+object files remain under `.z-cache/build`; consumers do not need them.
+A library entry is an export-only module graph and does not require
+`function main()`.
+
+See [`examples/interop/c/z-export`](../examples/interop/c/z-export) for a
+complete Z library and handwritten strict-C consumer.
+
+An inspectable project-level `z emit` form remains to be designed. A later
+`shared-library` target kind will produce the platform dynamic-library spelling
+plus the same public header. Executables remain the default target kind.
 
 ## Growth path
 
@@ -179,14 +195,15 @@ The first implementation checkpoint is complete only when a handwritten C
 program includes the generated header, links the generated static library,
 calls a Z scalar function, and passes strict compilation and execution tests.
 
-The bootstrap compiler now satisfies that executable boundary in its test
-suite: it parses and checks `export c function`, keeps the declaration
-available through ordinary Z imports and calls, emits a private implementation
-plus exact public C symbol, generates the guarded header, archives the emitted
-object, and runs a handwritten strict-C consumer. The accepted
-`static-library` manifest fields are also checked and make `main` optional.
-The remaining first-tier packaging step is the public `z build`/`z emit`
-project command and stable output-directory policy. The native frontend accepts
-the contextual declaration during hybrid checking; carrying the export fact
-through native lowering/header emission remains part of self-hosted backend
-parity.
+The bootstrap compiler now satisfies that executable boundary in both its test
+suite and the readable example: it parses and checks `export c function`, keeps
+the declaration available through ordinary Z imports and calls, emits a private
+implementation plus exact public C symbol, generates the guarded header,
+archives the emitted object through `z build`, and runs a handwritten strict-C
+consumer. The accepted `static-library` manifest fields make `main` optional
+and select the public artifact name and directory.
+
+The native frontend accepts the contextual declaration during hybrid checking.
+Carrying the export fact through native lowering and header emission, then
+teaching the standalone native driver the project-library command, remains part
+of self-hosted backend parity.
