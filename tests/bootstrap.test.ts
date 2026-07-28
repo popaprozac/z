@@ -9310,6 +9310,25 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const execution = spawnSync(application, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
+
+  const argumentApplicationSource = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-native-driver.zs",
+  );
+  const argumentApplication = resolve(directory, "argument-application");
+  const running = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSource,
+      argumentApplication,
+      "--",
+      argumentApplicationSource,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(running.status, 0, running.stderr);
+  assert.match(running.stdout, /compiled 1 Z modules/);
 }, 30_000);
 
 test("lowers the complete native frontend graph to C", () => {

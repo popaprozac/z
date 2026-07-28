@@ -18,9 +18,11 @@ command is intentionally smaller than the production `z` CLI:
 z-native check <entry.zs>
 z-native emit <entry.zs> <output.c>
 z-native build <entry.zs> <output>
+z-native run <entry.zs> <output> [-- args...]
 ```
 
 It supports the self-hosting language and runtime subset. Project manifests,
 foreign header discovery, target configuration, release profiles, polished
-diagnostics, `run`, and the complete production command options remain with
-Stage 0 until equivalent native paths are proven.
+diagnostics, automatic temporary output selection for `run`, and the complete
+production command options remain with Stage 0 until equivalent native paths
+are proven.

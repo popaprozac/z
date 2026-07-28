@@ -1106,9 +1106,11 @@ graph, emits readable C, writes that translation unit, and invokes Clang. Stage
 0 emits the driver once, but the resulting compilation of a separate
 two-module Z application executes no Bun or TypeScript process. The application
 returns its expected status 42. The same executable now exposes separate
-`check`, `emit`, and `build` commands over one `NativeProject` owner, proving
-that the parsed module array and resolved graph can move together across a
-driver API without representation casts.
+`check`, `emit`, `build`, and explicit-output `run` commands over one
+`NativeProject` owner, proving that the parsed module array and resolved graph
+can move together across a driver API without representation casts. `run`
+builds, launches without a shell, forwards owned String arguments after `--`,
+and returns the child status.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
@@ -1150,8 +1152,9 @@ This is not yet a distributable replacement for Stage 0. The native loader now
 canonicalizes every module through typed `fs.realPath`, preventing lexical or
 symlink aliases from creating duplicate module identities, but supports only
 the self-hosting subset. Manifest loading, foreign header and `.zd` ingestion,
-target/link configuration, release profiles, complete diagnostics, `run`, and
-production command options remain to cross independently.
+target/link configuration, release profiles, complete diagnostics, automatic
+temporary run artifacts, and production command options remain to cross
+independently.
 
 ## Not tested yet
 

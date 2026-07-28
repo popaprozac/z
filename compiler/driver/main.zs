@@ -124,6 +124,16 @@ function buildProject(
   return exitCode;
 }
 
+function runProject(
+  in entryPath: String,
+  in outputPath: String,
+  in childArguments: Array<String>
+): i32 throws String {
+  const compilationExitCode = try buildProject(entryPath, outputPath);
+  if (compilationExitCode != 0) return compilationExitCode;
+  return try process.run(outputPath, childArguments);
+}
+
 function reportOutcome(outcome: Result<i32, String>): i32 {
   return match (outcome) {
     success(exitCode) => exitCode;
@@ -137,7 +147,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 2) {
-    console.error("usage: z-native <check|emit|build> <entry.zs> [output]");
+    console.error("usage: z-native <check|emit|build|run> <entry.zs> [output] [-- args]");
     return 2;
   }
 
@@ -160,6 +170,25 @@ function main(): i32 {
       return 2;
     }
     const outcome = attempt buildProject(arguments[1], arguments[2]);
+    return reportOutcome(outcome);
+  }
+  if (command == "run") {
+    if (arguments.length < 3) {
+      console.error("usage: z-native run <entry.zs> <output> [-- args]");
+      return 2;
+    }
+    let childArguments = Array<String>();
+    let index: usize = 3;
+    if (arguments.length > 3 && arguments[3] == "--") index = 4;
+    while (index < arguments.length) {
+      childArguments.push(copy arguments[index]);
+      index = index + 1;
+    }
+    const outcome = attempt runProject(
+      arguments[1],
+      arguments[2],
+      childArguments
+    );
     return reportOutcome(outcome);
   }
   console.error(`unknown native compiler command ${command}`);
