@@ -300,3 +300,12 @@ driver fixture took 0.65 seconds for its initial debug compile and 0.02 seconds
 for the immediately repeated cache hit on the same machine. This is not a
 cross-language benchmark or a stable performance promise; it confirms that the
 hit path actually removes the dominant Clang compile/link work.
+
+The supported local bootstrap path now makes the consecutive-generation gate
+directly measurable. A focused integration run on 2026-07-28 took 12.1 seconds
+with the self-hosted frontend boundary already warm. That includes seed
+emission, an optimized strict C compile, generation one's optimized recursive
+build of generation two, a 3,071,066-byte exact-C comparison, and publication
+of the final native `z`. It is a bootstrap/release-path measurement rather than
+an edit-loop cost; ordinary users should eventually receive a trusted platform
+artifact instead of paying it.

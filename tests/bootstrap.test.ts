@@ -9510,6 +9510,44 @@ test("runs the source stager through native file, process, and console runtimes"
   );
 }, 15_000);
 
+test("bootstraps a fixed-point native z executable for local use", () => {
+  const directory = mkdtempSync("/tmp/z-native-bootstrap-");
+  const executable = resolve(
+    directory,
+    process.platform === "win32" ? "z.exe" : "z",
+  );
+  const bootstrap = spawnSync(
+    process.execPath,
+    [resolve(projectRoot, "scripts/bootstrap-native.ts"), executable],
+    {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  assert.equal(bootstrap.status, 0, bootstrap.stderr);
+  assert.match(
+    bootstrap.stdout,
+    /bootstrapped fixed-point native z \(\d+ C bytes\)/,
+  );
+  assert.equal(bootstrap.stdout.trimEnd().split("\n").at(-1), executable);
+  assert.equal(existsSync(executable), true);
+  assert.equal(existsSync(`${executable}.c`), true);
+  assert.equal(existsSync(`${executable}.pending`), false);
+  assert.equal(existsSync(`${executable}.c.pending`), false);
+
+  const checking = spawnSync(
+    executable,
+    ["check", resolve(projectRoot, "examples/language/modules/main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(checking.status, 0, checking.stderr);
+  assert.match(checking.stdout, /checked 3 Z modules/);
+
+  const usage = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(usage.status, 2);
+  assert.match(usage.stderr, /^usage: z /);
+}, 30_000);
+
 test("decodes versioned raw foreign function declarations in native Z", () => {
   const declarations: ForeignModuleDeclarations = {
     producer: "clang",

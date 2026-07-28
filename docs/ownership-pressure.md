@@ -1057,6 +1057,17 @@ distribution. Bun still performs source discovery and orchestration, and a
 trusted native bootstrap artifact must replace the source-built seed before a
 fresh installation can remove TypeScript.
 
+That proof is now also an explicit local workflow instead of only a test
+fixture. `bun run bootstrap [output]` uses Stage 0 exactly once to emit the
+current 37-module driver, strict-compiles generation one, asks generation one
+to build generation two in release mode, and compares their complete generated
+C before publishing an executable named `z`. The published binary performs
+ordinary pure-Z project discovery, checking, emission, building, caching, and
+execution without Bun. This does not erase the trust boundary: installations
+still need Bun for the seed ceremony, and the Clang declaration producer
+remains TypeScript-hosted. It does turn “generation two exists” into a
+repeatable artifact boundary suitable for later signing and distribution.
+
 ## First standalone Z driver
 
 The first driver-shaped executable now crosses the boundary that the compiler

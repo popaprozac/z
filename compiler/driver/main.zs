@@ -557,7 +557,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 2) {
-    console.error("usage: z-native <check|emit|build|run|foreign-inspect|foreign-contract-inspect> <input> [output] [--release] [-- args]");
+    console.error("usage: z <check|emit|build|run|foreign-inspect|foreign-contract-inspect> <input> [output] [--release] [-- args]");
     return 2;
   }
 
@@ -572,7 +572,7 @@ function main(): i32 {
   }
   if (command == "foreign-contract-inspect") {
     if (arguments.length != 4) {
-      console.error("usage: z-native foreign-contract-inspect <declarations.zfdcl> <header> <contract.zd>");
+      console.error("usage: z foreign-contract-inspect <declarations.zfdcl> <header> <contract.zd>");
       return 2;
     }
     const outcome = attempt inspectForeignContracts(
@@ -584,7 +584,7 @@ function main(): i32 {
   }
   if (command == "emit") {
     if (arguments.length < 3) {
-      console.error("usage: z-native emit <entry.zs> <output.c>");
+      console.error("usage: z emit <entry.zs> <output.c>");
       return 2;
     }
     const outcome = attempt emitProjectFile(arguments[1], arguments[2]);
@@ -592,7 +592,7 @@ function main(): i32 {
   }
   if (command == "build") {
     if (arguments.length < 3) {
-      console.error("usage: z-native build <entry.zs> <output>");
+      console.error("usage: z build <entry.zs> <output>");
       return 2;
     }
     const release = arguments.length > 3 && arguments[3] == "--release";
@@ -605,7 +605,7 @@ function main(): i32 {
   }
   if (command == "run") {
     if (arguments.length < 2) {
-      console.error("usage: z-native run <entry.zs> [--release] [-- args]");
+      console.error("usage: z run <entry.zs> [--release] [-- args]");
       return 2;
     }
     let childArguments = Array<String>();
@@ -626,6 +626,6 @@ function main(): i32 {
     );
     return reportOutcome(outcome);
   }
-  console.error(`unknown native compiler command ${command}`);
+  console.error(`unknown z compiler command ${command}`);
   return 2;
 }

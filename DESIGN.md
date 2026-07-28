@@ -2586,7 +2586,12 @@ ported independently rather than translated as one monolith.
 3. **Stage 2:** Compile the Z compiler with stage 0, then use that result to
    compile itself.
 4. **Bootstrap verification:** Compare generated native source and compiler test
-   results across consecutive self-hosted generations.
+   results across consecutive self-hosted generations. The repository-local
+   `bun run bootstrap` command now turns that gate into a native executable
+   named `z`: Stage 0 emits generation one, generation one builds generation
+   two, and complete generated C must match before publication. A release still
+   needs signed trusted platform artifacts and the adjacent native-metadata
+   toolchain so end users do not need the TypeScript seed.
 
 Self-hosting is not allowed to block early experimentation, but every bootstrap
 feature should have a plausible representation in the intended Z language.

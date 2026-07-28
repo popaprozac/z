@@ -5,6 +5,7 @@
   "packageManager": "bun@1.3.14",
   "scripts": {
     "z": "bun compiler/src/cli.ts",
+    "bootstrap": "bun scripts/bootstrap-native.ts",
     "lsp": "bun compiler/src/lsp.ts",
     "bench": "bun benchmarks/run.ts",
     "test": "bun test"

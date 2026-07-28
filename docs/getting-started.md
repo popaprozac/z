@@ -64,6 +64,31 @@ usage: z <check|emit|run> <file.zs>
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
 
+## Local native compiler
+
+The repository can turn the self-hosting fixed-point proof into a directly
+usable native compiler:
+
+```sh
+bun run bootstrap
+.z-cache/bootstrap/z check hello.zs
+.z-cache/bootstrap/z run hello.zs
+```
+
+The bootstrap command asks the trusted Stage 0 seed to emit generation one,
+strict-compiles it, then asks that native compiler to build generation two in
+release mode. It refuses publication unless generation-two C is byte-identical
+to the seed emission. The resulting executable is named `z`, retains its
+generated `.c` sidecar for inspection, and does not invoke Bun for ordinary
+pure-Z `check`, `emit`, `build`, or cached `run` commands.
+
+This is a reproducible local bootstrap procedure, not a versioned compiler
+distribution. Bun remains necessary to create the first generation, and the
+current `z-foreign-adapter` metadata producer still uses the TypeScript seed
+when a native-header import requires fresh Clang evidence. A future release
+will ship trusted platform bootstrap artifacts and the complete adapter
+toolchain so end users do not perform this seed ceremony.
+
 The native-frontend flag enables a deliberately narrow hybrid mode. Stage 0
 still produces the user-facing diagnostics first; after it succeeds, the native frontend
 receives the same canonical source-module batch, and its validated semantic
