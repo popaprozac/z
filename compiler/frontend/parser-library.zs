@@ -9,6 +9,7 @@ import {
   Stage1ModuleGraphResult,
   decodeModuleSources,
   emptyStage1ModuleGraphResult,
+  renderResolvedModuleGraph,
   resolverMessage,
   resolveModuleGraphPhase,
 } from "./module-resolver-protocol.zs";
@@ -126,6 +127,17 @@ function stage1Resolve(
       error: move message,
       graph: emptyStage1ModuleGraphResult(),
     });
+  };
+}
+
+function stage1ResolveStream(in entryPath: String, in batch: String): String {
+  const outcome = attempt resolveModuleGraphPhase(entryPath, batch);
+  return match (outcome) {
+    success(result) => {
+      const stream = renderResolvedModuleGraph(result.resolved);
+      select `ok\n${stream}`;
+    }
+    failure(message) => `error\n${message}`;
   };
 }
 

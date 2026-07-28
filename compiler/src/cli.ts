@@ -14,7 +14,7 @@ import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
 import {
   emitWithNativeFrontendLibrary,
   parseWithNativeFrontendLibrary,
-  resolveWithNativeFrontendLibrary,
+  resolveStreamWithNativeFrontendLibrary,
   type NativeFrontendGraphSummary,
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
@@ -158,12 +158,12 @@ function runStage1Resolver(
     source: module.source,
   }));
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
-  const boundary = prepareStage1ParserLibrary(projectRoot, bridgePath);
+  const boundary = prepareSelfHostedStage1StringLibrary(projectRoot, bridgePath);
   const batchStarted = performance.now();
   const batch = encodeStage1ModuleBatch(sources);
   const batchMilliseconds = performance.now() - batchStarted;
   const executionStarted = performance.now();
-  const nativeResponse = resolveWithNativeFrontendLibrary(
+  const nativeResponse = resolveStreamWithNativeFrontendLibrary(
     boundary.libraryPath,
     entryPath,
     batch,
@@ -238,12 +238,14 @@ function reportStage1Resolver(
     console.log(`${subject} uses ${authoritativeExpressionResolutionCount} expression native-authoritative contracts`);
   }
   if (timings) {
-    const cacheState = run.boundary.cacheHit ? "cache hit" : "cache miss; stage-0 compile + native build included";
+    const cacheState = run.boundary.cacheHit
+      ? "cache hit"
+      : "cache miss; seed compile + self-emission + native build included";
     console.log(`${subject} timing (${run.summary.moduleCount} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(run.boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(run.loadingMilliseconds)}`);
     console.log(`  host batch framing: ${formatMilliseconds(run.batchMilliseconds)}`);
-    console.log(`  native phase (FFI + lex + parse + resolve + structural handoff): ${formatMilliseconds(run.executionMilliseconds)}`);
+    console.log(`  native phase (FFI + lex + parse + resolve + graph stream decode): ${formatMilliseconds(run.executionMilliseconds)}`);
     console.log(`  compiler parity + semantic queries (reused AST): ${formatMilliseconds(parityMilliseconds)}`);
   }
 }
@@ -1531,6 +1533,17 @@ Z_STAGE1_EXPORT void *z_stage1_emit(
   Z_String entry = { (const char *)entry_data, entry_length, 0 };
   Z_String batch = { (const char *)batch_data, batch_length, 0 };
   return z_stage1_copy_string(stage1Emit(&entry, &batch));
+}
+
+Z_STAGE1_EXPORT void *z_stage1_resolve_stream(
+  const uint8_t *entry_data,
+  uintptr_t entry_length,
+  const uint8_t *batch_data,
+  uintptr_t batch_length
+) {
+  Z_String entry = { (const char *)entry_data, entry_length, 0 };
+  Z_String batch = { (const char *)batch_data, batch_length, 0 };
+  return z_stage1_copy_string(stage1ResolveStream(&entry, &batch));
 }
 
 Z_STAGE1_EXPORT void z_stage1_free(void *pointer) {

@@ -4,6 +4,7 @@ import {
   isNativeFrontendDiagnosticKind,
   NativeFrontendDiagnosticError,
 } from "./native-frontend-diagnostics.ts";
+import { decodeStage1ModuleGraphStream } from "./self-hosting.ts";
 import type {
   Stage1ModuleBindingResolution,
   Stage1ModuleCallResolution,
@@ -120,6 +121,74 @@ export function emitWithNativeFrontendLibrary(
       }
       if (!response.startsWith("ok\n")) throw new Error("the native frontend library returned a malformed emitter response");
       return response.slice("ok\n".length);
+    } finally {
+      library.symbols.z_stage1_free(resultPointer);
+    }
+  } finally {
+    library.close();
+  }
+}
+
+export function resolveStreamWithNativeFrontendLibrary(
+  libraryPath: string,
+  entryPath: string,
+  batch: Buffer,
+): NativeFrontendPhaseResult {
+  const library = dlopen(libraryPath, {
+    z_stage1_resolve_stream: {
+      args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    z_stage1_free: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
+    },
+  });
+  try {
+    const entryBytes = Buffer.from(entryPath, "utf8");
+    const entryStorage = entryBytes.byteLength > 0 ? entryBytes : Buffer.alloc(1);
+    const batchStorage = batch.byteLength > 0 ? batch : Buffer.alloc(1);
+    const resultPointer = library.symbols.z_stage1_resolve_stream(
+      ptr(entryStorage),
+      entryBytes.byteLength,
+      ptr(batchStorage),
+      batch.byteLength,
+    );
+    if (!resultPointer) throw new Error("the native frontend library returned a null resolver response");
+    try {
+      const response = new CString(resultPointer).toString();
+      if (response.startsWith("error\n")) {
+        throw decodeNativeResolverError(response.slice("error\n".length));
+      }
+      if (!response.startsWith("ok\n")) {
+        throw new Error("the native frontend library returned a malformed resolver response");
+      }
+      const graph = decodeStage1ModuleGraphStream(response.slice("ok\n".length));
+      let dependencyCount = 0;
+      let symbolCount = 0;
+      let callResolutionCount = 0;
+      let bindingResolutionCount = 0;
+      let expressionResolutionCount = 0;
+      for (const module of graph.modules) {
+        dependencyCount += module.dependencies.length;
+        symbolCount += module.symbols.length;
+        callResolutionCount += module.callResolutions.length;
+        bindingResolutionCount += module.bindingResolutions.length;
+        expressionResolutionCount += module.expressionResolutions.length;
+      }
+      return {
+        graph,
+        summary: {
+          entry: graph.entry,
+          moduleCount: graph.modules.length,
+          dependencyCount,
+          dependencyOrderCount: graph.dependencyOrder.length,
+          symbolCount,
+          callResolutionCount,
+          bindingResolutionCount,
+          expressionResolutionCount,
+        },
+      };
     } finally {
       library.symbols.z_stage1_free(resultPointer);
     }

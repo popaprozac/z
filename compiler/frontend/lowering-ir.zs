@@ -1332,6 +1332,10 @@ function statementMovesName(
   }
   match (in statement.secondExpression) {
     some(expression) => {
+      if (
+        statement.kind == StatementKind.assignmentStatement
+        && syntaxIsIdentifier(expression, name)
+      ) return true;
       if (syntaxMovesName(program, expression, name)) return true;
     }
     none => {}
@@ -5472,6 +5476,14 @@ function lowerStatement(
               evidence,
               tree,
               sourceRoot,
+              inout expressions
+            );
+          }
+          if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
+            loweredExpression = wrapImplicitOwnedTransfer(
+              tree,
+              sourceRoot,
+              loweredExpression,
               inout expressions
             );
           }

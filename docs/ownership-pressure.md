@@ -1015,12 +1015,24 @@ second integration test asks the self-emitted compiler to emit the complete
 frontend again, strict-compiles that result, links it, and runs its bootstrap
 entry point.
 
-The remaining boundary is intentionally narrower: the structural resolver FFI
-exports typed aggregate evidence whose C layout currently depends on stage-0
-knowledge. It stays on the seed library until generated ABI metadata or a
-representation-neutral query protocol replaces those handwritten casts. The
-Bun driver, filesystem graph discovery, foreign importers, and ordinary
-`check`/`emit`/`run` path also remain stage 0.
+The resolver now executes through that same self-emitted library. Z serializes
+the complete graph and semantic-evidence model into a representation-neutral
+stream, and the host validates and decodes it without knowing the emitted C
+layout. This preserves topology, symbols, callable and aggregate signatures,
+constraints, type identities, calls, bindings, and expression evidence while
+removing the last command path that executed the seed resolver.
+
+That wider execution probe immediately found an owned replacement-assignment
+bug. Contextual closure inference assigned one owned `String` local into
+another; native lowering emitted a shallow C assignment while cleanup planning
+left both owners live. Stage 0 already consumed the right-hand owner. Native
+lowering now wraps a direct identifier on an assignment RHS in the same
+implicit transfer node and cleanup planning recognizes that transfer, including
+the conditional live flag needed when the assignment occurs under control
+flow. The closure-heavy resolver fixture now completes instead of double-freeing.
+
+The Bun driver, filesystem graph discovery, foreign importers, seed emission,
+and ordinary `check`/`emit`/`run` path remain stage 0.
 
 ## Not tested yet
 
