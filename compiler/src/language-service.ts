@@ -195,6 +195,16 @@ export function completions(source: string, fileName: string, offset: number): C
   const selectiveImport = selectiveImportCompletions(source, fileName, offset);
   if (selectiveImport) return selectiveImport;
   const before = source.slice(0, offset);
+  const nativeExport = /\bexport\s+([A-Za-z_]*)$/.exec(before);
+  if (nativeExport) {
+    return filterCompletions([{
+      label: "c",
+      kind: completionKinds.keyword,
+      detail: "publish the Z function through a stable C ABI symbol",
+      insertText: "c ",
+      sortText: "0-c",
+    }], nativeExport[1], 3);
+  }
   const rawLanguage = /\braw\s+([A-Za-z_]*)$/.exec(before);
   if (rawLanguage) {
     return filterCompletions(
@@ -609,6 +619,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "unsafe") {
     return markdownHover(
       "unsafe { ... }  // local unverified native assertions remain in Z syntax and types; prefer reusable checked .zd contracts",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (
+    word.text === "c"
+    && /\bexport\s+$/.test(source.slice(Math.max(0, word.start - 24), word.start))
+  ) {
+    return markdownHover(
+      "export c function  // ordinary Z export plus a stable checked C ABI entry point",
       source,
       word.start,
       word.end,

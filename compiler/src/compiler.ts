@@ -1,4 +1,4 @@
-import { generateC } from "./codegen-c.ts";
+import { generateC, generateCHeader } from "./codegen-c.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import { analyze } from "./sema.ts";
@@ -40,6 +40,9 @@ export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
 export type NativeArtifact = {
   readonly source: string;
+  readonly header: string | null;
+  readonly targetKind: ProjectBuild["targetKind"];
+  readonly targetName: string | null;
   readonly language: NativeLanguage;
   readonly frameworks: readonly string[];
   readonly includeDirectories: readonly string[];
@@ -47,6 +50,10 @@ export type NativeArtifact = {
   readonly nativeLinkerArguments: readonly string[];
   readonly deploymentTarget: ProjectBuild["deploymentTarget"];
   readonly warnings: readonly DiagnosticError[];
+};
+
+export type NativeCompileOptions = {
+  readonly requireMain?: boolean;
 };
 
 export type AnalyzedSource = {
@@ -178,7 +185,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     fileName,
     foreignModules,
     typeDisplayNames,
-    options.requireMain ?? true,
+    options.requireMain ?? projectBuild.targetKind === "executable",
     projectBuild.deploymentTarget,
     nativeSemanticBridge?.observer ?? null,
     genericAggregateMaterializations,
@@ -338,8 +345,14 @@ function sourceOffset(source: string, targetLine: number, targetColumn: number):
   return offset + targetColumn - 1;
 }
 
-export function compileToNative(source: string, fileName: string): NativeArtifact {
-  const { program, semanticInfo, projectBuild, moduleIncludeDirectories } = analyzeSource(source, fileName);
+export function compileToNative(
+  source: string,
+  fileName: string,
+  options: NativeCompileOptions = {},
+): NativeArtifact {
+  const { program, semanticInfo, projectBuild, moduleIncludeDirectories } = analyzeSource(source, fileName, {
+    requireMain: options.requireMain,
+  });
   const asyncDeclaration = [
     ...program.functions,
     ...program.structs.flatMap((declaration) => declaration.methods),
@@ -349,6 +362,9 @@ export function compileToNative(source: string, fileName: string): NativeArtifac
   const synchronousSource = generateC(synchronousProgram, fileName, semanticInfo);
   return {
     source: generated ? `${synchronousSource}\n${generated.source}\n` : synchronousSource,
+    header: generateCHeader(program),
+    targetKind: projectBuild.targetKind,
+    targetName: projectBuild.targetName,
     language: semanticInfo.objectiveC
       ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
       : semanticInfo.cPlusPlus ? "c++" : "c",

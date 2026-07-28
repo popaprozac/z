@@ -263,8 +263,8 @@ bun run lsp
 - Run the curated programs in [the examples guide](examples.md).
 - Read [the language reference](language-reference.md) for accepted syntax and
   semantics.
-- Read the accepted [C export design](c-exports.md) for the next bidirectional
-  interop slice; `export c function` is not executable yet.
+- Read the [C export design](c-exports.md) for the executable scalar
+  bidirectional interop slice and the pending project artifact command.
 - Check [bootstrap status](bootstrap-status.md) before assuming a designed form
   is executable in stage 0.
 - Use `bun run z emit ...` when learning how a Z construct maps to native code.

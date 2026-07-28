@@ -1234,6 +1234,7 @@ export function analyze(
       );
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
+    validateNativeExport(declaration, fileName);
     if (parseReceiverViewReturnType(declaration.returnType.name)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "view returns require a borrowed instance method receiver", {
         code: "Z0206",
@@ -1328,6 +1329,44 @@ export function analyze(
     });
   }
   return state;
+}
+
+const nativeExportScalarTypes = new Set([
+  "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64",
+  "isize", "usize", "f32", "f64", "boolean", "void",
+]);
+
+function validateNativeExport(declaration: FunctionDeclaration, fileName: string): void {
+  if (!declaration.nativeExport) return;
+  const location = declaration.nativeExport.location;
+  const reject = (summary: string, help?: string): never => {
+    throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
+      code: "Z0830",
+      notes: ["the first C-export tier supports synchronous, non-throwing, non-generic scalar functions"],
+      helps: help ? [help] : undefined,
+    });
+  };
+  if (declaration.nativeExport.language !== "c") reject("unsupported native export language");
+  if (declaration.nativeExport.name === "main") reject("`main` cannot also be published as a C export");
+  if (declaration.async) reject("a C-exported function cannot be async in the first ABI tier");
+  if (declaration.errorType) reject("a C-exported function cannot throw in the first ABI tier");
+  if ((declaration.typeParameters?.length ?? 0) > 0) reject("a C-exported function cannot be generic in the first ABI tier");
+  if (declaration.executorAffinity) reject("a C-exported function cannot have executor affinity in the first ABI tier");
+  if (declaration.rawBody) reject("a C-exported function must have an ordinary checked Z body in the first ABI tier");
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode !== "value") {
+      reject(
+        `C export parameter ${JSON.stringify(parameter.name)} cannot use \`${parameter.mode}\` in the first ABI tier`,
+        "pass an ordinary by-value scalar parameter; explicit pointer ABI contracts are a later tier",
+      );
+    }
+    if (!nativeExportScalarTypes.has(parameter.type.name) || parameter.type.name === "void") {
+      reject(`C export parameter ${JSON.stringify(parameter.name)} has unsupported boundary type ${JSON.stringify(parameter.type.name)}`);
+    }
+  }
+  if (!nativeExportScalarTypes.has(declaration.returnType.name)) {
+    reject(`C export return type ${JSON.stringify(declaration.returnType.name)} is unsupported in the first ABI tier`);
+  }
 }
 
 function validateExecutorAffinity(

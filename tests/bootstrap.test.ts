@@ -114,6 +114,139 @@ test("emits functions and direct imported C calls", () => {
   assert.doesNotMatch(generated, /stdio\.puts/);
 });
 
+test("exports checked scalar Z functions through a stable C ABI", () => {
+  const source = `
+    export c function z_math_add(left: i32, right: i32): i32 {
+      return left + right;
+    }
+
+    export function ordinary(left: i32, right: i32): i32 {
+      return z_math_add(left, right);
+    }
+  `;
+  const artifact = compileToNative(source, "zmath.zs", { requireMain: false });
+  assert.match(artifact.source, /static int32_t __z_c_impl_0_z_math_add\(int32_t left, int32_t right\)/);
+  assert.match(artifact.source, /Z_API int32_t z_math_add\(int32_t left, int32_t right\)/);
+  assert.match(artifact.source, /static int32_t ordinary\(int32_t left, int32_t right\)[\s\S]*return __z_c_impl_0_z_math_add\(left, right\);/);
+  assert.match(artifact.source, /Z_API int32_t z_math_add\(int32_t left, int32_t right\) \{\s+return __z_c_impl_0_z_math_add\(left, right\);/);
+  assert.ok(artifact.header);
+  assert.match(artifact.header, /extern "C"/);
+  assert.match(artifact.header, /Z_API int32_t z_math_add\(int32_t left, int32_t right\);/);
+  assert.doesNotMatch(artifact.header, /ordinary/);
+
+  const directory = mkdtempSync("/tmp/z-c-export-");
+  const implementation = resolve(directory, "zmath.c");
+  const header = resolve(directory, "zmath.h");
+  const object = resolve(directory, "zmath.o");
+  const library = resolve(directory, "libzmath.a");
+  const consumer = resolve(directory, "consumer.c");
+  const executable = resolve(directory, "consumer");
+  writeFileSync(implementation, artifact.source);
+  writeFileSync(header, artifact.header);
+  writeFileSync(consumer, `
+    #include "zmath.h"
+    int main(void) {
+      return z_math_add(20, 22) == 42 ? 0 : 1;
+    }
+  `);
+  const compileLibrary = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-c", implementation, "-o", object,
+  ], { encoding: "utf8" });
+  assert.equal(compileLibrary.status, 0, compileLibrary.stderr);
+  const archive = spawnSync("ar", ["rcs", library, object], { encoding: "utf8" });
+  assert.equal(archive.status, 0, archive.stderr);
+  const compileConsumer = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", consumer, library, "-o", executable,
+  ], { encoding: "utf8" });
+  assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
+  const result = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const moduleDirectory = mkdtempSync("/tmp/z-c-export-modules-");
+  const libraryModule = resolve(moduleDirectory, "math.zs");
+  const entryModule = resolve(moduleDirectory, "entry.zs");
+  writeFileSync(libraryModule, `
+    export c function z_module_add(left: i32, right: i32): i32 {
+      return left + right;
+    }
+  `);
+  writeFileSync(entryModule, `
+    import { z_module_add } from "./math.zs";
+    export c function z_module_answer(): i32 {
+      return z_module_add(20, 22);
+    }
+  `);
+  const moduleArtifact = compileToNative(
+    readFileSync(entryModule, "utf8"),
+    entryModule,
+    { requireMain: false },
+  );
+  assert.match(moduleArtifact.source, /return __z_c_impl_1_z_module_add\(left, right\);/);
+  assert.match(moduleArtifact.source, /return __z_c_impl_1_z_module_add\(20, 22\);/);
+  assert.match(moduleArtifact.header ?? "", /z_module_add/);
+  assert.match(moduleArtifact.header ?? "", /z_module_answer/);
+
+  writeFileSync(resolve(moduleDirectory, "duplicate.zs"), `
+    import { z_module_add as importedAdd } from "./math.zs";
+    export c function z_module_add(): i32 { return 0; }
+  `);
+  const duplicate = resolve(moduleDirectory, "duplicate.zs");
+  assert.throws(
+    () => compileToNative(readFileSync(duplicate, "utf8"), duplicate, { requireMain: false }),
+    /duplicate C export symbol "z_module_add"/,
+  );
+});
+
+test("checks the first C-export ABI tier and its editor surface", () => {
+  const unsupported = `
+    export c function z_name(value: String): String {
+      return value;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(unsupported, "unsupported-export.zs", { requireMain: false }),
+    /C export parameter "value" has unsupported boundary type "String"/,
+  );
+  assert.throws(
+    () => compileToNative(
+      "export c async function z_work(): i32 { return 42; }",
+      "async-export.zs",
+      { requireMain: false },
+    ),
+    /C-exported function cannot be async/,
+  );
+
+  const source = "export c function z_value(): i32 { return 42; }";
+  const completionSource = "export c";
+  assert.equal(
+    completions(completionSource, "export-completion.zs", completionSource.length)
+      .find((item) => item.label === "c")?.detail,
+    "publish the Z function through a stable C ABI symbol",
+  );
+  const cOffset = source.indexOf("c function");
+  assert.match(hover(source, "export-hover.zs", cOffset)?.contents.value ?? "", /ordinary Z export/);
+  const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
+  assert.match(grammar, /export\\\\s\)c/);
+
+  const project = mkdtempSync("/tmp/z-static-library-project-");
+  const entry = resolve(project, "library.zs");
+  writeFileSync(resolve(project, "z.json"), JSON.stringify({
+    target: {
+      kind: "static-library",
+      name: "zanswer",
+      entry: "library.zs",
+    },
+  }));
+  writeFileSync(entry, source);
+  const configured = compileToNative(source, entry);
+  assert.equal(configured.targetKind, "static-library");
+  assert.equal(configured.targetName, "zanswer");
+  assert.ok(configured.header);
+  const nativeCheck = spawnSync(process.execPath, [cli, "check", entry, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
+});
+
 test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
   const example = resolve(projectRoot, "examples/interop/raw/native-boundary.zs");
   const source = readFileSync(example, "utf8");

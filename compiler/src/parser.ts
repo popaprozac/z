@@ -1171,26 +1171,34 @@ export function parse(tokens: Token[], fileName: string): Program {
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     const exportToken = match("export") ? previous() : null;
+    const nativeExportToken = exportToken && at("identifier") && peek().text === "c"
+      ? take()
+      : null;
     const readonlyToken = match("readonly") ? previous() : null;
     if (at("import")) {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` can only modify a function declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
       imports.push(parseImport());
     } else if (at("identifier") && peek().text === "type") {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` can only modify a function declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTypeAlias();
       typeAliases.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "type", location: exportToken.location });
     } else if (at("trait")) {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` can only modify a function declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTrait();
       traits.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "trait", location: exportToken.location });
     } else if (at("struct") || at("class")) {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` can only modify a function declaration");
       const declaration = parseAggregate(Boolean(readonlyToken));
       structs.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: declaration.kind, location: exportToken.location });
     } else if (at("enum")) {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` can only modify a function declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseEnum();
       enums.push(declaration);
@@ -1198,10 +1206,21 @@ export function parse(tokens: Token[], fileName: string): Program {
     } else if (at("function") || at("async")) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const isAsync = match("async");
-      const declaration = parseFunction(false, isAsync);
+      const parsed = parseFunction(false, isAsync);
+      const declaration = nativeExportToken
+        ? {
+            ...parsed,
+            nativeExport: {
+              language: "c" as const,
+              name: parsed.name,
+              location: nativeExportToken.location,
+            },
+          }
+        : parsed;
       functions.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
     } else {
+      if (nativeExportToken) throw new DiagnosticError(fileName, nativeExportToken.location, "`c` after `export` must be followed by a function declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       throw new DiagnosticError(fileName, peek().location, "expected an import, export, type, trait, struct, class, enum, or function declaration");
     }

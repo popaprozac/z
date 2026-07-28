@@ -374,6 +374,9 @@
         "name": "keyword.control.export.z",
         "match": "\\bexport\\b"
       }, {
+        "name": "support.language.native.z",
+        "match": "(?<=\\bexport\\s)c(?=\\s+(?:async\\s+)?function\\b)"
+      }, {
         "name": "keyword.control.declaration.z",
         "match": "\\bdeclare\\b"
       }, {

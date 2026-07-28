@@ -24,6 +24,20 @@ Relative `.zs` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
 
+`export c function` adds a stable C ABI entry point without removing the
+ordinary Z export:
+
+```z
+export c function z_math_add(left: i32, right: i32): i32 {
+  return left + right;
+}
+```
+
+Z callers import and call `z_math_add` normally. Native consumers use the exact
+source name from the generated header. The first implemented ABI tier accepts
+only synchronous, non-throwing, non-generic by-value scalar signatures; see
+[C exports](c-exports.md) for the exact mapping and growth path.
+
 The filename contract is `.zs` for Z source and `.zd` for foreign declarations.
 Z intentionally leaves `.z` to its established use as a compressed-archive
 suffix on Unix systems.

@@ -6,6 +6,9 @@ import type { ApiNotes } from "./foreign-api-notes.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
+  readonly targetKind: "executable" | "static-library";
+  readonly targetName: string | null;
+  readonly entryPath: string | null;
   readonly deploymentTarget: DeploymentTarget | null;
   readonly includeDirectories: readonly string[];
   readonly nativeLibraries: readonly string[];
@@ -21,6 +24,8 @@ export type DeploymentTarget = {
 
 type ProjectManifest = {
   readonly target?: {
+    readonly kind?: "executable" | "static-library";
+    readonly name?: string;
     readonly entry?: string;
     readonly platform?: string;
     readonly minimumVersion?: string;
@@ -40,6 +45,9 @@ type ProjectManifest = {
 
 const emptyBuild: ProjectBuild = {
   manifestPath: null,
+  targetKind: "executable",
+  targetName: null,
+  entryPath: null,
   deploymentTarget: null,
   includeDirectories: [],
   nativeLibraries: [],
@@ -62,12 +70,26 @@ export function prepareProject(fileName: string): ProjectBuild {
   }
 
   const swift = manifest.target?.swift;
+  const targetKind = manifest.target?.kind ?? "executable";
+  if (targetKind !== "executable" && targetKind !== "static-library") {
+    throw projectDiagnostic(fileName, 'z.json target.kind must be either "executable" or "static-library"');
+  }
+  const targetName = manifest.target?.name ?? null;
+  if (targetName !== null && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
+    throw projectDiagnostic(fileName, "z.json target.name must be a portable artifact name");
+  }
+  if (targetKind === "static-library" && targetName === null) {
+    throw projectDiagnostic(fileName, "z.json static-library targets require target.name");
+  }
+  let entryPath: string | null = null;
   if (manifest.target?.entry !== undefined) {
     if (typeof manifest.target.entry !== "string" || !manifest.target.entry.endsWith(".zs")) {
       throw projectDiagnostic(fileName, "z.json target.entry must be a Z source path");
     }
-    const entry = resolve(directory, manifest.target.entry);
-    if (!existsSync(entry)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entry)} does not exist`);
+    entryPath = resolve(directory, manifest.target.entry);
+    if (!existsSync(entryPath)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entryPath)} does not exist`);
+  } else if (targetKind === "static-library") {
+    throw projectDiagnostic(fileName, "z.json static-library targets require target.entry");
   }
   const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
   const includeDirectories = parseProjectDirectories(
@@ -86,6 +108,9 @@ export function prepareProject(fileName: string): ProjectBuild {
   const baseBuild: ProjectBuild = {
     ...emptyBuild,
     manifestPath,
+    targetKind,
+    targetName,
+    entryPath,
     deploymentTarget,
     includeDirectories,
     nativeLinkerArguments: [

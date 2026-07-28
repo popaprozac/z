@@ -179,6 +179,31 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
   };
   visit(entry);
 
+  const nativeExports = new Map<string, FunctionDeclaration>();
+  for (const node of ordered) {
+    for (const declaration of node.program.functions) {
+      if (!declaration.nativeExport) continue;
+      const existing = nativeExports.get(declaration.nativeExport.name);
+      if (existing) {
+        throw new DiagnosticError(
+          declaration.location.fileName ?? node.fileName,
+          declaration.nativeExport.location,
+          `duplicate C export symbol ${JSON.stringify(declaration.nativeExport.name)}`,
+          {
+            code: "Z0830",
+            labels: [{
+              location: existing.nativeExport!.location,
+              message: "first C export is declared here",
+              length: existing.nativeExport!.name.length,
+            }],
+            notes: ["C exports are external ABI contracts and are never module-mangled"],
+          },
+        );
+      }
+      nativeExports.set(declaration.nativeExport.name, declaration);
+    }
+  }
+
   const imports: ImportDeclaration[] = [];
   const typeAliases: Program["typeAliases"] = [];
   const traits: Program["traits"] = [];
@@ -295,6 +320,8 @@ function collectOwnNames(node: ModuleNode, entry: boolean): void {
     }
     const linkedName = declaration.kind === "type"
       ? `__z_alias_${node.id}_${declaration.name}`
+      : declaration.kind === "function" && declaration.nativeExport
+        ? `__z_c_impl_${node.id}_${declaration.name}`
       : entry
         ? declaration.name
         : `__z_module_${node.id}_${declaration.name}`;

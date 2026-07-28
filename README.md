@@ -118,11 +118,13 @@ See [the interop model](docs/interop-model.md) for the cost model and
 [the Foreign Interface IR](docs/foreign-interface-ir.md) for how native facts
 are normalized.
 
-The reverse boundary is now designed but not implemented:
-`export c function` will publish checked scalar Z functions through generated
-C headers and static-library artifacts. See
-[the C export design](docs/c-exports.md) for the accepted first tier and its
-ownership-aware growth path.
+The reverse boundary now has an executable scalar compiler slice:
+`export c function` remains callable from Z while publishing an exact checked
+C ABI symbol and generated C/C++-compatible header. A strict handwritten C
+consumer is compiled and linked against the emitted static archive in the test
+suite. The public project build/output command remains the final packaging seam
+for this first tier. See [the C export design](docs/c-exports.md) for the
+implemented boundary and its ownership-aware growth path.
 
 The first native application composition probe is Z Notes:
 
@@ -189,7 +191,7 @@ Each document has one job:
 | [Bootstrap status](docs/bootstrap-status.md) | What the stage-0 implementation supports now |
 | [Async model](docs/async-model.md) | Structured concurrency semantics and lowering phases |
 | [Interop model](docs/interop-model.md) | Native boundary contracts and cost model |
-| [C export design](docs/c-exports.md) | Accepted `export c function` direction for calling Z from native consumers |
+| [C export design](docs/c-exports.md) | Implemented scalar `export c function` boundary and its native-consumer growth path |
 | [Z declaration files](docs/z-declarations.md) | `.zd` grammar, capability dictionary, and C/C++/Objective-C mapping |
 | [Foreign Interface IR](docs/foreign-interface-ir.md) | Backend-neutral foreign declaration model |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic structure and authoring conventions |

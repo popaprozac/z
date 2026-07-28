@@ -1,6 +1,6 @@
 # C Export Design
 
-Status: accepted design; implementation has not started.
+Status: first scalar compiler slice implemented; project artifact command pending.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -178,3 +178,15 @@ Z source
 The first implementation checkpoint is complete only when a handwritten C
 program includes the generated header, links the generated static library,
 calls a Z scalar function, and passes strict compilation and execution tests.
+
+The bootstrap compiler now satisfies that executable boundary in its test
+suite: it parses and checks `export c function`, keeps the declaration
+available through ordinary Z imports and calls, emits a private implementation
+plus exact public C symbol, generates the guarded header, archives the emitted
+object, and runs a handwritten strict-C consumer. The accepted
+`static-library` manifest fields are also checked and make `main` optional.
+The remaining first-tier packaging step is the public `z build`/`z emit`
+project command and stable output-directory policy. The native frontend accepts
+the contextual declaration during hybrid checking; carrying the export fact
+through native lowering/header emission remains part of self-hosted backend
+parity.

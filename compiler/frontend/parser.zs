@@ -197,6 +197,7 @@ export struct StatementArena {
 
 export struct FunctionDeclaration {
   name: String;
+  nativeCExport: boolean;
   asynchronous: boolean;
   staticMethod: boolean;
   visibility: Visibility;
@@ -2916,6 +2917,7 @@ function parseImport(
 function parseFunctionDeclaration(
   in tokens: Array<Token>,
   inout current: usize,
+  nativeCExport: boolean,
   asynchronous: boolean,
   isStatic: boolean,
   visibility: Visibility,
@@ -2997,6 +2999,7 @@ function parseFunctionDeclaration(
   }
   return FunctionDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
+    nativeCExport,
     asynchronous,
     staticMethod: isStatic,
     visibility,
@@ -3118,7 +3121,7 @@ function parseAggregateDeclaration(
     const asynchronous = takeIf(tokens, inout current, TokenKind.asyncKeyword);
     if (tokens[current].kind == TokenKind.functionKeyword) {
       if (fieldReadonly) throw fail(tokens[current], "`readonly` applies to stored fields, not methods");
-      const method = try parseFunctionDeclaration(tokens, inout current, asynchronous, isStatic, visibility, false);
+      const method = try parseFunctionDeclaration(tokens, inout current, false, asynchronous, isStatic, visibility, false);
       methods.push(method);
       continue;
     }
@@ -3170,6 +3173,7 @@ function parseTraitDeclaration(
     const method = try parseFunctionDeclaration(
       tokens,
       inout current,
+      false,
       asynchronous,
       false,
       Visibility.publicVisibility,
@@ -3258,6 +3262,15 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       exported = true;
       current = current + 1;
     }
+    let nativeCExport = false;
+    if (
+      exported
+      && tokens[current].kind == TokenKind.identifier
+      && tokens[current].text == "c"
+    ) {
+      nativeCExport = true;
+      current = current + 1;
+    }
 
     let aggregateReadonly = false;
     if (tokens[current].kind == TokenKind.readonlyKeyword) {
@@ -3272,6 +3285,9 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     }
 
     const kind = tokens[current].kind;
+    if (nativeCExport && kind != TokenKind.functionKeyword && kind != TokenKind.asyncKeyword) {
+      throw fail(tokens[current], "`c` after `export` can only modify a function declaration");
+    }
     if (kind == TokenKind.importKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (exported) throw fail(tokens[current], "imports cannot be exported");
@@ -3311,6 +3327,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       const functionDeclaration = try parseFunctionDeclaration(
         tokens,
         inout current,
+        nativeCExport,
         asynchronous,
         false,
         Visibility.publicVisibility,

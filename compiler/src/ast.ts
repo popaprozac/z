@@ -105,6 +105,12 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  /** Stable native symbol published in addition to the ordinary Z identity. */
+  readonly nativeExport?: {
+    readonly language: "c";
+    readonly name: string;
+    readonly location: SourceLocation;
+  };
   readonly async?: boolean;
   readonly static?: boolean;
   readonly visibility?: "public" | "private";
