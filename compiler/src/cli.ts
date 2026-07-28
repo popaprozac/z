@@ -8,7 +8,7 @@ import type { Expression, FunctionDeclaration, Program, SourceLocation, Statemen
 import { canonicalTypeName } from "./canonical-type-name.ts";
 import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
-import { resolveForeignFunctionDeclarationStream } from "./foreign.ts";
+import { writeForeignDeclarationArtifact } from "./foreign-adapter.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
 import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
@@ -20,7 +20,7 @@ import {
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
-import { deploymentTargetFlags, prepareProject } from "./project.ts";
+import { deploymentTargetFlags } from "./project.ts";
 import {
   decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
@@ -65,23 +65,11 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
           "self-host-foreign requires a header specifier and output .zfdcl path",
         );
       }
-      const source = readFileSync(inputPath, "utf8");
-      const program = parse(lex(source, inputPath), inputPath);
-      const project = prepareProject(inputPath);
-      const header = trailingArguments[0];
-      const declaration = program.imports.find((candidate) => candidate.header === header);
-      if (!declaration) {
-        throw new Error(
-          `source does not import foreign header ${JSON.stringify(header)}`,
-        );
-      }
-      const stream = resolveForeignFunctionDeclarationStream(
-        declaration,
+      writeForeignDeclarationArtifact(
         inputPath,
-        project.includeDirectories,
-        project.deploymentTarget,
+        trailingArguments[0],
+        resolve(trailingArguments[1]),
       );
-      writeFileSync(resolve(trailingArguments[1]), stream);
     } else if (command === "check") {
       const nativeFrontend = trailingArguments.includes("--native-frontend");
       const timings = trailingArguments.includes("--timings");

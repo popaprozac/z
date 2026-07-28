@@ -1189,9 +1189,10 @@ instead of dropping its types.
 The boundary now survives process separation as well. An internal Stage-0
 adapter command writes the header-addressed artifact, while the self-emitted
 32-module native driver reads, owns, validates, and reports its declaration
-counts. Truncating that artifact is a native diagnostic. The ordinary native
-project loader still rejects the corresponding foreign import, because a raw
-producer stream has not yet earned `.zd` ownership facts or FIIR authority.
+counts. Truncating that artifact is a native diagnostic. At this checkpoint the
+ordinary native project loader still rejected the corresponding foreign import,
+because a raw producer stream had not yet earned `.zd` ownership facts or FIIR
+authority; the later automatic-discovery checkpoint below closes that path.
 
 Adding the first `.zd` reader raised the standalone compiler to 33 modules and
 immediately exercised the language's own non-escaping collection borrows.
@@ -1228,7 +1229,12 @@ declared success literals, and builds the same allocation-free
 `Result<void, i32>` representation used by Z throwing functions. Clang
 strict-compiles the emitted application together with its C implementation and
 the binary exits with the expected status 42. Automatic adapter invocation is
-still explicitly outside the tier.
+now connected at the standalone driver boundary: it discovers the adjacent
+contract, launches `z-foreign-adapter`, regenerates the versioned producer
+artifact, normalizes it in Z, strict-compiles the imported call, and runs the
+same application to status 42. Replacing the temporary beside-contract
+artifact with a target-aware cache remains deployment hygiene rather than a
+semantic dependency.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

@@ -66,10 +66,10 @@ an inferred receiver-tied view.
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; `check --native-frontend` reuses stage 0's canonical source batch/ASTs, attaches an indexed native semantic graph, and reports compiler-owned graph/query plus live call-resolution parity; native run I/O streams live and arguments after `--` are forwarded |
 | System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned UTF-8 reads and canonical paths, borrowed writes/process argv, owned arguments, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
-| Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate. The real Clang producer now frames function-only declarations as a versioned, length-prefixed `ZFDCL` artifact; the standalone native driver owns its decoder and rejects malformed streams, while richer headers fail closed. A first Z-owned `.zd` parser/normalizer verifies inferred scalar functions and decimal integer-status contracts against those declarations, preserving the native integer error type and explicit success set. Those checked callables enter native sema through ordinary module signatures for selective and namespace imports; arity, scalar types, and throwing effects are enforced while uncontracted symbols fail closed. Native lowering emits each required header, direct scalar calls, and one-call status adapters that construct `Result<void, E>`. Automatic adapter invocation, symbolic/enum statuses, broader `.zd` facts and declaration records, and richer native hierarchies remain |
+| Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate. The real Clang producer frames function-only declarations as a versioned, length-prefixed `ZFDCL` artifact; the standalone native driver discovers an adjacent `.zd`, automatically invokes the separate producer from `PATH`, owns the decoder, and rejects malformed or richer streams. A first Z-owned `.zd` parser/normalizer verifies inferred scalar functions and decimal integer-status contracts against those declarations, preserving the native integer error type and explicit success set. Those checked callables enter native sema through ordinary module signatures for selective and namespace imports; arity, scalar types, and throwing effects are enforced while uncontracted symbols fail closed. Native lowering emits each required header, direct scalar calls, and one-call status adapters that construct `Result<void, E>`. A production artifact cache, symbolic/enum statuses, broader `.zd` facts and declaration records, and richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, Swift-target preparer, and trusted seed. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. The standalone Z driver receives native arguments, canonically discovers modules, parses the established `z.json` target/link subset, exposes `check`/`emit`/`build`/explicit-output `run`, and invokes Clang. Generation one now rebuilds its own 34-module driver to byte-identical C, and generation two checks an independent project without Bun or TypeScript. An internal adapter command and the native driver exchange a real Clang-produced function-only declaration artifact; the driver now parses and normalizes inferred scalar and decimal integer-status `.zd` function contracts against it. Those normalized callables enter the native resolver and lower to executable direct/status-adapted C for both selective and namespace imports. Automatic adapter invocation, broader contracts, the production command surface, complete language semantics, Swift preparation, custom profiles, and distribution of a trusted bootstrap binary remain in stage 0 |
+| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign metadata producer, Swift-target preparer, and trusted seed. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. The standalone Z driver receives native arguments, canonically discovers modules, parses the established `z.json` target/link subset, exposes `check`/`emit`/`build`/explicit-output `run`, and invokes Clang. Generation one now rebuilds its own 36-module driver to byte-identical C, and generation two checks an independent project without Bun or TypeScript. The driver automatically invokes the separate Clang adapter for adjacent first-tier `.zd` imports, then owns decoding, normalization, semantic checking, and executable direct/status-adapted C emission for selective and namespace calls. Broader contracts, a production artifact cache, the production command surface, complete language semantics, Swift preparation, custom profiles, and distribution of a trusted bootstrap binary remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -1009,15 +1009,15 @@ Continue focused self-hosting work in this order:
    failures render their Z source line and caret without Stage 0. The native
    command now finds and parses `z.json`, validates its entry and configured
    directories, deduplicates libraries, and supplies include/link directories,
-   native libraries, and a macOS minimum target to Clang. Foreign discovery,
-   Swift target preparation, cross-platform target selection,
+   native libraries, and a macOS minimum target to Clang. Swift target
+   preparation, broader foreign declarations, cross-platform target selection,
    manifest-selected/custom profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic
    temporary run artifacts, and complete production options remain.
-   Until automatic foreign discovery invokes the adapter and loads adjacent
-   `.zd`, the ordinary native command rejects foreign imports at their source
-   location rather than claiming its resolver received evidence that was never
-   produced. The first versioned raw-declaration protocol now crosses
+   Automatic first-tier foreign discovery now invokes `z-foreign-adapter`,
+   loads the adjacent `.zd`, and rejects missing or unsupported evidence at the
+   import rather than claiming its resolver received facts that were never
+   produced. The first versioned raw-declaration protocol crosses
    function names, namespaces, overloads, parameter type spellings, source
    locations, executor affinity, and availability into owned Z storage. It is
    intentionally producer-facing rather than trusted FIIR and fails closed
@@ -1026,13 +1026,13 @@ Continue focused self-hosting work in this order:
    writes it and the native driver validates it. The first native `.zd` tier
    additionally normalizes inferred scalar and decimal integer-status function
    declarations against that evidence, feeds them into native sema, and emits
-   executable scalar/status calls; automatic invocation, symbolic status
-   constants, exact range checks, and broader contract facts remain.
+   executable scalar/status calls. A target-aware artifact cache, symbolic
+   status constants, exact range checks, and broader contract facts remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact
    C output before caching the library. The standalone command follows the same
-   rule: generation one builds its own 34-module graph, generation-two C must be
+   rule: generation one builds its own 36-module graph, generation-two C must be
    byte-identical, and the rebuilt command checks a separate project. The
    remaining release step is to ship a trusted bootstrap artifact so ordinary
    installations do not need Stage 0.

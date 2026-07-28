@@ -2,7 +2,6 @@ import console from "std/console";
 import { Set } from "std/collections";
 import fs from "std/fs";
 import process from "std/process";
-import { TextBuffer } from "std/text";
 import { emitModulesC } from "../frontend/c-emitter.zs";
 import {
   decodeRawForeignDeclarations,
@@ -20,7 +19,9 @@ import {
   isStandardModuleHeader,
   normalizedModulePath,
 } from "../frontend/module-paths.zs";
-import { resolveParsedModules } from "../frontend/module-resolver.zs";
+import {
+  resolveParsedModulesWithForeignContracts,
+} from "../frontend/module-resolver.zs";
 import {
   appendProjectCompilerArguments,
   loadProjectConfig,
@@ -28,78 +29,35 @@ import {
 } from "./project-manifest.zs";
 import {
   ModuleGraph,
-  ModuleResolveError,
   ModuleSource,
 } from "../frontend/semantic-model.zs";
 import { ParsedModule } from "../frontend/module-symbols.zs";
+import {
+  NativeForeignModuleContract,
+} from "../frontend/semantic-foreign.zs";
+import {
+  diagnosticMessage,
+  sourceDiagnostic,
+} from "./diagnostics.zs";
+import {
+  loadForeignModuleContract,
+} from "./foreign-project.zs";
 
 struct NativeProject {
   entryPath: String;
   config: NativeProjectConfig;
   modules: Array<ParsedModule>;
+  foreignModules: Array<NativeForeignModuleContract>;
   graph: ModuleGraph;
-}
-
-function sourceDiagnostic(
-  in path: String,
-  lineNumber: usize,
-  columnNumber: usize,
-  in message: String,
-  in source: String
-): String {
-  let output = TextBuffer();
-  output.append(
-    `${path}:${lineNumber}:${columnNumber}: error: ${message}`
-  );
-  let line: usize = 1;
-  let lineStart: usize = 0;
-  while (line < lineNumber && lineStart < source.byteLength) {
-    if (source.byteAt(lineStart) == 10) line = line + 1;
-    lineStart = lineStart + 1;
-  }
-  if (line != lineNumber) return output.finish();
-
-  let lineEnd = lineStart;
-  while (
-    lineEnd < source.byteLength
-    && source.byteAt(lineEnd) != 10
-    && source.byteAt(lineEnd) != 13
-  ) {
-    lineEnd = lineEnd + 1;
-  }
-  output.append(`\n${lineNumber} | `);
-  output.append(source.copyBytes(lineStart, lineEnd));
-  output.append("\n  | ");
-  let column: usize = 1;
-  while (column < columnNumber) {
-    output.append(" ");
-    column = column + 1;
-  }
-  output.append("^");
-  return output.finish();
-}
-
-function diagnosticMessage(
-  in error: ModuleResolveError,
-  in source: String
-): String {
-  const path = copy error.path;
-  const line = error.line;
-  const column = error.column;
-  const message = copy error.message;
-  return sourceDiagnostic(
-    path,
-    line,
-    column,
-    message,
-    source
-  );
 }
 
 function loadModule(
   in path: String,
+  in config: NativeProjectConfig,
   inout loaded: Set<String>,
-  inout modules: Array<ParsedModule>
+  inout loadedForeign: Set<String>,
+  inout modules: Array<ParsedModule>,
+  inout foreignModules: Array<NativeForeignModuleContract>
 ): void throws String {
   const normalized = normalizedModulePath(path);
   const canonical = try fs.realPath(normalized);
@@ -124,17 +82,33 @@ function loadModule(
       continue;
     }
     if (isStandardModuleHeader(declaration.header)) continue;
-    throw sourceDiagnostic(
-      canonical,
-      declaration.line,
-      declaration.column,
-      `native foreign import checking is not implemented for "${declaration.header}"; use the Stage-0 z command until FIIR discovery moves into the native driver`,
-      moduleSource.source
-    );
+    const header = copy declaration.header;
+    const line = declaration.line;
+    const column = declaration.column;
+    const foreignKey = `${canonical}\n${header}`;
+    if (!loadedForeign.has(foreignKey)) {
+      loadedForeign.add(copy foreignKey);
+      const foreignModule = try loadForeignModuleContract(
+        canonical,
+        moduleSource.source,
+        header,
+        line,
+        column,
+        config
+      );
+      foreignModules.push(foreignModule);
+    }
   }
   modules.push(parsed);
   for (const dependency of dependencies) {
-    try loadModule(dependency, inout loaded, inout modules);
+    try loadModule(
+      dependency,
+      config,
+      inout loaded,
+      inout loadedForeign,
+      inout modules,
+      inout foreignModules
+    );
   }
 }
 
@@ -143,10 +117,23 @@ function loadProject(in entryPath: String): NativeProject throws String {
   const canonicalEntry = try fs.realPath(normalizedEntry);
   const config = try loadProjectConfig(canonicalEntry);
   let loaded = Set<String>();
+  let loadedForeign = Set<String>();
   let modules = Array<ParsedModule>();
-  try loadModule(canonicalEntry, inout loaded, inout modules);
+  let foreignModules = Array<NativeForeignModuleContract>();
+  try loadModule(
+    canonicalEntry,
+    config,
+    inout loaded,
+    inout loadedForeign,
+    inout modules,
+    inout foreignModules
+  );
 
-  const graphOutcome = attempt resolveParsedModules(modules, canonicalEntry);
+  const graphOutcome = attempt resolveParsedModulesWithForeignContracts(
+    modules,
+    canonicalEntry,
+    foreignModules
+  );
   const graph = match (graphOutcome) {
     success(graph) => graph;
     failure(error) => {
@@ -162,6 +149,7 @@ function loadProject(in entryPath: String): NativeProject throws String {
     entryPath: canonicalEntry,
     config,
     modules,
+    foreignModules,
     graph,
   });
 }

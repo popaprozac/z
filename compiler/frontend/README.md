@@ -189,25 +189,24 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 34-module driver to
+0 seeds generation one, which now rebuilds the same 36-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
-verified: a non-standard, non-local import fails ordinary native `check` at its
-source location until automatic Clang discovery and `.zd` loading are
-connected. The internal `self-host-foreign` adapter command writes a real
-Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
-decodes and validates that artifact through its own `foreign-inspect` bootstrap
-operation. The driver also parses and normalizes inferred scalar and decimal
-integer-status `.zd` contracts against that artifact. An explicit bootstrap
-probe feeds those normalized contracts into native semantic analysis and C
-emission for selective and namespace calls. Scalar calls remain direct; status
-calls use a generated C11 wrapper that invokes the native function once and
-constructs `Result<void, E>` from the checked success set. Automatic adapter
-invocation, symbolic status constants, exact status-literal range checks, and
-broader declaration records/facts remain; raw decoding alone is never a
-trusted foreign import.
+verified. For its first function-only tier, it discovers an adjacent `.zd`,
+invokes the separate `z-foreign-adapter` producer from `PATH`, decodes the real
+Clang-produced `ZFDCL` artifact, and normalizes inferred scalar and decimal
+integer-status contracts before native semantic analysis. Selective and
+namespace calls then lower through the ordinary graph: scalar calls remain
+direct, while status calls use a generated C11 wrapper that invokes the native
+function once and constructs `Result<void, E>` from the checked success set.
+The bootstrap producer artifact is regenerated beside the contract before use;
+it is evidence crossing a process boundary, not a trusted cache. Missing
+contracts/adapters and unsupported records or facts fail at the source import.
+Symbolic status constants, exact status-literal range checks, richer
+declaration records/facts, and a production cache location remain; raw decoding
+alone is never a trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

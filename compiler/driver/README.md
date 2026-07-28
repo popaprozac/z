@@ -25,18 +25,23 @@ It supports the self-hosting language and runtime subset. The native driver
 finds the nearest `z.json`, parses the existing target entry, deployment,
 include-directory, link-directory, and library fields, validates configured
 paths, deduplicates native libraries, and projects those settings into Clang.
-Swift target preparation, foreign header discovery, cross-platform target
-selection, custom profiles, polished diagnostics, automatic temporary output
-selection for `run`, and the complete production command options remain with
-Stage 0 until equivalent native paths are proven. The current debug profile
-uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
+Swift target preparation, broader foreign declaration records, cross-platform
+target selection, custom profiles, polished diagnostics, automatic temporary
+output selection for `run`, and the complete production command options remain
+with Stage 0 until equivalent native paths are proven. The current debug
+profile uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
 
-Native `check` fails closed when a graph contains a C, C++, Objective-C, or
-Swift compatibility-header import. It points at the import and directs the
-developer to the Stage-0 command instead of reporting a successful check
-without FIIR evidence. Foreign imports become eligible for native `check` only
-after header discovery, adjacent `.zd` contracts, and normalized FIIR all
-cross that boundary together.
+For the first function-only scalar/status tier, the driver discovers the same
+adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
+`z-foreign-adapter` tool found on `PATH`, decodes its versioned Clang
+declaration stream, normalizes the contract in Z, and supplies only checked
+callables to native semantic analysis. The producer writes a temporary
+bootstrap artifact beside the contract as `<contract>.zfdcl`; it is regenerated
+before every use and is not trusted as a cache. A missing contract, missing
+adapter, malformed producer stream, unsupported declaration category, or
+unimplemented contract fact fails at the boundary. C++, Objective-C, Swift,
+records, constants, callbacks, symbolic statuses, and richer `.zd` facts remain
+with Stage 0 until their raw records and normalized FIIR cross together.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

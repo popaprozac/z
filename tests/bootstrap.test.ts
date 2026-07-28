@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { basename, resolve } from "node:path";
+import { basename, delimiter, resolve } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
@@ -9640,6 +9640,10 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8", input: driverEmission.stdout },
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
+  const foreignAdapterEnvironment = {
+    ...process.env,
+    PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
+  };
 
   const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
   const foreignAdapterHeader = resolve(
@@ -9777,7 +9781,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 34 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 36 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -9856,8 +9860,127 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignImportCheck.status, 1);
   assert.match(
     foreignImportCheck.stderr,
-    /:1:1: error: native foreign import checking is not implemented for "stdint\.h".*\n1 \| import native from "stdint\.h";\n  \| \^/,
+    /:1:1: error: native foreign import "stdint\.h" requires an adjacent \.zd contract\n1 \| import native from "stdint\.h";\n  \| \^/,
   );
+
+  const foreignProject = resolve(directory, "foreign-project");
+  mkdirSync(foreignProject, { recursive: true });
+  const foreignProjectSource = resolve(foreignProject, "main.zs");
+  const foreignProjectHeader = resolve(
+    foreignProject,
+    "foreign-functions-only.h",
+  );
+  const foreignProjectContract = `${foreignProjectHeader}.zd`;
+  const foreignProjectImplementation = resolve(
+    foreignProject,
+    "foreign-functions-only.c",
+  );
+  writeFileSync(
+    foreignProjectSource,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    foreignProjectHeader,
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.h"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    foreignProjectContract,
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.h.zd"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    foreignProjectImplementation,
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.c"),
+      "utf8",
+    ),
+  );
+  const foreignObject = resolve(foreignProject, "foreign-functions-only.o");
+  const foreignArchive = resolve(foreignProject, "libzforeignfixture.a");
+  const foreignObjectCompilation = spawnSync(
+    "clang",
+    ["-c", foreignProjectImplementation, "-o", foreignObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    foreignObjectCompilation.status,
+    0,
+    foreignObjectCompilation.stderr,
+  );
+  const foreignArchiving = spawnSync(
+    "ar",
+    ["rcs", foreignArchive, foreignObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignArchiving.status, 0, foreignArchiving.stderr);
+  writeFileSync(
+    resolve(foreignProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        entry: "main.zs",
+        includeDirectories: ["."],
+        link: {
+          directories: ["."],
+          libraries: ["zforeignfixture"],
+        },
+      },
+    }, null, 2)}\n`,
+  );
+  const missingForeignAdapter = spawnSync(
+    driver,
+    ["check", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: "/usr/bin:/bin",
+      },
+    },
+  );
+  assert.equal(missingForeignAdapter.status, 1);
+  assert.match(
+    missingForeignAdapter.stderr,
+    /:1:1: error: could not launch z-foreign-adapter for "foreign-functions-only\.h":/,
+  );
+  const foreignProjectCheck = spawnSync(
+    driver,
+    ["check", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(foreignProjectCheck.status, 0, foreignProjectCheck.stderr);
+  assert.match(foreignProjectCheck.stdout, /checked 1 Z modules/);
+  assert.equal(existsSync(`${foreignProjectContract}.zfdcl`), true);
+  const foreignApplication = resolve(directory, "foreign-application-native");
+  const foreignBuild = spawnSync(
+    driver,
+    ["build", foreignProjectSource, foreignApplication],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(foreignBuild.status, 0, foreignBuild.stderr);
+  assert.match(foreignBuild.stdout, /compiled 1 Z modules/);
+  const foreignExecution = spawnSync(
+    foreignApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignExecution.status, 42, foreignExecution.stderr);
 
   const applicationSource = resolve(
     projectRoot,
@@ -10023,7 +10146,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(running.status, 0, running.stderr);
   assert.match(running.stdout, /compiled 1 Z modules/);
-}, 30_000);
+}, 45_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");

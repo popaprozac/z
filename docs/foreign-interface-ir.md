@@ -171,12 +171,14 @@ TypeScript object layouts or JSON as compiler architecture. An end-to-end
 fixture runs a scalar C header through Clang, the stream encoder, native Z
 decoding, strict C compilation, and execution.
 
-The same producer/decoder seam is now exposed across standalone processes:
-Stage 0's internal `self-host-foreign` command writes a header-addressed
-artifact, and the self-emitted native driver validates it without relying on a
-TypeScript representation. Ordinary native `check` still rejects the import;
-decoding untrusted declarations is not equivalent to applying `.zd` facts or
-constructing validated FIIR.
+The same producer/decoder seam is now exposed across standalone processes.
+Stage 0's internal command and the `z-foreign-adapter` executable share one
+header-addressed producer. The self-emitted native driver finds the adjacent
+`.zd`, invokes that adapter from `PATH`, decodes its regenerated
+`<contract>.zfdcl` artifact, and performs contract normalization itself without
+relying on a TypeScript representation. Decoding untrusted declarations is
+still not equivalent to validated FIIR: a missing adapter/contract, unsupported
+raw declaration category, or unsupported contract fact rejects the import.
 
 The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
 the existing `declare module`, inferred scalar `export function`, and decimal
@@ -217,10 +219,11 @@ selective and namespace calls without exposing producer records to lowering.
    frame storage;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
-5. automate standalone-driver invocation of the implemented
-   Clang-to-`ZFDCL` adapter, then add records for native types, constants,
-   callbacks, Objective-C declarations, interfaces, and protocols without
-   weakening its fail-closed boundary;
+5. move the implemented standalone-driver adapter invocation from its
+   regenerated beside-contract bootstrap artifact to a target-aware production
+   cache, then add records for native types, constants, callbacks, Objective-C
+   declarations, interfaces, and protocols without weakening its fail-closed
+   boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal
    integer statuses through symbolic/enum statuses, ownership, pointer, buffer,
    callback, executor, and native-value facts, then extend the validated
