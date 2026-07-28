@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { basename, delimiter, resolve } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -9875,6 +9875,10 @@ test("compiles a multi-module Z application through the standalone native driver
     foreignProject,
     "foreign-functions-only.c",
   );
+  const foreignProjectDependency = resolve(
+    foreignProject,
+    "foreign-dependency.h",
+  );
   writeFileSync(
     foreignProjectSource,
     readFileSync(
@@ -9887,11 +9891,13 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   writeFileSync(
     foreignProjectHeader,
-    readFileSync(
-      resolve(projectRoot, "tests/fixtures/foreign-functions-only.h"),
-      "utf8",
-    ),
+    '#include "foreign-dependency.h"\n'
+      + readFileSync(
+        resolve(projectRoot, "tests/fixtures/foreign-functions-only.h"),
+        "utf8",
+      ).replace(/\bint\b/g, "Z_FOREIGN_INT"),
   );
+  writeFileSync(foreignProjectDependency, "#define Z_FOREIGN_INT int\n");
   writeFileSync(
     foreignProjectContract,
     readFileSync(
@@ -9963,7 +9969,91 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(foreignProjectCheck.status, 0, foreignProjectCheck.stderr);
   assert.match(foreignProjectCheck.stdout, /checked 1 Z modules/);
-  assert.equal(existsSync(`${foreignProjectContract}.zfdcl`), true);
+  assert.equal(existsSync(`${foreignProjectContract}.zfdcl`), false);
+  const foreignCacheDirectory = resolve(
+    foreignProject,
+    ".z-cache/foreign",
+  );
+  const cachedForeignArtifacts = readdirSync(foreignCacheDirectory)
+    .filter((entry) => entry.endsWith(".zfdcl"));
+  assert.equal(cachedForeignArtifacts.length, 1);
+  const cachedForeignArtifact = resolve(
+    foreignCacheDirectory,
+    cachedForeignArtifacts[0],
+  );
+  const cachedForeignMetadata = `${cachedForeignArtifact}.meta`;
+  assert.equal(existsSync(cachedForeignMetadata), true);
+  utimesSync(cachedForeignArtifact, 0, 0);
+  utimesSync(cachedForeignMetadata, 0, 0);
+  const cachedForeignCheck = spawnSync(
+    driver,
+    ["check", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(cachedForeignCheck.status, 0, cachedForeignCheck.stderr);
+  assert.equal(statSync(cachedForeignArtifact).mtimeMs, 0);
+  assert.equal(statSync(cachedForeignMetadata).mtimeMs, 0);
+
+  writeFileSync(
+    foreignProjectDependency,
+    "#define Z_FOREIGN_INT signed int\n",
+  );
+  const invalidatedForeignCheck = spawnSync(
+    driver,
+    ["check", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    invalidatedForeignCheck.status,
+    0,
+    invalidatedForeignCheck.stderr,
+  );
+  assert.ok(statSync(cachedForeignArtifact).mtimeMs > 0);
+  assert.ok(statSync(cachedForeignMetadata).mtimeMs > 0);
+
+  const additionalIncludeDirectory = resolve(
+    foreignProject,
+    "additional-include",
+  );
+  mkdirSync(additionalIncludeDirectory);
+  writeFileSync(
+    resolve(foreignProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        entry: "main.zs",
+        includeDirectories: [".", "additional-include"],
+        link: {
+          directories: ["."],
+          libraries: ["zforeignfixture"],
+        },
+      },
+    }, null, 2)}\n`,
+  );
+  const targetChangedForeignCheck = spawnSync(
+    driver,
+    ["check", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    targetChangedForeignCheck.status,
+    0,
+    targetChangedForeignCheck.stderr,
+  );
+  assert.equal(
+    readdirSync(foreignCacheDirectory)
+      .filter((entry) => entry.endsWith(".zfdcl"))
+      .length,
+    2,
+  );
   const foreignApplication = resolve(directory, "foreign-application-native");
   const foreignBuild = spawnSync(
     driver,

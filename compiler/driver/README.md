@@ -35,13 +35,17 @@ For the first function-only scalar/status tier, the driver discovers the same
 adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
 `z-foreign-adapter` tool found on `PATH`, decodes its versioned Clang
 declaration stream, normalizes the contract in Z, and supplies only checked
-callables to native semantic analysis. The producer writes a temporary
-bootstrap artifact beside the contract as `<contract>.zfdcl`; it is regenerated
-before every use and is not trusted as a cache. A missing contract, missing
-adapter, malformed producer stream, unsupported declaration category, or
-unimplemented contract fact fails at the boundary. C++, Objective-C, Swift,
-records, constants, callbacks, symbolic statuses, and richer `.zd` facts remain
-with Stage 0 until their raw records and normalized FIIR cross together.
+callables to native semantic analysis. Artifacts live under the owning
+project's `.z-cache/foreign`; their driver identity includes the importing
+module, header, contract contents, include directories, and target settings.
+The adapter metadata additionally hashes Clang's preprocessed header view, so a
+cache hit skips the AST producer while changes in transitive headers invalidate
+the evidence. A missing contract, missing adapter, malformed producer stream,
+unsupported declaration category, or unimplemented contract fact fails at the
+boundary. C++, Objective-C, Swift, records, constants, callbacks, symbolic
+statuses, and richer `.zd` facts remain with Stage 0 until their raw records and
+normalized FIIR cross together. Cross-process cache locking and eviction remain
+toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

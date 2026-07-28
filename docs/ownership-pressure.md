@@ -1232,9 +1232,22 @@ the binary exits with the expected status 42. Automatic adapter invocation is
 now connected at the standalone driver boundary: it discovers the adjacent
 contract, launches `z-foreign-adapter`, regenerates the versioned producer
 artifact, normalizes it in Z, strict-compiles the imported call, and runs the
-same application to status 42. Replacing the temporary beside-contract
-artifact with a target-aware cache remains deployment hygiene rather than a
-semantic dependency.
+same application to status 42. The next cache slice moves that evidence under
+the project's `.z-cache/foreign`, includes module/contract/target inputs in its
+identity, and records a SHA-256 fingerprint of Clang's preprocessed header
+view. A repeated check leaves both artifact and metadata untouched; changing a
+transitively included macro rewrites them, and changing include/target inputs
+selects a distinct driver identity. On the fixture, five warm cached native
+checks average 40.1 ms (38.9–43.0 ms) while still running the preprocessor
+fingerprint before trusting the artifact.
+
+Writing that identity in self-hosted Z exposed another honest subset boundary:
+the native emitter does not yet lower explicit integer construction or
+`wrappingMultiply`, even though Stage 0 accepts both. The cache deliberately
+uses its already-proven `u8` bitwise subset while adapter SHA metadata remains
+the authoritative collision/freshness check. Native integer conversion and
+wrapping-method lowering are now concrete follow-up work rather than a hidden
+dependency of foreign caching.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

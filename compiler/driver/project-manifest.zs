@@ -600,7 +600,8 @@ function validateProjectConfig(
 export function loadProjectConfig(
   in entryPath: String
 ): NativeProjectConfig throws String {
-  let directory = directoryName(entryPath);
+  const entryDirectory = directoryName(entryPath);
+  let directory = copy entryDirectory;
   while (true) {
     const candidate = normalizedModulePath(`${directory}/z.json`);
     if (fs.exists(candidate)) {
@@ -611,7 +612,11 @@ export function loadProjectConfig(
       return config;
     }
     const parent = directoryName(directory);
-    if (parent == directory) return emptyProjectConfig();
+    if (parent == directory) {
+      let config = emptyProjectConfig();
+      config.directory = copy entryDirectory;
+      return config;
+    }
     directory = move parent;
   }
   throw "project manifest search did not terminate";

@@ -201,12 +201,14 @@ integer-status contracts before native semantic analysis. Selective and
 namespace calls then lower through the ordinary graph: scalar calls remain
 direct, while status calls use a generated C11 wrapper that invokes the native
 function once and constructs `Result<void, E>` from the checked success set.
-The bootstrap producer artifact is regenerated beside the contract before use;
-it is evidence crossing a process boundary, not a trusted cache. Missing
-contracts/adapters and unsupported records or facts fail at the source import.
-Symbolic status constants, exact status-literal range checks, richer
-declaration records/facts, and a production cache location remain; raw decoding
-alone is never a trusted foreign import.
+Producer artifacts live in `.z-cache/foreign` under an identity derived from
+the importing module, header, contract, include paths, and target. The adapter
+stores a SHA-256 metadata key over Clang's preprocessed header view and the
+contract, so unchanged checks reuse the declaration stream while transitive
+header changes regenerate it. Missing contracts/adapters and unsupported
+records or facts fail at the source import. Symbolic status constants, exact
+status-literal range checks, richer declaration records/facts, cache locking,
+and eviction remain; raw decoding alone is never a trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

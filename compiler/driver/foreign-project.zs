@@ -1,5 +1,6 @@
 import fs from "std/fs";
 import process from "std/process";
+import { TextBuffer } from "std/text";
 import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
@@ -81,6 +82,109 @@ function existingForeignContract(
   return Option<String>.none;
 }
 
+struct CacheHash {
+  first: u8;
+  second: u8;
+  third: u8;
+  fourth: u8;
+  fifth: u8;
+  sixth: u8;
+  seventh: u8;
+  eighth: u8;
+  lane: usize;
+}
+
+function hashByte(inout hash: CacheHash, byte: u8): void {
+  if (hash.lane == 0) {
+    hash.first = hash.first ^ byte ^ hash.eighth;
+  } else if (hash.lane == 1) {
+    hash.second = hash.second ^ byte ^ hash.first;
+  } else if (hash.lane == 2) {
+    hash.third = hash.third ^ byte ^ hash.second;
+  } else if (hash.lane == 3) {
+    hash.fourth = hash.fourth ^ byte ^ hash.third;
+  } else if (hash.lane == 4) {
+    hash.fifth = hash.fifth ^ byte ^ hash.fourth;
+  } else if (hash.lane == 5) {
+    hash.sixth = hash.sixth ^ byte ^ hash.fifth;
+  } else if (hash.lane == 6) {
+    hash.seventh = hash.seventh ^ byte ^ hash.sixth;
+  } else {
+    hash.eighth = hash.eighth ^ byte ^ hash.seventh;
+  }
+  hash.lane = hash.lane + 1;
+  if (hash.lane == 8) hash.lane = 0;
+}
+
+function hashText(inout hash: CacheHash, in value: String): void {
+  let index: usize = 0;
+  while (index < value.byteLength) {
+    hashByte(inout hash, value.byteAt(index));
+    index = index + 1;
+  }
+  hashByte(inout hash, 255);
+}
+
+function appendHexDigit(inout output: TextBuffer, value: u8): void {
+  if (value < 10) {
+    output.appendAscii(48 + value);
+  } else {
+    output.appendAscii(87 + value);
+  }
+}
+
+function appendHexByte(inout output: TextBuffer, value: u8): void {
+  appendHexDigit(inout output, value >> 4);
+  appendHexDigit(inout output, value & 15);
+}
+
+function cacheIdentity(
+  in modulePath: String,
+  in header: String,
+  in contractPath: String,
+  in contractSource: String,
+  in config: NativeProjectConfig
+): String {
+  let hash = CacheHash({
+    first: 19,
+    second: 47,
+    third: 73,
+    fourth: 101,
+    fifth: 131,
+    sixth: 157,
+    seventh: 193,
+    eighth: 229,
+    lane: 0,
+  });
+  hashText(inout hash, "zfdcl-cache-v1");
+  hashText(inout hash, modulePath);
+  hashText(inout hash, header);
+  hashText(inout hash, contractPath);
+  hashText(inout hash, contractSource);
+  hashText(inout hash, config.directory);
+  for (const includeDirectory of config.includeDirectories) {
+    hashText(inout hash, includeDirectory);
+  }
+  match (in config.platform) {
+    some(platform) => hashText(inout hash, platform);
+    none => hashText(inout hash, "host-default");
+  }
+  match (in config.minimumVersion) {
+    some(version) => hashText(inout hash, version);
+    none => hashText(inout hash, "");
+  }
+  let output = TextBuffer();
+  appendHexByte(inout output, hash.first);
+  appendHexByte(inout output, hash.second);
+  appendHexByte(inout output, hash.third);
+  appendHexByte(inout output, hash.fourth);
+  appendHexByte(inout output, hash.fifth);
+  appendHexByte(inout output, hash.sixth);
+  appendHexByte(inout output, hash.seventh);
+  appendHexByte(inout output, hash.eighth);
+  return output.finish();
+}
+
 export function loadForeignModuleContract(
   in modulePath: String,
   in moduleSource: String,
@@ -103,7 +207,17 @@ export function loadForeignModuleContract(
       moduleSource
     );
   };
-  const artifactPath = `${contractPath}.zfdcl`;
+  const contractSource = try fs.readText(contractPath);
+  const identity = cacheIdentity(
+    modulePath,
+    header,
+    contractPath,
+    contractSource,
+    config
+  );
+  const artifactPath = normalizedModulePath(
+    `${config.directory}/.z-cache/foreign/${identity}.zfdcl`
+  );
   let adapterArguments = Array<String>();
   adapterArguments.push(copy modulePath);
   adapterArguments.push(copy header);
@@ -133,7 +247,6 @@ export function loadForeignModuleContract(
   }
   const declarationSource = try fs.readText(artifactPath);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
-  const contractSource = try fs.readText(contractPath);
   const contracts = try parseForeignContracts(contractSource, contractPath);
   const normalized = try normalizeForeignContracts(
     contracts,

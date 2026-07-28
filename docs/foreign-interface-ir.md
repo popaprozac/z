@@ -174,11 +174,15 @@ decoding, strict C compilation, and execution.
 The same producer/decoder seam is now exposed across standalone processes.
 Stage 0's internal command and the `z-foreign-adapter` executable share one
 header-addressed producer. The self-emitted native driver finds the adjacent
-`.zd`, invokes that adapter from `PATH`, decodes its regenerated
-`<contract>.zfdcl` artifact, and performs contract normalization itself without
-relying on a TypeScript representation. Decoding untrusted declarations is
-still not equivalent to validated FIIR: a missing adapter/contract, unsupported
-raw declaration category, or unsupported contract fact rejects the import.
+`.zd`, invokes that adapter from `PATH`, decodes its project-local
+`.z-cache/foreign` artifact, and performs contract normalization itself without
+relying on a TypeScript representation. Driver identities include module,
+header, contract, include directories, and target settings. Adapter metadata
+hashes Clang's complete preprocessed header view plus the contract; a hit skips
+AST production, while a direct or transitive header change regenerates the
+stream. Decoding untrusted declarations is still not equivalent to validated
+FIIR: a missing adapter/contract, unsupported raw declaration category, or
+unsupported contract fact rejects the import.
 
 The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
 the existing `declare module`, inferred scalar `export function`, and decimal
@@ -219,11 +223,10 @@ selective and namespace calls without exposing producer records to lowering.
    frame storage;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
-5. move the implemented standalone-driver adapter invocation from its
-   regenerated beside-contract bootstrap artifact to a target-aware production
-   cache, then add records for native types, constants, callbacks, Objective-C
-   declarations, interfaces, and protocols without weakening its fail-closed
-   boundary;
+5. add cross-process locking and eviction to the implemented target-aware
+   foreign artifact cache, then add records for native types, constants,
+   callbacks, Objective-C declarations, interfaces, and protocols without
+   weakening its fail-closed boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal
    integer statuses through symbolic/enum statuses, ownership, pointer, buffer,
    callback, executor, and native-value facts, then extend the validated

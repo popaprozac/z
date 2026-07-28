@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import type { ImportDeclaration } from "./ast.ts";
@@ -200,6 +201,84 @@ export function resolveForeignFunctionDeclarationStream(
     );
   }
   return encodeForeignFunctionDeclarationStream(resolved.header.declarations);
+}
+
+export function fingerprintForeignFunctionDeclarations(
+  declaration: ImportDeclaration,
+  fileName: string,
+  projectIncludeDirectories: readonly string[] = [],
+  deploymentTarget: DeploymentTarget | null = null,
+): string {
+  const sourceDirectory = resolve(dirname(fileName));
+  const includeDirectories = [
+    ...new Set([
+      resolve(dirname(declaration.location.fileName ?? fileName)),
+      sourceDirectory,
+      ...projectIncludeDirectories.map((directory) => resolve(directory)),
+    ]),
+  ];
+  const headerDirectory = includeDirectories.find(
+    (directory) => existsSync(resolve(directory, declaration.header)),
+  ) ?? includeDirectories[0];
+  const localHeader = resolve(headerDirectory, declaration.header);
+  const framework = discoverFramework(declaration.header);
+  const objectiveC = Boolean(framework)
+    || isSwiftCompatibilityHeader(declaration.header)
+    || (
+      existsSync(localHeader)
+      && /(?:^|\n)\s*(?:@interface|@protocol|@class|#import\b)/.test(
+        readFileSync(localHeader, "utf8"),
+      )
+    );
+  const cPlusPlus = isCPlusPlusHeader(declaration.header);
+  const language = objectiveC
+    ? cPlusPlus ? "objective-c++" : "objective-c"
+    : cPlusPlus ? "c++" : "c";
+  const clangArguments = [
+    "-x", language,
+    ...(cPlusPlus ? ["-std=c++20"] : []),
+    ...(objectiveC ? ["-fobjc-arc"] : []),
+    ...deploymentTargetFlags(deploymentTarget),
+    ...includeDirectories.flatMap((directory) => ["-I", directory]),
+    "-include", declaration.header,
+    "-E",
+    "-P",
+    "/dev/null",
+  ];
+  const command = objectiveC ? "xcrun" : "clang";
+  const commandArguments = objectiveC
+    ? ["clang", ...clangArguments]
+    : clangArguments;
+  const result = runWithBufferedStdoutOrSpill(
+    command,
+    commandArguments,
+    objectiveC ? 512 * 1024 * 1024 : 64 * 1024 * 1024,
+  );
+  if (result.error) {
+    throw new DiagnosticError(
+      fileName,
+      declaration.location,
+      `could not run Clang dependency fingerprint for header ${JSON.stringify(declaration.header)}: ${result.error.message}`,
+    );
+  }
+  if (result.status !== 0) {
+    const lines = result.stderr.trim().split("\n");
+    const detail = lines.find((line) => line.includes("error:"))
+      ?? lines[0]
+      ?? "Clang could not preprocess the header";
+    throw new DiagnosticError(
+      fileName,
+      declaration.location,
+      `could not fingerprint header ${JSON.stringify(declaration.header)}: ${detail}`,
+    );
+  }
+  return createHash("sha256")
+    .update(command)
+    .update("\0")
+    .update(commandArguments.join("\0"))
+    .update("\0")
+    .update(result.stdout)
+    .digest("hex");
 }
 
 function resolveImportedHeaders(
