@@ -169,7 +169,8 @@ without a shell. Export-only entries remain checkable, while executable
 commands produce Z-owned missing/invalid-`main` diagnostics before Clang. Stage
 0 seeds generation one, which now rebuilds the same 30-module driver to
 byte-identical C and produces a generation-two compiler that checks an
-independent project. Project
+independent project. Native build/run also distinguish debuggable `-O0` output
+from explicit `--release` output built with `-O2 -DNDEBUG`. Project
 manifests, foreign imports, target configuration, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and the
 complete compiler command surface remain subsequent slices.

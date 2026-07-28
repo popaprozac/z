@@ -1004,9 +1004,10 @@ Continue focused self-hosting work in this order:
    it, producing a separate two-module application without Bun; `run` launches
    that artifact without a shell and forwards program arguments. `check`
    accepts export-only modules, while executable commands diagnose missing or
-   incompatible `main` in Z before Clang. `z.json`,
+   incompatible `main` in Z before Clang. `build` and `run` default to `-O0`
+   and accept `--release` for `-O2 -DNDEBUG`. `z.json`,
    foreign discovery,
-   target/link configuration, release profiles, richer diagnostics,
+   target/link configuration, manifest-selected/custom profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic
    temporary run artifacts, and complete production options remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus

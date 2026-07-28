@@ -17,15 +17,16 @@ command is intentionally smaller than the production `z` CLI:
 ```text
 z-native check <entry.zs>
 z-native emit <entry.zs> <output.c>
-z-native build <entry.zs> <output>
-z-native run <entry.zs> <output> [-- args...]
+z-native build <entry.zs> <output> [--release]
+z-native run <entry.zs> <output> [--release] [-- args...]
 ```
 
 It supports the self-hosting language and runtime subset. Project manifests,
 foreign header discovery, target configuration, release profiles, polished
 diagnostics, automatic temporary output selection for `run`, and the complete
 production command options remain with Stage 0 until equivalent native paths
-are proven.
+are proven. The current debug profile uses Clang `-O0`; `--release` uses
+`-O2 -DNDEBUG`.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

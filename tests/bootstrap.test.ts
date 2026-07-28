@@ -9260,6 +9260,8 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
   assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
   assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
+  assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);
 
   const directory = mkdtempSync("/tmp/z-self-host-native-compiler-");
   const driver = resolve(directory, "z-native");
@@ -9359,6 +9361,16 @@ test("compiles a multi-module Z application through the standalone native driver
   const execution = spawnSync(application, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
 
+  const releaseApplication = resolve(directory, "release-application");
+  const releaseCompilation = spawnSync(
+    driver,
+    ["build", applicationSource, releaseApplication, "--release"],
+    { encoding: "utf8" },
+  );
+  assert.equal(releaseCompilation.status, 0, releaseCompilation.stderr);
+  const releaseExecution = spawnSync(releaseApplication, [], { encoding: "utf8" });
+  assert.equal(releaseExecution.status, 42, releaseExecution.stderr);
+
   const argumentApplicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-native-driver.zs",
@@ -9370,6 +9382,7 @@ test("compiles a multi-module Z application through the standalone native driver
       "run",
       argumentApplicationSource,
       argumentApplication,
+      "--release",
       "--",
       argumentApplicationSource,
     ],

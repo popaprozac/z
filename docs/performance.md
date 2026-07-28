@@ -40,6 +40,32 @@ deterministic ownership, structured task overhead, and native threads. ARC
 identity, Map/Set, generators, Objective-C/C++ boundary calls, and richer async
 fan-out remain explicit follow-up cases.
 
+## Standalone native compiler checkpoint
+
+On 2026-07-27, the recursively self-built 30-module native driver made a
+like-for-like compiler measurement possible. Hyperfine used warm caches, 12
+measured runs, and the same macOS arm64 development machine:
+
+| Operation | Stage 0 / Bun | Native `-O0` | Native `-O2 -DNDEBUG` |
+| --- | ---: | ---: | ---: |
+| Check the 30-module driver graph | 372.3 ms ± 4.1 ms | 601.7 ms ± 3.5 ms | 185.7 ms ± 1.3 ms |
+| Emit the 30-module driver graph to C | 1.095 s ± 0.006 s | 982.9 ms ± 4.7 ms | 257.7 ms ± 1.0 ms |
+| Check a two-module application | 52.6 ms ± 0.6 ms | 2.0 ms ± 0.1 ms | not separately measured |
+
+The results separate two conclusions. First, the ordinary `-O0` native compiler
+is not automatically faster: on its own large semantic workload it is about
+1.62 times slower than Bun, despite using less aggregate CPU. Second, the same
+generated C compiled as release code checks that graph 2.0 times faster than
+Bun and emits it about 4.25 times faster. The small-project native check removes
+most runtime startup overhead and is about 26.6 times faster than the Bun
+command.
+
+These are compiler-throughput measurements, not generated-program runtime
+benchmarks. They justify shipping the compiler itself as optimized native code
+while retaining a debuggable `-O0` output profile for user programs. They do not
+remove the need to profile String, collection, and semantic hot paths, and they
+must be repeated as foreign/project-manifest work enters the native command.
+
 ## Compiler developer-experience latency
 
 Runtime performance and compiler throughput are separate gates. During

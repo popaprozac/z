@@ -1132,6 +1132,14 @@ paths separately, stores the parsed module in preorder, and only then recurses.
 This preserves deterministic identity without keeping a borrow into moved AST
 storage.
 
+Build-profile measurements confirmed that bootstrap configuration is part of
+the compiler result. The same native source checked its 30-module graph in
+601.7 ms at `-O0` but 185.7 ms at `-O2 -DNDEBUG`, compared with 372.3 ms for
+the Bun Stage-0 check. Release native emission measured 257.7 ms versus 1.095 s
+for the Bun/self-host command. The driver now exposes `--release` on `build`
+and `run` instead of conflating its debuggable default with Z's optimized
+ceiling.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z
@@ -1172,9 +1180,9 @@ This is not yet a distributable replacement for Stage 0. The native loader now
 canonicalizes every module through typed `fs.realPath`, preventing lexical or
 symlink aliases from creating duplicate module identities, but supports only
 the self-hosting subset. Manifest loading, foreign header and `.zd` ingestion,
-target/link configuration, release profiles, complete diagnostics, automatic
-temporary run artifacts, and production command options remain to cross
-independently.
+target/link configuration, manifest-selected/custom profiles, complete
+diagnostics, automatic temporary run artifacts, and production command options
+remain to cross independently.
 
 ## Not tested yet
 
