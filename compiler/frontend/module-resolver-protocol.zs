@@ -522,6 +522,8 @@ function appendExpressionResolution(
   output.appendAscii(9);
   appendHexText(inout output, resolution.typeName);
   output.appendAscii(9);
+  appendHexText(inout output, resolution.targetName);
+  output.appendAscii(9);
   appendHexUsize(inout output, resolution.typeIdentities.length);
   for (const identity of resolution.typeIdentities) {
     output.appendAscii(9);

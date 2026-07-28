@@ -47,6 +47,45 @@ function foreignFunctionIndex(
   return Option<usize>.none;
 }
 
+function foreignConstantIndex(
+  in contracts: NativeForeignContractSet,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < contracts.constants.length) {
+    if (contracts.constants[index].name == name) {
+      return Option<usize>.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function foreignTypeIndex(
+  in contracts: NativeForeignContractSet,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < contracts.types.length) {
+    if (contracts.types[index].name == name) {
+      return Option<usize>.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function localForeignTypeName(
+  in types: Array<NativeForeignTypeContract>,
+  in namespace: String,
+  in typeName: String
+): String {
+  for (const type of types) {
+    if (type.name == typeName) return `${namespace}.${type.name}`;
+  }
+  return typeName.copyBytes(0, typeName.byteLength);
+}
+
 function foreignFunctionSignature(
   in contract: NativeForeignFunctionContract,
   in types: Array<NativeForeignTypeContract>,
@@ -57,21 +96,13 @@ function foreignFunctionSignature(
   for (const parameter of contract.parameters) {
     parameterModes.push("value");
     parameterTypes.push(
-      parameter.typeName.copyBytes(0, parameter.typeName.byteLength)
+      localForeignTypeName(types, namespace, parameter.typeName)
     );
   }
   let errorType = "";
   match (in contract.errorType) {
     some(typeName) => {
-      let foreign = false;
-      for (const type of types) {
-        if (type.name != typeName) continue;
-        errorType = `${namespace}.${type.name}`;
-        foreign = true;
-      }
-      if (!foreign) {
-        errorType = typeName.copyBytes(0, typeName.byteLength);
-      }
+      errorType = localForeignTypeName(types, namespace, typeName);
     }
     none => {}
   }
@@ -142,6 +173,7 @@ function attachSelectiveFunction(
       0,
       contracts.functions[contractIndex].nativeName.byteLength
     );
+  modules[moduleIndex].symbols[symbolIndex].valueType = "";
   modules[moduleIndex].symbols[symbolIndex].functionSignature =
     Option<ModuleFunctionSignature>.some(
       foreignFunctionSignature(
@@ -189,6 +221,7 @@ function attachNamespaceFunctions(
         0,
         contract.nativeName.byteLength
       ),
+      valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.some(
         foreignFunctionSignature(contract, contracts.types, namespace)
       ),
@@ -198,6 +231,48 @@ function attachNamespaceFunctions(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: successValues,
+      offset,
+      line,
+      column,
+    }));
+  }
+  modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
+    modules[moduleIndex].symbols
+  );
+}
+
+function attachNamespaceConstants(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): void {
+  for (const contract of contracts.constants) {
+    const name = `${namespace}.${contract.name}`;
+    modules[moduleIndex].symbols.push(ModuleSymbol({
+      name,
+      kind: ModuleSymbolKind.importedSymbol,
+      exported: false,
+      targetModule: Option<usize>.none,
+      importedName: contract.nativeName.copyBytes(
+        0,
+        contract.nativeName.byteLength
+      ),
+      valueType: localForeignTypeName(
+        contracts.types,
+        namespace,
+        contract.typeName
+      ),
+      functionSignature: Option<ModuleFunctionSignature>.none,
+      typeSignature: Option<ModuleTypeSignature>.none,
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: Array<String>(),
       offset,
       line,
       column,
@@ -252,6 +327,7 @@ function attachForeignTypes(
         0,
         contracts.moduleSpecifier.byteLength
       ),
+      valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
       typeSignature: Option<ModuleTypeSignature>.none,
       foreignHeader: contracts.moduleSpecifier.copyBytes(
@@ -275,6 +351,7 @@ function attachForeignTypes(
       exported: false,
       targetModule: Option<usize>.none,
       importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
+      valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
       typeSignature: Option<ModuleTypeSignature>.some(
         foreignTypeSignature(type)
@@ -292,6 +369,59 @@ function attachForeignTypes(
   modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
     modules[moduleIndex].symbols
   );
+}
+
+function attachSelectiveConstant(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  in localName: String,
+  constantIndex: usize
+): void {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
+  modules[moduleIndex].symbols[symbolIndex].importedName =
+    contracts.constants[constantIndex].nativeName.copyBytes(
+      0,
+      contracts.constants[constantIndex].nativeName.byteLength
+    );
+  modules[moduleIndex].symbols[symbolIndex].valueType = localForeignTypeName(
+    contracts.types,
+    namespace,
+    contracts.constants[constantIndex].typeName
+  );
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    );
+}
+
+function attachSelectiveType(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in localName: String,
+  typeIndex: usize
+): void {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
+  modules[moduleIndex].symbols[symbolIndex].kind =
+    ModuleSymbolKind.enumSymbol;
+  modules[moduleIndex].symbols[symbolIndex].importedName =
+    contracts.types[typeIndex].nativeName.copyBytes(
+      0,
+      contracts.types[typeIndex].nativeName.byteLength
+    );
+  modules[moduleIndex].symbols[symbolIndex].valueType = "";
+  modules[moduleIndex].symbols[symbolIndex].typeSignature =
+    Option<ModuleTypeSignature>.some(
+      foreignTypeSignature(contracts.types[typeIndex])
+    );
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    );
 }
 
 function attachModuleContract(
@@ -339,20 +469,63 @@ function attachModuleContract(
         );
         const line = importBinding.line;
         const column = importBinding.column;
-        try attachSelectiveFunction(
-          parsed[moduleIndex],
-          moduleIndex,
-          inout modules,
-          binding.contracts,
-          namespace,
-          localName,
-          importedName,
-          line,
-          column
-        );
+        match (foreignFunctionIndex(binding.contracts, importedName)) {
+          some(_) => try attachSelectiveFunction(
+            parsed[moduleIndex],
+            moduleIndex,
+            inout modules,
+            binding.contracts,
+            namespace,
+            localName,
+            importedName,
+            line,
+            column
+          );
+          none => match (foreignConstantIndex(
+            binding.contracts,
+            importedName
+          )) {
+            some(index) => attachSelectiveConstant(
+              moduleIndex,
+              inout modules,
+              binding.contracts,
+              namespace,
+              localName,
+              index
+            );
+            none => match (foreignTypeIndex(
+              binding.contracts,
+              importedName
+            )) {
+              some(index) => attachSelectiveType(
+                moduleIndex,
+                inout modules,
+                binding.contracts,
+                localName,
+                index
+              );
+              none => throw missingContract(
+                parsed[moduleIndex],
+                line,
+                column,
+                binding.contracts.moduleSpecifier,
+                importedName
+              );
+            }
+          }
+        }
       }
     } else {
       attachNamespaceFunctions(
+        moduleIndex,
+        inout modules,
+        binding.contracts,
+        namespace,
+        declaration.offset,
+        declaration.line,
+        declaration.column
+      );
+      attachNamespaceConstants(
         moduleIndex,
         inout modules,
         binding.contracts,

@@ -106,6 +106,7 @@ export struct LoweredParameter {
 
 export enum LoweredExpressionKind {
   localValue,
+  foreignValue,
   parameterValue,
   receiverValue,
   integerValue,
@@ -2181,6 +2182,25 @@ function resolvedExpressionTypeName(
   return Option<String>.none;
 }
 
+function resolvedExpressionTargetName(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  for (const resolution of evidence.expressionResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+      && resolution.targetName.byteLength > 0
+    ) return Option.some(resolution.targetName.copyBytes(
+      0,
+      resolution.targetName.byteLength
+    ));
+  }
+  return Option<String>.none;
+}
+
 function loweredIntegerSourceType(
   in importedTypes: Array<LoweredImportedType>,
   in sourceType: String
@@ -2698,6 +2718,16 @@ function lowerExpression(
   index: usize,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  match (resolvedExpressionTargetName(evidence, tree, index)) {
+    some(targetName) => return pushExpression(
+      inout output,
+      LoweredExpressionKind.foreignValue,
+      targetName,
+      Array<usize>(),
+      Array<String>()
+    );
+    none => {}
+  }
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
     const kind = tree.nodes[index].value == "this"
       ? LoweredExpressionKind.receiverValue

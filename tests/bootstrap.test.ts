@@ -9474,6 +9474,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     emittedForeignSource,
     /ZForeignStatus failure;/,
   );
+  assert.match(
+    emittedForeignSource,
+    /z_foreign_status_code\(Z_FOREIGN_ENUM_OK\)/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /z_foreign_status_code\(Z_FOREIGN_ENUM_FAILED\)/,
+  );
   assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
   const foreignApplication = resolve(directory, "foreign-application");
   const foreignApplicationCompilation = spawnSync(
@@ -9543,6 +9551,30 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8" },
   );
   assert.equal(unhandledForeignStatus.status, 3);
+
+  const invalidForeignEnumPath = resolve(
+    directory,
+    "invalid-foreign-enum.zs",
+  );
+  writeFileSync(
+    invalidForeignEnumPath,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      "utf8",
+    ).replace(
+      "native.z_foreign_status_code(native.Z_FOREIGN_ENUM_OK)",
+      "native.z_foreign_status_code(0)",
+    ),
+  );
+  const invalidForeignEnum = spawnSync(
+    contractExecutable,
+    [clangPath, contractPath, invalidForeignEnumPath, emittedForeignPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidForeignEnum.status, 3);
 
   const uncontractedForeignFunctionPath = resolve(
     directory,
@@ -9770,7 +9802,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignInspection.status, 0, foreignInspection.stderr);
   assert.match(
     foreignInspection.stdout,
-    /decoded 4 foreign functions from clang/,
+    /decoded 5 foreign functions from clang/,
   );
   const invalidForeignAdapterStream = resolve(
     directory,
@@ -9810,7 +9842,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 3 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 4 foreign function contracts for foreign-functions-only\.h/,
   );
   const mismatchedEnumContract = resolve(
     directory,
@@ -12409,7 +12441,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
-    + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t0000000000000000\n"
+    + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t\t0000000000000000\n"
     + "order\t0000000000000000\n",
   );
   assert.deepEqual(callEvidenceGraph.modules[0].callResolutions, [{
@@ -12443,6 +12475,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     line: 2,
     column: 10,
     typeName: "i32",
+    targetName: "",
     typeIdentities: [],
   }]);
   const structuralTopology = decodeStage1ModuleGraphStream("", {
@@ -12580,6 +12613,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
           line: 6,
           column: 3,
           typeName: "State",
+          targetName: "",
           typeIdentities: [{
             path: "",
             targetModule: 0,
@@ -12705,6 +12739,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     line: 6,
     column: 3,
     typeName: "State",
+    targetName: "",
     typeIdentities: [{ path: "", targetModule: 0, targetSymbol: 2 }],
   }]);
   assert.deepEqual(structuralTopology.modules[1].symbols[0], {

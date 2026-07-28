@@ -63,6 +63,7 @@ export struct ModuleExpressionResolution {
   line: usize;
   column: usize;
   typeName: String;
+  targetName: String;
   typeIdentities: Array<ModuleTypeIdentity>;
 }
 
@@ -119,6 +120,7 @@ export struct ModuleSymbol {
   exported: boolean;
   targetModule: Option<usize>;
   importedName: String;
+  valueType: String;
   functionSignature: Option<ModuleFunctionSignature>;
   typeSignature: Option<ModuleTypeSignature>;
   foreignHeader: String;

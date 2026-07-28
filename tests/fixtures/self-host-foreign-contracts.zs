@@ -46,7 +46,12 @@ function inspect(
   if (normalized.types[0].name != "ZForeignStatus") return 46;
   if (normalized.types[0].nativeName != "ZForeignStatus") return 47;
   if (normalized.types[0].underlyingType != "i32") return 48;
-  if (normalized.functions.length != 3) return 11;
+  if (normalized.constants.length != 5) return 52;
+  if (normalized.constants[0].name != "Z_FOREIGN_ENUM_OK") return 53;
+  if (normalized.constants[0].typeName != "ZForeignStatus") return 54;
+  if (normalized.constants[2].typeName != "i32") return 55;
+  if (normalized.constants[4].typeName != "u32") return 56;
+  if (normalized.functions.length != 4) return 11;
   if (normalized.functions[0].name != "z_foreign_add") return 12;
   if (normalized.functions[0].nativeName != "z_foreign_add") return 13;
   if (normalized.functions[0].returnType != "i32") return 14;
@@ -84,6 +89,11 @@ function inspect(
     normalized.functions[2].successValues[0]
       != "Z_FOREIGN_ENUM_OK"
   ) return 34;
+  if (normalized.functions[3].name != "z_foreign_status_code") return 57;
+  if (
+    normalized.functions[3].parameters[0].typeName
+      != "ZForeignStatus"
+  ) return 58;
 
   const source = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({
@@ -118,7 +128,7 @@ function inspect(
     );
   };
   if (graph.modules.length != 1) return 29;
-  if (graph.modules[0].semanticEvidence.callResolutions.length != 5) return 30;
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 7) return 30;
   if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "foreign") {
     return 31;
   }
@@ -179,6 +189,40 @@ function inspect(
     graph.modules[0].semanticEvidence.callResolutions[4].errorType
       != "native.ZForeignStatus"
   ) return 51;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[5].targetName
+      != "z_foreign_status_code"
+  ) return 59;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[5].parameterTypes[0]
+      != "native.ZForeignStatus"
+  ) return 60;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[6].targetName
+      != "z_foreign_status_code"
+  ) return 61;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[6].parameterTypes[0]
+      != "__z_selective_import_0.ZForeignStatus"
+  ) return 62;
+  let constantEvidence: usize = 0;
+  for (
+    const resolution
+    of graph.modules[0].semanticEvidence.expressionResolutions
+  ) {
+    if (resolution.targetName == "Z_FOREIGN_ENUM_OK") {
+      if (resolution.typeName != "native.ZForeignStatus") return 63;
+      constantEvidence = constantEvidence + 1;
+    }
+    if (resolution.targetName == "Z_FOREIGN_ENUM_FAILED") {
+      if (
+        resolution.typeName
+          != "__z_selective_import_1.ZForeignStatus"
+      ) return 64;
+      constantEvidence = constantEvidence + 1;
+    }
+  }
+  if (constantEvidence != 2) return 65;
   const emitted = try emitModulesC(modules, graph);
   try fs.writeText(outputPath, emitted);
   return 0;

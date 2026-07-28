@@ -9,4 +9,6 @@ declare module "foreign-functions-only.h" {
   export function z_foreign_enum_status(code: _): void throws _ {
     success Z_FOREIGN_ENUM_OK;
   }
+
+  export function z_foreign_status_code(status: _): _;
 }

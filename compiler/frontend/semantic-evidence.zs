@@ -161,6 +161,37 @@ export function callableSymbolLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+export function foreignValueSymbolLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize
+): Option<ModuleSymbolLocation> {
+  let name = "";
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    name = identifierLookupName(tree.nodes[index].value);
+  } else if (
+    tree.nodes[index].kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    if (
+      tree.nodes[receiver].kind != ExpressionKind.identifierExpression
+    ) return Option<ModuleSymbolLocation>.none;
+    const namespace = identifierLookupName(tree.nodes[receiver].value);
+    const member = identifierLookupName(tree.nodes[index].value);
+    name = `${namespace}.${member}`;
+  } else return Option<ModuleSymbolLocation>.none;
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  if (
+    symbolIndex < modules[moduleIndex].symbols.length
+    && modules[moduleIndex].symbols[symbolIndex].kind
+      == ModuleSymbolKind.importedSymbol
+    && modules[moduleIndex].symbols[symbolIndex].valueType.byteLength > 0
+  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+  return Option<ModuleSymbolLocation>.none;
+}
+
 export function recordCallResolution(
   in tree: ExpressionTree,
   callIndex: usize,
@@ -280,8 +311,47 @@ export function recordExpressionResolution(
     line: tree.nodes[index].line,
     column: tree.nodes[index].column,
     typeName: typeName.copyBytes(0, typeName.byteLength),
+    targetName: "",
     typeIdentities,
   }));
+}
+
+export function recordForeignValueResolution(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in typeName: String,
+  in targetName: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  recordExpressionResolution(
+    modules,
+    moduleIndex,
+    tree,
+    index,
+    typeName,
+    inout evidence
+  );
+  let resolutionIndex: usize = 0;
+  while (resolutionIndex < evidence.expressionResolutions.length) {
+    if (
+      evidence.expressionResolutions[resolutionIndex].offset
+        == tree.nodes[index].offset
+      && evidence.expressionResolutions[resolutionIndex].line
+        == tree.nodes[index].line
+      && evidence.expressionResolutions[resolutionIndex].column
+        == tree.nodes[index].column
+    ) {
+      evidence.expressionResolutions[resolutionIndex].targetName =
+        targetName.copyBytes(
+        0,
+        targetName.byteLength
+      );
+      return;
+    }
+    resolutionIndex = resolutionIndex + 1;
+  }
 }
 
 export function recordBindingResolution(

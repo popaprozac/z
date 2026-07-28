@@ -1776,6 +1776,8 @@ typedef struct {
   uint64_t column;
   uint64_t type_name_data;
   uint64_t type_name_length;
+  uint64_t target_name_data;
+  uint64_t target_name_length;
   uint64_t identity_count;
 } Z_Stage1ExpressionResolutionRecord;
 
@@ -3314,6 +3316,12 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_expression_resolution_records(
         .type_name_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].semanticEvidence
           .expressionResolutions.data[resolution_index].typeName.length,
+        .target_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .expressionResolutions.data[resolution_index].targetName.data,
+        .target_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .expressionResolutions.data[resolution_index].targetName.length,
         .identity_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].semanticEvidence
           .expressionResolutions.data[resolution_index].typeIdentities.length,

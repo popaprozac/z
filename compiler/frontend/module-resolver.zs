@@ -38,8 +38,10 @@ import {
 import {
   callableSymbolLocation,
   emptySemanticEvidence,
+  foreignValueSymbolLocation,
   recordBindingResolution,
   recordExpressionResolution,
+  recordForeignValueResolution,
   recordForeignCallFacts,
   recordCallResolution,
 } from "./semantic-evidence.zs";
@@ -1307,8 +1309,39 @@ function inferExpressionNodeType(
     || kind == ExpressionKind.argumentBindingExpression
   ) {
     const lookup = identifierLookupName(value);
+    const bindingType = valueBindingType(bindings, lookup);
+    if (bindingType.byteLength > 0) {
+      try requireInitializedBinding(module, tree, index, bindings, lookup);
+      return bindingType;
+    }
+    match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
+      some(location) => {
+        recordForeignValueResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].valueType,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].importedName,
+          inout evidence
+        );
+        return modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].valueType.copyBytes(
+          0,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].valueType.byteLength
+        );
+      }
+      none => {}
+    }
     try requireInitializedBinding(module, tree, index, bindings, lookup);
-    return valueBindingType(bindings, lookup);
+    return "";
   }
   if (
     (kind == ExpressionKind.tryExpression || kind == ExpressionKind.attemptExpression)
@@ -1844,6 +1877,32 @@ function inferExpressionNodeType(
     return try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
   }
   if (kind == ExpressionKind.memberExpression && children.length == 1) {
+    match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
+      some(location) => {
+        recordForeignValueResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].valueType,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].importedName,
+          inout evidence
+        );
+        return modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].valueType.copyBytes(
+          0,
+          modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].valueType.byteLength
+        );
+      }
+      none => {}
+    }
     const receiverType = try inferExpressionNodeType(
       module,
       modules,

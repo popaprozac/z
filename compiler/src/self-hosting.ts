@@ -87,6 +87,7 @@ export type Stage1ModuleExpressionResolution = {
   readonly line: number;
   readonly column: number;
   readonly typeName: string;
+  readonly targetName: string;
   readonly typeIdentities: readonly Stage1ModuleTypeIdentity[];
 };
 
@@ -491,18 +492,21 @@ export function decodeStage1ModuleGraphStream(
       continue;
     }
     if (fields[0] === "expressionResolution") {
-      if (fields.length < 7) throw new Error(`malformed stage-1 expression resolution line: ${line}`);
+      if (fields.length < 8) throw new Error(`malformed stage-1 expression resolution line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "expression resolution module");
       const module = modules[moduleIndex];
       if (!module) throw new Error("stage-1 expression resolution appeared before its module");
       if (!/^(?:[0-9a-f]{2})*$/.test(fields[5])) {
         throw new Error(`malformed stage-1 expression resolution text: ${line}`);
       }
-      const identityCount = parseProtocolHexInteger(fields[6], "expression resolution identity count");
-      if (fields.length !== 7 + (identityCount * 3)) {
+      if (!/^(?:[0-9a-f]{2})*$/.test(fields[6])) {
+        throw new Error(`malformed stage-1 expression resolution target: ${line}`);
+      }
+      const identityCount = parseProtocolHexInteger(fields[7], "expression resolution identity count");
+      if (fields.length !== 8 + (identityCount * 3)) {
         throw new Error(`malformed stage-1 expression resolution identity arity: ${line}`);
       }
-      const encodedIdentities = fields.slice(7);
+      const encodedIdentities = fields.slice(8);
       const typeIdentities: Stage1ModuleTypeIdentity[] = [];
       for (let index = 0; index < encodedIdentities.length; index += 3) {
         if (!/^(?:[0-9a-f]{2})*$/.test(encodedIdentities[index])) {
@@ -519,6 +523,7 @@ export function decodeStage1ModuleGraphStream(
         line: parseProtocolHexInteger(fields[3], "expression resolution line"),
         column: parseProtocolHexInteger(fields[4], "expression resolution column"),
         typeName: Buffer.from(fields[5], "hex").toString("utf8"),
+        targetName: Buffer.from(fields[6], "hex").toString("utf8"),
         typeIdentities,
       });
       continue;

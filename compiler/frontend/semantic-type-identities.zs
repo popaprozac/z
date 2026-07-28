@@ -422,6 +422,30 @@ export function transparentTypeName(
   };
 }
 
+function symbolTypeIdentity(
+  in modules: Array<ResolvedModule>,
+  in location: ModuleSymbolLocation
+): String {
+  match (
+    in modules[location.moduleIndex].symbols[
+      location.symbolIndex
+    ].typeSignature
+  ) {
+    some(signature) => {
+      if (
+        signature.foreignNativeName.byteLength > 0
+        && modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].foreignHeader.byteLength > 0
+      ) {
+        return `@foreign:${modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader}:${signature.foreignNativeName}`;
+      }
+    }
+    none => {}
+  }
+  return `@${location.moduleIndex}:${location.symbolIndex}`;
+}
+
 export function semanticTypeIdentity(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -448,7 +472,7 @@ export function semanticTypeIdentity(
     some(generic) => {
       let base = generic.base.copyBytes(0, generic.base.byteLength);
       match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
-        some(location) => base = `@${location.moduleIndex}:${location.symbolIndex}`;
+        some(location) => base = symbolTypeIdentity(modules, location);
         none => {}
       }
       let output = TextBuffer();
@@ -467,7 +491,7 @@ export function semanticTypeIdentity(
     none => {}
   }
   return match (typeSymbolLocation(modules, moduleIndex, name)) {
-    some(location) => `@${location.moduleIndex}:${location.symbolIndex}`;
+    some(location) => symbolTypeIdentity(modules, location);
     none => name.copyBytes(0, name.byteLength);
   };
 }

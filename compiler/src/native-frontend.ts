@@ -1573,7 +1573,7 @@ export function resolveWithNativeFrontendLibrary(
         });
         expectedTypeIdentityCount += identityCount;
       }
-      const expressionResolutionRecordWidth = 8 * 8;
+      const expressionResolutionRecordWidth = 10 * 8;
       const expressionResolutionRecords = Buffer.alloc(
         Math.max(1, summary.expressionResolutionCount * expressionResolutionRecordWidth),
       );
@@ -1604,7 +1604,7 @@ export function resolveWithNativeFrontendLibrary(
         if (!module || resolutionIndex !== module.expressionResolutions.length) {
           throw new Error("the native frontend returned an out-of-order expression resolution");
         }
-        const identityCount = field(7, "identity count");
+        const identityCount = field(9, "identity count");
         const identities = new Array<NativeFrontendTypeIdentityStructure>(identityCount);
         module.expressionResolutions.push({
           offset: field(2, "offset"),
@@ -1614,6 +1614,11 @@ export function resolveWithNativeFrontendLibrary(
             field(5, "type-name pointer"),
             field(6, "type-name length"),
             "expression-resolution type name",
+          ),
+          targetName: nativeString(
+            field(7, "target-name pointer"),
+            field(8, "target-name length"),
+            "expression-resolution target name",
           ),
           typeIdentities: identities,
         });

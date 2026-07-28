@@ -1280,8 +1280,17 @@ graph, throwing calls produce `Result<void, ZForeignStatus>`, match payloads
 retain that type, and C lowering stores the header's real `ZForeignStatus`
 rather than an invented Z enum or flattened `i32`. Explicit `i32(status)`
 construction remains available because the producer supplied the underlying
-type. General enum parameters and constant expressions remain deliberately
-outside this narrow status path.
+type.
+
+The next native slice generalized that evidence without flattening it. Enum
+parameters in inferred `.zd` declarations now retain the exact imported enum
+identity, producer-proven constants become ordinary typed namespace or
+selective-import expressions, and native lowering emits their verified C
+spellings. A contextual integer literal is deliberately not accepted where a
+foreign enum is expected; users must pass a constant, retain an enum result, or
+write an explicit checked enum construction. The module graph exports the
+constant target spelling with expression evidence so aliases do not rely on
+source-name guesses.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

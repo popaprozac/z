@@ -908,6 +908,13 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.foreignValue
+  ) {
+    output.append(declaration.expressions[index].value);
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.enumPayloadValue
   ) {
     if (

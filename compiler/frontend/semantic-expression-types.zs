@@ -3,6 +3,7 @@ import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
 import {
   equivalentTypes,
   isUnresolvedExternalType,
+  typeSymbolLocation,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
@@ -39,6 +40,27 @@ export function isContextualNumericLiteral(
   ) {
     const child = tree.nodes[index].children[0];
     return tree.nodes[child].kind == ExpressionKind.numberExpression;
+  }
+  return false;
+}
+
+function isVerifiedForeignNominalType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => return signature.foreignNativeName.byteLength > 0;
+        none => {}
+      }
+    }
+    none => {}
   }
   return false;
 }
@@ -154,6 +176,7 @@ export function requireExpressionType(
   ) return;
   if (
     isUnresolvedExternalType(modules, moduleIndex, expected)
+    && !isVerifiedForeignNominalType(modules, moduleIndex, expected)
     && isContextualNumericLiteral(tree, index)
   ) return;
   if (

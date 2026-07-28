@@ -56,9 +56,16 @@ export struct NativeForeignTypeContract {
   underlyingType: String;
 }
 
+export struct NativeForeignConstantContract {
+  name: String;
+  nativeName: String;
+  typeName: String;
+}
+
 export struct NativeForeignContractSet {
   moduleSpecifier: String;
   types: Array<NativeForeignTypeContract>;
+  constants: Array<NativeForeignConstantContract>;
   functions: Array<NativeForeignFunctionContract>;
 }
 
@@ -387,31 +394,43 @@ export function parseForeignContracts(
 
 function scalarTypeName(in nativeType: String): String throws String {
   if (nativeType == "void") return "void";
-  if (nativeType == "float") return "f32";
-  if (nativeType == "double") return "f64";
-  if (nativeType == "signed char") return "i8";
-  if (nativeType == "unsigned char") return "u8";
+  if (nativeType == "float" || nativeType == "f32") return "f32";
+  if (nativeType == "double" || nativeType == "f64") return "f64";
+  if (nativeType == "signed char" || nativeType == "i8") return "i8";
+  if (nativeType == "unsigned char" || nativeType == "u8") return "u8";
   if (
     nativeType == "short"
     || nativeType == "short int"
     || nativeType == "signed short"
     || nativeType == "signed short int"
+    || nativeType == "i16"
   ) return "i16";
   if (
     nativeType == "unsigned short"
     || nativeType == "unsigned short int"
+    || nativeType == "u16"
   ) return "u16";
-  if (nativeType == "int" || nativeType == "signed int") return "i32";
-  if (nativeType == "unsigned" || nativeType == "unsigned int") return "u32";
+  if (
+    nativeType == "int"
+    || nativeType == "signed int"
+    || nativeType == "i32"
+  ) return "i32";
+  if (
+    nativeType == "unsigned"
+    || nativeType == "unsigned int"
+    || nativeType == "u32"
+  ) return "u32";
   if (
     nativeType == "long long"
     || nativeType == "long long int"
     || nativeType == "signed long long"
     || nativeType == "signed long long int"
+    || nativeType == "i64"
   ) return "i64";
   if (
     nativeType == "unsigned long long"
     || nativeType == "unsigned long long int"
+    || nativeType == "u64"
   ) return "u64";
   if (nativeType == "_Bool" || nativeType == "bool") return "boolean";
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
@@ -502,6 +521,39 @@ export function normalizeForeignContracts(
       ),
     }));
   }
+  let constants = Array<NativeForeignConstantContract>();
+  for (const declaration of declarations.constants) {
+    let typeName = "";
+    let typeIndex: usize = 0;
+    while (typeIndex < declarations.types.length) {
+      if (
+        declarations.types[typeIndex].kind == "enum"
+        && declaration.typeName == declarations.types[typeIndex].typeName
+      ) {
+        typeName = declarations.types[typeIndex].exportName.copyBytes(
+          0,
+          declarations.types[typeIndex].exportName.byteLength
+        );
+        break;
+      }
+      typeIndex = typeIndex + 1;
+    }
+    if (typeName.byteLength == 0) {
+      const scalar = attempt scalarTypeName(declaration.typeName);
+      match (scalar) {
+        success(name) => typeName = move name;
+        failure(_) => continue;
+      }
+    }
+    constants.push(NativeForeignConstantContract({
+      name: declaration.name.copyBytes(0, declaration.name.byteLength),
+      nativeName: declaration.nativeName.copyBytes(
+        0,
+        declaration.nativeName.byteLength
+      ),
+      typeName,
+    }));
+  }
   let functions = Array<NativeForeignFunctionContract>();
   for (const contract of contracts.functions) {
     const functionIndex = try findRawFunction(declarations, contract.name);
@@ -538,9 +590,18 @@ export function normalizeForeignContracts(
         }
         none => {}
       }
-      const typeName = try scalarTypeName(
+      const typeName = match (foreignEnumTypeIndex(
+        declarations,
         declarations.parameters[rawParameterIndex].nativeType
-      );
+      )) {
+        some(typeIndex) => declarations.types[typeIndex].exportName.copyBytes(
+          0,
+          declarations.types[typeIndex].exportName.byteLength
+        );
+        none => try scalarTypeName(
+          declarations.parameters[rawParameterIndex].nativeType
+        );
+      };
       parameters.push(NativeForeignParameterContract({
         name: contract.parameters[parameterIndex].name.copyBytes(
           0,
@@ -649,6 +710,7 @@ export function normalizeForeignContracts(
       contracts.moduleSpecifier.byteLength
     ),
     types,
+    constants,
     functions,
   });
 }
