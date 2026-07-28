@@ -9317,13 +9317,13 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000001\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000002\nM/);
   assert.throws(
     () => encodeForeignFunctionDeclarationStream({
       ...declarations,
-      constants: new Map([["unsupported", {} as never]]),
+      nativeTypes: new Map([["unsupported", {} as never]]),
     }),
-    /supports function-only modules/,
+    /supports function-only modules with typed constants/,
   );
 
   const directory = mkdtempSync("/tmp/z-self-host-foreign-declarations-");
@@ -9452,7 +9452,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.match(
     emittedForeignSource,
-    /status == 0 \|\| status == 2/,
+    /status == Z_FOREIGN_OK \|\| status == Z_FOREIGN_RETRY/,
   );
   assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
   const foreignApplication = resolve(directory, "foreign-application");
@@ -9581,7 +9581,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   writeFileSync(
     incompleteStatusContractPath,
     readFileSync(contractPath, "utf8").replace(
-      "    success 0;\n    success 2;\n",
+      "    success Z_FOREIGN_OK;\n    success Z_FOREIGN_RETRY;\n",
       "",
     ),
   );
@@ -9599,6 +9599,55 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8" },
   );
   assert.equal(incompleteStatusContract.status, 3);
+
+  const unknownStatusContractPath = resolve(directory, "unknown-status.zd");
+  writeFileSync(
+    unknownStatusContractPath,
+    readFileSync(contractPath, "utf8").replace(
+      "Z_FOREIGN_OK",
+      "Z_FOREIGN_MISSING",
+    ),
+  );
+  const unknownStatusContract = spawnSync(
+    contractExecutable,
+    [
+      clangPath,
+      unknownStatusContractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      emittedForeignPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(unknownStatusContract.status, 3);
+
+  const mismatchedStatusContractPath = resolve(
+    directory,
+    "mismatched-status.zd",
+  );
+  writeFileSync(
+    mismatchedStatusContractPath,
+    readFileSync(contractPath, "utf8").replace(
+      "Z_FOREIGN_OK",
+      "Z_FOREIGN_UNSIGNED",
+    ),
+  );
+  const mismatchedStatusContract = spawnSync(
+    contractExecutable,
+    [
+      clangPath,
+      mismatchedStatusContractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      emittedForeignPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(mismatchedStatusContract.status, 3);
 
   assert.throws(
     () => resolveForeignFunctionDeclarationStreams(

@@ -191,8 +191,17 @@ function parseStatusValue(
     negative = true;
     cursor.index = cursor.index + 1;
   }
+  if (
+    !negative
+    && cursor.tokens[cursor.index].kind == TokenKind.identifier
+  ) {
+    return try parseQualifiedName(inout cursor);
+  }
   if (cursor.tokens[cursor.index].kind != TokenKind.number) {
-    throw contractError(cursor, "expected an integer status value");
+    throw contractError(
+      cursor,
+      "expected an integer status value or header constant"
+    );
   }
   const token = cursor.tokens[cursor.index].text.copyBytes(
     0,
@@ -212,6 +221,30 @@ function parseStatusValue(
   cursor.index = cursor.index + 1;
   if (negative) return `-${token}`;
   return token;
+}
+
+function isDecimalStatusValue(in value: String): boolean {
+  let index: usize = 0;
+  if (value.byteLength > 0 && value.byteAt(0) == 45) index = 1;
+  if (index >= value.byteLength) return false;
+  while (index < value.byteLength) {
+    const byte = value.byteAt(index);
+    if (byte < 48 || byte > 57) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
+function findRawConstant(
+  in declarations: RawForeignModuleDeclarations,
+  in name: String
+): usize throws String {
+  let index: usize = 0;
+  while (index < declarations.constants.length) {
+    if (declarations.constants[index].name == name) return index;
+    index = index + 1;
+  }
+  throw `Z declaration names unknown foreign constant "${name}"`;
 }
 
 function parseFunction(
@@ -470,11 +503,33 @@ export function normalizeForeignContracts(
         throw `native status function "${contract.name}" must return an integer scalar`;
       }
       returnType = "void";
-      errorType = Option.some(nativeReturnType);
+      errorType = Option.some(nativeReturnType.copyBytes(
+        0,
+        nativeReturnType.byteLength
+      ));
       for (const successValue of contract.successValues) {
-        successValues.push(
-          successValue.copyBytes(0, successValue.byteLength)
-        );
+        if (isDecimalStatusValue(successValue)) {
+          successValues.push(
+            successValue.copyBytes(0, successValue.byteLength)
+          );
+        } else {
+          const constantIndex = try findRawConstant(
+            declarations,
+            successValue
+          );
+          if (
+            declarations.constants[constantIndex].typeName
+              != nativeReturnType
+          ) {
+            throw `native success constant "${successValue}" has type ${declarations.constants[constantIndex].typeName}, expected ${nativeReturnType}`;
+          }
+          successValues.push(
+            declarations.constants[constantIndex].nativeName.copyBytes(
+              0,
+              declarations.constants[constantIndex].nativeName.byteLength
+            )
+          );
+        }
       }
     }
     functions.push(NativeForeignFunctionContract({

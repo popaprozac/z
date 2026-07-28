@@ -65,8 +65,8 @@ function inspect(
     none => return 25;
   }
   if (normalized.functions[1].successValues.length != 2) return 26;
-  if (normalized.functions[1].successValues[0] != "0") return 27;
-  if (normalized.functions[1].successValues[1] != "2") return 28;
+  if (normalized.functions[1].successValues[0] != "Z_FOREIGN_OK") return 27;
+  if (normalized.functions[1].successValues[1] != "Z_FOREIGN_RETRY") return 28;
 
   const source = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({

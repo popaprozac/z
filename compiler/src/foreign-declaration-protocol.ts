@@ -3,7 +3,7 @@ import type {
   ForeignModuleDeclarations,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 1;
+const protocolVersion = 2;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -47,9 +47,10 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign function
- * declarations. It deliberately fails closed when the module contains native
- * types, constants, or Objective-C declarations that this first stream tier
- * cannot yet represent.
+ * declarations. Version 2 additionally carries typed native constants so the
+ * Z-owned contract normalizer can verify symbolic status facts without
+ * trusting their spelling. It still fails closed on richer native types and
+ * Objective-C declarations that this stream tier cannot represent.
  */
 export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
@@ -57,14 +58,13 @@ export function encodeForeignFunctionDeclarationStream(
   const unsupportedCounts = [
     module.nativeTypes.size,
     module.namedTypes.size,
-    module.constants.size,
     module.objectTypes.size,
     module.interfaces.size,
     module.protocols.size,
   ];
   if (unsupportedCounts.some((count) => count !== 0)) {
     throw new Error(
-      "foreign declaration stream tier 1 supports function-only modules",
+      "foreign declaration stream tier 2 supports function-only modules with typed constants",
     );
   }
 
@@ -78,6 +78,23 @@ export function encodeForeignFunctionDeclarationStream(
       boolean(module.cPlusPlus),
     ].join(""),
   ];
+  const constants = [...module.constants.values()];
+  for (let constantIndex = 0; constantIndex < constants.length; constantIndex += 1) {
+    const constant = constants[constantIndex];
+    const source = constant.metadata.source;
+    records.push([
+      "C",
+      hexNumber(constantIndex),
+      text(constant.name),
+      text(constant.cName),
+      text(constant.typeName),
+      text(constant.sourceKind),
+      optionalText(source?.fileName),
+      hexNumber(source?.line ?? 0),
+      hexNumber(source?.column ?? 0),
+      hexNumber(source?.length ?? 0),
+    ].join(""));
+  }
   const functions = [...module.functions.values()];
   for (let functionIndex = 0; functionIndex < functions.length; functionIndex += 1) {
     const declaration = functions[functionIndex];

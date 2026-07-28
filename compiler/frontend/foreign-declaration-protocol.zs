@@ -16,6 +16,18 @@ export struct RawForeignAvailability {
   message: Option<String>;
 }
 
+export struct RawForeignConstant {
+  constantIndex: usize;
+  name: String;
+  nativeName: String;
+  typeName: String;
+  sourceKind: String;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+}
+
 export struct RawForeignParameter {
   functionIndex: usize;
   overloadIndex: usize;
@@ -62,6 +74,7 @@ export struct RawForeignModuleDeclarations {
   objectiveC: boolean;
   cPlusPlus: boolean;
   namespaces: Array<String>;
+  constants: Array<RawForeignConstant>;
   functions: Array<RawForeignFunction>;
   overloads: Array<RawForeignOverload>;
   parameters: Array<RawForeignParameter>;
@@ -81,6 +94,7 @@ function emptyRawForeignModule(): RawForeignModuleDeclarations {
     objectiveC: false,
     cPlusPlus: false,
     namespaces: Array<String>(),
+    constants: Array<RawForeignConstant>(),
     functions: Array<RawForeignFunction>(),
     overloads: Array<RawForeignOverload>(),
     parameters: Array<RawForeignParameter>(),
@@ -215,6 +229,43 @@ function validateFunctionReference(
   ) {
     throw "foreign declaration stream contains an out-of-order overload";
   }
+}
+
+function appendConstant(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const constantIndex = try readHexUsize(inout cursor);
+  if (constantIndex != module.constants.length) {
+    throw "foreign declaration stream contains an out-of-order constant";
+  }
+  const name = try readText(inout cursor);
+  const nativeName = try readText(inout cursor);
+  const typeName = try readText(inout cursor);
+  const sourceKind = try readText(inout cursor);
+  if (
+    sourceKind != "enum"
+    && sourceKind != "variable"
+    && sourceKind != "macro"
+  ) {
+    throw "foreign declaration stream contains an unknown constant source kind";
+  }
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  module.constants.push(RawForeignConstant({
+    constantIndex,
+    name,
+    nativeName,
+    typeName,
+    sourceKind,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+  }));
+  try endRecord(inout cursor);
 }
 
 function appendFunction(
@@ -406,7 +457,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 1) {
+  if (module.version != 2) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);
@@ -420,7 +471,9 @@ export function decodeRawForeignDeclarations(
   while (cursor.offset < cursor.batch.byteLength) {
     const tag = cursor.batch.byteAt(cursor.offset);
     cursor.offset = cursor.offset + 1;
-    if (tag == 70) {
+    if (tag == 67) {
+      try appendConstant(inout cursor, inout module);
+    } else if (tag == 70) {
       try appendFunction(inout cursor, inout module);
     } else if (tag == 79) {
       try appendOverload(inout cursor, inout module);

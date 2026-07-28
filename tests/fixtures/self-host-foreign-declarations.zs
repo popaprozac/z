@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 1) return 10;
+  if (module.version != 2) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -55,10 +55,17 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 1) return 40;
+  if (module.version != 2) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.functions.length != 3) return 43;
+  if (module.constants.length != 3) return 60;
+  if (module.constants[0].name != "Z_FOREIGN_OK") return 61;
+  if (module.constants[0].typeName != "i32") return 62;
+  if (module.constants[0].sourceKind != "macro") return 63;
+  if (module.constants[1].name != "Z_FOREIGN_RETRY") return 64;
+  if (module.constants[2].name != "Z_FOREIGN_UNSIGNED") return 65;
+  if (module.constants[2].typeName != "u32") return 66;
   if (module.overloads.length != 3) return 44;
   if (module.parameters.length != 5) return 45;
   if (module.availability.length != 0) return 46;

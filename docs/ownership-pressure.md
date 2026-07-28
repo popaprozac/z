@@ -1260,6 +1260,16 @@ became an illegal C declaration. The native C emitter now escapes C-reserved
 function, parameter, and local binding names consistently, and the regression
 keeps `signed` in the source rather than avoiding the collision.
 
+The next foreign composition slice removes magic status integers from the
+native driver without trusting contract text. `ZFDCL` version 2 carries typed
+constant records alongside functions. The Z-owned `.zd` normalizer accepts a
+symbolic `success Z_FOREIGN_OK;` only when the producer proves that constant
+exists and its scalar type exactly matches the native function result. Native
+lowering retains the verified C spelling, so generated code compares against
+the header symbol. Unknown constants and signedness-mismatched constants fail
+before semantic analysis; decimal status values remain supported. Enum-backed
+constants still require their named type evidence to cross the protocol.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

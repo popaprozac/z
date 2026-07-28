@@ -2,7 +2,7 @@ declare module "foreign-functions-only.h" {
   export function z_foreign_add(left: _, right: _): _;
 
   export function z_foreign_status(code: _): void throws _ {
-    success 0;
-    success 2;
+    success Z_FOREIGN_OK;
+    success Z_FOREIGN_RETRY;
   }
 }
