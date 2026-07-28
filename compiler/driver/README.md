@@ -47,11 +47,12 @@ and typed native constants, so symbolic scalar and enum-backed status facts are
 verified against Clang evidence and lower as the header symbol rather than a
 magic integer. Enum-backed errors retain their nominal imported type through
 native sema, `Result<void, E>`, matching, and C emission; explicit integer
-construction uses the producer-verified underlying type. General foreign enum
-parameters/constants, C++, Objective-C, Swift, records, callbacks, and richer
-`.zd` facts remain with Stage 0 until their raw records and normalized FIIR
-cross together. Cross-process cache locking and eviction remain toolchain
-hardening.
+construction uses the producer-verified underlying type. Ordinary enum
+parameters and producer-proven constants retain that identity across namespace
+or selective imports and lower to their verified C spellings. C++,
+Objective-C, Swift, records, callbacks, and richer `.zd` facts remain with
+Stage 0 until their raw records and normalized FIIR cross together.
+Cross-process cache locking and eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

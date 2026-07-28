@@ -285,7 +285,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
   return match (outcome) {
     success(exitCode) => exitCode;
     failure(message) => {
-      console.error(`${message}`);
+      console.error(message);
       select 1;
     }
   };

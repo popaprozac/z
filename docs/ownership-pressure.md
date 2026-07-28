@@ -1297,14 +1297,19 @@ bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z
 rejected it. Binding the source first makes its lifetime explicit across the
 call and allows deterministic cleanup after parsing. A second boundary remained
-deliberately visible: native console lowering currently accepts a syntactic
-String or template, so forwarding a dynamic diagnostic currently uses:
+The driver originally exposed a native-console syntax restriction: only a
+literal or template was recognized as a standard console call, even when an
+ordinary expression was already proven to be `String`. The native standard
+signature now accepts any `String` expression, so the driver forwards its owned
+error payload directly:
 
 ```z
-console.error(`${message}`);
+console.error(message);
 ```
 
-General typed console values remain outside the self-hosting subset.
+Formatting arbitrary non-String values remains outside the self-hosting
+subset; this slice removes a syntax-shaped restriction without weakening the
+typed `in String` contract.
 
 A value-producing `if` whose result was `Result<i32, String>` passed semantic
 analysis but remains outside native lowering. The driver therefore dispatches

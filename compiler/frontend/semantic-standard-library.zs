@@ -176,8 +176,7 @@ export function nativeStandardCall(
   in program: Program,
   in namespaceName: String,
   in memberName: String,
-  argumentCount: usize,
-  stringArgumentSyntax: boolean
+  argumentCount: usize
 ): Option<NativeStandardCallShape> {
   const header = namespaceHeader(program, namespaceName);
   if (header == "std/fs") return fsCall(memberName);
@@ -185,7 +184,6 @@ export function nativeStandardCall(
   if (
     header == "std/console"
     && argumentCount == 1
-    && stringArgumentSyntax
   ) return consoleCall(memberName);
   return Option<NativeStandardCallShape>.none;
 }
