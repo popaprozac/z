@@ -117,6 +117,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   module/function/parameter identity against raw Clang declarations, maps
   supported ABI scalars to Z types, preserves the native integer as the error
   type, and rejects every unimplemented fact at its `.zd` source location.
+- `semantic-foreign.zs` attaches only those normalized callable contracts to
+  ordinary native module symbols. Selective aliases and namespace members then
+  use the same arity, scalar type, and throwing-effect checker as Z functions;
+  uncontracted imported functions remain unavailable.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
@@ -185,21 +189,23 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 33-module driver to
+0 seeds generation one, which now rebuilds the same 34-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
-verified: a non-standard, non-local import fails native `check` at its source
-location until Clang discovery, `.zd` normalization, and FIIR ingestion are
+verified: a non-standard, non-local import fails ordinary native `check` at its
+source location until automatic Clang discovery and `.zd` loading are
 connected. The internal `self-host-foreign` adapter command writes a real
 Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
 decodes and validates that artifact through its own `foreign-inspect` bootstrap
 operation. The driver also parses and normalizes inferred scalar and decimal
-integer-status `.zd` contracts against that artifact. Automatic adapter
-invocation, symbolic status constants, exact status-literal range checks,
-broader declaration records/facts, and ingestion by native sema/emission
-remain; decoding or partial normalization is not a trusted foreign import.
+integer-status `.zd` contracts against that artifact. An explicit bootstrap
+probe feeds those normalized contracts into native semantic analysis for
+selective and namespace calls. Automatic adapter invocation, symbolic status
+constants, exact status-literal range checks, broader declaration
+records/facts, and foreign emission remain; raw decoding alone is never a
+trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

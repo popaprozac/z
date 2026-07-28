@@ -77,7 +77,7 @@ export function callableSymbolLocation(
             0,
             modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
           );
-        return match (
+        const target = match (
           in modules[moduleIndex].symbols[symbolIndex].targetModule
         ) {
           some(target) => exportedFunctionLocation(
@@ -85,8 +85,19 @@ export function callableSymbolLocation(
             target,
             importedName
           );
-          none => Option<ModuleSymbolLocation>.none;
+          none => {
+            return match (
+              in modules[moduleIndex].symbols[symbolIndex].functionSignature
+            ) {
+              some(_) => Option<ModuleSymbolLocation>.some(ModuleSymbolLocation({
+                moduleIndex,
+                symbolIndex,
+              }));
+              none => Option<ModuleSymbolLocation>.none;
+            };
+          }
         };
+        return target;
       }
     }
     return Option<ModuleSymbolLocation>.none;
@@ -122,7 +133,27 @@ export function callableSymbolLocation(
           target,
           memberName
         );
-        none => Option<ModuleSymbolLocation>.none;
+        none => {
+          const qualified = `${namespace}.${memberName}`;
+          const foreignIndex = moduleSymbolIndex(
+            modules[moduleIndex],
+            qualified
+          );
+          if (
+            foreignIndex < modules[moduleIndex].symbols.length
+            && modules[moduleIndex].symbols[foreignIndex].kind
+              == ModuleSymbolKind.importedSymbol
+          ) return match (
+            in modules[moduleIndex].symbols[foreignIndex].functionSignature
+          ) {
+            some(_) => Option<ModuleSymbolLocation>.some(ModuleSymbolLocation({
+              moduleIndex,
+              symbolIndex: foreignIndex,
+            }));
+            none => Option<ModuleSymbolLocation>.none;
+          };
+          return Option<ModuleSymbolLocation>.none;
+        }
       };
     }
   }

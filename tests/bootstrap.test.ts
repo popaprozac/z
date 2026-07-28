@@ -9428,10 +9428,79 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const contractExecution = spawnSync(
     contractExecutable,
-    [clangPath, contractPath],
+    [
+      clangPath,
+      contractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+    ],
     { encoding: "utf8" },
   );
   assert.equal(contractExecution.status, 0, contractExecution.stderr);
+
+  const wrongForeignArityPath = resolve(directory, "wrong-foreign-arity.zs");
+  writeFileSync(
+    wrongForeignArityPath,
+    [
+      'import { z_foreign_add as add } from "foreign-functions-only.h";',
+      "function main(): i32 {",
+      "  return add(1);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const wrongForeignArity = spawnSync(
+    contractExecutable,
+    [clangPath, contractPath, wrongForeignArityPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(wrongForeignArity.status, 3);
+
+  const unhandledForeignStatusPath = resolve(
+    directory,
+    "unhandled-foreign-status.zs",
+  );
+  writeFileSync(
+    unhandledForeignStatusPath,
+    [
+      'import { z_foreign_status as status } from "foreign-functions-only.h";',
+      "function main(): i32 {",
+      "  status(0);",
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const unhandledForeignStatus = spawnSync(
+    contractExecutable,
+    [clangPath, contractPath, unhandledForeignStatusPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(unhandledForeignStatus.status, 3);
+
+  const uncontractedForeignFunctionPath = resolve(
+    directory,
+    "uncontracted-foreign-function.zs",
+  );
+  writeFileSync(
+    uncontractedForeignFunctionPath,
+    [
+      'import { z_foreign_measure as measure } from "foreign-functions-only.h";',
+      "function main(): i32 {",
+      '  measure(1, "label");',
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const uncontractedForeignFunction = spawnSync(
+    contractExecutable,
+    [clangPath, contractPath, uncontractedForeignFunctionPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(uncontractedForeignFunction.status, 3);
 
   const unsupportedContractPath = resolve(directory, "unsupported.zd");
   writeFileSync(
@@ -9443,7 +9512,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const unsupportedContract = spawnSync(
     contractExecutable,
-    [clangPath, unsupportedContractPath],
+    [
+      clangPath,
+      unsupportedContractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+    ],
     { encoding: "utf8" },
   );
   assert.equal(unsupportedContract.status, 3);
@@ -9461,7 +9537,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const incompleteStatusContract = spawnSync(
     contractExecutable,
-    [clangPath, incompleteStatusContractPath],
+    [
+      clangPath,
+      incompleteStatusContractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+    ],
     { encoding: "utf8" },
   );
   assert.equal(incompleteStatusContract.status, 3);
@@ -9643,7 +9726,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 33 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 34 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,

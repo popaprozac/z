@@ -7,10 +7,26 @@ import {
   normalizeForeignContracts,
   parseForeignContracts,
 } from "../../compiler/frontend/foreign-contracts.zs";
+import {
+  parseModule,
+} from "../../compiler/frontend/module-graph.zs";
+import {
+  resolveParsedModulesWithForeignContracts,
+} from "../../compiler/frontend/module-resolver.zs";
+import {
+  NativeForeignModuleContract,
+} from "../../compiler/frontend/semantic-foreign.zs";
+import {
+  ModuleSource,
+} from "../../compiler/frontend/semantic-model.zs";
+import {
+  ParsedModule,
+} from "../../compiler/frontend/module-symbols.zs";
 
 function inspect(
   in declarationPath: String,
-  in contractPath: String
+  in contractPath: String,
+  in sourcePath: String
 ): i32 throws String {
   const declarationSource = try fs.readText(declarationPath);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
@@ -47,13 +63,81 @@ function inspect(
   if (normalized.functions[1].successValues.length != 2) return 26;
   if (normalized.functions[1].successValues[0] != "0") return 27;
   if (normalized.functions[1].successValues[1] != "2") return 28;
+
+  const source = try fs.readText(sourcePath);
+  const moduleSource = ModuleSource({
+    path: sourcePath.copyBytes(0, sourcePath.byteLength),
+    source,
+  });
+  const parsedOutcome = attempt parseModule(moduleSource);
+  const parsed = match (parsedOutcome) {
+    success(parsed) => parsed;
+    failure(error) => throw error.message.copyBytes(
+      0,
+      error.message.byteLength
+    );
+  };
+  let modules = Array<ParsedModule>();
+  modules.push(parsed);
+  let foreignModules = Array<NativeForeignModuleContract>();
+  foreignModules.push(NativeForeignModuleContract({
+    modulePath: sourcePath.copyBytes(0, sourcePath.byteLength),
+    contracts: normalized,
+  }));
+  const graphOutcome = attempt resolveParsedModulesWithForeignContracts(
+    modules,
+    sourcePath,
+    foreignModules
+  );
+  const graph = match (graphOutcome) {
+    success(graph) => graph;
+    failure(error) => throw error.message.copyBytes(
+      0,
+      error.message.byteLength
+    );
+  };
+  if (graph.modules.length != 1) return 29;
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 3) return 30;
+  if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "foreign") {
+    return 31;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[0].targetName
+      != "z_foreign_add"
+  ) return 32;
+  if (graph.modules[0].semanticEvidence.callResolutions[0].returnType != "i32") {
+    return 33;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[0].errorType != "") {
+    return 34;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[1].kind != "foreign") {
+    return 35;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[1].targetName
+      != "z_foreign_add"
+  ) return 36;
+  if (graph.modules[0].semanticEvidence.callResolutions[2].kind != "foreign") {
+    return 37;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[2].targetName
+      != "z_foreign_status"
+  ) return 38;
+  if (graph.modules[0].semanticEvidence.callResolutions[2].returnType != "void") {
+    return 39;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[2].errorType != "i32") {
+    return 40;
+  }
   return 0;
 }
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length != 2) return 2;
-  const outcome = attempt inspect(arguments[0], arguments[1]);
+  if (arguments.length != 3) return 2;
+  const outcome = attempt inspect(arguments[0], arguments[1], arguments[2]);
   return match (outcome) {
     success(code) => code;
     failure(_) => 3;

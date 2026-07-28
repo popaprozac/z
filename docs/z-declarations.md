@@ -171,6 +171,12 @@ in Stage 0. Other facts still fail closed in the native compiler while they are
 ported; this is a bootstrap implementation boundary, not a restriction of the
 `.zd` language.
 
+The normalized scalar/status tier also reaches native semantic analysis.
+Selective aliases and namespace calls use the same signature/effect checker as
+ordinary Z functions, and a selected native function absent from the checked
+contract is rejected. Automatic header-adapter invocation and C emission remain
+separate bootstrap steps.
+
 ## Declaration dictionary
 
 | Form | Meaning in Z | Native evidence or lowering |

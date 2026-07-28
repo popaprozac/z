@@ -1211,6 +1211,16 @@ callback, and other result-body facts still fail closed until their semantics
 cross. The driver still refuses to call this partial normalization a checked
 foreign import.
 
+The next slice added `semantic-foreign.zs`, raising the standalone compiler to
+34 modules. It converts only normalized callable contracts into ordinary module
+function signatures. A source probe exercises both selective aliases and
+namespace calls, verifies native target identity, and preserves a status
+function's `void throws i32` effect. Wrong arity, an unhandled status call, and
+selection of a header function absent from `.zd` all fail in native Z. This is
+the intended FIIR boundary: sema sees checked callables, never Clang records or
+raw contract syntax. Automatic adapter invocation and emission are still
+explicitly outside the tier.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

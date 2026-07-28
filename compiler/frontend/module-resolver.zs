@@ -75,6 +75,10 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  NativeForeignModuleContract,
+  attachForeignContracts,
+} from "./semantic-foreign.zs";
+import {
   bindGenericType,
   genericCallError,
   parameterizedTypeName,
@@ -2887,10 +2891,34 @@ function inferExpressionNodeType(
       some(location) => {
         match (in modules[location.moduleIndex].symbols[location.symbolIndex].functionSignature) {
           some(signature) => {
-            const functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
+            let functionName = modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
               0,
               modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
             );
+            let callKind = "function";
+            if (
+              modules[location.moduleIndex].symbols[location.symbolIndex].kind
+                == ModuleSymbolKind.importedSymbol
+            ) {
+              match (
+                in modules[location.moduleIndex].symbols[location.symbolIndex].targetModule
+              ) {
+                some(_) => {}
+                none => {
+                  functionName = modules[location.moduleIndex]
+                    .symbols[location.symbolIndex]
+                    .importedName
+                    .copyBytes(
+                      0,
+                      modules[location.moduleIndex]
+                        .symbols[location.symbolIndex]
+                        .importedName
+                        .byteLength
+                    );
+                  callKind = "foreign";
+                }
+              }
+            }
             const substitutions = Array<NativeValueBinding>();
             const callableSignature = rebaseModuleFunctionSignature(
               modules,
@@ -2916,7 +2944,7 @@ function inferExpressionNodeType(
               substitutions,
               location.moduleIndex,
               location.symbolIndex,
-              "function",
+              callKind,
               inout evidence
             );
           }
@@ -4235,12 +4263,30 @@ export function resolveParsedModules(
   in parsed: Array<ParsedModule>,
   in entryPath: String
 ): ModuleGraph throws ModuleResolveError {
+  const foreignContracts = Array<NativeForeignModuleContract>();
+  return try resolveParsedModulesWithForeignContracts(
+    parsed,
+    entryPath,
+    foreignContracts
+  );
+}
+
+export function resolveParsedModulesWithForeignContracts(
+  in parsed: Array<ParsedModule>,
+  in entryPath: String,
+  in foreignContracts: Array<NativeForeignModuleContract>
+): ModuleGraph throws ModuleResolveError {
   const entry = try findEntryModule(parsed, entryPath);
   let modules = try buildResolvedModules(parsed);
   let index: usize = 0;
   while (index < parsed.length) {
     try validateModuleTypes(parsed[index], modules, index);
     try validateModuleNames(parsed[index], modules[index].symbols);
+    index = index + 1;
+  }
+  try attachForeignContracts(parsed, foreignContracts, inout modules);
+  index = 0;
+  while (index < parsed.length) {
     modules[index].semanticEvidence = try validateExpressionTypesAndLocals(parsed[index], modules, index);
     index = index + 1;
   }

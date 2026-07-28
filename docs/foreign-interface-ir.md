@@ -191,8 +191,12 @@ compatibility.
 This first protocol tier deliberately fails closed for native types, constants,
 Objective-C declarations, interfaces, and protocols. It is producer-facing
 data, not serialized FIIR: `.zd` facts still need to be read and normalized in
-Z before semantic analysis may trust the result. The normalized in-memory FIIR
-remains a separate, version-independent compiler model.
+Z before semantic analysis may trust the result. The first normalized scalar
+and integer-status callables now attach to ordinary native module symbols:
+selective aliases and namespace members share Z's arity, type, and throwing
+effect checker, while an imported function missing from the checked contract
+fails closed. The normalized in-memory FIIR remains a separate,
+version-independent compiler model.
 
 ## Next slices
 
@@ -212,5 +216,6 @@ remains a separate, version-independent compiler model.
    weakening its fail-closed boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal
    integer statuses through symbolic/enum statuses, ownership, pointer, buffer,
-   callback, executor, and native-value facts, then feed its validated
-   in-memory FIIR into native sema rather than teaching sema about wire records.
+   callback, executor, and native-value facts, then extend the validated
+   in-memory FIIR already consumed by native sema into lowering and emission
+   rather than teaching either layer about wire records.
