@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, project-manifest loader, and seed compiler. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference, and the current generations are identical. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. A standalone Z driver now receives native arguments, recursively loads relative modules, executes that frontend, writes C, and invokes Clang; its proven multi-module compilation path runs without Bun or TypeScript. Ordinary `check`/`emit`/`run`, complete language semantics, foreign import, `z.json`/target handling, and distribution of a trusted bootstrap binary remain in stage 0 |
+| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, project-manifest loader, and trusted seed. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. The standalone Z driver receives native arguments, canonically discovers modules, exposes `check`/`emit`/`build`/explicit-output `run`, and invokes Clang. Generation one now rebuilds its own 30-module driver to byte-identical C, and generation two checks an independent project without Bun or TypeScript. The production command surface, complete language semantics, foreign import, `z.json`/target handling, and distribution of a trusted bootstrap binary remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -1012,8 +1012,11 @@ Continue focused self-hosting work in this order:
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact
-   C output before caching the library. The remaining release step is to ship a
-   trusted bootstrap artifact so ordinary installations do not need Stage 0.
+   C output before caching the library. The standalone command follows the same
+   rule: generation one builds its own 30-module graph, generation-two C must be
+   byte-identical, and the rebuilt command checks a separate project. The
+   remaining release step is to ship a trusted bootstrap artifact so ordinary
+   installations do not need Stage 0.
 
 The next self-hosting sprint should begin when duplicated Stage-0 semantics are
 slowing language work, a new feature exposes a native corpus gap worth closing,

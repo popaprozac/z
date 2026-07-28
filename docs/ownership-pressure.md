@@ -1118,6 +1118,20 @@ require `function main(): i32`. An incompatible present `main` fails every
 command with its Z source location; an absent `main` fails only executable
 commands. Clang is no longer the first component to explain the missing entry.
 
+The driver now passes the stronger recursive test as well. A Stage-0-seeded
+generation-one executable loads all 30 driver/frontend modules and builds
+generation two; generation two then checks an independent multi-module
+application. The generated C is byte-identical across those driver generations.
+
+The first comparison was not identical even though both binaries behaved
+correctly. Stage 0 inserted a module into discovery order before visiting its
+imports, while the native loader appended the parsed module after recursion.
+Private function names include module indices, so preorder versus postorder
+changed names throughout the C output. The native loader now owns dependency
+paths separately, stores the parsed module in preorder, and only then recurses.
+This preserves deterministic identity without keeping a borrow into moved AST
+storage.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

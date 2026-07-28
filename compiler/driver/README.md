@@ -30,3 +30,10 @@ are proven.
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every
 command before native emission.
+
+The bootstrap regression first emits this driver through the trusted Stage-0
+seed, then asks that native executable to build `main.zs` again. The
+driver-generated C must match the seed-generated C byte for byte, and the
+second-generation executable must compile an independent multi-module project.
+This is a recursive compiler fixed point; distributing a trusted bootstrap
+binary and replacing the broader production CLI are separate release steps.

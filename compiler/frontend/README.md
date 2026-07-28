@@ -167,7 +167,9 @@ compilation path. Separate native `check`, `emit`, `build`, and explicit-output
 resolution, emission does not invoke Clang, and run forwards child arguments
 without a shell. Export-only entries remain checkable, while executable
 commands produce Z-owned missing/invalid-`main` diagnostics before Clang. Stage
-0 is still required to build the driver, and project
+0 seeds generation one, which now rebuilds the same 30-module driver to
+byte-identical C and produces a generation-two compiler that checks an
+independent project. Project
 manifests, foreign imports, target configuration, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and the
 complete compiler command surface remain subsequent slices.

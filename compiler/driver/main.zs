@@ -50,12 +50,15 @@ function loadModule(
     failure(error) => throw diagnosticMessage(error);
   };
 
+  let dependencies = Array<String>();
   for (const declaration of parsed.program.imports) {
     if (!isLocalModuleHeader(declaration.header)) continue;
-    const dependency = importedModulePath(canonical, declaration.header);
-    try loadModule(dependency, inout loaded, inout modules);
+    dependencies.push(importedModulePath(canonical, declaration.header));
   }
   modules.push(parsed);
+  for (const dependency of dependencies) {
+    try loadModule(dependency, inout loaded, inout modules);
+  }
 }
 
 function loadProject(in entryPath: String): NativeProject throws String {

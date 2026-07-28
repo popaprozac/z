@@ -34,8 +34,10 @@ Z source -> parser and semantic model -> ownership/async lowering
          -> C-family source -> Clang -> native binary
 ```
 
-Self-hosting is the goal. TypeScript is the bootstrap implementation, not Z's
-runtime model.
+Self-hosting is underway. TypeScript remains the bootstrap seed and production
+CLI, but the standalone Z driver can already discover, compile, and rebuild its
+own 30-module source graph to byte-identical C without Bun in the recursive
+compilation path. TypeScript is not Z's runtime model.
 
 Z source modules use `.zs` (Z source), while foreign declaration contracts use
 `.zd` (Z declaration). The compiler intentionally does not claim `.z`, which is

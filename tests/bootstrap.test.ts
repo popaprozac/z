@@ -9270,6 +9270,19 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
 
+  const recursiveDriver = resolve(directory, "z-native-generation-2");
+  const recursiveCompilation = spawnSync(
+    driver,
+    ["build", driverSource, recursiveDriver],
+    { encoding: "utf8" },
+  );
+  assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
+  assert.match(recursiveCompilation.stdout, /compiled 30 Z modules/);
+  assert.equal(
+    readFileSync(`${recursiveDriver}.c`, "utf8"),
+    driverEmission.stdout,
+  );
+
   const moduleOnlySource = resolve(
     projectRoot,
     "examples/language/modules/geometry.zs",
@@ -9315,6 +9328,13 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 2 Z modules/);
+  const recursiveChecking = spawnSync(
+    recursiveDriver,
+    ["check", applicationSource],
+    { encoding: "utf8" },
+  );
+  assert.equal(recursiveChecking.status, 0, recursiveChecking.stderr);
+  assert.match(recursiveChecking.stdout, /checked 2 Z modules/);
 
   const emittedSource = resolve(directory, "emitted.c");
   const emitting = spawnSync(
