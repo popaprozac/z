@@ -174,10 +174,13 @@ directories, native libraries, and the macOS minimum target into Clang. Stage
 0 seeds generation one, which now rebuilds the same 31-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
-from explicit `--release` output built with `-O2 -DNDEBUG`. Project
-manifests, foreign imports, target configuration, release profiles, polished
-diagnostics, fixed-array-to-Slice lowering, general console formatting, and the
-complete compiler command surface remain subsequent slices.
+from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
+driver does not treat the resolver's intentionally opaque foreign symbols as
+verified: a non-standard, non-local import fails native `check` at its source
+location until Clang discovery and FIIR ingestion are available natively.
+Swift targets, broader target selection, release profiles, polished
+diagnostics, fixed-array-to-Slice lowering, general console formatting, and
+the complete compiler command surface remain subsequent slices.
 
 Scalar calls, mutable control flow, value structs, owned enums, `Option<T>`,
 and `Result<T, E>` now run directly through the typed lowering IR. Checked

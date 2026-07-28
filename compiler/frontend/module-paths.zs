@@ -21,6 +21,17 @@ export function isLocalModuleHeader(in header: String): boolean {
     && header.byteAt(header.byteLength - 1) == 115;
 }
 
+export function isStandardModuleHeader(in header: String): boolean {
+  if (header == "std") return true;
+  return (
+    header.byteLength > 4
+    && header.byteAt(0) == 115
+    && header.byteAt(1) == 116
+    && header.byteAt(2) == 100
+    && isSlash(header.byteAt(3))
+  );
+}
+
 export function directoryName(in path: String): String {
   let index = path.byteLength;
   while (index > 0) {

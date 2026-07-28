@@ -1156,6 +1156,15 @@ filesystem query—`fs.isDirectory`—but no public JSON value hierarchy merely 
 bootstrap the compiler. A recursive fixture builds and links a real temporary
 static library through this path.
 
+Trying the resulting driver against curl, Raylib, and SDL exposed a more
+important boundary than the first lowering error: native `check` initially
+reported success because the module resolver deliberately preserves foreign
+bindings as opaque symbols for hybrid Stage-0 evidence. A standalone compiler
+has no such evidence. The driver now rejects every foreign import at its source
+location until Clang discovery, `.zd` loading, and normalized FIIR can move
+together. A partial compiler must fail closed rather than turn an implementation
+gap into a false safety claim.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

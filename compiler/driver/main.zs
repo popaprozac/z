@@ -10,6 +10,7 @@ import {
 import {
   importedModulePath,
   isLocalModuleHeader,
+  isStandardModuleHeader,
   normalizedModulePath,
 } from "../frontend/module-paths.zs";
 import { resolveParsedModules } from "../frontend/module-resolver.zs";
@@ -32,21 +33,24 @@ struct NativeProject {
   graph: ModuleGraph;
 }
 
-function diagnosticMessage(
-  in error: ModuleResolveError,
+function sourceDiagnostic(
+  in path: String,
+  lineNumber: usize,
+  columnNumber: usize,
+  in message: String,
   in source: String
 ): String {
   let output = TextBuffer();
   output.append(
-    `${error.path}:${error.line}:${error.column}: error: ${error.message}`
+    `${path}:${lineNumber}:${columnNumber}: error: ${message}`
   );
   let line: usize = 1;
   let lineStart: usize = 0;
-  while (line < error.line && lineStart < source.byteLength) {
+  while (line < lineNumber && lineStart < source.byteLength) {
     if (source.byteAt(lineStart) == 10) line = line + 1;
     lineStart = lineStart + 1;
   }
-  if (line != error.line) return output.finish();
+  if (line != lineNumber) return output.finish();
 
   let lineEnd = lineStart;
   while (
@@ -56,16 +60,33 @@ function diagnosticMessage(
   ) {
     lineEnd = lineEnd + 1;
   }
-  output.append(`\n${error.line} | `);
+  output.append(`\n${lineNumber} | `);
   output.append(source.copyBytes(lineStart, lineEnd));
   output.append("\n  | ");
   let column: usize = 1;
-  while (column < error.column) {
+  while (column < columnNumber) {
     output.append(" ");
     column = column + 1;
   }
   output.append("^");
   return output.finish();
+}
+
+function diagnosticMessage(
+  in error: ModuleResolveError,
+  in source: String
+): String {
+  const path = copy error.path;
+  const line = error.line;
+  const column = error.column;
+  const message = copy error.message;
+  return sourceDiagnostic(
+    path,
+    line,
+    column,
+    message,
+    source
+  );
 }
 
 function loadModule(
@@ -91,8 +112,18 @@ function loadModule(
 
   let dependencies = Array<String>();
   for (const declaration of parsed.program.imports) {
-    if (!isLocalModuleHeader(declaration.header)) continue;
-    dependencies.push(importedModulePath(canonical, declaration.header));
+    if (isLocalModuleHeader(declaration.header)) {
+      dependencies.push(importedModulePath(canonical, declaration.header));
+      continue;
+    }
+    if (isStandardModuleHeader(declaration.header)) continue;
+    throw sourceDiagnostic(
+      canonical,
+      declaration.line,
+      declaration.column,
+      `native foreign import checking is not implemented for "${declaration.header}"; use the Stage-0 z command until FIIR discovery moves into the native driver`,
+      moduleSource.source
+    );
   }
   modules.push(parsed);
   for (const dependency of dependencies) {

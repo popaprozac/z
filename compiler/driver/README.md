@@ -31,6 +31,13 @@ selection for `run`, and the complete production command options remain with
 Stage 0 until equivalent native paths are proven. The current debug profile
 uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
 
+Native `check` fails closed when a graph contains a C, C++, Objective-C, or
+Swift compatibility-header import. It points at the import and directs the
+developer to the Stage-0 command instead of reporting a successful check
+without FIIR evidence. Foreign imports become eligible for native `check` only
+after header discovery, adjacent `.zd` contracts, and normalized FIIR all
+cross that boundary together.
+
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every
 command before native emission. Lexer, parser, and semantic failures render

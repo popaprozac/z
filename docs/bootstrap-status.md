@@ -1014,6 +1014,9 @@ Continue focused self-hosting work in this order:
    manifest-selected/custom profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic
    temporary run artifacts, and complete production options remain.
+   Until foreign discovery and FIIR ingestion cross together, the native
+   command rejects foreign imports at their source location rather than
+   claiming they were checked through opaque resolver symbols.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact

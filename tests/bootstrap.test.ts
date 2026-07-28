@@ -9348,6 +9348,22 @@ test("compiles a multi-module Z application through the standalone native driver
     /:2:10: error: unknown name missing\n2 \|   return missing;\n  \|          \^/,
   );
 
+  const foreignImport = resolve(directory, "foreign-import.zs");
+  writeFileSync(
+    foreignImport,
+    'import native from "stdint.h";\nfunction main(): i32 { return 0; }\n',
+  );
+  const foreignImportCheck = spawnSync(
+    driver,
+    ["check", foreignImport],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignImportCheck.status, 1);
+  assert.match(
+    foreignImportCheck.stderr,
+    /:1:1: error: native foreign import checking is not implemented for "stdint\.h".*\n1 \| import native from "stdint\.h";\n  \| \^/,
+  );
+
   const applicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
