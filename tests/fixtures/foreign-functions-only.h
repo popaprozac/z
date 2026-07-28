@@ -2,6 +2,7 @@
 #define Z_TEST_FOREIGN_FUNCTIONS_ONLY_H
 
 int z_foreign_add(int left, int right);
+int z_foreign_status(int code);
 long z_foreign_measure(int value, const char *label);
 
 #endif

@@ -179,12 +179,14 @@ decoding untrusted declarations is not equivalent to applying `.zd` facts or
 constructing validated FIIR.
 
 The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
-the existing `declare module` and inferred scalar `export function` grammar,
-then checks module identity, function identity, parameter names/counts,
-capabilities, nullability, and supported ABI scalar mappings against the raw
-declarations. Its output is a normalized callable contract with Z type names.
-Any parameter/result fact outside this tier is a source-located error; it is
-never discarded for forward compatibility.
+the existing `declare module`, inferred scalar `export function`, and decimal
+integer-status `void throws _ { success N; }` grammar. It checks module
+identity, function identity, parameter names/counts, capabilities, nullability,
+and supported ABI scalar mappings against the raw declarations. Its normalized
+callable contracts carry Z type names, an optional exact native integer error
+type, and explicit success literals. Any parameter/result fact outside this
+tier is a source-located error; it is never discarded for forward
+compatibility.
 
 This first protocol tier deliberately fails closed for native types, constants,
 Objective-C declarations, interfaces, and protocols. It is producer-facing
@@ -208,7 +210,7 @@ remains a separate, version-independent compiler model.
    Clang-to-`ZFDCL` adapter, then add records for native types, constants,
    callbacks, Objective-C declarations, interfaces, and protocols without
    weakening its fail-closed boundary;
-6. expand the implemented `.zd` reader and contract normalizer through status,
-   ownership, pointer, buffer, callback, executor, and native-value facts, then
-   feed its validated in-memory FIIR into native sema rather than teaching sema
-   about wire records.
+6. expand the implemented `.zd` reader and contract normalizer from decimal
+   integer statuses through symbolic/enum statuses, ownership, pointer, buffer,
+   callback, executor, and native-value facts, then feed its validated
+   in-memory FIIR into native sema rather than teaching sema about wire records.

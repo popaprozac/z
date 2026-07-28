@@ -7,7 +7,7 @@ import {
   tokenize,
 } from "./lexer.zs";
 
-// First native .zd slice: inferred scalar function declarations.
+// First native .zd slice: inferred scalar and integer-status functions.
 //
 // The model is intentionally separate from raw producer declarations. A
 // contract must match Clang evidence before it can produce these normalized
@@ -24,7 +24,9 @@ export struct RawForeignContractParameter {
 export struct RawForeignFunctionContract {
   name: String;
   parameters: Array<RawForeignContractParameter>;
+  returnKind: String;
   returnNullable: boolean;
+  successValues: Array<String>;
   line: usize;
   column: usize;
 }
@@ -43,6 +45,8 @@ export struct NativeForeignFunctionContract {
   name: String;
   nativeName: String;
   returnType: String;
+  errorType: Option<String>;
+  successValues: Array<String>;
   parameters: Array<NativeForeignParameterContract>;
 }
 
@@ -62,6 +66,15 @@ function contractError(
   in message: String
 ): String {
   return `${cursor.path}:${cursor.tokens[cursor.index].line}:${cursor.tokens[cursor.index].column}: error: ${message}`;
+}
+
+function contractErrorAt(
+  in cursor: ForeignContractCursor,
+  line: usize,
+  column: usize,
+  in message: String
+): String {
+  return `${cursor.path}:${line}:${column}: error: ${message}`;
 }
 
 function atText(in cursor: ForeignContractCursor, in text: String): boolean {
@@ -170,6 +183,37 @@ function parseParameter(
   });
 }
 
+function parseStatusValue(
+  inout cursor: ForeignContractCursor
+): String throws String {
+  let negative = false;
+  if (atText(cursor, "-")) {
+    negative = true;
+    cursor.index = cursor.index + 1;
+  }
+  if (cursor.tokens[cursor.index].kind != TokenKind.number) {
+    throw contractError(cursor, "expected an integer status value");
+  }
+  const token = cursor.tokens[cursor.index].text.copyBytes(
+    0,
+    cursor.tokens[cursor.index].text.byteLength
+  );
+  let index: usize = 0;
+  while (index < token.byteLength) {
+    const byte = token.byteAt(index);
+    if (byte < 48 || byte > 57) {
+      throw contractError(
+        cursor,
+        "the first native status tier requires a decimal integer"
+      );
+    }
+    index = index + 1;
+  }
+  cursor.index = cursor.index + 1;
+  if (negative) return `-${token}`;
+  return token;
+}
+
 function parseFunction(
   inout cursor: ForeignContractCursor
 ): RawForeignFunctionContract throws String {
@@ -190,18 +234,55 @@ function parseFunction(
   }
   try expectText(inout cursor, ")");
   try expectText(inout cursor, ":");
-  const returnNullable = try parseInferredType(inout cursor);
-  if (!atText(cursor, ";")) {
-    throw contractError(
-      cursor,
-      "function result facts are not implemented in the first native Z declaration slice"
-    );
+  let returnKind = "inferred";
+  let returnNullable = false;
+  let successValues = Array<String>();
+  if (atText(cursor, "void")) {
+    returnKind = "status";
+    cursor.index = cursor.index + 1;
+    try expectText(inout cursor, "throws");
+    const errorNullable = try parseInferredType(inout cursor);
+    if (errorNullable) {
+      throw contractError(cursor, "a native status error cannot be nullable");
+    }
+    try expectText(inout cursor, "{");
+    while (!atText(cursor, "}")) {
+      if (!atText(cursor, "success")) {
+        throw contractError(
+          cursor,
+          "only success values are implemented in the first native status tier"
+        );
+      }
+      cursor.index = cursor.index + 1;
+      const successValue = try parseStatusValue(inout cursor);
+      successValues.push(successValue);
+      try expectText(inout cursor, ";");
+    }
+    try expectText(inout cursor, "}");
+    if (successValues.length == 0) {
+      throw contractErrorAt(
+        cursor,
+        line,
+        column,
+        "a native status contract requires at least one success value"
+      );
+    }
+  } else {
+    returnNullable = try parseInferredType(inout cursor);
+    if (!atText(cursor, ";")) {
+      throw contractError(
+        cursor,
+        "function result facts are not implemented in the first native Z declaration slice"
+      );
+    }
+    cursor.index = cursor.index + 1;
   }
-  cursor.index = cursor.index + 1;
   return RawForeignFunctionContract({
     name,
     parameters,
+    returnKind,
     returnNullable,
+    successValues,
     line,
     column,
   });
@@ -296,6 +377,17 @@ function scalarTypeName(in nativeType: String): String throws String {
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
 }
 
+function isIntegerTypeName(in typeName: String): boolean {
+  return typeName == "i8"
+    || typeName == "u8"
+    || typeName == "i16"
+    || typeName == "u16"
+    || typeName == "i32"
+    || typeName == "u32"
+    || typeName == "i64"
+    || typeName == "u64";
+}
+
 function findRawFunction(
   in declarations: RawForeignModuleDeclarations,
   in name: String
@@ -364,9 +456,27 @@ export function normalizeForeignContracts(
       }));
       parameterIndex = parameterIndex + 1;
     }
-    const returnType = try scalarTypeName(
+    const nativeReturnType = try scalarTypeName(
       declarations.overloads[overloadIndex].returnNativeType
     );
+    let returnType = nativeReturnType.copyBytes(
+      0,
+      nativeReturnType.byteLength
+    );
+    let errorType = Option<String>.none;
+    let successValues = Array<String>();
+    if (contract.returnKind == "status") {
+      if (!isIntegerTypeName(nativeReturnType)) {
+        throw `native status function "${contract.name}" must return an integer scalar`;
+      }
+      returnType = "void";
+      errorType = Option.some(nativeReturnType);
+      for (const successValue of contract.successValues) {
+        successValues.push(
+          successValue.copyBytes(0, successValue.byteLength)
+        );
+      }
+    }
     functions.push(NativeForeignFunctionContract({
       name: contract.name.copyBytes(0, contract.name.byteLength),
       nativeName: declarations.overloads[overloadIndex].nativeName.copyBytes(
@@ -374,6 +484,8 @@ export function normalizeForeignContracts(
         declarations.overloads[overloadIndex].nativeName.byteLength
       ),
       returnType,
+      errorType,
+      successValues,
       parameters,
     }));
   }

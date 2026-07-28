@@ -112,10 +112,11 @@ semantic analysis and code generation; the frontend itself is native Z code.
   complete producer/decoder boundary in the bootstrap suite, while a record
   header fails closed.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
-  parses the established `declare module` plus inferred scalar
-  `export function` shape, verifies module/function/parameter identity against
-  raw Clang declarations, maps supported ABI scalars to Z types, and rejects
-  every unimplemented fact at its `.zd` source location.
+  parses the established `declare module`, inferred scalar `export function`,
+  and decimal integer-status `void throws _ { success N; }` shapes. It verifies
+  module/function/parameter identity against raw Clang declarations, maps
+  supported ABI scalars to Z types, preserves the native integer as the error
+  type, and rejects every unimplemented fact at its `.zd` source location.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
@@ -194,10 +195,11 @@ location until Clang discovery, `.zd` normalization, and FIIR ingestion are
 connected. The internal `self-host-foreign` adapter command writes a real
 Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
 decodes and validates that artifact through its own `foreign-inspect` bootstrap
-operation. The driver also parses and normalizes the first scalar `.zd`
-contract against that artifact. Automatic adapter invocation, broader
-declaration records/facts, and ingestion by native sema/emission remain;
-decoding or partial normalization is not a trusted foreign import.
+operation. The driver also parses and normalizes inferred scalar and decimal
+integer-status `.zd` contracts against that artifact. Automatic adapter
+invocation, symbolic status constants, exact status-literal range checks,
+broader declaration records/facts, and ingestion by native sema/emission
+remain; decoding or partial normalization is not a trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

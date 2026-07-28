@@ -58,23 +58,26 @@ function inspectClang(in path: String): i32 throws String {
   if (module.version != 1) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
-  if (module.functions.length != 2) return 43;
-  if (module.overloads.length != 2) return 44;
-  if (module.parameters.length != 4) return 45;
+  if (module.functions.length != 3) return 43;
+  if (module.overloads.length != 3) return 44;
+  if (module.parameters.length != 5) return 45;
   if (module.availability.length != 0) return 46;
   if (module.functions[0].name != "z_foreign_add") return 47;
-  if (module.functions[1].name != "z_foreign_measure") return 48;
-  if (module.overloads[0].returnNativeType != "int") return 49;
-  if (module.overloads[1].returnNativeType != "long") return 50;
-  if (module.parameters[0].nativeType != "int") return 51;
-  if (module.parameters[1].nativeType != "int") return 52;
-  if (module.parameters[2].nativeType != "int") return 53;
-  if (module.parameters[3].nativeType != "const char *") return 54;
+  if (module.functions[1].name != "z_foreign_status") return 48;
+  if (module.functions[2].name != "z_foreign_measure") return 49;
+  if (module.overloads[0].returnNativeType != "int") return 50;
+  if (module.overloads[1].returnNativeType != "int") return 51;
+  if (module.overloads[2].returnNativeType != "long") return 52;
+  if (module.parameters[0].nativeType != "int") return 53;
+  if (module.parameters[1].nativeType != "int") return 54;
+  if (module.parameters[2].nativeType != "int") return 55;
+  if (module.parameters[3].nativeType != "int") return 56;
+  if (module.parameters[4].nativeType != "const char *") return 57;
   match (in module.overloads[0].sourceFile) {
     some(path) => {
-      if (path.byteLength == 0) return 55;
+      if (path.byteLength == 0) return 58;
     }
-    none => return 56;
+    none => return 59;
   }
   return 0;
 }

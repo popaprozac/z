@@ -162,11 +162,14 @@ spelling does not silently pass through.
 ### Native self-hosting status
 
 The production Stage-0 compiler supports the complete current shape documented
-below. The self-hosted compiler now has its first `.zd` vertical slice:
-`declare module` plus inferred scalar `export function` declarations are parsed
-in Z and validated against Clang-produced declarations. Other facts still fail
-closed in the native compiler while they are ported; this is a bootstrap
-implementation boundary, not a restriction of the `.zd` language.
+below. The self-hosted compiler now parses `declare module`, inferred scalar
+`export function` declarations, and decimal integer-status contracts such as
+`void throws _ { success 0; }`. It validates them against Clang-produced
+declarations and preserves the exact mapped native integer type as the Z error
+type. Symbolic constants, enum statuses, and exact literal range checks remain
+in Stage 0. Other facts still fail closed in the native compiler while they are
+ported; this is a bootstrap implementation boundary, not a restriction of the
+`.zd` language.
 
 ## Declaration dictionary
 

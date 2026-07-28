@@ -9448,6 +9448,24 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(unsupportedContract.status, 3);
 
+  const incompleteStatusContractPath = resolve(
+    directory,
+    "incomplete-status.zd",
+  );
+  writeFileSync(
+    incompleteStatusContractPath,
+    readFileSync(contractPath, "utf8").replace(
+      "    success 0;\n    success 2;\n",
+      "",
+    ),
+  );
+  const incompleteStatusContract = spawnSync(
+    contractExecutable,
+    [clangPath, incompleteStatusContractPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(incompleteStatusContract.status, 3);
+
   assert.throws(
     () => resolveForeignFunctionDeclarationStreams(
       [{
@@ -9519,7 +9537,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignInspection.status, 0, foreignInspection.stderr);
   assert.match(
     foreignInspection.stdout,
-    /decoded 2 foreign functions from clang/,
+    /decoded 3 foreign functions from clang/,
   );
   const invalidForeignAdapterStream = resolve(
     directory,
@@ -9559,7 +9577,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 1 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 2 foreign function contracts for foreign-functions-only\.h/,
   );
   const unsupportedNativeContract = resolve(
     directory,
@@ -9588,6 +9606,34 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(
     unsupportedNativeContractInspection.stderr,
     /unsupported-native-contract\.zd:2:\d+: error: function result facts are not implemented/,
+  );
+  const incompleteNativeStatusContract = resolve(
+    directory,
+    "incomplete-native-status.zd",
+  );
+  writeFileSync(
+    incompleteNativeStatusContract,
+    [
+      'declare module "foreign-functions-only.h" {',
+      "  export function z_foreign_status(code: _): void throws _ {}",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const incompleteNativeStatusInspection = spawnSync(
+    driver,
+    [
+      "foreign-contract-inspect",
+      foreignAdapterStream,
+      "foreign-functions-only.h",
+      incompleteNativeStatusContract,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(incompleteNativeStatusInspection.status, 1);
+  assert.match(
+    incompleteNativeStatusInspection.stderr,
+    /incomplete-native-status\.zd:2:\d+: error: a native status contract requires at least one success value/,
   );
 
   const recursiveDriver = resolve(directory, "z-native-generation-2");

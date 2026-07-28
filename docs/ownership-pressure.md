@@ -1182,7 +1182,7 @@ fit the same representation-neutral style as the native resolver stream. Its
 first version rejects non-function declaration categories, preserving the
 critical distinction between untrusted producer facts and normalized FIIR
 rather than silently treating incomplete native metadata as safe. The first
-real adapter probe runs a two-function scalar header through Clang and the
+real adapter probe runs a three-function scalar header through Clang and the
 native decoder; the same operation rejects the record-bearing geometry header
 instead of dropping its types.
 
@@ -1200,12 +1200,16 @@ not copy them into convenient locals; it retains their array indexes and copies
 only strings that enter the normalized contract. That is the intended
 ownership distinction in real compiler code, not a special-case bridge.
 
-The first native contract tier matches an inferred scalar function declaration
-against the Clang stream and produces Z-facing parameter/result types. Module,
-function, and parameter identities are checked. Nullable, borrowed, status,
-ownership, callback, and result-body facts fail at their `.zd` source location
-until their semantics cross. The driver still refuses to call this partial
-normalization a checked foreign import.
+The native contract tier now matches inferred scalar functions and decimal
+integer-status functions against the Clang stream. Status normalization
+preserves the mapped native integer as the error type and the explicit set of
+successful literals while presenting `void` to Z. Module, function, and
+parameter identities are checked, a status contract requires at least one
+success value, and a non-integer native return is rejected. Symbolic/enum
+statuses, exact literal range validation, nullable, borrowed, ownership,
+callback, and other result-body facts still fail closed until their semantics
+cross. The driver still refuses to call this partial normalization a checked
+foreign import.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
