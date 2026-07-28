@@ -7896,13 +7896,22 @@ test("reads files, exposes program arguments, and runs child processes through s
   const directory = mkdtempSync("/tmp/z-system-std-");
   const fileName = resolve(directory, "main.zs");
   const copyPath = resolve(directory, "copy.zs");
+  const binaryPath = resolve(directory, "bytes.bin");
   const nestedDirectory = resolve(directory, "cache/generated/native");
+  writeFileSync(binaryPath, Buffer.from([0, 255, 42]));
   const source = `
     import console from "std/console";
     import fs from "std/fs";
     import process from "std/process";
 
     function runTool(): i32 throws String {
+      const bytes = try fs.readBytes(${JSON.stringify(binaryPath)});
+      if (
+        bytes.length != 3
+        || bytes[0] != 0
+        || bytes[1] != 255
+        || bytes[2] != 42
+      ) return 83;
       const source = try fs.readText(${JSON.stringify(fileName)});
       try fs.writeText(${JSON.stringify(copyPath)}, source);
       if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
@@ -7950,6 +7959,7 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.equal(readFileSync(copyPath, "utf8"), source);
 
   const generated = compileToC(source, fileName);
+  assert.match(generated, /static Z_Result_.* z_fs_read_bytes/);
   assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
   assert.match(generated, /static Z_Result_String_String z_fs_real_path/);
   assert.match(generated, /static bool z_fs_is_directory/);
@@ -7961,6 +7971,11 @@ test("reads files, exposes program arguments, and runs child processes through s
 
   const readOffset = source.indexOf("readText") + 2;
   assert.match(hover(source, fileName, readOffset)?.contents.value ?? "", /readText\(in path: String\): String throws String/);
+  const readBytesOffset = source.indexOf("readBytes") + 2;
+  assert.match(
+    hover(source, fileName, readBytesOffset)?.contents.value ?? "",
+    /readBytes\(in path: String\): Array<u8> throws String/,
+  );
   const createOffset = source.indexOf("createDirectories") + 2;
   assert.match(
     hover(source, fileName, createOffset)?.contents.value ?? "",
@@ -9801,6 +9816,15 @@ test("compiles a multi-module Z application through the standalone native driver
     ...process.env,
     PATH: `${resolve(projectRoot, "compiler/bin")}${delimiter}${process.env.PATH ?? ""}`,
   };
+  const contentHashRun = spawnSync(
+    driver,
+    [
+      "run",
+      resolve(projectRoot, "tests/fixtures/self-host-content-hash.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(contentHashRun.status, 0, contentHashRun.stderr);
 
   const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
   const foreignAdapterHeader = resolve(
@@ -9967,7 +9991,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 36 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 37 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -10249,11 +10273,69 @@ test("compiles a multi-module Z application through the standalone native driver
     },
   );
   assert.equal(firstForeignRun.status, 42, firstForeignRun.stderr);
-  assert.match(
-    firstForeignRun.stdout,
-    /cache bypass: configured native libraries are not fingerprinted yet/,
-  );
   assert.match(firstForeignRun.stdout, /compiled 1 Z modules/);
+  const cachedForeignApplication = resolve(
+    foreignProject,
+    ".z-cache/run/program",
+  );
+  utimesSync(cachedForeignApplication, 0, 0);
+  const cachedForeignRun = spawnSync(
+    driver,
+    ["run", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(cachedForeignRun.status, 42, cachedForeignRun.stderr);
+  assert.match(
+    cachedForeignRun.stdout,
+    /cache hit: reused .*\.z-cache\/run\/program/,
+  );
+  assert.equal(statSync(cachedForeignApplication).mtimeMs, 0);
+
+  writeFileSync(
+    foreignProjectImplementation,
+    `${readFileSync(foreignProjectImplementation, "utf8")}\nint z_foreign_cache_marker(void) { return 1; }\n`,
+  );
+  const changedForeignObjectCompilation = spawnSync(
+    "clang",
+    ["-c", foreignProjectImplementation, "-o", foreignObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    changedForeignObjectCompilation.status,
+    0,
+    changedForeignObjectCompilation.stderr,
+  );
+  const changedForeignArchiving = spawnSync(
+    "ar",
+    ["rcs", foreignArchive, foreignObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    changedForeignArchiving.status,
+    0,
+    changedForeignArchiving.stderr,
+  );
+  const libraryInvalidatedForeignRun = spawnSync(
+    driver,
+    ["run", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    libraryInvalidatedForeignRun.status,
+    42,
+    libraryInvalidatedForeignRun.stderr,
+  );
+  assert.match(
+    libraryInvalidatedForeignRun.stdout,
+    /compiled 1 Z modules/,
+  );
+  assert.ok(statSync(cachedForeignApplication).mtimeMs > 0);
 
   const headerOnlyProject = resolve(directory, "header-only-project");
   mkdirSync(headerOnlyProject);

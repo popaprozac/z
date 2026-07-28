@@ -23,6 +23,8 @@ import {
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
   if (type.kind == LoweredTypeKind.u8Type) return "uint8_t";
+  if (type.kind == LoweredTypeKind.u32Type) return "uint32_t";
+  if (type.kind == LoweredTypeKind.u64Type) return "uint64_t";
   if (type.kind == LoweredTypeKind.usizeType) return "size_t";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
@@ -41,6 +43,8 @@ function cType(in type: LoweredType): String throws String {
 function integerCType(in name: String): String throws String {
   if (name == "i32") return "int32_t";
   if (name == "u8") return "uint8_t";
+  if (name == "u32") return "uint32_t";
+  if (name == "u64") return "uint64_t";
   if (name == "usize") return "size_t";
   throw `native C emission does not support integer type ${name}`;
 }
@@ -487,7 +491,12 @@ function appendExpression(
       declaration.expressions[index].value.byteLength
     );
     const argument = declaration.expressions[index].children[0];
-    if (source == target || source == "u8") {
+    if (
+      source == target
+      || source == "u8"
+      || (source == "u32" && target == "u64")
+      || (source == "usize" && target == "u64")
+    ) {
       const targetCType = try integerCType(target);
       output.append("((");
       output.append(targetCType);
@@ -762,6 +771,11 @@ function appendExpression(
     }
     const callee = declaration.expressions[index].children[0];
     if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.readBytes"
+    ) output.append("z_stage1_fs_read_bytes");
+    else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.readText"
@@ -2065,6 +2079,8 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
   if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.u32Type) return "u32";
+  if (type.kind == LoweredTypeKind.u64Type) return "u64";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
   throw "native C emission cannot form an intrinsic identity for this type";
 }
@@ -2348,6 +2364,7 @@ function appendSystemStandardRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void {
+  const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
@@ -2364,7 +2381,8 @@ function appendSystemStandardRuntime(
   const usesConsoleError = programUsesStandardCall(program, "console.error");
   const usesConsoleDebug = programUsesStandardCall(program, "console.debug");
   if (
-    usesReadText
+    usesReadBytes
+    || usesReadText
     || usesWriteText
     || usesExists
     || usesIsDirectory
@@ -2409,6 +2427,46 @@ function appendSystemStandardRuntime(
     output.append("  Z_String result = { NULL, 0, 0 };\n");
     output.append("  z_string_append_bytes(&result, value, strlen(value));\n");
     output.append("  return result;\n");
+    output.append("}\n\n");
+  }
+  if (usesReadBytes) {
+    output.append("static __attribute__((unused)) Z___z_Result___z_Array_u8_String z_stage1_fs_read_bytes(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
+    output.append("  FILE *file = fopen(native_path, \"rb\");\n");
+    output.append("  if (file == NULL) return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (fseek(file, 0, SEEK_END) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  const long measured = ftell(file);\n");
+    output.append("  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  Z___z_Array_u8 contents = { NULL, 0, 0 };\n");
+    output.append("  if (measured > 0) {\n");
+    output.append("    contents.data = malloc((size_t)measured);\n");
+    output.append("    if (contents.data == NULL) abort();\n");
+    output.append("    contents.length = (size_t)measured;\n");
+    output.append("    contents.capacity = contents.length;\n");
+    output.append("    if (fread(contents.data, 1, (size_t)measured, file) != (size_t)measured) {\n");
+    output.append("      const int code = ferror(file) ? errno : EIO;\n");
+    output.append("      fclose(file);\n");
+    output.append("      free(contents.data);\n");
+    output.append("      return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    }\n");
+    output.append("  }\n");
+    output.append("  if (fclose(file) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    free(contents.data);\n");
+    output.append("    return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  return (Z___z_Result___z_Array_u8_String){ .tag = Z___z_Result___z_Array_u8_StringTag_success, .payload.success = contents };\n");
     output.append("}\n\n");
   }
   if (usesReadText) {
@@ -2679,6 +2737,90 @@ function appendSystemStandardRuntime(
   }
 }
 
+function appendCheckedUnsignedIntegerRuntime(
+  inout output: TextBuffer,
+  in name: String,
+  in nativeType: String,
+  in maximum: String,
+  in bitWidth: String
+): void {
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_add_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  if (__builtin_add_overflow(left, right, &result)) abort();\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_subtract_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  if (__builtin_sub_overflow(left, right, &result)) abort();\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_multiply_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  if (__builtin_mul_overflow(left, right, &result)) abort();\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_divide_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  if (right == 0) abort();\n  return left / right;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_remainder_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  if (right == 0) abort();\n  return left % right;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_shift_left_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  if (right >= ");
+  output.append(bitWidth);
+  output.append(" || left > (");
+  output.append(maximum);
+  output.append(" >> right)) abort();\n  return left << right;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_checked_shift_right_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  if (right >= ");
+  output.append(bitWidth);
+  output.append(") abort();\n  return left >> right;\n}\n\n");
+}
+
 function appendWrappingIntegerRuntime(
   inout output: TextBuffer,
   in name: String,
@@ -2725,6 +2867,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     program,
     "process.args"
   );
+  const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
@@ -2750,7 +2893,8 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("\"\n");
   }
   if (
-    usesReadText
+    usesReadBytes
+    || usesReadText
     || usesWriteText
     || usesCreateDirectories
     || usesRealPath
@@ -2758,7 +2902,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   ) {
     output.append("#include <errno.h>\n");
   }
-  if (usesReadText || usesWriteText || usesConsole) {
+  if (usesReadBytes || usesReadText || usesWriteText || usesConsole) {
     output.append("#include <stdio.h>\n");
   }
   if (
@@ -2857,6 +3001,20 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (right == 0) abort();\n");
   output.append("  return left % right;\n");
   output.append("}\n\n");
+  appendCheckedUnsignedIntegerRuntime(
+    inout output,
+    "u32",
+    "uint32_t",
+    "UINT32_MAX",
+    "32"
+  );
+  appendCheckedUnsignedIntegerRuntime(
+    inout output,
+    "u64",
+    "uint64_t",
+    "UINT64_MAX",
+    "64"
+  );
   output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_shift_left_u8(uint8_t left, uint8_t right) {\n");
   output.append("  if (right >= 8 || left > (uint8_t)(UINT8_MAX >> right)) abort();\n");
   output.append("  return (uint8_t)(left << right);\n");
@@ -2895,6 +3053,18 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  if (value > UINT8_MAX) abort();\n");
   output.append("  return (uint8_t)value;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_convert_u32_to_u8(uint32_t value) {\n");
+  output.append("  if (value > UINT8_MAX) abort();\n");
+  output.append("  return (uint8_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_convert_u64_to_u8(uint64_t value) {\n");
+  output.append("  if (value > UINT8_MAX) abort();\n");
+  output.append("  return (uint8_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint32_t z_stage1_checked_convert_i32_to_u32(int32_t value) {\n");
+  output.append("  if (value < 0) abort();\n");
+  output.append("  return (uint32_t)value;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_usize_to_i32(size_t value) {\n");
   output.append("  if (value > INT32_MAX) abort();\n");
   output.append("  return (int32_t)value;\n");
@@ -2905,6 +3075,8 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("}\n\n");
   appendWrappingIntegerRuntime(inout output, "i32", "int32_t");
   appendWrappingIntegerRuntime(inout output, "u8", "uint8_t");
+  appendWrappingIntegerRuntime(inout output, "u32", "uint32_t");
+  appendWrappingIntegerRuntime(inout output, "u64", "uint64_t");
   appendWrappingIntegerRuntime(inout output, "usize", "size_t");
   output.append("typedef struct Z_String {\n");
   output.append("  const char *data;\n");

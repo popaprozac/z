@@ -193,7 +193,7 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 36-module driver to
+0 seeds generation one, which now rebuilds the same 37-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone

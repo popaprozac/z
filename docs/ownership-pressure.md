@@ -1126,13 +1126,16 @@ profile, include configuration, or semantic Z source does the same. An
 incomplete metadata marker is written before compilation, preventing an old
 binary from being reused after a failed rebuild.
 
-Configured native libraries expose the next correctness boundary. Their
-resolved archive or dynamic-library bytes are not available through the current
-typed filesystem API, so those projects explicitly report a cache bypass and
-relink. Serving a possibly stale binary would be faster but would violate the
-compiler's safety and predictability goals. Native-library fingerprinting comes
-before widening reuse to that shape; module-level parse and semantic caches are
-separate future work.
+Configured native libraries exposed the next correctness boundary. Z now has a
+typed `fs.readBytes` operation returning owned `Array<u8>` storage, and the
+driver implements SHA-256 in ordinary Z rather than delegating cache identity
+to a host script. Each library that resolves to exactly one supported spelling
+in an explicit link directory contributes its canonical path and byte digest;
+an unchanged static archive hits the cache and rebuilding that archive
+invalidates it. Missing, system-search-path, or ambiguous libraries still
+report a cache bypass. Serving a possibly stale binary would be faster but
+would violate the compiler's safety and predictability goals. Module-level
+parse and semantic caches are separate future work.
 
 The command split also made entry policy executable rather than documentary.
 `check` validates an export-only entry graph, but `emit`, `build`, and `run`
@@ -1266,13 +1269,16 @@ fingerprint before trusting the artifact.
 Writing that identity in self-hosted Z exposed another honest subset boundary:
 the native emitter did not lower explicit integer construction or wrapping
 methods even though Stage 0 accepted both. The next composition slice closes
-that mismatch for the native IR's current `i32`, `u8`, and `usize` vocabulary.
+that mismatch for the native IR's initial `i32`, `u8`, and `usize` vocabulary.
 Contained conversions emit direct casts; narrowing and signedness-risk
 conversions call checked helpers; and `wrappingAdd`, `wrappingSubtract`, and
 `wrappingMultiply` preserve modulo-width behavior. A standalone native-driver
 fixture exercises all three paths across a module boundary and a negative
-runtime probe proves that checked narrowing traps. Wider integer kinds and
-native compile-time constant-range diagnostics remain separate expansion work.
+runtime probe proves that checked narrowing traps. The Z-written SHA-256 cache
+fingerprint then supplied real compiler pressure for `u32`, `u64`,
+`Array<u32>`, checked shifts and conversions, and wrapping arithmetic; those
+wider unsigned kinds now cross native lowering and strict C emission as well.
+Native compile-time constant-range diagnostics remain separate expansion work.
 When an Objective-C or other foreign scalar is intentionally opaque to Stage 1,
 native shadow analysis defers the conversion to Stage 0 rather than classifying
 the unknown ABI value as a non-integer.
@@ -1361,7 +1367,8 @@ symlink aliases from creating duplicate module identities, but supports only
 the self-hosting subset. Broader foreign declaration/`.zd` categories,
 Swift-target preparation, cross-platform target selection,
 manifest-selected/custom profiles, complete diagnostics, native-library
-fingerprints, cache locking/eviction, incremental frontend reuse, and
+resolution outside explicit link directories, cache locking/eviction,
+incremental frontend reuse, and
 production command options remain to cross independently.
 
 ## Not tested yet

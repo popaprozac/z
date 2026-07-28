@@ -43,6 +43,7 @@ import {
 import {
   loadForeignModuleContract,
 } from "./foreign-project.zs";
+import { sha256 } from "./content-hash.zs";
 
 struct NativeProject {
   entryPath: String;
@@ -50,6 +51,11 @@ struct NativeProject {
   modules: Array<ParsedModule>;
   foreignModules: Array<NativeForeignModuleContract>;
   graph: ModuleGraph;
+}
+
+struct RunCacheMetadata {
+  value: String;
+  reusable: boolean;
 }
 
 function loadModule(
@@ -304,11 +310,59 @@ function appendCacheField(
   output.appendAscii(0);
 }
 
+function resolvedNativeLibrary(
+  in config: NativeProjectConfig,
+  in library: String
+): Option<String> {
+  for (const directory of config.linkDirectories) {
+    let candidates = Array<String>();
+    candidates.push(`${directory}/lib${library}.tbd`);
+    candidates.push(`${directory}/lib${library}.dylib`);
+    candidates.push(`${directory}/lib${library}.so`);
+    candidates.push(`${directory}/lib${library}.a`);
+    candidates.push(`${directory}/${library}.lib`);
+    candidates.push(`${directory}/lib${library}.lib`);
+    candidates.push(`${directory}/lib${library}.dll.a`);
+    let selected = "";
+    for (const candidate of candidates) {
+      if (!fs.exists(candidate) || fs.isDirectory(candidate)) continue;
+      if (selected.byteLength > 0) return Option<String>.none;
+      selected = copy candidate;
+    }
+    if (selected.byteLength > 0) return Option.some(selected);
+  }
+  return Option<String>.none;
+}
+
+function appendNativeLibraryEvidence(
+  in project: NativeProject,
+  inout output: TextBuffer
+): boolean throws String {
+  for (const library of project.config.linkLibraries) {
+    const path = match (resolvedNativeLibrary(
+      project.config,
+      library
+    )) {
+      some(path) => path;
+      none => return false;
+    };
+    const bytes = try fs.readBytes(path);
+    const digest = sha256(bytes);
+    appendCacheField(inout output, "native-library", path);
+    appendCacheField(
+      inout output,
+      "native-library-sha256",
+      digest
+    );
+  }
+  return true;
+}
+
 function runCacheMetadata(
   in project: NativeProject,
   in toolchainIdentity: String,
   release: boolean
-): String {
+): RunCacheMetadata throws String {
   let output = TextBuffer();
   appendCacheField(
     inout output,
@@ -372,7 +426,14 @@ function runCacheMetadata(
       foreignModule.cacheKey
     );
   }
-  return output.finish();
+  const reusable = try appendNativeLibraryEvidence(
+    project,
+    inout output
+  );
+  return RunCacheMetadata({
+    value: output.finish(),
+    reusable,
+  });
 }
 
 function loadToolchainIdentity(
@@ -394,10 +455,6 @@ function loadToolchainIdentity(
     throw `could not fingerprint Clang; preprocessor exited with status ${exitCode}`;
   }
   return try fs.readText(outputPath);
-}
-
-function runCacheSupported(in project: NativeProject): boolean {
-  return project.config.linkLibraries.length == 0;
 }
 
 function runCacheMatches(
@@ -438,12 +495,13 @@ function runProject(
   const metadataPath = `${outputPath}.meta`;
   const emitted = try emitProject(project);
   const toolchainIdentity = try loadToolchainIdentity(outputDirectory);
-  const metadata = runCacheMetadata(
+  const cacheMetadata = try runCacheMetadata(
     project,
     toolchainIdentity,
     release
   );
-  const cacheSupported = runCacheSupported(project);
+  const cacheSupported = cacheMetadata.reusable;
+  const metadata = copy cacheMetadata.value;
   if (
     cacheSupported
     && runCacheMatches(
@@ -458,7 +516,7 @@ function runProject(
   } else {
     if (!cacheSupported) {
       console.log(
-        "cache bypass: configured native libraries are not fingerprinted yet"
+        "cache bypass: could not resolve every configured native library unambiguously"
       );
     }
     try fs.writeText(metadataPath, "incomplete\n");

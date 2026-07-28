@@ -278,9 +278,10 @@ compile/link step from unchanged `run` commands. It still loads, checks, lowers,
 and emits the complete graph, then compares exact C plus profile, target,
 toolchain, and foreign evidence before reporting a cache hit. This improves the
 edit loop without conflating backend reuse with the still-future module-level
-parse and semantic caches. Projects with configured native libraries
-conservatively relink until the driver can fingerprint the resolved binary
-dependencies.
+parse and semantic caches. Configured native libraries found unambiguously in
+explicit link directories now contribute their canonical path and exact
+SHA-256 bytes to the identity. System-search-path or ambiguous libraries still
+fail closed to relinking rather than risk a stale executable.
 
 An exploratory `/usr/bin/time` smoke measurement on the one-module native
 driver fixture took 0.65 seconds for its initial debug compile and 0.02 seconds

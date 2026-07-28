@@ -38,14 +38,19 @@ source-hash collision. A failed compilation writes an incomplete marker before
 changing the C artifact, so an older executable cannot become a false cache
 hit on retry.
 
-Projects with configured native libraries currently bypass executable reuse
-because the driver cannot yet fingerprint the resolved archive or dynamic
-library bytes. This is a conservative correctness boundary: ordinary Z and
-header-only foreign projects cache, while native-library projects relink until
-binary dependency identities land. The native frontend still loads, checks,
-and emits the graph on a cache hit; incremental parse and semantic reuse are a
-later layer. The current debug profile uses Clang `-O0`; `--release` uses
-`-O2 -DNDEBUG`.
+For each configured native library, the driver searches the explicit link
+directories in order for the platform spellings it already passes to Clang. An
+exactly resolved archive, import library, or dynamic library contributes its
+canonical path and SHA-256 digest to the executable identity. The digest is
+implemented in ordinary Z over `fs.readBytes`, and a regression proves that
+unchanged archive bytes hit while rebuilding the archive invalidates. If a
+library cannot be found in those directories or more than one supported
+spelling exists in the selected directory, reuse fails closed and the driver
+reports a cache bypass. System-search-path libraries therefore conservatively
+relink until target-aware toolchain resolution is modeled. The native frontend
+still loads, checks, and emits the graph on a cache hit; incremental parse and
+semantic reuse are a later layer. The current debug profile uses Clang `-O0`;
+`--release` uses `-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
 adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
@@ -68,8 +73,7 @@ parameters and producer-proven constants retain that identity across namespace
 or selective imports and lower to their verified C spellings. C++,
 Objective-C, Swift, records, callbacks, and richer `.zd` facts remain with
 Stage 0 until their raw records and normalized FIIR cross together.
-Cross-process cache locking, native-library fingerprinting, and eviction remain
-toolchain hardening.
+Cross-process cache locking and eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

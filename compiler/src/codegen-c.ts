@@ -7223,9 +7223,14 @@ ${managedCleanup ? `${indent(managedCleanup, 2)}\n` : ""}${native ? "  std::dest
 
 function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>): string {
   const sections: string[] = [];
+  const bytesType = dynamicArrayTypeName("u8");
+  const bytesArray = dynamicArrayName(bytesType);
+  const bytesResult = enumName(resultTypeName(bytesType, "String"));
   const stringResult = enumName(resultTypeName("String", "String"));
   const voidResult = enumName(resultTypeName("void", "String"));
   const processResult = enumName(resultTypeName("i32", "String"));
+  const bytesSuccess = variantTag(resultTypeName(bytesType, "String"), "success");
+  const bytesFailure = variantTag(resultTypeName(bytesType, "String"), "failure");
   const stringSuccess = variantTag(resultTypeName("String", "String"), "success");
   const stringFailure = variantTag(resultTypeName("String", "String"), "failure");
   const voidSuccess = variantTag(resultTypeName("void", "String"), "success");
@@ -7239,7 +7244,8 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
 }`);
   }
   if (
-    used.has("fs.readText")
+    used.has("fs.readBytes")
+    || used.has("fs.readText")
     || used.has("fs.writeText")
     || used.has("fs.createDirectories")
     || used.has("fs.realPath")
@@ -7247,6 +7253,49 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   ) {
     sections.push(`static Z_String z_standard_error(const char *message) {
   return z_string_from_cstring(message != NULL ? message : "unknown operating-system error");
+}`);
+  }
+
+  if (used.has("fs.readBytes")) {
+    sections.push(`static ${bytesResult} z_fs_read_bytes(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+  }
+  const char *native_path = path.data != NULL ? path.data : "";
+  FILE *file = fopen(native_path, "rb");
+  if (file == NULL) {
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  if (fseek(file, 0, SEEK_END) != 0) {
+    const int code = errno;
+    fclose(file);
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  const long measured = ftell(file);
+  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {
+    const int code = errno;
+    fclose(file);
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  ${bytesArray} contents = { .data = NULL, .length = 0, .capacity = 0 };
+  if (measured > 0) {
+    contents.data = malloc((size_t)measured);
+    if (contents.data == NULL) abort();
+    contents.length = (uintptr_t)measured;
+    contents.capacity = contents.length;
+    if (fread(contents.data, 1, (size_t)measured, file) != (size_t)measured) {
+      const int code = ferror(file) ? errno : EIO;
+      fclose(file);
+      free(contents.data);
+      return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+    }
+  }
+  if (fclose(file) != 0) {
+    const int code = errno;
+    free(contents.data);
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  return (${bytesResult}){ .tag = ${bytesSuccess}, .data.success = contents };
 }`);
   }
 

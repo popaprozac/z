@@ -1206,22 +1206,26 @@ import process from "std/process";
 
 function stage(in path: String): i32 throws String {
   const source = try fs.readText(path);
+  const bytes = try fs.readBytes(path);
   try fs.createDirectories(".z-cache");
   try fs.writeText(".z-cache/input.zs", source);
+  console.log(`read ${bytes.length} raw bytes`);
   const clangArguments = ["--version"];
   return try process.run("clang", clangArguments);
 }
 ```
 
-`fs.readText(path)` returns an owned `String`; `fs.writeText(path, contents)`
-borrows both strings for the call; `fs.exists(path)` performs a non-throwing
-existence probe; and `fs.isDirectory(path)` distinguishes an existing
-directory from a file or missing path. `fs.createDirectories(path)` creates
-every missing parent, succeeds when the complete directory already exists, and
-throws if an existing component is not a directory or the operating system
-rejects creation. `fs.realPath(path)` returns an owned canonical absolute path,
-resolving relative components and filesystem links, or throws a typed `String`
-OS failure. Returned paths and file contents must be valid UTF-8.
+`fs.readText(path)` returns an owned UTF-8 `String`; `fs.readBytes(path)`
+returns an owned `Array<u8>` without text decoding; `fs.writeText(path,
+contents)` borrows both strings for the call; `fs.exists(path)` performs a
+non-throwing existence probe; and `fs.isDirectory(path)` distinguishes an
+existing directory from a file or missing path. `fs.createDirectories(path)`
+creates every missing parent, succeeds when the complete directory already
+exists, and throws if an existing component is not a directory or the
+operating system rejects creation. `fs.realPath(path)` returns an owned
+canonical absolute path, resolving relative components and filesystem links,
+or throws a typed `String` OS failure. Returned paths and text contents must be
+valid UTF-8; `readBytes` deliberately accepts arbitrary file bytes.
 `process.args()` returns an owned `Array<String>` containing
 the arguments after the executable name. `process.run(program, arguments)`
 borrows a stored fixed array or `Array<String>` as a non-escaping

@@ -16,6 +16,7 @@ export type StandardFunctionName =
   | "sleep"
   | "delay"
   | "scheduler.yield"
+  | "fs.readBytes"
   | "fs.readText"
   | "fs.writeText"
   | "fs.exists"
@@ -55,6 +56,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [],
     returnType: "void",
     async: true,
+  },
+  "fs.readBytes": {
+    cName: "z_fs_read_bytes",
+    parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
+    returnType: dynamicArrayTypeName("u8"),
+    errorType: "String",
   },
   "fs.readText": {
     cName: "z_fs_read_text",
@@ -115,6 +122,7 @@ export function standardFunctionSignature(name: StandardFunctionName): StandardF
 
 const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, StandardFunctionName>>> = {
   fs: {
+    readBytes: "fs.readBytes",
     readText: "fs.readText",
     writeText: "fs.writeText",
     exists: "fs.exists",

@@ -46,6 +46,19 @@ function namespaceHeader(
 function fsCall(in memberName: String): Option<NativeStandardCallShape> {
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
+  if (memberName == "readBytes") {
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    return Option.some(NativeStandardCallShape({
+      name: "fs.readBytes",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "Array<u8>",
+        "String"
+      ),
+    }));
+  }
   if (memberName == "readText") {
     parameterModes.push("in");
     parameterTypes.push("String");

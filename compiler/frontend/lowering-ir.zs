@@ -36,6 +36,8 @@ export enum LoweredTypeKind {
   booleanType,
   i32Type,
   u8Type,
+  u32Type,
+  u64Type,
   usizeType,
   stringType,
   arrayType,
@@ -301,6 +303,8 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
   if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.u32Type) return "u32";
+  if (type.kind == LoweredTypeKind.u64Type) return "u64";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   return type.name.copyBytes(0, type.name.byteLength);
@@ -355,6 +359,8 @@ function lowerTypeName(
   }
   if (name == "i32") return LoweredType({ kind: LoweredTypeKind.i32Type, name: "" });
   if (name == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
+  if (name == "u32") return LoweredType({ kind: LoweredTypeKind.u32Type, name: "" });
+  if (name == "u64") return LoweredType({ kind: LoweredTypeKind.u64Type, name: "" });
   if (name == "usize") {
     return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
   }
@@ -2208,6 +2214,8 @@ function loweredIntegerSourceType(
   if (
     sourceType == "i32"
     || sourceType == "u8"
+    || sourceType == "u32"
+    || sourceType == "u64"
     || sourceType == "usize"
   ) return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
   for (const type of importedTypes) {
@@ -2256,7 +2264,13 @@ function checkedIntegerTypeName(
 ): String {
   match (resolvedExpressionTypeName(evidence, tree, index)) {
     some(name) => {
-      if (name == "u8" || name == "usize" || name == "i32") return name;
+      if (
+        name == "u8"
+        || name == "u32"
+        || name == "u64"
+        || name == "usize"
+        || name == "i32"
+      ) return name;
     }
     none => {}
   }
@@ -2264,8 +2278,10 @@ function checkedIntegerTypeName(
   for (const child of tree.nodes[index].children) {
     match (resolvedExpressionTypeName(evidence, tree, child)) {
       some(name) => {
-        if (name == "usize") return name;
-        if (name == "u8") candidate = move name;
+        if (name == "u64") return name;
+        if (name == "usize") candidate = "usize";
+        if (name == "u32" && candidate != "usize") candidate = "u32";
+        if (name == "u8") candidate = "u8";
       }
       none => {}
     }
@@ -2283,8 +2299,10 @@ function checkedIntegerTypeName(
         childOffset
       )) {
         some(name) => {
-          if (name == "usize") return name;
-          if (name == "u8") candidate = move name;
+          if (name == "u64") return name;
+          if (name == "usize") candidate = "usize";
+          if (name == "u32" && candidate != "usize") candidate = "u32";
+          if (name == "u8") candidate = "u8";
         }
         none => {}
       }
@@ -3086,6 +3104,8 @@ function lowerExpression(
       && (
         tree.nodes[calleeInput].value == "i32"
         || tree.nodes[calleeInput].value == "u8"
+        || tree.nodes[calleeInput].value == "u32"
+        || tree.nodes[calleeInput].value == "u64"
         || tree.nodes[calleeInput].value == "usize"
       )
     ) {
@@ -3213,6 +3233,8 @@ function lowerExpression(
         if (
           receiverType == "i32"
           || receiverType == "u8"
+          || receiverType == "u32"
+          || receiverType == "u64"
           || receiverType == "usize"
         ) {
           const receiver = try lowerExpression(
@@ -3855,7 +3877,8 @@ function lowerExpression(
     match (resolvedCallTarget(evidence, tree, index)) {
       some(target) => {
         if (
-          target == "fs.readText"
+          target == "fs.readBytes"
+          || target == "fs.readText"
           || target == "fs.writeText"
           || target == "fs.exists"
           || target == "fs.isDirectory"
