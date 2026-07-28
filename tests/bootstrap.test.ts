@@ -7,7 +7,11 @@ import { analyzeSource, check, compileToC, compileToNative } from "../compiler/s
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
-import type { ForeignFunctionDeclaration } from "../compiler/src/foreign-ir.ts";
+import { encodeForeignFunctionDeclarationStream } from "../compiler/src/foreign-declaration-protocol.ts";
+import type {
+  ForeignFunctionDeclaration,
+  ForeignModuleDeclarations,
+} from "../compiler/src/foreign-ir.ts";
 import { buildStage0ModuleGraph } from "../compiler/src/native-semantic-parity.ts";
 import { NativeFrontendDiagnosticError } from "../compiler/src/native-frontend-diagnostics.ts";
 import {
@@ -9250,6 +9254,104 @@ test("runs the source stager through native file, process, and console runtimes"
     readFileSync(resolve(directory, ".z-cache/self-host-input.zs"), "utf8"),
     readFileSync(source, "utf8"),
   );
+}, 15_000);
+
+test("decodes versioned raw foreign function declarations in native Z", () => {
+  const declarations: ForeignModuleDeclarations = {
+    producer: "clang",
+    functions: new Map([
+      ["math.measureπ", {
+        name: "measureπ",
+        namespacePath: ["math"],
+        qualifiedName: "math.measureπ",
+        overloads: [{
+          name: "measureπ",
+          nativeName: "math::measure_pi",
+          returnType: {
+            nativeName: "long",
+            canonicalNativeName: "long",
+          },
+          parameters: [
+            {
+              name: "value",
+              type: { nativeName: "int", canonicalNativeName: "int" },
+            },
+            {
+              name: null,
+              type: { nativeName: "const char *" },
+            },
+          ],
+          variadic: false,
+          nativeSignature: "long (int, const char *)",
+          metadata: {
+            source: {
+              fileName: "/native/math.hpp",
+              line: 42,
+              column: 7,
+              length: 10,
+            },
+            availability: [{
+              platform: "macos",
+              introduced: "14.0",
+              deprecated: true,
+              deprecatedVersion: "15.0",
+              obsoleted: null,
+              unavailable: false,
+              message: "prefer measure_next",
+            }],
+            executorAffinity: null,
+          },
+        }],
+      }],
+    ]),
+    nativeTypes: new Map(),
+    namedTypes: new Map(),
+    constants: new Map(),
+    objectTypes: new Map(),
+    interfaces: new Map(),
+    protocols: new Map(),
+    framework: null,
+    objectiveC: false,
+    cPlusPlus: false,
+  };
+  const encoded = encodeForeignFunctionDeclarationStream(declarations);
+  assert.match(encoded, /^ZFDCL0000000000000001\nM/);
+  assert.throws(
+    () => encodeForeignFunctionDeclarationStream({
+      ...declarations,
+      constants: new Map([["unsupported", {} as never]]),
+    }),
+    /supports function-only modules/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-self-host-foreign-declarations-");
+  const protocolPath = resolve(directory, "declarations.zfdcl");
+  writeFileSync(protocolPath, encoded);
+  const fixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-foreign-declarations.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", fixture],
+    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /decodeRawForeignDeclarations/);
+  const executable = resolve(directory, "foreign-declarations");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [protocolPath], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  const truncatedPath = resolve(directory, "truncated.zfdcl");
+  writeFileSync(truncatedPath, encoded.slice(0, -2));
+  const truncated = spawnSync(executable, [truncatedPath], { encoding: "utf8" });
+  assert.equal(truncated.status, 3, truncated.stderr);
 }, 15_000);
 
 test("compiles a multi-module Z application through the standalone native driver", () => {

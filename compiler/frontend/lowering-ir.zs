@@ -1159,6 +1159,7 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
 
 function treeMovesName(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
   in name: String
@@ -1189,6 +1190,25 @@ function treeMovesName(
     tree.nodes[index].kind == ExpressionKind.callExpression
     && tree.nodes[index].children.length > 0
   ) {
+    const parameterModes = resolvedCallParameterModes(
+      program,
+      evidence,
+      tree,
+      index
+    );
+    let argumentPosition: usize = 1;
+    while (
+      argumentPosition < tree.nodes[index].children.length
+      && argumentPosition - 1 < parameterModes.length
+    ) {
+      const argument = tree.nodes[index].children[argumentPosition];
+      if (
+        parameterModes[argumentPosition - 1] == "value"
+        && tree.nodes[argument].kind == ExpressionKind.identifierExpression
+        && tree.nodes[argument].value == name
+      ) return true;
+      argumentPosition = argumentPosition + 1;
+    }
     const callee = tree.nodes[index].children[0];
     if (
       tree.nodes[callee].kind == ExpressionKind.memberExpression
@@ -1267,20 +1287,21 @@ function treeMovesName(
     }
   }
   for (const child of tree.nodes[index].children) {
-    if (treeMovesName(program, tree, child, name)) return true;
+    if (treeMovesName(program, evidence, tree, child, name)) return true;
   }
   return false;
 }
 
 function syntaxMovesName(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in expression: ExpressionSyntax,
   in name: String
 ): boolean {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
-      select treeMovesName(program, tree, root, name);
+      select treeMovesName(program, evidence, tree, root, name);
     }
     none => false;
   };
@@ -1300,17 +1321,21 @@ function syntaxIsIdentifier(
 
 function arenaMovesName(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in name: String
 ): boolean {
   for (const statement of arena.nodes) {
-    if (statementMovesName(program, arena, statement, name)) return true;
+    if (statementMovesName(program, evidence, arena, statement, name)) {
+      return true;
+    }
   }
   return false;
 }
 
 function statementMovesName(
   in program: Program,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in statement: Statement,
   in name: String
@@ -1326,7 +1351,7 @@ function statementMovesName(
         )
         && syntaxIsIdentifier(expression, name)
       ) return true;
-      if (syntaxMovesName(program, expression, name)) return true;
+      if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
     none => {}
   }
@@ -1336,12 +1361,18 @@ function statementMovesName(
         statement.kind == StatementKind.assignmentStatement
         && syntaxIsIdentifier(expression, name)
       ) return true;
-      if (syntaxMovesName(program, expression, name)) return true;
+      if (syntaxMovesName(program, evidence, expression, name)) return true;
     }
     none => {}
   }
   for (const child of statement.children) {
-    if (statementMovesName(program, arena, arena.nodes[child], name)) {
+    if (statementMovesName(
+      program,
+      evidence,
+      arena,
+      arena.nodes[child],
+      name
+    )) {
       return true;
     }
   }
@@ -1461,6 +1492,7 @@ function attachReplacementCleanup(
 function planCleanupStatement(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   sourceIndex: usize,
@@ -1509,6 +1541,7 @@ function planCleanupStatement(
     try planCleanupStatement(
       program,
       importedTypes,
+      evidence,
       arena,
       ownerName,
       sourceIndex,
@@ -1582,6 +1615,7 @@ function planCleanupStatement(
               const introduced = try planCleanupSequence(
                 program,
                 importedTypes,
+                evidence,
                 arena,
                 ownerName,
                 sourceRoots,
@@ -1630,6 +1664,7 @@ function planCleanupStatement(
     const introduced = try planCleanupSequence(
       program,
       importedTypes,
+      evidence,
       arena,
       ownerName,
       sourceChildren,
@@ -1671,6 +1706,7 @@ function planCleanupStatement(
       try planCleanupStatement(
         program,
         importedTypes,
+        evidence,
         arena,
         ownerName,
         sourceChild,
@@ -1691,6 +1727,7 @@ function planCleanupStatement(
 function planCleanupSequence(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
   in sourceRoots: Array<usize>,
@@ -1728,6 +1765,7 @@ function planCleanupSequence(
           if (moduleTypeNeedsCleanup(program, importedTypes, ownedType)) {
             const moved = arenaMovesName(
               program,
+              evidence,
               arena,
               arena.nodes[sourceIndex].name
             );
@@ -1778,6 +1816,7 @@ function planCleanupSequence(
     try planCleanupStatement(
       program,
       importedTypes,
+      evidence,
       arena,
       ownerName,
       sourceIndex,
@@ -4701,6 +4740,7 @@ function lowerMatchTree(
         if (
           statementMovesName(
             program,
+            evidence,
             arena,
             arena.nodes[bodyIndex],
             sourcePayloadBinding
@@ -5683,6 +5723,7 @@ function lowerFunction(
     ) {
       const moved = arenaMovesName(
         program,
+        evidence,
         declaration.body,
         parameter.name
       );
@@ -5734,6 +5775,7 @@ function lowerFunction(
   const introduced = try planCleanupSequence(
     program,
     importedTypes,
+    evidence,
     declaration.body,
     declaration.name,
     sourceRoots,
@@ -5830,6 +5872,7 @@ function lowerDeinitializer(
   const introduced = try planCleanupSequence(
     program,
     importedTypes,
+    evidence,
     body,
     `${ownerName}.deinit`,
     sourceRoots,

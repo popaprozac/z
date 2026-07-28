@@ -161,9 +161,18 @@ Z-owned normalizer
 Z sema and native backends
 ```
 
-Serialization remains intentionally deferred. When caching or the adapter
-process requires a wire format, it will version the raw declaration stream
-separately from the in-memory normalized FIIR.
+The first adapter seam is now executable. A versioned `ZFDCL` raw-declaration
+stream carries function names, namespaces, overloads, native type spellings,
+parameters, source locations, executor affinity, and availability into an
+owned Z decoder. Text is length-prefixed UTF-8 and records are flat, so the
+native compiler can validate and consume a bounded stream without adopting
+TypeScript object layouts or JSON as compiler architecture.
+
+This first protocol tier deliberately fails closed for native types, constants,
+Objective-C declarations, interfaces, and protocols. It is producer-facing
+data, not serialized FIIR: `.zd` facts still need to be read and normalized in
+Z before semantic analysis may trust the result. The normalized in-memory FIIR
+remains a separate, version-independent compiler model.
 
 ## Next slices
 
@@ -177,5 +186,9 @@ separately from the in-memory normalized FIIR.
    frame storage;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
-5. add serialization only when caching or a self-hosted toolchain adapter needs
-   it, then version that format separately from the in-memory IR.
+5. connect the actual Clang producer to the implemented raw declaration stream,
+   then add records for native types, constants, callbacks, Objective-C
+   declarations, interfaces, and protocols without weakening its fail-closed
+   boundary;
+6. implement the `.zd` reader and contract normalizer in Z, producing validated
+   in-memory FIIR rather than teaching native sema about wire records.

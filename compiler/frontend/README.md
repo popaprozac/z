@@ -103,6 +103,11 @@ semantic analysis and code generation; the frontend itself is native Z code.
   classified as fresh enum values rather than ownership-bearing field moves.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
+- `foreign-declaration-protocol.zs` decodes the versioned producer-facing
+  `ZFDCL` stream into owned flat Z declarations. Its first tier covers foreign
+  functions, overloads, parameters, source locations, executor affinity, and
+  availability, and rejects incomplete or unsupported records rather than
+  treating them as checked FIIR.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
@@ -177,7 +182,10 @@ independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
 verified: a non-standard, non-local import fails native `check` at its source
-location until Clang discovery and FIIR ingestion are available natively.
+location until Clang discovery, `.zd` normalization, and FIIR ingestion are
+connected. The native frontend can now decode and validate the first
+function-only raw declaration stream, but that producer protocol is not itself
+a trusted foreign contract.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

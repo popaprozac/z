@@ -1165,6 +1165,24 @@ location until Clang discovery, `.zd` loading, and normalized FIIR can move
 together. A partial compiler must fail closed rather than turn an implementation
 gap into a false safety claim.
 
+The first raw foreign-declaration round trip then exposed an ownership bug in
+the compiler itself. Passing an owned `String` to an imported Z function was
+lowered as an implicit transfer, but cleanup planning only inspected
+same-module call declarations. The generated C therefore shallow-copied the
+String into the callee and also destroyed the caller binding. Cleanup planning
+now consumes the resolver's cross-module parameter-mode evidence, so an owned
+argument transferred to either a local or imported function becomes
+unavailable and is destroyed exactly once. The protocol fixture deliberately
+omits an explicit `move` to keep this implicit owned-transfer path executable
+as a regression.
+
+The protocol itself uses fixed-width numeric framing plus length-prefixed UTF-8
+instead of JSON or delimiter escaping. Flat arrays and explicit source indexes
+fit the same representation-neutral style as the native resolver stream. Its
+first version rejects non-function declaration categories, preserving the
+critical distinction between untrusted producer facts and normalized FIIR
+rather than silently treating incomplete native metadata as safe.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z
