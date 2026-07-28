@@ -50,6 +50,26 @@ function baseName(in path: String): String {
   return copy path;
 }
 
+function adjacentForeignAdapter(in executablePath: String): String {
+  const directory = directoryName(executablePath);
+  const adjacent = normalizedModulePath(
+    `${directory}/z-foreign-adapter`
+  );
+  if (fs.exists(adjacent)) return adjacent;
+  const adjacentWindows = normalizedModulePath(
+    `${directory}/z-foreign-adapter.exe`
+  );
+  if (fs.exists(adjacentWindows)) return adjacentWindows;
+  return "z-foreign-adapter";
+}
+
+function foreignAdapterProgram(): String {
+  return match (attempt process.executablePath()) {
+    success(executablePath) => adjacentForeignAdapter(executablePath);
+    failure(_) => "z-foreign-adapter";
+  };
+}
+
 function existingForeignContract(
   in modulePath: String,
   in header: String,
@@ -222,8 +242,9 @@ export function loadForeignModuleContract(
   adapterArguments.push(copy modulePath);
   adapterArguments.push(copy header);
   adapterArguments.push(copy artifactPath);
+  const adapterProgram = foreignAdapterProgram();
   const adapterOutcome = attempt process.run(
-    "z-foreign-adapter",
+    adapterProgram,
     adapterArguments
   );
   const adapterStatus = match (adapterOutcome) {

@@ -1256,6 +1256,10 @@ borrows a stored fixed array or `Array<String>` as a non-escaping
 `Slice<String>`, launches the executable directly without a shell, inherits the
 parent standard streams, and returns its exit code. Failure to launch or wait is
 a typed failure; a child program's nonzero exit is a successful `i32` result.
+`process.executablePath()` returns the canonical absolute UTF-8 path of the
+currently running executable or throws a typed operating-system `String`
+failure. It is intended for locating resources and helper tools distributed
+beside an application; it does not expose the compiler host's executable.
 
 `z run file.zs -- one two` forwards `one` and `two` to the native program.
 Stage 0 currently lowers these APIs to a small cross-platform C runtime. The

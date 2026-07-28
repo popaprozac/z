@@ -38,8 +38,9 @@ Self-hosting is underway. TypeScript remains the bootstrap seed and production
 CLI, but the standalone Z driver can already discover, compile, and rebuild its
 own 37-module source graph to byte-identical C without Bun in the recursive
 compilation path. `bun run bootstrap` turns that fixed-point proof into a local
-native executable named `z`; a versioned trusted bootstrap artifact is not
-shipped yet. TypeScript is not Z's runtime model.
+native executable named `z` and packages its foreign-metadata adapter beside
+it; a versioned trusted bootstrap artifact is not shipped yet. TypeScript is
+not Z's runtime model.
 
 Z source modules use `.zs` (Z source), while foreign declaration contracts use
 `.zd` (Z declaration). The compiler intentionally does not claim `.z`, which is

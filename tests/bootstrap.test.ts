@@ -7951,6 +7951,8 @@ test("reads files, exposes program arguments, and runs child processes through s
       const canonical = try fs.realPath(${JSON.stringify(`${directory}/./main.zs`)});
       if (canonical != ${JSON.stringify(resolve(realpathSync(directory), "main.zs"))}) return 88;
       const arguments = process.args();
+      const executablePath = try process.executablePath();
+      if (!fs.exists(executablePath)) return 79;
       const childArguments = ["-e", "process.exit(0)"];
       const exitCode = try process.run(${JSON.stringify(process.execPath)}, childArguments);
       const missing = attempt process.run("/z/definitely/missing/executable", childArguments);
@@ -7991,6 +7993,10 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.match(generated, /static bool z_fs_is_directory/);
   assert.match(generated, /static Z_Result_void_String z_fs_create_directories/);
   assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
+  assert.match(
+    generated,
+    /static Z_Result_String_String z_process_executable_path\(void\)/,
+  );
   assert.match(generated, /execvp\(argv\[0\], argv\)/);
   assert.match(generated, /int32_t main\(int argc, char \*\*argv\)/);
   assert.doesNotMatch(generated, /#include <std\/(?:fs|process)>/);
@@ -8011,6 +8017,11 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.match(
     hover(source, fileName, replaceOffset)?.contents.value ?? "",
     /replace\(in source: String, in destination: String\): void throws String/,
+  );
+  const executablePathOffset = source.indexOf("executablePath()") + 2;
+  assert.match(
+    hover(source, fileName, executablePathOffset)?.contents.value ?? "",
+    /executablePath\(\): String throws String/,
   );
   const completionSource = source.replace("fs.readText", "fs.re");
   const completionOffset = completionSource.indexOf("fs.re") + "fs.re".length;
@@ -8043,6 +8054,20 @@ test("reads files, exposes program arguments, and runs child processes through s
     ).find((item) => item.label === "replace")?.detail ?? "",
     /throws String/,
   );
+  const processCompletionSource = source.replace(
+    "process.executablePath",
+    "process.exe",
+  );
+  const processCompletionOffset = processCompletionSource.indexOf("process.exe")
+    + "process.exe".length;
+  assert.match(
+    completions(
+      processCompletionSource,
+      fileName,
+      processCompletionOffset,
+    ).find((item) => item.label === "executablePath")?.detail ?? "",
+    /throws String/,
+  );
   const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
   const readPosition = positionForOffset(source, source.indexOf("readText"));
   assert.ok(tokens.some((token) => (
@@ -8056,6 +8081,14 @@ test("reads files, exposes program arguments, and runs child processes through s
   const uncheckedReplace = `import fs from "std/fs"; function main(): i32 { fs.replace("source", "destination"); return 0; }`;
   assert.match(
     diagnostics(uncheckedReplace, "unchecked-fs-replace.zs")[0].message,
+    /requires `attempt` or `try`/,
+  );
+  const uncheckedExecutablePath = `import process from "std/process"; function main(): i32 { process.executablePath(); return 0; }`;
+  assert.match(
+    diagnostics(
+      uncheckedExecutablePath,
+      "unchecked-process-executable-path.zs",
+    )[0].message,
     /requires `attempt` or `try`/,
   );
   const selective = `import { readText } from "std/fs"; function main(): i32 { return 0; }`;
@@ -9534,6 +9567,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(existsSync(`${executable}.c`), true);
   assert.equal(existsSync(`${executable}.pending`), false);
   assert.equal(existsSync(`${executable}.c.pending`), false);
+  const foreignAdapter = resolve(
+    directory,
+    process.platform === "win32"
+      ? "z-foreign-adapter.exe"
+      : "z-foreign-adapter",
+  );
+  assert.equal(existsSync(foreignAdapter), true);
 
   const checking = spawnSync(
     executable,
@@ -9546,7 +9586,68 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   const usage = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(usage.status, 2);
   assert.match(usage.stderr, /^usage: z /);
-}, 30_000);
+
+  const adapterUsage = spawnSync(foreignAdapter, [], { encoding: "utf8" });
+  assert.equal(adapterUsage.status, 2);
+  assert.match(adapterUsage.stderr, /^usage: z-foreign-adapter /);
+
+  const foreignProject = resolve(directory, "foreign-project");
+  mkdirSync(foreignProject);
+  const foreignSource = resolve(foreignProject, "main.zs");
+  writeFileSync(
+    foreignSource,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(foreignProject, "foreign-functions-only.h"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.h"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(foreignProject, "foreign-functions-only.h.zd"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.h.zd"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(foreignProject, "z.json"),
+    JSON.stringify({
+      target: {
+        entry: "main.zs",
+        includeDirectories: ["."],
+      },
+    }),
+  );
+  const foreignChecking = spawnSync(
+    executable,
+    ["check", foreignSource],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: "/usr/bin:/bin",
+      },
+    },
+  );
+  assert.equal(foreignChecking.status, 0, foreignChecking.stderr);
+  assert.match(foreignChecking.stdout, /checked 1 Z modules/);
+  assert.equal(
+    readdirSync(resolve(foreignProject, ".z-cache/foreign"))
+      .some((entry) => entry.endsWith(".zfdcl")),
+    true,
+  );
+
+  rmSync(directory, { recursive: true, force: true });
+}, 45_000);
 
 test("decodes versioned raw foreign function declarations in native Z", () => {
   const declarations: ForeignModuleDeclarations = {

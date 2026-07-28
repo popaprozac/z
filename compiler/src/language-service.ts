@@ -3354,6 +3354,8 @@ function standardFunctionDetail(localName: string, name: StandardFunctionName): 
     ? "  // blocks the current thread"
     : name === "fs.replace"
     ? "  // atomically replaces a same-filesystem destination"
+    : name === "process.executablePath"
+    ? "  // canonical path of the current native executable"
     : "";
   const detail = `${asynchronous}${localName}(${parameters}): ${displayStandardType(signature.returnType)}${throws}${behavior}`;
   return localName === name || name.includes(".")

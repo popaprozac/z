@@ -2590,8 +2590,10 @@ ported independently rather than translated as one monolith.
    `bun run bootstrap` command now turns that gate into a native executable
    named `z`: Stage 0 emits generation one, generation one builds generation
    two, and complete generated C must match before publication. A release still
-   needs signed trusted platform artifacts and the adjacent native-metadata
-   toolchain so end users do not need the TypeScript seed.
+   needs signed trusted platform artifacts. The local bootstrap already
+   packages the trusted TypeScript/Clang metadata producer as an adjacent
+   standalone tool, so running the resulting toolchain does not require an
+   installed Bun command.
 
 Self-hosting is not allowed to block early experimentation, but every bootstrap
 feature should have a plausible representation in the intended Z language.

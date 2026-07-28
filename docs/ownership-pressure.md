@@ -1063,10 +1063,14 @@ current 37-module driver, strict-compiles generation one, asks generation one
 to build generation two in release mode, and compares their complete generated
 C before publishing an executable named `z`. The published binary performs
 ordinary pure-Z project discovery, checking, emission, building, caching, and
-execution without Bun. This does not erase the trust boundary: installations
-still need Bun for the seed ceremony, and the Clang declaration producer
-remains TypeScript-hosted. It does turn “generation two exists” into a
-repeatable artifact boundary suitable for later signing and distribution.
+execution without Bun. The same ceremony now compiles the trusted
+TypeScript/Clang declaration producer into an adjacent `z-foreign-adapter`.
+`process.executablePath()` lets the Z driver locate that sibling before falling
+back to `PATH`, so a fresh foreign-header check also runs without an installed
+Bun command. This does not erase the trust boundary: installations still need
+Bun for the seed ceremony and the producer remains TypeScript-hosted. It turns
+“generation two exists” into a repeatable complete-tool boundary suitable for
+later signing and distribution.
 
 ## First standalone Z driver
 

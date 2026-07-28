@@ -302,10 +302,13 @@ cross-language benchmark or a stable performance promise; it confirms that the
 hit path actually removes the dominant Clang compile/link work.
 
 The supported local bootstrap path now makes the consecutive-generation gate
-directly measurable. A focused integration run on 2026-07-28 took 12.1 seconds
-with the self-hosted frontend boundary already warm. That includes seed
-emission, an optimized strict C compile, generation one's optimized recursive
-build of generation two, a 3,071,066-byte exact-C comparison, and publication
-of the final native `z`. It is a bootstrap/release-path measurement rather than
-an edit-loop cost; ordinary users should eventually receive a trusted platform
-artifact instead of paying it.
+directly measurable. A warm-boundary run on 2026-07-28 took 12.0 seconds. That
+includes seed emission, an optimized strict C compile, generation one's
+optimized recursive build of generation two, a 3,087,259-byte exact-C
+comparison, compilation of the adjacent metadata adapter, and publication.
+The native `z` is about 820 KiB; the currently Bun-compiled adapter is about
+61 MiB because it embeds its trusted JavaScript runtime and Clang-import
+orchestration. That size belongs to the temporary toolchain adapter, not every
+Z program. This is a bootstrap/release-path measurement rather than an
+edit-loop cost; ordinary users should eventually receive trusted platform
+artifacts instead of paying it.

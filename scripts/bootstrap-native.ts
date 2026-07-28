@@ -33,6 +33,12 @@ const stageDirectory = (() => {
 
 try {
   const cliPath = join(projectRoot, "compiler", "src", "cli.ts");
+  const foreignAdapterCliPath = join(
+    projectRoot,
+    "compiler",
+    "src",
+    "foreign-adapter-cli.ts",
+  );
   const driverPath = join(projectRoot, "compiler", "driver", "main.zs");
   const seedCPath = join(stageDirectory, "z-seed.c");
   const generationOnePath = join(
@@ -42,6 +48,10 @@ try {
   const generationTwoPath = join(
     stageDirectory,
     executableName("z-generation-two"),
+  );
+  const foreignAdapterPath = join(
+    stageDirectory,
+    executableName("z-foreign-adapter"),
   );
 
   const seedEmission = spawnSync(
@@ -99,9 +109,33 @@ try {
     );
   }
 
+  const adapterCompilation = spawnSync(
+    process.execPath,
+    [
+      "build",
+      foreignAdapterCliPath,
+      "--compile",
+      "--outfile",
+      foreignAdapterPath,
+    ],
+    { encoding: "utf8" },
+  );
+  requireSuccess(
+    adapterCompilation,
+    "Bun could not package the foreign metadata adapter",
+  );
+
   const pendingOutputPath = `${outputPath}.pending`;
   const finalCPath = `${outputPath}.c`;
   const pendingCPath = `${finalCPath}.pending`;
+  const finalAdapterPath = join(
+    outputDirectory,
+    executableName("z-foreign-adapter"),
+  );
+  const pendingAdapterPath = `${finalAdapterPath}.pending`;
+  copyFileSync(foreignAdapterPath, pendingAdapterPath);
+  chmodSync(pendingAdapterPath, 0o755);
+  renameSync(pendingAdapterPath, finalAdapterPath);
   copyFileSync(generationTwoPath, pendingOutputPath);
   chmodSync(pendingOutputPath, 0o755);
   copyFileSync(generationTwoCPath, pendingCPath);
@@ -111,6 +145,7 @@ try {
   console.log(
     `bootstrapped fixed-point native z (${generationTwoC.length} C bytes)`,
   );
+  console.log(`packaged adjacent foreign adapter at ${finalAdapterPath}`);
   console.log(outputPath);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

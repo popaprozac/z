@@ -852,6 +852,12 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value
+        == "process.executablePath"
+    ) output.append("z_stage1_process_executable_path");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "process.run"
     ) output.append("z_stage1_process_run");
     else if (
@@ -2417,6 +2423,10 @@ function appendSystemStandardRuntime(
   );
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessArgs = programUsesStandardCall(program, "process.args");
+  const usesProcessExecutablePath = programUsesStandardCall(
+    program,
+    "process.executablePath"
+  );
   const usesProcessRun = programUsesStandardCall(program, "process.run");
   const usesConsoleLog = programUsesStandardCall(program, "console.log");
   const usesConsoleWrite = programUsesStandardCall(program, "console.write");
@@ -2433,6 +2443,7 @@ function appendSystemStandardRuntime(
     || usesCreateDirectories
     || usesRealPath
     || usesProcessArgs
+    || usesProcessExecutablePath
     || usesProcessRun
   ) {
     output.append("static __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
@@ -2768,6 +2779,64 @@ function appendSystemStandardRuntime(
     output.append("  return result;\n");
     output.append("}\n\n");
   }
+  if (usesProcessExecutablePath) {
+    output.append("static __attribute__((unused)) Z___z_Result_String_String z_stage1_process_executable_path(void) {\n");
+    output.append("  char *resolved = NULL;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  DWORD capacity = 256;\n");
+    output.append("  wchar_t *wide = NULL;\n");
+    output.append("  DWORD length = 0;\n");
+    output.append("  for (;;) {\n");
+    output.append("    wide = malloc((size_t)capacity * sizeof(wchar_t));\n");
+    output.append("    if (wide == NULL) abort();\n");
+    output.append("    length = GetModuleFileNameW(NULL, wide, capacity);\n");
+    output.append("    if (length == 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") }; }\n");
+    output.append("    if (length < capacity) break;\n");
+    output.append("    free(wide); wide = NULL;\n");
+    output.append("    if (capacity > UINT32_MAX / 2) abort();\n");
+    output.append("    capacity *= 2;\n");
+    output.append("  }\n");
+    output.append("  const int utf8_length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, (int)length, NULL, 0, NULL, NULL);\n");
+    output.append("  if (utf8_length <= 0) { free(wide); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") }; }\n");
+    output.append("  resolved = malloc((size_t)utf8_length + 1);\n");
+    output.append("  if (resolved == NULL) abort();\n");
+    output.append("  (void)WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide, (int)length, resolved, utf8_length, NULL, NULL);\n");
+    output.append("  resolved[utf8_length] = '\\0';\n");
+    output.append("  free(wide);\n");
+    output.append("#elif defined(__APPLE__)\n");
+    output.append("  uint32_t capacity = 0;\n");
+    output.append("  (void)_NSGetExecutablePath(NULL, &capacity);\n");
+    output.append("  if (capacity == 0) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") };\n");
+    output.append("  char *candidate = malloc((size_t)capacity);\n");
+    output.append("  if (candidate == NULL) abort();\n");
+    output.append("  if (_NSGetExecutablePath(candidate, &capacity) != 0) { free(candidate); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") }; }\n");
+    output.append("  resolved = realpath(candidate, NULL);\n");
+    output.append("  free(candidate);\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("#elif defined(__linux__)\n");
+    output.append("  size_t capacity = 256;\n");
+    output.append("  for (;;) {\n");
+    output.append("    resolved = malloc(capacity);\n");
+    output.append("    if (resolved == NULL) abort();\n");
+    output.append("    const ssize_t length = readlink(\"/proc/self/exe\", resolved, capacity - 1);\n");
+    output.append("    if (length < 0) { const int code = errno; free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) }; }\n");
+    output.append("    if ((size_t)length < capacity - 1) { resolved[length] = '\\0'; break; }\n");
+    output.append("    free(resolved); resolved = NULL;\n");
+    output.append("    if (capacity > SIZE_MAX / 2) abort();\n");
+    output.append("    capacity *= 2;\n");
+    output.append("  }\n");
+    output.append("#else\n");
+    output.append("  if (z_stage1_process_argc <= 0 || z_stage1_process_argv == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not locate the current executable\") };\n");
+    output.append("  resolved = realpath(z_stage1_process_argv[0], NULL);\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("#endif\n");
+    output.append("  const size_t length = strlen(resolved);\n");
+    output.append("  if (!z_stage1_string_is_valid_utf8(resolved, length)) { free(resolved); return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"the current executable path is not valid UTF-8\") }; }\n");
+    output.append("  Z_String result = z_stage1_string_from_cstring(resolved);\n");
+    output.append("  free(resolved);\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = result };\n");
+    output.append("}\n\n");
+  }
   if (usesProcessRun) {
     output.append("static __attribute__((unused)) Z___z_Result_i32_String z_stage1_process_run(const Z_String *program, Z___z_Array_String arguments) {\n");
     output.append("  if (program == NULL || (program->length > 0 && memchr(program->data, '\\0', program->length) != NULL)) {\n");
@@ -2978,7 +3047,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   const usesProcessArguments = programUsesStandardCall(
     program,
     "process.args"
-  );
+  ) || programUsesStandardCall(program, "process.executablePath");
   const usesLock = programUsesStandardCall(program, "fs.lock");
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
@@ -2992,12 +3061,16 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   );
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
+  const usesProcessExecutablePath = programUsesStandardCall(
+    program,
+    "process.executablePath"
+  );
   const usesConsole =
     programUsesStandardCall(program, "console.log")
     || programUsesStandardCall(program, "console.write")
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
-  if (usesRealPath || usesCreateDirectories) {
+  if (usesRealPath || usesCreateDirectories || usesProcessExecutablePath) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
@@ -3014,6 +3087,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || usesReplace
     || usesCreateDirectories
     || usesRealPath
+    || usesProcessExecutablePath
     || usesProcessRun
   ) {
     output.append("#include <errno.h>\n");
@@ -3032,6 +3106,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || usesIsDirectory
     || usesCreateDirectories
     || usesRealPath
+    || usesProcessExecutablePath
     || usesProcessRun
   ) {
     output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
@@ -3041,6 +3116,9 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   if (usesReplace) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#endif\n");
+  }
+  if (usesProcessExecutablePath) {
+    output.append("#if defined(_WIN32)\n#include <windows.h>\n#elif defined(__APPLE__)\n#include <mach-o/dyld.h>\n#endif\n");
   }
   if (usesIsDirectory || usesCreateDirectories) {
     output.append("#include <sys/stat.h>\n");

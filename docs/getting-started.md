@@ -79,15 +79,17 @@ The bootstrap command asks the trusted Stage 0 seed to emit generation one,
 strict-compiles it, then asks that native compiler to build generation two in
 release mode. It refuses publication unless generation-two C is byte-identical
 to the seed emission. The resulting executable is named `z`, retains its
-generated `.c` sidecar for inspection, and does not invoke Bun for ordinary
-pure-Z `check`, `emit`, `build`, or cached `run` commands.
+generated `.c` sidecar for inspection, and packages a standalone
+`z-foreign-adapter` beside it. `z` discovers that adapter relative to its own
+executable path, so ordinary commands and currently supported native-header
+imports do not require Bun on `PATH`.
 
 This is a reproducible local bootstrap procedure, not a versioned compiler
-distribution. Bun remains necessary to create the first generation, and the
-current `z-foreign-adapter` metadata producer still uses the TypeScript seed
-when a native-header import requires fresh Clang evidence. A future release
-will ship trusted platform bootstrap artifacts and the complete adapter
-toolchain so end users do not perform this seed ceremony.
+distribution. Bun remains necessary to create the first generation and package
+the adapter. The adapter is still a trusted TypeScript/Clang component
+internally; compiling it as a standalone executable removes the user's runtime
+dependency without pretending Z has reimplemented Clang. A future release will
+ship trusted platform artifacts so end users do not perform this seed ceremony.
 
 The native-frontend flag enables a deliberately narrow hybrid mode. Stage 0
 still produces the user-facing diagnostics first; after it succeeds, the native frontend

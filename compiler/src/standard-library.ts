@@ -27,6 +27,7 @@ export type StandardFunctionName =
   | "fs.createDirectories"
   | "fs.realPath"
   | "process.args"
+  | "process.executablePath"
   | "process.run";
 
 export type StandardFunctionSignature = {
@@ -123,6 +124,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [],
     returnType: dynamicArrayTypeName("String"),
   },
+  "process.executablePath": {
+    cName: "z_process_executable_path",
+    parameters: [],
+    returnType: "String",
+    errorType: "String",
+  },
   "process.run": {
     cName: "z_process_run",
     parameters: [
@@ -152,6 +159,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
   },
   process: {
     args: "process.args",
+    executablePath: "process.executablePath",
     run: "process.run",
   },
   thread: {},

@@ -3957,6 +3957,7 @@ function lowerExpression(
           || target == "fs.createDirectories"
           || target == "fs.realPath"
           || target == "process.args"
+          || target == "process.executablePath"
           || target == "process.run"
           || target == "console.log"
           || target == "console.write"

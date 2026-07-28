@@ -176,7 +176,8 @@ decoding, strict C compilation, and execution.
 The same producer/decoder seam is now exposed across standalone processes.
 Stage 0's internal command and the `z-foreign-adapter` executable share one
 header-addressed producer. The self-emitted native driver finds the adjacent
-`.zd`, invokes that adapter from `PATH`, decodes its project-local
+`.zd`, prefers an adapter packaged beside its own executable and otherwise
+invokes one from `PATH`, decodes its project-local
 `.z-cache/foreign` artifact, and performs contract normalization itself without
 relying on a TypeScript representation. Driver identities include module,
 header, contract, include directories, and target settings. Adapter metadata

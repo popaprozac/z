@@ -184,6 +184,17 @@ function processCall(in memberName: String): Option<NativeStandardCallShape> {
       ),
     }));
   }
+  if (memberName == "executablePath") {
+    return Option.some(NativeStandardCallShape({
+      name: "process.executablePath",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "String",
+        "String"
+      ),
+    }));
+  }
   if (memberName == "run") {
     parameterModes.push("in");
     parameterTypes.push("String");
