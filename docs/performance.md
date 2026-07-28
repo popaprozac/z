@@ -31,9 +31,9 @@ and generated-code findings.
   `Rc`/`Arc`, Nim ARC, and Swift classes—not uniquely owned Rust values.
 - `z run` is currently a debuggable bootstrap path. It is not the release
   profile used by the benchmark suite.
-- Compilation measurements currently include Bun stage-0 emission separately
-  from native compilation. They are not yet measurements of a self-hosted Z
-  frontend.
+- The cross-language benchmark suite's compilation measurements include Bun
+  Stage-0 emission separately from native compilation. The standalone native
+  compiler measurements below are a separate self-hosting checkpoint.
 
 The first checkpoint covers portable kernels, direct C calls, dynamic arrays,
 deterministic ownership, structured task overhead, and native threads. ARC

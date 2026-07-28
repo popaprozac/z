@@ -1,8 +1,12 @@
 # Native Z frontend
 
-This directory contains the reusable lexer and parser being implemented in Z
-for incremental self-hosting. Stage 0 still compiles these sources and owns
-semantic analysis and code generation; the frontend itself is native Z code.
+This directory contains the native compiler implementation being built in Z.
+Stage 0 remains its trusted seed and parity authority, but this graph now owns
+lexing, parsing, module resolution, a substantial semantic and ownership
+subset, typed lowering, deterministic cleanup planning, and readable C
+emission for the self-hosting corpus. The fixed-point native driver compiles
+this same source graph again without a Bun or TypeScript process in the
+recursive path.
 
 - `lexer.zs` performs checked UTF-8 tokenization while publishing UTF-16 source
   coordinates compatible with the language server and stage-zero compiler.
@@ -184,7 +188,7 @@ recursively discovers relative `.zs` imports, parses and resolves the resulting
 module graph, emits C, writes the translation unit, and invokes Clang. Its
 regression fixture compiles a two-module Z application
 whose expected exit status is 42, with no Bun or TypeScript process in that
-compilation path. Separate native `check`, `emit`, `build`, and explicit-output
+compilation path. Separate native `check`, `emit`, `build`, and project-cached
 `run` commands share one project-loading operation; checking stops after
 resolution, emission does not invoke Clang, and run forwards child arguments
 without a shell. Export-only entries remain checkable, while executable
@@ -199,7 +203,8 @@ independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
 verified. For its first function-only tier, it discovers an adjacent `.zd`,
-invokes the separate `z-foreign-adapter` producer from `PATH`, decodes the real
+prefers the packaged `z-foreign-adapter` beside its own executable and otherwise
+searches `PATH`, decodes the real
 Clang-produced `ZFDCL` artifact, and normalizes inferred scalar and decimal
 integer-status contracts before native semantic analysis. Selective and
 namespace calls then lower through the ordinary graph: scalar calls remain
@@ -210,10 +215,10 @@ the importing module, header, contract, include paths, and target. The adapter
 stores a SHA-256 metadata key over Clang's preprocessed header view and the
 contract, so unchanged checks reuse the declaration stream while transitive
 header changes regenerate it. Missing contracts/adapters and unsupported
-records or facts fail at the source import. Symbolic status constants, exact
-status-literal range checks, richer declaration records/facts, cache locking,
-and eviction remain; raw decoding alone is never a trusted foreign import.
-Swift targets, broader target selection, release profiles, polished
+records or facts fail at the source import. Exact status-literal range checks,
+richer declaration records/facts, foreign-cache locking, and eviction remain;
+raw decoding alone is never a trusted foreign import.
+Swift targets, broader target selection, custom profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.
 

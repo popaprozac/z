@@ -7,7 +7,8 @@ versioned compiler distribution or package manager.
 ## Requirements
 
 - [Bun](https://bun.sh/) matching the repository's `packageManager` version as
-  closely as practical;
+  closely as practical for development, tests, the editor server, and the
+  local bootstrap ceremony;
 - Clang on `PATH` for native C-family compilation;
 - macOS plus Xcode Command Line Tools for AppKit, Objective-C, and Swift probes.
 
@@ -50,6 +51,8 @@ tooling commonly recognizes it as a compressed archive.
 
 ## CLI commands
 
+The repository Stage-0 command currently exposes:
+
 ```text
 usage: z <check|emit|run> <file.zs>
 ```
@@ -90,6 +93,20 @@ the adapter. The adapter is still a trusted TypeScript/Clang component
 internally; compiling it as a standalone executable removes the user's runtime
 dependency without pretending Z has reimplemented Clang. A future release will
 ship trusted platform artifacts so end users do not perform this seed ceremony.
+
+The bootstrapped native command has its own explicit artifact surface:
+
+```text
+z check <entry.zs>
+z emit <entry.zs> <output.c>
+z build <entry.zs> <output> [--release]
+z run <entry.zs> [--release] [-- args...]
+```
+
+`emit` writes readable C without invoking Clang. `build` retains that C beside
+the requested native output. Native `run` uses the project-local
+`.z-cache/run` and skips Clang when emitted C, target/toolchain settings,
+foreign evidence, and resolved library bytes are unchanged.
 
 The native-frontend flag enables a deliberately narrow hybrid mode. Stage 0
 still produces the user-facing diagnostics first; after it succeeds, the native frontend
@@ -246,6 +263,8 @@ bun run lsp
 - Run the curated programs in [the examples guide](examples.md).
 - Read [the language reference](language-reference.md) for accepted syntax and
   semantics.
+- Read the accepted [C export design](c-exports.md) for the next bidirectional
+  interop slice; `export c function` is not executable yet.
 - Check [bootstrap status](bootstrap-status.md) before assuming a designed form
   is executable in stage 0.
 - Use `bun run z emit ...` when learning how a Z construct maps to native code.

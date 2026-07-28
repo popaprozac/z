@@ -4,8 +4,9 @@ Z is an experimental native systems language with TypeScript-inspired syntax,
 deterministic cleanup, typed errors, memory-safe ownership, and direct interop
 with C-family platform APIs.
 
-> Z is pre-alpha. The repository is a language-design laboratory and working
-> stage-0 compiler, not yet a production toolchain.
+> Z is pre-alpha. The repository is a language-design laboratory with a working
+> Stage-0 compiler and a fixed-point native compiler, not yet a production
+> toolchain.
 
 ```z
 import stdio from "stdio.h";
@@ -69,7 +70,7 @@ requiring lifetime syntax throughout ordinary application code.
 
 ## Current shape
 
-| Area | Implemented stage-0 slice |
+| Area | Current implemented slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
 | Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, RAII interprocess `fs.Lock`, same-filesystem atomic replacement, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
@@ -117,6 +118,12 @@ See [the interop model](docs/interop-model.md) for the cost model and
 [the Foreign Interface IR](docs/foreign-interface-ir.md) for how native facts
 are normalized.
 
+The reverse boundary is now designed but not implemented:
+`export c function` will publish checked scalar Z functions through generated
+C headers and static-library artifacts. See
+[the C export design](docs/c-exports.md) for the accepted first tier and its
+ownership-aware growth path.
+
 The first native application composition probe is Z Notes:
 
 ```sh
@@ -138,8 +145,9 @@ lower targets receive a Z-source availability diagnostic.
 
 ## Try the compiler
 
-Z currently requires Bun and a working Clang toolchain. On macOS, Xcode Command
-Line Tools provide Clang, Apple frameworks, and Swift for the interop probes.
+Developing from source currently requires Bun and a working Clang toolchain.
+On macOS, Xcode Command Line Tools provide Clang, Apple frameworks, and Swift
+for the interop probes.
 
 ```sh
 bun test
@@ -148,6 +156,12 @@ bun run z emit examples/language/basics/first.zs
 bun run z run examples/language/basics/first.zs
 bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
 ```
+
+`bun run bootstrap` additionally produces `.z-cache/bootstrap/z` and an
+adjacent standalone foreign-metadata adapter. That native toolchain runs its
+supported `check`, `emit`, `build`, and cached `run` paths without Bun on
+`PATH`; Bun remains the trusted local seed and powers the development language
+server until versioned native toolchain artifacts are distributed.
 
 Install the development editor extension for VS Code and Cursor:
 
@@ -175,6 +189,7 @@ Each document has one job:
 | [Bootstrap status](docs/bootstrap-status.md) | What the stage-0 implementation supports now |
 | [Async model](docs/async-model.md) | Structured concurrency semantics and lowering phases |
 | [Interop model](docs/interop-model.md) | Native boundary contracts and cost model |
+| [C export design](docs/c-exports.md) | Accepted `export c function` direction for calling Z from native consumers |
 | [Z declaration files](docs/z-declarations.md) | `.zd` grammar, capability dictionary, and C/C++/Objective-C mapping |
 | [Foreign Interface IR](docs/foreign-interface-ir.md) | Backend-neutral foreign declaration model |
 | [Diagnostics](docs/diagnostics.md) | Diagnostic structure and authoring conventions |
@@ -189,13 +204,14 @@ new implementation slices should update status and a runnable example.
 ## Repository layout
 
 ```text
-compiler/src/     stage-0 compiler and language server
-runtime/          native runtime support
-editors/vscode/   VS Code/Cursor extension
-examples/         categorized language, async, and interop probes
-benchmarks/       repeatable release-mode performance probes
-tests/fixtures/   deterministic native integration fixtures
-docs/             focused reference, model, and status documents
+compiler/src/      Stage-0 compiler and language server
+compiler/frontend/ native Z frontend, semantic analysis, lowering, and emitter
+compiler/driver/   standalone native Z compiler command
+editors/vscode/    VS Code/Cursor extension
+examples/          categorized language, async, and interop probes
+benchmarks/        repeatable release-mode performance probes
+tests/fixtures/    deterministic native integration fixtures
+docs/              focused reference, model, and status documents
 ```
 
 The integration suite is the executable truth for the bootstrap. Before a

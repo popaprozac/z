@@ -1577,6 +1577,27 @@ time without exposing C preprocessor text to ordinary Z source.
 Platform APIs continue to require explicit native imports; portable `std` APIs
 may provide common contracts over them without erasing platform differences.
 
+Interop is bidirectional. Z modules use ordinary `export` for source-module
+visibility and the accepted `export c function` qualifier for implementations
+that deliberately enter the global C ABI:
+
+```z
+export c function z_math_add(left: i32, right: i32): i32 {
+  return left + right;
+}
+```
+
+The source name is initially the exact C symbol. The compiler must reject
+cross-module collisions rather than silently module-mangling public ABI names.
+Its first tier is limited to ABI-stable scalar parameters and results, emits a
+public wrapper plus a C/C++-compatible header, and rejects generics, errors,
+async, affinity, and Z-owned representations at the source declaration.
+Static-library output and a handwritten C consumer come before structs,
+strings/slices, projected errors, owned results, callbacks, or async exports.
+The wrapper keeps Z's internal identity private and should optimize away when
+the implementation is trivial. The complete accepted direction is recorded in
+[`docs/c-exports.md`](docs/c-exports.md).
+
 ## Inline assembly direction
 
 Z intends to support inline assembly as an explicit, target-specific hardware
@@ -2312,9 +2333,10 @@ declarations augment Clang's raw facts and must agree with every ABI property Z
 can verify. They may supply missing ownership, lifetime, release, and callback
 facts, but cannot override contradictory native facts. Operations whose memory
 or lifetime safety remains unverifiable require the separate `unsafe` boundary.
-`extern` is not currently part of the accepted user-facing grammar; ABI and
-linkage remain inferred contract metadata unless a future binary-only boundary
-needs them explicitly. Handwritten declarations and raw operations remain
+`extern` is not currently part of the accepted user-facing grammar for importing
+implementations supplied elsewhere; header ABI and linkage remain inferred
+contract metadata. Outbound `export c function` is distinct because the
+implementation is Z-owned. Handwritten declarations and raw operations remain
 escape hatches rather than the routine function and data interop path.
 
 Interop work proceeds in architectural layers:
@@ -2329,7 +2351,8 @@ Interop work proceeds in architectural layers:
 7. Swift-authored Objective-C compatibility-header import through the
    Objective-C path.
 8. Swift-native copyable value ownership through the generated C++ interface.
-9. Broader Swift module/interface and Swift Package import for Swift-only APIs,
+9. Z-to-C scalar exports, generated headers, and native library artifacts.
+10. Broader Swift module/interface and Swift Package import for Swift-only APIs,
    methods, strings, protocols, generics, errors, and concurrency.
 
 Completed slices and precise unsupported boundaries are tracked in

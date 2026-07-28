@@ -71,6 +71,19 @@ support or producing language-server diagnostics from hypothetical imports.
   yields owned tokens, returns a typed scan summary, and fails during explicit
   advancement. The native token-stream bridge is compared directly with the
   stage-0 TypeScript lexer.
+- [`project-index`](applications/project-index): an application-shaped Map/Set
+  pressure test with borrowed lookup views, explicit owned snapshots, custom
+  hashing, typed IO errors, and an unchanged dense-to-hashed benchmark.
+- [`z-curl`](applications/z-curl): a shimless libcurl GET using an adjacent
+  `.zd` for owned handles, typed native status errors, variadic options,
+  callback/context lifetime, byte-slice projection, and callback-error
+  narrowing.
+- [`z-raylib`](applications/z-raylib): a native Raylib application exercising
+  canonical C aliases, move-only by-value resources, runtime-owned borrows,
+  nominal enum conversion, and reverse cleanup.
+- [`z-sdl3`](applications/z-sdl3): a native SDL3 application exercising
+  large-header import, owned handles, scalar output projection, nominal enum
+  conversion, and deterministic shutdown.
 
 ## Async
 

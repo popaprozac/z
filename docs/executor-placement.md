@@ -3,9 +3,10 @@
 Status: direct placed calls and ownership-aware placement blocks execute through
 structured task frames. Async direct calls use the callee frame without nesting
 `Task`; plain values, String copies, Z ARC classes, and Objective-C identity
-from an owning async task are supported. Native-worker handoff and Darwin
-CFRunLoop wakeups are implemented. Mutable/borrowed/native-affine block-capture
-contracts and platform UI-loop adapters remain planned.
+from an owning async task are supported. Placement blocks accept explicit
+`using (in value, inout state, move owner)` capture contracts. Native-worker
+handoff and Darwin CFRunLoop wakeups are implemented. `out` capture, executors
+beyond `thread.main`, and Windows/Linux UI-loop adapters remain planned.
 
 Date: 2026-07-20
 
@@ -366,7 +367,7 @@ It still means one new dedicated OS thread, unlike `task on thread.main` or a fu
 
 ### Dispatching from a native worker
 
-`task on thread.main` should be legal inside the synchronous closure passed to
+`task on thread.main` is legal inside the synchronous closure passed to
 `thread.spawn`. This is Z's structured analogue of dispatching asynchronously
 onto a platform main queue:
 

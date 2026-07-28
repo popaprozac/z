@@ -11,32 +11,37 @@ Stage 0 emits it and Clang builds it, the resulting executable:
 5. writes `<output>.c`; and
 6. invokes Clang directly to produce `<output>`.
 
-The resulting compilation path does not execute Bun or TypeScript. The current
-command is intentionally smaller than the production `z` CLI:
+The resulting compilation path does not execute Bun or TypeScript. The
+fixed-point bootstrap publishes this command under the public local name `z`;
+its supported surface is:
 
 ```text
-z-native check <entry.zs>
-z-native emit <entry.zs> <output.c>
-z-native build <entry.zs> <output> [--release]
-z-native run <entry.zs> [--release] [-- args...]
+z check <entry.zs>
+z emit <entry.zs> <output.c>
+z build <entry.zs> <output> [--release]
+z run <entry.zs> [--release] [-- args...]
 ```
 
-It supports the self-hosting language and runtime subset. The native driver
-finds the nearest `z.json`, parses the existing target entry, deployment,
+This is still narrower than the Stage-0 compiler in language and foreign
+coverage even though it already has a more artifact-oriented command surface.
+The native driver finds the nearest `z.json`, parses the existing target entry,
+deployment,
 include-directory, link-directory, and library fields, validates configured
 paths, deduplicates native libraries, and projects those settings into Clang.
 Swift target preparation, broader foreign declaration records, cross-platform
-target selection, custom profiles, polished diagnostics, cache locking and
-eviction, and the complete production command options remain with Stage 0
+target selection, custom profiles, polished diagnostics, cache eviction, and
+the complete production command options remain with Stage 0
 until equivalent native paths are proven. `run` creates missing project-local
 cache parents and retains its generated C and executable at
 `.z-cache/run/program.c` and `.z-cache/run/program`. An unchanged run compares
 the exact newly emitted C, debug/release profile, target configuration, Clang
 predefined-macro identity, and foreign producer evidence, then skips Clang and
 reports a cache hit. The exact C comparison deliberately avoids a weak
-source-hash collision. A failed compilation writes an incomplete marker before
-changing the C artifact, so an older executable cannot become a false cache
-hit on retry.
+source-hash collision. A move-only filesystem lock serializes inspection and
+rebuild. Misses compile into pending paths; successful builds atomically publish
+the C and executable before committing metadata. A failed compilation preserves
+the previous executable but leaves metadata invalid, so it cannot become a
+false cache hit.
 
 For each configured native library, the driver searches the explicit link
 directories in order for the platform spellings it already passes to Clang. An
@@ -53,9 +58,10 @@ semantic reuse are a later layer. The current debug profile uses Clang `-O0`;
 `--release` uses `-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
-adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
-`z-foreign-adapter` tool found on `PATH`, decodes its versioned Clang
-declaration stream, normalizes the contract in Z, and supplies only checked
+adjacent or include-directory `.zd` shapes as Stage 0, prefers the packaged
+`z-foreign-adapter` beside its own executable and otherwise searches `PATH`,
+then decodes its versioned Clang declaration stream, normalizes the contract in
+Z, and supplies only checked
 callables to native semantic analysis. Artifacts live under the owning
 project's `.z-cache/foreign`; their driver identity includes the importing
 module, header, contract contents, include directories, and target settings.
@@ -73,7 +79,7 @@ parameters and producer-proven constants retain that identity across namespace
 or selective imports and lower to their verified C spellings. C++,
 Objective-C, Swift, records, callbacks, and richer `.zd` facts remain with
 Stage 0 until their raw records and normalized FIIR cross together.
-Cross-process cache locking and eviction remain toolchain hardening.
+Foreign-cache locking and cache eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every
@@ -86,6 +92,8 @@ seed, then asks that native executable to build `main.zs` again. The
 driver-generated C must match the seed-generated C byte for byte, and the
 second-generation executable must compile an independent multi-module project.
 The same integration builds a temporary static C library and links it through
-native `z.json` settings. This is a recursive compiler fixed point;
-distributing a trusted bootstrap binary and replacing the broader production
-CLI are separate release steps.
+native `z.json` settings. `bun run bootstrap` packages the resulting native
+`z`, its inspectable generated C, and the standalone foreign adapter together.
+This is a recursive compiler fixed point; signing, versioning, and distributing
+trusted platform artifacts and replacing the broader production CLI are
+separate release steps.

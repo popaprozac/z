@@ -13,11 +13,17 @@ direct:
 sqlite.sqlite3_libversion();
 ```
 
-The bootstrap compiler treats an imported module member as a native symbol and
-lets Clang validate the generated call. The production importer must instead
-parse headers with Clang and represent declarations, layouts, macros that can be
-modeled safely, overloads, calling conventions, availability, and documentation
-in a cached foreign module.
+The compiler parses supported headers with Clang and represents declarations,
+layouts, safely modeled macros, overloads, calling conventions, availability,
+and source locations in a cached foreign module. Unsupported shapes remain
+explicit and fail closed rather than relying on a generated-call error as the
+first type check.
+
+The reverse direction has a separate accepted design:
+`export c function` deliberately publishes a Z implementation through a stable
+C ABI, generated header, and native library artifact. That syntax is not
+executable yet; its scalar-first boundary and ownership growth path are recorded
+in [the C export design](c-exports.md).
 
 Headers do not reliably encode ownership or asynchronous callback contracts.
 Packages can therefore ship adjacent `.zd` declarations without modifying
