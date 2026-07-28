@@ -166,7 +166,9 @@ compilation path. Separate native `check`, `emit`, `build`, and explicit-output
 `run` commands share one project-loading operation; checking stops after
 resolution, emission does not invoke Clang, and run forwards child arguments
 without a shell. Export-only entries remain checkable, while executable
-commands produce Z-owned missing/invalid-`main` diagnostics before Clang. Stage
+commands produce Z-owned missing/invalid-`main` diagnostics before Clang.
+Parser and resolver failures also render the source line and caret entirely
+inside the native driver. Stage
 0 seeds generation one, which now rebuilds the same 30-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output

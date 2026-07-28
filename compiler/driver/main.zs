@@ -2,6 +2,7 @@ import console from "std/console";
 import { Set } from "std/collections";
 import fs from "std/fs";
 import process from "std/process";
+import { TextBuffer } from "std/text";
 import { emitModulesC } from "../frontend/c-emitter.zs";
 import {
   parseModule,
@@ -25,8 +26,40 @@ struct NativeProject {
   graph: ModuleGraph;
 }
 
-function diagnosticMessage(in error: ModuleResolveError): String {
-  return `${error.path}:${error.line}:${error.column}: ${error.message}`;
+function diagnosticMessage(
+  in error: ModuleResolveError,
+  in source: String
+): String {
+  let output = TextBuffer();
+  output.append(
+    `${error.path}:${error.line}:${error.column}: error: ${error.message}`
+  );
+  let line: usize = 1;
+  let lineStart: usize = 0;
+  while (line < error.line && lineStart < source.byteLength) {
+    if (source.byteAt(lineStart) == 10) line = line + 1;
+    lineStart = lineStart + 1;
+  }
+  if (line != error.line) return output.finish();
+
+  let lineEnd = lineStart;
+  while (
+    lineEnd < source.byteLength
+    && source.byteAt(lineEnd) != 10
+    && source.byteAt(lineEnd) != 13
+  ) {
+    lineEnd = lineEnd + 1;
+  }
+  output.append(`\n${error.line} | `);
+  output.append(source.copyBytes(lineStart, lineEnd));
+  output.append("\n  | ");
+  let column: usize = 1;
+  while (column < error.column) {
+    output.append(" ");
+    column = column + 1;
+  }
+  output.append("^");
+  return output.finish();
 }
 
 function loadModule(
@@ -47,7 +80,7 @@ function loadModule(
   const parsedOutcome = attempt parseModule(moduleSource);
   const parsed = match (parsedOutcome) {
     success(parsed) => parsed;
-    failure(error) => throw diagnosticMessage(error);
+    failure(error) => throw diagnosticMessage(error, moduleSource.source);
   };
 
   let dependencies = Array<String>();
@@ -71,7 +104,14 @@ function loadProject(in entryPath: String): NativeProject throws String {
   const graphOutcome = attempt resolveParsedModules(modules, canonicalEntry);
   const graph = match (graphOutcome) {
     success(graph) => graph;
-    failure(error) => throw diagnosticMessage(error);
+    failure(error) => {
+      const sourceOutcome = attempt fs.readText(error.path);
+      const message = match (sourceOutcome) {
+        success(source) => diagnosticMessage(error, source);
+        failure(_) => `${error.path}:${error.line}:${error.column}: error: ${error.message}`;
+      };
+      throw message;
+    }
   };
   return NativeProject({
     entryPath: canonicalEntry,

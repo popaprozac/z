@@ -30,7 +30,9 @@ are proven. The current debug profile uses Clang `-O0`; `--release` uses
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every
-command before native emission.
+command before native emission. Lexer, parser, and semantic failures render
+their canonical Z path, line and column, source line, and caret without
+round-tripping through Stage 0.
 
 The bootstrap regression first emits this driver through the trusted Stage-0
 seed, then asks that native executable to build `main.zs` again. The

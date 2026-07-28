@@ -1140,6 +1140,13 @@ for the Bun/self-host command. The driver now exposes `--release` on `build`
 and `run` instead of conflating its debuggable default with Z's optimized
 ceiling.
 
+Diagnostic presentation also crossed the boundary without a compiler-only
+escape hatch. The driver retains or reloads the owned module source at the
+failure boundary, walks to the reported line, and builds the canonical
+`path:line:column` header, source excerpt, and caret through `TextBuffer`.
+Parser and semantic failures now remain readable even when no TypeScript
+process exists.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

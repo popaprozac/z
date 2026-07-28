@@ -9313,6 +9313,38 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(invalidMainCheck.status, 1);
   assert.match(invalidMainCheck.stderr, /`main` must have signature `function main\(\): i32`/);
 
+  const invalidSyntax = resolve(directory, "invalid-syntax.zs");
+  writeFileSync(
+    invalidSyntax,
+    "function main(): i32 {\n  const answer = ;\n  return answer;\n}\n",
+  );
+  const invalidSyntaxCheck = spawnSync(
+    driver,
+    ["check", invalidSyntax],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidSyntaxCheck.status, 1);
+  assert.match(
+    invalidSyntaxCheck.stderr,
+    /:2:18: error: expected a variable initializer\n2 \|   const answer = ;\n  \|                  \^/,
+  );
+
+  const invalidName = resolve(directory, "invalid-name.zs");
+  writeFileSync(
+    invalidName,
+    "function main(): i32 {\n  return missing;\n}\n",
+  );
+  const invalidNameCheck = spawnSync(
+    driver,
+    ["check", invalidName],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidNameCheck.status, 1);
+  assert.match(
+    invalidNameCheck.stderr,
+    /:2:10: error: unknown name missing\n2 \|   return missing;\n  \|          \^/,
+  );
+
   const applicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",

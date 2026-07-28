@@ -1005,7 +1005,8 @@ Continue focused self-hosting work in this order:
    that artifact without a shell and forwards program arguments. `check`
    accepts export-only modules, while executable commands diagnose missing or
    incompatible `main` in Z before Clang. `build` and `run` default to `-O0`
-   and accept `--release` for `-O2 -DNDEBUG`. `z.json`,
+   and accept `--release` for `-O2 -DNDEBUG`. Native parse and semantic
+   failures render their Z source line and caret without Stage 0. `z.json`,
    foreign discovery,
    target/link configuration, manifest-selected/custom profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic
