@@ -3352,6 +3352,8 @@ function standardFunctionDetail(localName: string, name: StandardFunctionName): 
     ? "  // cooperatively requeues the current task on its existing executor"
     : name === "sleep"
     ? "  // blocks the current thread"
+    : name === "fs.replace"
+    ? "  // atomically replaces a same-filesystem destination"
     : "";
   const detail = `${asynchronous}${localName}(${parameters}): ${displayStandardType(signature.returnType)}${throws}${behavior}`;
   return localName === name || name.includes(".")

@@ -21,6 +21,7 @@ export type StandardFunctionName =
   | "fs.readBytes"
   | "fs.readText"
   | "fs.writeText"
+  | "fs.replace"
   | "fs.exists"
   | "fs.isDirectory"
   | "fs.createDirectories"
@@ -86,6 +87,15 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     returnType: "void",
     errorType: "String",
   },
+  "fs.replace": {
+    cName: "z_fs_replace",
+    parameters: [
+      { name: "source", mode: "in", type: "String", abi: "value" },
+      { name: "destination", mode: "in", type: "String", abi: "value" },
+    ],
+    returnType: "void",
+    errorType: "String",
+  },
   "fs.exists": {
     cName: "z_fs_exists",
     parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
@@ -134,6 +144,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     readBytes: "fs.readBytes",
     readText: "fs.readText",
     writeText: "fs.writeText",
+    replace: "fs.replace",
     exists: "fs.exists",
     isDirectory: "fs.isDirectory",
     createDirectories: "fs.createDirectories",

@@ -822,6 +822,11 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.replace"
+    ) output.append("z_stage1_fs_replace");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.exists"
     ) output.append("z_stage1_fs_exists");
     else if (
@@ -2403,6 +2408,7 @@ function appendSystemStandardRuntime(
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesReplace = programUsesStandardCall(program, "fs.replace");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
   const usesCreateDirectories = programUsesStandardCall(
@@ -2421,6 +2427,7 @@ function appendSystemStandardRuntime(
     || usesReadBytes
     || usesReadText
     || usesWriteText
+    || usesReplace
     || usesExists
     || usesIsDirectory
     || usesCreateDirectories
@@ -2612,6 +2619,28 @@ function appendSystemStandardRuntime(
     output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
     output.append("  }\n");
     output.append("  if (fclose(file) != 0) return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
+    output.append("}\n\n");
+  }
+  if (usesReplace) {
+    output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_replace(const Z_String *source, const Z_String *destination) {\n");
+    output.append("  if (source == NULL || (source->length > 0 && memchr(source->data, '\\0', source->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"source path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  if (destination == NULL || (destination->length > 0 && memchr(destination->data, '\\0', destination->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"destination path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_source = source->data != NULL ? source->data : \"\";\n");
+    output.append("  const char *native_destination = destination->data != NULL ? destination->data : \"\";\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  if (!MoveFileExA(native_source, native_destination, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not atomically replace filesystem path\") };\n");
+    output.append("  }\n");
+    output.append("#else\n");
+    output.append("  if (rename(native_source, native_destination) != 0) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  }\n");
+    output.append("#endif\n");
     output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
     output.append("}\n\n");
   }
@@ -2954,6 +2983,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
+  const usesReplace = programUsesStandardCall(program, "fs.replace");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
   const usesCreateDirectories = programUsesStandardCall(
@@ -2981,13 +3011,20 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || usesReadBytes
     || usesReadText
     || usesWriteText
+    || usesReplace
     || usesCreateDirectories
     || usesRealPath
     || usesProcessRun
   ) {
     output.append("#include <errno.h>\n");
   }
-  if (usesReadBytes || usesReadText || usesWriteText || usesConsole) {
+  if (
+    usesReadBytes
+    || usesReadText
+    || usesWriteText
+    || usesReplace
+    || usesConsole
+  ) {
     output.append("#include <stdio.h>\n");
   }
   if (
@@ -3001,6 +3038,9 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   }
   if (usesLock) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <fcntl.h>\n#include <sys/file.h>\n#include <unistd.h>\n#endif\n");
+  }
+  if (usesReplace) {
+    output.append("#if defined(_WIN32)\n#include <windows.h>\n#endif\n");
   }
   if (usesIsDirectory || usesCreateDirectories) {
     output.append("#include <sys/stat.h>\n");

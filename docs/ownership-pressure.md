@@ -1123,8 +1123,9 @@ foreign adapter's SHA-backed producer key. This is intentionally stronger than
 mtime-only reuse. A transitive header edit invalidates the executable even when
 the Z call and emitted native symbol spelling remain unchanged; changing
 profile, include configuration, or semantic Z source does the same. An
-incomplete metadata marker is written before compilation, preventing an old
-binary from being reused after a failed rebuild.
+incomplete metadata marker is atomically published before compilation,
+preventing an old binary from being reused after a failed rebuild; complete
+metadata is now the final publication step.
 
 Configured native libraries exposed the next correctness boundary. Z now has a
 typed `fs.readBytes` operation returning owned `Array<u8>` storage, and the
@@ -1150,6 +1151,18 @@ until the first scope releases. A second `unlock()` is ordinary use-after-move.
 This pressure test is useful beyond caching: it proves an OS resource can be
 represented identically in Stage 0 and the self-emitted backend without adding
 manual cleanup syntax to application code.
+
+Serialization removed competing writers but did not make one writer's
+publication crash-safe. The next slice added typed
+`fs.replace(source, destination)` to both backends. The driver now invalidates
+stable metadata atomically, asks Clang to write pending source/executable
+paths, replaces the stable artifacts only after compilation succeeds, and
+replaces complete metadata last. That last rename is the cache commit point.
+A deliberate link failure proves the previous executable remains byte-for-byte
+untouched while its incomplete metadata prevents reuse. This is a useful
+composition result: ordinary typed I/O, a move-only OS lock, process execution,
+and atomic namespace replacement are sufficient to implement a conservative
+compiler cache without a host-only transaction primitive.
 
 The command split also made entry policy executable rather than documentary.
 `check` validates an export-only entry graph, but `emit`, `build`, and `run`
@@ -1381,7 +1394,7 @@ symlink aliases from creating duplicate module identities, but supports only
 the self-hosting subset. Broader foreign declaration/`.zd` categories,
 Swift-target preparation, cross-platform target selection,
 manifest-selected/custom profiles, complete diagnostics, native-library
-resolution outside explicit link directories, cache locking/eviction,
+resolution outside explicit link directories, foreign-cache locking/eviction,
 incremental frontend reuse, and
 production command options remain to cross independently.
 

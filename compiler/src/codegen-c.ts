@@ -207,6 +207,7 @@ export function generateC(
     || usedStandardFunctions.has("fs.createDirectories");
   const usesDirectoryCreation = usedStandardFunctions.has("fs.createDirectories");
   const usesFileLock = usedStandardFunctions.has("fs.lock");
+  const usesFileReplace = usedStandardFunctions.has("fs.replace");
   const usesProcess = [...usedStandardFunctions].some((name) => name.startsWith("process."));
   const usesNativeMove = [...semanticInfo.foreignNamedTypes.values()].some((type) => (
     type.kind === "value" && type.lifecycle.move && !type.lifecycle.copy
@@ -238,7 +239,7 @@ export function generateC(
   if (usesProcess) {
     lines.push(
       "#if defined(_WIN32)",
-      ...(usesFileLock ? ["#include <windows.h>"] : []),
+      ...(usesFileLock || usesFileReplace ? ["#include <windows.h>"] : []),
       "#include <io.h>",
       "#include <process.h>",
       "#else",
@@ -255,14 +256,16 @@ export function generateC(
     includedHeaders.add("sys/types.h");
     includedHeaders.add("sys/wait.h");
     includedHeaders.add("unistd.h");
-    if (usesFileLock) {
+    if (usesFileLock || usesFileReplace) {
       includedHeaders.add("windows.h");
+    }
+    if (usesFileLock) {
       includedHeaders.add("sys/file.h");
     }
   } else if (usesFileSystem) {
     lines.push(
       "#if defined(_WIN32)",
-      ...(usesFileLock ? ["#include <windows.h>"] : []),
+      ...(usesFileLock || usesFileReplace ? ["#include <windows.h>"] : []),
       "#include <io.h>",
       "#else",
       ...(usesFileLock ? ["#include <fcntl.h>"] : []),
@@ -270,8 +273,10 @@ export function generateC(
       "#include <unistd.h>",
       "#endif",
     );
-    if (usesFileLock) {
+    if (usesFileLock || usesFileReplace) {
       includedHeaders.add("windows.h");
+    }
+    if (usesFileLock) {
       includedHeaders.add("fcntl.h");
       includedHeaders.add("sys/file.h");
     }
@@ -7302,6 +7307,7 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
     || used.has("fs.lock")
     || used.has("fs.readText")
     || used.has("fs.writeText")
+    || used.has("fs.replace")
     || used.has("fs.createDirectories")
     || used.has("fs.realPath")
     || used.has("process.run")
@@ -7482,6 +7488,33 @@ static ${lockResult} z_fs_lock(Z_String path) {
   if (fclose(file) != 0) {
     return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
   }
+  return (${voidResult}){ .tag = ${voidSuccess} };
+}`);
+  }
+
+  if (used.has("fs.replace")) {
+    sections.push(`static ${voidResult} z_fs_replace(Z_String source, Z_String destination) {
+  if (!z_standard_string_is_cstring(&source)) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("source path contains an embedded null byte") };
+  }
+  if (!z_standard_string_is_cstring(&destination)) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("destination path contains an embedded null byte") };
+  }
+  const char *native_source = source.data != NULL ? source.data : "";
+  const char *native_destination = destination.data != NULL ? destination.data : "";
+#if defined(_WIN32)
+  if (!MoveFileExA(
+    native_source,
+    native_destination,
+    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+  )) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("could not atomically replace filesystem path") };
+  }
+#else
+  if (rename(native_source, native_destination) != 0) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+#endif
   return (${voidResult}){ .tag = ${voidSuccess} };
 }`);
   }

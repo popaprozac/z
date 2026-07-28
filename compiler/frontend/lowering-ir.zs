@@ -3951,6 +3951,7 @@ function lowerExpression(
           || target == "fs.readBytes"
           || target == "fs.readText"
           || target == "fs.writeText"
+          || target == "fs.replace"
           || target == "fs.exists"
           || target == "fs.isDirectory"
           || target == "fs.createDirectories"

@@ -69,7 +69,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Area | Implemented stage-0 slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
-| Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, RAII interprocess `fs.Lock`, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
+| Standard library | Explicit console/time/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, RAII interprocess `fs.Lock`, same-filesystem atomic replacement, `Arena` region storage, and ownership-aware `Map<K, V>` / `Set<T>` semantic tiers |
 | Ownership | Lexical borrows, moves, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, receiver-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |
 | Control flow | Checked arithmetic, loops, ternaries, value `if`, exhaustive `match`, selected-branch suspension across logical/ternary/value-`if`/owned-match expressions, custom iterators, cold synchronous `Generator<Yield, Return?, Error?>`, cold awaited `AsyncGenerator<Yield, Return?, Error?>` frames, sequential `for await...of`, and explicit `try for await` propagation |

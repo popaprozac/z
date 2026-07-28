@@ -1201,6 +1201,7 @@ child launch use ordinary Z typed errors; `try` propagates them and `attempt`
 materializes their `Result` for local handling:
 
 ```z
+import console from "std/console";
 import fs from "std/fs";
 import process from "std/process";
 
@@ -1210,6 +1211,8 @@ function stage(in path: String): i32 throws String {
   const bytes = try fs.readBytes(path);
   try fs.createDirectories(".z-cache");
   try fs.writeText(".z-cache/input.zs", source);
+  try fs.writeText(".z-cache/output.pending", source);
+  try fs.replace(".z-cache/output.pending", ".z-cache/output.zs");
   cacheLock.unlock(); // optional early release; scope exit also releases it
   console.log(`read ${bytes.length} raw bytes`);
   const clangArguments = ["--version"];
@@ -1238,6 +1241,15 @@ kernel lock, so this is not a stale lock-file protocol. This primitive protects
 cross-process artifacts. In-process shared-memory synchronization belongs to
 the future `std/sync` family (`Mutex<T>`, `RwLock<T>`, guards, atomics,
 condition variables, and semaphores).
+
+`fs.replace(source, destination)` publishes a completely written artifact with
+one atomic same-filesystem directory-entry replacement. On success the source
+path disappears and an existing destination names the source contents. It
+throws a typed `String` OS failure rather than silently copying across
+filesystems. Atomic replacement prevents a partial-file observer; callers that
+need persistence across abrupt power loss still require a future explicit
+durability/synchronization API.
+
 `process.args()` returns an owned `Array<String>` containing
 the arguments after the executable name. `process.run(program, arguments)`
 borrows a stored fixed array or `Array<String>` as a non-escaping

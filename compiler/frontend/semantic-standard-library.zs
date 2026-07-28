@@ -100,6 +100,21 @@ function fsCall(in memberName: String): Option<NativeStandardCallShape> {
       ),
     }));
   }
+  if (memberName == "replace") {
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    return Option.some(NativeStandardCallShape({
+      name: "fs.replace",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "void",
+        "String"
+      ),
+    }));
+  }
   if (memberName == "exists") {
     parameterModes.push("in");
     parameterTypes.push("String");

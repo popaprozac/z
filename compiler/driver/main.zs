@@ -269,11 +269,7 @@ function compileEmittedProject(
   );
   compilerArguments.push("-o");
   compilerArguments.push(copy outputPath);
-  const exitCode = try process.run("clang", compilerArguments);
-  if (exitCode == 0) {
-    console.log(`compiled ${project.modules.length} Z modules to ${outputPath}`);
-  }
-  return exitCode;
+  return try process.run("clang", compilerArguments);
 }
 
 function buildLoadedProject(
@@ -282,12 +278,16 @@ function buildLoadedProject(
   release: boolean
 ): i32 throws String {
   const emitted = try emitProject(project);
-  return try compileEmittedProject(
+  const exitCode = try compileEmittedProject(
     project,
     emitted,
     outputPath,
     release
   );
+  if (exitCode == 0) {
+    console.log(`compiled ${project.modules.length} Z modules to ${outputPath}`);
+  }
+  return exitCode;
 }
 
 function buildProject(
@@ -493,6 +493,9 @@ function runProject(
   const outputPath = `${outputDirectory}/program`;
   const cPath = `${outputPath}.c`;
   const metadataPath = `${outputPath}.meta`;
+  const pendingOutputPath = `${outputPath}.pending`;
+  const pendingCPath = `${pendingOutputPath}.c`;
+  const pendingMetadataPath = `${metadataPath}.pending`;
   const cacheLock = try fs.lock(`${outputPath}.lock`);
   const emitted = try emitProject(project);
   const toolchainIdentity = try loadToolchainIdentity(outputDirectory);
@@ -520,15 +523,22 @@ function runProject(
         "cache bypass: could not resolve every configured native library unambiguously"
       );
     }
-    try fs.writeText(metadataPath, "incomplete\n");
+    // Invalidate the cache record before replacing either stable artifact.
+    // Publishing the complete metadata record last is the commit point.
+    try fs.writeText(pendingMetadataPath, "incomplete\n");
+    try fs.replace(pendingMetadataPath, metadataPath);
     const compilationExitCode = try compileEmittedProject(
       project,
       emitted,
-      outputPath,
+      pendingOutputPath,
       release
     );
     if (compilationExitCode != 0) return compilationExitCode;
-    try fs.writeText(metadataPath, metadata);
+    try fs.replace(pendingCPath, cPath);
+    try fs.replace(pendingOutputPath, outputPath);
+    try fs.writeText(pendingMetadataPath, metadata);
+    try fs.replace(pendingMetadataPath, metadataPath);
+    console.log(`compiled ${project.modules.length} Z modules to ${outputPath}`);
   }
   cacheLock.unlock();
   return try process.run(outputPath, childArguments);

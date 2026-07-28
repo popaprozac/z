@@ -288,8 +288,12 @@ OS-backed `fs.Lock`. The lock covers inspection, compilation, and metadata
 publication but is explicitly released before launching the user program.
 Warm single-process hits therefore pay one open/lock/unlock/close sequence,
 while concurrent misses avoid duplicate Clang work and torn cache artifacts.
-Module-level caches and per-artifact temporary publication can later reduce the
-critical section without changing the public ownership model.
+Misses compile into pending paths, then use same-filesystem `fs.replace` to
+publish the generated C and executable before atomically publishing complete
+metadata last. Failed compilation leaves the prior executable bytes untouched
+and an invalid metadata marker prevents stale reuse. This adds no replacement
+work to a hit; module-level caches can later reduce the critical section
+without changing the public ownership model.
 
 An exploratory `/usr/bin/time` smoke measurement on the one-module native
 driver fixture took 0.65 seconds for its initial debug compile and 0.02 seconds

@@ -1114,6 +1114,21 @@ values, condition variables, and semaphores belong to a future explicit
 `std/sync` module whose guard values should use the same move-only cleanup
 model.
 
+Artifact publication uses a separate typed operation:
+
+```z
+try fs.writeText(".z-cache/program.pending", generated);
+try fs.replace(".z-cache/program.pending", ".z-cache/program");
+```
+
+`fs.replace(source, destination)` atomically changes the destination directory
+entry to name the source artifact and removes the source path on success. Both
+paths must be on the same filesystem; cross-filesystem copying is deliberately
+not hidden behind this API. An existing destination is replaced, while any OS
+failure is a typed `String` error. The atomic namespace transition prevents
+observers from reading a partially written artifact, but it is not by itself a
+power-loss durability guarantee.
+
 Cooperative scheduling is explicit and timer-free:
 
 ```z

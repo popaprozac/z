@@ -7896,6 +7896,8 @@ test("reads files, exposes program arguments, and runs child processes through s
   const directory = mkdtempSync("/tmp/z-system-std-");
   const fileName = resolve(directory, "main.zs");
   const copyPath = resolve(directory, "copy.zs");
+  const replacementSourcePath = resolve(directory, "replacement.pending");
+  const replacementDestinationPath = resolve(directory, "replacement.txt");
   const binaryPath = resolve(directory, "bytes.bin");
   const nestedDirectory = resolve(directory, "cache/generated/native");
   writeFileSync(binaryPath, Buffer.from([0, 255, 42]));
@@ -7915,6 +7917,26 @@ test("reads files, exposes program arguments, and runs child processes through s
       const source = try fs.readText(${JSON.stringify(fileName)});
       try fs.writeText(${JSON.stringify(copyPath)}, source);
       if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
+      try fs.writeText(${JSON.stringify(replacementDestinationPath)}, "old");
+      try fs.writeText(${JSON.stringify(replacementSourcePath)}, "new");
+      try fs.replace(
+        ${JSON.stringify(replacementSourcePath)},
+        ${JSON.stringify(replacementDestinationPath)}
+      );
+      if (fs.exists(${JSON.stringify(replacementSourcePath)})) return 82;
+      const replaced = try fs.readText(
+        ${JSON.stringify(replacementDestinationPath)}
+      );
+      if (replaced != "new") return 81;
+      const missingReplacement = attempt fs.replace(
+        ${JSON.stringify(replacementSourcePath)},
+        ${JSON.stringify(replacementDestinationPath)}
+      );
+      const missingReplacementFailed = match (missingReplacement) {
+        success => false;
+        failure(_) => true;
+      };
+      if (!missingReplacementFailed) return 80;
       if (!fs.isDirectory(${JSON.stringify(directory)})) return 87;
       if (fs.isDirectory(${JSON.stringify(fileName)})) return 86;
       try fs.createDirectories(${JSON.stringify(nestedDirectory)});
@@ -7957,11 +7979,15 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "args=2, child=0\n");
   assert.equal(readFileSync(copyPath, "utf8"), source);
+  assert.equal(existsSync(replacementSourcePath), false);
+  assert.equal(readFileSync(replacementDestinationPath, "utf8"), "new");
 
   const generated = compileToC(source, fileName);
   assert.match(generated, /static Z_Result_.* z_fs_read_bytes/);
   assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
   assert.match(generated, /static Z_Result_String_String z_fs_real_path/);
+  assert.match(generated, /static Z_Result_void_String z_fs_replace/);
+  assert.match(generated, /rename\(native_source, native_destination\)/);
   assert.match(generated, /static bool z_fs_is_directory/);
   assert.match(generated, /static Z_Result_void_String z_fs_create_directories/);
   assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
@@ -7980,6 +8006,11 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.match(
     hover(source, fileName, createOffset)?.contents.value ?? "",
     /createDirectories\(in path: String\): void throws String/,
+  );
+  const replaceOffset = source.indexOf("replace(") + 2;
+  assert.match(
+    hover(source, fileName, replaceOffset)?.contents.value ?? "",
+    /replace\(in source: String, in destination: String\): void throws String/,
   );
   const completionSource = source.replace("fs.readText", "fs.re");
   const completionOffset = completionSource.indexOf("fs.re") + "fs.re".length;
@@ -8001,6 +8032,17 @@ test("reads files, exposes program arguments, and runs child processes through s
     ).find((item) => item.label === "createDirectories")?.detail ?? "",
     /throws String/,
   );
+  const replaceCompletionSource = source.replace("fs.replace", "fs.rep");
+  const replaceCompletionOffset = replaceCompletionSource.indexOf("fs.rep")
+    + "fs.rep".length;
+  assert.match(
+    completions(
+      replaceCompletionSource,
+      fileName,
+      replaceCompletionOffset,
+    ).find((item) => item.label === "replace")?.detail ?? "",
+    /throws String/,
+  );
   const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
   const readPosition = positionForOffset(source, source.indexOf("readText"));
   assert.ok(tokens.some((token) => (
@@ -8011,6 +8053,11 @@ test("reads files, exposes program arguments, and runs child processes through s
 
   const unchecked = `import fs from "std/fs"; function main(): i32 { fs.readText("missing"); return 0; }`;
   assert.match(diagnostics(unchecked, "unchecked-fs.zs")[0].message, /requires `attempt` or `try`/);
+  const uncheckedReplace = `import fs from "std/fs"; function main(): i32 { fs.replace("source", "destination"); return 0; }`;
+  assert.match(
+    diagnostics(uncheckedReplace, "unchecked-fs-replace.zs")[0].message,
+    /requires `attempt` or `try`/,
+  );
   const selective = `import { readText } from "std/fs"; function main(): i32 { return 0; }`;
   assert.match(diagnostics(selective, "selective-fs.zs")[0].message, /default module import/);
 
@@ -9961,6 +10008,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
   assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
   assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_replace\(/);
   assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
   assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
   assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
@@ -10922,6 +10970,65 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(cachedRunning.status, 0, cachedRunning.stderr);
   assert.match(cachedRunning.stdout, /cache hit: reused .*\.z-cache\/run\/program/);
   assert.equal(statSync(cachedArgumentApplication).mtimeMs, 0);
+
+  const stableApplication = readFileSync(cachedArgumentApplication);
+  const argumentMetadata = resolve(
+    argumentProject,
+    ".z-cache/run/program.meta",
+  );
+  const failingManifest = resolve(argumentProject, "z.json");
+  writeFileSync(
+    failingManifest,
+    JSON.stringify({
+      target: {
+        link: {
+          libraries: ["z_intentionally_missing_cache_publication"],
+        },
+      },
+    }),
+  );
+  const failedPublication = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSourceCopy,
+      "--release",
+      "--",
+      argumentApplicationSourceCopy,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(failedPublication.status, 0);
+  assert.deepEqual(
+    readFileSync(cachedArgumentApplication),
+    stableApplication,
+    "a failed cache rebuild must not replace the stable executable",
+  );
+  assert.equal(
+    readFileSync(argumentMetadata, "utf8"),
+    "incomplete\n",
+    "metadata must stay invalid until every cache artifact is published",
+  );
+  rmSync(failingManifest);
+
+  const recoveredPublication = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSourceCopy,
+      "--release",
+      "--",
+      argumentApplicationSourceCopy,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    recoveredPublication.status,
+    0,
+    recoveredPublication.stderr,
+  );
+  assert.match(recoveredPublication.stdout, /compiled 1 Z modules/);
+  assert.notEqual(readFileSync(argumentMetadata, "utf8"), "incomplete\n");
 
   const debugRunning = spawnSync(
     driver,
