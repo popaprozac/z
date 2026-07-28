@@ -371,7 +371,10 @@ failure storage uses placement construction, typed moves, and deterministic
 destruction rather than plain aggregate assignment.
 
 `Result<T, E>` is a built-in tagged union with `success` and `failure` variants;
-those names are variants, not global functions or reserved keywords.
+those names are variants, not global functions or reserved keywords. It may be
+written explicitly in parameter, field, local, and return annotations as well
+as inferred from `attempt`; explicit use materializes the same representation
+and does not depend on a throwing call appearing in the same module.
 
 A `.zd` contract may project a conventional native integer status into this
 same error model without changing the ABI:
@@ -1211,7 +1214,9 @@ function stage(in path: String): i32 throws String {
 
 `fs.readText(path)` returns an owned `String`; `fs.writeText(path, contents)`
 borrows both strings for the call; and `fs.exists(path)` performs a non-throwing
-existence probe. `readText` reports invalid UTF-8 as a typed `String` failure.
+existence probe. `fs.realPath(path)` returns an owned canonical absolute path,
+resolving relative components and filesystem links, or throws a typed `String`
+OS failure. Returned paths and file contents must be valid UTF-8.
 `process.args()` returns an owned `Array<String>` containing
 the arguments after the executable name. `process.run(program, arguments)`
 borrows a stored fixed array or `Array<String>` as a non-escaping

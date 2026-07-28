@@ -3501,6 +3501,7 @@ function lowerExpression(
           target == "fs.readText"
           || target == "fs.writeText"
           || target == "fs.exists"
+          || target == "fs.realPath"
           || target == "process.args"
           || target == "process.run"
           || target == "console.log"

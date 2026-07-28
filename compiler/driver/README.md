@@ -4,7 +4,8 @@
 Stage 0 emits it and Clang builds it, the resulting executable:
 
 1. reads an entry `.zs` file through `std/fs`;
-2. discovers relative `.zs` imports recursively;
+2. canonicalizes module identity and discovers relative `.zs` imports
+   recursively;
 3. parses and resolves the complete module graph through the native frontend;
 4. lowers that graph to readable C;
 5. writes `<output>.c`; and

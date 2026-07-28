@@ -14,6 +14,7 @@ import { mapEntryTypeName, mapTypeName } from "./map-types.ts";
 import { setTypeName } from "./set-types.ts";
 import { weakTypeName } from "./weak-types.ts";
 import { optionTypeName } from "./option-types.ts";
+import { resultTypeName } from "./results.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableTraitDeclaration } from "./hash-types.ts";
 import { iteratorTraitDeclaration } from "./iterator-types.ts";
@@ -76,6 +77,7 @@ export function materializeGenerics(
   const functionInstances = new Map<string, string>();
   const traitInstances = new Map<string, string>();
   const optionInstances = new Map<string, EnumDeclaration>();
+  const resultInstances = new Map<string, EnumDeclaration>();
   const generatorStepInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
   const setInstances = new Set<string>();
@@ -84,6 +86,11 @@ export function materializeGenerics(
     const declaration = program.structs.find((item) => item.name === "Option")
       ?? program.enums.find((item) => item.name === "Option")!;
     throw new DiagnosticError(fileName, declaration.location, "Option is a compiler-provided type and cannot be redeclared");
+  }
+  if (program.structs.some((item) => item.name === "Result") || program.enums.some((item) => item.name === "Result")) {
+    const declaration = program.structs.find((item) => item.name === "Result")
+      ?? program.enums.find((item) => item.name === "Result")!;
+    throw new DiagnosticError(fileName, declaration.location, "Result is a compiler-provided type and cannot be redeclared");
   }
   if (program.structs.some((item) => item.name === "Map") || program.enums.some((item) => item.name === "Map")) {
     const declaration = program.structs.find((item) => item.name === "Map")
@@ -228,6 +235,7 @@ export function materializeGenerics(
     }
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
+    if (generic.base === "Result") return instantiateResult(args);
     if (traitTemplates.has(generic.base)) return instantiateTrait(generic.base, args);
     return instantiateStruct(generic.base, args);
   };
@@ -390,6 +398,33 @@ export function materializeGenerics(
       methods: materializeMethods(template, substitutions),
     } as StructDeclaration;
     structs.push(concrete);
+    return name;
+  }
+
+  function instantiateResult(args: string[]): string {
+    if (args.length !== 2) {
+      throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Result expects 2 type arguments, received ${args.length}`);
+    }
+    const [successType, errorType] = args;
+    const name = resultTypeName(successType, errorType);
+    typeDisplayNames.set(name, `Result<${displayName(successType)}, ${displayName(errorType)}>`);
+    if (!resultInstances.has(name)) {
+      const location = program.functions[0]?.location ?? program.structs[0]?.location ?? program.enums[0]?.location
+        ?? { offset: 0, line: 1, column: 1 };
+      resultInstances.set(name, {
+        kind: "enum",
+        name,
+        location,
+        variants: [
+          {
+            name: "success",
+            payload: successType === "void" ? null : { name: successType, location },
+            location,
+          },
+          { name: "failure", payload: { name: errorType, location }, location },
+        ],
+      });
+    }
     return name;
   }
 
@@ -665,7 +700,12 @@ export function materializeGenerics(
     typeAliases,
     structs,
     functions,
-    enums: [...enums, ...optionInstances.values(), ...generatorStepInstances.values()],
+    enums: [
+      ...enums,
+      ...optionInstances.values(),
+      ...resultInstances.values(),
+      ...generatorStepInstances.values(),
+    ],
     traits: [...traits_, ...materializedTraits],
   };
 }

@@ -35,12 +35,13 @@ function loadModule(
   inout modules: Array<ParsedModule>
 ): void throws String {
   const normalized = normalizedModulePath(path);
-  if (loaded.has(normalized)) return;
-  loaded.add(copy normalized);
+  const canonical = try fs.realPath(normalized);
+  if (loaded.has(canonical)) return;
+  loaded.add(copy canonical);
 
-  const source = try fs.readText(normalized);
+  const source = try fs.readText(canonical);
   const moduleSource = ModuleSource({
-    path: copy normalized,
+    path: copy canonical,
     source,
   });
   const parsedOutcome = attempt parseModule(moduleSource);
@@ -51,7 +52,7 @@ function loadModule(
 
   for (const declaration of parsed.program.imports) {
     if (!isLocalModuleHeader(declaration.header)) continue;
-    const dependency = importedModulePath(normalized, declaration.header);
+    const dependency = importedModulePath(canonical, declaration.header);
     try loadModule(dependency, inout loaded, inout modules);
   }
   modules.push(parsed);
@@ -59,17 +60,18 @@ function loadModule(
 
 function loadProject(in entryPath: String): NativeProject throws String {
   const normalizedEntry = normalizedModulePath(entryPath);
+  const canonicalEntry = try fs.realPath(normalizedEntry);
   let loaded = Set<String>();
   let modules = Array<ParsedModule>();
-  try loadModule(normalizedEntry, inout loaded, inout modules);
+  try loadModule(canonicalEntry, inout loaded, inout modules);
 
-  const graphOutcome = attempt resolveParsedModules(modules, normalizedEntry);
+  const graphOutcome = attempt resolveParsedModules(modules, canonicalEntry);
   const graph = match (graphOutcome) {
     success(graph) => graph;
     failure(error) => throw diagnosticMessage(error);
   };
   return NativeProject({
-    entryPath: normalizedEntry,
+    entryPath: canonicalEntry,
     modules,
     graph,
   });

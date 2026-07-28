@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { basename, resolve } from "node:path";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { test } from "bun:test";
 import { analyzeSource, check, compileToC, compileToNative } from "../compiler/src/compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.ts";
@@ -7899,6 +7899,8 @@ test("reads files, exposes program arguments, and runs child processes through s
       const source = try fs.readText(${JSON.stringify(fileName)});
       try fs.writeText(${JSON.stringify(copyPath)}, source);
       if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
+      const canonical = try fs.realPath(${JSON.stringify(`${directory}/./main.zs`)});
+      if (canonical != ${JSON.stringify(resolve(realpathSync(directory), "main.zs"))}) return 88;
       const arguments = process.args();
       const childArguments = ["-e", "process.exit(0)"];
       const exitCode = try process.run(${JSON.stringify(process.execPath)}, childArguments);
@@ -7931,6 +7933,7 @@ test("reads files, exposes program arguments, and runs child processes through s
 
   const generated = compileToC(source, fileName);
   assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
+  assert.match(generated, /static Z_Result_String_String z_fs_real_path/);
   assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
   assert.match(generated, /execvp\(argv\[0\], argv\)/);
   assert.match(generated, /int32_t main\(int argc, char \*\*argv\)/);
@@ -9256,6 +9259,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
   assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
   assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
 
   const directory = mkdtempSync("/tmp/z-self-host-native-compiler-");
   const driver = resolve(directory, "z-native");
@@ -9272,7 +9276,13 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   const checking = spawnSync(
     driver,
-    ["check", applicationSource],
+    [
+      "check",
+      applicationSource.replace(
+        "/self-host-emit-modules/",
+        "/self-host-emit-modules/../self-host-emit-modules/",
+      ),
+    ],
     { encoding: "utf8" },
   );
   assert.equal(checking.status, 0, checking.stderr);
@@ -14798,6 +14808,52 @@ test("materializes inferred and explicitly empty Option values with owned payloa
   assert.match(
     completions(variantCompletionSource, example, variantCompletionOffset).find((item) => item.label === "some")?.detail ?? "",
     /some\(value: T\): Option<T>/,
+  );
+});
+
+test("materializes explicit Result type annotations independently of throwing-call discovery", () => {
+  const source = `
+    function inspect(result: Result<i32, String>): i32 {
+      return match (result) {
+        success(value) => value;
+        failure(_) => 1;
+      };
+    }
+
+    function inspectVoid(result: Result<void, String>): i32 {
+      return match (result) {
+        success => 0;
+        failure(_) => 2;
+      };
+    }
+
+    function value(): i32 throws String {
+      return 42;
+    }
+
+    function ready(): void throws String {
+      return;
+    }
+
+    function main(): i32 {
+      const observed = inspect(attempt value());
+      const completed = inspectVoid(attempt ready());
+      return observed + completed - 42;
+    }
+  `;
+  const fileName = "/tmp/explicit-result-annotation.zs";
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /Z_Result_i32_String/);
+  assert.match(generated, /Z_Result_void_String/);
+  const directory = mkdtempSync("/tmp/z-explicit-result-");
+  const sourcePath = resolve(directory, "main.zs");
+  writeFileSync(sourcePath, source);
+  const execution = spawnSync(process.execPath, [cli, "run", sourcePath], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  assert.throws(
+    () => check("struct Result { value: i32; }", "/tmp/redeclared-result.zs"),
+    /Result is a compiler-provided type and cannot be redeclared/,
   );
 });
 

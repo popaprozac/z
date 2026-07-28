@@ -628,6 +628,11 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.realPath"
+    ) output.append("z_stage1_fs_real_path");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "process.args"
     ) output.append("z_stage1_process_args");
     else if (
@@ -2175,6 +2180,7 @@ function appendSystemStandardRuntime(
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
+  const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessArgs = programUsesStandardCall(program, "process.args");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
   const usesConsoleLog = programUsesStandardCall(program, "console.log");
@@ -2185,6 +2191,7 @@ function appendSystemStandardRuntime(
     usesReadText
     || usesWriteText
     || usesExists
+    || usesRealPath
     || usesProcessArgs
     || usesProcessRun
   ) {
@@ -2299,6 +2306,27 @@ function appendSystemStandardRuntime(
     output.append("#endif\n");
     output.append("}\n\n");
   }
+  if (usesRealPath) {
+    output.append("static __attribute__((unused)) Z___z_Result_String_String z_stage1_fs_real_path(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  char *resolved = _fullpath(NULL, path->data != NULL ? path->data : \"\", 0);\n");
+    output.append("#else\n");
+    output.append("  char *resolved = realpath(path->data != NULL ? path->data : \"\", NULL);\n");
+    output.append("#endif\n");
+    output.append("  if (resolved == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  const size_t length = strlen(resolved);\n");
+    output.append("  if (!z_stage1_string_is_valid_utf8(resolved, length)) {\n");
+    output.append("    free(resolved);\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"canonical path is not valid UTF-8\") };\n");
+    output.append("  }\n");
+    output.append("  Z_String result = z_stage1_string_from_cstring(resolved);\n");
+    output.append("  free(resolved);\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = result };\n");
+    output.append("}\n\n");
+  }
   if (usesProcessArgs) {
     output.append("static __attribute__((unused)) Z___z_Array_String z_stage1_process_args(void) {\n");
     output.append("  Z___z_Array_String result = { NULL, 0, 0 };\n");
@@ -2402,20 +2430,24 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
+  const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
   const usesConsole =
     programUsesStandardCall(program, "console.log")
     || programUsesStandardCall(program, "console.write")
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
+  if (usesRealPath) {
+    output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
+  }
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
-  if (usesReadText || usesWriteText || usesProcessRun) {
+  if (usesReadText || usesWriteText || usesRealPath || usesProcessRun) {
     output.append("#include <errno.h>\n");
   }
   if (usesReadText || usesWriteText || usesConsole) {
     output.append("#include <stdio.h>\n");
   }
-  if (usesExists || usesProcessRun) {
+  if (usesExists || usesRealPath || usesProcessRun) {
     output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
   }
   output.append("\n");

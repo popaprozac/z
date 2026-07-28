@@ -19,6 +19,7 @@ export type StandardFunctionName =
   | "fs.readText"
   | "fs.writeText"
   | "fs.exists"
+  | "fs.realPath"
   | "process.args"
   | "process.run";
 
@@ -73,6 +74,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
     returnType: "boolean",
   },
+  "fs.realPath": {
+    cName: "z_fs_real_path",
+    parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
+    returnType: "String",
+    errorType: "String",
+  },
   "process.args": {
     cName: "z_process_args",
     parameters: [],
@@ -98,6 +105,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     readText: "fs.readText",
     writeText: "fs.writeText",
     exists: "fs.exists",
+    realPath: "fs.realPath",
   },
   process: {
     args: "process.args",

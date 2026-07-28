@@ -64,7 +64,7 @@ an inferred receiver-tied view.
 | --- | --- | --- |
 | Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics, and canonical native type identity across intermediate modules; ordinary lowering still uses stage 0 |
 | CLI | Implemented | `z check`, `z emit`, and `z run` through Bun; `check --native-frontend` reuses stage 0's canonical source batch/ASTs, attaches an indexed native semantic graph, and reports compiler-owned graph/query plus live call-resolution parity; native run I/O streams live and arguments after `--` are forwarded |
-| System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned reads/arguments, borrowed writes/process argv, direct no-shell child launch, typed OS failures |
+| System standard APIs | Implemented foundation | Default `std/fs` and `std/process` modules; owned UTF-8 reads and canonical paths, borrowed writes/process argv, owned arguments, direct no-shell child launch, typed OS failures |
 | Native backends | Partial | Readable C, C++20, Objective-C ARC, and Objective-C++ source generation |
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
@@ -702,10 +702,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    borrowed String temporaries, nested mutable Array storage, collision-safe
    match payloads, and implicit successful `Result<void, E>` fallthrough were
    the final compile blockers. The compiler library still uses a bootstrap
-   no-op `main`, but the first standalone-driver fixture now compiles and
-   executes with `process.args()` and typed `fs.readText()`. A native compiler
-   command surface, project discovery, and replacement of the TypeScript-hosted
-   driver remain before this is a standalone compiler.
+   no-op `main`, while the standalone Z driver now compiles and executes with
+   `process.args()`, typed `fs.readText()`/`fs.realPath()`, recursive canonical
+   project discovery, and native `check`/`emit`/`build` commands. Project
+   manifests, foreign discovery, full target configuration, `run`, and
+   replacement of the production TypeScript-hosted driver remain.
    The flat typed arenas normalize checked arithmetic, direct calls,
    field reads, and struct construction before target emission; the C printer
    no longer imports parser nodes or interprets operator strings. Deterministic

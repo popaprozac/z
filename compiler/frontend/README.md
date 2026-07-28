@@ -157,9 +157,10 @@ Its emitted executable copies a source file, invokes Clang, and handles typed
 filesystem/process failures without Bun at runtime.
 
 The standalone [`compiler/driver`](../driver) now composes those APIs with the
-native frontend itself. It recursively discovers relative `.zs` imports, parses
-and resolves the resulting module graph, emits C, writes the translation unit,
-and invokes Clang. Its regression fixture compiles a two-module Z application
+native frontend itself. It canonicalizes paths through typed `fs.realPath`,
+recursively discovers relative `.zs` imports, parses and resolves the resulting
+module graph, emits C, writes the translation unit, and invokes Clang. Its
+regression fixture compiles a two-module Z application
 whose expected exit status is 42, with no Bun or TypeScript process in that
 compilation path. Separate native `check`, `emit`, and `build` commands share
 one project-loading operation; checking stops after resolution and emission

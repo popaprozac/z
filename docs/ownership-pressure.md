@@ -1131,6 +1131,13 @@ commands through ordinary statement branches and a shared consuming
 restriction; it should close when general value-`if` lowering reaches
 cleanup-bearing results.
 
+Writing that helper also exposed an unrelated Stage-0 ordering hole: explicit
+`Result<T, E>` annotations were accidentally routed through general generic
+monomorphization and only appeared to work when another throwing call happened
+to materialize the same result enum. `Result` now has direct compiler-provided
+materialization, including payload-free `Result<void, E>`, so annotations no
+longer depend on discovery order.
+
 The driver uses existing ordinary Z modules and collections; it did not require
 trait values, a compiler-only graph loader, or a new lifetime mechanism.
 `Set<String>` provides lexical discovery deduplication, `Array<ParsedModule>`
@@ -1139,11 +1146,12 @@ bridge flows directly into C emission. That is positive evidence that the
 earlier resolver modularization created a reusable compiler architecture rather
 than merely splitting a large source file.
 
-This is not yet a distributable replacement for Stage 0. The native commands
-use lexical normalized paths and support the self-hosting subset. Manifest
-loading, foreign header and `.zd` ingestion, target/link configuration, release
-profiles, complete diagnostics, `run`, and production command options remain
-to cross independently.
+This is not yet a distributable replacement for Stage 0. The native loader now
+canonicalizes every module through typed `fs.realPath`, preventing lexical or
+symlink aliases from creating duplicate module identities, but supports only
+the self-hosting subset. Manifest loading, foreign header and `.zd` ingestion,
+target/link configuration, release profiles, complete diagnostics, `run`, and
+production command options remain to cross independently.
 
 ## Not tested yet
 
