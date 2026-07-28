@@ -66,6 +66,21 @@ while retaining a debuggable `-O0` output profile for user programs. They do not
 remove the need to profile String, collection, and semantic hot paths, and they
 must be repeated as foreign/project-manifest work enters the native command.
 
+The first repetition followed immediately after the native driver gained its
+31st module: a typed `z.json` reader with path validation and Clang target/link
+projection. The same machine, warm-cache policy, and 12-run sample measured:
+
+| Operation | Stage 0 / Bun | Native `-O0` | Native `-O2 -DNDEBUG` |
+| --- | ---: | ---: | ---: |
+| Check the 31-module driver graph | 378.0 ms ± 6.7 ms | 609.7 ms ± 1.6 ms | 190.3 ms ± 1.4 ms |
+| Emit the 31-module driver graph to C | 1.109 s ± 0.003 s | 1.018 s ± 0.005 s | 265.3 ms ± 1.4 ms |
+
+Relative to the 30-module checkpoint, release check increased 2.5% and release
+emit increased 2.9%. The new release compiler still checks 1.99 times faster
+and emits 4.18 times faster than the corresponding Bun command. That is within
+the expected cost of adding and semantically resolving a real parser module;
+it does not indicate a throughput cliff.
+
 ## Compiler developer-experience latency
 
 Runtime performance and compiler throughput are separate gates. During
