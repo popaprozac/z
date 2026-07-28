@@ -15,6 +15,7 @@ import { isStandardModuleSpecifier } from "./standard-library.ts";
 import { sliceTypeName } from "./array-types.ts";
 import { deploymentTargetFlags, type DeploymentTarget } from "./project.ts";
 import { collectIntegerMacroConstants } from "./foreign-macros.ts";
+import { encodeForeignFunctionDeclarationStream } from "./foreign-declaration-protocol.ts";
 import { runWithBufferedStdoutOrSpill } from "./process-output.ts";
 import type {
   ForeignCallbackType,
@@ -54,6 +55,10 @@ export type ForeignModule = ForeignModuleIR & {
 };
 
 type HeaderInfo = ForeignModuleIR;
+type ImportedHeader = {
+  readonly declarations: ForeignModuleDeclarations;
+  readonly ir: HeaderInfo;
+};
 
 type ClangNode = {
   readonly id?: string;
@@ -124,7 +129,7 @@ function callbackTypedefParameterNames(node: ClangNode, parameterCount: number):
   }
 }
 
-const headerCache = new Map<string, HeaderInfo>();
+const headerCache = new Map<string, ImportedHeader>();
 const foreignSourceCache = new Map<string, { readonly freshness: string; readonly source: string }>();
 const clangNodeSourceFiles = new WeakMap<ClangNode, string>();
 let cachedSdkPath: string | null | undefined;
@@ -138,6 +143,60 @@ export function resolveForeignModules(
   declarationOverrides: Readonly<Record<string, { readonly source: string; readonly fileName: string }>> = {},
 ): ReadonlyMap<string, ForeignModule> {
   const modules = new Map<string, ForeignModule>();
+  for (const [moduleName, resolved] of resolveImportedHeaders(
+    declarations,
+    fileName,
+    projectIncludeDirectories,
+    deploymentTarget,
+    projectApiNotes,
+    declarationOverrides,
+  )) {
+    modules.set(moduleName, { declaration: resolved.declaration, ...resolved.header.ir });
+  }
+  return modules;
+}
+
+/**
+ * Runs the real Clang producer and frames its untrusted function declarations
+ * for the native Z adapter boundary. The encoder fails closed if this first
+ * protocol tier encounters declaration categories it cannot represent.
+ */
+export function resolveForeignFunctionDeclarationStreams(
+  declarations: readonly ImportDeclaration[],
+  fileName: string,
+  projectIncludeDirectories: readonly string[] = [],
+  deploymentTarget: DeploymentTarget | null = null,
+): ReadonlyMap<string, string> {
+  const streams = new Map<string, string>();
+  for (const [moduleName, resolved] of resolveImportedHeaders(
+    declarations,
+    fileName,
+    projectIncludeDirectories,
+    deploymentTarget,
+  )) {
+    streams.set(
+      moduleName,
+      encodeForeignFunctionDeclarationStream(resolved.header.declarations),
+    );
+  }
+  return streams;
+}
+
+function resolveImportedHeaders(
+  declarations: readonly ImportDeclaration[],
+  fileName: string,
+  projectIncludeDirectories: readonly string[] = [],
+  deploymentTarget: DeploymentTarget | null = null,
+  projectApiNotes: Readonly<Record<string, ApiNotes>> = {},
+  declarationOverrides: Readonly<Record<string, { readonly source: string; readonly fileName: string }>> = {},
+): ReadonlyMap<string, {
+  readonly declaration: ImportDeclaration;
+  readonly header: ImportedHeader;
+}> {
+  const modules = new Map<string, {
+    readonly declaration: ImportDeclaration;
+    readonly header: ImportedHeader;
+  }>();
   const sourceDirectory = resolve(dirname(fileName));
   const includeDirectories = [...new Set([sourceDirectory, ...projectIncludeDirectories.map((directory) => resolve(directory))])];
   for (const declaration of declarations) {
@@ -178,7 +237,7 @@ export function resolveForeignModules(
       );
       headerCache.set(cacheKey, header);
     }
-    modules.set(declaration.moduleName, { declaration, ...header });
+    modules.set(declaration.moduleName, { declaration, header });
   }
   return modules;
 }
@@ -194,7 +253,7 @@ function readHeader(
   deploymentTarget: DeploymentTarget | null,
   generatedNotes: ApiNotes | null,
   declarationOverride: { readonly source: string; readonly fileName: string } | null,
-): HeaderInfo {
+): ImportedHeader {
   const clangLanguage = objectiveC ? cPlusPlus ? "objective-c++" : "objective-c" : cPlusPlus ? "c++" : "c";
   const swiftCxxNamespace = cPlusPlus ? swiftCompatibilityNamespace(declaration.header) : null;
   const clangBaseArguments = [
@@ -399,20 +458,23 @@ function readHeader(
     declaration.location,
   );
   return {
-    producer: produced.producer,
-    functions: contracts.functions,
-    functionAliases: contracts.functionAliases,
-    types: contracts.pointerTypes,
-    namedTypes: applyForeignNamedTypeApiNotes(produced.namedTypes, notes),
-    namedTypeAliases: imported.namedTypeAliases,
-    namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
-    constants: produced.constants,
-    objectTypes: produced.objectTypes,
-    interfaces: applyObjCMethodApiNotes(produced.interfaces, notes),
-    protocols: produced.protocols,
-    framework: produced.framework,
-    objectiveC: produced.objectiveC,
-    cPlusPlus: produced.cPlusPlus,
+    declarations: produced,
+    ir: {
+      producer: produced.producer,
+      functions: contracts.functions,
+      functionAliases: contracts.functionAliases,
+      types: contracts.pointerTypes,
+      namedTypes: applyForeignNamedTypeApiNotes(produced.namedTypes, notes),
+      namedTypeAliases: imported.namedTypeAliases,
+      namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
+      constants: produced.constants,
+      objectTypes: produced.objectTypes,
+      interfaces: applyObjCMethodApiNotes(produced.interfaces, notes),
+      protocols: produced.protocols,
+      framework: produced.framework,
+      objectiveC: produced.objectiveC,
+      cPlusPlus: produced.cPlusPlus,
+    },
   };
 }
 

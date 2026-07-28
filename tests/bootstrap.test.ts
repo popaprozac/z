@@ -8,6 +8,8 @@ import { DiagnosticError, formatDiagnostic } from "../compiler/src/diagnostics.t
 import { ApiNoteConflictError, mergeApiNotes } from "../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../compiler/src/foreign-contracts.ts";
 import { encodeForeignFunctionDeclarationStream } from "../compiler/src/foreign-declaration-protocol.ts";
+import { resolveForeignFunctionDeclarationStreams } from "../compiler/src/foreign.ts";
+import type { ImportDeclaration } from "../compiler/src/ast.ts";
 import type {
   ForeignFunctionDeclaration,
   ForeignModuleDeclarations,
@@ -9347,6 +9349,50 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [protocolPath], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
+
+  const foreignFixture = resolve(
+    projectRoot,
+    "tests/fixtures/foreign-functions-only.h",
+  );
+  const foreignImport: ImportDeclaration = {
+    kind: "import",
+    moduleName: "native",
+    bindings: null,
+    header: basename(foreignFixture),
+    location: {
+      fileName: fixture,
+      offset: 0,
+      line: 1,
+      column: 1,
+    },
+  };
+  const clangStreams = resolveForeignFunctionDeclarationStreams(
+    [foreignImport],
+    fixture,
+    [resolve(projectRoot, "tests/fixtures")],
+  );
+  const clangStream = clangStreams.get("native");
+  assert.ok(clangStream);
+  const clangPath = resolve(directory, "clang.zfdcl");
+  writeFileSync(clangPath, clangStream);
+  const clangExecution = spawnSync(
+    executable,
+    [clangPath, "clang"],
+    { encoding: "utf8" },
+  );
+  assert.equal(clangExecution.status, 0, clangExecution.stderr);
+
+  assert.throws(
+    () => resolveForeignFunctionDeclarationStreams(
+      [{
+        ...foreignImport,
+        header: "geometry.h",
+      }],
+      fixture,
+      [resolve(projectRoot, "tests/fixtures")],
+    ),
+    /supports function-only modules/,
+  );
 
   const truncatedPath = resolve(directory, "truncated.zfdcl");
   writeFileSync(truncatedPath, encoded.slice(0, -2));

@@ -1181,7 +1181,10 @@ instead of JSON or delimiter escaping. Flat arrays and explicit source indexes
 fit the same representation-neutral style as the native resolver stream. Its
 first version rejects non-function declaration categories, preserving the
 critical distinction between untrusted producer facts and normalized FIIR
-rather than silently treating incomplete native metadata as safe.
+rather than silently treating incomplete native metadata as safe. The first
+real adapter probe runs a two-function scalar header through Clang and the
+native decoder; the same operation rejects the record-bearing geometry header
+instead of dropping its types.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
