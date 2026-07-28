@@ -111,6 +111,11 @@ semantic analysis and code generation; the frontend itself is native Z code.
   matching function-only stream operation; a scalar C header crosses the
   complete producer/decoder boundary in the bootstrap suite, while a record
   header fails closed.
+- `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
+  parses the established `declare module` plus inferred scalar
+  `export function` shape, verifies module/function/parameter identity against
+  raw Clang declarations, maps supported ABI scalars to Z types, and rejects
+  every unimplemented fact at its `.zd` source location.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
 - `c-emitter.zs` is the first native lowering/code-generation slice. It emits
@@ -179,7 +184,7 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 32-module driver to
+0 seeds generation one, which now rebuilds the same 33-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
@@ -189,8 +194,10 @@ location until Clang discovery, `.zd` normalization, and FIIR ingestion are
 connected. The internal `self-host-foreign` adapter command writes a real
 Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
 decodes and validates that artifact through its own `foreign-inspect` bootstrap
-operation. Automatic adapter invocation and the producer protocol are not
-substitutes for a trusted foreign contract.
+operation. The driver also parses and normalizes the first scalar `.zd`
+contract against that artifact. Automatic adapter invocation, broader
+declaration records/facts, and ingestion by native sema/emission remain;
+decoding or partial normalization is not a trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

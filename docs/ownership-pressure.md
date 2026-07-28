@@ -1193,6 +1193,20 @@ counts. Truncating that artifact is a native diagnostic. The ordinary native
 project loader still rejects the corresponding foreign import, because a raw
 producer stream has not yet earned `.zd` ownership facts or FIIR authority.
 
+Adding the first `.zd` reader raised the standalone compiler to 33 modules and
+immediately exercised the language's own non-escaping collection borrows.
+Token and declaration elements contain owned Strings, so the normalizer could
+not copy them into convenient locals; it retains their array indexes and copies
+only strings that enter the normalized contract. That is the intended
+ownership distinction in real compiler code, not a special-case bridge.
+
+The first native contract tier matches an inferred scalar function declaration
+against the Clang stream and produces Z-facing parameter/result types. Module,
+function, and parameter identities are checked. Nullable, borrowed, status,
+ownership, callback, and result-body facts fail at their `.zd` source location
+until their semantics cross. The driver still refuses to call this partial
+normalization a checked foreign import.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

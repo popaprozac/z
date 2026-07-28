@@ -159,6 +159,15 @@ use `in` for a const pointer that borrows one stored scalar.
 Only facts supported by the current compiler are accepted. Undesigned future
 spelling does not silently pass through.
 
+### Native self-hosting status
+
+The production Stage-0 compiler supports the complete current shape documented
+below. The self-hosted compiler now has its first `.zd` vertical slice:
+`declare module` plus inferred scalar `export function` declarations are parsed
+in Z and validated against Clang-produced declarations. Other facts still fail
+closed in the native compiler while they are ported; this is a bootstrap
+implementation boundary, not a restriction of the `.zd` language.
+
 ## Declaration dictionary
 
 | Form | Meaning in Z | Native evidence or lowering |

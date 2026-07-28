@@ -8,6 +8,10 @@ import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
 import {
+  normalizeForeignContracts,
+  parseForeignContracts,
+} from "../frontend/foreign-contracts.zs";
+import {
   parseModule,
 } from "../frontend/module-graph.zs";
 import {
@@ -211,6 +215,26 @@ function inspectForeignDeclarations(in streamPath: String): i32 throws String {
   return 0;
 }
 
+function inspectForeignContracts(
+  in streamPath: String,
+  in header: String,
+  in contractPath: String
+): i32 throws String {
+  const declarationSource = try fs.readText(streamPath);
+  const declarations = try decodeRawForeignDeclarations(declarationSource);
+  const contractSource = try fs.readText(contractPath);
+  const contracts = try parseForeignContracts(contractSource, contractPath);
+  const normalized = try normalizeForeignContracts(
+    contracts,
+    declarations,
+    header
+  );
+  console.log(
+    `normalized ${normalized.functions.length} foreign function contracts for ${normalized.moduleSpecifier}`
+  );
+  return 0;
+}
+
 function emitProjectFile(
   in entryPath: String,
   in cPath: String
@@ -282,7 +306,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 2) {
-    console.error("usage: z-native <check|emit|build|run|foreign-inspect> <input> [output] [--release] [-- args]");
+    console.error("usage: z-native <check|emit|build|run|foreign-inspect|foreign-contract-inspect> <input> [output] [--release] [-- args]");
     return 2;
   }
 
@@ -293,6 +317,18 @@ function main(): i32 {
   }
   if (command == "foreign-inspect") {
     const outcome = attempt inspectForeignDeclarations(arguments[1]);
+    return reportOutcome(outcome);
+  }
+  if (command == "foreign-contract-inspect") {
+    if (arguments.length != 4) {
+      console.error("usage: z-native foreign-contract-inspect <declarations.zfdcl> <header> <contract.zd>");
+      return 2;
+    }
+    const outcome = attempt inspectForeignContracts(
+      arguments[1],
+      arguments[2],
+      arguments[3]
+    );
     return reportOutcome(outcome);
   }
   if (command == "emit") {

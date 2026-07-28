@@ -9393,6 +9393,61 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(clangExecution.status, 0, clangExecution.stderr);
 
+  const contractFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-foreign-contracts.zs",
+  );
+  const contractEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", contractFixture],
+    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+  );
+  assert.equal(contractEmission.status, 0, contractEmission.stderr);
+  assert.match(contractEmission.stdout, /parseForeignContracts/);
+  assert.match(contractEmission.stdout, /normalizeForeignContracts/);
+  const contractExecutable = resolve(directory, "foreign-contracts");
+  const contractCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      contractExecutable,
+    ],
+    { encoding: "utf8", input: contractEmission.stdout },
+  );
+  assert.equal(contractCompilation.status, 0, contractCompilation.stderr);
+  const contractPath = resolve(
+    projectRoot,
+    "tests/fixtures/foreign-functions-only.h.zd",
+  );
+  const contractExecution = spawnSync(
+    contractExecutable,
+    [clangPath, contractPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(contractExecution.status, 0, contractExecution.stderr);
+
+  const unsupportedContractPath = resolve(directory, "unsupported.zd");
+  writeFileSync(
+    unsupportedContractPath,
+    readFileSync(contractPath, "utf8").replace(
+      "): _;",
+      "): _ { owned; }",
+    ),
+  );
+  const unsupportedContract = spawnSync(
+    contractExecutable,
+    [clangPath, unsupportedContractPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(unsupportedContract.status, 3);
+
   assert.throws(
     () => resolveForeignFunctionDeclarationStreams(
       [{
@@ -9484,6 +9539,56 @@ test("compiles a multi-module Z application through the standalone native driver
     invalidForeignInspection.stderr,
     /foreign declaration stream ended/,
   );
+  const foreignContractInspection = spawnSync(
+    driver,
+    [
+      "foreign-contract-inspect",
+      foreignAdapterStream,
+      "foreign-functions-only.h",
+      resolve(
+        projectRoot,
+        "tests/fixtures/foreign-functions-only.h.zd",
+      ),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    foreignContractInspection.status,
+    0,
+    foreignContractInspection.stderr,
+  );
+  assert.match(
+    foreignContractInspection.stdout,
+    /normalized 1 foreign function contracts for foreign-functions-only\.h/,
+  );
+  const unsupportedNativeContract = resolve(
+    directory,
+    "unsupported-native-contract.zd",
+  );
+  writeFileSync(
+    unsupportedNativeContract,
+    [
+      'declare module "foreign-functions-only.h" {',
+      "  export function z_foreign_add(left: _, right: _): _ { owned; }",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const unsupportedNativeContractInspection = spawnSync(
+    driver,
+    [
+      "foreign-contract-inspect",
+      foreignAdapterStream,
+      "foreign-functions-only.h",
+      unsupportedNativeContract,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(unsupportedNativeContractInspection.status, 1);
+  assert.match(
+    unsupportedNativeContractInspection.stderr,
+    /unsupported-native-contract\.zd:2:\d+: error: function result facts are not implemented/,
+  );
 
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
@@ -9492,7 +9597,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 32 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 33 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
