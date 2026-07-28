@@ -1213,8 +1213,9 @@ function stage(in path: String): i32 throws String {
 ```
 
 `fs.readText(path)` returns an owned `String`; `fs.writeText(path, contents)`
-borrows both strings for the call; and `fs.exists(path)` performs a non-throwing
-existence probe. `fs.realPath(path)` returns an owned canonical absolute path,
+borrows both strings for the call; `fs.exists(path)` performs a non-throwing
+existence probe; and `fs.isDirectory(path)` distinguishes an existing
+directory from a file or missing path. `fs.realPath(path)` returns an owned canonical absolute path,
 resolving relative components and filesystem links, or throws a typed `String`
 OS failure. Returned paths and file contents must be valid UTF-8.
 `process.args()` returns an owned `Array<String>` containing

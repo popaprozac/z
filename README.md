@@ -36,7 +36,7 @@ Z source -> parser and semantic model -> ownership/async lowering
 
 Self-hosting is underway. TypeScript remains the bootstrap seed and production
 CLI, but the standalone Z driver can already discover, compile, and rebuild its
-own 30-module source graph to byte-identical C without Bun in the recursive
+own 31-module source graph to byte-identical C without Bun in the recursive
 compilation path. TypeScript is not Z's runtime model.
 
 Z source modules use `.zs` (Z source), while foreign declaration contracts use

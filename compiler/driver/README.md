@@ -21,12 +21,15 @@ z-native build <entry.zs> <output> [--release]
 z-native run <entry.zs> <output> [--release] [-- args...]
 ```
 
-It supports the self-hosting language and runtime subset. Project manifests,
-foreign header discovery, target configuration, release profiles, polished
-diagnostics, automatic temporary output selection for `run`, and the complete
-production command options remain with Stage 0 until equivalent native paths
-are proven. The current debug profile uses Clang `-O0`; `--release` uses
-`-O2 -DNDEBUG`.
+It supports the self-hosting language and runtime subset. The native driver
+finds the nearest `z.json`, parses the existing target entry, deployment,
+include-directory, link-directory, and library fields, validates configured
+paths, deduplicates native libraries, and projects those settings into Clang.
+Swift target preparation, foreign header discovery, cross-platform target
+selection, custom profiles, polished diagnostics, automatic temporary output
+selection for `run`, and the complete production command options remain with
+Stage 0 until equivalent native paths are proven. The current debug profile
+uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every
@@ -38,5 +41,7 @@ The bootstrap regression first emits this driver through the trusted Stage-0
 seed, then asks that native executable to build `main.zs` again. The
 driver-generated C must match the seed-generated C byte for byte, and the
 second-generation executable must compile an independent multi-module project.
-This is a recursive compiler fixed point; distributing a trusted bootstrap
-binary and replacing the broader production CLI are separate release steps.
+The same integration builds a temporary static C library and links it through
+native `z.json` settings. This is a recursive compiler fixed point;
+distributing a trusted bootstrap binary and replacing the broader production
+CLI are separate release steps.

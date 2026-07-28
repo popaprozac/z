@@ -1147,6 +1147,15 @@ failure boundary, walks to the reported line, and builds the canonical
 Parser and semantic failures now remain readable even when no TypeScript
 process exists.
 
+Project configuration supplied another application-shaped parser rather than a
+compiler bridge. A typed Z reader now walks the nearest `z.json`, ignores
+unknown fields for forward compatibility, validates the established target and
+link subset, resolves configured directories relative to the manifest, and
+projects those facts into Clang. The implementation added one generally useful
+filesystem query—`fs.isDirectory`—but no public JSON value hierarchy merely to
+bootstrap the compiler. A recursive fixture builds and links a real temporary
+static library through this path.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z
@@ -1186,10 +1195,10 @@ than merely splitting a large source file.
 This is not yet a distributable replacement for Stage 0. The native loader now
 canonicalizes every module through typed `fs.realPath`, preventing lexical or
 symlink aliases from creating duplicate module identities, but supports only
-the self-hosting subset. Manifest loading, foreign header and `.zd` ingestion,
-target/link configuration, manifest-selected/custom profiles, complete
-diagnostics, automatic temporary run artifacts, and production command options
-remain to cross independently.
+the self-hosting subset. Foreign header and `.zd` ingestion, Swift-target
+preparation, cross-platform target selection, manifest-selected/custom
+profiles, complete diagnostics, automatic temporary run artifacts, and
+production command options remain to cross independently.
 
 ## Not tested yet
 

@@ -14,6 +14,11 @@ import {
 } from "../frontend/module-paths.zs";
 import { resolveParsedModules } from "../frontend/module-resolver.zs";
 import {
+  appendProjectCompilerArguments,
+  loadProjectConfig,
+  NativeProjectConfig,
+} from "./project-manifest.zs";
+import {
   ModuleGraph,
   ModuleResolveError,
   ModuleSource,
@@ -22,6 +27,7 @@ import { ParsedModule } from "../frontend/module-symbols.zs";
 
 struct NativeProject {
   entryPath: String;
+  config: NativeProjectConfig;
   modules: Array<ParsedModule>;
   graph: ModuleGraph;
 }
@@ -97,6 +103,7 @@ function loadModule(
 function loadProject(in entryPath: String): NativeProject throws String {
   const normalizedEntry = normalizedModulePath(entryPath);
   const canonicalEntry = try fs.realPath(normalizedEntry);
+  const config = try loadProjectConfig(canonicalEntry);
   let loaded = Set<String>();
   let modules = Array<ParsedModule>();
   try loadModule(canonicalEntry, inout loaded, inout modules);
@@ -115,6 +122,7 @@ function loadProject(in entryPath: String): NativeProject throws String {
   };
   return NativeProject({
     entryPath: canonicalEntry,
+    config,
     modules,
     graph,
   });
@@ -194,6 +202,10 @@ function buildProject(
   compilerArguments.push("-Wextra");
   compilerArguments.push("-Werror");
   compilerArguments.push(copy cPath);
+  try appendProjectCompilerArguments(
+    project.config,
+    inout compilerArguments
+  );
   compilerArguments.push("-o");
   compilerArguments.push(copy outputPath);
   const exitCode = try process.run("clang", compilerArguments);

@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, project-manifest loader, and trusted seed. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. The standalone Z driver receives native arguments, canonically discovers modules, exposes `check`/`emit`/`build`/explicit-output `run`, and invokes Clang. Generation one now rebuilds its own 30-module driver to byte-identical C, and generation two checks an independent project without Bun or TypeScript. The production command surface, complete language semantics, foreign import, `z.json`/target handling, and distribution of a trusted bootstrap binary remain in stage 0 |
+| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, Swift-target preparer, and trusted seed. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. The standalone Z driver receives native arguments, canonically discovers modules, parses the established `z.json` target/link subset, exposes `check`/`emit`/`build`/explicit-output `run`, and invokes Clang. Generation one now rebuilds its own 31-module driver to byte-identical C, and generation two checks an independent project without Bun or TypeScript. The production command surface, complete language semantics, foreign import, Swift preparation, custom profiles, and distribution of a trusted bootstrap binary remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -1006,16 +1006,19 @@ Continue focused self-hosting work in this order:
    accepts export-only modules, while executable commands diagnose missing or
    incompatible `main` in Z before Clang. `build` and `run` default to `-O0`
    and accept `--release` for `-O2 -DNDEBUG`. Native parse and semantic
-   failures render their Z source line and caret without Stage 0. `z.json`,
-   foreign discovery,
-   target/link configuration, manifest-selected/custom profiles, richer diagnostics,
+   failures render their Z source line and caret without Stage 0. The native
+   command now finds and parses `z.json`, validates its entry and configured
+   directories, deduplicates libraries, and supplies include/link directories,
+   native libraries, and a macOS minimum target to Clang. Foreign discovery,
+   Swift target preparation, cross-platform target selection,
+   manifest-selected/custom profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic
    temporary run artifacts, and complete production options remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact
    C output before caching the library. The standalone command follows the same
-   rule: generation one builds its own 30-module graph, generation-two C must be
+   rule: generation one builds its own 31-module graph, generation-two C must be
    byte-identical, and the rebuilt command checks a separate project. The
    remaining release step is to ship a trusted bootstrap artifact so ordinary
    installations do not need Stage 0.

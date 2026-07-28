@@ -628,6 +628,11 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.isDirectory"
+    ) output.append("z_stage1_fs_is_directory");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.realPath"
     ) output.append("z_stage1_fs_real_path");
     else if (
@@ -2180,6 +2185,7 @@ function appendSystemStandardRuntime(
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
+  const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessArgs = programUsesStandardCall(program, "process.args");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
@@ -2191,6 +2197,7 @@ function appendSystemStandardRuntime(
     usesReadText
     || usesWriteText
     || usesExists
+    || usesIsDirectory
     || usesRealPath
     || usesProcessArgs
     || usesProcessRun
@@ -2303,6 +2310,18 @@ function appendSystemStandardRuntime(
     output.append("  return _access(path->data != NULL ? path->data : \"\", 0) == 0;\n");
     output.append("#else\n");
     output.append("  return access(path->data != NULL ? path->data : \"\", F_OK) == 0;\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+  }
+  if (usesIsDirectory) {
+    output.append("static __attribute__((unused)) bool z_stage1_fs_is_directory(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) return false;\n");
+    output.append("  struct stat status;\n");
+    output.append("  if (stat(path->data != NULL ? path->data : \"\", &status) != 0) return false;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  return (status.st_mode & _S_IFDIR) != 0;\n");
+    output.append("#else\n");
+    output.append("  return S_ISDIR(status.st_mode);\n");
     output.append("#endif\n");
     output.append("}\n\n");
   }
@@ -2430,6 +2449,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
+  const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
   const usesConsole =
@@ -2447,8 +2467,11 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   if (usesReadText || usesWriteText || usesConsole) {
     output.append("#include <stdio.h>\n");
   }
-  if (usesExists || usesRealPath || usesProcessRun) {
+  if (usesExists || usesIsDirectory || usesRealPath || usesProcessRun) {
     output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
+  }
+  if (usesIsDirectory) {
+    output.append("#include <sys/stat.h>\n");
   }
   output.append("\n");
   if (usesProcessArguments) {

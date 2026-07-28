@@ -200,6 +200,7 @@ export function generateC(
   const usesTiming = usesSleep || [...semanticInfo.standardFunctionReferences.values()].includes("delay");
   const usedStandardFunctions = new Set(semanticInfo.standardFunctionReferences.values());
   const usesFileSystem = [...usedStandardFunctions].some((name) => name.startsWith("fs."));
+  const usesDirectoryInspection = usedStandardFunctions.has("fs.isDirectory");
   const usesProcess = [...usedStandardFunctions].some((name) => name.startsWith("process."));
   const usesNativeMove = [...semanticInfo.foreignNamedTypes.values()].some((type) => (
     type.kind === "value" && type.lifecycle.move && !type.lifecycle.copy
@@ -256,6 +257,10 @@ export function generateC(
     );
     includedHeaders.add("io.h");
     includedHeaders.add("unistd.h");
+  }
+  if (usesDirectoryInspection) {
+    lines.push("#include <sys/stat.h>");
+    includedHeaders.add("sys/stat.h");
   }
   lines.push(
     "#include <stdbool.h>",
@@ -7312,6 +7317,20 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   return _access(native_path, 0) == 0;
 #else
   return access(native_path, F_OK) == 0;
+#endif
+}`);
+  }
+
+  if (used.has("fs.isDirectory")) {
+    sections.push(`static bool z_fs_is_directory(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) return false;
+  const char *native_path = path.data != NULL ? path.data : "";
+  struct stat status;
+  if (stat(native_path, &status) != 0) return false;
+#if defined(_WIN32)
+  return (status.st_mode & _S_IFDIR) != 0;
+#else
+  return S_ISDIR(status.st_mode);
 #endif
 }`);
   }

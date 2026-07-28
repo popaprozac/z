@@ -87,6 +87,19 @@ function fsCall(in memberName: String): Option<NativeStandardCallShape> {
       ),
     }));
   }
+  if (memberName == "isDirectory") {
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    return Option.some(NativeStandardCallShape({
+      name: "fs.isDirectory",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "boolean",
+        ""
+      ),
+    }));
+  }
   if (memberName == "realPath") {
     parameterModes.push("in");
     parameterTypes.push("String");

@@ -7899,6 +7899,8 @@ test("reads files, exposes program arguments, and runs child processes through s
       const source = try fs.readText(${JSON.stringify(fileName)});
       try fs.writeText(${JSON.stringify(copyPath)}, source);
       if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
+      if (!fs.isDirectory(${JSON.stringify(directory)})) return 87;
+      if (fs.isDirectory(${JSON.stringify(fileName)})) return 86;
       const canonical = try fs.realPath(${JSON.stringify(`${directory}/./main.zs`)});
       if (canonical != ${JSON.stringify(resolve(realpathSync(directory), "main.zs"))}) return 88;
       const arguments = process.args();
@@ -7934,6 +7936,7 @@ test("reads files, exposes program arguments, and runs child processes through s
   const generated = compileToC(source, fileName);
   assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
   assert.match(generated, /static Z_Result_String_String z_fs_real_path/);
+  assert.match(generated, /static bool z_fs_is_directory/);
   assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
   assert.match(generated, /execvp\(argv\[0\], argv\)/);
   assert.match(generated, /int32_t main\(int argc, char \*\*argv\)/);
@@ -9279,7 +9282,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 30 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 31 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -9392,6 +9395,93 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const execution = spawnSync(application, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
+
+  const manifestProject = resolve(directory, "manifest-project");
+  const manifestInclude = resolve(manifestProject, "include");
+  const manifestLibrary = resolve(manifestProject, "lib");
+  mkdirSync(manifestInclude, { recursive: true });
+  mkdirSync(manifestLibrary, { recursive: true });
+  writeFileSync(
+    resolve(manifestProject, "main.zs"),
+    [
+      'import { answer } from "./value.zs";',
+      "function main(): i32 { return answer(); }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(manifestProject, "value.zs"),
+    "export function answer(): i32 { return 42; }\n",
+  );
+  const nativeLibrarySource = resolve(manifestProject, "native.c");
+  const nativeLibraryObject = resolve(manifestLibrary, "native.o");
+  const nativeLibraryArchive = resolve(manifestLibrary, "libzmanifest.a");
+  writeFileSync(nativeLibrarySource, "int z_manifest_fixture(void) { return 1; }\n");
+  const nativeLibraryCompilation = spawnSync(
+    "clang",
+    ["-c", nativeLibrarySource, "-o", nativeLibraryObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeLibraryCompilation.status, 0, nativeLibraryCompilation.stderr);
+  const nativeLibraryArchiving = spawnSync(
+    "ar",
+    ["rcs", nativeLibraryArchive, nativeLibraryObject],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeLibraryArchiving.status, 0, nativeLibraryArchiving.stderr);
+  const manifest = {
+    target: {
+      entry: "main.zs",
+      ...(process.platform === "darwin"
+        ? { platform: "macos", minimumVersion: "14.0" }
+        : {}),
+      includeDirectories: ["include", "include"],
+      link: {
+        directories: ["lib", "lib"],
+        libraries: ["zmanifest", "zmanifest"],
+      },
+    },
+  };
+  writeFileSync(
+    resolve(manifestProject, "z.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+  );
+  const manifestApplication = resolve(directory, "manifest-application");
+  const manifestCompilation = spawnSync(
+    driver,
+    ["build", resolve(manifestProject, "main.zs"), manifestApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(manifestCompilation.status, 0, manifestCompilation.stderr);
+  const manifestExecution = spawnSync(manifestApplication, [], { encoding: "utf8" });
+  assert.equal(manifestExecution.status, 42, manifestExecution.stderr);
+
+  writeFileSync(
+    resolve(manifestProject, "z.json"),
+    JSON.stringify({ target: { includeDirectories: ["missing"] } }),
+  );
+  const missingDirectoryCheck = spawnSync(
+    driver,
+    ["check", resolve(manifestProject, "main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingDirectoryCheck.status, 1);
+  assert.match(
+    missingDirectoryCheck.stderr,
+    /target\.includeDirectories directory .*missing.* does not exist/,
+  );
+
+  writeFileSync(resolve(manifestProject, "z.json"), '{"target": ');
+  const malformedManifestCheck = spawnSync(
+    driver,
+    ["check", resolve(manifestProject, "main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(malformedManifestCheck.status, 1);
+  assert.match(
+    malformedManifestCheck.stderr,
+    /z\.json:1:12: error: expected an object for target/,
+  );
 
   const releaseApplication = resolve(directory, "release-application");
   const releaseCompilation = spawnSync(

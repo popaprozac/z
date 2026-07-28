@@ -19,6 +19,7 @@ export type StandardFunctionName =
   | "fs.readText"
   | "fs.writeText"
   | "fs.exists"
+  | "fs.isDirectory"
   | "fs.realPath"
   | "process.args"
   | "process.run";
@@ -74,6 +75,11 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
     returnType: "boolean",
   },
+  "fs.isDirectory": {
+    cName: "z_fs_is_directory",
+    parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
+    returnType: "boolean",
+  },
   "fs.realPath": {
     cName: "z_fs_real_path",
     parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
@@ -105,6 +111,7 @@ const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, 
     readText: "fs.readText",
     writeText: "fs.writeText",
     exists: "fs.exists",
+    isDirectory: "fs.isDirectory",
     realPath: "fs.realPath",
   },
   process: {

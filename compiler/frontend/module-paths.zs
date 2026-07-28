@@ -21,7 +21,7 @@ export function isLocalModuleHeader(in header: String): boolean {
     && header.byteAt(header.byteLength - 1) == 115;
 }
 
-function directoryName(in path: String): String {
+export function directoryName(in path: String): String {
   let index = path.byteLength;
   while (index > 0) {
     index = index - 1;
