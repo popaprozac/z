@@ -9246,6 +9246,44 @@ test("runs the source stager through native file, process, and console runtimes"
   );
 }, 15_000);
 
+test("compiles a multi-module Z application through the standalone native driver", () => {
+  const driverSource = resolve(projectRoot, "compiler/driver/main.zs");
+  const driverEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", driverSource],
+    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+  );
+  assert.equal(driverEmission.status, 0, driverEmission.stderr);
+  assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
+  assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-native-compiler-");
+  const driver = resolve(directory, "z-native");
+  const driverCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-", "-o", driver],
+    { encoding: "utf8", input: driverEmission.stdout },
+  );
+  assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
+
+  const applicationSource = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-modules/main.zs",
+  );
+  const application = resolve(directory, "application");
+  const compilation = spawnSync(
+    driver,
+    [applicationSource, application],
+    { encoding: "utf8" },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  assert.match(compilation.stdout, /compiled 2 Z modules/);
+  assert.equal(existsSync(`${application}.c`), true);
+
+  const execution = spawnSync(application, [], { encoding: "utf8" });
+  assert.equal(execution.status, 42, execution.stderr);
+}, 30_000);
+
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
   const emission = spawnSync(

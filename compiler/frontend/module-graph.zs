@@ -27,7 +27,7 @@ import {
   moduleResolutionError,
 } from "./semantic-model.zs";
 
-function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
+export function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
   const tokenOutcome = attempt tokenize(source.source);
   const tokens = match (tokenOutcome) {
     success(tokens) => tokens;

@@ -1097,6 +1097,44 @@ use the existing borrowed-temporary lifetime. Multi-value calls and non-String
 formatting continue through Stage 0, preventing the native subset from
 rejecting already-valid console programs while richer formatting is added.
 
+## Standalone multi-module compilation
+
+The first compiler-shaped Z executable now owns more than runtime plumbing.
+`compiler/driver/main.zs` recursively reads an entry module and its relative
+imports, parses each source into the native owned AST, resolves the complete
+graph, emits readable C, writes that translation unit, and invokes Clang. Stage
+0 emits the driver once, but the resulting compilation of a separate
+two-module Z application executes no Bun or TypeScript process. The application
+returns its expected status 42.
+
+This composition pressure exposed one real ownership rule rather than a
+bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
+the borrowed `parseModule` argument did not provide a named lifetime, so Z
+rejected it. Binding the source first makes its lifetime explicit across the
+call and allows deterministic cleanup after parsing. A second boundary remained
+deliberately visible: native console lowering currently accepts a syntactic
+String or template, so forwarding a dynamic diagnostic currently uses:
+
+```z
+console.error(`${message}`);
+```
+
+General typed console values remain outside the self-hosting subset.
+
+The driver uses existing ordinary Z modules and collections; it did not require
+trait values, a compiler-only graph loader, or a new lifetime mechanism.
+`Set<String>` provides lexical discovery deduplication, `Array<ParsedModule>`
+owns the growing graph, and the same `ModuleGraph` consumed by the in-process
+bridge flows directly into C emission. That is positive evidence that the
+earlier resolver modularization created a reusable compiler architecture rather
+than merely splitting a large source file.
+
+This is not yet a distributable replacement for Stage 0. The native command
+accepts only an entry path and output path, uses lexical normalized paths, and
+supports the self-hosting subset. Manifest loading, foreign header and `.zd`
+ingestion, target/link configuration, release profiles, complete diagnostics,
+and the production command surface remain to cross independently.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

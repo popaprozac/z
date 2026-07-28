@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial compiler | Stage 0 remains the Bun/TypeScript driver, project loader, foreign importer, and seed compiler. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference, and the current generations are identical. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. A first emitted standalone driver now receives native command-line arguments and performs typed UTF-8 `std/fs.readText` without Bun at runtime. Ordinary `check`/`emit`/`run`, complete language semantics, foreign import, project discovery, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial compiler | Stage 0 remains the production Bun/TypeScript CLI, foreign importer, project-manifest loader, and seed compiler. The seed builds the native frontend once; that native frontend emits its own C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference, and the current generations are identical. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. A standalone Z driver now receives native arguments, recursively loads relative modules, executes that frontend, writes C, and invokes Clang; its proven multi-module compilation path runs without Bun or TypeScript. Ordinary `check`/`emit`/`run`, complete language semantics, foreign import, `z.json`/target handling, and distribution of a trusted bootstrap binary remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -989,15 +989,20 @@ Continue focused self-hosting work in this order:
    invoke Clang as an external tool; self-hosting does not require replacing it.
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding
-   TypeScript/Bun paths only after parity. This step has started: native
+   TypeScript/Bun paths only after parity. This step now has an end-to-end
+   vertical slice: native
    standard-call evidence now covers `std/fs` and `std/process`, and an emitted
    executable receives owned `Array<String>` arguments, checks and reads UTF-8
    files, and handles `Result<String, String>` entirely outside Bun. The
    application-shaped source stager also writes the owned source, launches
    Clang without a shell, handles typed process failures, and flushes
-   interpolated console output from the native executable. Fixed-array-to-Slice
-   lowering, general console formatting, recursive project discovery, and the
-   actual compiler command protocol remain.
+   interpolated console output from the native executable. The native driver
+   recursively discovers local `.zs` imports, parses and resolves the graph,
+   emits and writes C, and invokes Clang; the resulting binary compiles a
+   separate two-module application without Bun. `z.json`, foreign discovery,
+   target/link configuration, release profiles, richer diagnostics,
+   fixed-array-to-Slice lowering, general console formatting, and the complete
+   `check` / `emit` / `run` command protocol remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact
