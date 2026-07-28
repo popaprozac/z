@@ -1186,6 +1186,13 @@ real adapter probe runs a two-function scalar header through Clang and the
 native decoder; the same operation rejects the record-bearing geometry header
 instead of dropping its types.
 
+The boundary now survives process separation as well. An internal Stage-0
+adapter command writes the header-addressed artifact, while the self-emitted
+32-module native driver reads, owns, validates, and reports its declaration
+counts. Truncating that artifact is a native diagnostic. The ordinary native
+project loader still rejects the corresponding foreign import, because a raw
+producer stream has not yet earned `.zd` ownership facts or FIIR authority.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

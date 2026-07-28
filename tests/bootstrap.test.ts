@@ -9374,7 +9374,18 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const clangStream = clangStreams.get("native");
   assert.ok(clangStream);
   const clangPath = resolve(directory, "clang.zfdcl");
-  writeFileSync(clangPath, clangStream);
+  const adapterSource = resolve(directory, "adapter-input.zs");
+  writeFileSync(
+    adapterSource,
+    `import native from ${JSON.stringify(foreignFixture)};\n`,
+  );
+  const adapter = spawnSync(
+    process.execPath,
+    [cli, "self-host-foreign", adapterSource, foreignFixture, clangPath],
+    { encoding: "utf8" },
+  );
+  assert.equal(adapter.status, 0, adapter.stderr);
+  assert.equal(readFileSync(clangPath, "utf8"), clangStream);
   const clangExecution = spawnSync(
     executable,
     [clangPath, "clang"],
@@ -9423,6 +9434,57 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
 
+  const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
+  const foreignAdapterHeader = resolve(
+    projectRoot,
+    "tests/fixtures/foreign-functions-only.h",
+  );
+  const foreignAdapterStream = resolve(directory, "foreign-adapter.zfdcl");
+  writeFileSync(
+    foreignAdapterSource,
+    `import native from ${JSON.stringify(foreignAdapterHeader)};\n`,
+  );
+  const foreignAdapter = spawnSync(
+    process.execPath,
+    [
+      cli,
+      "self-host-foreign",
+      foreignAdapterSource,
+      foreignAdapterHeader,
+      foreignAdapterStream,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignAdapter.status, 0, foreignAdapter.stderr);
+  const foreignInspection = spawnSync(
+    driver,
+    ["foreign-inspect", foreignAdapterStream],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignInspection.status, 0, foreignInspection.stderr);
+  assert.match(
+    foreignInspection.stdout,
+    /decoded 2 foreign functions from clang/,
+  );
+  const invalidForeignAdapterStream = resolve(
+    directory,
+    "invalid-foreign-adapter.zfdcl",
+  );
+  writeFileSync(
+    invalidForeignAdapterStream,
+    readFileSync(foreignAdapterStream, "utf8").slice(0, -2),
+  );
+  const invalidForeignInspection = spawnSync(
+    driver,
+    ["foreign-inspect", invalidForeignAdapterStream],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidForeignInspection.status, 1);
+  assert.match(
+    invalidForeignInspection.stderr,
+    /foreign declaration stream ended/,
+  );
+
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(
     driver,
@@ -9430,7 +9492,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 31 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 32 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,

@@ -171,6 +171,13 @@ TypeScript object layouts or JSON as compiler architecture. An end-to-end
 fixture runs a scalar C header through Clang, the stream encoder, native Z
 decoding, strict C compilation, and execution.
 
+The same producer/decoder seam is now exposed across standalone processes:
+Stage 0's internal `self-host-foreign` command writes a header-addressed
+artifact, and the self-emitted native driver validates it without relying on a
+TypeScript representation. Ordinary native `check` still rejects the import;
+decoding untrusted declarations is not equivalent to applying `.zd` facts or
+constructing validated FIIR.
+
 This first protocol tier deliberately fails closed for native types, constants,
 Objective-C declarations, interfaces, and protocols. It is producer-facing
 data, not serialized FIIR: `.zd` facts still need to be read and normalized in
@@ -189,9 +196,9 @@ remains a separate, version-independent compiler model.
    frame storage;
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
-5. expose the implemented Clang-to-`ZFDCL` operation across the standalone
-   native driver's adapter boundary, then add records for native types,
-   constants, callbacks, Objective-C declarations, interfaces, and protocols
-   without weakening its fail-closed boundary;
+5. automate standalone-driver invocation of the implemented
+   Clang-to-`ZFDCL` adapter, then add records for native types, constants,
+   callbacks, Objective-C declarations, interfaces, and protocols without
+   weakening its fail-closed boundary;
 6. implement the `.zd` reader and contract normalizer in Z, producing validated
    in-memory FIIR rather than teaching native sema about wire records.

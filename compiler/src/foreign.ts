@@ -182,6 +182,26 @@ export function resolveForeignFunctionDeclarationStreams(
   return streams;
 }
 
+export function resolveForeignFunctionDeclarationStream(
+  declaration: ImportDeclaration,
+  fileName: string,
+  projectIncludeDirectories: readonly string[] = [],
+  deploymentTarget: DeploymentTarget | null = null,
+): string {
+  const resolved = resolveImportedHeaders(
+    [declaration],
+    fileName,
+    projectIncludeDirectories,
+    deploymentTarget,
+  ).get(declaration.moduleName);
+  if (!resolved) {
+    throw new Error(
+      `foreign declaration producer did not resolve ${JSON.stringify(declaration.header)}`,
+    );
+  }
+  return encodeForeignFunctionDeclarationStream(resolved.header.declarations);
+}
+
 function resolveImportedHeaders(
   declarations: readonly ImportDeclaration[],
   fileName: string,

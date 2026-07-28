@@ -8,6 +8,7 @@ import type { Expression, FunctionDeclaration, Program, SourceLocation, Statemen
 import { canonicalTypeName } from "./canonical-type-name.ts";
 import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
+import { resolveForeignFunctionDeclarationStream } from "./foreign.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
 import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
@@ -19,7 +20,7 @@ import {
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
-import { deploymentTargetFlags } from "./project.ts";
+import { deploymentTargetFlags, prepareProject } from "./project.ts";
 import {
   decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
@@ -36,7 +37,7 @@ import {
 const [command, inputArgument, ...trailingArguments] = process.argv.slice(2);
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
-if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit"].includes(command)) {
+if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
@@ -58,6 +59,29 @@ if (!command || !inputArgument || !["check", "emit", "run", "self-host-lex", "se
     } else if (command === "self-host-emit") {
       if (trailingArguments.length > 0) throw new Error("self-host-emit accepts one .zs source path");
       emitWithStage1(inputPath);
+    } else if (command === "self-host-foreign") {
+      if (trailingArguments.length !== 2) {
+        throw new Error(
+          "self-host-foreign requires a header specifier and output .zfdcl path",
+        );
+      }
+      const source = readFileSync(inputPath, "utf8");
+      const program = parse(lex(source, inputPath), inputPath);
+      const project = prepareProject(inputPath);
+      const header = trailingArguments[0];
+      const declaration = program.imports.find((candidate) => candidate.header === header);
+      if (!declaration) {
+        throw new Error(
+          `source does not import foreign header ${JSON.stringify(header)}`,
+        );
+      }
+      const stream = resolveForeignFunctionDeclarationStream(
+        declaration,
+        inputPath,
+        project.includeDirectories,
+        project.deploymentTarget,
+      );
+      writeFileSync(resolve(trailingArguments[1]), stream);
     } else if (command === "check") {
       const nativeFrontend = trailingArguments.includes("--native-frontend");
       const timings = trailingArguments.includes("--timings");
@@ -3517,4 +3541,5 @@ function usage(): void {
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
   console.error("       z self-host-resolve <entry.zs> [--timings]");
   console.error("       z self-host-emit <file.zs>");
+  console.error("       z self-host-foreign <file.zs> <header> <output.zfdcl>");
 }

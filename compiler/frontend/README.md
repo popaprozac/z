@@ -179,17 +179,18 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 31-module driver to
+0 seeds generation one, which now rebuilds the same 32-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
 verified: a non-standard, non-local import fails native `check` at its source
 location until Clang discovery, `.zd` normalization, and FIIR ingestion are
-connected. The real Clang producer and native frontend can now exchange and
-validate the first function-only raw declaration stream, but the standalone
-driver does not yet invoke that adapter and the producer protocol is not itself
-a trusted foreign contract.
+connected. The internal `self-host-foreign` adapter command writes a real
+Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
+decodes and validates that artifact through its own `foreign-inspect` bootstrap
+operation. Automatic adapter invocation and the producer protocol are not
+substitutes for a trusted foreign contract.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and
 the complete compiler command surface remain subsequent slices.

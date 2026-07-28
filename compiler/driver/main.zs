@@ -5,6 +5,9 @@ import process from "std/process";
 import { TextBuffer } from "std/text";
 import { emitModulesC } from "../frontend/c-emitter.zs";
 import {
+  decodeRawForeignDeclarations,
+} from "../frontend/foreign-declaration-protocol.zs";
+import {
   parseModule,
 } from "../frontend/module-graph.zs";
 import {
@@ -199,6 +202,15 @@ function checkProject(in entryPath: String): i32 throws String {
   return 0;
 }
 
+function inspectForeignDeclarations(in streamPath: String): i32 throws String {
+  const source = try fs.readText(streamPath);
+  const declarations = try decodeRawForeignDeclarations(source);
+  console.log(
+    `decoded ${declarations.functions.length} foreign functions from ${declarations.producer}`
+  );
+  return 0;
+}
+
 function emitProjectFile(
   in entryPath: String,
   in cPath: String
@@ -270,13 +282,17 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 2) {
-    console.error("usage: z-native <check|emit|build|run> <entry.zs> [output] [--release] [-- args]");
+    console.error("usage: z-native <check|emit|build|run|foreign-inspect> <input> [output] [--release] [-- args]");
     return 2;
   }
 
   const command = copy arguments[0];
   if (command == "check") {
     const outcome = attempt checkProject(arguments[1]);
+    return reportOutcome(outcome);
+  }
+  if (command == "foreign-inspect") {
+    const outcome = attempt inspectForeignDeclarations(arguments[1]);
     return reportOutcome(outcome);
   }
   if (command == "emit") {
