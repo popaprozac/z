@@ -116,6 +116,8 @@ export function typeHasCleanup(
     typeName == "String"
     || typeName == "TextBuffer"
     || typeName == "Arena"
+    || typeName == "fs.Lock"
+    || typeName == "__z_std_fs_Lock"
     || stringStartsWith(typeName, "__z_native_function:")
   ) return true;
   match (fixedArrayShape(typeName)) {
@@ -257,6 +259,8 @@ export function typeSupportsExplicitCopy(
   if (
     actual == "TextBuffer"
     || actual == "Arena"
+    || actual == "fs.Lock"
+    || actual == "__z_std_fs_Lock"
     || stringStartsWith(actual, "Weak<")
     || stringStartsWith(actual, "__z_native_function:")
   ) return false;

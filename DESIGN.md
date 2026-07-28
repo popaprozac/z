@@ -1093,6 +1093,27 @@ monotonic timer queue. It suspends only the current task; cancellation removes
 its pending timer. The separate names ensure `sleep` never changes behavior
 based on calling context.
 
+Cross-process filesystem locking follows the same resource vocabulary:
+
+```z
+import fs from "std/fs";
+
+const lock = try fs.lock(".z-cache/build.lock");
+publishArtifacts();
+lock.unlock();
+```
+
+`fs.lock` blocks the current OS thread while acquiring an exclusive kernel
+lock. The returned `fs.Lock` is move-only and releases automatically through
+deterministic cleanup on scope exit, propagation, and early return. The
+optional consuming `unlock()` method releases earlier and makes later use a
+compile error. The path names the shared lock identity; the file itself may
+remain after release. This is an interprocess artifact primitive, not a
+shared-memory synchronization abstraction. Mutexes, read/write locks, atomic
+values, condition variables, and semaphores belong to a future explicit
+`std/sync` module whose guard values should use the same move-only cleanup
+model.
+
 Cooperative scheduling is explicit and timer-free:
 
 ```z

@@ -1137,6 +1137,20 @@ report a cache bypass. Serving a possibly stale binary would be faster but
 would violate the compiler's safety and predictability goals. Module-level
 parse and semantic caches are separate future work.
 
+The cache then exposed a process-level ownership race: two native drivers could
+both observe a miss, write the same translation unit and incomplete marker, and
+publish one executable path concurrently. The repair deliberately uses Z's
+ordinary resource model rather than a compiler-only host helper. `fs.lock(path)`
+returns a move-only `fs.Lock`; its generated POSIX `flock` or Windows
+`LockFileEx` owner releases through deterministic cleanup on every `return` and
+typed-error path. The native driver holds that owner across cache inspection,
+Clang, and metadata publication, then calls consuming `unlock()` before running
+the child. A real two-process probe confirms that the second owner cannot enter
+until the first scope releases. A second `unlock()` is ordinary use-after-move.
+This pressure test is useful beyond caching: it proves an OS resource can be
+represented identically in Stage 0 and the self-emitted backend without adding
+manual cleanup syntax to application code.
+
 The command split also made entry policy executable rather than documentary.
 `check` validates an export-only entry graph, but `emit`, `build`, and `run`
 require `function main(): i32`. An incompatible present `main` fails every

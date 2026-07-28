@@ -50,6 +50,7 @@ import {
   type ForeignDeclarationContracts,
 } from "./foreign-declarations.ts";
 import {
+  fsLockTypeName,
   objcConnectionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
@@ -454,9 +455,16 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     ) {
       const owner = context.semanticInfo.standardModuleBindings.get(tokens[index - 2]?.text ?? "");
       const objcType = owner === "objc" && (token.text === "Connection" || token.text === "Binding");
+      const standardType = owner === "fs" && token.text === "Lock";
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf(
-          objcType ? "class" : owner === "thread" && token.text === "main" ? "property" : "method",
+          standardType
+            ? "type"
+            : objcType
+              ? "class"
+              : owner === "thread" && token.text === "main"
+                ? "property"
+                : "method",
         ),
         modifiers: owner === "thread" && token.text === "main" ? 6 : 4,
       });
@@ -941,6 +949,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "thread" && word.text === "main") {
       return markdownHover("thread.main: Executor  // main-thread execution target", source, word.start, word.end);
     }
+    if (standardOwner === "fs" && word.text === "Lock") {
+      return markdownHover(
+        "fs.Lock  // move-only exclusive interprocess filesystem lock; released on scope exit",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (standardOwner === "objc" && word.text === "connect") {
       return markdownHover(
         "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection  // owns the control and callback lifetime",
@@ -1098,6 +1114,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
             ? "isCancellationRequested: boolean"
             : null;
       if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    if (resolved?.kind === "fsLock" && word.text === "unlock") {
+      return markdownHover(
+        "unlock(): void  // consumes fs.Lock and releases it immediately",
+        source,
+        word.start,
+        word.end,
+      );
     }
     if (resolved?.kind === "integer") {
       const detail = integerMethodDetail(word.text, resolved.type);
@@ -3313,12 +3337,15 @@ function containsDeclarationName(start: number, name: string, offset: number): b
 
 function standardFunctionDetail(localName: string, name: StandardFunctionName): string {
   const signature = standardFunctionSignature(name);
+  const displayStandardType = (type: string): string => (
+    type === fsLockTypeName ? "fs.Lock" : displayArrayType(type)
+  );
   const parameters = signature.parameters.map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
-    return `${capability}${parameter.name}: ${displayArrayType(parameter.type)}`;
+    return `${capability}${parameter.name}: ${displayStandardType(parameter.type)}`;
   }).join(", ");
   const asynchronous = signature.async ? "async " : "";
-  const throws = signature.errorType ? ` throws ${displayArrayType(signature.errorType)}` : "";
+  const throws = signature.errorType ? ` throws ${displayStandardType(signature.errorType)}` : "";
   const behavior = name === "delay"
     ? "  // suspends the current task"
     : name === "scheduler.yield"
@@ -3326,7 +3353,7 @@ function standardFunctionDetail(localName: string, name: StandardFunctionName): 
     : name === "sleep"
     ? "  // blocks the current thread"
     : "";
-  const detail = `${asynchronous}${localName}(${parameters}): ${displayArrayType(signature.returnType)}${throws}${behavior}`;
+  const detail = `${asynchronous}${localName}(${parameters}): ${displayStandardType(signature.returnType)}${throws}${behavior}`;
   return localName === name || name.includes(".")
     ? detail
     : `${detail} — alias of ${name} from "std/time"`;
@@ -3750,6 +3777,14 @@ function memberCompletions(
           detail: member === "Connection"
             ? "owned Objective-C target/action lifetime"
             : "owned Objective-C protocol-binding lifetime",
+          insertText: member,
+        };
+      }
+      if (standardModule === "fs" && member === "Lock") {
+        return {
+          label: member,
+          kind: completionKinds.struct,
+          detail: "move-only exclusive interprocess filesystem lock",
           insertText: member,
         };
       }
@@ -4215,6 +4250,14 @@ function memberCompletions(
       },
     ], prefix, 1000);
   }
+  if (resolved?.kind === "fsLock") {
+    return filterCompletions([{
+      label: "unlock",
+      kind: completionKinds.method,
+      detail: "unlock(): void  // consumes and releases the lock",
+      insertText: "unlock()",
+    }], prefix, 1000);
+  }
   return [];
 }
 
@@ -4529,6 +4572,7 @@ type ResolvedReceiver =
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
   | { readonly kind: "taskScope" }
   | { readonly kind: "taskControl" }
+  | { readonly kind: "fsLock" }
   | { readonly kind: "objcConnection" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
@@ -4557,6 +4601,9 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (receiverType === "Hasher") return { kind: "hasher" };
   if (receiverType === "TaskScope") return { kind: "taskScope" };
   if (receiverType === "TaskControl") return { kind: "taskControl" };
+  if (receiverType === fsLockTypeName || receiverType === "fs.Lock") {
+    return { kind: "fsLock" };
+  }
   if (receiverType === "String") return { kind: "string" };
   const map = parseMapType(receiverType);
   if (map) return { kind: "map", ...map };

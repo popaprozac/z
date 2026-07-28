@@ -39,6 +39,7 @@ export enum LoweredTypeKind {
   u32Type,
   u64Type,
   usizeType,
+  fsLockType,
   stringType,
   arrayType,
   mapType,
@@ -126,6 +127,7 @@ export enum LoweredExpressionKind {
   wrappingAddInteger,
   wrappingSubtractInteger,
   wrappingMultiplyInteger,
+  fsLockUnlock,
   moveValue,
   copyValue,
   borrowedTemporary,
@@ -306,6 +308,7 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.u32Type) return "u32";
   if (type.kind == LoweredTypeKind.u64Type) return "u64";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
+  if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   return type.name.copyBytes(0, type.name.byteLength);
 }
@@ -363,6 +366,12 @@ function lowerTypeName(
   if (name == "u64") return LoweredType({ kind: LoweredTypeKind.u64Type, name: "" });
   if (name == "usize") {
     return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
+  }
+  if (name == "__z_std_fs_Lock" || name == "fs.Lock") {
+    return LoweredType({
+      kind: LoweredTypeKind.fsLockType,
+      name: "FsLock",
+    });
   }
   if (name == "String" || name == "TextBuffer") {
     return LoweredType({
@@ -644,6 +653,7 @@ function enumNeedsCleanup(
             if (
               type.kind == LoweredTypeKind.arrayType
               || type.kind == LoweredTypeKind.stringType
+              || type.kind == LoweredTypeKind.fsLockType
             ) return true;
           }
           failure(_) => {}
@@ -686,6 +696,7 @@ function aggregateNeedsCleanup(
         if (
           type.kind == LoweredTypeKind.arrayType
           || type.kind == LoweredTypeKind.stringType
+          || type.kind == LoweredTypeKind.fsLockType
         ) return true;
       }
       failure(_) => {}
@@ -712,6 +723,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.mapType
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
+    || type.kind == LoweredTypeKind.fsLockType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -879,6 +891,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.mapType
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
+    || type.kind == LoweredTypeKind.fsLockType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1261,11 +1274,22 @@ function treeMovesName(
     }
     if (
       tree.nodes[callee].kind == ExpressionKind.memberExpression
-      && tree.nodes[callee].value == "finish"
       && tree.nodes[callee].children.length == 1
     ) {
       const receiver = tree.nodes[callee].children[0];
+      let consumesReceiver = tree.nodes[callee].value == "finish";
+      if (tree.nodes[callee].value == "unlock") {
+        match (resolvedExpressionTypeName(evidence, tree, receiver)) {
+          some(typeName) => {
+            consumesReceiver = typeName == "fs.Lock"
+              || typeName == "__z_std_fs_Lock";
+          }
+          none => {}
+        }
+      }
       if (
+        consumesReceiver
+        &&
         tree.nodes[receiver].kind == ExpressionKind.identifierExpression
         && tree.nodes[receiver].value == name
       ) return true;
@@ -3569,6 +3593,52 @@ function lowerExpression(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "unlock"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.fsLockType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let moveChildren = Array<usize>();
+            moveChildren.push(receiver);
+            const movedReceiver = pushExpression(
+              inout output,
+              LoweredExpressionKind.moveValue,
+              "",
+              moveChildren,
+              Array<String>()
+            );
+            let children = Array<usize>();
+            children.push(movedReceiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.fsLockUnlock,
+              "",
+              move children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
       && (
         tree.nodes[calleeInput].value == "append"
@@ -3877,7 +3947,8 @@ function lowerExpression(
     match (resolvedCallTarget(evidence, tree, index)) {
       some(target) => {
         if (
-          target == "fs.readBytes"
+          target == "fs.lock"
+          || target == "fs.readBytes"
           || target == "fs.readText"
           || target == "fs.writeText"
           || target == "fs.exists"

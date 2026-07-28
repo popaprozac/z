@@ -34,6 +34,7 @@ import {
 } from "./foreign.ts";
 import {
   isStandardModuleSpecifier,
+  fsLockTypeName,
   nativeConnectionTypeName,
   objcConnectionTypeName,
   objcSelectorTypeName,
@@ -133,6 +134,8 @@ const primitiveTypeNames: Record<string, string> = {
   Hasher: "Z_Hasher",
   TaskScope: "Z_TaskScope *",
   TaskControl: "Z_TaskControl *",
+  "fs.Lock": "Z_FsLock",
+  [fsLockTypeName]: "Z_FsLock",
   [objcSelectorTypeName]: "SEL",
   [nativeConnectionTypeName]: "Z_NativeConnection",
 };
@@ -203,6 +206,7 @@ export function generateC(
   const usesDirectoryInspection = usedStandardFunctions.has("fs.isDirectory")
     || usedStandardFunctions.has("fs.createDirectories");
   const usesDirectoryCreation = usedStandardFunctions.has("fs.createDirectories");
+  const usesFileLock = usedStandardFunctions.has("fs.lock");
   const usesProcess = [...usedStandardFunctions].some((name) => name.startsWith("process."));
   const usesNativeMove = [...semanticInfo.foreignNamedTypes.values()].some((type) => (
     type.kind === "value" && type.lifecycle.move && !type.lifecycle.copy
@@ -234,10 +238,12 @@ export function generateC(
   if (usesProcess) {
     lines.push(
       "#if defined(_WIN32)",
+      ...(usesFileLock ? ["#include <windows.h>"] : []),
       "#include <io.h>",
       "#include <process.h>",
       "#else",
       "#include <fcntl.h>",
+      ...(usesFileLock ? ["#include <sys/file.h>"] : []),
       "#include <sys/types.h>",
       "#include <sys/wait.h>",
       "#include <unistd.h>",
@@ -249,14 +255,26 @@ export function generateC(
     includedHeaders.add("sys/types.h");
     includedHeaders.add("sys/wait.h");
     includedHeaders.add("unistd.h");
+    if (usesFileLock) {
+      includedHeaders.add("windows.h");
+      includedHeaders.add("sys/file.h");
+    }
   } else if (usesFileSystem) {
     lines.push(
       "#if defined(_WIN32)",
+      ...(usesFileLock ? ["#include <windows.h>"] : []),
       "#include <io.h>",
       "#else",
+      ...(usesFileLock ? ["#include <fcntl.h>"] : []),
+      ...(usesFileLock ? ["#include <sys/file.h>"] : []),
       "#include <unistd.h>",
       "#endif",
     );
+    if (usesFileLock) {
+      includedHeaders.add("windows.h");
+      includedHeaders.add("fcntl.h");
+      includedHeaders.add("sys/file.h");
+    }
     includedHeaders.add("io.h");
     includedHeaders.add("unistd.h");
   }
@@ -367,6 +385,18 @@ export function generateC(
   if (usesSleep) lines.push(generateSleepRuntime(), "");
   if (usesArena) lines.push(generateArenaRuntime(), "");
   if (usesHasher) lines.push(generateHasherRuntime(usesString), "");
+
+  lines.push(
+    "typedef struct Z_FsLock {",
+    "  intptr_t native;",
+    "} Z_FsLock;",
+  );
+  if (usesFileLock) {
+    lines.push(
+      "static void Z_FsLock_deinit(Z_FsLock *lock);",
+      "",
+    );
+  }
 
   for (const declaration of program.structs) {
     lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
@@ -1674,6 +1704,9 @@ function generateOwnedEnvironmentCleanup(
   if (type === "Arena") return `z_arena_reset(&(${value}));`;
   if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (type === "TaskControl") return `z_task_control_release(${value});`;
+  if (type === fsLockTypeName || type === "fs.Lock") {
+    return `Z_FsLock_deinit(&(${value}));`;
+  }
   if (parseWeakType(type)) return `z_weak_release(${value});`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeReleaseName(functionType)}(${value});`;
@@ -5224,6 +5257,10 @@ function generateValueCleanup(
     const release = `z_task_control_release(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  if (type === fsLockTypeName || type === "fs.Lock") {
+    const release = `Z_FsLock_deinit(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   if (type === nativeConnectionTypeName) {
     const release = `z_native_connection_deinit(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
@@ -6766,6 +6803,20 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           : receiverType;
         const receiverView = parseViewType(receiverStorageType);
         const receiverValueType = receiverView?.target ?? receiverType;
+        if (
+          receiverValueType === fsLockTypeName
+          || receiverValueType === "fs.Lock"
+        ) {
+          if (expression.callee.object.kind !== "identifier") {
+            throw new Error("fs.Lock.unlock lowering requires a directly named owner");
+          }
+          const name = expression.callee.object.name;
+          const liveFlag = context.liveFlags.get(name);
+          if (!liveFlag) {
+            throw new Error(`missing ownership flag for fs.Lock ${JSON.stringify(name)}`);
+          }
+          return `(${liveFlag} = false, Z_FsLock_deinit(&(${generateStoredValue(name, context)})))`;
+        }
         if (receiverValueType === "TaskControl") {
           const receiver = generateExpression(expression.callee.object, context);
           const value = receiverView ? `(*(${receiver}))` : receiver;
@@ -7226,11 +7277,14 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   const bytesType = dynamicArrayTypeName("u8");
   const bytesArray = dynamicArrayName(bytesType);
   const bytesResult = enumName(resultTypeName(bytesType, "String"));
+  const lockResult = enumName(resultTypeName(fsLockTypeName, "String"));
   const stringResult = enumName(resultTypeName("String", "String"));
   const voidResult = enumName(resultTypeName("void", "String"));
   const processResult = enumName(resultTypeName("i32", "String"));
   const bytesSuccess = variantTag(resultTypeName(bytesType, "String"), "success");
   const bytesFailure = variantTag(resultTypeName(bytesType, "String"), "failure");
+  const lockSuccess = variantTag(resultTypeName(fsLockTypeName, "String"), "success");
+  const lockFailure = variantTag(resultTypeName(fsLockTypeName, "String"), "failure");
   const stringSuccess = variantTag(resultTypeName("String", "String"), "success");
   const stringFailure = variantTag(resultTypeName("String", "String"), "failure");
   const voidSuccess = variantTag(resultTypeName("void", "String"), "success");
@@ -7245,6 +7299,7 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   }
   if (
     used.has("fs.readBytes")
+    || used.has("fs.lock")
     || used.has("fs.readText")
     || used.has("fs.writeText")
     || used.has("fs.createDirectories")
@@ -7253,6 +7308,68 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   ) {
     sections.push(`static Z_String z_standard_error(const char *message) {
   return z_string_from_cstring(message != NULL ? message : "unknown operating-system error");
+}`);
+  }
+
+  if (used.has("fs.lock")) {
+    sections.push(`static void Z_FsLock_deinit(Z_FsLock *lock) {
+  if (lock == NULL) return;
+#if defined(_WIN32)
+  HANDLE handle = (HANDLE)lock->native;
+  if (handle == NULL || handle == INVALID_HANDLE_VALUE) return;
+  OVERLAPPED range = {0};
+  (void)UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &range);
+  (void)CloseHandle(handle);
+  lock->native = 0;
+#else
+  const int descriptor = (int)lock->native;
+  if (descriptor < 0) return;
+  while (flock(descriptor, LOCK_UN) != 0 && errno == EINTR) {}
+  (void)close(descriptor);
+  lock->native = -1;
+#endif
+}
+
+static ${lockResult} z_fs_lock(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+  }
+  const char *native_path = path.data != NULL ? path.data : "";
+#if defined(_WIN32)
+  HANDLE handle = CreateFileA(
+    native_path,
+    GENERIC_READ | GENERIC_WRITE,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    NULL,
+    OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL,
+    NULL
+  );
+  if (handle == INVALID_HANDLE_VALUE) {
+    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("could not open filesystem lock") };
+  }
+  OVERLAPPED range = {0};
+  if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &range)) {
+    (void)CloseHandle(handle);
+    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("could not acquire filesystem lock") };
+  }
+  return (${lockResult}){ .tag = ${lockSuccess}, .data.success = (Z_FsLock){ .native = (intptr_t)handle } };
+#else
+  const int descriptor = open(native_path, O_CREAT | O_RDWR, 0666);
+  if (descriptor < 0) {
+    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error(strerror(errno)) };
+  }
+  int status;
+  do {
+    status = flock(descriptor, LOCK_EX);
+  } while (status != 0 && errno == EINTR);
+  if (status != 0) {
+    const int code = errno;
+    (void)close(descriptor);
+    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  return (${lockResult}){ .tag = ${lockSuccess}, .data.success = (Z_FsLock){ .native = (intptr_t)descriptor } };
+#endif
 }`);
   }
 
@@ -8319,7 +8436,15 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
-  if (type === "String" || type === "TextBuffer" || type === "Arena" || type === "TaskScope" || type === "TaskControl") return true;
+  if (
+    type === "String"
+    || type === "TextBuffer"
+    || type === "Arena"
+    || type === "TaskScope"
+    || type === "TaskControl"
+    || type === fsLockTypeName
+    || type === "fs.Lock"
+  ) return true;
   if (type === nativeConnectionTypeName) return true;
   if (parseGeneratorType(type)) return true;
   if (parseWeakType(type)) return true;

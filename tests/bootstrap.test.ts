@@ -8045,6 +8045,132 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.equal(invalidUtf8.status, 0, invalidUtf8.stderr);
 });
 
+test("owns exclusive filesystem locks and releases them deterministically", async () => {
+  const directory = mkdtempSync("/tmp/z-fs-lock-");
+  const lockPath = resolve(directory, "shared.lock");
+  const source = `
+    import console from "std/console";
+    import fs from "std/fs";
+    import { sleep } from "std/time";
+
+    function holdLock(): i32 throws String {
+      const lock: fs.Lock = try fs.lock(${JSON.stringify(lockPath)});
+      console.log("acquired");
+      sleep(250);
+      return 0;
+    }
+
+    function main(): i32 {
+      return match (attempt holdLock()) {
+        success(status) => status;
+        failure(message) => {
+          console.error(message);
+          select 1;
+        }
+      };
+    }
+  `;
+  const generated = compileToC(source, resolve(directory, "main.zs"));
+  assert.match(generated, /typedef struct Z_FsLock/);
+  assert.match(generated, /flock\(descriptor, LOCK_EX\)/);
+  assert.match(generated, /Z_FsLock_deinit/);
+
+  const executable = resolve(directory, "holder");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: generated },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const first = spawn(executable, [], { stdio: ["ignore", "pipe", "pipe"] });
+  let firstOutput = "";
+  let firstError = "";
+  first.stdout.on("data", (chunk) => { firstOutput += chunk.toString(); });
+  first.stderr.on("data", (chunk) => { firstError += chunk.toString(); });
+  await new Promise<void>((resolveAcquired, reject) => {
+    first.once("error", reject);
+    first.stdout.on("data", () => {
+      if (firstOutput.includes("acquired\n")) resolveAcquired();
+    });
+  });
+
+  const second = spawn(executable, [], { stdio: ["ignore", "pipe", "pipe"] });
+  let secondOutput = "";
+  let secondError = "";
+  second.stdout.on("data", (chunk) => { secondOutput += chunk.toString(); });
+  second.stderr.on("data", (chunk) => { secondError += chunk.toString(); });
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 75));
+  assert.equal(secondOutput, "", "the second process must wait for the first lock owner");
+
+  const firstExit = await new Promise<number | null>((resolveExit, reject) => {
+    first.once("error", reject);
+    first.once("close", resolveExit);
+  });
+  assert.equal(firstExit, 0, firstError);
+  const secondExit = await new Promise<number | null>((resolveExit, reject) => {
+    second.once("error", reject);
+    second.once("close", resolveExit);
+  });
+  assert.equal(secondExit, 0, secondError);
+  assert.equal(firstOutput, "acquired\n");
+  assert.equal(secondOutput, "acquired\n");
+
+  const explicit = `
+    import fs from "std/fs";
+    function releaseEarly(): i32 throws String {
+      const lock = try fs.lock(${JSON.stringify(lockPath)});
+      lock.unlock();
+      return 0;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.equal(diagnostics(explicit, "fs-lock-unlock.zs").length, 0);
+  const unlockOffset = explicit.indexOf("unlock") + 2;
+  assert.match(
+    hover(explicit, "fs-lock-unlock.zs", unlockOffset)?.contents.value ?? "",
+    /consumes fs\.Lock and releases it immediately/,
+  );
+  const lockBindingOffset = explicit.indexOf("lock =") + 1;
+  assert.match(
+    hover(explicit, "fs-lock-binding.zs", lockBindingOffset)?.contents.value ?? "",
+    /lock: fs\.Lock/,
+  );
+  const memberSource = explicit.replace("lock.unlock()", "lock.un");
+  const memberOffset = memberSource.indexOf("lock.un") + "lock.un".length;
+  assert.match(
+    completions(memberSource, "fs-lock-completion.zs", memberOffset)
+      .find((item) => item.label === "unlock")?.detail ?? "",
+    /consumes and releases/,
+  );
+  const typeOffset = source.indexOf("fs.Lock") + "fs.".length + 1;
+  assert.match(
+    hover(source, "fs-lock-type.zs", typeOffset)?.contents.value ?? "",
+    /move-only exclusive interprocess filesystem lock/,
+  );
+  const tokens = decodeSemanticTokens(
+    semanticTokens(source, "fs-lock-type.zs").data,
+  );
+  const lockTypePosition = positionForOffset(
+    source,
+    source.indexOf("Lock", source.indexOf("fs.Lock")),
+  );
+  assert.ok(tokens.some((token) => (
+    token.line === lockTypePosition.line
+    && token.character === lockTypePosition.character
+    && token.type === semanticTokenTypes.indexOf("type")
+  )));
+
+  const doubleUnlock = explicit.replace(
+    "lock.unlock();",
+    "lock.unlock();\n      lock.unlock();",
+  );
+  assert.match(
+    diagnostics(doubleUnlock, "fs-lock-double-unlock.zs")[0].message,
+    /use of moved value|used after move|already been moved/,
+  );
+});
+
 test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
   const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
@@ -9220,6 +9346,40 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 20_000);
 
+test("lowers filesystem lock ownership through the native frontend", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-fs-lock.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /typedef struct Z_FsLock/);
+  assert.match(emission.stdout, /z_stage1_fs_lock/);
+  assert.match(
+    emission.stdout,
+    /Z_FsLock_deinit\(&\(lock\)\);\n  return/,
+  );
+  assert.doesNotMatch(
+    emission.stdout,
+    /Z_FsLock_deinit\(&\(lock\)\);[\s\S]*Z_FsLock_deinit\(&lock\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-self-host-fs-lock-");
+  const executable = resolve(directory, "fs-lock");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+});
+
 test("emits and runs a standalone native Z driver with arguments and checked file I/O", () => {
   const input = resolve(
     projectRoot,
@@ -9800,6 +9960,8 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
   assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
   assert.match(driverEmission.stdout, /Z___z_Result_String_String emitModulesC\(/);
+  assert.match(driverEmission.stdout, /z_stage1_fs_lock\(/);
+  assert.match(driverEmission.stdout, /Z_FsLock_deinit\(&\(cacheLock\)\)/);
   assert.match(driverEmission.stdout, /z_stage1_fs_real_path\(/);
   assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-O2"\)/);
   assert.match(driverEmission.stdout, /Z_STRING_LITERAL\("-DNDEBUG"\)/);

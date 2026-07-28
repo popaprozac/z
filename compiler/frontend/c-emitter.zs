@@ -26,6 +26,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.u32Type) return "uint32_t";
   if (type.kind == LoweredTypeKind.u64Type) return "uint64_t";
   if (type.kind == LoweredTypeKind.usizeType) return "size_t";
+  if (type.kind == LoweredTypeKind.fsLockType) return "Z_FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.mapType) return `Z_${type.name}`;
@@ -553,6 +554,34 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.fsLockUnlock
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed fs.Lock.unlock";
+    }
+    const moved = declaration.expressions[index].children[0];
+    if (
+      declaration.expressions[moved].kind != LoweredExpressionKind.moveValue
+      || declaration.expressions[moved].children.length != 1
+    ) {
+      throw "native C emission received a non-consuming fs.Lock.unlock";
+    }
+    if (declaration.expressions[moved].value.byteLength > 0) {
+      output.append("(");
+      output.append(declaration.expressions[moved].value);
+      output.append(" = false, ");
+    }
+    output.append("Z_FsLock_deinit(&(");
+    const operand = declaration.expressions[moved].children[0];
+    try appendExpression(inout output, declaration, operand);
+    output.append("))");
+    if (declaration.expressions[moved].value.byteLength > 0) {
+      output.append(")");
+    }
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.moveValue) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed move expression";
@@ -771,6 +800,11 @@ function appendExpression(
     }
     const callee = declaration.expressions[index].children[0];
     if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.lock"
+    ) output.append("z_stage1_fs_lock");
+    else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.readBytes"
@@ -1794,6 +1828,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.mapType
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
+    || type.kind == LoweredTypeKind.fsLockType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -2364,6 +2399,7 @@ function appendSystemStandardRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void {
+  const usesLock = programUsesStandardCall(program, "fs.lock");
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
@@ -2381,7 +2417,8 @@ function appendSystemStandardRuntime(
   const usesConsoleError = programUsesStandardCall(program, "console.error");
   const usesConsoleDebug = programUsesStandardCall(program, "console.debug");
   if (
-    usesReadBytes
+    usesLock
+    || usesReadBytes
     || usesReadText
     || usesWriteText
     || usesExists
@@ -2427,6 +2464,52 @@ function appendSystemStandardRuntime(
     output.append("  Z_String result = { NULL, 0, 0 };\n");
     output.append("  z_string_append_bytes(&result, value, strlen(value));\n");
     output.append("  return result;\n");
+    output.append("}\n\n");
+  }
+  if (usesLock) {
+    output.append("static __attribute__((unused)) void Z_FsLock_deinit(Z_FsLock *lock) {\n");
+    output.append("  if (lock == NULL) return;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  HANDLE handle = (HANDLE)lock->native;\n");
+    output.append("  if (handle == NULL || handle == INVALID_HANDLE_VALUE) return;\n");
+    output.append("  OVERLAPPED range = {0};\n");
+    output.append("  (void)UnlockFileEx(handle, 0, MAXDWORD, MAXDWORD, &range);\n");
+    output.append("  (void)CloseHandle(handle);\n");
+    output.append("  lock->native = 0;\n");
+    output.append("#else\n");
+    output.append("  const int descriptor = (int)lock->native;\n");
+    output.append("  if (descriptor < 0) return;\n");
+    output.append("  while (flock(descriptor, LOCK_UN) != 0 && errno == EINTR) {}\n");
+    output.append("  (void)close(descriptor);\n");
+    output.append("  lock->native = -1;\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+    output.append("static __attribute__((unused)) Z___z_Result_FsLock_String z_stage1_fs_lock(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  HANDLE handle = CreateFileA(native_path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);\n");
+    output.append("  if (handle == INVALID_HANDLE_VALUE) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not open filesystem lock\") };\n");
+    output.append("  OVERLAPPED range = {0};\n");
+    output.append("  if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &range)) {\n");
+    output.append("    (void)CloseHandle(handle);\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"could not acquire filesystem lock\") };\n");
+    output.append("  }\n");
+    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload.success = (Z_FsLock){ .native = (intptr_t)handle } };\n");
+    output.append("#else\n");
+    output.append("  const int descriptor = open(native_path, O_CREAT | O_RDWR, 0666);\n");
+    output.append("  if (descriptor < 0) return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  int status;\n");
+    output.append("  do { status = flock(descriptor, LOCK_EX); } while (status != 0 && errno == EINTR);\n");
+    output.append("  if (status != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    (void)close(descriptor);\n");
+    output.append("    return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  return (Z___z_Result_FsLock_String){ .tag = Z___z_Result_FsLock_StringTag_success, .payload.success = (Z_FsLock){ .native = (intptr_t)descriptor } };\n");
+    output.append("#endif\n");
     output.append("}\n\n");
   }
   if (usesReadBytes) {
@@ -2867,6 +2950,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     program,
     "process.args"
   );
+  const usesLock = programUsesStandardCall(program, "fs.lock");
   const usesReadBytes = programUsesStandardCall(program, "fs.readBytes");
   const usesReadText = programUsesStandardCall(program, "fs.readText");
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
@@ -2893,7 +2977,8 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("\"\n");
   }
   if (
-    usesReadBytes
+    usesLock
+    || usesReadBytes
     || usesReadText
     || usesWriteText
     || usesCreateDirectories
@@ -2913,6 +2998,9 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || usesProcessRun
   ) {
     output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
+  }
+  if (usesLock) {
+    output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <fcntl.h>\n#include <sys/file.h>\n#include <unistd.h>\n#endif\n");
   }
   if (usesIsDirectory || usesCreateDirectories) {
     output.append("#include <sys/stat.h>\n");
@@ -3203,6 +3291,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  }\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
   try appendTypeDefinitions(inout output, program);
   for (const foreign of program.foreignFunctions) {
     const errorType = try cType(foreign.errorType);

@@ -11,11 +11,13 @@ export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
 export const objcSelectorTypeName = "__z_std_objc_Selector";
 export const nativeConnectionTypeName = "__z_native_Connection";
+export const fsLockTypeName = "__z_std_fs_Lock";
 
 export type StandardFunctionName =
   | "sleep"
   | "delay"
   | "scheduler.yield"
+  | "fs.lock"
   | "fs.readBytes"
   | "fs.readText"
   | "fs.writeText"
@@ -56,6 +58,12 @@ const standardFunctions: Record<StandardFunctionName, StandardFunctionSignature>
     parameters: [],
     returnType: "void",
     async: true,
+  },
+  "fs.lock": {
+    cName: "z_fs_lock",
+    parameters: [{ name: "path", mode: "in", type: "String", abi: "value" }],
+    returnType: fsLockTypeName,
+    errorType: "String",
   },
   "fs.readBytes": {
     cName: "z_fs_read_bytes",
@@ -122,6 +130,7 @@ export function standardFunctionSignature(name: StandardFunctionName): StandardF
 
 const standardModuleMembers: Record<StandardModuleName, Readonly<Record<string, StandardFunctionName>>> = {
   fs: {
+    lock: "fs.lock",
     readBytes: "fs.readBytes",
     readText: "fs.readText",
     writeText: "fs.writeText",
@@ -155,6 +164,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
   if (module === "thread") return ["spawn", "main"];
   if (module === "objc") return ["connect", "bind", "Connection", "Binding"];
+  if (module === "fs") return [...Object.keys(standardModuleMembers[module]), "Lock"];
   return Object.keys(standardModuleMembers[module]);
 }
 

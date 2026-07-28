@@ -63,6 +63,7 @@ import {
   objcBindingTypeName,
   objcConnectionTypeName,
   objcSelectorTypeName,
+  fsLockTypeName,
   nativeConnectionTypeName,
   standardFunctionSignature,
   standardModuleFunction,
@@ -578,7 +579,9 @@ const primitiveTypes = new Set([
   "Hasher",
   "TaskScope",
   "TaskControl",
+  "fs.Lock",
   nativeConnectionTypeName,
+  fsLockTypeName,
 ]);
 const movedPrefix = "__z_moved:";
 const maybeMovedPrefix = "__z_maybe_moved:";
@@ -626,6 +629,7 @@ export function analyze(
   typeDisplayNames = new Map([
     ...typeDisplayNames,
     [nativeConnectionTypeName, "native.Connection"],
+    [fsLockTypeName, "fs.Lock"],
   ]);
   const foreignTypes = new Map<string, ForeignPointerType>();
   const foreignNamedTypes = new Map<string, ForeignNamedType>();
@@ -5139,6 +5143,8 @@ function inferImplicitPlacementCopyType(
     || type === "Arena"
     || type === "TaskScope"
     || type === "TaskControl"
+    || type === fsLockTypeName
+    || type === "fs.Lock"
     || parseViewType(type)
     || parseSliceType(type)
     || parseDynamicArrayType(type)
@@ -6801,6 +6807,16 @@ function inferExpressionInner(
         });
       }
       const receiverValueType = receiverView?.target ?? String(receiverType);
+      if (
+        receiverValueType === fsLockTypeName
+        || receiverValueType === "fs.Lock"
+      ) {
+        throw new DiagnosticError(
+          fileName,
+          expression.location,
+          `fs.Lock has no property ${JSON.stringify(expression.property)}; call unlock for explicit early release`,
+        );
+      }
       if (receiverValueType === objcConnectionTypeName) {
         throw new DiagnosticError(fileName, expression.location, `objc.Connection has no property ${JSON.stringify(expression.property)}`);
       }
@@ -7786,6 +7802,43 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "TaskControl.requestCancel requires a named control handle");
           }
           return "boolean";
+        }
+        if (
+          receiverValueType === fsLockTypeName
+          || receiverValueType === "fs.Lock"
+        ) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "unlock") {
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.location,
+              `fs.Lock has no method ${JSON.stringify(expression.callee.property)}`,
+            );
+          }
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(
+              fileName,
+              expression.location,
+              `fs.Lock.unlock expects 0 arguments, received ${expression.arguments.length}`,
+            );
+          }
+          if (expression.callee.object.kind !== "identifier") {
+            throw new DiagnosticError(
+              fileName,
+              expression.callee.object.location,
+              "fs.Lock.unlock currently requires a directly named lock owner",
+            );
+          }
+          consumeOwnedValue(
+            expression.callee.object,
+            receiverType,
+            locals,
+            structs,
+            enums,
+            fileName,
+            state,
+          );
+          return "void";
         }
         if (receiverValueType === "TaskScope") {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -10504,6 +10557,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
+  if (actual === fsLockTypeName || actual === "fs.Lock") return true;
   if (actual === nativeConnectionTypeName) return true;
   if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
   if (parseWeakType(actual)) return true;
@@ -10550,6 +10604,8 @@ function explicitCopyPlanForType(
     || actual === "Arena"
     || actual === "TaskScope"
     || actual === "TaskControl"
+    || actual === fsLockTypeName
+    || actual === "fs.Lock"
     || parseAsyncGeneratorType(actual)
     || parseWeakType(actual)
     || parseFunctionType(actual)
@@ -10586,6 +10642,8 @@ function explicitAggregateCopyable(
     type === "TextBuffer"
     || type === "Arena"
     || type === "TaskControl"
+    || type === fsLockTypeName
+    || type === "fs.Lock"
     || parseAsyncGeneratorType(type)
     || parseWeakType(type)
     || parseFunctionType(type)
@@ -13346,6 +13404,7 @@ function integerLiteralFits(value: string, type: string): boolean {
 
 function canonicalType(type: ValueType, foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>): ValueType {
   if (type === "unknown" || type === "never") return type;
+  if (type === "fs.Lock") return fsLockTypeName;
   const named = foreignNamedTypes.get(String(underlyingType(type)));
   if (named?.kind === "scalar") return named.underlying;
   if (named?.kind === "enum" && named.flags) return named.underlying;

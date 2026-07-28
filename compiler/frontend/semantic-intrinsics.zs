@@ -110,6 +110,18 @@ export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
 ): Option<ModuleFunctionSignature> {
+  if (ownerType == "fs.Lock" && methodName == "unlock") {
+    return Option.some(ModuleFunctionSignature({
+      asynchronous: false,
+      executorAffinity: "",
+      typeParameters: Array<String>(),
+      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      parameterModes: Array<String>(),
+      parameterTypes: Array<String>(),
+      returnType: "void",
+      errorType: "",
+    }));
+  }
   if (
     isIntegerTypeName(ownerType)
     && (

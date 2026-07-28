@@ -283,6 +283,14 @@ explicit link directories now contribute their canonical path and exact
 SHA-256 bytes to the identity. System-search-path or ambiguous libraries still
 fail closed to relinking rather than risk a stale executable.
 
+Concurrent native-driver runs now serialize the cache-critical section with an
+OS-backed `fs.Lock`. The lock covers inspection, compilation, and metadata
+publication but is explicitly released before launching the user program.
+Warm single-process hits therefore pay one open/lock/unlock/close sequence,
+while concurrent misses avoid duplicate Clang work and torn cache artifacts.
+Module-level caches and per-artifact temporary publication can later reduce the
+critical section without changing the public ownership model.
+
 An exploratory `/usr/bin/time` smoke measurement on the one-module native
 driver fixture took 0.65 seconds for its initial debug compile and 0.02 seconds
 for the immediately repeated cache hit on the same machine. This is not a

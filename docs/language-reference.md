@@ -1205,10 +1205,12 @@ import fs from "std/fs";
 import process from "std/process";
 
 function stage(in path: String): i32 throws String {
+  const cacheLock: fs.Lock = try fs.lock(".z-cache/build.lock");
   const source = try fs.readText(path);
   const bytes = try fs.readBytes(path);
   try fs.createDirectories(".z-cache");
   try fs.writeText(".z-cache/input.zs", source);
+  cacheLock.unlock(); // optional early release; scope exit also releases it
   console.log(`read ${bytes.length} raw bytes`);
   const clangArguments = ["--version"];
   return try process.run("clang", clangArguments);
@@ -1226,6 +1228,16 @@ operating system rejects creation. `fs.realPath(path)` returns an owned
 canonical absolute path, resolving relative components and filesystem links,
 or throws a typed `String` OS failure. Returned paths and text contents must be
 valid UTF-8; `readBytes` deliberately accepts arbitrary file bytes.
+`fs.lock(path)` blocks the current OS thread until it owns an exclusive
+interprocess lock associated with that file. Its move-only `fs.Lock` result
+releases the operating-system lock deterministically on scope exit, including
+error propagation and early `return`. Calling `lock.unlock()` releases it
+earlier and consumes the owner, so a later use or second unlock is a compile
+error. The lock file may remain on disk; process termination still releases the
+kernel lock, so this is not a stale lock-file protocol. This primitive protects
+cross-process artifacts. In-process shared-memory synchronization belongs to
+the future `std/sync` family (`Mutex<T>`, `RwLock<T>`, guards, atomics,
+condition variables, and semaphores).
 `process.args()` returns an owned `Array<String>` containing
 the arguments after the executable name. `process.run(program, arguments)`
 borrows a stored fixed array or `Array<String>` as a non-escaping

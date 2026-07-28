@@ -493,6 +493,7 @@ function runProject(
   const outputPath = `${outputDirectory}/program`;
   const cPath = `${outputPath}.c`;
   const metadataPath = `${outputPath}.meta`;
+  const cacheLock = try fs.lock(`${outputPath}.lock`);
   const emitted = try emitProject(project);
   const toolchainIdentity = try loadToolchainIdentity(outputDirectory);
   const cacheMetadata = try runCacheMetadata(
@@ -529,6 +530,7 @@ function runProject(
     if (compilationExitCode != 0) return compilationExitCode;
     try fs.writeText(metadataPath, metadata);
   }
+  cacheLock.unlock();
   return try process.run(outputPath, childArguments);
 }
 
