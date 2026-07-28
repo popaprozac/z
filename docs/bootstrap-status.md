@@ -683,8 +683,11 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    lowering graph also carries public value types that flow transitively through
    imported function results. Direct assignment-form `try` propagates failure
    and replaces scalar or cleanup-bearing storage only after success, while
-   terminating match arms, explicit String `copy`, and checked shifts are
-   executable. Native `Map<String, scalar>` lowering now emits an owned-key
+   terminating match arms, explicit String `copy`, checked shifts, explicit
+   `i32`/`u8`/`usize` construction, and wrapping add/subtract/multiply are
+   executable. Checked narrowing traps, contained conversions compile to
+   direct casts, and C-reserved Z binding names are escaped at emission.
+   Native `Map<String, scalar>` lowering now emits an owned-key
    open-addressed table with `set`, `has`, `get`, and deterministic cleanup;
    its generated C fixture compiles and returns 42. The real compiler probe
    advances through both `Map<String, usize>` and `Set<String>`, then enters

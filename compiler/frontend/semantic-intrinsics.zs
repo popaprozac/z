@@ -3,6 +3,7 @@ import { aggregateFieldShape } from "./semantic-member-lookups.zs";
 import {
   arrayElementType,
   genericTypeShape,
+  isIntegerTypeName,
 } from "./semantic-type-shapes.zs";
 import {
   ModuleFunctionSignature,
@@ -109,6 +110,29 @@ export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
 ): Option<ModuleFunctionSignature> {
+  if (
+    isIntegerTypeName(ownerType)
+    && (
+      methodName == "wrappingAdd"
+      || methodName == "wrappingSubtract"
+      || methodName == "wrappingMultiply"
+    )
+  ) {
+    let parameterModes = Array<String>();
+    parameterModes.push("value");
+    let parameterTypes = Array<String>();
+    parameterTypes.push(ownerType.copyBytes(0, ownerType.byteLength));
+    return Option.some(ModuleFunctionSignature({
+      asynchronous: false,
+      executorAffinity: "",
+      typeParameters: Array<String>(),
+      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      parameterModes,
+      parameterTypes,
+      returnType: ownerType.copyBytes(0, ownerType.byteLength),
+      errorType: "",
+    }));
+  }
   if (ownerType == "String" || ownerType == "TextBuffer") {
     let parameterModes = Array<String>();
     let parameterTypes = Array<String>();

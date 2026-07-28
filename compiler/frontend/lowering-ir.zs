@@ -118,6 +118,10 @@ export enum LoweredExpressionKind {
   checkedShiftLeftInteger,
   checkedShiftRightInteger,
   checkedNegateInteger,
+  integerConversion,
+  wrappingAddInteger,
+  wrappingSubtractInteger,
+  wrappingMultiplyInteger,
   moveValue,
   copyValue,
   borrowedTemporary,
@@ -3022,6 +3026,53 @@ function lowerExpression(
     const calleeInput = tree.nodes[index].children[0];
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[index].children.length == 2
+      && (
+        tree.nodes[calleeInput].value == "i32"
+        || tree.nodes[calleeInput].value == "u8"
+        || tree.nodes[calleeInput].value == "usize"
+      )
+    ) {
+      const argumentInput = tree.nodes[index].children[1];
+      const sourceType = match (
+        resolvedExpressionTypeName(evidence, tree, argumentInput)
+      ) {
+        some(name) => name;
+        none => throw "native integer conversion could not resolve its source type";
+      };
+      const targetType = tree.nodes[calleeInput].value.copyBytes(
+        0,
+        tree.nodes[calleeInput].value.byteLength
+      );
+      if (
+        sourceType != "i32"
+        && sourceType != "u8"
+        && sourceType != "usize"
+      ) {
+        throw `native integer conversion does not support source type ${sourceType} yet`;
+      }
+      const argument = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(argument);
+      let labels = Array<String>();
+      labels.push(sourceType.copyBytes(0, sourceType.byteLength));
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.integerConversion,
+        targetType,
+        children,
+        labels
+      );
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 1
     ) {
       match (genericTypeShape(tree.nodes[calleeInput].value)) {
@@ -3090,6 +3141,72 @@ function lowerExpression(
       && tree.nodes[calleeInput].children.length == 1
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[index].children.length == 2
+        && (
+          tree.nodes[calleeInput].value == "wrappingAdd"
+          || tree.nodes[calleeInput].value == "wrappingSubtract"
+          || tree.nodes[calleeInput].value == "wrappingMultiply"
+        )
+      ) {
+        const receiverType = match (
+          resolvedExpressionTypeName(evidence, tree, receiverInput)
+        ) {
+          some(name) => name;
+          none => throw "native wrapping arithmetic could not resolve its receiver type";
+        };
+        if (
+          receiverType == "i32"
+          || receiverType == "u8"
+          || receiverType == "usize"
+        ) {
+          const receiver = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            receiverInput,
+            inout output
+          );
+          const argumentInput = tree.nodes[index].children[1];
+          const argument = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput,
+            inout output
+          );
+          let children = Array<usize>();
+          children.push(receiver);
+          children.push(argument);
+          if (tree.nodes[calleeInput].value == "wrappingAdd") {
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.wrappingAddInteger,
+              receiverType,
+              children,
+              Array<String>()
+            );
+          }
+          if (tree.nodes[calleeInput].value == "wrappingSubtract") {
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.wrappingSubtractInteger,
+              receiverType,
+              children,
+              Array<String>()
+            );
+          }
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.wrappingMultiplyInteger,
+            receiverType,
+            children,
+            Array<String>()
+          );
+        }
+      }
       if (
         tree.nodes[calleeInput].value == "byteAt"
         || tree.nodes[calleeInput].value == "copyBytes"

@@ -274,8 +274,13 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   structural field metadata for downstream lowering. Direct assignment-form
   `try` now propagates failure and replaces scalar or cleanup-bearing storage
   only after success, destroying the previous owner exactly once. Terminating
-  `return`/`throw` match arms, explicit String `copy`, and checked integer
-  shifts compose through the same IR. Native `Map<String, scalar>` lowering
+  `return`/`throw` match arms, explicit String `copy`, checked integer shifts,
+  explicit conversion among native `i32`/`u8`/`usize`, and wrapping
+  add/subtract/multiply compose through the same IR. Contained conversions are
+  direct casts while narrowing and signedness-risk conversions use checked
+  helpers. Native C binding hygiene also escapes valid Z names such as
+  `signed` when they collide with backend keywords. Native
+  `Map<String, scalar>` lowering
   now emits owned String keys, open-addressed hashed lookup, `set`, `has`,
   `get`, and deterministic cleanup. The real compiler probe advances through
   `Map<String, usize>` and `Set<String>`, then enters native lowering itself.

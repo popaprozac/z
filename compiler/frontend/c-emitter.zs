@@ -35,6 +35,75 @@ function cType(in type: LoweredType): String throws String {
   throw "native C emission received an unsupported lowered type";
 }
 
+function integerCType(in name: String): String throws String {
+  if (name == "i32") return "int32_t";
+  if (name == "u8") return "uint8_t";
+  if (name == "usize") return "size_t";
+  throw `native C emission does not support integer type ${name}`;
+}
+
+function isCReservedWord(in name: String): boolean {
+  return name == "alignas"
+    || name == "alignof"
+    || name == "auto"
+    || name == "bool"
+    || name == "break"
+    || name == "case"
+    || name == "char"
+    || name == "const"
+    || name == "continue"
+    || name == "default"
+    || name == "do"
+    || name == "double"
+    || name == "else"
+    || name == "enum"
+    || name == "extern"
+    || name == "false"
+    || name == "float"
+    || name == "for"
+    || name == "goto"
+    || name == "if"
+    || name == "inline"
+    || name == "int"
+    || name == "long"
+    || name == "register"
+    || name == "restrict"
+    || name == "return"
+    || name == "short"
+    || name == "signed"
+    || name == "sizeof"
+    || name == "static"
+    || name == "static_assert"
+    || name == "struct"
+    || name == "switch"
+    || name == "thread_local"
+    || name == "true"
+    || name == "typedef"
+    || name == "union"
+    || name == "unsigned"
+    || name == "void"
+    || name == "volatile"
+    || name == "while"
+    || name == "_Alignas"
+    || name == "_Alignof"
+    || name == "_Atomic"
+    || name == "_Bool"
+    || name == "_Complex"
+    || name == "_Generic"
+    || name == "_Imaginary"
+    || name == "_Noreturn"
+    || name == "_Static_assert"
+    || name == "_Thread_local";
+}
+
+function appendCBindingName(
+  inout output: TextBuffer,
+  in name: String
+): void {
+  if (isCReservedWord(name)) output.append("z_");
+  output.append(name);
+}
+
 function appendIndent(inout output: TextBuffer, depth: usize): void {
   let current: usize = 0;
   while (current < depth) {
@@ -85,7 +154,7 @@ function appendCleanups(
     output.append("Z_");
     output.append(cleanups[remaining].type.name);
     output.append("_deinit(&");
-    output.append(cleanups[remaining].name);
+    appendCBindingName(inout output, cleanups[remaining].name);
     output.append(");\n");
   }
 }
@@ -99,9 +168,12 @@ function appendExpression(
     output.append("(*self)");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.localValue) {
+    appendCBindingName(inout output, declaration.expressions[index].value);
+    return;
+  }
   if (
-    declaration.expressions[index].kind == LoweredExpressionKind.localValue
-    || declaration.expressions[index].kind == LoweredExpressionKind.integerValue
+    declaration.expressions[index].kind == LoweredExpressionKind.integerValue
     || declaration.expressions[index].kind == LoweredExpressionKind.booleanValue
   ) {
     output.append(declaration.expressions[index].value);
@@ -111,7 +183,7 @@ function appendExpression(
     declaration.expressions[index].kind == LoweredExpressionKind.parameterValue
   ) {
     output.append("(*");
-    output.append(declaration.expressions[index].value);
+    appendCBindingName(inout output, declaration.expressions[index].value);
     output.append(")");
     return;
   }
@@ -390,6 +462,82 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     output.append("(");
     try appendExpression(inout output, declaration, operand);
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.integerConversion
+  ) {
+    if (
+      declaration.expressions[index].children.length != 1
+      || declaration.expressions[index].labels.length != 1
+    ) {
+      throw "native C emission received a malformed integer conversion";
+    }
+    const source = declaration.expressions[index].labels[0].copyBytes(
+      0,
+      declaration.expressions[index].labels[0].byteLength
+    );
+    const target = declaration.expressions[index].value.copyBytes(
+      0,
+      declaration.expressions[index].value.byteLength
+    );
+    const argument = declaration.expressions[index].children[0];
+    if (source == target || source == "u8") {
+      const targetCType = try integerCType(target);
+      output.append("((");
+      output.append(targetCType);
+      output.append(")(");
+      try appendExpression(inout output, declaration, argument);
+      output.append("))");
+    } else {
+      output.append("z_stage1_checked_convert_");
+      output.append(source);
+      output.append("_to_");
+      output.append(target);
+      output.append("(");
+      try appendExpression(inout output, declaration, argument);
+      output.append(")");
+    }
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.wrappingAddInteger
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.wrappingSubtractInteger
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.wrappingMultiplyInteger
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed wrapping arithmetic";
+    }
+    output.append("z_stage1_wrapping_");
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.wrappingAddInteger
+    ) output.append("add_");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.wrappingSubtractInteger
+    ) output.append("subtract_");
+    else output.append("multiply_");
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    const left = declaration.expressions[index].children[0];
+    const right = declaration.expressions[index].children[1];
+    try appendExpression(
+      inout output,
+      declaration,
+      left
+    );
+    output.append(", ");
+    try appendExpression(
+      inout output,
+      declaration,
+      right
+    );
     output.append(")");
     return;
   }
@@ -948,7 +1096,7 @@ function appendStatement(
     }
     output.append(type);
     output.append(" ");
-    output.append(declaration.statements[index].name);
+    appendCBindingName(inout output, declaration.statements[index].name);
     if (
       !localNameIsUsed(
         declaration,
@@ -975,7 +1123,7 @@ function appendStatement(
     if (declaration.statements[index].liveFlag.byteLength > 0) {
       appendIndent(inout output, depth);
       output.append("bool ");
-      output.append(declaration.statements[index].liveFlag);
+      appendCBindingName(inout output, declaration.statements[index].liveFlag);
       output.append(" = true;\n");
     }
     for (const child of declaration.statements[index].children) {
@@ -1342,7 +1490,10 @@ function appendStatement(
           output.append(payloadType);
           output.append(" __attribute__((unused))");
           output.append(" ");
-          output.append(declaration.statements[arm].labels[0]);
+          appendCBindingName(
+            inout output,
+            declaration.statements[arm].labels[0]
+          );
           output.append(" = ");
           if (declaration.statements[index].matchConsumesSubject) {
             output.append(matchTemporary);
@@ -1470,7 +1621,7 @@ function appendStatement(
     output.append("const ");
     output.append(elementType);
     output.append(" ");
-    output.append(declaration.statements[index].name);
+    appendCBindingName(inout output, declaration.statements[index].name);
     output.append(" = *Z_");
     output.append(declaration.statements[index].labels[0]);
     output.append("_at(&(");
@@ -1513,7 +1664,7 @@ function appendFunctionSignature(
   const returnType = try cType(declaration.returnType);
   output.append(returnType);
   output.append(" ");
-  output.append(declaration.name);
+  appendCBindingName(inout output, declaration.name);
   output.append("(");
   if (
     declaration.name == "main"
@@ -1533,7 +1684,7 @@ function appendFunctionSignature(
     output.append(parameterType);
     if (parameter.mode != LoweredParameterMode.value) output.append(" *");
     else output.append(" ");
-    output.append(parameter.name);
+    appendCBindingName(inout output, parameter.name);
   }
   if (first) output.append("void");
   output.append(")");
@@ -1562,7 +1713,7 @@ function appendFunction(
     if (flag.parameter) {
       appendIndent(inout output, 1);
       output.append("bool ");
-      output.append(flag.name);
+      appendCBindingName(inout output, flag.name);
       output.append(" = true;\n");
     }
   }
@@ -2440,6 +2591,46 @@ function appendSystemStandardRuntime(
   }
 }
 
+function appendWrappingIntegerRuntime(
+  inout output: TextBuffer,
+  in name: String,
+  in nativeType: String
+): void {
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_wrapping_add_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  (void)__builtin_add_overflow(left, right, &result);\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_wrapping_subtract_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  (void)__builtin_sub_overflow(left, right, &result);\n  return result;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(nativeType);
+  output.append(" z_stage1_wrapping_multiply_");
+  output.append(name);
+  output.append("(");
+  output.append(nativeType);
+  output.append(" left, ");
+  output.append(nativeType);
+  output.append(" right) {\n  ");
+  output.append(nativeType);
+  output.append(" result;\n  (void)__builtin_mul_overflow(left, right, &result);\n  return result;\n}\n\n");
+}
+
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
   const usesProcessArguments = programUsesStandardCall(
@@ -2589,6 +2780,25 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  const int64_t magnitude = -(int64_t)left;\n");
   output.append("  return (int32_t)(-((magnitude + divisor - 1) / divisor));\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_convert_i32_to_u8(int32_t value) {\n");
+  output.append("  if (value < 0 || value > UINT8_MAX) abort();\n");
+  output.append("  return (uint8_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_convert_usize_to_u8(size_t value) {\n");
+  output.append("  if (value > UINT8_MAX) abort();\n");
+  output.append("  return (uint8_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_convert_usize_to_i32(size_t value) {\n");
+  output.append("  if (value > INT32_MAX) abort();\n");
+  output.append("  return (int32_t)value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_stage1_checked_convert_i32_to_usize(int32_t value) {\n");
+  output.append("  if (value < 0) abort();\n");
+  output.append("  return (size_t)value;\n");
+  output.append("}\n\n");
+  appendWrappingIntegerRuntime(inout output, "i32", "int32_t");
+  appendWrappingIntegerRuntime(inout output, "u8", "uint8_t");
+  appendWrappingIntegerRuntime(inout output, "usize", "size_t");
   output.append("typedef struct Z_String {\n");
   output.append("  const char *data;\n");
   output.append("  size_t length;\n");

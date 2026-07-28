@@ -1242,12 +1242,23 @@ checks average 40.1 ms (38.9–43.0 ms) while still running the preprocessor
 fingerprint before trusting the artifact.
 
 Writing that identity in self-hosted Z exposed another honest subset boundary:
-the native emitter does not yet lower explicit integer construction or
-`wrappingMultiply`, even though Stage 0 accepts both. The cache deliberately
-uses its already-proven `u8` bitwise subset while adapter SHA metadata remains
-the authoritative collision/freshness check. Native integer conversion and
-wrapping-method lowering are now concrete follow-up work rather than a hidden
-dependency of foreign caching.
+the native emitter did not lower explicit integer construction or wrapping
+methods even though Stage 0 accepted both. The next composition slice closes
+that mismatch for the native IR's current `i32`, `u8`, and `usize` vocabulary.
+Contained conversions emit direct casts; narrowing and signedness-risk
+conversions call checked helpers; and `wrappingAdd`, `wrappingSubtract`, and
+`wrappingMultiply` preserve modulo-width behavior. A standalone native-driver
+fixture exercises all three paths across a module boundary and a negative
+runtime probe proves that checked narrowing traps. Wider integer kinds and
+native compile-time constant-range diagnostics remain separate expansion work.
+When an Objective-C or other foreign scalar is intentionally opaque to Stage 1,
+native shadow analysis defers the conversion to Stage 0 rather than classifying
+the unknown ABI value as a non-integer.
+
+That fixture also found backend-name leakage: the valid Z binding `signed`
+became an illegal C declaration. The native C emitter now escapes C-reserved
+function, parameter, and local binding names consistently, and the regression
+keeps `signed` in the source rather than avoiding the collision.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

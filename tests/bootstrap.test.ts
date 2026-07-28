@@ -10105,7 +10105,32 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(emitting.status, 0, emitting.stderr);
   assert.match(emitting.stdout, /emitted 2 Z modules/);
-  assert.match(readFileSync(emittedSource, "utf8"), /int32_t main\(void\)/);
+  const emittedApplicationSource = readFileSync(emittedSource, "utf8");
+  assert.match(emittedApplicationSource, /int32_t main\(void\)/);
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_convert_usize_to_i32\(widened\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_convert_i32_to_usize\(z_signed\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_checked_convert_usize_to_u8\(native\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_wrapping_add_u8\(maximum, 1\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_wrapping_subtract_u8\(wrappedAdd, 1\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /z_stage1_wrapping_multiply_u8\(maximum, 2\)/,
+  );
 
   const application = resolve(directory, "application");
   const compilation = spawnSync(
@@ -10119,6 +10144,51 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const execution = spawnSync(application, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
+
+  const narrowingSource = resolve(directory, "native-narrowing.zs");
+  const narrowingApplication = resolve(directory, "native-narrowing");
+  writeFileSync(
+    narrowingSource,
+    "function main(): i32 {\n"
+      + "  const signed: i32 = -1;\n"
+      + "  return i32(u8(signed));\n"
+      + "}\n",
+  );
+  const narrowingCompilation = spawnSync(
+    driver,
+    ["build", narrowingSource, narrowingApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    narrowingCompilation.status,
+    0,
+    narrowingCompilation.stderr,
+  );
+  const narrowingExecution = spawnSync(
+    narrowingApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(narrowingExecution.status, 0);
+
+  const unsupportedConversionSource = resolve(
+    directory,
+    "native-floating-conversion.zs",
+  );
+  writeFileSync(
+    unsupportedConversionSource,
+    "function main(): i32 { const value = f64(1); return 0; }\n",
+  );
+  const unsupportedConversionCheck = spawnSync(
+    driver,
+    ["check", unsupportedConversionSource],
+    { encoding: "utf8" },
+  );
+  assert.equal(unsupportedConversionCheck.status, 1);
+  assert.match(
+    unsupportedConversionCheck.stderr,
+    /numeric conversion is not available in the integer-only conversion tier/,
+  );
 
   const manifestProject = resolve(directory, "manifest-project");
   const manifestInclude = resolve(manifestProject, "include");

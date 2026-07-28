@@ -18,6 +18,22 @@ export function add(first: i32, second: i32): i32 {
   return first + second;
 }
 
+export function integerParity(value: u8): i32 {
+  const widened = usize(value);
+  const signed = i32(widened);
+  const native = usize(signed);
+  const narrowed = u8(native);
+  const maximum: u8 = 255;
+  const wrappedAdd = maximum.wrappingAdd(1);
+  const wrappedSubtract = wrappedAdd.wrappingSubtract(1);
+  const wrappedMultiply = maximum.wrappingMultiply(2);
+  return i32(wrappedAdd)
+    + i32(wrappedSubtract)
+    + i32(wrappedMultiply)
+    + i32(narrowed)
+    - 511;
+}
+
 export function makePoint(x: i32, y: i32): Point {
   return Point({ x, y });
 }

@@ -2840,18 +2840,61 @@ function inferExpressionNodeType(
         return "";
       }
       const base = identifierLookupName(callee);
-      if (isNumericTypeName(base)) {
-        try inferUnclassifiedCallArguments(
+      if (isIntegerTypeName(base)) {
+        if (children.length != 2) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `${base} numeric construction expects exactly one integer value`,
+            tree.nodes[index].line,
+            tree.nodes[index].column
+          );
+        }
+        const argument = children[1];
+        const actual = try inferExpressionNodeType(
           module,
           modules,
           moduleIndex,
           arena,
           tree,
-          children,
+          argument,
           inout bindings,
           inout evidence
         );
+        if (actual.byteLength == 0) {
+          // Stage 1 intentionally defers foreign scalar identity until that
+          // ABI evidence enters the native graph. Stage 0 remains authoritative
+          // for this conversion rather than inventing a conflicting type.
+          return copiedString(base);
+        }
+        try requireSettledExpressionType(module, tree, argument, actual);
+        if (!isIntegerTypeName(actual)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `${base} numeric construction requires an integer value, found ${actual}`,
+            tree.nodes[argument].line,
+            tree.nodes[argument].column
+          );
+        }
+        recordExpressionResolution(
+          modules,
+          moduleIndex,
+          tree,
+          argument,
+          actual,
+          inout evidence
+        );
         return copiedString(base);
+      }
+      if (isFloatTypeName(base)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `${base}(value) numeric conversion is not available in the integer-only conversion tier`,
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
       }
       if (
         base == "Array"

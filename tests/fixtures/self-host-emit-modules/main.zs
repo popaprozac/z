@@ -1,5 +1,6 @@
 import {
   add as combine,
+  integerParity,
   makePoint as coordinate,
   makeResource as managed,
   makeState as state,
@@ -40,7 +41,7 @@ function main(): i32 {
   const direct = State.ready(managed(0));
   const empty = State.empty;
   observeEmpty();
-  return combine(
+  return combine(integerParity(2), combine(
     combine(
       combine(
         combine(sum(point), sum(directPoint)),
@@ -49,5 +50,5 @@ function main(): i32 {
       stateId(current)
     ),
     combine(stateId(direct), stateId(empty))
-  );
+  ));
 }
