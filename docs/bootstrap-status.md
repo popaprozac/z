@@ -997,12 +997,13 @@ Continue focused self-hosting work in this order:
    application-shaped source stager also writes the owned source, launches
    Clang without a shell, handles typed process failures, and flushes
    interpolated console output from the native executable. The native driver
-   recursively discovers local `.zs` imports, parses and resolves the graph,
-   emits and writes C, and invokes Clang; the resulting binary compiles a
-   separate two-module application without Bun. `z.json`, foreign discovery,
+   recursively discovers local `.zs` imports and exposes native `check`, `emit`,
+   and `build` commands over one parsed and resolved graph. `emit` writes C
+   without invoking Clang; `build` writes C and invokes it, producing a separate
+   two-module application without Bun. `z.json`, foreign discovery,
    target/link configuration, release profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, and the complete
-   `check` / `emit` / `run` command protocol remain.
+   production options plus `run` remain.
 7. Keep the consecutive-generation fixed-point gate and complete test/corpus
    results green. A cold preparation now builds the compiler with Stage 0,
    executes that native compiler to emit itself again, and requires byte-exact

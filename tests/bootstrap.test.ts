@@ -9270,10 +9270,28 @@ test("compiles a multi-module Z application through the standalone native driver
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",
   );
+  const checking = spawnSync(
+    driver,
+    ["check", applicationSource],
+    { encoding: "utf8" },
+  );
+  assert.equal(checking.status, 0, checking.stderr);
+  assert.match(checking.stdout, /checked 2 Z modules/);
+
+  const emittedSource = resolve(directory, "emitted.c");
+  const emitting = spawnSync(
+    driver,
+    ["emit", applicationSource, emittedSource],
+    { encoding: "utf8" },
+  );
+  assert.equal(emitting.status, 0, emitting.stderr);
+  assert.match(emitting.stdout, /emitted 2 Z modules/);
+  assert.match(readFileSync(emittedSource, "utf8"), /int32_t main\(void\)/);
+
   const application = resolve(directory, "application");
   const compilation = spawnSync(
     driver,
-    [applicationSource, application],
+    ["build", applicationSource, application],
     { encoding: "utf8" },
   );
   assert.equal(compilation.status, 0, compilation.stderr);

@@ -14,11 +14,12 @@ The resulting compilation path does not execute Bun or TypeScript. The current
 command is intentionally smaller than the production `z` CLI:
 
 ```text
-z-native <entry.zs> <output>
+z-native check <entry.zs>
+z-native emit <entry.zs> <output.c>
+z-native build <entry.zs> <output>
 ```
 
 It supports the self-hosting language and runtime subset. Project manifests,
 foreign header discovery, target configuration, release profiles, polished
-diagnostics, and the complete `check` / `emit` / `run` command surface remain
-with Stage 0 until equivalent native paths are proven.
-
+diagnostics, `run`, and the complete production command options remain with
+Stage 0 until equivalent native paths are proven.

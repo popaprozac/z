@@ -1105,7 +1105,10 @@ imports, parses each source into the native owned AST, resolves the complete
 graph, emits readable C, writes that translation unit, and invokes Clang. Stage
 0 emits the driver once, but the resulting compilation of a separate
 two-module Z application executes no Bun or TypeScript process. The application
-returns its expected status 42.
+returns its expected status 42. The same executable now exposes separate
+`check`, `emit`, and `build` commands over one `NativeProject` owner, proving
+that the parsed module array and resolved graph can move together across a
+driver API without representation casts.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
@@ -1121,6 +1124,13 @@ console.error(`${message}`);
 
 General typed console values remain outside the self-hosting subset.
 
+A value-producing `if` whose result was `Result<i32, String>` passed semantic
+analysis but remains outside native lowering. The driver therefore dispatches
+commands through ordinary statement branches and a shared consuming
+`reportOutcome` helper. This is a native-emitter composition gap, not a language
+restriction; it should close when general value-`if` lowering reaches
+cleanup-bearing results.
+
 The driver uses existing ordinary Z modules and collections; it did not require
 trait values, a compiler-only graph loader, or a new lifetime mechanism.
 `Set<String>` provides lexical discovery deduplication, `Array<ParsedModule>`
@@ -1129,11 +1139,11 @@ bridge flows directly into C emission. That is positive evidence that the
 earlier resolver modularization created a reusable compiler architecture rather
 than merely splitting a large source file.
 
-This is not yet a distributable replacement for Stage 0. The native command
-accepts only an entry path and output path, uses lexical normalized paths, and
-supports the self-hosting subset. Manifest loading, foreign header and `.zd`
-ingestion, target/link configuration, release profiles, complete diagnostics,
-and the production command surface remain to cross independently.
+This is not yet a distributable replacement for Stage 0. The native commands
+use lexical normalized paths and support the self-hosting subset. Manifest
+loading, foreign header and `.zd` ingestion, target/link configuration, release
+profiles, complete diagnostics, `run`, and production command options remain
+to cross independently.
 
 ## Not tested yet
 

@@ -13,10 +13,17 @@ import {
 } from "../frontend/module-paths.zs";
 import { resolveParsedModules } from "../frontend/module-resolver.zs";
 import {
+  ModuleGraph,
   ModuleResolveError,
   ModuleSource,
 } from "../frontend/semantic-model.zs";
 import { ParsedModule } from "../frontend/module-symbols.zs";
+
+struct NativeProject {
+  entryPath: String;
+  modules: Array<ParsedModule>;
+  graph: ModuleGraph;
+}
 
 function diagnosticMessage(in error: ModuleResolveError): String {
   return `${error.path}:${error.line}:${error.column}: ${error.message}`;
@@ -50,10 +57,7 @@ function loadModule(
   modules.push(parsed);
 }
 
-function compileProject(
-  in entryPath: String,
-  in outputPath: String
-): i32 throws String {
+function loadProject(in entryPath: String): NativeProject throws String {
   const normalizedEntry = normalizedModulePath(entryPath);
   let loaded = Set<String>();
   let modules = Array<ParsedModule>();
@@ -64,10 +68,42 @@ function compileProject(
     success(graph) => graph;
     failure(error) => throw diagnosticMessage(error);
   };
-  const emitted = try emitModulesC(modules, graph);
+  return NativeProject({
+    entryPath: normalizedEntry,
+    modules,
+    graph,
+  });
+}
+
+function emitProject(in project: NativeProject): String throws String {
+  return try emitModulesC(project.modules, project.graph);
+}
+
+function checkProject(in entryPath: String): i32 throws String {
+  const project = try loadProject(entryPath);
+  console.log(`checked ${project.modules.length} Z modules`);
+  return 0;
+}
+
+function emitProjectFile(
+  in entryPath: String,
+  in cPath: String
+): i32 throws String {
+  const project = try loadProject(entryPath);
+  const emitted = try emitProject(project);
+  try fs.writeText(cPath, emitted);
+  console.log(`emitted ${project.modules.length} Z modules to ${cPath}`);
+  return 0;
+}
+
+function buildProject(
+  in entryPath: String,
+  in outputPath: String
+): i32 throws String {
+  const project = try loadProject(entryPath);
+  const emitted = try emitProject(project);
   const cPath = `${outputPath}.c`;
   try fs.writeText(cPath, emitted);
-
   let compilerArguments = Array<String>();
   compilerArguments.push("-x");
   compilerArguments.push("c");
@@ -81,19 +117,12 @@ function compileProject(
   compilerArguments.push(copy outputPath);
   const exitCode = try process.run("clang", compilerArguments);
   if (exitCode == 0) {
-    console.log(`compiled ${modules.length} Z modules to ${outputPath}`);
+    console.log(`compiled ${project.modules.length} Z modules to ${outputPath}`);
   }
   return exitCode;
 }
 
-function main(): i32 {
-  const arguments = process.args();
-  if (arguments.length < 2) {
-    console.error("usage: z-native <entry.zs> <output>");
-    return 2;
-  }
-
-  const outcome = attempt compileProject(arguments[0], arguments[1]);
+function reportOutcome(outcome: Result<i32, String>): i32 {
   return match (outcome) {
     success(exitCode) => exitCode;
     failure(message) => {
@@ -101,4 +130,36 @@ function main(): i32 {
       select 1;
     }
   };
+}
+
+function main(): i32 {
+  const arguments = process.args();
+  if (arguments.length < 2) {
+    console.error("usage: z-native <check|emit|build> <entry.zs> [output]");
+    return 2;
+  }
+
+  const command = copy arguments[0];
+  if (command == "check") {
+    const outcome = attempt checkProject(arguments[1]);
+    return reportOutcome(outcome);
+  }
+  if (command == "emit") {
+    if (arguments.length < 3) {
+      console.error("usage: z-native emit <entry.zs> <output.c>");
+      return 2;
+    }
+    const outcome = attempt emitProjectFile(arguments[1], arguments[2]);
+    return reportOutcome(outcome);
+  }
+  if (command == "build") {
+    if (arguments.length < 3) {
+      console.error("usage: z-native build <entry.zs> <output>");
+      return 2;
+    }
+    const outcome = attempt buildProject(arguments[1], arguments[2]);
+    return reportOutcome(outcome);
+  }
+  console.error(`unknown native compiler command ${command}`);
+  return 2;
 }

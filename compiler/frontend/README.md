@@ -161,7 +161,9 @@ native frontend itself. It recursively discovers relative `.zs` imports, parses
 and resolves the resulting module graph, emits C, writes the translation unit,
 and invokes Clang. Its regression fixture compiles a two-module Z application
 whose expected exit status is 42, with no Bun or TypeScript process in that
-compilation path. Stage 0 is still required to build the driver, and project
+compilation path. Separate native `check`, `emit`, and `build` commands share
+one project-loading operation; checking stops after resolution and emission
+does not invoke Clang. Stage 0 is still required to build the driver, and project
 manifests, foreign imports, target configuration, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and the
 complete compiler command surface remain subsequent slices.
