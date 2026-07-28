@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -240,7 +240,7 @@ function reportStage1Resolver(
   if (timings) {
     const cacheState = run.boundary.cacheHit
       ? "cache hit"
-      : "cache miss; seed compile + self-emission + native build included";
+      : "cache miss; seed compile + self-emission + native build + fixed-point verification included";
     console.log(`${subject} timing (${run.summary.moduleCount} modules, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(run.boundary.prepareMilliseconds)}`);
     console.log(`  host discovery (file I/O + stage-0 import parse): ${formatMilliseconds(run.loadingMilliseconds)}`);
@@ -331,7 +331,7 @@ function verifyStage1Parser(inputPaths: readonly string[], timings: boolean): vo
   if (timings) {
     const cacheState = boundary.cacheHit
       ? "cache hit"
-      : "cache miss; seed compile + self-emission + native build included";
+      : "cache miss; seed compile + self-emission + native build + fixed-point verification included";
     console.log(`stage-1 parser timing (${inputPaths.length} ${inputPaths.length === 1 ? "file" : "files"}, ${cacheState})`);
     console.log(`  boundary preparation: ${formatMilliseconds(boundary.prepareMilliseconds)}`);
     console.log(`  native in-process batch (host file I/O + FFI + lex + parse + encode): ${formatMilliseconds(executionMilliseconds)}`);
@@ -1419,7 +1419,32 @@ function prepareSelfHostedStage1StringLibrary(
     stage1StringLibraryWrapper(),
     outputStem,
   );
+  const regenerated = emitWithNativeFrontendLibrary(
+    builtPath,
+    bridgePath,
+    batch,
+  );
+  if (regenerated !== emitted) {
+    unlinkSync(builtPath);
+    const mismatch = firstDifferentByte(emitted, regenerated);
+    throw new Error(
+      "the self-emitted frontend did not reach a fixed point: "
+      + `seed generation ${createHash("sha256").update(emitted).digest("hex")}, `
+      + `self generation ${createHash("sha256").update(regenerated).digest("hex")}, `
+      + `first differing byte ${mismatch}`,
+    );
+  }
   return { libraryPath: builtPath, cacheHit: false, prepareMilliseconds: performance.now() - started };
+}
+
+function firstDifferentByte(left: string, right: string): number {
+  const leftBytes = Buffer.from(left, "utf8");
+  const rightBytes = Buffer.from(right, "utf8");
+  const sharedLength = Math.min(leftBytes.byteLength, rightBytes.byteLength);
+  for (let index = 0; index < sharedLength; index += 1) {
+    if (leftBytes[index] !== rightBytes[index]) return index;
+  }
+  return leftBytes.byteLength === rightBytes.byteLength ? -1 : sharedLength;
 }
 
 function buildSelfHostedNativeLibrary(

@@ -138,6 +138,10 @@ TypeScript AST. The command passes its canonical source batch through native
 module resolution and semantic analysis before emission, so invalid names and
 types fail before Clang. Scalar and control-flow fixtures prove that native
 lexing, parsing, semantic validation, and C emission compose.
+Cold library preparation also asks the compiled self-emitted frontend to emit
+the same 31-module graph again and requires byte-identical C before caching the
+library. This consecutive-generation fixed-point gate catches seed/native
+lowering drift before any parse, resolve, or emit command can use the artifact.
 Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
 

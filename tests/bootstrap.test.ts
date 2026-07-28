@@ -8044,7 +8044,7 @@ test("parses declarations, function bodies, and type shapes in native Z", () => 
   assert.match(result.stdout, /self-host-parser-input\.zs: stage-1 parser matches 17 declarations, 4 imports, 7 function signatures, 7 function bodies, and 6 type shapes/);
   assert.match(result.stdout, /lexer\.zs: stage-1 parser matches 18 declarations, 1 imports, 13 function signatures, 13 function bodies, and 4 type shapes/);
   assert.match(result.stdout, /parser\.zs: stage-1 parser matches \d+ declarations, \d+ imports, \d+ function signatures, \d+ function bodies, and \d+ type shapes/);
-  assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; seed compile \+ self-emission \+ native build included)\)/);
+  assert.match(result.stdout, /stage-1 parser timing \(3 files, cache (?:hit|miss; seed compile \+ self-emission \+ native build \+ fixed-point verification included)\)/);
   assert.match(result.stdout, /native in-process batch \(host file I\/O \+ FFI \+ lex \+ parse \+ encode\): \d+\.\d{2} ms/);
 
   const directory = mkdtempSync("/tmp/z-self-host-parser-");

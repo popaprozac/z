@@ -1034,6 +1034,29 @@ flow. The closure-heavy resolver fixture now completes instead of double-freeing
 The Bun driver, filesystem graph discovery, foreign importers, seed emission,
 and ordinary `check`/`emit`/`run` path remain stage 0.
 
+## Consecutive-generation fixed point
+
+Cold self-hosted library preparation now executes one more compiler generation
+before caching the result. Stage 0 compiles the seed frontend; that seed emits
+the 31-module frontend C; Clang builds it; and the resulting self-emitted
+compiler emits the unchanged graph again. Preparation compares those two C
+translation units byte for byte and removes the candidate library if they
+differ, reporting both SHA-256 identities and the first differing byte.
+
+The current generations are identical at 2,506,500 bytes. The verified cold
+preparation took about 4.0 seconds on the development machine, compared with
+roughly 2.7 seconds before the extra generation. It is content-addressed and
+paid once: the following resolver run prepared the cached boundary in 2.74 ms,
+performed native lex/parse/resolve plus graph decoding in 2.84 ms, and completed
+the Stage-0 parity/index queries in 0.70 ms. The generation-two output also
+strict-compiled with `-std=c11 -Wall -Wextra -Werror` and returned the fixture's
+expected status 42.
+
+This is evidence of a deterministic compiler fixed point, not yet a standalone
+distribution. Bun still performs source discovery and orchestration, and a
+trusted native bootstrap artifact must replace the source-built seed before a
+fresh installation can remove TypeScript.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -69,7 +69,7 @@ an inferred receiver-tied view.
 | Foreign Interface IR | Implemented foundation | Raw declarations, API-note merge, normalized contracts, source locations, and availability metadata are separate; richer native hierarchies remain |
 | Language server | Partial | Diagnostics, semantic highlighting, contextual selective-import/object-pattern completion, hover, and Z/native definitions; `copy`/`move` incompatibilities diagnose live and keyword hover explains inferred type, capability source, copy cost, and source invalidation. Native hover separates the source-level Z signature from ABI and availability details, uses source-nameable handle types, and resolves the selected Objective-C receiver instead of merging unrelated selectors. Broader incomplete-pattern recovery remains |
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
-| Self-hosting | Partial compiler | Stage 0 remains the Bun/TypeScript driver, project loader, foreign importer, and seed compiler. The seed builds the native frontend once; that native frontend emits its own 31-module C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. Ordinary `check`/`emit`/`run`, complete language semantics, foreign import, and the CLI driver remain in stage 0 |
+| Self-hosting | Partial compiler | Stage 0 remains the Bun/TypeScript driver, project loader, foreign importer, and seed compiler. The seed builds the native frontend once; that native frontend emits its own 31-module C implementation, which is strict-compiled into the library used by `self-host-parse`, `self-host-resolve`, and `self-host-emit`. On every cold build that compiled self-emitted generation emits the same frontend again; preparation rejects any byte-level difference, and the current generations are identical. The self-emitted library executes Z-owned lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, and C emission for the self-hosting subset. Resolver topology, signatures, and semantic evidence cross a complete representation-neutral graph stream rather than stage-zero aggregate-layout casts. Ordinary `check`/`emit`/`run`, complete language semantics, foreign import, and the CLI driver remain in stage 0 |
 
 ## Foreign interfaces
 
@@ -968,17 +968,14 @@ Continue focused self-hosting work in this order:
    last-use release, receiver-path capabilities, and recursive ownership
    contexts. Do not port a feature merely for nominal completeness; add a
    realistic corpus case first.
-3. Keep the completed version-1 structural phase API green. One owned native
-   result handle supplies entry, module paths, dependency lists/order,
-   symbols, every signature shape, and all call/binding/expression evidence.
-   Bulk fixed-width base/item batches preserve generic constraints, fields,
-   variants, trait conformance, capabilities, effects, source locations, and
-   flattened nominal-identity paths. Success has no text payload; only resolver
-   failures retain the temporary framed diagnostic payload. The host validates
-   the API version, structural cardinalities, references, and owned-handle
-   lifecycle before adopting the canonical graph directly. Preserve canonical
-   module-local locations and the guarded Stage-0 fallback. Measure cold library
-   preparation, warm native work/handoff, and Stage-0 parity separately.
+3. Keep the complete representation-neutral resolver stream green. It supplies
+   entry, module paths, dependency lists/order, symbols, every signature shape,
+   and all call/binding/expression evidence without exposing emitted C layout.
+   Preserve generic constraints, fields, variants, trait conformance,
+   capabilities, effects, source locations, flattened nominal-identity paths,
+   canonical module-local locations, and the guarded Stage-0 fallback. Measure
+   cold library preparation, warm native work/stream decoding, and Stage-0
+   parity separately.
 4. Finish the native semantic subset required to compile the compiler itself.
    Broader language features may continue to fall back to Stage 0 until their
    native representation is justified by real programs.
@@ -991,8 +988,11 @@ Continue focused self-hosting work in this order:
 6. Move module loading, project driving, files/paths/processes, diagnostics, and
    command-line orchestration into the Z driver, then remove the corresponding
    TypeScript/Bun paths only after parity.
-7. Build the compiler with Stage 0, use that native compiler to compile itself,
-   and compare consecutive generations plus the complete test/corpus results.
+7. Keep the consecutive-generation fixed-point gate and complete test/corpus
+   results green. A cold preparation now builds the compiler with Stage 0,
+   executes that native compiler to emit itself again, and requires byte-exact
+   C output before caching the library. The remaining release step is to ship a
+   trusted bootstrap artifact so ordinary installations do not need Stage 0.
 
 The next self-hosting sprint should begin when duplicated Stage-0 semantics are
 slowing language work, a new feature exposes a native corpus gap worth closing,
