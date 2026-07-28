@@ -201,10 +201,12 @@ Clang-produced function-only `ZFDCL` artifact, and the standalone driver now
 decodes and validates that artifact through its own `foreign-inspect` bootstrap
 operation. The driver also parses and normalizes inferred scalar and decimal
 integer-status `.zd` contracts against that artifact. An explicit bootstrap
-probe feeds those normalized contracts into native semantic analysis for
-selective and namespace calls. Automatic adapter invocation, symbolic status
-constants, exact status-literal range checks, broader declaration
-records/facts, and foreign emission remain; raw decoding alone is never a
+probe feeds those normalized contracts into native semantic analysis and C
+emission for selective and namespace calls. Scalar calls remain direct; status
+calls use a generated C11 wrapper that invokes the native function once and
+constructs `Result<void, E>` from the checked success set. Automatic adapter
+invocation, symbolic status constants, exact status-literal range checks, and
+broader declaration records/facts remain; raw decoding alone is never a
 trusted foreign import.
 Swift targets, broader target selection, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and

@@ -40,6 +40,7 @@ import {
   emptySemanticEvidence,
   recordBindingResolution,
   recordExpressionResolution,
+  recordForeignCallFacts,
   recordCallResolution,
 } from "./semantic-evidence.zs";
 import {
@@ -2927,7 +2928,7 @@ function inferExpressionNodeType(
               signature
             );
             const argumentNodes = callArgumentNodes(children);
-            return try inferSignatureCallType(
+            const callType = try inferSignatureCallType(
               module,
               modules,
               moduleIndex,
@@ -2947,6 +2948,15 @@ function inferExpressionNodeType(
               callKind,
               inout evidence
             );
+            if (callKind == "foreign") {
+              recordForeignCallFacts(
+                tree,
+                index,
+                modules[location.moduleIndex].symbols[location.symbolIndex],
+                inout evidence
+              );
+            }
+            return callType;
           }
           none => {}
         }

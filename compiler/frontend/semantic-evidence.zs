@@ -14,6 +14,7 @@ import {
   ModuleExpressionResolution,
   ModuleFunctionSignature,
   ModuleSemanticEvidence,
+  ModuleSymbol,
   ModuleSymbolKind,
   ModuleTypeIdentity,
   ResolvedModule,
@@ -216,7 +217,38 @@ export function recordCallResolution(
     parameterTypes,
     returnType: returnType.copyBytes(0, returnType.byteLength),
     errorType: errorType.copyBytes(0, errorType.byteLength),
+    foreignHeader: "",
+    foreignSuccessValues: Array<String>(),
   }));
+}
+
+export function recordForeignCallFacts(
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in symbol: ModuleSymbol,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let resolutionIndex: usize = 0;
+  while (resolutionIndex < evidence.callResolutions.length) {
+    if (
+      evidence.callResolutions[resolutionIndex].offset
+        == tree.nodes[callIndex].offset
+      && evidence.callResolutions[resolutionIndex].line
+        == tree.nodes[callIndex].line
+      && evidence.callResolutions[resolutionIndex].column
+        == tree.nodes[callIndex].column
+    ) {
+      evidence.callResolutions[resolutionIndex].foreignHeader =
+        symbol.foreignHeader.copyBytes(0, symbol.foreignHeader.byteLength);
+      for (const successValue of symbol.foreignSuccessValues) {
+        evidence.callResolutions[resolutionIndex].foreignSuccessValues.push(
+          successValue.copyBytes(0, successValue.byteLength)
+        );
+      }
+      return;
+    }
+    resolutionIndex = resolutionIndex + 1;
+  }
 }
 
 export function recordExpressionResolution(

@@ -9426,6 +9426,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     projectRoot,
     "tests/fixtures/foreign-functions-only.h.zd",
   );
+  const emittedForeignPath = resolve(directory, "foreign-application.c");
   const contractExecution = spawnSync(
     contractExecutable,
     [
@@ -9435,10 +9436,53 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         projectRoot,
         "tests/fixtures/self-host-foreign-call-input.zs",
       ),
+      emittedForeignPath,
     ],
     { encoding: "utf8" },
   );
   assert.equal(contractExecution.status, 0, contractExecution.stderr);
+  const emittedForeignSource = readFileSync(emittedForeignPath, "utf8");
+  assert.match(
+    emittedForeignSource,
+    /#include "foreign-functions-only\.h"/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /status = z_foreign_status\(parameter_0\);/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /status == 0 \|\| status == 2/,
+  );
+  assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
+  const foreignApplication = resolve(directory, "foreign-application");
+  const foreignApplicationCompilation = spawnSync(
+    "clang",
+    [
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I",
+      resolve(projectRoot, "tests/fixtures"),
+      emittedForeignPath,
+      resolve(projectRoot, "tests/fixtures/foreign-functions-only.c"),
+      "-o",
+      foreignApplication,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    foreignApplicationCompilation.status,
+    0,
+    foreignApplicationCompilation.stderr,
+  );
+  const foreignApplicationExecution = spawnSync(
+    foreignApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(foreignApplicationExecution.status, 42);
 
   const wrongForeignArityPath = resolve(directory, "wrong-foreign-arity.zs");
   writeFileSync(
@@ -9453,7 +9497,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const wrongForeignArity = spawnSync(
     contractExecutable,
-    [clangPath, contractPath, wrongForeignArityPath],
+    [clangPath, contractPath, wrongForeignArityPath, emittedForeignPath],
     { encoding: "utf8" },
   );
   assert.equal(wrongForeignArity.status, 3);
@@ -9475,7 +9519,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const unhandledForeignStatus = spawnSync(
     contractExecutable,
-    [clangPath, contractPath, unhandledForeignStatusPath],
+    [clangPath, contractPath, unhandledForeignStatusPath, emittedForeignPath],
     { encoding: "utf8" },
   );
   assert.equal(unhandledForeignStatus.status, 3);
@@ -9497,7 +9541,12 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const uncontractedForeignFunction = spawnSync(
     contractExecutable,
-    [clangPath, contractPath, uncontractedForeignFunctionPath],
+    [
+      clangPath,
+      contractPath,
+      uncontractedForeignFunctionPath,
+      emittedForeignPath,
+    ],
     { encoding: "utf8" },
   );
   assert.equal(uncontractedForeignFunction.status, 3);
@@ -9519,6 +9568,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         projectRoot,
         "tests/fixtures/self-host-foreign-call-input.zs",
       ),
+      emittedForeignPath,
     ],
     { encoding: "utf8" },
   );
@@ -9544,6 +9594,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         projectRoot,
         "tests/fixtures/self-host-foreign-call-input.zs",
       ),
+      emittedForeignPath,
     ],
     { encoding: "utf8" },
   );

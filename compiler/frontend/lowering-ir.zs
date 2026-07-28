@@ -217,7 +217,19 @@ export struct LoweredFunction {
   liveFlags: Array<LoweredLiveFlag>;
 }
 
+export struct LoweredForeignFunction {
+  header: String;
+  nativeName: String;
+  wrapperName: String;
+  resultType: String;
+  errorType: LoweredType;
+  parameterTypes: Array<LoweredType>;
+  successValues: Array<String>;
+}
+
 export struct LoweredProgram {
+  foreignHeaders: Array<String>;
+  foreignFunctions: Array<LoweredForeignFunction>;
   arrays: Array<LoweredArray>;
   maps: Array<LoweredMap>;
   sets: Array<LoweredSet>;
@@ -1952,12 +1964,145 @@ function resolvedCallTarget(
       resolution.offset == tree.nodes[index].offset
       && resolution.line == tree.nodes[index].line
       && resolution.column == tree.nodes[index].column
-    ) return Option.some(resolution.targetName.copyBytes(
-      0,
-      resolution.targetName.byteLength
-    ));
+    ) {
+      if (
+        resolution.kind == "foreign"
+        && resolution.foreignSuccessValues.length > 0
+      ) return Option.some(
+        `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
+      );
+      return Option.some(resolution.targetName.copyBytes(
+        0,
+        resolution.targetName.byteLength
+      ));
+    }
   }
   return Option<String>.none;
+}
+
+function resolvedForeignCallTarget(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+      && resolution.kind == "foreign"
+    ) {
+      if (resolution.foreignSuccessValues.length > 0) {
+        return Option.some(
+          `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`
+        );
+      }
+      return Option.some(resolution.targetName.copyBytes(
+        0,
+        resolution.targetName.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
+}
+
+function containsString(in values: Array<String>, in value: String): boolean {
+  for (const candidate of values) {
+    if (candidate == value) return true;
+  }
+  return false;
+}
+
+function containsForeignWrapper(
+  in functions: Array<LoweredForeignFunction>,
+  in name: String
+): boolean {
+  for (const candidate of functions) {
+    if (candidate.wrapperName == name) return true;
+  }
+  return false;
+}
+
+function requireSafeForeignHeader(in header: String): void throws String {
+  let index: usize = 0;
+  while (index < header.byteLength) {
+    const byte = header.byteAt(index);
+    if (byte == 10 || byte == 13 || byte == 34) {
+      throw "native foreign header contains a character unsafe for C inclusion";
+    }
+    index = index + 1;
+  }
+}
+
+function collectForeignLowering(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  inout headers: Array<String>,
+  inout functions: Array<LoweredForeignFunction>
+): void throws String {
+  for (const resolution of evidence.callResolutions) {
+    if (resolution.kind != "foreign") continue;
+    try requireSafeForeignHeader(resolution.foreignHeader);
+    if (!containsString(headers, resolution.foreignHeader)) {
+      headers.push(resolution.foreignHeader.copyBytes(
+        0,
+        resolution.foreignHeader.byteLength
+      ));
+    }
+    if (resolution.foreignSuccessValues.length == 0) continue;
+    const wrapperName =
+      `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`;
+    if (containsForeignWrapper(functions, wrapperName)) continue;
+    if (resolution.errorType.byteLength == 0) {
+      throw "native foreign status lowering requires an error type";
+    }
+    let parameterTypes = Array<LoweredType>();
+    for (const parameterType of resolution.parameterTypes) {
+      const loweredParameter = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        parameterType
+      );
+      parameterTypes.push(loweredParameter);
+    }
+    const errorType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resolution.errorType
+    );
+    const resultName =
+      `Result<${resolution.returnType}, ${resolution.errorType}>`;
+    const resultType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resultName
+    );
+    let successValues = Array<String>();
+    for (const successValue of resolution.foreignSuccessValues) {
+      successValues.push(
+        successValue.copyBytes(0, successValue.byteLength)
+      );
+    }
+    functions.push(LoweredForeignFunction({
+      header: resolution.foreignHeader.copyBytes(
+        0,
+        resolution.foreignHeader.byteLength
+      ),
+      nativeName: resolution.targetName.copyBytes(
+        0,
+        resolution.targetName.byteLength
+      ),
+      wrapperName,
+      resultType: resultType.name.copyBytes(
+        0,
+        resultType.name.byteLength
+      ),
+      errorType,
+      parameterTypes,
+      successValues,
+    }));
+  }
 }
 
 function lowerParameterMode(mode: ParameterMode): LoweredParameterMode {
@@ -3534,6 +3679,7 @@ function lowerExpression(
     }
     let callee: usize = 0;
     let standardTarget = "";
+    let foreignTarget = "";
     match (resolvedCallTarget(evidence, tree, index)) {
       some(target) => {
         if (
@@ -3552,11 +3698,23 @@ function lowerExpression(
       }
       none => {}
     }
+    match (resolvedForeignCallTarget(evidence, tree, index)) {
+      some(target) => foreignTarget = move target;
+      none => {}
+    }
     if (standardTarget.byteLength > 0) {
       callee = pushExpression(
         inout output,
         LoweredExpressionKind.localValue,
         standardTarget,
+        Array<usize>(),
+        Array<String>()
+      );
+    } else if (foreignTarget.byteLength > 0) {
+      callee = pushExpression(
+        inout output,
+        LoweredExpressionKind.localValue,
+        foreignTarget,
         Array<usize>(),
         Array<String>()
       );
@@ -6934,6 +7092,8 @@ export function lowerProgram(
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
+  let foreignHeaders = Array<String>();
+  let foreignFunctions = Array<LoweredForeignFunction>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -6952,7 +7112,16 @@ export function lowerProgram(
     inout enums,
     inout functions
   );
-  return LoweredProgram({ arrays, maps, sets, structs, enums, functions });
+  return LoweredProgram({
+    foreignHeaders,
+    foreignFunctions,
+    arrays,
+    maps,
+    sets,
+    structs,
+    enums,
+    functions,
+  });
 }
 
 export function lowerModules(
@@ -6965,6 +7134,8 @@ export function lowerModules(
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
+  let foreignHeaders = Array<String>();
+  let foreignFunctions = Array<LoweredForeignFunction>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
@@ -6974,6 +7145,13 @@ export function lowerModules(
       structs,
       enums,
       moduleIndex
+    );
+    try collectForeignLowering(
+      parsed[moduleIndex].program,
+      importedTypes,
+      graph.modules[moduleIndex].semanticEvidence,
+      inout foreignHeaders,
+      inout foreignFunctions
     );
     const moduleOutcome = attempt appendLoweredProgram(
       parsed[moduleIndex].program,
@@ -7001,5 +7179,14 @@ export function lowerModules(
       }
     }
   }
-  return LoweredProgram({ arrays, maps, sets, structs, enums, functions });
+  return LoweredProgram({
+    foreignHeaders,
+    foreignFunctions,
+    arrays,
+    maps,
+    sets,
+    structs,
+    enums,
+    functions,
+  });
 }

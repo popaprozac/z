@@ -17,6 +17,9 @@ import {
   NativeForeignModuleContract,
 } from "../../compiler/frontend/semantic-foreign.zs";
 import {
+  emitModulesC,
+} from "../../compiler/frontend/c-emitter.zs";
+import {
   ModuleSource,
 } from "../../compiler/frontend/semantic-model.zs";
 import {
@@ -26,7 +29,8 @@ import {
 function inspect(
   in declarationPath: String,
   in contractPath: String,
-  in sourcePath: String
+  in sourcePath: String,
+  in outputPath: String
 ): i32 throws String {
   const declarationSource = try fs.readText(declarationPath);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
@@ -131,13 +135,20 @@ function inspect(
   if (graph.modules[0].semanticEvidence.callResolutions[2].errorType != "i32") {
     return 40;
   }
+  const emitted = try emitModulesC(modules, graph);
+  try fs.writeText(outputPath, emitted);
   return 0;
 }
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length != 3) return 2;
-  const outcome = attempt inspect(arguments[0], arguments[1], arguments[2]);
+  if (arguments.length != 4) return 2;
+  const outcome = attempt inspect(
+    arguments[0],
+    arguments[1],
+    arguments[2],
+    arguments[3]
+  );
   return match (outcome) {
     success(code) => code;
     failure(_) => 3;

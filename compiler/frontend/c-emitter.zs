@@ -2461,6 +2461,11 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  for (const header of program.foreignHeaders) {
+    output.append("#include \"");
+    output.append(header);
+    output.append("\"\n");
+  }
   if (usesReadText || usesWriteText || usesRealPath || usesProcessRun) {
     output.append("#include <errno.h>\n");
   }
@@ -2710,6 +2715,55 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
+  for (const foreign of program.foreignFunctions) {
+    const errorType = try cType(foreign.errorType);
+    output.append("static __attribute__((unused)) Z_");
+    output.append(foreign.resultType);
+    output.append(" ");
+    output.append(foreign.wrapperName);
+    output.append("(");
+    let parameterIndex: usize = 0;
+    while (parameterIndex < foreign.parameterTypes.length) {
+      if (parameterIndex > 0) output.append(", ");
+      const parameterType = try cType(
+        foreign.parameterTypes[parameterIndex]
+      );
+      output.append(parameterType);
+      output.append(" parameter_");
+      output.append(`${parameterIndex}`);
+      parameterIndex = parameterIndex + 1;
+    }
+    if (foreign.parameterTypes.length == 0) output.append("void");
+    output.append(") {\n  ");
+    output.append(errorType);
+    output.append(" status = ");
+    output.append(foreign.nativeName);
+    output.append("(");
+    parameterIndex = 0;
+    while (parameterIndex < foreign.parameterTypes.length) {
+      if (parameterIndex > 0) output.append(", ");
+      output.append("parameter_");
+      output.append(`${parameterIndex}`);
+      parameterIndex = parameterIndex + 1;
+    }
+    output.append(");\n  if (");
+    let successIndex: usize = 0;
+    while (successIndex < foreign.successValues.length) {
+      if (successIndex > 0) output.append(" || ");
+      output.append("status == ");
+      output.append(foreign.successValues[successIndex]);
+      successIndex = successIndex + 1;
+    }
+    output.append(") return (Z_");
+    output.append(foreign.resultType);
+    output.append("){ .tag = Z_");
+    output.append(foreign.resultType);
+    output.append("Tag_success };\n  return (Z_");
+    output.append(foreign.resultType);
+    output.append("){ .tag = Z_");
+    output.append(foreign.resultType);
+    output.append("Tag_failure, .payload.failure = status };\n}\n\n");
+  }
   appendSystemStandardRuntime(inout output, program);
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);

@@ -98,6 +98,8 @@ export struct ModuleCallResolution {
   parameterTypes: Array<String>;
   returnType: String;
   errorType: String;
+  foreignHeader: String;
+  foreignSuccessValues: Array<String>;
 }
 
 export enum ModuleSymbolKind {
@@ -119,6 +121,8 @@ export struct ModuleSymbol {
   importedName: String;
   functionSignature: Option<ModuleFunctionSignature>;
   typeSignature: Option<ModuleTypeSignature>;
+  foreignHeader: String;
+  foreignSuccessValues: Array<String>;
   offset: usize;
   line: usize;
   column: usize;

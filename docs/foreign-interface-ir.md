@@ -198,6 +198,13 @@ effect checker, while an imported function missing from the checked contract
 fails closed. The normalized in-memory FIIR remains a separate,
 version-independent compiler model.
 
+That same first tier now reaches native lowering. Imported headers are emitted
+once, infallible scalar calls retain their native target directly, and
+integer-status calls route through a generated C11 adapter that calls the
+native function once and constructs `Result<void, E>` from the normalized
+success literals. The executable fixture strict-compiles and runs both
+selective and namespace calls without exposing producer records to lowering.
+
 ## Next slices
 
 1. extend the host deployment-target slice with cross-compilation and explicit
@@ -217,5 +224,5 @@ version-independent compiler model.
 6. expand the implemented `.zd` reader and contract normalizer from decimal
    integer statuses through symbolic/enum statuses, ownership, pointer, buffer,
    callback, executor, and native-value facts, then extend the validated
-   in-memory FIIR already consumed by native sema into lowering and emission
-   rather than teaching either layer about wire records.
+   in-memory FIIR already consumed by native sema and scalar/status lowering
+   into richer emission rather than teaching any layer about wire records.

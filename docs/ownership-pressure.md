@@ -1218,8 +1218,17 @@ namespace calls, verifies native target identity, and preserves a status
 function's `void throws i32` effect. Wrong arity, an unhandled status call, and
 selection of a header function absent from `.zd` all fail in native Z. This is
 the intended FIIR boundary: sema sees checked callables, never Clang records or
-raw contract syntax. Automatic adapter invocation and emission are still
-explicitly outside the tier.
+raw contract syntax.
+
+The following lowering slice carries those checked facts through generated C.
+Headers are deduplicated and emitted as includes, scalar calls retain the exact
+Clang target, and status calls use a deterministic wrapper per imported symbol.
+The wrapper evaluates the native call once, compares its result with both
+declared success literals, and builds the same allocation-free
+`Result<void, i32>` representation used by Z throwing functions. Clang
+strict-compiles the emitted application together with its C implementation and
+the binary exits with the expected status 42. Automatic adapter invocation is
+still explicitly outside the tier.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

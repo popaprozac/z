@@ -131,6 +131,16 @@ function attachSelectiveFunction(
     Option<ModuleFunctionSignature>.some(
       foreignFunctionSignature(contracts.functions[contractIndex])
     );
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    );
+  for (const successValue of contracts.functions[contractIndex].successValues) {
+    modules[moduleIndex].symbols[symbolIndex].foreignSuccessValues.push(
+      successValue.copyBytes(0, successValue.byteLength)
+    );
+  }
 }
 
 function attachNamespaceFunctions(
@@ -145,6 +155,12 @@ function attachNamespaceFunctions(
   for (const contract of contracts.functions) {
     const name = `${namespace}.${contract.name}`;
     const symbolIndex = modules[moduleIndex].symbols.length;
+    let successValues = Array<String>();
+    for (const successValue of contract.successValues) {
+      successValues.push(
+        successValue.copyBytes(0, successValue.byteLength)
+      );
+    }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name: name.copyBytes(0, name.byteLength),
       kind: ModuleSymbolKind.importedSymbol,
@@ -158,6 +174,11 @@ function attachNamespaceFunctions(
         foreignFunctionSignature(contract)
       ),
       typeSignature: Option<ModuleTypeSignature>.none,
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: successValues,
       offset,
       line,
       column,
