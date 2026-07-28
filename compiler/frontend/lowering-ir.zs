@@ -43,6 +43,7 @@ export enum LoweredTypeKind {
   setType,
   structType,
   enumType,
+  foreignEnumType,
 }
 
 export struct LoweredType {
@@ -250,6 +251,7 @@ struct LoweredImportedType {
   fields: Array<LoweredField>;
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
+  underlyingType: String;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -2179,6 +2181,30 @@ function resolvedExpressionTypeName(
   return Option<String>.none;
 }
 
+function loweredIntegerSourceType(
+  in importedTypes: Array<LoweredImportedType>,
+  in sourceType: String
+): Option<String> {
+  if (
+    sourceType == "i32"
+    || sourceType == "u8"
+    || sourceType == "usize"
+  ) return Option.some(sourceType.copyBytes(0, sourceType.byteLength));
+  for (const type of importedTypes) {
+    if (
+      type.kind == LoweredTypeKind.foreignEnumType
+      && (
+        type.localName == sourceType
+        || type.targetName == sourceType
+      )
+    ) return Option.some(type.underlyingType.copyBytes(
+      0,
+      type.underlyingType.byteLength
+    ));
+  }
+  return Option<String>.none;
+}
+
 function contextualIntrinsicTypeName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -3044,13 +3070,12 @@ function lowerExpression(
         0,
         tree.nodes[calleeInput].value.byteLength
       );
-      if (
-        sourceType != "i32"
-        && sourceType != "u8"
-        && sourceType != "usize"
+      const conversionSourceType = match (
+        loweredIntegerSourceType(importedTypes, sourceType)
       ) {
-        throw `native integer conversion does not support source type ${sourceType} yet`;
-      }
+        some(typeName) => typeName;
+        none => throw `native integer conversion does not support source type ${sourceType} yet`;
+      };
       const argument = try lowerExpression(
         program,
         importedTypes,
@@ -3062,7 +3087,7 @@ function lowerExpression(
       let children = Array<usize>();
       children.push(argument);
       let labels = Array<String>();
-      labels.push(sourceType.copyBytes(0, sourceType.byteLength));
+      labels.push(conversionSourceType);
       return pushExpression(
         inout output,
         LoweredExpressionKind.integerConversion,
@@ -6793,6 +6818,38 @@ function importedTypesForModule(
 ): Array<LoweredImportedType> {
   let types = Array<LoweredImportedType>();
   for (const symbol of graph.modules[moduleIndex].symbols) {
+    if (
+      symbol.kind == ModuleSymbolKind.enumSymbol
+      && symbol.foreignHeader.byteLength > 0
+    ) {
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (
+            signature.foreignNativeName.byteLength > 0
+            && signature.foreignUnderlyingType.byteLength > 0
+          ) {
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              kind: LoweredTypeKind.foreignEnumType,
+              needsDeinit: false,
+              fields: Array<LoweredField>(),
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: signature.foreignUnderlyingType.copyBytes(
+                0,
+                signature.foreignUnderlyingType.byteLength
+              ),
+            }));
+          }
+        }
+        none => {}
+      }
+      continue;
+    }
     if (symbol.kind != ModuleSymbolKind.importedSymbol) continue;
     let targetModule = graph.modules.length;
     match (in symbol.targetModule) {
@@ -6826,6 +6883,7 @@ function importedTypesForModule(
             fields,
             variants: Array<LoweredVariant>(),
             payloadBearing: false,
+            underlyingType: "",
           }));
         }
         none => {}
@@ -6854,6 +6912,7 @@ function importedTypesForModule(
             fields: Array<LoweredField>(),
             variants,
             payloadBearing: declaration.payloadBearing,
+            underlyingType: "",
           }));
         }
         none => {}
@@ -6886,6 +6945,7 @@ function importedTypesForModule(
               fields,
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
+              underlyingType: "",
             }));
           }
           none => {}
@@ -6905,6 +6965,7 @@ function importedTypesForModule(
               fields: Array<LoweredField>(),
               variants,
               payloadBearing: declaration.payloadBearing,
+              underlyingType: "",
             }));
           }
           none => {}
@@ -6958,6 +7019,7 @@ function appendLoweredProgram(
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
+      underlyingType: "",
     }));
   }
   for (const aggregate of program.aggregates) {
@@ -6978,6 +7040,7 @@ function appendLoweredProgram(
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
+      underlyingType: "",
     }));
   }
 
@@ -7052,6 +7115,7 @@ function appendLoweredProgram(
       fields: Array<LoweredField>(),
       variants: importedVariants,
       payloadBearing,
+      underlyingType: "",
     }));
   }
 
@@ -7144,6 +7208,7 @@ function appendLoweredProgram(
           fields,
           variants: Array<LoweredVariant>(),
           payloadBearing: false,
+          underlyingType: "",
         }));
       }
       none => {}

@@ -32,6 +32,9 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.foreignEnumType) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
   throw "native C emission received an unsupported lowered type";
 }
 

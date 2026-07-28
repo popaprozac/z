@@ -1272,10 +1272,16 @@ before semantic analysis; decimal status values remain supported.
 `ZFDCL` version 3 now carries the missing nominal enum evidence. A status
 constant from an enum must belong to the exact enum returned by the native
 function; an integer macro with the same value is not interchangeable. The
-native executable subset compares against the verified enum symbol and carries
-the enum's checked underlying scalar through `Result<void, E>`. Preserving the
-foreign enum as a source-nameable native semantic type is intentionally a later
-named-type slice rather than something this adapter flattens or invents.
+native executable subset compares against the verified enum symbol.
+
+The following slice preserved that enum identity beyond verification. Native
+foreign contracts now attach hidden/imported enum type symbols to the module
+graph, throwing calls produce `Result<void, ZForeignStatus>`, match payloads
+retain that type, and C lowering stores the header's real `ZForeignStatus`
+rather than an invented Z enum or flattened `i32`. Explicit `i32(status)`
+construction remains available because the producer supplied the underlying
+type. General enum parameters and constant expressions remain deliberately
+outside this narrow status path.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

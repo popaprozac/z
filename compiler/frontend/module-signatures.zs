@@ -200,6 +200,8 @@ export function programTypeSignature(
         customDeinit,
         customConstructor,
         constructorSignature,
+        foreignNativeName: "",
+        foreignUnderlyingType: "",
       }));
     }
   }
@@ -227,6 +229,8 @@ export function programTypeSignature(
         customDeinit: false,
         customConstructor: false,
         constructorSignature: Option<ModuleFunctionSignature>.none,
+        foreignNativeName: "",
+        foreignUnderlyingType: "",
       }));
     }
   }
@@ -256,6 +260,8 @@ export function programTypeSignature(
         customDeinit: false,
         customConstructor: false,
         constructorSignature: Option<ModuleFunctionSignature>.none,
+        foreignNativeName: "",
+        foreignUnderlyingType: "",
       }));
     }
   }

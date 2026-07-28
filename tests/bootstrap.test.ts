@@ -9462,6 +9462,18 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     emittedForeignSource,
     /status == Z_FOREIGN_ENUM_OK/,
   );
+  assert.match(
+    emittedForeignSource,
+    /ZForeignStatus status = z_foreign_enum_status\(parameter_0\);/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /typedef struct Z___z_Result_void_ZForeignStatus/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /ZForeignStatus failure;/,
+  );
   assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
   const foreignApplication = resolve(directory, "foreign-application");
   const foreignApplicationCompilation = spawnSync(

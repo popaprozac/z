@@ -164,6 +164,8 @@ export struct ModuleTypeSignature {
   customDeinit: boolean;
   customConstructor: boolean;
   constructorSignature: Option<ModuleFunctionSignature>;
+  foreignNativeName: String;
+  foreignUnderlyingType: String;
 }
 
 export struct ModuleFunctionSignature {

@@ -117,9 +117,10 @@ semantic analysis and code generation; the frontend itself is native Z code.
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies
   module/function/parameter identity against raw Clang declarations, maps
   supported ABI scalars to Z types, requires symbolic constants to exist with
-  the exact scalar or nominal enum return identity, preserves the verified
-  underlying integer as the current native error payload, and rejects every
-  unimplemented fact at its `.zd` source location.
+  the exact scalar or nominal enum return identity, preserves enum-backed
+  errors as source-nameable nominal types through `Result` while retaining
+  their verified C representation, and rejects every unimplemented fact at its
+  `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;

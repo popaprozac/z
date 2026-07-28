@@ -2863,7 +2863,8 @@ function parseProjectedStatement(
 
 function parseImport(
   in tokens: Array<Token>,
-  inout current: usize
+  inout current: usize,
+  inout selectiveImportCounter: usize
 ): ImportDeclaration throws ParserError {
   const start = try expect(tokens, inout current, TokenKind.importKeyword, "an import declaration");
   let moduleName = "";
@@ -2871,6 +2872,8 @@ function parseImport(
   let selective = false;
   if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
     selective = true;
+    moduleName = `__z_selective_import_${selectiveImportCounter}`;
+    selectiveImportCounter = selectiveImportCounter + 1;
     if (tokens[current].kind == TokenKind.rightBrace) {
       throw fail(tokens[current], "a selective import requires at least one imported name");
     }
@@ -3248,6 +3251,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
   let traits = Array<TraitDeclaration>();
   let enums = Array<EnumDeclaration>();
   let current: usize = 0;
+  let selectiveImportCounter: usize = 0;
   while (tokens[current].kind != TokenKind.eof) {
     let exported = false;
     if (tokens[current].kind == TokenKind.exportKeyword) {
@@ -3272,7 +3276,11 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (exported) throw fail(tokens[current], "imports cannot be exported");
       if (asynchronous) throw fail(tokens[current], "imports cannot be async");
-      const importDeclaration = try parseImport(tokens, inout current);
+      const importDeclaration = try parseImport(
+        tokens,
+        inout current,
+        inout selectiveImportCounter
+      );
       const declaration = Declaration({
         kind: DeclarationKind.importDeclaration,
         name: importDeclaration.header.copyBytes(0, importDeclaration.header.byteLength),

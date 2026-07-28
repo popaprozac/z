@@ -45,12 +45,13 @@ unsupported declaration category, or unimplemented contract fact fails at the
 boundary. Version 3 of the producer stream also carries nominal enum evidence
 and typed native constants, so symbolic scalar and enum-backed status facts are
 verified against Clang evidence and lower as the header symbol rather than a
-magic integer. The current native executable subset preserves an enum status's
-verified underlying integer as the error payload; exposing the named foreign
-enum itself remains part of richer native type semantics. C++, Objective-C,
-Swift, records, callbacks, and richer `.zd` facts remain with Stage 0 until
-their raw records and normalized FIIR cross together. Cross-process cache
-locking and eviction remain toolchain hardening.
+magic integer. Enum-backed errors retain their nominal imported type through
+native sema, `Result<void, E>`, matching, and C emission; explicit integer
+construction uses the producer-verified underlying type. General foreign enum
+parameters/constants, C++, Objective-C, Swift, records, callbacks, and richer
+`.zd` facts remain with Stage 0 until their raw records and normalized FIIR
+cross together. Cross-process cache locking and eviction remain toolchain
+hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

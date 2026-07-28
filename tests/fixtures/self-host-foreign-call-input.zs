@@ -10,11 +10,18 @@ function main(): i32 {
   const extra = native.z_foreign_add(1, 1);
   const outcome = attempt checkStatus(0);
   const enumOutcome = attempt checkEnumStatus(0);
+  const namespaceOutcome: Result<void, native.ZForeignStatus> =
+    attempt native.z_foreign_enum_status(0);
   const enumStatus = match (enumOutcome) {
     success => 0;
     failure(status) => i32(status);
   };
   if (enumStatus != 0) return enumStatus;
+  const namespaceStatus = match (namespaceOutcome) {
+    success => 0;
+    failure(status) => i32(status);
+  };
+  if (namespaceStatus != 0) return namespaceStatus;
   return match (outcome) {
     success => sum + extra;
     failure(status) => status;

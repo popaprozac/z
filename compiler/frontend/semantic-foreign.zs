@@ -1,6 +1,7 @@
 import {
   NativeForeignContractSet,
   NativeForeignFunctionContract,
+  NativeForeignTypeContract,
 } from "./foreign-contracts.zs";
 import {
   ParsedModule,
@@ -10,12 +11,15 @@ import {
 } from "./module-symbols.zs";
 import {
   ModuleFunctionSignature,
+  ModuleFieldSignature,
+  ModuleMethodSignature,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSymbol,
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
   ModuleTypeSignature,
+  ModuleVariantSignature,
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
@@ -44,7 +48,9 @@ function foreignFunctionIndex(
 }
 
 function foreignFunctionSignature(
-  in contract: NativeForeignFunctionContract
+  in contract: NativeForeignFunctionContract,
+  in types: Array<NativeForeignTypeContract>,
+  in namespace: String
 ): ModuleFunctionSignature {
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
@@ -57,7 +63,15 @@ function foreignFunctionSignature(
   let errorType = "";
   match (in contract.errorType) {
     some(typeName) => {
-      errorType = typeName.copyBytes(0, typeName.byteLength);
+      let foreign = false;
+      for (const type of types) {
+        if (type.name != typeName) continue;
+        errorType = `${namespace}.${type.name}`;
+        foreign = true;
+      }
+      if (!foreign) {
+        errorType = typeName.copyBytes(0, typeName.byteLength);
+      }
     }
     none => {}
   }
@@ -97,6 +111,7 @@ function attachSelectiveFunction(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
+  in namespace: String,
   in localName: String,
   in importedName: String,
   line: usize,
@@ -129,7 +144,11 @@ function attachSelectiveFunction(
     );
   modules[moduleIndex].symbols[symbolIndex].functionSignature =
     Option<ModuleFunctionSignature>.some(
-      foreignFunctionSignature(contracts.functions[contractIndex])
+      foreignFunctionSignature(
+        contracts.functions[contractIndex],
+        contracts.types,
+        namespace
+      )
     );
   modules[moduleIndex].symbols[symbolIndex].foreignHeader =
     contracts.moduleSpecifier.copyBytes(
@@ -171,7 +190,7 @@ function attachNamespaceFunctions(
         contract.nativeName.byteLength
       ),
       functionSignature: Option<ModuleFunctionSignature>.some(
-        foreignFunctionSignature(contract)
+        foreignFunctionSignature(contract, contracts.types, namespace)
       ),
       typeSignature: Option<ModuleTypeSignature>.none,
       foreignHeader: contracts.moduleSpecifier.copyBytes(
@@ -179,6 +198,92 @@ function attachNamespaceFunctions(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: successValues,
+      offset,
+      line,
+      column,
+    }));
+  }
+  modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
+    modules[moduleIndex].symbols
+  );
+}
+
+function foreignTypeSignature(
+  in type: NativeForeignTypeContract
+): ModuleTypeSignature {
+  return ModuleTypeSignature({
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    executorAffinity: "",
+    implementedTraits: Array<String>(),
+    fields: Array<ModuleFieldSignature>(),
+    methods: Array<ModuleMethodSignature>(),
+    variants: Array<ModuleVariantSignature>(),
+    customDeinit: false,
+    customConstructor: false,
+    constructorSignature: Option<ModuleFunctionSignature>.none,
+    foreignNativeName: type.nativeName.copyBytes(
+      0,
+      type.nativeName.byteLength
+    ),
+    foreignUnderlyingType: type.underlyingType.copyBytes(
+      0,
+      type.underlyingType.byteLength
+    ),
+  });
+}
+
+function attachForeignTypes(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): void {
+  if (moduleSymbolIndex(modules[moduleIndex], namespace) >= modules[moduleIndex].symbols.length) {
+    modules[moduleIndex].symbols.push(ModuleSymbol({
+      name: namespace.copyBytes(0, namespace.byteLength),
+      kind: ModuleSymbolKind.namespaceSymbol,
+      exported: false,
+      targetModule: Option<usize>.none,
+      importedName: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      functionSignature: Option<ModuleFunctionSignature>.none,
+      typeSignature: Option<ModuleTypeSignature>.none,
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: Array<String>(),
+      offset,
+      line,
+      column,
+    }));
+  }
+  for (const type of contracts.types) {
+    const name = `${namespace}.${type.name}`;
+    if (moduleSymbolIndex(modules[moduleIndex], name) < modules[moduleIndex].symbols.length) {
+      continue;
+    }
+    modules[moduleIndex].symbols.push(ModuleSymbol({
+      name,
+      kind: ModuleSymbolKind.enumSymbol,
+      exported: false,
+      targetModule: Option<usize>.none,
+      importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
+      functionSignature: Option<ModuleFunctionSignature>.none,
+      typeSignature: Option<ModuleTypeSignature>.some(
+        foreignTypeSignature(type)
+      ),
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: Array<String>(),
       offset,
       line,
       column,
@@ -212,6 +317,16 @@ function attachModuleContract(
   for (const declaration of parsed[moduleIndex].program.imports) {
     if (declaration.header != binding.contracts.moduleSpecifier) continue;
     matched = true;
+    const namespace = moduleBindingName(declaration);
+    attachForeignTypes(
+      moduleIndex,
+      inout modules,
+      binding.contracts,
+      namespace,
+      declaration.offset,
+      declaration.line,
+      declaration.column
+    );
     if (declaration.selective) {
       for (const importBinding of declaration.bindings) {
         const localName = importBinding.localName.copyBytes(
@@ -229,6 +344,7 @@ function attachModuleContract(
           moduleIndex,
           inout modules,
           binding.contracts,
+          namespace,
           localName,
           importedName,
           line,
@@ -236,7 +352,6 @@ function attachModuleContract(
         );
       }
     } else {
-      const namespace = moduleBindingName(declaration);
       attachNamespaceFunctions(
         moduleIndex,
         inout modules,

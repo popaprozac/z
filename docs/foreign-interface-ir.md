@@ -230,8 +230,8 @@ selective and namespace calls without exposing producer records to lowering.
    callbacks, Objective-C declarations, interfaces, and protocols without
    weakening its fail-closed boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal,
-   symbolic scalar, and nominally verified enum-backed integer statuses through
-   named foreign enum semantics, ownership, pointer, buffer,
+   symbolic scalar, and nominally preserved enum-backed integer statuses
+   through general foreign enum parameters/constants, ownership, pointer, buffer,
    callback, executor, and native-value facts, then extend the validated
    in-memory FIIR already consumed by native sema and scalar/status lowering
    into richer emission rather than teaching any layer about wire records.

@@ -42,6 +42,10 @@ function inspect(
     "foreign-functions-only.h"
   );
   if (normalized.moduleSpecifier != "foreign-functions-only.h") return 10;
+  if (normalized.types.length != 1) return 45;
+  if (normalized.types[0].name != "ZForeignStatus") return 46;
+  if (normalized.types[0].nativeName != "ZForeignStatus") return 47;
+  if (normalized.types[0].underlyingType != "i32") return 48;
   if (normalized.functions.length != 3) return 11;
   if (normalized.functions[0].name != "z_foreign_add") return 12;
   if (normalized.functions[0].nativeName != "z_foreign_add") return 13;
@@ -71,7 +75,7 @@ function inspect(
   if (normalized.functions[2].returnType != "void") return 30;
   match (in normalized.functions[2].errorType) {
     some(typeName) => {
-      if (typeName != "i32") return 31;
+      if (typeName != "ZForeignStatus") return 31;
     }
     none => return 32;
   }
@@ -114,7 +118,7 @@ function inspect(
     );
   };
   if (graph.modules.length != 1) return 29;
-  if (graph.modules[0].semanticEvidence.callResolutions.length != 4) return 30;
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 5) return 30;
   if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "foreign") {
     return 31;
   }
@@ -158,9 +162,23 @@ function inspect(
   if (graph.modules[0].semanticEvidence.callResolutions[3].returnType != "void") {
     return 43;
   }
-  if (graph.modules[0].semanticEvidence.callResolutions[3].errorType != "i32") {
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[3].errorType
+      != "__z_selective_import_0.ZForeignStatus"
+  ) {
     return 44;
   }
+  if (graph.modules[0].semanticEvidence.callResolutions[4].kind != "foreign") {
+    return 49;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[4].targetName
+      != "z_foreign_enum_status"
+  ) return 50;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[4].errorType
+      != "native.ZForeignStatus"
+  ) return 51;
   const emitted = try emitModulesC(modules, graph);
   try fs.writeText(outputPath, emitted);
   return 0;

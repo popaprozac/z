@@ -50,8 +50,15 @@ export struct NativeForeignFunctionContract {
   parameters: Array<NativeForeignParameterContract>;
 }
 
+export struct NativeForeignTypeContract {
+  name: String;
+  nativeName: String;
+  underlyingType: String;
+}
+
 export struct NativeForeignContractSet {
   moduleSpecifier: String;
+  types: Array<NativeForeignTypeContract>;
   functions: Array<NativeForeignFunctionContract>;
 }
 
@@ -478,6 +485,23 @@ export function normalizeForeignContracts(
   if (contracts.moduleSpecifier != expectedModuleSpecifier) {
     throw `Z declaration module "${contracts.moduleSpecifier}" does not match imported header "${expectedModuleSpecifier}"`;
   }
+  let types = Array<NativeForeignTypeContract>();
+  for (const declaration of declarations.types) {
+    types.push(NativeForeignTypeContract({
+      name: declaration.exportName.copyBytes(
+        0,
+        declaration.exportName.byteLength
+      ),
+      nativeName: declaration.nativeName.copyBytes(
+        0,
+        declaration.nativeName.byteLength
+      ),
+      underlyingType: declaration.underlyingType.copyBytes(
+        0,
+        declaration.underlyingType.byteLength
+      ),
+    }));
+  }
   let functions = Array<NativeForeignFunctionContract>();
   for (const contract of contracts.functions) {
     const functionIndex = try findRawFunction(declarations, contract.name);
@@ -548,10 +572,25 @@ export function normalizeForeignContracts(
         throw `native status function "${contract.name}" must return an integer scalar`;
       }
       returnType = "void";
-      errorType = Option.some(nativeReturnType.copyBytes(
-        0,
-        nativeReturnType.byteLength
-      ));
+      match (foreignEnumTypeIndex(
+        declarations,
+        declarations.overloads[overloadIndex].returnNativeType
+      )) {
+        some(typeIndex) => {
+          errorType = Option.some(
+            declarations.types[typeIndex].exportName.copyBytes(
+              0,
+              declarations.types[typeIndex].exportName.byteLength
+            )
+          );
+        }
+        none => {
+          errorType = Option.some(nativeReturnType.copyBytes(
+            0,
+            nativeReturnType.byteLength
+          ));
+        }
+      }
       for (const successValue of contract.successValues) {
         if (isDecimalStatusValue(successValue)) {
           successValues.push(
@@ -609,6 +648,7 @@ export function normalizeForeignContracts(
       0,
       contracts.moduleSpecifier.byteLength
     ),
+    types,
     functions,
   });
 }

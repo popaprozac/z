@@ -120,7 +120,19 @@ export function typeSymbolLocation(
       }
       return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
         some(target) => exportedTypeLocation(modules, target, member);
-        none => Option<ModuleSymbolLocation>.none;
+        none => {
+          const exact = moduleSymbolIndex(modules[moduleIndex], typeName);
+          if (
+            exact < modules[moduleIndex].symbols.length
+            && isTypeSymbolKind(modules[moduleIndex].symbols[exact].kind)
+          ) {
+            return Option.some(ModuleSymbolLocation({
+              moduleIndex,
+              symbolIndex: exact,
+            }));
+          }
+          return Option<ModuleSymbolLocation>.none;
+        }
       };
     }
     if (isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)) {

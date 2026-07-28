@@ -1200,6 +1200,29 @@ function inferUnclassifiedCallArguments(
   }
 }
 
+function isIntegerConstructionSource(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  if (isIntegerTypeName(typeName)) return true;
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+      ) {
+        some(signature) => {
+          return signature.foreignNativeName.byteLength > 0
+            && isIntegerTypeName(signature.foreignUnderlyingType);
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2868,7 +2891,7 @@ function inferExpressionNodeType(
           return copiedString(base);
         }
         try requireSettledExpressionType(module, tree, argument, actual);
-        if (!isIntegerTypeName(actual)) {
+        if (!isIntegerConstructionSource(modules, moduleIndex, actual)) {
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
