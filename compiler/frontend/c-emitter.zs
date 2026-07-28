@@ -610,7 +610,32 @@ function appendExpression(
       throw "native C emission received a malformed direct call";
     }
     const callee = declaration.expressions[index].children[0];
-    try appendExpression(inout output, declaration, callee);
+    if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.readText"
+    ) output.append("z_stage1_fs_read_text");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.writeText"
+    ) output.append("z_stage1_fs_write_text");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.exists"
+    ) output.append("z_stage1_fs_exists");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "process.args"
+    ) output.append("z_stage1_process_args");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "process.run"
+    ) output.append("z_stage1_process_run");
+    else try appendExpression(inout output, declaration, callee);
     output.append("(");
     let argument: usize = 1;
     while (argument < declaration.expressions[index].children.length) {
@@ -1452,13 +1477,23 @@ function appendStatement(
 
 function appendFunctionSignature(
   inout output: TextBuffer,
-  in declaration: LoweredFunction
+  in declaration: LoweredFunction,
+  processArguments: boolean
 ): void throws String {
   const returnType = try cType(declaration.returnType);
   output.append(returnType);
   output.append(" ");
   output.append(declaration.name);
   output.append("(");
+  if (
+    declaration.name == "main"
+    && declaration.parameters.length == 0
+    && processArguments
+  ) {
+    output.append("int argc, char **argv");
+    output.append(")");
+    return;
+  }
   let first = true;
   for (const parameter of declaration.parameters) {
     if (!first) output.append(", ");
@@ -1476,10 +1511,23 @@ function appendFunctionSignature(
 
 function appendFunction(
   inout output: TextBuffer,
-  in declaration: LoweredFunction
+  in declaration: LoweredFunction,
+  processArguments: boolean
 ): void throws String {
-  try appendFunctionSignature(inout output, declaration);
+  try appendFunctionSignature(
+    inout output,
+    declaration,
+    processArguments
+  );
   output.append(" {\n");
+  if (
+    declaration.name == "main"
+    && declaration.parameters.length == 0
+    && processArguments
+  ) {
+    output.append("  z_stage1_process_argc = argc;\n");
+    output.append("  z_stage1_process_argv = argv;\n");
+  }
   for (const flag of declaration.liveFlags) {
     if (flag.parameter) {
       appendIndent(inout output, 1);
@@ -2085,9 +2133,136 @@ function appendSetRuntime(
   }
 }
 
+function programUsesStandardCall(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.localValue
+        && expression.value == name
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function appendSystemStandardRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  const usesReadText = programUsesStandardCall(program, "fs.readText");
+  const usesProcessArgs = programUsesStandardCall(program, "process.args");
+  if (usesReadText || usesProcessArgs) {
+    output.append("static __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
+    output.append("  size_t index = 0;\n");
+    output.append("  while (index < length) {\n");
+    output.append("    const uint8_t first = (uint8_t)data[index];\n");
+    output.append("    if (first <= 0x7Fu) { index += 1; continue; }\n");
+    output.append("    if (first >= 0xC2u && first <= 0xDFu) {\n");
+    output.append("      if (index + 1 >= length || ((uint8_t)data[index + 1] & 0xC0u) != 0x80u) return false;\n");
+    output.append("      index += 2; continue;\n");
+    output.append("    }\n");
+    output.append("    if (first >= 0xE0u && first <= 0xEFu) {\n");
+    output.append("      if (index + 2 >= length) return false;\n");
+    output.append("      const uint8_t second = (uint8_t)data[index + 1];\n");
+    output.append("      const uint8_t third = (uint8_t)data[index + 2];\n");
+    output.append("      if ((third & 0xC0u) != 0x80u) return false;\n");
+    output.append("      if (first == 0xE0u ? second < 0xA0u || second > 0xBFu : first == 0xEDu ? second < 0x80u || second > 0x9Fu : (second & 0xC0u) != 0x80u) return false;\n");
+    output.append("      index += 3; continue;\n");
+    output.append("    }\n");
+    output.append("    if (first >= 0xF0u && first <= 0xF4u) {\n");
+    output.append("      if (index + 3 >= length) return false;\n");
+    output.append("      const uint8_t second = (uint8_t)data[index + 1];\n");
+    output.append("      const uint8_t third = (uint8_t)data[index + 2];\n");
+    output.append("      const uint8_t fourth = (uint8_t)data[index + 3];\n");
+    output.append("      if ((third & 0xC0u) != 0x80u || (fourth & 0xC0u) != 0x80u) return false;\n");
+    output.append("      if (first == 0xF0u ? second < 0x90u || second > 0xBFu : first == 0xF4u ? second < 0x80u || second > 0x8Fu : (second & 0xC0u) != 0x80u) return false;\n");
+    output.append("      index += 4; continue;\n");
+    output.append("    }\n");
+    output.append("    return false;\n");
+    output.append("  }\n");
+    output.append("  return true;\n");
+    output.append("}\n\n");
+    output.append("static __attribute__((unused)) Z_String z_stage1_string_from_cstring(const char *value) {\n");
+    output.append("  if (value == NULL) abort();\n");
+    output.append("  if (!z_stage1_string_is_valid_utf8(value, strlen(value))) abort();\n");
+    output.append("  Z_String result = { NULL, 0, 0 };\n");
+    output.append("  z_string_append_bytes(&result, value, strlen(value));\n");
+    output.append("  return result;\n");
+    output.append("}\n\n");
+  }
+  if (usesReadText) {
+    output.append("static __attribute__((unused)) Z___z_Result_String_String z_stage1_fs_read_text(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  const char *native_path = path->data != NULL ? path->data : \"\";\n");
+    output.append("  FILE *file = fopen(native_path, \"rb\");\n");
+    output.append("  if (file == NULL) return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(errno)) };\n");
+    output.append("  if (fseek(file, 0, SEEK_END) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  const long measured = ftell(file);\n");
+    output.append("  if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    fclose(file);\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  Z_String contents = { NULL, 0, 0 };\n");
+    output.append("  if (measured > 0) {\n");
+    output.append("    z_string_reserve(&contents, (size_t)measured);\n");
+    output.append("    const size_t count = fread((void *)contents.data, 1, (size_t)measured, file);\n");
+    output.append("    if (count != (size_t)measured) {\n");
+    output.append("      const int code = ferror(file) ? errno : EIO;\n");
+    output.append("      fclose(file);\n");
+    output.append("      Z_String_deinit(&contents);\n");
+    output.append("      return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("    }\n");
+    output.append("    contents.length = count;\n");
+    output.append("    ((char *)contents.data)[contents.length] = '\\0';\n");
+    output.append("  }\n");
+    output.append("  if (fclose(file) != 0) {\n");
+    output.append("    const int code = errno;\n");
+    output.append("    Z_String_deinit(&contents);\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  if (!z_stage1_string_is_valid_utf8(contents.data != NULL ? contents.data : \"\", contents.length)) {\n");
+    output.append("    Z_String_deinit(&contents);\n");
+    output.append("    return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"file is not valid UTF-8\") };\n");
+    output.append("  }\n");
+    output.append("  return (Z___z_Result_String_String){ .tag = Z___z_Result_String_StringTag_success, .payload.success = contents };\n");
+    output.append("}\n\n");
+  }
+  if (usesProcessArgs) {
+    output.append("static __attribute__((unused)) Z___z_Array_String z_stage1_process_args(void) {\n");
+    output.append("  Z___z_Array_String result = { NULL, 0, 0 };\n");
+    output.append("  if (z_stage1_process_argc <= 1 || z_stage1_process_argv == NULL) return result;\n");
+    output.append("  result.length = (size_t)(z_stage1_process_argc - 1);\n");
+    output.append("  result.capacity = result.length;\n");
+    output.append("  result.data = calloc(result.capacity, sizeof(Z_String));\n");
+    output.append("  if (result.data == NULL) abort();\n");
+    output.append("  Z_String *items = (Z_String *)result.data;\n");
+    output.append("  for (size_t index = 0; index < result.length; index += 1) items[index] = z_stage1_string_from_cstring(z_stage1_process_argv[index + 1]);\n");
+    output.append("  return result;\n");
+    output.append("}\n\n");
+  }
+}
+
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
-  output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+  const usesProcessArguments = programUsesStandardCall(
+    program,
+    "process.args"
+  );
+  output.append("#include <stdbool.h>\n#include <errno.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n\n");
+  if (usesProcessArguments) {
+    output.append("static int z_stage1_process_argc = 0;\n");
+    output.append("static char **z_stage1_process_argv = NULL;\n\n");
+  }
   output.append("static inline __attribute__((unused)) int32_t z_stage1_checked_add_i32(int32_t left, int32_t right) {\n");
   output.append("  int32_t result;\n");
   output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
@@ -2320,6 +2495,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("  return result;\n");
   output.append("}\n\n");
   try appendTypeDefinitions(inout output, program);
+  appendSystemStandardRuntime(inout output, program);
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
     output.append("static inline __attribute__((unused)) const ");
@@ -2417,7 +2593,11 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     }
   }
   for (const declaration of program.functions) {
-    try appendFunctionSignature(inout output, declaration);
+    try appendFunctionSignature(
+      inout output,
+      declaration,
+      usesProcessArguments
+    );
     output.append(";\n");
   }
   output.append("\n");
@@ -2549,7 +2729,11 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     }
   }
   for (const declaration of program.functions) {
-    try appendFunction(inout output, declaration);
+    try appendFunction(
+      inout output,
+      declaration,
+      usesProcessArguments
+    );
   }
   return output.finish();
 }

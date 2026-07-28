@@ -1057,6 +1057,38 @@ distribution. Bun still performs source discovery and orchestration, and a
 trusted native bootstrap artifact must replace the source-built seed before a
 fresh installation can remove TypeScript.
 
+## First standalone Z driver
+
+The first driver-shaped executable now crosses the boundary that the compiler
+library's no-op entry point did not exercise. A Z program imports `std/process`
+and `std/fs`, receives its native `argc`/`argv` as an owned `Array<String>`,
+indexes one argument, calls the throwing `fs.readText`, and consumes the result
+through `attempt` plus `match`. The self-emitted frontend emits the program,
+Clang strict-compiles it, and the resulting binary runs without Bun. It returns
+distinct statuses for no argument, a successful UTF-8 read, a missing file, and
+invalid UTF-8.
+
+This probe found two representation boundaries:
+
+- external standard namespaces existed in the graph but carried no native
+  semantic call signature. Standard calls now have a distinct evidence kind
+  targeting the imported namespace, while their parameter capabilities,
+  return type, and error type remain ordinary `ModuleFunctionSignature` data;
+- native `try` lowering initially required an identifier callee even when
+  complete throwing-call evidence existed for a member call. It now trusts the
+  source-positioned evidence before applying the local-function fallback.
+
+The standard-library signatures live in their own frontend module rather than
+growing the resolver monolith. Lowering maps semantic names to runtime entry
+points, and runtime emission is demand-driven so programs that do not use
+process arguments retain an ordinary `main(void)` ABI.
+
+The broader `source-stager` application deliberately remains the next pressure
+target. It reaches fixed `Array<String>` to `Slice<String>` coercion at
+`process.run`, followed by native `fs.writeText` and console lowering. Those are
+composition gaps to close, not reasons to weaken the typed standard-library
+contract.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

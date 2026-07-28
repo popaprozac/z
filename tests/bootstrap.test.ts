@@ -9163,6 +9163,46 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 20_000);
 
+test("emits and runs a standalone native Z driver with arguments and checked file I/O", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-native-driver.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /int32_t main\(int argc, char \*\*argv\);/);
+  assert.match(emission.stdout, /z_stage1_process_args\(\)/);
+  assert.match(emission.stdout, /z_stage1_fs_read_text\(/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-native-driver-");
+  const executable = resolve(directory, "driver");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const noArguments = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(noArguments.status, 2, noArguments.stderr);
+  const existing = spawnSync(executable, [input], { encoding: "utf8" });
+  assert.equal(existing.status, 0, existing.stderr);
+  const missing = spawnSync(
+    executable,
+    [resolve(directory, "missing.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(missing.status, 1, missing.stderr);
+  const invalidUtf8 = resolve(directory, "invalid-utf8.zs");
+  writeFileSync(invalidUtf8, Buffer.from([0xc3, 0x28]));
+  const invalid = spawnSync(executable, [invalidUtf8], { encoding: "utf8" });
+  assert.equal(invalid.status, 1, invalid.stderr);
+}, 15_000);
+
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
   const emission = spawnSync(
@@ -11710,9 +11750,9 @@ test("preserves recursive ownership through unimported aggregate field types", (
   const authoritativeExpressions = result.stdout.match(
     /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
-  assert.equal(observedBindings, "7");
+  assert.equal(observedBindings, "10");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "91");
+  assert.equal(observedExpressions, "105");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

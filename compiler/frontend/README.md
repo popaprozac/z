@@ -139,11 +139,21 @@ module resolution and semantic analysis before emission, so invalid names and
 types fail before Clang. Scalar and control-flow fixtures prove that native
 lexing, parsing, semantic validation, and C emission compose.
 Cold library preparation also asks the compiled self-emitted frontend to emit
-the same 31-module graph again and requires byte-identical C before caching the
+the same frontend graph again and requires byte-identical C before caching the
 library. This consecutive-generation fixed-point gate catches seed/native
 lowering drift before any parse, resolve, or emit command can use the artifact.
 Stage 0 still owns full-language semantic analysis, lowering, module linking,
 runtime support, foreign interop, and production `emit`/`run`.
+
+The first standalone-driver fixture advances one layer beyond the compiler
+library's bootstrap entry point. Native semantic evidence recognizes imported
+`std/process` and `std/fs` calls; the native emitter supplies owned
+`process.args()` plus checked UTF-8 `fs.readText()` runtime support. Its emitted
+C strict-compiles into a binary that distinguishes missing arguments,
+successful reads, OS failures, and invalid UTF-8 without Bun at runtime.
+Writing files, launching child processes, console output, recursive project
+discovery, and the complete compiler command surface remain subsequent driver
+slices.
 
 Scalar calls, mutable control flow, value structs, owned enums, `Option<T>`,
 and `Result<T, E>` now run directly through the typed lowering IR. Checked
@@ -219,7 +229,7 @@ signatures used by lowering, so inferred `u8`/`usize`/`boolean`/`String`
   `Result` or assigning a selecting arm's success payload. Checked division and
   remainder, imported throwing-call evidence, discarded non-void `try`, nested
   assignment targets, and contextual `Option` returns close the remaining
-  lowering stops. The unchanged 31-module `parser-library.zs` graph now lowers
+  lowering stops. The unchanged `parser-library.zs` graph now lowers
   completely into one native C translation unit and compiles and links cleanly
   as strict C11 with Clang `-Wall -Wextra -Werror`. Contextual integer evidence,
   cleanup-bearing borrowed temporaries, contextual `Option` construction,

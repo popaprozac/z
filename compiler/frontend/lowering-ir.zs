@@ -3494,7 +3494,30 @@ function lowerExpression(
       }
     }
     let callee: usize = 0;
-    if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
+    let standardTarget = "";
+    match (resolvedCallTarget(evidence, tree, index)) {
+      some(target) => {
+        if (
+          target == "fs.readText"
+          || target == "fs.writeText"
+          || target == "fs.exists"
+          || target == "process.args"
+          || target == "process.run"
+        ) standardTarget = move target;
+      }
+      none => {}
+    }
+    if (standardTarget.byteLength > 0) {
+      callee = pushExpression(
+        inout output,
+        LoweredExpressionKind.localValue,
+        standardTarget,
+        Array<usize>(),
+        Array<String>()
+      );
+    } else if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+    ) {
       match (resolvedCallTarget(evidence, tree, index)) {
         some(target) => callee = pushExpression(
           inout output,
@@ -4001,6 +4024,20 @@ function directThrowingCallResult(
     tree.nodes[index].kind != ExpressionKind.callExpression
     || tree.nodes[index].children.length == 0
   ) return Option<LoweredEnum>.none;
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+      || resolution.errorType.byteLength == 0
+    ) continue;
+    const resultName = `Result<${resolution.returnType}, ${resolution.errorType}>`;
+    return try intrinsicResultDeclaration(
+      program,
+      importedTypes,
+      resultName
+    );
+  }
   const callee = tree.nodes[index].children[0];
   if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) {
     return Option<LoweredEnum>.none;
@@ -4024,20 +4061,6 @@ function directThrowingCallResult(
         none => return Option<LoweredEnum>.none;
       }
     }
-  }
-  for (const resolution of evidence.callResolutions) {
-    if (
-      resolution.offset != tree.nodes[index].offset
-      || resolution.line != tree.nodes[index].line
-      || resolution.column != tree.nodes[index].column
-      || resolution.errorType.byteLength == 0
-    ) continue;
-    const resultName = `Result<${resolution.returnType}, ${resolution.errorType}>`;
-    return try intrinsicResultDeclaration(
-      program,
-      importedTypes,
-      resultName
-    );
   }
   return Option<LoweredEnum>.none;
 }

@@ -7,6 +7,7 @@ import {
 } from "./module-graph.zs";
 import {
   ParsedModule,
+  moduleSymbolIndex,
   moduleBindingName as bindingName,
 } from "./module-symbols.zs";
 import { validateModuleNames } from "./semantic-names.zs";
@@ -49,6 +50,7 @@ import {
   numberLiteralType,
   throwingGeneratorHandleType,
 } from "./semantic-intrinsics.zs";
+import { nativeStandardCall } from "./semantic-standard-library.zs";
 import {
   NativeInitializationState,
   NativeOwnershipState,
@@ -2928,6 +2930,57 @@ function inferExpressionNodeType(
       && tree.nodes[calleeIndex].children.length == 1
     ) {
       const receiverIndex = tree.nodes[calleeIndex].children[0];
+      if (
+        tree.nodes[receiverIndex].kind
+          == ExpressionKind.identifierExpression
+      ) {
+        const namespaceName = identifierLookupName(
+          tree.nodes[receiverIndex].value
+        );
+        const memberName = identifierLookupName(
+          tree.nodes[calleeIndex].value
+        );
+        match (nativeStandardCall(
+          module.program,
+          namespaceName,
+          memberName
+        )) {
+          some(standard) => {
+            const namespaceSymbol = moduleSymbolIndex(
+              modules[moduleIndex],
+              namespaceName
+            );
+            if (
+              namespaceSymbol
+                < modules[moduleIndex].symbols.length
+            ) {
+              const substitutions = Array<NativeValueBinding>();
+              const argumentNodes = callArgumentNodes(children);
+              return try inferSignatureCallType(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                calleeIndex,
+                index,
+                argumentNodes,
+                inout bindings,
+                "",
+                "",
+                standard.name,
+                standard.signature,
+                substitutions,
+                moduleIndex,
+                namespaceSymbol,
+                "standard",
+                inout evidence
+              );
+            }
+          }
+          none => {}
+        }
+      }
       let ownerType = try inferExpressionNodeType(
         module,
         modules,
