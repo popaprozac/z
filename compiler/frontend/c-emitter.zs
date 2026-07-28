@@ -784,6 +784,11 @@ function appendExpression(
     else if (
       declaration.expressions[callee].kind
         == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "fs.createDirectories"
+    ) output.append("z_stage1_fs_create_directories");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "fs.realPath"
     ) output.append("z_stage1_fs_real_path");
     else if (
@@ -2347,6 +2352,10 @@ function appendSystemStandardRuntime(
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
+  const usesCreateDirectories = programUsesStandardCall(
+    program,
+    "fs.createDirectories"
+  );
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessArgs = programUsesStandardCall(program, "process.args");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
@@ -2359,6 +2368,7 @@ function appendSystemStandardRuntime(
     || usesWriteText
     || usesExists
     || usesIsDirectory
+    || usesCreateDirectories
     || usesRealPath
     || usesProcessArgs
     || usesProcessRun
@@ -2484,6 +2494,74 @@ function appendSystemStandardRuntime(
     output.append("#else\n");
     output.append("  return S_ISDIR(status.st_mode);\n");
     output.append("#endif\n");
+    output.append("}\n\n");
+  }
+  if (usesCreateDirectories) {
+    output.append("static __attribute__((unused)) bool z_stage1_fs_is_path_separator(char value) {\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  return value == '/' || value == '\\\\';\n");
+    output.append("#else\n");
+    output.append("  return value == '/';\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+    output.append("static __attribute__((unused)) int z_stage1_fs_create_one_directory(const char *path) {\n");
+    output.append("  if (path == NULL || path[0] == '\\0') return 0;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  if (_mkdir(path) == 0) return 0;\n");
+    output.append("#else\n");
+    output.append("  if (mkdir(path, 0777) == 0) return 0;\n");
+    output.append("#endif\n");
+    output.append("  const int code = errno;\n");
+    output.append("  if (code != EEXIST) return code;\n");
+    output.append("  struct stat status;\n");
+    output.append("  if (stat(path, &status) != 0) return errno;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  return (status.st_mode & _S_IFDIR) != 0 ? 0 : ENOTDIR;\n");
+    output.append("#else\n");
+    output.append("  return S_ISDIR(status.st_mode) ? 0 : ENOTDIR;\n");
+    output.append("#endif\n");
+    output.append("}\n\n");
+    output.append("static __attribute__((unused)) Z___z_Result_void_String z_stage1_fs_create_directories(const Z_String *path) {\n");
+    output.append("  if (path == NULL || (path->length > 0 && memchr(path->data, '\\0', path->length) != NULL)) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"path contains an embedded null byte\") };\n");
+    output.append("  }\n");
+    output.append("  if (path->length == 0) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"directory path cannot be empty\") };\n");
+    output.append("  }\n");
+    output.append("  char *buffer = malloc(path->length + 1);\n");
+    output.append("  if (buffer == NULL) abort();\n");
+    output.append("  memcpy(buffer, path->data, path->length);\n");
+    output.append("  buffer[path->length] = '\\0';\n");
+    output.append("  size_t start = 0;\n");
+    output.append("#if defined(_WIN32)\n");
+    output.append("  if (path->length >= 2 && buffer[1] == ':') {\n");
+    output.append("    start = path->length >= 3 && z_stage1_fs_is_path_separator(buffer[2]) ? 3 : 2;\n");
+    output.append("  } else if (path->length >= 2 && z_stage1_fs_is_path_separator(buffer[0]) && z_stage1_fs_is_path_separator(buffer[1])) {\n");
+    output.append("    size_t cursor = 2;\n");
+    output.append("    while (cursor < path->length && !z_stage1_fs_is_path_separator(buffer[cursor])) cursor += 1;\n");
+    output.append("    while (cursor < path->length && z_stage1_fs_is_path_separator(buffer[cursor])) cursor += 1;\n");
+    output.append("    while (cursor < path->length && !z_stage1_fs_is_path_separator(buffer[cursor])) cursor += 1;\n");
+    output.append("    start = cursor < path->length ? cursor + 1 : cursor;\n");
+    output.append("  }\n");
+    output.append("#else\n");
+    output.append("  if (z_stage1_fs_is_path_separator(buffer[0])) start = 1;\n");
+    output.append("#endif\n");
+    output.append("  int code = 0;\n");
+    output.append("  for (size_t index = start; index < path->length; index += 1) {\n");
+    output.append("    if (!z_stage1_fs_is_path_separator(buffer[index])) continue;\n");
+    output.append("    const char separator = buffer[index];\n");
+    output.append("    buffer[index] = '\\0';\n");
+    output.append("    code = z_stage1_fs_create_one_directory(buffer);\n");
+    output.append("    buffer[index] = separator;\n");
+    output.append("    if (code != 0) break;\n");
+    output.append("    while (index + 1 < path->length && z_stage1_fs_is_path_separator(buffer[index + 1])) index += 1;\n");
+    output.append("  }\n");
+    output.append("  if (code == 0) code = z_stage1_fs_create_one_directory(buffer);\n");
+    output.append("  free(buffer);\n");
+    output.append("  if (code != 0) {\n");
+    output.append("    return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(strerror(code)) };\n");
+    output.append("  }\n");
+    output.append("  return (Z___z_Result_void_String){ .tag = Z___z_Result_void_StringTag_success };\n");
     output.append("}\n\n");
   }
   if (usesRealPath) {
@@ -2651,6 +2729,10 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   const usesWriteText = programUsesStandardCall(program, "fs.writeText");
   const usesExists = programUsesStandardCall(program, "fs.exists");
   const usesIsDirectory = programUsesStandardCall(program, "fs.isDirectory");
+  const usesCreateDirectories = programUsesStandardCall(
+    program,
+    "fs.createDirectories"
+  );
   const usesRealPath = programUsesStandardCall(program, "fs.realPath");
   const usesProcessRun = programUsesStandardCall(program, "process.run");
   const usesConsole =
@@ -2658,7 +2740,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || programUsesStandardCall(program, "console.write")
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
-  if (usesRealPath) {
+  if (usesRealPath || usesCreateDirectories) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
@@ -2667,17 +2749,32 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append(header);
     output.append("\"\n");
   }
-  if (usesReadText || usesWriteText || usesRealPath || usesProcessRun) {
+  if (
+    usesReadText
+    || usesWriteText
+    || usesCreateDirectories
+    || usesRealPath
+    || usesProcessRun
+  ) {
     output.append("#include <errno.h>\n");
   }
   if (usesReadText || usesWriteText || usesConsole) {
     output.append("#include <stdio.h>\n");
   }
-  if (usesExists || usesIsDirectory || usesRealPath || usesProcessRun) {
+  if (
+    usesExists
+    || usesIsDirectory
+    || usesCreateDirectories
+    || usesRealPath
+    || usesProcessRun
+  ) {
     output.append("#if defined(_WIN32)\n#include <io.h>\n#include <process.h>\n#else\n#include <fcntl.h>\n#include <sys/types.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#endif\n");
   }
-  if (usesIsDirectory) {
+  if (usesIsDirectory || usesCreateDirectories) {
     output.append("#include <sys/stat.h>\n");
+  }
+  if (usesCreateDirectories) {
+    output.append("#if defined(_WIN32)\n#include <direct.h>\n#endif\n");
   }
   output.append("\n");
   if (usesProcessArguments) {

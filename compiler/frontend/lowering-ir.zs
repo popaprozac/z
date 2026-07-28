@@ -3859,6 +3859,7 @@ function lowerExpression(
           || target == "fs.writeText"
           || target == "fs.exists"
           || target == "fs.isDirectory"
+          || target == "fs.createDirectories"
           || target == "fs.realPath"
           || target == "process.args"
           || target == "process.run"

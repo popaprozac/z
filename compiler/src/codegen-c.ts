@@ -200,7 +200,9 @@ export function generateC(
   const usesTiming = usesSleep || [...semanticInfo.standardFunctionReferences.values()].includes("delay");
   const usedStandardFunctions = new Set(semanticInfo.standardFunctionReferences.values());
   const usesFileSystem = [...usedStandardFunctions].some((name) => name.startsWith("fs."));
-  const usesDirectoryInspection = usedStandardFunctions.has("fs.isDirectory");
+  const usesDirectoryInspection = usedStandardFunctions.has("fs.isDirectory")
+    || usedStandardFunctions.has("fs.createDirectories");
+  const usesDirectoryCreation = usedStandardFunctions.has("fs.createDirectories");
   const usesProcess = [...usedStandardFunctions].some((name) => name.startsWith("process."));
   const usesNativeMove = [...semanticInfo.foreignNamedTypes.values()].some((type) => (
     type.kind === "value" && type.lifecycle.move && !type.lifecycle.copy
@@ -261,6 +263,14 @@ export function generateC(
   if (usesDirectoryInspection) {
     lines.push("#include <sys/stat.h>");
     includedHeaders.add("sys/stat.h");
+  }
+  if (usesDirectoryCreation) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "#include <direct.h>",
+      "#endif",
+    );
+    includedHeaders.add("direct.h");
   }
   lines.push(
     "#include <stdbool.h>",
@@ -7231,6 +7241,7 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
   if (
     used.has("fs.readText")
     || used.has("fs.writeText")
+    || used.has("fs.createDirectories")
     || used.has("fs.realPath")
     || used.has("process.run")
   ) {
@@ -7332,6 +7343,79 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
 #else
   return S_ISDIR(status.st_mode);
 #endif
+}`);
+  }
+
+  if (used.has("fs.createDirectories")) {
+    sections.push(`static bool z_fs_is_path_separator(char value) {
+#if defined(_WIN32)
+  return value == '/' || value == '\\\\';
+#else
+  return value == '/';
+#endif
+}
+
+static int z_fs_create_one_directory(const char *path) {
+  if (path == NULL || path[0] == '\\0') return 0;
+#if defined(_WIN32)
+  if (_mkdir(path) == 0) return 0;
+#else
+  if (mkdir(path, 0777) == 0) return 0;
+#endif
+  const int code = errno;
+  if (code != EEXIST) return code;
+  struct stat status;
+  if (stat(path, &status) != 0) return errno;
+#if defined(_WIN32)
+  return (status.st_mode & _S_IFDIR) != 0 ? 0 : ENOTDIR;
+#else
+  return S_ISDIR(status.st_mode) ? 0 : ENOTDIR;
+#endif
+}
+
+static ${voidResult} z_fs_create_directories(Z_String path) {
+  if (!z_standard_string_is_cstring(&path)) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+  }
+  if (path.length == 0) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("directory path cannot be empty") };
+  }
+  char *buffer = malloc((size_t)path.length + 1);
+  if (buffer == NULL) abort();
+  memcpy(buffer, path.data, (size_t)path.length);
+  buffer[path.length] = '\\0';
+
+  size_t start = 0;
+#if defined(_WIN32)
+  if (path.length >= 2 && buffer[1] == ':') {
+    start = path.length >= 3 && z_fs_is_path_separator(buffer[2]) ? 3 : 2;
+  } else if (path.length >= 2 && z_fs_is_path_separator(buffer[0]) && z_fs_is_path_separator(buffer[1])) {
+    size_t cursor = 2;
+    while (cursor < path.length && !z_fs_is_path_separator(buffer[cursor])) cursor += 1;
+    while (cursor < path.length && z_fs_is_path_separator(buffer[cursor])) cursor += 1;
+    while (cursor < path.length && !z_fs_is_path_separator(buffer[cursor])) cursor += 1;
+    start = cursor < path.length ? cursor + 1 : cursor;
+  }
+#else
+  if (z_fs_is_path_separator(buffer[0])) start = 1;
+#endif
+
+  int code = 0;
+  for (size_t index = start; index < path.length; index += 1) {
+    if (!z_fs_is_path_separator(buffer[index])) continue;
+    const char separator = buffer[index];
+    buffer[index] = '\\0';
+    code = z_fs_create_one_directory(buffer);
+    buffer[index] = separator;
+    if (code != 0) break;
+    while (index + 1 < path.length && z_fs_is_path_separator(buffer[index + 1])) index += 1;
+  }
+  if (code == 0) code = z_fs_create_one_directory(buffer);
+  free(buffer);
+  if (code != 0) {
+    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(code)) };
+  }
+  return (${voidResult}){ .tag = ${voidSuccess} };
 }`);
   }
 

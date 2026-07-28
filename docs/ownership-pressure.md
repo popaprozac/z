@@ -1106,11 +1106,15 @@ graph, emits readable C, writes that translation unit, and invokes Clang. Stage
 0 emits the driver once, but the resulting compilation of a separate
 two-module Z application executes no Bun or TypeScript process. The application
 returns its expected status 42. The same executable now exposes separate
-`check`, `emit`, `build`, and explicit-output `run` commands over one
+`check`, `emit`, `build`, and project-cache `run` commands over one
 `NativeProject` owner, proving that the parsed module array and resolved graph
 can move together across a driver API without representation casts. `run`
-builds, launches without a shell, forwards owned String arguments after `--`,
-and returns the child status.
+creates missing `.z-cache/run` parents through the typed
+`fs.createDirectories` API, builds into that stable project-local location,
+launches without a shell, forwards owned String arguments after `--`, and
+returns the child status. This removes an implementation-shaped output
+argument from the ergonomic command while retaining the C translation unit for
+inspection and future incremental reuse.
 
 The command split also made entry policy executable rather than documentary.
 `check` validates an export-only entry graph, but `emit`, `build`, and `run`
@@ -1338,8 +1342,8 @@ canonicalizes every module through typed `fs.realPath`, preventing lexical or
 symlink aliases from creating duplicate module identities, but supports only
 the self-hosting subset. Foreign header and `.zd` ingestion, Swift-target
 preparation, cross-platform target selection, manifest-selected/custom
-profiles, complete diagnostics, automatic temporary run artifacts, and
-production command options remain to cross independently.
+profiles, complete diagnostics, cache locking/eviction and incremental run
+artifact reuse, and production command options remain to cross independently.
 
 ## Not tested yet
 

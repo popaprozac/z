@@ -234,12 +234,11 @@ function emitProjectFile(
   return 0;
 }
 
-function buildProject(
-  in entryPath: String,
+function buildLoadedProject(
+  in project: NativeProject,
   in outputPath: String,
   release: boolean
 ): i32 throws String {
-  const project = try loadProject(entryPath);
   const emitted = try emitProject(project);
   const cPath = `${outputPath}.c`;
   try fs.writeText(cPath, emitted);
@@ -270,13 +269,29 @@ function buildProject(
   return exitCode;
 }
 
-function runProject(
+function buildProject(
   in entryPath: String,
   in outputPath: String,
+  release: boolean
+): i32 throws String {
+  const project = try loadProject(entryPath);
+  return try buildLoadedProject(project, outputPath, release);
+}
+
+function runProject(
+  in entryPath: String,
   in childArguments: Array<String>,
   release: boolean
 ): i32 throws String {
-  const compilationExitCode = try buildProject(entryPath, outputPath, release);
+  const project = try loadProject(entryPath);
+  const outputDirectory = `${project.config.directory}/.z-cache/run`;
+  try fs.createDirectories(outputDirectory);
+  const outputPath = `${outputDirectory}/program`;
+  const compilationExitCode = try buildLoadedProject(
+    project,
+    outputPath,
+    release
+  );
   if (compilationExitCode != 0) return compilationExitCode;
   return try process.run(outputPath, childArguments);
 }
@@ -341,14 +356,14 @@ function main(): i32 {
     return reportOutcome(outcome);
   }
   if (command == "run") {
-    if (arguments.length < 3) {
-      console.error("usage: z-native run <entry.zs> <output> [-- args]");
+    if (arguments.length < 2) {
+      console.error("usage: z-native run <entry.zs> [--release] [-- args]");
       return 2;
     }
     let childArguments = Array<String>();
-    const release = arguments.length > 3 && arguments[3] == "--release";
-    let index: usize = 3;
-    if (release) index = 4;
+    const release = arguments.length > 2 && arguments[2] == "--release";
+    let index: usize = 2;
+    if (release) index = 3;
     if (index < arguments.length && arguments[index] == "--") {
       index = index + 1;
     }
@@ -358,7 +373,6 @@ function main(): i32 {
     }
     const outcome = attempt runProject(
       arguments[1],
-      arguments[2],
       childArguments,
       release
     );

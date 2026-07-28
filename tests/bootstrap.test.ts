@@ -7896,6 +7896,7 @@ test("reads files, exposes program arguments, and runs child processes through s
   const directory = mkdtempSync("/tmp/z-system-std-");
   const fileName = resolve(directory, "main.zs");
   const copyPath = resolve(directory, "copy.zs");
+  const nestedDirectory = resolve(directory, "cache/generated/native");
   const source = `
     import console from "std/console";
     import fs from "std/fs";
@@ -7907,6 +7908,15 @@ test("reads files, exposes program arguments, and runs child processes through s
       if (!fs.exists(${JSON.stringify(copyPath)})) return 90;
       if (!fs.isDirectory(${JSON.stringify(directory)})) return 87;
       if (fs.isDirectory(${JSON.stringify(fileName)})) return 86;
+      try fs.createDirectories(${JSON.stringify(nestedDirectory)});
+      try fs.createDirectories(${JSON.stringify(nestedDirectory)});
+      if (!fs.isDirectory(${JSON.stringify(nestedDirectory)})) return 85;
+      const occupied = attempt fs.createDirectories(${JSON.stringify(copyPath)});
+      const occupiedWasFailure = match (occupied) {
+        success => false;
+        failure(_) => true;
+      };
+      if (!occupiedWasFailure) return 84;
       const canonical = try fs.realPath(${JSON.stringify(`${directory}/./main.zs`)});
       if (canonical != ${JSON.stringify(resolve(realpathSync(directory), "main.zs"))}) return 88;
       const arguments = process.args();
@@ -7943,6 +7953,7 @@ test("reads files, exposes program arguments, and runs child processes through s
   assert.match(generated, /static Z_Result_String_String z_fs_read_text/);
   assert.match(generated, /static Z_Result_String_String z_fs_real_path/);
   assert.match(generated, /static bool z_fs_is_directory/);
+  assert.match(generated, /static Z_Result_void_String z_fs_create_directories/);
   assert.match(generated, /static Z_DynamicArray_.* z_process_args\(void\)/);
   assert.match(generated, /execvp\(argv\[0\], argv\)/);
   assert.match(generated, /int32_t main\(int argc, char \*\*argv\)/);
@@ -7950,10 +7961,29 @@ test("reads files, exposes program arguments, and runs child processes through s
 
   const readOffset = source.indexOf("readText") + 2;
   assert.match(hover(source, fileName, readOffset)?.contents.value ?? "", /readText\(in path: String\): String throws String/);
+  const createOffset = source.indexOf("createDirectories") + 2;
+  assert.match(
+    hover(source, fileName, createOffset)?.contents.value ?? "",
+    /createDirectories\(in path: String\): void throws String/,
+  );
   const completionSource = source.replace("fs.readText", "fs.re");
   const completionOffset = completionSource.indexOf("fs.re") + "fs.re".length;
   assert.match(
     completions(completionSource, fileName, completionOffset).find((item) => item.label === "readText")?.detail ?? "",
+    /throws String/,
+  );
+  const createCompletionSource = source.replace(
+    "fs.createDirectories",
+    "fs.createD",
+  );
+  const createCompletionOffset = createCompletionSource.indexOf("fs.createD")
+    + "fs.createD".length;
+  assert.match(
+    completions(
+      createCompletionSource,
+      fileName,
+      createCompletionOffset,
+    ).find((item) => item.label === "createDirectories")?.detail ?? "",
     /throws String/,
   );
   const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
@@ -10447,21 +10477,34 @@ test("compiles a multi-module Z application through the standalone native driver
     projectRoot,
     "tests/fixtures/self-host-native-driver.zs",
   );
-  const argumentApplication = resolve(directory, "argument-application");
+  const argumentProject = resolve(directory, "argument-project");
+  mkdirSync(argumentProject);
+  const argumentApplicationSourceCopy = resolve(argumentProject, "main.zs");
+  writeFileSync(
+    argumentApplicationSourceCopy,
+    readFileSync(argumentApplicationSource, "utf8"),
+  );
   const running = spawnSync(
     driver,
     [
       "run",
-      argumentApplicationSource,
-      argumentApplication,
+      argumentApplicationSourceCopy,
       "--release",
       "--",
-      argumentApplicationSource,
+      argumentApplicationSourceCopy,
     ],
     { encoding: "utf8" },
   );
   assert.equal(running.status, 0, running.stderr);
   assert.match(running.stdout, /compiled 1 Z modules/);
+  assert.equal(
+    existsSync(resolve(argumentProject, ".z-cache/run/program")),
+    true,
+  );
+  assert.equal(
+    existsSync(resolve(argumentProject, ".z-cache/run/program.c")),
+    true,
+  );
 }, 45_000);
 
 test("lowers the complete native frontend graph to C", () => {

@@ -100,6 +100,19 @@ function fsCall(in memberName: String): Option<NativeStandardCallShape> {
       ),
     }));
   }
+  if (memberName == "createDirectories") {
+    parameterModes.push("in");
+    parameterTypes.push("String");
+    return Option.some(NativeStandardCallShape({
+      name: "fs.createDirectories",
+      signature: standardSignature(
+        move parameterModes,
+        move parameterTypes,
+        "void",
+        "String"
+      ),
+    }));
+  }
   if (memberName == "realPath") {
     parameterModes.push("in");
     parameterTypes.push("String");

@@ -18,7 +18,7 @@ command is intentionally smaller than the production `z` CLI:
 z-native check <entry.zs>
 z-native emit <entry.zs> <output.c>
 z-native build <entry.zs> <output> [--release]
-z-native run <entry.zs> <output> [--release] [-- args...]
+z-native run <entry.zs> [--release] [-- args...]
 ```
 
 It supports the self-hosting language and runtime subset. The native driver
@@ -26,10 +26,13 @@ finds the nearest `z.json`, parses the existing target entry, deployment,
 include-directory, link-directory, and library fields, validates configured
 paths, deduplicates native libraries, and projects those settings into Clang.
 Swift target preparation, broader foreign declaration records, cross-platform
-target selection, custom profiles, polished diagnostics, automatic temporary
-output selection for `run`, and the complete production command options remain
-with Stage 0 until equivalent native paths are proven. The current debug
-profile uses Clang `-O0`; `--release` uses `-O2 -DNDEBUG`.
+target selection, custom profiles, polished diagnostics, cache locking and
+eviction, and the complete production command options remain with Stage 0
+until equivalent native paths are proven. `run` creates missing project-local
+cache parents and retains its generated C and executable at
+`.z-cache/run/program.c` and `.z-cache/run/program`, ready for a later
+incremental-build layer. The current debug profile uses Clang `-O0`;
+`--release` uses `-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
 adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
