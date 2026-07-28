@@ -2,6 +2,7 @@ import console from "std/console";
 import { Set } from "std/collections";
 import fs from "std/fs";
 import process from "std/process";
+import { TextBuffer } from "std/text";
 import { emitModulesC } from "../frontend/c-emitter.zs";
 import {
   decodeRawForeignDeclarations,
@@ -234,12 +235,12 @@ function emitProjectFile(
   return 0;
 }
 
-function buildLoadedProject(
+function compileEmittedProject(
   in project: NativeProject,
+  in emitted: String,
   in outputPath: String,
   release: boolean
 ): i32 throws String {
-  const emitted = try emitProject(project);
   const cPath = `${outputPath}.c`;
   try fs.writeText(cPath, emitted);
   let compilerArguments = Array<String>();
@@ -269,6 +270,20 @@ function buildLoadedProject(
   return exitCode;
 }
 
+function buildLoadedProject(
+  in project: NativeProject,
+  in outputPath: String,
+  release: boolean
+): i32 throws String {
+  const emitted = try emitProject(project);
+  return try compileEmittedProject(
+    project,
+    emitted,
+    outputPath,
+    release
+  );
+}
+
 function buildProject(
   in entryPath: String,
   in outputPath: String,
@@ -276,6 +291,138 @@ function buildProject(
 ): i32 throws String {
   const project = try loadProject(entryPath);
   return try buildLoadedProject(project, outputPath, release);
+}
+
+function appendCacheField(
+  inout output: TextBuffer,
+  in name: String,
+  in value: String
+): void {
+  output.append(name);
+  output.appendAscii(0);
+  output.append(value);
+  output.appendAscii(0);
+}
+
+function runCacheMetadata(
+  in project: NativeProject,
+  in toolchainIdentity: String,
+  release: boolean
+): String {
+  let output = TextBuffer();
+  appendCacheField(
+    inout output,
+    "schema",
+    "z-native-run-cache-v1"
+  );
+  if (release) {
+    appendCacheField(inout output, "profile", "release");
+  } else {
+    appendCacheField(inout output, "profile", "debug");
+  }
+  appendCacheField(inout output, "entry", project.entryPath);
+  appendCacheField(inout output, "directory", project.config.directory);
+  appendCacheField(
+    inout output,
+    "toolchain",
+    toolchainIdentity
+  );
+  match (in project.config.platform) {
+    some(platform) => appendCacheField(
+      inout output,
+      "platform",
+      platform
+    );
+    none => appendCacheField(
+      inout output,
+      "platform",
+      "host-default"
+    );
+  }
+  match (in project.config.minimumVersion) {
+    some(version) => appendCacheField(
+      inout output,
+      "minimum-version",
+      version
+    );
+    none => appendCacheField(
+      inout output,
+      "minimum-version",
+      ""
+    );
+  }
+  for (const directory of project.config.includeDirectories) {
+    appendCacheField(inout output, "include", directory);
+  }
+  for (const directory of project.config.linkDirectories) {
+    appendCacheField(inout output, "link-directory", directory);
+  }
+  for (const library of project.config.linkLibraries) {
+    appendCacheField(inout output, "link-library", library);
+  }
+  for (const foreignModule of project.foreignModules) {
+    appendCacheField(
+      inout output,
+      "foreign-module",
+      foreignModule.modulePath
+    );
+    appendCacheField(
+      inout output,
+      "foreign-evidence",
+      foreignModule.cacheKey
+    );
+  }
+  return output.finish();
+}
+
+function loadToolchainIdentity(
+  in outputDirectory: String
+): String throws String {
+  const inputPath = `${outputDirectory}/toolchain-input.c`;
+  const outputPath = `${outputDirectory}/toolchain.txt`;
+  try fs.writeText(inputPath, "");
+  let arguments = Array<String>();
+  arguments.push("-dM");
+  arguments.push("-E");
+  arguments.push("-x");
+  arguments.push("c");
+  arguments.push(copy inputPath);
+  arguments.push("-o");
+  arguments.push(copy outputPath);
+  const exitCode = try process.run("clang", arguments);
+  if (exitCode != 0) {
+    throw `could not fingerprint Clang; preprocessor exited with status ${exitCode}`;
+  }
+  return try fs.readText(outputPath);
+}
+
+function runCacheSupported(in project: NativeProject): boolean {
+  return project.config.linkLibraries.length == 0;
+}
+
+function runCacheMatches(
+  in cPath: String,
+  in outputPath: String,
+  in metadataPath: String,
+  in emitted: String,
+  in metadata: String
+): boolean {
+  if (
+    !fs.exists(cPath)
+    || !fs.exists(outputPath)
+    || !fs.exists(metadataPath)
+  ) return false;
+  const cachedSource = attempt fs.readText(cPath);
+  const sourceMatches = match (cachedSource) {
+    success(source) => source == emitted;
+    failure(_) => false;
+  };
+  if (!sourceMatches) return false;
+  const cachedMetadata = attempt fs.readText(metadataPath);
+  return match (cachedMetadata) {
+    success(found) => found == metadata;
+    failure(_) => false;
+  };
 }
 
 function runProject(
@@ -287,12 +434,43 @@ function runProject(
   const outputDirectory = `${project.config.directory}/.z-cache/run`;
   try fs.createDirectories(outputDirectory);
   const outputPath = `${outputDirectory}/program`;
-  const compilationExitCode = try buildLoadedProject(
+  const cPath = `${outputPath}.c`;
+  const metadataPath = `${outputPath}.meta`;
+  const emitted = try emitProject(project);
+  const toolchainIdentity = try loadToolchainIdentity(outputDirectory);
+  const metadata = runCacheMetadata(
     project,
-    outputPath,
+    toolchainIdentity,
     release
   );
-  if (compilationExitCode != 0) return compilationExitCode;
+  const cacheSupported = runCacheSupported(project);
+  if (
+    cacheSupported
+    && runCacheMatches(
+      cPath,
+      outputPath,
+      metadataPath,
+      emitted,
+      metadata
+    )
+  ) {
+    console.log(`cache hit: reused ${outputPath}`);
+  } else {
+    if (!cacheSupported) {
+      console.log(
+        "cache bypass: configured native libraries are not fingerprinted yet"
+      );
+    }
+    try fs.writeText(metadataPath, "incomplete\n");
+    const compilationExitCode = try compileEmittedProject(
+      project,
+      emitted,
+      outputPath,
+      release
+    );
+    if (compilationExitCode != 0) return compilationExitCode;
+    try fs.writeText(metadataPath, metadata);
+  }
   return try process.run(outputPath, childArguments);
 }
 

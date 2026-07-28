@@ -1114,7 +1114,25 @@ creates missing `.z-cache/run` parents through the typed
 launches without a shell, forwards owned String arguments after `--`, and
 returns the child status. This removes an implementation-shaped output
 argument from the ergonomic command while retaining the C translation unit for
-inspection and future incremental reuse.
+inspection and incremental reuse.
+
+The first incremental run tier now executes the native frontend but skips
+Clang when five inputs agree: the exact emitted C bytes, debug/release profile,
+normalized project target fields, Clang's predefined-macro output, and each
+foreign adapter's SHA-backed producer key. This is intentionally stronger than
+mtime-only reuse. A transitive header edit invalidates the executable even when
+the Z call and emitted native symbol spelling remain unchanged; changing
+profile, include configuration, or semantic Z source does the same. An
+incomplete metadata marker is written before compilation, preventing an old
+binary from being reused after a failed rebuild.
+
+Configured native libraries expose the next correctness boundary. Their
+resolved archive or dynamic-library bytes are not available through the current
+typed filesystem API, so those projects explicitly report a cache bypass and
+relink. Serving a possibly stale binary would be faster but would violate the
+compiler's safety and predictability goals. Native-library fingerprinting comes
+before widening reuse to that shape; module-level parse and semantic caches are
+separate future work.
 
 The command split also made entry policy executable rather than documentary.
 `check` validates an export-only entry graph, but `emit`, `build`, and `run`
@@ -1340,10 +1358,11 @@ than merely splitting a large source file.
 This is not yet a distributable replacement for Stage 0. The native loader now
 canonicalizes every module through typed `fs.realPath`, preventing lexical or
 symlink aliases from creating duplicate module identities, but supports only
-the self-hosting subset. Foreign header and `.zd` ingestion, Swift-target
-preparation, cross-platform target selection, manifest-selected/custom
-profiles, complete diagnostics, cache locking/eviction and incremental run
-artifact reuse, and production command options remain to cross independently.
+the self-hosting subset. Broader foreign declaration/`.zd` categories,
+Swift-target preparation, cross-platform target selection,
+manifest-selected/custom profiles, complete diagnostics, native-library
+fingerprints, cache locking/eviction, incremental frontend reuse, and
+production command options remain to cross independently.
 
 ## Not tested yet
 

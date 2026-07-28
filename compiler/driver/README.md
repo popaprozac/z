@@ -30,9 +30,22 @@ target selection, custom profiles, polished diagnostics, cache locking and
 eviction, and the complete production command options remain with Stage 0
 until equivalent native paths are proven. `run` creates missing project-local
 cache parents and retains its generated C and executable at
-`.z-cache/run/program.c` and `.z-cache/run/program`, ready for a later
-incremental-build layer. The current debug profile uses Clang `-O0`;
-`--release` uses `-O2 -DNDEBUG`.
+`.z-cache/run/program.c` and `.z-cache/run/program`. An unchanged run compares
+the exact newly emitted C, debug/release profile, target configuration, Clang
+predefined-macro identity, and foreign producer evidence, then skips Clang and
+reports a cache hit. The exact C comparison deliberately avoids a weak
+source-hash collision. A failed compilation writes an incomplete marker before
+changing the C artifact, so an older executable cannot become a false cache
+hit on retry.
+
+Projects with configured native libraries currently bypass executable reuse
+because the driver cannot yet fingerprint the resolved archive or dynamic
+library bytes. This is a conservative correctness boundary: ordinary Z and
+header-only foreign projects cache, while native-library projects relink until
+binary dependency identities land. The native frontend still loads, checks,
+and emits the graph on a cache hit; incremental parse and semantic reuse are a
+later layer. The current debug profile uses Clang `-O0`; `--release` uses
+`-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
 adjacent or include-directory `.zd` shapes as Stage 0, invokes the separate
@@ -55,7 +68,8 @@ parameters and producer-proven constants retain that identity across namespace
 or selective imports and lower to their verified C spellings. C++,
 Objective-C, Swift, records, callbacks, and richer `.zd` facts remain with
 Stage 0 until their raw records and normalized FIIR cross together.
-Cross-process cache locking and eviction remain toolchain hardening.
+Cross-process cache locking, native-library fingerprinting, and eviction remain
+toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

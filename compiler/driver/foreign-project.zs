@@ -246,6 +246,7 @@ export function loadForeignModuleContract(
     );
   }
   const declarationSource = try fs.readText(artifactPath);
+  const producerCacheKey = try fs.readText(`${artifactPath}.meta`);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
   const contracts = try parseForeignContracts(contractSource, contractPath);
   const normalized = try normalizeForeignContracts(
@@ -255,6 +256,7 @@ export function loadForeignModuleContract(
   );
   return NativeForeignModuleContract({
     modulePath: modulePath.copyBytes(0, modulePath.byteLength),
+    cacheKey: producerCacheKey,
     contracts: normalized,
   });
 }

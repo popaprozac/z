@@ -113,6 +113,7 @@ function inspect(
   let foreignModules = Array<NativeForeignModuleContract>();
   foreignModules.push(NativeForeignModuleContract({
     modulePath: sourcePath.copyBytes(0, sourcePath.byteLength),
+    cacheKey: "fixture",
     contracts: normalized,
   }));
   const graphOutcome = attempt resolveParsedModulesWithForeignContracts(

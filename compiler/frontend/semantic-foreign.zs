@@ -30,6 +30,7 @@ import {
 
 export struct NativeForeignModuleContract {
   modulePath: String;
+  cacheKey: String;
   contracts: NativeForeignContractSet;
 }
 

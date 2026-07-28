@@ -272,3 +272,18 @@ modules is not free, so the direction is not guaranteed for every split.
 Native module fingerprints and incremental parse/semantic caches should
 eventually make a one-file edit proportional to the changed module and its
 dependents rather than the whole frontend.
+
+The standalone native driver's first incremental tier now removes the Clang
+compile/link step from unchanged `run` commands. It still loads, checks, lowers,
+and emits the complete graph, then compares exact C plus profile, target,
+toolchain, and foreign evidence before reporting a cache hit. This improves the
+edit loop without conflating backend reuse with the still-future module-level
+parse and semantic caches. Projects with configured native libraries
+conservatively relink until the driver can fingerprint the resolved binary
+dependencies.
+
+An exploratory `/usr/bin/time` smoke measurement on the one-module native
+driver fixture took 0.65 seconds for its initial debug compile and 0.02 seconds
+for the immediately repeated cache hit on the same machine. This is not a
+cross-language benchmark or a stable performance promise; it confirms that the
+hit path actually removes the dominant Clang compile/link work.

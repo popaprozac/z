@@ -10240,6 +10240,156 @@ test("compiles a multi-module Z application through the standalone native driver
       .length,
     2,
   );
+  const firstForeignRun = spawnSync(
+    driver,
+    ["run", foreignProjectSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(firstForeignRun.status, 42, firstForeignRun.stderr);
+  assert.match(
+    firstForeignRun.stdout,
+    /cache bypass: configured native libraries are not fingerprinted yet/,
+  );
+  assert.match(firstForeignRun.stdout, /compiled 1 Z modules/);
+
+  const headerOnlyProject = resolve(directory, "header-only-project");
+  mkdirSync(headerOnlyProject);
+  const headerOnlyDependency = resolve(
+    headerOnlyProject,
+    "header-only-dependency.h",
+  );
+  const headerOnlyHeader = resolve(headerOnlyProject, "header-only.h");
+  const headerOnlyContract = `${headerOnlyHeader}.zd`;
+  const headerOnlySource = resolve(headerOnlyProject, "main.zs");
+  writeFileSync(
+    headerOnlyDependency,
+    "#define HEADER_ONLY_CODE 0\n",
+  );
+  writeFileSync(
+    headerOnlyHeader,
+    '#include "header-only-dependency.h"\n'
+      + "typedef enum {\n"
+      + "  HEADER_ONLY_OK = HEADER_ONLY_CODE\n"
+      + "} HeaderOnlyStatus;\n"
+      + "static inline int header_only_status(void) {\n"
+      + "  return HEADER_ONLY_CODE;\n"
+      + "}\n",
+  );
+  writeFileSync(
+    headerOnlyContract,
+    'declare module "header-only.h" {\n'
+      + "  export function header_only_status(): _;\n"
+      + "}\n",
+  );
+  writeFileSync(
+    headerOnlySource,
+    'import native from "header-only.h";\n'
+      + "function main(): i32 {\n"
+      + "  return i32(native.header_only_status());\n"
+      + "}\n",
+  );
+  writeFileSync(
+    resolve(headerOnlyProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        entry: "main.zs",
+        includeDirectories: ["."],
+      },
+    }, null, 2)}\n`,
+  );
+  const firstHeaderOnlyRun = spawnSync(
+    driver,
+    ["run", headerOnlySource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(firstHeaderOnlyRun.status, 0, firstHeaderOnlyRun.stderr);
+  assert.match(
+    firstHeaderOnlyRun.stdout,
+    /compiled 1 Z modules/,
+  );
+  const cachedHeaderOnlyApplication = resolve(
+    headerOnlyProject,
+    ".z-cache/run/program",
+  );
+  utimesSync(cachedHeaderOnlyApplication, 0, 0);
+  const cachedHeaderOnlyRun = spawnSync(
+    driver,
+    ["run", headerOnlySource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(cachedHeaderOnlyRun.status, 0, cachedHeaderOnlyRun.stderr);
+  assert.match(
+    cachedHeaderOnlyRun.stdout,
+    /cache hit: reused .*\.z-cache\/run\/program/,
+  );
+  assert.equal(statSync(cachedHeaderOnlyApplication).mtimeMs, 0);
+
+  writeFileSync(
+    headerOnlyDependency,
+    "#define HEADER_ONLY_CODE 1\n",
+  );
+  const headerInvalidatedRun = spawnSync(
+    driver,
+    ["run", headerOnlySource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    headerInvalidatedRun.status,
+    1,
+    headerInvalidatedRun.stderr,
+  );
+  assert.match(
+    headerInvalidatedRun.stdout,
+    /compiled 1 Z modules/,
+  );
+  assert.ok(statSync(cachedHeaderOnlyApplication).mtimeMs > 0);
+
+  utimesSync(cachedHeaderOnlyApplication, 0, 0);
+  const cacheIncludeDirectory = resolve(
+    headerOnlyProject,
+    "cache-include",
+  );
+  mkdirSync(cacheIncludeDirectory);
+  writeFileSync(
+    resolve(headerOnlyProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        entry: "main.zs",
+        includeDirectories: [".", "cache-include"],
+      },
+    }, null, 2)}\n`,
+  );
+  const configInvalidatedRun = spawnSync(
+    driver,
+    ["run", headerOnlySource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    configInvalidatedRun.status,
+    1,
+    configInvalidatedRun.stderr,
+  );
+  assert.match(
+    configInvalidatedRun.stdout,
+    /compiled 1 Z modules/,
+  );
+  assert.ok(statSync(cachedHeaderOnlyApplication).mtimeMs > 0);
+
   const foreignApplication = resolve(directory, "foreign-application-native");
   const foreignBuild = spawnSync(
     driver,
@@ -10505,6 +10655,69 @@ test("compiles a multi-module Z application through the standalone native driver
     existsSync(resolve(argumentProject, ".z-cache/run/program.c")),
     true,
   );
+  assert.equal(
+    existsSync(resolve(argumentProject, ".z-cache/run/program.meta")),
+    true,
+  );
+  const cachedArgumentApplication = resolve(
+    argumentProject,
+    ".z-cache/run/program",
+  );
+  utimesSync(cachedArgumentApplication, 0, 0);
+  const cachedRunning = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSourceCopy,
+      "--release",
+      "--",
+      argumentApplicationSourceCopy,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(cachedRunning.status, 0, cachedRunning.stderr);
+  assert.match(cachedRunning.stdout, /cache hit: reused .*\.z-cache\/run\/program/);
+  assert.equal(statSync(cachedArgumentApplication).mtimeMs, 0);
+
+  const debugRunning = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSourceCopy,
+      "--",
+      argumentApplicationSourceCopy,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(debugRunning.status, 0, debugRunning.stderr);
+  assert.match(debugRunning.stdout, /compiled 1 Z modules/);
+  assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
+
+  utimesSync(cachedArgumentApplication, 0, 0);
+  writeFileSync(
+    argumentApplicationSourceCopy,
+    readFileSync(argumentApplicationSourceCopy, "utf8").replace(
+      "if (!fs.exists(arguments[0])) return 1;",
+      "if (!fs.exists(arguments[0])) return 4;",
+    ),
+  );
+  const changedSourceRunning = spawnSync(
+    driver,
+    [
+      "run",
+      argumentApplicationSourceCopy,
+      "--",
+      argumentApplicationSourceCopy,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    changedSourceRunning.status,
+    0,
+    changedSourceRunning.stderr,
+  );
+  assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
+  assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
 }, 45_000);
 
 test("lowers the complete native frontend graph to C", () => {
