@@ -165,7 +165,9 @@ whose expected exit status is 42, with no Bun or TypeScript process in that
 compilation path. Separate native `check`, `emit`, `build`, and explicit-output
 `run` commands share one project-loading operation; checking stops after
 resolution, emission does not invoke Clang, and run forwards child arguments
-without a shell. Stage 0 is still required to build the driver, and project
+without a shell. Export-only entries remain checkable, while executable
+commands produce Z-owned missing/invalid-`main` diagnostics before Clang. Stage
+0 is still required to build the driver, and project
 manifests, foreign imports, target configuration, release profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and the
 complete compiler command surface remain subsequent slices.

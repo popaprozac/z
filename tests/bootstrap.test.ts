@@ -9270,6 +9270,34 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
 
+  const moduleOnlySource = resolve(
+    projectRoot,
+    "examples/language/modules/geometry.zs",
+  );
+  const moduleChecking = spawnSync(
+    driver,
+    ["check", moduleOnlySource],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleChecking.status, 0, moduleChecking.stderr);
+  const moduleEmission = spawnSync(
+    driver,
+    ["emit", moduleOnlySource, resolve(directory, "module.c")],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleEmission.status, 1);
+  assert.match(moduleEmission.stderr, /program must declare `function main\(\): i32`/);
+
+  const invalidMain = resolve(directory, "invalid-main.zs");
+  writeFileSync(invalidMain, "function main(value: i32): i32 { return value; }");
+  const invalidMainCheck = spawnSync(
+    driver,
+    ["check", invalidMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidMainCheck.status, 1);
+  assert.match(invalidMainCheck.stderr, /`main` must have signature `function main\(\): i32`/);
+
   const applicationSource = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-modules/main.zs",

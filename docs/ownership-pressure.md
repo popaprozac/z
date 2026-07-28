@@ -1112,6 +1112,12 @@ can move together across a driver API without representation casts. `run`
 builds, launches without a shell, forwards owned String arguments after `--`,
 and returns the child status.
 
+The command split also made entry policy executable rather than documentary.
+`check` validates an export-only entry graph, but `emit`, `build`, and `run`
+require `function main(): i32`. An incompatible present `main` fails every
+command with its Z source location; an absent `main` fails only executable
+commands. Clang is no longer the first component to explain the missing entry.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

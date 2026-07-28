@@ -1002,7 +1002,9 @@ Continue focused self-hosting work in this order:
    `build`, and explicit-output `run` commands over one parsed and resolved
    graph. `emit` writes C without invoking Clang; `build` writes C and invokes
    it, producing a separate two-module application without Bun; `run` launches
-   that artifact without a shell and forwards program arguments. `z.json`,
+   that artifact without a shell and forwards program arguments. `check`
+   accepts export-only modules, while executable commands diagnose missing or
+   incompatible `main` in Z before Clang. `z.json`,
    foreign discovery,
    target/link configuration, release profiles, richer diagnostics,
    fixed-array-to-Slice lowering, general console formatting, automatic

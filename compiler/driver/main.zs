@@ -77,12 +77,42 @@ function loadProject(in entryPath: String): NativeProject throws String {
   });
 }
 
+function validateExecutableEntry(
+  in project: NativeProject,
+  required: boolean
+): void throws String {
+  const entry = project.graph.entry;
+  for (const declaration of project.modules[entry].program.functions) {
+    if (declaration.name != "main") continue;
+    if (
+      declaration.parameters.length != 0
+      || declaration.returnType.name != "i32"
+    ) {
+      throw `${project.modules[entry].path}:${declaration.line}:${declaration.column}: \`main\` must have signature \`function main(): i32\``;
+    }
+    match (in declaration.errorType) {
+      some(_) => {
+        if (!declaration.asynchronous) {
+          throw `${project.modules[entry].path}:${declaration.line}:${declaration.column}: \`main\` cannot throw in the bootstrap runtime`;
+        }
+      }
+      none => {}
+    }
+    return;
+  }
+  if (required) {
+    throw `${project.modules[entry].path}:1:1: program must declare \`function main(): i32\``;
+  }
+}
+
 function emitProject(in project: NativeProject): String throws String {
+  try validateExecutableEntry(project, true);
   return try emitModulesC(project.modules, project.graph);
 }
 
 function checkProject(in entryPath: String): i32 throws String {
   const project = try loadProject(entryPath);
+  try validateExecutableEntry(project, false);
   console.log(`checked ${project.modules.length} Z modules`);
   return 0;
 }

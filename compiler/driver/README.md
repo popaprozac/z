@@ -26,3 +26,7 @@ foreign header discovery, target configuration, release profiles, polished
 diagnostics, automatic temporary output selection for `run`, and the complete
 production command options remain with Stage 0 until equivalent native paths
 are proven.
+
+`check` accepts an export-only entry module. `emit`, `build`, and `run` require
+`function main(): i32`; a present but incompatible `main` is rejected by every
+command before native emission.
