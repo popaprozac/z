@@ -1261,14 +1261,21 @@ function, parameter, and local binding names consistently, and the regression
 keeps `signed` in the source rather than avoiding the collision.
 
 The next foreign composition slice removes magic status integers from the
-native driver without trusting contract text. `ZFDCL` version 2 carries typed
+native driver without trusting contract text. `ZFDCL` version 2 carried typed
 constant records alongside functions. The Z-owned `.zd` normalizer accepts a
 symbolic `success Z_FOREIGN_OK;` only when the producer proves that constant
 exists and its scalar type exactly matches the native function result. Native
 lowering retains the verified C spelling, so generated code compares against
 the header symbol. Unknown constants and signedness-mismatched constants fail
-before semantic analysis; decimal status values remain supported. Enum-backed
-constants still require their named type evidence to cross the protocol.
+before semantic analysis; decimal status values remain supported.
+
+`ZFDCL` version 3 now carries the missing nominal enum evidence. A status
+constant from an enum must belong to the exact enum returned by the native
+function; an integer macro with the same value is not interchangeable. The
+native executable subset compares against the verified enum symbol and carries
+the enum's checked underlying scalar through `Result<void, E>`. Preserving the
+foreign enum as a source-nameable native semantic type is intentionally a later
+named-type slice rather than something this adapter flattens or invents.
 
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in

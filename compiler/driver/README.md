@@ -42,13 +42,15 @@ The adapter metadata additionally hashes Clang's preprocessed header view, so a
 cache hit skips the AST producer while changes in transitive headers invalidate
 the evidence. A missing contract, missing adapter, malformed producer stream,
 unsupported declaration category, or unimplemented contract fact fails at the
-boundary. Version 2 of the producer stream also carries typed native constants,
-so symbolic scalar status facts such as `success SQLITE_OK;` are verified
-against Clang evidence and lower as the header symbol rather than a magic
-integer. C++, Objective-C, Swift, records, enum-backed statuses, callbacks, and
-richer `.zd` facts remain with Stage 0 until their raw records and normalized
-FIIR cross together. Cross-process cache locking and eviction remain toolchain
-hardening.
+boundary. Version 3 of the producer stream also carries nominal enum evidence
+and typed native constants, so symbolic scalar and enum-backed status facts are
+verified against Clang evidence and lower as the header symbol rather than a
+magic integer. The current native executable subset preserves an enum status's
+verified underlying integer as the error payload; exposing the named foreign
+enum itself remains part of richer native type semantics. C++, Objective-C,
+Swift, records, callbacks, and richer `.zd` facts remain with Stage 0 until
+their raw records and normalized FIIR cross together. Cross-process cache
+locking and eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require
 `function main(): i32`; a present but incompatible `main` is rejected by every

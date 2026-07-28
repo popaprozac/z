@@ -5,4 +5,8 @@ declare module "foreign-functions-only.h" {
     success Z_FOREIGN_OK;
     success Z_FOREIGN_RETRY;
   }
+
+  export function z_foreign_enum_status(code: _): void throws _ {
+    success Z_FOREIGN_ENUM_OK;
+  }
 }

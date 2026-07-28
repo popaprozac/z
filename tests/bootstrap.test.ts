@@ -9317,13 +9317,13 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000002\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000003\nM/);
   assert.throws(
     () => encodeForeignFunctionDeclarationStream({
       ...declarations,
-      nativeTypes: new Map([["unsupported", {} as never]]),
+      namedTypes: new Map([["unsupported", {} as never]]),
     }),
-    /supports function-only modules with typed constants/,
+    /supports function modules with typed constants and nominal enums/,
   );
 
   const directory = mkdtempSync("/tmp/z-self-host-foreign-declarations-");
@@ -9453,6 +9453,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   assert.match(
     emittedForeignSource,
     /status == Z_FOREIGN_OK \|\| status == Z_FOREIGN_RETRY/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /status = z_foreign_enum_status\(parameter_0\);/,
+  );
+  assert.match(
+    emittedForeignSource,
+    /status == Z_FOREIGN_ENUM_OK/,
   );
   assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
   const foreignApplication = resolve(directory, "foreign-application");
@@ -9649,6 +9657,32 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(mismatchedStatusContract.status, 3);
 
+  const mismatchedEnumStatusContractPath = resolve(
+    directory,
+    "mismatched-enum-status.zd",
+  );
+  writeFileSync(
+    mismatchedEnumStatusContractPath,
+    readFileSync(contractPath, "utf8").replace(
+      "Z_FOREIGN_ENUM_OK",
+      "Z_FOREIGN_OK",
+    ),
+  );
+  const mismatchedEnumStatusContract = spawnSync(
+    contractExecutable,
+    [
+      clangPath,
+      mismatchedEnumStatusContractPath,
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-call-input.zs",
+      ),
+      emittedForeignPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(mismatchedEnumStatusContract.status, 3);
+
   assert.throws(
     () => resolveForeignFunctionDeclarationStreams(
       [{
@@ -9658,7 +9692,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
       fixture,
       [resolve(projectRoot, "tests/fixtures")],
     ),
-    /supports function-only modules/,
+    /supports function modules with typed constants and nominal enums/,
   );
 
   const truncatedPath = resolve(directory, "truncated.zfdcl");
@@ -9724,7 +9758,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignInspection.status, 0, foreignInspection.stderr);
   assert.match(
     foreignInspection.stdout,
-    /decoded 3 foreign functions from clang/,
+    /decoded 4 foreign functions from clang/,
   );
   const invalidForeignAdapterStream = resolve(
     directory,
@@ -9764,7 +9798,36 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 2 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 3 foreign function contracts for foreign-functions-only\.h/,
+  );
+  const mismatchedEnumContract = resolve(
+    directory,
+    "mismatched-enum-contract.zd",
+  );
+  writeFileSync(
+    mismatchedEnumContract,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/foreign-functions-only.h.zd",
+      ),
+      "utf8",
+    ).replace("Z_FOREIGN_ENUM_OK", "Z_FOREIGN_OK"),
+  );
+  const mismatchedEnumContractInspection = spawnSync(
+    driver,
+    [
+      "foreign-contract-inspect",
+      foreignAdapterStream,
+      "foreign-functions-only.h",
+      mismatchedEnumContract,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(mismatchedEnumContractInspection.status, 1);
+  assert.match(
+    mismatchedEnumContractInspection.stderr,
+    /native success constant "Z_FOREIGN_OK" has type i32, expected enum ZForeignStatus/,
   );
   const unsupportedNativeContract = resolve(
     directory,

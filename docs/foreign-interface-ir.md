@@ -162,10 +162,11 @@ Z sema and native backends
 ```
 
 The first adapter seam is now executable. The real Clang header producer can
-frame functions and typed native constants as a versioned `ZFDCL`
-raw-declaration stream, carrying constant identity/type plus function names,
-namespaces, overloads, native type spellings, parameters, source locations,
-executor affinity, and availability into an owned Z decoder. Text is
+frame functions, nominal enum types, and typed native constants as a versioned
+`ZFDCL` raw-declaration stream, carrying enum identity/underlying type,
+constant identity/type, function names, namespaces, overloads, native type
+spellings, parameters, source locations, executor affinity, and availability
+into an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
 native compiler can validate and consume a bounded stream without adopting
 TypeScript object layouts or JSON as compiler architecture. An end-to-end
@@ -228,9 +229,9 @@ selective and namespace calls without exposing producer records to lowering.
    foreign artifact cache, then add records for native types, constants,
    callbacks, Objective-C declarations, interfaces, and protocols without
    weakening its fail-closed boundary;
-6. expand the implemented `.zd` reader and contract normalizer from decimal
-   and symbolic scalar integer statuses through enum-backed statuses,
-   ownership, pointer, buffer,
+6. expand the implemented `.zd` reader and contract normalizer from decimal,
+   symbolic scalar, and nominally verified enum-backed integer statuses through
+   named foreign enum semantics, ownership, pointer, buffer,
    callback, executor, and native-value facts, then extend the validated
    in-memory FIIR already consumed by native sema and scalar/status lowering
    into richer emission rather than teaching any layer about wire records.

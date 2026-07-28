@@ -104,20 +104,22 @@ semantic analysis and code generation; the frontend itself is native Z code.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 2 covers typed native
-  constants plus foreign functions, overloads, parameters, source locations,
-  executor affinity, and availability, and rejects incomplete or unsupported
-  records rather than treating them as checked FIIR. Stage 0's real Clang
-  producer exposes the matching stream operation; a scalar C header with
-  integer macros crosses the complete producer/decoder boundary in the
-  bootstrap suite, while a record header fails closed.
+  `ZFDCL` stream into owned flat Z declarations. Version 3 covers nominal enum
+  evidence and typed native constants plus foreign functions, overloads,
+  parameters, source locations, executor affinity, and availability, and
+  rejects incomplete or unsupported records rather than treating them as
+  checked FIIR. Stage 0's real Clang producer exposes the matching stream
+  operation; a C header with scalar macros and a typedef enum crosses the
+  complete producer/decoder boundary in the bootstrap suite, while a record
+  header fails closed.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies
   module/function/parameter identity against raw Clang declarations, maps
   supported ABI scalars to Z types, requires symbolic constants to exist with
-  the exact scalar return type, preserves the native integer as the error type,
-  and rejects every unimplemented fact at its `.zd` source location.
+  the exact scalar or nominal enum return identity, preserves the verified
+  underlying integer as the current native error payload, and rejects every
+  unimplemented fact at its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;

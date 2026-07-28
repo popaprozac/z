@@ -42,7 +42,7 @@ function inspect(
     "foreign-functions-only.h"
   );
   if (normalized.moduleSpecifier != "foreign-functions-only.h") return 10;
-  if (normalized.functions.length != 2) return 11;
+  if (normalized.functions.length != 3) return 11;
   if (normalized.functions[0].name != "z_foreign_add") return 12;
   if (normalized.functions[0].nativeName != "z_foreign_add") return 13;
   if (normalized.functions[0].returnType != "i32") return 14;
@@ -67,6 +67,19 @@ function inspect(
   if (normalized.functions[1].successValues.length != 2) return 26;
   if (normalized.functions[1].successValues[0] != "Z_FOREIGN_OK") return 27;
   if (normalized.functions[1].successValues[1] != "Z_FOREIGN_RETRY") return 28;
+  if (normalized.functions[2].name != "z_foreign_enum_status") return 29;
+  if (normalized.functions[2].returnType != "void") return 30;
+  match (in normalized.functions[2].errorType) {
+    some(typeName) => {
+      if (typeName != "i32") return 31;
+    }
+    none => return 32;
+  }
+  if (normalized.functions[2].successValues.length != 1) return 33;
+  if (
+    normalized.functions[2].successValues[0]
+      != "Z_FOREIGN_ENUM_OK"
+  ) return 34;
 
   const source = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({
@@ -101,7 +114,7 @@ function inspect(
     );
   };
   if (graph.modules.length != 1) return 29;
-  if (graph.modules[0].semanticEvidence.callResolutions.length != 3) return 30;
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 4) return 30;
   if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "foreign") {
     return 31;
   }
@@ -134,6 +147,19 @@ function inspect(
   }
   if (graph.modules[0].semanticEvidence.callResolutions[2].errorType != "i32") {
     return 40;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[3].kind != "foreign") {
+    return 41;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[3].targetName
+      != "z_foreign_enum_status"
+  ) return 42;
+  if (graph.modules[0].semanticEvidence.callResolutions[3].returnType != "void") {
+    return 43;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[3].errorType != "i32") {
+    return 44;
   }
   const emitted = try emitModulesC(modules, graph);
   try fs.writeText(outputPath, emitted);

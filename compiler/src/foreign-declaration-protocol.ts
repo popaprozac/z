@@ -3,7 +3,7 @@ import type {
   ForeignModuleDeclarations,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 2;
+const protocolVersion = 3;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -47,24 +47,24 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign function
- * declarations. Version 2 additionally carries typed native constants so the
- * Z-owned contract normalizer can verify symbolic status facts without
- * trusting their spelling. It still fails closed on richer native types and
- * Objective-C declarations that this stream tier cannot represent.
+ * declarations. Version 3 additionally carries nominal enum evidence so the
+ * Z-owned contract normalizer can verify enum-backed status facts without
+ * flattening their identity into an integer. It still fails closed on richer
+ * native types and Objective-C declarations that this stream tier cannot
+ * represent.
  */
 export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
 ): string {
-  const unsupportedCounts = [
-    module.nativeTypes.size,
-    module.namedTypes.size,
-    module.objectTypes.size,
-    module.interfaces.size,
-    module.protocols.size,
-  ];
-  if (unsupportedCounts.some((count) => count !== 0)) {
+  const namedTypes = [...module.namedTypes.values()];
+  if (
+    namedTypes.some((type) => type.kind !== "enum")
+    || module.objectTypes.size !== 0
+    || module.interfaces.size !== 0
+    || module.protocols.size !== 0
+  ) {
     throw new Error(
-      "foreign declaration stream tier 2 supports function-only modules with typed constants",
+      "foreign declaration stream tier 3 supports function modules with typed constants and nominal enums",
     );
   }
 
@@ -78,6 +78,25 @@ export function encodeForeignFunctionDeclarationStream(
       boolean(module.cPlusPlus),
     ].join(""),
   ];
+  for (let typeIndex = 0; typeIndex < namedTypes.length; typeIndex += 1) {
+    const type = namedTypes[typeIndex];
+    if (type.kind !== "enum") throw new Error("unreachable non-enum foreign type");
+    const source = type.metadata.source;
+    records.push([
+      "T",
+      hexNumber(typeIndex),
+      text(type.kind),
+      text(type.exportName),
+      text(type.qualifiedName),
+      text(type.typeName),
+      text(type.cName),
+      text(type.underlying),
+      optionalText(source?.fileName),
+      hexNumber(source?.line ?? 0),
+      hexNumber(source?.column ?? 0),
+      hexNumber(source?.length ?? 0),
+    ].join(""));
+  }
   const constants = [...module.constants.values()];
   for (let constantIndex = 0; constantIndex < constants.length; constantIndex += 1) {
     const constant = constants[constantIndex];

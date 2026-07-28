@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 2) return 10;
+  if (module.version != 3) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -16,6 +16,7 @@ function inspect(in path: String): i32 throws String {
   if (module.availability.length != 1) return 16;
   if (module.namespaces.length != 1) return 17;
   if (module.namespaces[0] != "math") return 18;
+  if (module.types.length != 0) return 34;
   if (module.functions[0].name != "measureπ") return 19;
   if (module.functions[0].qualifiedName != "math.measureπ") return 20;
   if (module.overloads[0].nativeName != "math::measure_pi") return 21;
@@ -55,31 +56,42 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 2) return 40;
+  if (module.version != 3) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
-  if (module.functions.length != 3) return 43;
-  if (module.constants.length != 3) return 60;
-  if (module.constants[0].name != "Z_FOREIGN_OK") return 61;
-  if (module.constants[0].typeName != "i32") return 62;
-  if (module.constants[0].sourceKind != "macro") return 63;
-  if (module.constants[1].name != "Z_FOREIGN_RETRY") return 64;
-  if (module.constants[2].name != "Z_FOREIGN_UNSIGNED") return 65;
-  if (module.constants[2].typeName != "u32") return 66;
-  if (module.overloads.length != 3) return 44;
-  if (module.parameters.length != 5) return 45;
+  if (module.types.length != 1) return 67;
+  if (module.types[0].kind != "enum") return 68;
+  if (module.types[0].exportName != "ZForeignStatus") return 69;
+  if (module.types[0].nativeName != "ZForeignStatus") return 70;
+  if (module.types[0].underlyingType != "i32") return 71;
+  if (module.functions.length != 4) return 43;
+  if (module.constants.length != 5) return 60;
+  if (module.constants[0].name != "Z_FOREIGN_ENUM_OK") return 61;
+  if (module.constants[0].typeName != module.types[0].typeName) return 62;
+  if (module.constants[0].sourceKind != "enum") return 63;
+  if (module.constants[1].name != "Z_FOREIGN_ENUM_FAILED") return 64;
+  if (module.constants[2].name != "Z_FOREIGN_OK") return 65;
+  if (module.constants[2].typeName != "i32") return 66;
+  if (module.constants[3].name != "Z_FOREIGN_RETRY") return 72;
+  if (module.constants[4].name != "Z_FOREIGN_UNSIGNED") return 73;
+  if (module.constants[4].typeName != "u32") return 74;
+  if (module.overloads.length != 4) return 44;
+  if (module.parameters.length != 6) return 45;
   if (module.availability.length != 0) return 46;
   if (module.functions[0].name != "z_foreign_add") return 47;
   if (module.functions[1].name != "z_foreign_status") return 48;
-  if (module.functions[2].name != "z_foreign_measure") return 49;
+  if (module.functions[2].name != "z_foreign_enum_status") return 49;
+  if (module.functions[3].name != "z_foreign_measure") return 75;
   if (module.overloads[0].returnNativeType != "int") return 50;
   if (module.overloads[1].returnNativeType != "int") return 51;
-  if (module.overloads[2].returnNativeType != "long") return 52;
+  if (module.overloads[2].returnNativeType != "ZForeignStatus") return 52;
+  if (module.overloads[3].returnNativeType != "long") return 76;
   if (module.parameters[0].nativeType != "int") return 53;
   if (module.parameters[1].nativeType != "int") return 54;
   if (module.parameters[2].nativeType != "int") return 55;
   if (module.parameters[3].nativeType != "int") return 56;
-  if (module.parameters[4].nativeType != "const char *") return 57;
+  if (module.parameters[4].nativeType != "int") return 57;
+  if (module.parameters[5].nativeType != "const char *") return 77;
   match (in module.overloads[0].sourceFile) {
     some(path) => {
       if (path.byteLength == 0) return 58;

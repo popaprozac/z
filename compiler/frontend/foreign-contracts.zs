@@ -410,6 +410,43 @@ function scalarTypeName(in nativeType: String): String throws String {
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
 }
 
+function foreignEnumTypeIndex(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < declarations.types.length) {
+    if (
+      declarations.types[index].kind == "enum"
+      && (
+        nativeType == declarations.types[index].nativeName
+        || nativeType == declarations.types[index].exportName
+        || nativeType == declarations.types[index].qualifiedName
+      )
+    ) return Option<usize>.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function statusScalarTypeName(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): String throws String {
+  match (foreignEnumTypeIndex(declarations, nativeType)) {
+    some(index) => {
+      if (!isIntegerTypeName(declarations.types[index].underlyingType)) {
+        throw "native status enum has an unsupported underlying type";
+      }
+      return declarations.types[index].underlyingType.copyBytes(
+        0,
+        declarations.types[index].underlyingType.byteLength
+      );
+    }
+    none => return try scalarTypeName(nativeType);
+  }
+}
+
 function isIntegerTypeName(in typeName: String): boolean {
   return typeName == "i8"
     || typeName == "u8"
@@ -489,9 +526,17 @@ export function normalizeForeignContracts(
       }));
       parameterIndex = parameterIndex + 1;
     }
-    const nativeReturnType = try scalarTypeName(
-      declarations.overloads[overloadIndex].returnNativeType
-    );
+    let nativeReturnType = "";
+    if (contract.returnKind == "status") {
+      nativeReturnType = try statusScalarTypeName(
+        declarations,
+        declarations.overloads[overloadIndex].returnNativeType
+      );
+    } else {
+      nativeReturnType = try scalarTypeName(
+        declarations.overloads[overloadIndex].returnNativeType
+      );
+    }
     let returnType = nativeReturnType.copyBytes(
       0,
       nativeReturnType.byteLength
@@ -517,11 +562,26 @@ export function normalizeForeignContracts(
             declarations,
             successValue
           );
-          if (
-            declarations.constants[constantIndex].typeName
-              != nativeReturnType
-          ) {
-            throw `native success constant "${successValue}" has type ${declarations.constants[constantIndex].typeName}, expected ${nativeReturnType}`;
+          match (foreignEnumTypeIndex(
+            declarations,
+            declarations.overloads[overloadIndex].returnNativeType
+          )) {
+            some(typeIndex) => {
+              if (
+                declarations.constants[constantIndex].typeName
+                  != declarations.types[typeIndex].typeName
+              ) {
+                throw `native success constant "${successValue}" has type ${declarations.constants[constantIndex].typeName}, expected enum ${declarations.types[typeIndex].exportName}`;
+              }
+            }
+            none => {
+              if (
+                declarations.constants[constantIndex].typeName
+                  != nativeReturnType
+              ) {
+                throw `native success constant "${successValue}" has type ${declarations.constants[constantIndex].typeName}, expected ${nativeReturnType}`;
+              }
+            }
           }
           successValues.push(
             declarations.constants[constantIndex].nativeName.copyBytes(
