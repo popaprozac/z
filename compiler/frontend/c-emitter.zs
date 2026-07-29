@@ -264,6 +264,7 @@ function appendExpression(
       if (
         declaration.expressions[index].labels[part] == "text"
         || declaration.expressions[index].labels[part] == "String"
+        || declaration.expressions[index].labels[part] == "view String"
       ) {
         output.append("Z_TEMPLATE_STRING, .value.string_value = ");
       } else if (
@@ -280,7 +281,11 @@ function appendExpression(
         throw "native C emission cannot format this template value type";
       }
       const value = declaration.expressions[index].children[part];
+      const viewString =
+        declaration.expressions[index].labels[part] == "view String";
+      if (viewString) output.append("(*(");
       try appendExpression(inout output, declaration, value);
+      if (viewString) output.append("))");
       output.append(" }");
       part = part + 1;
     }
@@ -303,10 +308,13 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed Array.length";
     }
-    output.append("(");
     const receiver = declaration.expressions[index].children[0];
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
+    output.append("(");
     try appendExpression(inout output, declaration, receiver);
-    output.append(").length");
+    if (viewReceiver) output.append(")->length");
+    else output.append(").length");
     return;
   }
   if (
@@ -319,15 +327,25 @@ function appendExpression(
     }
     output.append("(*Z_");
     output.append(declaration.expressions[index].value);
+    const receiver = declaration.expressions[index].children[0];
+    const offset = declaration.expressions[index].children[1];
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
     if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.arrayMutableIndex
-    ) output.append("_at_mut(&(");
-    else output.append("_at(&(");
-    const receiver = declaration.expressions[index].children[0];
-    const offset = declaration.expressions[index].children[1];
+    ) {
+      if (viewReceiver) {
+        throw "native C emission cannot mutate through a view Array";
+      }
+      output.append("_at_mut(&(");
+    } else {
+      if (viewReceiver) output.append("_at(");
+      else output.append("_at(&(");
+    }
     try appendExpression(inout output, declaration, receiver);
-    output.append("), ");
+    if (viewReceiver) output.append(", ");
+    else output.append("), ");
     try appendExpression(inout output, declaration, offset);
     output.append("))");
     return;
@@ -729,17 +747,25 @@ function appendExpression(
     output.append("z_string_equal(");
     const left = declaration.expressions[index].children[0];
     const right = declaration.expressions[index].children[1];
+    const leftView = declaration.expressions[index].labels.length == 2
+      && declaration.expressions[index].labels[0] == "view";
+    const rightView = declaration.expressions[index].labels.length == 2
+      && declaration.expressions[index].labels[1] == "view";
+    if (leftView) output.append("(*(");
     try appendExpression(
       inout output,
       declaration,
       left
     );
+    if (leftView) output.append("))");
     output.append(", ");
+    if (rightView) output.append("(*(");
     try appendExpression(
       inout output,
       declaration,
       right
     );
+    if (rightView) output.append("))");
     output.append(")");
     return;
   }
@@ -754,14 +780,17 @@ function appendExpression(
       declaration.expressions[index].kind
         == LoweredExpressionKind.stringIsEmpty
     ) output.append("(");
-    output.append("(");
     const receiver = declaration.expressions[index].children[0];
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
+    output.append("(");
     try appendExpression(
       inout output,
       declaration,
       receiver
     );
-    output.append(").length");
+    if (viewReceiver) output.append(")->length");
+    else output.append(").length");
     if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.stringIsEmpty
@@ -777,11 +806,15 @@ function appendExpression(
     output.append("z_string_byte_at(");
     const receiver = declaration.expressions[index].children[0];
     const position = declaration.expressions[index].children[1];
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
+    if (viewReceiver) output.append("(*(");
     try appendExpression(
       inout output,
       declaration,
       receiver
     );
+    if (viewReceiver) output.append("))");
     output.append(", ");
     try appendExpression(
       inout output,
@@ -803,11 +836,17 @@ function appendExpression(
     while (child < declaration.expressions[index].children.length) {
       if (child > 0) output.append(", ");
       const value = declaration.expressions[index].children[child];
+      const viewReceiver =
+        child == 0
+        && declaration.expressions[index].labels.length > 0
+        && declaration.expressions[index].labels[0] == "view";
+      if (viewReceiver) output.append("(*(");
       try appendExpression(
         inout output,
         declaration,
         value
       );
+      if (viewReceiver) output.append("))");
       child = child + 1;
     }
     output.append(")");
@@ -1748,10 +1787,13 @@ function appendStatement(
   if (declaration.statements[index].kind == LoweredStatementKind.forStatement) {
     if (
       declaration.statements[index].children.length != 1
-      || declaration.statements[index].labels.length != 1
+      || declaration.statements[index].labels.length < 1
+      || declaration.statements[index].labels.length > 2
     ) {
       throw "native C emission received a malformed for statement";
     }
+    const viewIterable = declaration.statements[index].labels.length == 2
+      && declaration.statements[index].labels[1] == "view";
     const elementType = match (in declaration.statements[index].type) {
       some(type) => try cType(type);
       none => throw "native C emission received an untyped for binding";
@@ -1763,6 +1805,7 @@ function appendStatement(
     output.append(" = 0; ");
     output.append(position);
     output.append(" < (");
+    if (viewIterable) output.append("(*(");
     match (in declaration.statements[index].expression) {
       some(iterable) => try appendExpression(
         inout output,
@@ -1771,6 +1814,7 @@ function appendStatement(
       );
       none => throw "native C emission received a for without an iterable";
     }
+    if (viewIterable) output.append("))");
     output.append(").length; ");
     output.append(position);
     output.append(" += 1) {\n");
@@ -1782,6 +1826,7 @@ function appendStatement(
     output.append(" = *Z_");
     output.append(declaration.statements[index].labels[0]);
     output.append("_at(&(");
+    if (viewIterable) output.append("(*(");
     match (in declaration.statements[index].expression) {
       some(iterable) => try appendExpression(
         inout output,
@@ -1790,6 +1835,7 @@ function appendStatement(
       );
       none => throw "native C emission received a for without an iterable";
     }
+    if (viewIterable) output.append("))");
     output.append("), ");
     output.append(position);
     output.append(");\n");

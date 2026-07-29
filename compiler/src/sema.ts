@@ -5889,7 +5889,8 @@ function requireConsoleFormattable(
   state: AnalysisState,
   visiting = new Set<string>(),
 ): void {
-  const actual = String(underlyingType(type));
+  const stored = String(underlyingType(type));
+  const actual = parseViewType(stored)?.target ?? stored;
   if (actual === "TextBuffer") {
     throw new DiagnosticError(fileName, expression.location, "TextBuffer is mutable construction storage, not printable text", {
       code: "Z0402",
@@ -6863,8 +6864,9 @@ function inferExpressionInner(
         const zEnum = left === right ? enums.get(String(left)) : null;
         const comparableZEnum = zEnum !== null && zEnum !== undefined
           && zEnum.variants.every((variant) => variant.payload === null);
-        const comparableString = canonicalLeft === "String" && canonicalRight === "String";
-        if (canonicalLeft !== canonicalRight || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
+        const comparableString = (parseViewType(canonicalLeft)?.target ?? canonicalLeft) === "String"
+          && (parseViewType(canonicalRight)?.target ?? canonicalRight) === "String";
+        if ((!comparableString && canonicalLeft !== canonicalRight) || (!isNumericType(canonicalLeft) && canonicalLeft !== "boolean" && !comparableNamed && !comparableZEnum && !comparableString)) {
           throw new DiagnosticError(fileName, expression.location, `operator ${JSON.stringify(expression.operator)} requires matching numeric, boolean, String, payload-free enum, or native enum operands`);
         }
         return "boolean";
@@ -10679,6 +10681,7 @@ function analyzeForLoop(
   }
   const iterableType = inferExpression(statement.iterable, locals, globals, structs, enums, fileName, state);
   const iterableName = String(underlyingType(iterableType));
+  const iterableValueName = parseViewType(iterableName)?.target ?? iterableName;
   const root = storageRoot(statement.iterable);
   const generator = parseGeneratorType(iterableName);
   const asyncGenerator = parseAsyncGeneratorType(iterableName);
@@ -10825,11 +10828,11 @@ function analyzeForLoop(
       helps: ["bind the collection to a const or let before iterating it"],
     });
   }
-  const map = parseMapType(iterableName);
-  const set = parseSetType(iterableName);
-  const collection = parseFixedArrayType(iterableName)
-    ?? parseDynamicArrayType(iterableName)
-    ?? parseSliceType(iterableName)
+  const map = parseMapType(iterableValueName);
+  const set = parseSetType(iterableValueName);
+  const collection = parseFixedArrayType(iterableValueName)
+    ?? parseDynamicArrayType(iterableValueName)
+    ?? parseSliceType(iterableValueName)
     ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
     ?? (set ? { elementType: set.elementType } : null);
   if (!collection) {

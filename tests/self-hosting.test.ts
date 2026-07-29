@@ -240,8 +240,15 @@ test("preserves local views through native lowering and C emission", () => {
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /const Z_Node \* const node = &\(tree\.node\);/);
+  assert.match(emission.stdout, /const Z___z_Array_i32 \* const numbers = &\(tree\.values\);/);
+  assert.match(emission.stdout, /const Z_String \* const label = &\(tree\.label\);/);
+  assert.match(emission.stdout, /Z___z_Array_i32_at\(&\(\(\*\(numbers\)\)\)/);
+  assert.match(emission.stdout, /z_string_copy_bytes\(\(\*\(label\)\), 0, \(label\)->length\)/);
+  assert.match(emission.stdout, /z_string_equal\(\(\*\(label\)\), Z_STRING_LITERAL\("ready"\)\)/);
   assert.match(emission.stdout, /observe\(node\)\), 5\)/);
   assert.doesNotMatch(emission.stdout, /Z_Node_deinit\(&\(node\)\)/);
+  assert.doesNotMatch(emission.stdout, /Z___z_Array_i32_deinit\(&\(numbers\)\)/);
+  assert.doesNotMatch(emission.stdout, /Z_String_deinit\(&\(label\)\)/);
   assert.match(emission.stdout, /Z_Tree_deinit\(&tree\)/);
 
   const directory = mkdtempSync("/tmp/z-native-local-view-");

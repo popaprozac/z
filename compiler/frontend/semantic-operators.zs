@@ -201,6 +201,11 @@ export function binaryOperatorType(
     );
   }
   if (operator == "==" || operator == "!=") {
+    const leftString = left == "String" || left == "view String";
+    const rightString = right == "String" || right == "view String";
+    if (leftString && rightString) {
+      return "boolean";
+    }
     if (
       equivalentTypes(modules, moduleIndex, left, right)
       && (

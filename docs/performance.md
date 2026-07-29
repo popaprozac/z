@@ -312,3 +312,15 @@ orchestration. That size belongs to the temporary toolchain adapter, not every
 Z program. This is a bootstrap/release-path measurement rather than an
 edit-loop cost; ordinary users should eventually receive trusted platform
 artifacts instead of paying it.
+
+A local-view composition checkpoint on 2026-07-29 replaced 64 repeated
+`tree.nodes[index]` projections in the recursive expression resolver with one
+checked `view`, and replaced defensive owned copies of its child-index Array and
+String spelling with owner-tied views. Generated C consequently contains one
+root bounds check and no per-call child-array or spelling allocation/cleanup.
+This did not yet move whole-compiler latency: interleaved fixed-point native
+`z check` measurements were 252.1 ms before and 256.0 ms after, statistically
+neutral at `1.02 ± 0.02`. The hybrid check was likewise effectively flat at
+3.870 seconds before and 3.900 seconds after (`1.01 ± 0.01`) while also
+analyzing and lowering the expanded compiler implementation. This is recorded
+as a confirmed generated-code improvement, not a claimed end-to-end speedup.

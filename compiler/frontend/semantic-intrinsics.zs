@@ -4,6 +4,7 @@ import {
   arrayElementType,
   genericTypeShape,
   isIntegerTypeName,
+  stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
   ModuleFunctionSignature,
@@ -22,6 +23,10 @@ export function numberLiteralType(in value: String): String {
 }
 
 export function iterationElementType(in name: String): String {
+  if (stringStartsWith(name, "view ") && name.byteLength > 5) {
+    const target = name.copyBytes(5, name.byteLength);
+    return iterationElementType(target);
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (
@@ -53,6 +58,18 @@ export function iterationObjectFieldType(
   in iterableType: String,
   in fieldName: String
 ): String {
+  if (
+    stringStartsWith(iterableType, "view ")
+    && iterableType.byteLength > 5
+  ) {
+    const target = iterableType.copyBytes(5, iterableType.byteLength);
+    return iterationObjectFieldType(
+      modules,
+      moduleIndex,
+      target,
+      fieldName
+    );
+  }
   match (genericTypeShape(iterableType)) {
     some(generic) => {
       if (generic.base == "Map" && generic.arguments.length == 2) {
@@ -110,6 +127,13 @@ export function collectionMethodSignature(
   in ownerType: String,
   in methodName: String
 ): Option<ModuleFunctionSignature> {
+  if (
+    stringStartsWith(ownerType, "view ")
+    && ownerType.byteLength > 5
+  ) {
+    const target = ownerType.copyBytes(5, ownerType.byteLength);
+    return collectionMethodSignature(target, methodName);
+  }
   if (ownerType == "fs.Lock" && methodName == "unlock") {
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,

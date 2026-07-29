@@ -325,6 +325,14 @@ project a field or indexed element from named value storage. Hover reports both
 the projected `view T` and its owner. It creates a `const T *` in generated C;
 there is no value copy, allocation, retain, or cleanup.
 
+Read-only operations preserve that representation for intrinsic containers.
+A local `view Array<T>` supports checked indexing, `length`, and `for...of`
+iteration without copying the growable buffer. A `view String` supports
+comparison, interpolation, `byteLength`, `isEmpty`, `byteAt`, and the explicit
+owned `copyBytes` operation. These operations do not create a second lifetime:
+the container or string view remains tied to the original named owner until its
+last use, and mutation through the view remains invalid.
+
 A narrow `view T` method result may provide the same read-only projection
 through owner behavior:
 

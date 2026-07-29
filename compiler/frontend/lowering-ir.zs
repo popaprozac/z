@@ -2928,6 +2928,7 @@ function lowerExpression(
       }
       if (
         typeName != "String"
+        && typeName != "view String"
         && typeName != "boolean"
         && typeName != "i32"
         && typeName != "u8"
@@ -3018,8 +3019,12 @@ function lowerExpression(
         importedTypes,
         operandTypeName
       );
-      if (operandType.kind != LoweredTypeKind.structType) {
-        throw `native view lowering currently supports value-struct projections, found ${operandTypeName}`;
+      if (
+        operandType.kind != LoweredTypeKind.structType
+        && operandType.kind != LoweredTypeKind.arrayType
+        && operandType.kind != LoweredTypeKind.stringType
+      ) {
+        throw `native view lowering currently supports value-struct, Array, and String projections, found ${operandTypeName}`;
       }
       kind = LoweredExpressionKind.viewProjection;
     }
@@ -3140,6 +3145,23 @@ function lowerExpression(
     let children = Array<usize>();
     children.push(left);
     children.push(right);
+    let labels = Array<String>();
+    if (kind == LoweredExpressionKind.stringEqual) {
+      match (in leftType) {
+        some(name) => {
+          if (stringStartsWith(name, "view ")) labels.push("view");
+          else labels.push("value");
+        }
+        none => labels.push("value");
+      }
+      match (in rightType) {
+        some(name) => {
+          if (stringStartsWith(name, "view ")) labels.push("view");
+          else labels.push("value");
+        }
+        none => labels.push("value");
+      }
+    }
     const operation = (
       kind == LoweredExpressionKind.checkedAddInteger
       || kind == LoweredExpressionKind.checkedSubtractInteger
@@ -3159,7 +3181,7 @@ function lowerExpression(
       kind,
       operation,
       children,
-      Array<String>()
+      labels
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.conditionalExpression) {
@@ -3381,6 +3403,15 @@ function lowerExpression(
         tree.nodes[calleeInput].value == "byteAt"
         || tree.nodes[calleeInput].value == "copyBytes"
       ) {
+        let labels = Array<String>();
+        match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+          some(receiverTypeName) => {
+            if (stringStartsWith(receiverTypeName, "view ")) {
+              labels.push("view");
+            }
+          }
+          none => {}
+        }
         const receiver = try lowerExpression(
           program,
           importedTypes,
@@ -3410,7 +3441,7 @@ function lowerExpression(
             LoweredExpressionKind.stringByteAt,
             "",
             children,
-            Array<String>()
+            labels
           );
         }
         if (
@@ -3442,7 +3473,7 @@ function lowerExpression(
             LoweredExpressionKind.stringCopyBytes,
             "",
             children,
-            Array<String>()
+            labels
           );
         }
       }
@@ -4200,10 +4231,25 @@ function lowerExpression(
       some(name) => name;
       none => throw `native lowering could not resolve indexed storage at ${tree.nodes[receiverInput].line}:${tree.nodes[receiverInput].column}`;
     };
+    let receiverValueTypeName = receiverTypeName.copyBytes(
+      0,
+      receiverTypeName.byteLength
+    );
+    let receiverView = false;
+    if (
+      stringStartsWith(receiverValueTypeName, "view ")
+      && receiverValueTypeName.byteLength > 5
+    ) {
+      receiverValueTypeName = receiverValueTypeName.copyBytes(
+        5,
+        receiverValueTypeName.byteLength
+      );
+      receiverView = true;
+    }
     const receiverType = try lowerModuleTypeName(
       program,
       importedTypes,
-      receiverTypeName
+      receiverValueTypeName
     );
     if (receiverType.kind != LoweredTypeKind.arrayType) {
       throw `native lowering does not support indexing ${receiverTypeName} yet`;
@@ -4228,12 +4274,14 @@ function lowerExpression(
     let children = Array<usize>();
     children.push(receiver);
     children.push(offset);
+    let labels = Array<String>();
+    if (receiverView) labels.push("view");
     return pushExpression(
       inout output,
       LoweredExpressionKind.arrayIndex,
       receiverType.name,
       children,
-      Array<String>()
+      labels
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.memberExpression) {
@@ -4244,10 +4292,25 @@ function lowerExpression(
     if (tree.nodes[index].value == "length") {
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
         some(receiverTypeName) => {
+          let receiverValueTypeName = receiverTypeName.copyBytes(
+            0,
+            receiverTypeName.byteLength
+          );
+          let receiverView = false;
+          if (
+            stringStartsWith(receiverValueTypeName, "view ")
+            && receiverValueTypeName.byteLength > 5
+          ) {
+            receiverValueTypeName = receiverValueTypeName.copyBytes(
+              5,
+              receiverValueTypeName.byteLength
+            );
+            receiverView = true;
+          }
           const receiverType = try lowerModuleTypeName(
             program,
             importedTypes,
-            receiverTypeName
+            receiverValueTypeName
           );
           if (receiverType.kind == LoweredTypeKind.arrayType) {
             const receiver = try lowerExpression(
@@ -4260,12 +4323,14 @@ function lowerExpression(
             );
             let children = Array<usize>();
             children.push(receiver);
+            let labels = Array<String>();
+            if (receiverView) labels.push("view");
             return pushExpression(
               inout output,
               LoweredExpressionKind.arrayLength,
               receiverType.name,
               children,
-              Array<String>()
+              labels
             );
           }
         }
@@ -4276,6 +4341,15 @@ function lowerExpression(
       tree.nodes[index].value == "byteLength"
       || tree.nodes[index].value == "isEmpty"
     ) {
+      let labels = Array<String>();
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          if (stringStartsWith(receiverTypeName, "view ")) {
+            labels.push("view");
+          }
+        }
+        none => {}
+      }
       const receiver = try lowerExpression(
         program,
         importedTypes,
@@ -4292,7 +4366,7 @@ function lowerExpression(
           LoweredExpressionKind.stringLength,
           "",
           children,
-          Array<String>()
+          labels
         );
       }
       if (tree.nodes[index].value == "isEmpty") {
@@ -4301,7 +4375,7 @@ function lowerExpression(
           LoweredExpressionKind.stringIsEmpty,
           "",
           children,
-          Array<String>()
+          labels
         );
       }
     }
@@ -6159,6 +6233,14 @@ function lowerStatement(
           if (typeName.byteLength == 0) {
             throw `native lowering could not resolve the for iterable type at ${tree.nodes[root].line}:${tree.nodes[root].column}`;
           }
+          let viewIterable = false;
+          if (
+            stringStartsWith(typeName, "view ")
+            && typeName.byteLength > 5
+          ) {
+            typeName = typeName.copyBytes(5, typeName.byteLength);
+            viewIterable = true;
+          }
           const iterableType = try lowerModuleTypeName(
             program,
             importedTypes,
@@ -6208,6 +6290,7 @@ function lowerStatement(
             0,
             iterableType.name.byteLength
           ));
+          if (viewIterable) labels.push("view");
         }
         none => throw "native lowering cannot iterate an opaque expression";
       }

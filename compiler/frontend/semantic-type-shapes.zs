@@ -100,6 +100,10 @@ export function stringStartsWith(in value: String, in prefix: String): boolean {
 }
 
 export function arrayElementType(in name: String): String {
+  if (stringStartsWith(name, "view ") && name.byteLength > 5) {
+    const target = name.copyBytes(5, name.byteLength);
+    return arrayElementType(target);
+  }
   if (stringStartsWith(name, "Array<") || stringStartsWith(name, "Slice<")) {
     if (name.byteLength > 7 && name.byteAt(name.byteLength - 1) == 62) {
       const start: usize = 6;

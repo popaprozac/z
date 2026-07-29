@@ -1295,10 +1295,11 @@ function inferExpressionNodeType(
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
-  const kind = tree.nodes[index].kind;
-  const value = tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  const node = view tree.nodes[index];
+  const kind = node.kind;
+  const value = view node.value;
   const valueLength = value.byteLength;
-  const children = copyIndices(tree.nodes[index].children);
+  const children = view node.children;
   if (kind == ExpressionKind.numberExpression) return numberLiteralType(value);
   if (kind == ExpressionKind.stringExpression) return "String";
   if (kind == ExpressionKind.templateExpression) {
@@ -1415,8 +1416,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           "try requires an enclosing throwing function",
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
     }
@@ -1441,8 +1442,8 @@ function inferExpressionNodeType(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
             `cannot propagate ${call.errorType} from a function throwing ${enclosingError}`,
-            tree.nodes[index].line,
-            tree.nodes[index].column
+            node.line,
+            node.column
           );
         }
         return call.successType.copyBytes(0, call.successType.byteLength);
@@ -1455,8 +1456,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           message,
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
     }
@@ -1471,32 +1472,32 @@ function inferExpressionNodeType(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
         "executor placement requires an enclosing async function",
-        tree.nodes[index].line,
-        tree.nodes[index].column
+        node.line,
+        node.column
       );
     }
     let declaredReturn = "void";
     let declaredError = "";
     let bodyKind = "";
-    if (tree.nodes[index].labels.length > 0) {
-      const label = tree.nodes[index].labels[0].copyBytes(
+    if (node.labels.length > 0) {
+      const label = node.labels[0].copyBytes(
         0,
-        tree.nodes[index].labels[0].byteLength
+        node.labels[0].byteLength
       );
       if (label.byteLength > 0) {
         declaredReturn = label.copyBytes(0, label.byteLength);
       }
     }
-    if (tree.nodes[index].labels.length > 1) {
-      declaredError = tree.nodes[index].labels[1].copyBytes(
+    if (node.labels.length > 1) {
+      declaredError = node.labels[1].copyBytes(
         0,
-        tree.nodes[index].labels[1].byteLength
+        node.labels[1].byteLength
       );
     }
-    if (tree.nodes[index].labels.length > 2) {
-      bodyKind = tree.nodes[index].labels[2].copyBytes(
+    if (node.labels.length > 2) {
+      bodyKind = node.labels[2].copyBytes(
         0,
-        tree.nodes[index].labels[2].byteLength
+        node.labels[2].byteLength
       );
     }
     if (bodyKind == "call" && children.length > 2) {
@@ -1538,7 +1539,7 @@ function inferExpressionNodeType(
           }
         }
       }
-      if (tree.nodes[index].value == "spawn") {
+      if (node.value == "spawn") {
         return taskEffectType(successType, errorType);
       }
       if (errorType.byteLength > 0) {
@@ -1567,7 +1568,7 @@ function inferExpressionNodeType(
         declaredError
       );
     }
-    const statements = copyIndices(tree.nodes[index].statements);
+    const statements = copyIndices(node.statements);
     const expectedReturn = valueBindingType(
       bindings,
       "__z_native_return_type"
@@ -1582,11 +1583,11 @@ function inferExpressionNodeType(
       inout evidence,
       expectedReturn
     );
-    if (tree.nodes[index].value != "spawn") {
+    if (node.value != "spawn") {
       copyBindingFlowStates(inout bindings, blockBindings);
     }
     applyExecutorCaptureMoves(movedCaptures, inout bindings);
-    if (tree.nodes[index].value == "spawn") {
+    if (node.value == "spawn") {
       return taskEffectType(declaredReturn, declaredError);
     }
     if (declaredError.byteLength > 0) {
@@ -1604,8 +1605,8 @@ function inferExpressionNodeType(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
         "await requires an enclosing async function",
-        tree.nodes[index].line,
-        tree.nodes[index].column
+        node.line,
+        node.column
       );
     }
     const outcome = try inferExpressionNodeType(
@@ -1661,8 +1662,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           "await requires an async call or Task value",
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
     }
@@ -1677,8 +1678,8 @@ function inferExpressionNodeType(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
         "task requires an enclosing async function",
-        tree.nodes[index].line,
-        tree.nodes[index].column
+        node.line,
+        node.column
       );
     }
     if (tree.nodes[children[0]].kind != ExpressionKind.callExpression) {
@@ -1686,8 +1687,8 @@ function inferExpressionNodeType(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
         "task requires a direct async function or method call",
-        tree.nodes[index].line,
-        tree.nodes[index].column
+        node.line,
+        node.column
       );
     }
     const outcome = try inferExpressionNodeType(
@@ -1710,8 +1711,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           "task requires a direct async function or method call",
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
     }
@@ -1727,8 +1728,8 @@ function inferExpressionNodeType(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
             `new requires a class type; construct ${value} as ${value}({ ... })`,
-            tree.nodes[index].line,
-            tree.nodes[index].column
+            node.line,
+            node.column
           );
         }
         match (
@@ -1826,8 +1827,8 @@ function inferExpressionNodeType(
                     ModuleResolveErrorKind.typeMismatch,
                     module.path,
                     "synthesized class initialization requires one object literal",
-                    tree.nodes[index].line,
-                    tree.nodes[index].column
+                    node.line,
+                    node.column
                   );
                 }
                 const contextual = try inferContextualObjectExpressionNode(
@@ -2050,8 +2051,8 @@ function inferExpressionNodeType(
         ModuleResolveErrorKind.unknownMember,
         module.path,
         `type ${receiverValueType} has no field ${memberName}`,
-        tree.nodes[index].line,
-        tree.nodes[index].column
+        node.line,
+        node.column
       );
     }
     return "";
@@ -2208,7 +2209,7 @@ function inferExpressionNodeType(
     return result;
   }
   if (kind == ExpressionKind.valueBlockExpression) {
-    const statements = copyIndices(tree.nodes[index].statements);
+    const statements = copyIndices(node.statements);
     if (statements.length == 0) return "";
     let blockBindings = copyValueBindings(bindings);
     const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
@@ -2577,22 +2578,22 @@ function inferExpressionNodeType(
     let returnType = "";
     let errorType = "";
     let bodyKind = "expression";
-    if (tree.nodes[index].labels.length > 0) {
-      returnType = tree.nodes[index].labels[0].copyBytes(
+    if (node.labels.length > 0) {
+      returnType = node.labels[0].copyBytes(
         0,
-        tree.nodes[index].labels[0].byteLength
+        node.labels[0].byteLength
       );
     }
-    if (tree.nodes[index].labels.length > 1) {
-      errorType = tree.nodes[index].labels[1].copyBytes(
+    if (node.labels.length > 1) {
+      errorType = node.labels[1].copyBytes(
         0,
-        tree.nodes[index].labels[1].byteLength
+        node.labels[1].byteLength
       );
     }
-    if (tree.nodes[index].labels.length > 2) {
-      bodyKind = tree.nodes[index].labels[2].copyBytes(
+    if (node.labels.length > 2) {
+      bodyKind = node.labels[2].copyBytes(
         0,
-        tree.nodes[index].labels[2].byteLength
+        node.labels[2].byteLength
       );
     }
     const contextualType = contextualExpectedType(bindings, tree, index);
@@ -2614,7 +2615,7 @@ function inferExpressionNodeType(
     let captures = Array<String>();
     if (bodyKind == "block") {
       let bodyNames = copyBindings(localNames);
-      const statements = copyIndices(tree.nodes[index].statements);
+      const statements = copyIndices(node.statements);
       collectClosureStatementCaptures(
         arena,
         tree,
@@ -2628,8 +2629,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           "a block-bodied closure requires an explicit or contextual return type",
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
     } else {
@@ -2653,8 +2654,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           `cannot capture uninitialized value "${capture}"`,
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
       const ownership = valueBindingOwnership(bindings, capture);
@@ -2666,8 +2667,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           message,
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
       const captureType = valueBindingType(bindings, capture);
@@ -2678,8 +2679,8 @@ function inferExpressionNodeType(
               ModuleResolveErrorKind.typeMismatch,
               module.path,
               `cannot move borrowed capture "${capture}"`,
-              tree.nodes[index].line,
-              tree.nodes[index].column
+              node.line,
+              node.column
             );
           }
           setValueBindingOwnership(
@@ -2737,7 +2738,7 @@ function inferExpressionNodeType(
       );
     }
     if (bodyKind == "block") {
-      const statements = copyIndices(tree.nodes[index].statements);
+      const statements = copyIndices(node.statements);
       try inferStatementSequence(
         module,
         modules,
@@ -2992,8 +2993,8 @@ function inferExpressionNodeType(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
             `${base} numeric construction expects exactly one integer value`,
-            tree.nodes[index].line,
-            tree.nodes[index].column
+            node.line,
+            node.column
           );
         }
         const argument = children[1];
@@ -3038,8 +3039,8 @@ function inferExpressionNodeType(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
           `${base}(value) numeric conversion is not available in the integer-only conversion tier`,
-          tree.nodes[index].line,
-          tree.nodes[index].column
+          node.line,
+          node.column
         );
       }
       if (

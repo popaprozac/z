@@ -797,6 +797,11 @@ may name a direct field or element projection with
 direct projection as `view T`. The compiler ties either read-only view to its
 named value-storage owner and prevents invalidating mutation until last use.
 The local form lowers to `const T *` and does not copy the projected value. The
+same pointer representation survives read-only `Array<T>` indexing, length,
+and iteration plus read-only `String` inspection, comparison, and formatting;
+an explicit `copyBytes` remains the operation that produces an owned String.
+This is intrinsic composition over the existing owner loan, not a general
+stored-borrow or lifetime mechanism. The
 first slice intentionally omits removal, reservation, fallible allocation,
 escaping slices, subslices, class-owned views, and general lifetime parameters.
 Allocation failure currently traps. `T[]` remains unassigned until those

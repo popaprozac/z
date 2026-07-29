@@ -891,6 +891,36 @@ parameters, and schedules cleanup only for the owner. `semantic-operators.zs`
 is the first self-hosted compiler module to use the form; the complete frontend
 graph still emits, compiles under strict C warnings, and executes.
 
+The next compiler-shaped adoption replaced the repeated root projections in
+`inferExpressionNodeType`:
+
+```z
+const node = view tree.nodes[index];
+const value = view node.value;
+const children = view node.children;
+```
+
+The function previously contained 64 direct `tree.nodes[index]` expressions;
+it now performs one checked root projection. `children` no longer constructs
+and destroys an owned `Array<usize>` on every recursive inference call, and
+`value` no longer copies and destroys the expression node's String. This
+required read-only intrinsic composition for `view Array<T>` and `view String`,
+not a broader lifetime rule: both views retain the tree provenance, reject
+mutation, and disappear at last use. A native compiler fixture now exercises
+array length/index/iteration and String length/comparison/interpolation/
+`copyBytes`, strict-compiles the emitted C, and verifies that only the owning
+aggregate is destroyed.
+
+The performance result is deliberately modest. An interleaved 2026-07-29
+comparison of the complete hybrid native-frontend check measured 3.870 seconds
+for the prior tree and 3.900 seconds for the expanded tree (`1.01 ± 0.01`);
+that path also analyzes and lowers the newly larger compiler. Separate
+fixed-point native `z check` runs measured 252.1 ms before and 256.0 ms after,
+inside the combined run variance (`1.02 ± 0.02`). The generated fixed-point C
+became slightly smaller, from 3,248,664 to 3,241,509 bytes. The defensible win
+at this checkpoint is eliminated recursive allocation and repeated bounds
+checks in generated C; whole-compiler latency is neutral, not yet faster.
+
 The first extractions moved the public graph, symbol, signature, and evidence
 values into `semantic-model.zs`, isolated lexical module paths, then separated
 declaration-signature projection, symbol construction, graph construction, and

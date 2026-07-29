@@ -4464,6 +4464,10 @@ function renderStringValue(
   target: string,
   context: GenerationContext,
 ): string[] {
+  const view = parseViewType(type);
+  if (view) {
+    return renderStringValue(`(*(${value}))`, view.target, target, context);
+  }
   if (["i8", "i16", "i32", "i64", "isize"].includes(type)) {
     return [`z_string_append_signed(&${target}, (long long)(${value}));`];
   }
@@ -4664,15 +4668,18 @@ function generateFor(statement: Extract<Statement, { kind: "for" }>, context: Ge
   if (iteratorElement) {
     return generateIteratorFor(statement, iterableType, iteratorElement, index, context);
   }
-  const map = parseMapType(iterableType);
-  const set = parseSetType(iterableType);
-  const collection = parseFixedArrayType(iterableType)
-    ?? parseDynamicArrayType(iterableType)
-    ?? parseSliceType(iterableType)
+  const iterableView = parseViewType(iterableType);
+  const iterableValueType = iterableView?.target ?? iterableType;
+  const map = parseMapType(iterableValueType);
+  const set = parseSetType(iterableValueType);
+  const collection = parseFixedArrayType(iterableValueType)
+    ?? parseDynamicArrayType(iterableValueType)
+    ?? parseSliceType(iterableValueType)
     ?? (map ? { elementType: mapEntryTypeName(map.keyType, map.valueType) } : null)
     ?? (set ? { elementType: set.elementType } : null);
   if (!collection) throw new Error("for...of lowering requires an array, Slice, Map, or Set");
-  const iterable = generateExpression(statement.iterable, context);
+  const emittedIterable = generateExpression(statement.iterable, context);
+  const iterable = iterableView ? `(*(${emittedIterable}))` : emittedIterable;
   const storage = map ? `(${iterable}).entries` : set ? `(${iterable}).values` : `(${iterable})`;
   const length = "length" in collection ? String(collection.length) : `${storage}.length`;
   let item = `((${storage}.data[_z_for_index_${index}]))`;
@@ -6784,15 +6791,20 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (integerOperation) {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;
       }
+      const leftType = inferExpressionType(expression.left, context);
+      const rightType = inferExpressionType(expression.right, context);
       if (
         (expression.operator === "==" || expression.operator === "!=")
-        && inferExpressionType(expression.left, context) === "String"
-        && inferExpressionType(expression.right, context) === "String"
+        && (parseViewType(leftType)?.target ?? leftType) === "String"
+        && (parseViewType(rightType)?.target ?? rightType) === "String"
       ) {
-        const comparison = `z_string_equal(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;
+        const emittedLeft = generateExpression(expression.left, context);
+        const emittedRight = generateExpression(expression.right, context);
+        const left = parseViewType(leftType) ? `(*(${emittedLeft}))` : emittedLeft;
+        const right = parseViewType(rightType) ? `(*(${emittedRight}))` : emittedRight;
+        const comparison = `z_string_equal(${left}, ${right})`;
         return expression.operator === "==" ? comparison : `(!${comparison})`;
       }
-      const leftType = inferExpressionType(expression.left, context);
       const comparableEnum = context.enums.get(leftType);
       if (
         (expression.operator === "==" || expression.operator === "!=")
