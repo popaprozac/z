@@ -39,6 +39,13 @@ import {
 
 const projectRoot = resolve(dirnameFromImportMeta(), "..");
 const cli = resolve(projectRoot, "compiler/src/cli.ts");
+const hostToolchainTest = (
+  name: string,
+  callback: () => void,
+  timeout = 5_000,
+): void => {
+  test(name, callback, process.env.CI ? timeout * 4 : timeout);
+};
 
 test("captures machine-readable compiler output beyond the former 64 MiB pipe ceiling", () => {
   const mebibytes = 65;
@@ -4325,7 +4332,7 @@ test("imports C++ constructors and static methods as direct type-level calls", (
   );
 });
 
-test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
+hostToolchainTest("imports AppKit classes and emits an ARC Objective-C NSWindow program", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/nswindow.zs");
   const source = readFileSync(example, "utf8");
@@ -4394,7 +4401,7 @@ test("imports AppKit classes and emits an ARC Objective-C NSWindow program", () 
   assert.doesNotMatch(activateHover, /iOS|watchOS|tvOS/);
 });
 
-test("narrows nullable Objective-C references before member access", () => {
+hostToolchainTest("narrows nullable Objective-C references before member access", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "objc-nullability.zs");
   const source = `
@@ -4531,7 +4538,7 @@ test("narrows nullable Objective-C references before member access", () => {
   );
 });
 
-test("lifts nullable Objective-C references into Option values", () => {
+hostToolchainTest("lifts nullable Objective-C references into Option values", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/objc-nullability.zs");
   const source = readFileSync(example, "utf8");
@@ -4606,7 +4613,7 @@ test("lifts nullable Objective-C references into Option values", () => {
   );
 }, 10_000);
 
-test("compiles a desktop ownership slice and preserves its current pressure walls", () => {
+hostToolchainTest("compiles a desktop ownership slice and preserves its current pressure walls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/desktop-ownership/main.zs");
   const source = readFileSync(example, "utf8");
@@ -4636,7 +4643,7 @@ test("compiles a desktop ownership slice and preserves its current pressure wall
   assert.match(hover(source, example, windowFieldOffset)?.contents.value ?? "", /class NSWindow/);
 });
 
-test("builds the interactive Z Notes AppKit and sqlite3 application", () => {
+hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application", () => {
   if (process.platform !== "darwin") return;
   const application = resolve(projectRoot, "examples/applications/z-notes/main.zs");
   const source = readFileSync(application, "utf8");
@@ -5466,7 +5473,7 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
   assert.match(hover(source, "optional-view.zs", payloadOffset)?.contents.value ?? "", /item: view Item/);
 });
 
-test("retains owned Z closure environments across Objective-C blocks", () => {
+hostToolchainTest("retains owned Z closure environments across Objective-C blocks", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "tests/fixtures/objc-blocks.zs");
   const source = readFileSync(example, "utf8");
@@ -5672,7 +5679,7 @@ test("registers persistent Objective-C event callbacks with explicit token clean
   );
 }, 10_000);
 
-test("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
+hostToolchainTest("copies owned Z strings across NSString boundaries without losing embedded nulls", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "tests/fixtures/objc-strings.zs");
   const source = readFileSync(example, "utf8");
@@ -5688,7 +5695,7 @@ test("copies owned Z strings across NSString boundaries without losing embedded 
   assert.equal(result.stdout, "round trip=answer=42\nembedded=a\0b\n");
 }, 10_000);
 
-test("imports and executes Swift through its generated Objective-C compatibility header", () => {
+hostToolchainTest("imports and executes Swift through its generated Objective-C compatibility header", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-swift-interop-");
   const header = resolve(directory, "ZSwiftFixture-Swift.h");
@@ -5761,7 +5768,7 @@ test("imports and executes Swift through its generated Objective-C compatibility
   assert.match(hover(source, zSource, propertyOffset)?.contents.value ?? "", /value: i32/);
 });
 
-test("builds a declared Swift target for ordinary CLI and editor workflows", () => {
+hostToolchainTest("builds a declared Swift target for ordinary CLI and editor workflows", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-interop/main.zs");
   const source = readFileSync(example, "utf8");
@@ -5799,7 +5806,7 @@ test("builds a declared Swift target for ordinary CLI and editor workflows", () 
   );
 });
 
-test("projects Swift callbacks into tasks and preserves MainActor isolation", () => {
+hostToolchainTest("projects Swift callbacks into tasks and preserves MainActor isolation", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-task-scope/main.zs");
   const source = readFileSync(example, "utf8");
@@ -6125,7 +6132,7 @@ test("projects Swift callbacks into tasks and preserves MainActor isolation", ()
   assert.equal(result.stdout, "7\n42\n");
 }, 60_000);
 
-test("imports and owns a Swift value through its generated C++ compatibility header", () => {
+hostToolchainTest("imports and owns a Swift value through its generated C++ compatibility header", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-value-interop/main.zs");
   const source = readFileSync(example, "utf8");
@@ -6203,7 +6210,7 @@ test("imports and owns a Swift value through its generated C++ compatibility hea
   assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nSwift value=42\nembedded=a\0b\nreleased 40\n");
 });
 
-test("constructs Swift associated-value enum cases through generated C++ factories", () => {
+hostToolchainTest("constructs Swift associated-value enum cases through generated C++ factories", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/swift/swift-enum-interop/main.zs");
   const source = readFileSync(example, "utf8");
@@ -17208,7 +17215,7 @@ test("constructs contextual enum payloads and destructures their named fields", 
   assert.equal(result.status, 0, result.stderr);
 
   const generated = compileToC(source, example);
-  assert.match(generated, /\.data\.ready = \(Z_Response\)\{ \.status = 200/);
+  assert.match(generated, /\.data = \{ \.ready = \(Z_Response\)\{ \.status = 200/);
   assert.match(generated, /const Z_ResponseState \*_z_match_\d+ = &\(\(\*state\)\)/);
   assert.match(generated, /Z_Response const \*_z_match_\d+_ready_payload/);
   assert.match(generated, /Z_Response_deinit\(&\(_z_match_\d+_ready_payload\)\)/);
@@ -19622,7 +19629,7 @@ test("preserves executor affinity across Z module boundaries", () => {
   }
 });
 
-test("imports native executor affinity from Clang metadata and Z declarations", () => {
+hostToolchainTest("imports native executor affinity from Clang metadata and Z declarations", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "tests/fixtures/executor-affinity-test.zs");
   const source = `
@@ -19790,7 +19797,7 @@ test("borrows Z ARC identities captured by main-executor placement", () => {
   assert.equal(result.status, 0, result.stderr);
 });
 
-test("publishes owned worker results through borrowed Objective-C identity on main", () => {
+hostToolchainTest("publishes owned worker results through borrowed Objective-C identity on main", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/async/appkit-main-result.zs");
   const source = readFileSync(example, "utf8");

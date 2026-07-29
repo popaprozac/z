@@ -1428,11 +1428,11 @@ function generateForeignConnectionHelper(
     }`;
   const successValue = `(${resultCType}){
       .tag = ${variantTag(resultType, "success")},
-      .data.success = ${connectionValue},
+      .data = { .success = ${connectionValue} },
     }`;
   const failureValue = `(${resultCType}){
       .tag = ${variantTag(resultType, "failure")},
-      .data.failure = status,
+      .data = { .failure = status },
     }`;
   return `static void ${disconnect}(void *owner_value, void *context) {
   ${ownerType} owner = ${ownerCast};
@@ -2488,7 +2488,7 @@ function generateMapRuntime(
     ? `${enumName(valueOption)}::make_some(std::move(self->entries.data[index].value))`
     : nicheValue
     ? "self->entries.data[index].value"
-    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data.some = self->entries.data[index].value }`;
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data = { .some = self->entries.data[index].value } }`;
   const noneValue = nativeMoveValue
     ? `${enumName(valueOption)}::make_none()`
     : nicheValue
@@ -2532,7 +2532,7 @@ function generateMapRuntime(
       : "&self->entries.data[stored - 1].value";
   const someLookup = nicheLookup
     ? storedLookup
-    : `(${mappedLookupOption}){ .tag = ${variantTag(lookupOption, "some")}, .data.some = ${storedLookup} }`;
+    : `(${mappedLookupOption}){ .tag = ${variantTag(lookupOption, "some")}, .data = { .some = ${storedLookup} } }`;
   const noneLookup = nicheLookup
     ? nicheOptionNull(nicheLookup)
     : `(${mappedLookupOption}){ .tag = ${variantTag(lookupOption, "none")} }`;
@@ -2735,7 +2735,7 @@ function generateSetRuntime(
   );
   const someValue = nicheValue
     ? "self->values.data[index]"
-    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data.some = self->values.data[index] }`;
+    : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "some")}, .data = { .some = self->values.data[index] } }`;
   const noneValue = nicheValue
     ? nicheOptionNull(nicheValue)
     : `(${mappedValueOption}){ .tag = ${variantTag(valueOption, "none")} }`;
@@ -2995,12 +2995,12 @@ static ${unused}__attribute__((unused)) ${enumName(weakResultTypeName(declaratio
   if (value == NULL) {
     return (${enumName(weakResultTypeName(declaration.name))}){
       .tag = ${variantTag(weakResultTypeName(declaration.name), "failure")},
-      .data.failure = (${structName(weakExpiredType)}){}
+      .data = { .failure = (${structName(weakExpiredType)}){} }
     };
   }
   return (${enumName(weakResultTypeName(declaration.name))}){
     .tag = ${variantTag(weakResultTypeName(declaration.name), "success")},
-    .data.success = ${retainName(declaration.name)}(value)
+    .data = { .success = ${retainName(declaration.name)}(value) }
   };
 }
 
@@ -3262,7 +3262,7 @@ function generateGeneratorRuntime(
   const advanceName = mapType(advanceType, structs, enums, foreignNamedTypes);
   const none = `(${mapType(advanceSuccessType, structs, enums, foreignNamedTypes)}){ .tag = ${variantTag(advanceSuccessType, "none")} }`;
   const successfulExhaustion = generator.errorType
-    ? `(${advanceName}){ .tag = ${variantTag(advanceType, "success")}, .data.success = ${none} }`
+    ? `(${advanceName}){ .tag = ${variantTag(advanceType, "success")}, .data = { .success = ${none} } }`
     : none;
   const exhausted = generator.returnType
     ? "abort();"
@@ -7177,7 +7177,7 @@ function generateEnumVariantConstruction(
   )) {
     return `${enumName(declaration.name)}::make_${nativeSymbolPart(variant)}(${payload ?? ""})`;
   }
-  const initializedPayload = payload === null ? "" : `, .data.${variant} = ${payload}`;
+  const initializedPayload = payload === null ? "" : `, .data = { .${variant} = ${payload} }`;
   return `(${enumName(declaration.name)}){ .tag = ${variantTag(declaration.name, variant)}${initializedPayload} }`;
 }
 
@@ -7542,7 +7542,7 @@ function generateSystemStandardRuntime(used: ReadonlySet<StandardFunctionName>):
 
 static ${lockResult} z_fs_lock(Z_String path) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${lockResult}){ .tag = ${lockFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   const char *native_path = path.data != NULL ? path.data : "";
 #if defined(_WIN32)
@@ -7556,18 +7556,18 @@ static ${lockResult} z_fs_lock(Z_String path) {
     NULL
   );
   if (handle == INVALID_HANDLE_VALUE) {
-    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("could not open filesystem lock") };
+    return (${lockResult}){ .tag = ${lockFailure}, .data = { .failure = z_standard_error("could not open filesystem lock") } };
   }
   OVERLAPPED range = {0};
   if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &range)) {
     (void)CloseHandle(handle);
-    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error("could not acquire filesystem lock") };
+    return (${lockResult}){ .tag = ${lockFailure}, .data = { .failure = z_standard_error("could not acquire filesystem lock") } };
   }
-  return (${lockResult}){ .tag = ${lockSuccess}, .data.success = (Z_FsLock){ .native = (intptr_t)handle } };
+  return (${lockResult}){ .tag = ${lockSuccess}, .data = { .success = (Z_FsLock){ .native = (intptr_t)handle } } };
 #else
   const int descriptor = open(native_path, O_CREAT | O_RDWR, 0666);
   if (descriptor < 0) {
-    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${lockResult}){ .tag = ${lockFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   int status;
   do {
@@ -7576,9 +7576,9 @@ static ${lockResult} z_fs_lock(Z_String path) {
   if (status != 0) {
     const int code = errno;
     (void)close(descriptor);
-    return (${lockResult}){ .tag = ${lockFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${lockResult}){ .tag = ${lockFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
-  return (${lockResult}){ .tag = ${lockSuccess}, .data.success = (Z_FsLock){ .native = (intptr_t)descriptor } };
+  return (${lockResult}){ .tag = ${lockSuccess}, .data = { .success = (Z_FsLock){ .native = (intptr_t)descriptor } } };
 #endif
 }`);
   }
@@ -7586,23 +7586,23 @@ static ${lockResult} z_fs_lock(Z_String path) {
   if (used.has("fs.readBytes")) {
     sections.push(`static ${bytesResult} z_fs_read_bytes(Z_String path) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   const char *native_path = path.data != NULL ? path.data : "";
   FILE *file = fopen(native_path, "rb");
   if (file == NULL) {
-    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   if (fseek(file, 0, SEEK_END) != 0) {
     const int code = errno;
     fclose(file);
-    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   const long measured = ftell(file);
   if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {
     const int code = errno;
     fclose(file);
-    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   ${bytesArray} contents = { .data = NULL, .length = 0, .capacity = 0 };
   if (measured > 0) {
@@ -7614,38 +7614,38 @@ static ${lockResult} z_fs_lock(Z_String path) {
       const int code = ferror(file) ? errno : EIO;
       fclose(file);
       free(contents.data);
-      return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+      return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
     }
   }
   if (fclose(file) != 0) {
     const int code = errno;
     free(contents.data);
-    return (${bytesResult}){ .tag = ${bytesFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${bytesResult}){ .tag = ${bytesFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
-  return (${bytesResult}){ .tag = ${bytesSuccess}, .data.success = contents };
+  return (${bytesResult}){ .tag = ${bytesSuccess}, .data = { .success = contents } };
 }`);
   }
 
   if (used.has("fs.readText")) {
     sections.push(`static ${stringResult} z_fs_read_text(Z_String path) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   const char *native_path = path.data != NULL ? path.data : "";
   FILE *file = fopen(native_path, "rb");
   if (file == NULL) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   if (fseek(file, 0, SEEK_END) != 0) {
     const int code = errno;
     fclose(file);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   const long measured = ftell(file);
   if (measured < 0 || fseek(file, 0, SEEK_SET) != 0) {
     const int code = errno;
     fclose(file);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   Z_String contents = z_string_new();
   if (measured > 0) {
@@ -7655,7 +7655,7 @@ static ${lockResult} z_fs_lock(Z_String path) {
       const int code = ferror(file) ? errno : EIO;
       fclose(file);
       if (contents.capacity > 0) free((void *)contents.data);
-      return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+      return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
     }
     contents.length = (uintptr_t)count;
     ((char *)contents.data)[contents.length] = '\\0';
@@ -7663,34 +7663,34 @@ static ${lockResult} z_fs_lock(Z_String path) {
   if (fclose(file) != 0) {
     const int code = errno;
     if (contents.capacity > 0) free((void *)contents.data);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   if (!z_string_is_valid_utf8(contents.data != NULL ? contents.data : "", contents.length)) {
     if (contents.capacity > 0) free((void *)contents.data);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("file is not valid UTF-8") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("file is not valid UTF-8") } };
   }
-  return (${stringResult}){ .tag = ${stringSuccess}, .data.success = contents };
+  return (${stringResult}){ .tag = ${stringSuccess}, .data = { .success = contents } };
 }`);
   }
 
   if (used.has("fs.writeText")) {
     sections.push(`static ${voidResult} z_fs_write_text(Z_String path, Z_String contents) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   const char *native_path = path.data != NULL ? path.data : "";
   FILE *file = fopen(native_path, "wb");
   if (file == NULL) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   const char *data = contents.data != NULL ? contents.data : "";
   if (contents.length > 0 && fwrite(data, 1, (size_t)contents.length, file) != (size_t)contents.length) {
     const int code = errno;
     fclose(file);
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   if (fclose(file) != 0) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   return (${voidResult}){ .tag = ${voidSuccess} };
 }`);
@@ -7699,10 +7699,10 @@ static ${lockResult} z_fs_lock(Z_String path) {
   if (used.has("fs.replace")) {
     sections.push(`static ${voidResult} z_fs_replace(Z_String source, Z_String destination) {
   if (!z_standard_string_is_cstring(&source)) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("source path contains an embedded null byte") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("source path contains an embedded null byte") } };
   }
   if (!z_standard_string_is_cstring(&destination)) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("destination path contains an embedded null byte") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("destination path contains an embedded null byte") } };
   }
   const char *native_source = source.data != NULL ? source.data : "";
   const char *native_destination = destination.data != NULL ? destination.data : "";
@@ -7712,11 +7712,11 @@ static ${lockResult} z_fs_lock(Z_String path) {
     native_destination,
     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
   )) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("could not atomically replace filesystem path") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("could not atomically replace filesystem path") } };
   }
 #else
   if (rename(native_source, native_destination) != 0) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
 #endif
   return (${voidResult}){ .tag = ${voidSuccess} };
@@ -7778,10 +7778,10 @@ static int z_fs_create_one_directory(const char *path) {
 
 static ${voidResult} z_fs_create_directories(Z_String path) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   if (path.length == 0) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error("directory path cannot be empty") };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error("directory path cannot be empty") } };
   }
   char *buffer = malloc((size_t)path.length + 1);
   if (buffer == NULL) abort();
@@ -7816,7 +7816,7 @@ static ${voidResult} z_fs_create_directories(Z_String path) {
   if (code == 0) code = z_fs_create_one_directory(buffer);
   free(buffer);
   if (code != 0) {
-    return (${voidResult}){ .tag = ${voidFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${voidResult}){ .tag = ${voidFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   return (${voidResult}){ .tag = ${voidSuccess} };
 }`);
@@ -7825,7 +7825,7 @@ static ${voidResult} z_fs_create_directories(Z_String path) {
   if (used.has("fs.realPath")) {
     sections.push(`static ${stringResult} z_fs_real_path(Z_String path) {
   if (!z_standard_string_is_cstring(&path)) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("path contains an embedded null byte") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("path contains an embedded null byte") } };
   }
   const char *native_path = path.data != NULL ? path.data : "";
 #if defined(_WIN32)
@@ -7834,15 +7834,15 @@ static ${voidResult} z_fs_create_directories(Z_String path) {
   char *resolved = realpath(native_path, NULL);
 #endif
   if (resolved == NULL) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   if (!z_string_is_valid_utf8(resolved, (uintptr_t)strlen(resolved))) {
     free(resolved);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("canonical path is not valid UTF-8") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("canonical path is not valid UTF-8") } };
   }
   Z_String result = z_string_from_cstring(resolved);
   free(resolved);
-  return (${stringResult}){ .tag = ${stringSuccess}, .data.success = result };
+  return (${stringResult}){ .tag = ${stringSuccess}, .data = { .success = result } };
 }`);
   }
 
@@ -7882,7 +7882,7 @@ static void z_process_set_arguments(int argc, char **argv) {
     length = GetModuleFileNameW(NULL, wide, capacity);
     if (length == 0) {
       free(wide);
-      return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("could not locate the current executable") };
+      return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("could not locate the current executable") } };
     }
     if (length < capacity) break;
     free(wide);
@@ -7902,7 +7902,7 @@ static void z_process_set_arguments(int argc, char **argv) {
   );
   if (utf8_length <= 0) {
     free(wide);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("the current executable path is not valid UTF-8") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("the current executable path is not valid UTF-8") } };
   }
   resolved = (char *)malloc((size_t)utf8_length + 1);
   if (resolved == NULL) abort();
@@ -7922,18 +7922,18 @@ static void z_process_set_arguments(int argc, char **argv) {
   uint32_t capacity = 0;
   (void)_NSGetExecutablePath(NULL, &capacity);
   if (capacity == 0) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("could not locate the current executable") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("could not locate the current executable") } };
   }
   char *candidate = (char *)malloc((size_t)capacity);
   if (candidate == NULL) abort();
   if (_NSGetExecutablePath(candidate, &capacity) != 0) {
     free(candidate);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("could not locate the current executable") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("could not locate the current executable") } };
   }
   resolved = realpath(candidate, NULL);
   free(candidate);
   if (resolved == NULL) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
 #elif defined(__linux__)
   size_t capacity = 256;
@@ -7944,7 +7944,7 @@ static void z_process_set_arguments(int argc, char **argv) {
     if (length < 0) {
       const int code = errno;
       free(resolved);
-      return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(code)) };
+      return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
     }
     if ((size_t)length < capacity - 1) {
       resolved[length] = '\\0';
@@ -7957,21 +7957,21 @@ static void z_process_set_arguments(int argc, char **argv) {
   }
 #else
   if (z_process_argc <= 0 || z_process_argv == NULL) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("could not locate the current executable") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("could not locate the current executable") } };
   }
   resolved = realpath(z_process_argv[0], NULL);
   if (resolved == NULL) {
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
 #endif
   const uintptr_t length = (uintptr_t)strlen(resolved);
   if (!z_string_is_valid_utf8(resolved, length)) {
     free(resolved);
-    return (${stringResult}){ .tag = ${stringFailure}, .data.failure = z_standard_error("the current executable path is not valid UTF-8") };
+    return (${stringResult}){ .tag = ${stringFailure}, .data = { .failure = z_standard_error("the current executable path is not valid UTF-8") } };
   }
   Z_String result = z_string_from_cstring(resolved);
   free(resolved);
-  return (${stringResult}){ .tag = ${stringSuccess}, .data.success = result };
+  return (${stringResult}){ .tag = ${stringSuccess}, .data = { .success = result } };
 }`);
     }
   }
@@ -7980,11 +7980,11 @@ static void z_process_set_arguments(int argc, char **argv) {
     const slice = sliceName(sliceTypeName("String"));
     sections.push(`static ${processResult} z_process_run(Z_String program, ${slice} arguments) {
   if (!z_standard_string_is_cstring(&program)) {
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error("program contains an embedded null byte") };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error("program contains an embedded null byte") } };
   }
   for (uintptr_t index = 0; index < arguments.length; index += 1) {
     if (!z_standard_string_is_cstring(&arguments.data[index])) {
-      return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error("process argument contains an embedded null byte") };
+      return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error("process argument contains an embedded null byte") } };
     }
   }
   if (arguments.length > SIZE_MAX / sizeof(char *) - 2) abort();
@@ -7999,23 +7999,23 @@ static void z_process_set_arguments(int argc, char **argv) {
   if (status == -1) {
     const int code = errno;
     free(argv);
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   free(argv);
-  return (${processResult}){ .tag = ${processSuccess}, .data.success = (int32_t)status };
+  return (${processResult}){ .tag = ${processSuccess}, .data = { .success = (int32_t)status } };
 #else
   int error_pipe[2];
   if (pipe(error_pipe) != 0) {
     const int code = errno;
     free(argv);
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   if (fcntl(error_pipe[1], F_SETFD, FD_CLOEXEC) == -1) {
     const int code = errno;
     close(error_pipe[0]);
     close(error_pipe[1]);
     free(argv);
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   const pid_t child = fork();
   if (child < 0) {
@@ -8023,7 +8023,7 @@ static void z_process_set_arguments(int argc, char **argv) {
     close(error_pipe[0]);
     close(error_pipe[1]);
     free(argv);
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(code)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(code)) } };
   }
   if (child == 0) {
     close(error_pipe[0]);
@@ -8048,18 +8048,18 @@ static void z_process_set_arguments(int argc, char **argv) {
   } while (waited < 0 && errno == EINTR);
   free(argv);
   if (waited < 0) {
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(errno)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(errno)) } };
   }
   if (pipe_error != 0) {
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(pipe_error)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(pipe_error)) } };
   }
   if (error_bytes == (ssize_t)sizeof(exec_error)) {
-    return (${processResult}){ .tag = ${processFailure}, .data.failure = z_standard_error(strerror(exec_error)) };
+    return (${processResult}){ .tag = ${processFailure}, .data = { .failure = z_standard_error(strerror(exec_error)) } };
   }
   const int32_t exit_code = WIFEXITED(status)
     ? (int32_t)WEXITSTATUS(status)
     : WIFSIGNALED(status) ? (int32_t)(128 + WTERMSIG(status)) : 1;
-  return (${processResult}){ .tag = ${processSuccess}, .data.success = exit_code };
+  return (${processResult}){ .tag = ${processSuccess}, .data = { .success = exit_code } };
 #endif
 }`);
   }
