@@ -13,7 +13,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { test } from "bun:test";
+import { test as bunTest } from "bun:test";
 import {
   analyzeSource,
   check,
@@ -132,10 +132,23 @@ if (process.platform === "darwin") {
 
 function hostToolchainTest(
   name: string,
-  callback: () => void,
+  callback: () => void | Promise<void>,
   timeout = 5_000,
 ): void {
-  test(name, callback, process.env.CI ? timeout * 4 : timeout);
+  test(name, callback, timeout);
+}
+
+function test(
+  name: string,
+  callback: () => void | Promise<void>,
+  timeout?: number,
+): void {
+  if (timeout === undefined) {
+    bunTest(name, callback);
+    return;
+  }
+
+  bunTest(name, callback, process.env.CI ? timeout * 4 : timeout);
 }
 
 function swiftModuleCacheArguments(): string[] {
