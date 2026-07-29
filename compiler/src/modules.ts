@@ -374,7 +374,14 @@ function collectOwnNames(node: ModuleNode, entry: boolean): void {
 }
 
 function buildScope(node: ModuleNode): ModuleScope {
-  const globals = new Map(node.ownNames);
+  const hiddenTestNames = new Set(
+    node.program.functions
+      .filter((declaration) => declaration.testName)
+      .map((declaration) => declaration.name),
+  );
+  const globals = new Map(
+    [...node.ownNames].filter(([name]) => !hiddenTestNames.has(name)),
+  );
   const namespaces = new Map<string, ModuleNode>();
   const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">();
   const occupied = new Map<string, SourceLocation>();
@@ -383,7 +390,7 @@ function buildScope(node: ModuleNode): ModuleScope {
     ...node.program.traits,
     ...node.program.structs,
     ...node.program.enums,
-    ...node.program.functions,
+    ...node.program.functions.filter((declaration) => !declaration.testName),
   ]) occupied.set(declaration.name, declaration.location);
 
   const bind = (name: string, linkedName: string, location: SourceLocation): void => {

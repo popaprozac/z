@@ -6,7 +6,13 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { Expression, FunctionDeclaration, Program, SourceLocation, Statement, StructDeclaration } from "./ast.ts";
 import { canonicalTypeName } from "./canonical-type-name.ts";
-import { analyzeSource, check, compileToNative, type NativeArtifact } from "./compiler.ts";
+import {
+  analyzeSource,
+  check,
+  compileTestsToNative,
+  compileToNative,
+  type NativeArtifact,
+} from "./compiler.ts";
 import { DiagnosticError, formatDiagnostic } from "./diagnostics.ts";
 import { writeForeignDeclarationArtifact } from "./foreign-adapter.ts";
 import { parseGenericType } from "./generic-types.ts";
@@ -43,7 +49,7 @@ const trailingArguments = buildUsesCurrentDirectory
   : suppliedTrailingArguments;
 const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
 
-if (!command || !inputArgument || !["build", "check", "emit", "run", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
+if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
@@ -77,6 +83,24 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "self-host-
         inputPath,
         trailingArguments[0],
         resolve(trailingArguments[1]),
+      );
+    } else if (command === "test") {
+      if (trailingArguments.length > 0) {
+        throw new Error(`unknown test option ${JSON.stringify(trailingArguments[0])}`);
+      }
+      if (!inputPath.endsWith(".zs")) {
+        throw new Error("test currently requires a .zs source module");
+      }
+      const source = readFileSync(inputPath, "utf8");
+      const artifact = compileTestsToNative(source, inputPath);
+      for (const warning of artifact.warnings) {
+        console.error(formatDiagnostic(warning, source));
+      }
+      runNative(
+        inputPath,
+        artifact,
+        [],
+        `${basename(inputPath, ".zs")}-tests`,
       );
     } else if (command === "check") {
       const nativeFrontend = trailingArguments.includes("--native-frontend");
@@ -1344,8 +1368,13 @@ function readSourceIfAvailable(path: string): string | undefined {
   }
 }
 
-function runNative(inputPath: string, artifact: NativeArtifact, programArguments: readonly string[]): void {
-  const executablePath = buildNative(inputPath, artifact);
+function runNative(
+  inputPath: string,
+  artifact: NativeArtifact,
+  programArguments: readonly string[],
+  outputStem?: string,
+): void {
+  const executablePath = buildNative(inputPath, artifact, outputStem);
   const execution = spawnSync(executablePath, programArguments, { stdio: "inherit" });
   if (execution.error) throw execution.error;
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
@@ -3641,6 +3670,7 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 function usage(): void {
   console.error("usage: z build [project-directory] [--release]");
   console.error("usage: z check <file.zs> [--native-frontend] [--timings]");
+  console.error("       z test <file.zs>");
   console.error("       z <emit|run> <file.zs> [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");

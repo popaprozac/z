@@ -9,7 +9,7 @@
     "lsp": "bun compiler/src/lsp.ts",
     "bench": "bun benchmarks/run.ts",
     "test": "bun test --no-orphans --timeout 30000",
-    "test:language": "bun test --no-orphans --timeout 30000 tests/language-core.test.ts tests/stdlib-collections.test.ts tests/generators-errors.test.ts tests/editor-integration.test.ts",
+    "test:language": "bun test --no-orphans --timeout 30000 tests/language-core.test.ts tests/stdlib-collections.test.ts tests/generators-errors.test.ts tests/testing.test.ts tests/editor-integration.test.ts",
     "test:native-interop": "bun test --no-orphans --timeout 30000 tests/native-interop.test.ts",
     "test:objc-interop": "bun test --no-orphans --timeout 30000 tests/objc-interop.test.ts",
     "test:swift-interop": "bun test --no-orphans --timeout 30000 tests/swift-interop.test.ts",

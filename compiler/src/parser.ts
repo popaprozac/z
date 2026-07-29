@@ -1029,6 +1029,26 @@ export function parse(tokens: Token[], fileName: string): Program {
     };
   };
 
+  const parseTest = (): FunctionDeclaration => {
+    const start = take();
+    const displayName = expect("string", "a test name string after `test`");
+    if (displayName.text.length === 0) {
+      throw new DiagnosticError(fileName, displayName.location, "a test name cannot be empty");
+    }
+    const block = parseRequiredBlock("a test body");
+    return {
+      kind: "function",
+      name: `__z_test_${start.location.offset}`,
+      testName: displayName.text,
+      receiverMode: null,
+      parameters: [],
+      returnType: { name: "void", location: start.location },
+      errorType: null,
+      body: block.statements,
+      location: start.location,
+    };
+  };
+
   const parseAggregate = (
     aggregateReadonly = false,
     nativeLayoutToken: Token | null = null,
@@ -1232,6 +1252,26 @@ export function parse(tokens: Token[], fileName: string): Program {
       const declaration = parseEnum(nativeCToken);
       enums.push(declaration);
       if (exportToken) exports.push({ name: declaration.name, declarationKind: "enum", location: exportToken.location });
+    } else if (
+      at("async")
+      && tokens[current + 1]?.kind === "identifier"
+      && tokens[current + 1]?.text === "test"
+    ) {
+      throw new DiagnosticError(fileName, peek().location, "async tests are not implemented yet", {
+        code: "Z0900",
+        helps: ["use a synchronous test until the async test runner tier lands"],
+      });
+    } else if (at("identifier") && peek().text === "test") {
+      if (exportToken) {
+        throw new DiagnosticError(fileName, exportToken.location, "tests cannot be exported");
+      }
+      if (nativeCToken) {
+        throw new DiagnosticError(fileName, nativeCToken.location, "`c` cannot modify a test declaration");
+      }
+      if (readonlyToken) {
+        throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` cannot modify a test declaration");
+      }
+      functions.push(parseTest());
     } else if (at("function") || at("async")) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (nativeCToken && !exportToken) {
@@ -1254,7 +1294,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     } else {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` must be followed by a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
-      throw new DiagnosticError(fileName, peek().location, "expected an import, export, type, trait, struct, class, enum, or function declaration");
+      throw new DiagnosticError(fileName, peek().location, "expected an import, export, type, trait, struct, class, enum, function, or test declaration");
     }
   }
   return { kind: "program", imports, exports, typeAliases, traits, structs, enums, functions };

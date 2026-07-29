@@ -6464,6 +6464,7 @@ function collisionSafePrivateFunctionNames(
   let names = Array<String>();
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
+      if (declaration.testDeclaration) continue;
       if (containsName(names, declaration.name)) continue;
       let count: usize = 0;
       let exportedCount: usize = 0;
@@ -6922,6 +6923,7 @@ function collectIntrinsicEnums(
     }
   }
   for (const declaration of program.functions) {
+    if (declaration.testDeclaration) continue;
     for (const parameter of declaration.parameters) {
       try collectIntrinsicTypeName(
         program,
@@ -7480,6 +7482,7 @@ function appendLoweredProgram(
   }
 
   for (const declaration of program.functions) {
+    if (declaration.testDeclaration) continue;
     if (
       containsLoweredFunction(functions, declaration.name)
       && !containsName(privateFunctionCollisionNames, declaration.name)

@@ -52,6 +52,10 @@ export type NativeArtifact = {
   readonly warnings: readonly DiagnosticError[];
 };
 
+export type NativeTestArtifact = NativeArtifact & {
+  readonly testNames: readonly string[];
+};
+
 export type NativeCompileOptions = {
   readonly requireMain?: boolean;
 };
@@ -95,6 +99,7 @@ export type AnalyzedSource = {
 
 export type AnalysisOptions = {
   readonly requireMain?: boolean;
+  readonly includeTests?: boolean;
   readonly nativeFrontendResolver?: (sourceBatch: SourceModuleBatch) => Stage1ModuleGraph;
   readonly foreignDeclarationOverrides?: Readonly<Record<string, {
     readonly source: string;
@@ -106,7 +111,13 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
   const linked = linkSourceModules(source, sourceProgram, fileName);
-  const typeAliases = resolveTypeAliases(linked.program, fileName, linked.typeDisplayNames);
+  const linkedProgram = options.includeTests === false
+    ? {
+        ...linked.program,
+        functions: linked.program.functions.filter((declaration) => !declaration.testName),
+      }
+    : linked.program;
+  const typeAliases = resolveTypeAliases(linkedProgram, fileName, linked.typeDisplayNames);
   const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
   const foreignModules = resolveForeignModules(
@@ -352,6 +363,7 @@ export function compileToNative(
 ): NativeArtifact {
   const { program, semanticInfo, projectBuild, moduleIncludeDirectories } = analyzeSource(source, fileName, {
     requireMain: options.requireMain,
+    includeTests: false,
   });
   const asyncDeclaration = [
     ...program.functions,
@@ -386,6 +398,82 @@ export function compileToNative(
     ])],
     deploymentTarget: projectBuild.deploymentTarget,
     warnings: semanticInfo.warnings,
+  };
+}
+
+export function compileTestsToNative(
+  source: string,
+  fileName: string,
+): NativeTestArtifact {
+  const {
+    program,
+    semanticInfo,
+    projectBuild,
+    moduleIncludeDirectories,
+  } = analyzeSource(source, fileName, {
+    requireMain: false,
+    includeTests: true,
+  });
+  const tests = program.functions.filter((declaration) => declaration.testName);
+  if (tests.length === 0) {
+    throw new DiagnosticError(
+      fileName,
+      { offset: 0, line: 1, column: 1, fileName },
+      "no tests were found in this module or its imports",
+      {
+        code: "Z0900",
+        helps: ['add a top-level `test "descriptive name" { ... }` declaration'],
+      },
+    );
+  }
+  const testProgram: Program = {
+    ...program,
+    functions: program.functions.filter((declaration) => declaration.name !== "main"),
+  };
+  const asyncDeclaration = [
+    ...testProgram.functions,
+    ...testProgram.structs.flatMap((declaration) => declaration.methods),
+  ].find((declaration) => declaration.async);
+  const generated = asyncDeclaration
+    ? generateAsyncC(testProgram, fileName, semanticInfo)
+    : null;
+  const synchronousProgram = generated?.synchronousProgram ?? testProgram;
+  const synchronousSource = generateC(
+    synchronousProgram,
+    fileName,
+    semanticInfo,
+    { testRunner: tests },
+  );
+  return {
+    source: generated ? `${synchronousSource}\n${generated.source}\n` : synchronousSource,
+    header: generateCHeader(testProgram),
+    targetKind: projectBuild.targetKind,
+    targetName: projectBuild.targetName,
+    language: semanticInfo.objectiveC
+      ? semanticInfo.cPlusPlus ? "objective-c++" : "objective-c"
+      : semanticInfo.cPlusPlus ? "c++" : "c",
+    frameworks: [...new Set([
+      ...semanticInfo.frameworks,
+      ...projectBuild.frameworks,
+      ...(generated?.frameworks ?? []),
+    ])],
+    includeDirectories: [...new Set([
+      ...projectBuild.includeDirectories,
+      ...moduleIncludeDirectories,
+    ])],
+    nativeLibraries: projectBuild.nativeLibraries,
+    nativeLinkerArguments: [...new Set([
+      ...(
+        (semanticInfo.threadSpawnCalls.size > 0 || semanticInfo.taskScopeAsyncCalls.size > 0)
+        && process.platform !== "win32"
+          ? ["-pthread"]
+          : []
+      ),
+      ...projectBuild.nativeLinkerArguments,
+    ])],
+    deploymentTarget: projectBuild.deploymentTarget,
+    warnings: semanticInfo.warnings,
+    testNames: tests.map((declaration) => declaration.testName!),
   };
 }
 

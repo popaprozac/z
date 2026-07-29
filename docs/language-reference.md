@@ -61,6 +61,27 @@ The filename contract is `.zs` for Z source and `.zd` for foreign declarations.
 Z intentionally leaves `.z` to its established use as a compressed-archive
 suffix on Unix systems.
 
+## Tests
+
+A test is a compiler-known top-level declaration:
+
+```z
+test "Map.remove transfers the value" {
+  // Test body.
+}
+```
+
+Tests may appear among ordinary declarations in any `.zs` module. They are not
+exported or callable as functions. An inline test shares its module's private
+declaration scope; a dedicated `*.test.zs` module uses ordinary imports to test
+public APIs. Test names must be nonempty and unique within their source module.
+
+Ordinary builds exclude test declarations completely. `z test <file.zs>`
+discovers the tests in that module and its project-owned import graph, emits a
+native runner, and executes it. The first runner tier is synchronous. Assertions
+are standard-library behavior rather than additional language syntax; the
+`std/test` matcher API is the next implementation layer.
+
 ## Comments
 
 Z supports TypeScript/C-style line and block comments:

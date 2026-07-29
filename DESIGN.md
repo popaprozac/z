@@ -1263,6 +1263,28 @@ executable-oriented `z emit`, or as a manifest entry must declare
 `function main(): i32`. This keeps module identity in the
 import/build graph rather than duplicating it in source syntax.
 
+Tests follow the same module model rather than introducing a second source
+language or required filename:
+
+```z
+test "Map.remove transfers the value" {
+  // Test body.
+}
+```
+
+`test` is a compiler-known top-level declaration. Tests may live beside private
+implementation details in any `.zs` file; `*.test.zs` is an optional convention
+for black-box modules that import public APIs. Tests are never exported or
+callable as ordinary functions, and production compilation omits their bodies
+and names. `z test <file.zs>` includes tests from the selected project-owned
+module graph. Dependencies do not contribute tests merely because an eventual
+package is installed; project-wide discovery and explicit dependency inclusion
+remain runner policy.
+
+Only the declaration is intrinsic syntax. Assertions and expectations come
+from imported standard modules such as `std/test`; normal ownership remains
+enforced even when test helpers provide ergonomic statement-bounded borrows.
+
 ## Async and concurrency
 
 Z keeps suspension explicit. Full colorless async is not a goal because hidden

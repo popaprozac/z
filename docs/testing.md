@@ -46,7 +46,31 @@ domain file.
 
 ## Native Z tests
 
-A native `z test` runner remains planned. Its declaration syntax, assertion
-surface, discovery rules, filtering, and isolation model are intentionally not
-settled here. They will be designed before implementation rather than inferred
-from the bootstrap runner.
+The first native test-runner slice is implemented. Tests are top-level
+declarations and may live beside the code they exercise:
+
+```z
+function add(left: i32, right: i32): i32 {
+  return left + right;
+}
+
+test "add combines two values" {
+  const answer = add(20, 22);
+}
+```
+
+Run a source module and tests in its project-owned import graph with:
+
+```sh
+bun run z test path/to/module.test.zs
+```
+
+`*.test.zs` is an organizational convention, not a separate source mode.
+Inline tests can use private declarations from their own module; dedicated
+test modules exercise exported APIs through ordinary imports. Normal `build`,
+`run`, and `emit` paths omit test bodies, names, and runner code.
+
+The current executable tier runs synchronous test bodies in one native runner.
+The imported `std/test` expectation API, rich failure continuation, filtering,
+project-wide discovery, and async tests are the next testing layers. Their
+surface is not inferred from Bun's bootstrap API.

@@ -105,7 +105,7 @@ const sourceKeywordTokens = [
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
-  "readonly", "static", "struct", "task", "throw", "throws", "trait", "type", "try", "unsafe", "view",
+  "readonly", "static", "struct", "task", "test", "throw", "throws", "trait", "type", "try", "unsafe", "view",
   "using", "weak", "while", "yield", "raw",
 ] as const;
 
@@ -1979,7 +1979,11 @@ function symbolCompletions(
     });
   }
   for (const declaration of context.program.functions) {
-    if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
+    if (
+      declaration.testName
+      || declaration.name.startsWith("__z_mono_")
+      || declaration.name.startsWith("__z_module_")
+    ) continue;
     items.push({
       label: declaration.name,
       kind: completionKinds.function,

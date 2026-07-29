@@ -5991,3 +5991,25 @@ test("preserves executor placement and capture effects in native semantic eviden
   assert.ok(observedExpressions);
   assert.equal(authoritativeExpressions, observedExpressions);
 });
+
+hostToolchainTest("keeps top-level test declarations in native frontend parity", () => {
+  const directory = mkdtempSync("/tmp/z-native-test-syntax-");
+  const input = resolve(directory, "calculator.test.zs");
+  writeFileSync(input, `
+    function add(left: i32, right: i32): i32 {
+      return left + right;
+    }
+
+    test "add combines values" {
+      const answer = add(20, 22);
+    }
+  `);
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /native frontend hybrid matches/);
+  assert.match(result.stdout, /uses 1 function/);
+}, 60_000);

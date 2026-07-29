@@ -383,6 +383,9 @@
         "name": "keyword.control.declaration.z",
         "match": "\\bdeclare\\b"
       }, {
+        "name": "keyword.control.declaration.test.z",
+        "match": "\\btest(?=\\s*(?:\"|'))"
+      }, {
         "name": "storage.modifier.z",
         "match": "\\bmove(?=\\s+this\\b)"
       }, {

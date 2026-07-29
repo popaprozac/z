@@ -144,7 +144,10 @@ export function generateC(
   program: Program,
   sourceName: string,
   semanticInfo: SemanticInfo,
-  options: { readonly omitRawNativeBodies?: boolean } = {},
+  options: {
+    readonly omitRawNativeBodies?: boolean;
+    readonly testRunner?: readonly FunctionDeclaration[];
+  } = {},
 ): string {
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
@@ -337,7 +340,12 @@ export function generateC(
   }
 
   const usesString = programUsesString(program, semanticInfo);
-  if (semanticInfo.consoleCalls.size > 0 || usesString || usesFileSystem) {
+  if (
+    semanticInfo.consoleCalls.size > 0
+    || usesString
+    || usesFileSystem
+    || (options.testRunner?.length ?? 0) > 0
+  ) {
     lines.push("#include <stdio.h>");
     includedHeaders.add("stdio.h");
   }
@@ -643,7 +651,56 @@ export function generateC(
   if (nativeExports.length > 0) {
     lines.push(generateNativeExportDefinitions(nativeExports, structs, enums), "");
   }
+  if (options.testRunner?.length) {
+    lines.push(generateTestRunner(
+      options.testRunner,
+      semanticInfo.objectiveC,
+      usesProcess,
+    ), "");
+  }
   return `${lines.join("\n")}\n`;
+}
+
+function generateTestRunner(
+  tests: readonly FunctionDeclaration[],
+  objectiveC: boolean,
+  usesProcess: boolean,
+): string {
+  const statements = [
+    usesProcess
+      ? "z_process_set_arguments(argc, argv);"
+      : "(void)argc;\n(void)argv;",
+    `printf("running ${tests.length} ${tests.length === 1 ? "test" : "tests"}\\n");`,
+    ...tests.flatMap((declaration) => [
+      `printf("test %s ... ", ${cTestNameLiteral(declaration.testName!)});`,
+      "fflush(stdout);",
+      `${cFunctionName(declaration.name)}();`,
+      'puts("ok");',
+    ]),
+    `printf("test result: ok. ${tests.length} passed; 0 failed\\n");`,
+    "return 0;",
+  ];
+  const body = statements.map((statement) => indent(statement, objectiveC ? 4 : 2)).join("\n");
+  return objectiveC
+    ? `int main(int argc, char **argv) {\n  @autoreleasepool {\n${body}\n  }\n}`
+    : `int main(int argc, char **argv) {\n${body}\n}`;
+}
+
+function cTestNameLiteral(value: string): string {
+  const bytes = Buffer.from(value, "utf8");
+  let escaped = "";
+  for (const byte of bytes) {
+    if (byte >= 0x20 && byte <= 0x7e && byte !== 0x22 && byte !== 0x5c) {
+      escaped += String.fromCharCode(byte);
+    } else if (byte === 0x22) {
+      escaped += '\\"';
+    } else if (byte === 0x5c) {
+      escaped += "\\\\";
+    } else {
+      escaped += `\\${byte.toString(8).padStart(3, "0")}`;
+    }
+  }
+  return `"${escaped}"`;
 }
 
 const nativeExportCTypes: Readonly<Record<string, string>> = {

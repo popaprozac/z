@@ -118,6 +118,8 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  /** Human-readable name when this hidden function originated from a `test` declaration. */
+  readonly testName?: string;
   /** Stable native symbol published in addition to the ordinary Z identity. */
   readonly nativeExport?: {
     readonly language: "c";

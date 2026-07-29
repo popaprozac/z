@@ -1157,7 +1157,28 @@ export function analyze(
     enums.set(declaration.name, declaration);
   }
 
+  const testNames = new Map<string, SourceLocation>();
   for (const declaration of program.functions) {
+    if (!declaration.testName) continue;
+    const declarationFile = declaration.location.fileName ?? fileName;
+    const key = `${declarationFile}\0${declaration.testName}`;
+    const existing = testNames.get(key);
+    if (existing) {
+      throw new DiagnosticError(declarationFile, declaration.location, `duplicate test name ${JSON.stringify(declaration.testName)}`, {
+        code: "Z0900",
+        labels: [{
+          location: existing,
+          message: "first test with this name is declared here",
+          length: 4,
+        }],
+        helps: ["give every test in a source module a distinct descriptive name"],
+      });
+    }
+    testNames.set(key, declaration.location);
+  }
+
+  for (const declaration of program.functions) {
+    if (declaration.testName) continue;
     declareGlobal(globals, declaration.name, { kind: "function", declaration }, declaration.location, fileName);
   }
 

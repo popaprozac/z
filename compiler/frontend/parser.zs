@@ -197,6 +197,8 @@ export struct StatementArena {
 
 export struct FunctionDeclaration {
   name: String;
+  testDeclaration: boolean;
+  testName: String;
   nativeCExport: boolean;
   asynchronous: boolean;
   staticMethod: boolean;
@@ -3002,6 +3004,8 @@ function parseFunctionDeclaration(
   }
   return FunctionDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
+    testDeclaration: false,
+    testName: "",
     nativeCExport,
     asynchronous,
     staticMethod: isStatic,
@@ -3013,6 +3017,48 @@ function parseFunctionDeclaration(
     errorType,
     executorAffinity,
     body,
+    offset: start.offset,
+    line: start.line,
+    column: start.column,
+  });
+}
+
+function parseTestDeclaration(
+  in tokens: Array<Token>,
+  inout current: usize
+): FunctionDeclaration throws ParserError {
+  const start = try expect(tokens, inout current, TokenKind.identifier, "`test`");
+  if (start.text != "test") throw fail(start, "expected a test declaration");
+  const displayName = try expect(tokens, inout current, TokenKind.string, "a test name string after `test`");
+  if (displayName.text.byteLength == 0) throw fail(displayName, "a test name cannot be empty");
+  let bodyNodes = Array<Statement>();
+  const bodyRoots = try parseProjectedBlock(
+    tokens,
+    inout current,
+    "a test body",
+    inout bodyNodes
+  );
+  return FunctionDeclaration({
+    name: `__z_test_${start.offset}`,
+    testDeclaration: true,
+    testName: displayName.text.copyBytes(0, displayName.text.byteLength),
+    nativeCExport: false,
+    asynchronous: false,
+    staticMethod: false,
+    visibility: Visibility.privateVisibility,
+    typeParameters: Array<TypeParameter>(),
+    receiverMode: ReceiverMode.none,
+    parameters: Array<Parameter>(),
+    returnType: TypeReference({
+      name: "void",
+      references: Array<TypeNameReference>(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    }),
+    errorType: Option<TypeReference>.none,
+    executorAffinity: "",
+    body: StatementArena({ nodes: bodyNodes, roots: bodyRoots }),
     offset: start.offset,
     line: start.line,
     column: start.column,
@@ -3342,6 +3388,22 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         column: alias.column,
       }));
       typeAliases.push(alias);
+    } else if (kind == TokenKind.identifier && tokens[current].text == "test") {
+      if (exported) throw fail(tokens[current], "tests cannot be exported");
+      if (nativeCModifier) throw fail(tokens[current], "`c` cannot modify a test declaration");
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` cannot modify a test declaration");
+      if (asynchronous) throw fail(tokens[current], "async tests are not implemented yet");
+      const functionDeclaration = try parseTestDeclaration(tokens, inout current);
+      declarations.push(Declaration({
+        kind: DeclarationKind.functionDeclaration,
+        name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),
+        exported: false,
+        asynchronous: false,
+        offset: functionDeclaration.offset,
+        line: functionDeclaration.line,
+        column: functionDeclaration.column,
+      }));
+      functions.push(functionDeclaration);
     } else if (kind == TokenKind.functionKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       const functionDeclaration = try parseFunctionDeclaration(
@@ -3441,7 +3503,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       enums.push(enumDeclaration);
     } else {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
-      throw fail(tokens[current], "expected an import, type, function, struct, class, trait, or enum declaration");
+      throw fail(tokens[current], "expected an import, type, function, struct, class, trait, enum, or test declaration");
     }
   }
   return Program({ declarations, imports, typeAliases, functions, aggregates, traits, enums });

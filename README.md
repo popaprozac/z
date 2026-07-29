@@ -166,6 +166,7 @@ bun run test
 bun run z check examples/language/basics/first.zs
 bun run z emit examples/language/basics/first.zs
 bun run z run examples/language/basics/first.zs
+bun run z test path/to/module.test.zs
 bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
 ```
 

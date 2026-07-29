@@ -17,6 +17,7 @@ import { test } from "bun:test";
 import {
   analyzeSource,
   check,
+  compileTestsToNative,
   compileToC,
   compileToNative,
 } from "../../compiler/src/compiler.ts";
@@ -70,6 +71,7 @@ export {
   buildStage0ModuleGraph,
   check,
   cli,
+  compileTestsToNative,
   compileToC,
   compileToNative,
   completions,
