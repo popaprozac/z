@@ -55,7 +55,7 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
-test("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
+hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
   const lexer = resolve(projectRoot, "compiler/frontend/lexer.zs");
   const smoke = resolve(projectRoot, "examples/applications/source-inspector/lexer-smoke.zs");
@@ -3313,7 +3313,7 @@ test("lowers the complete native frontend graph to C", () => {
   assert.equal(execution.status, 0, execution.stderr);
 }, 15_000);
 
-test("resolves a canonical module graph directly from native Z ASTs", () => {
+hostToolchainTest("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
