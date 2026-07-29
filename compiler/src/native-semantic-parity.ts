@@ -116,6 +116,8 @@ function stage0ModuleSymbols(
     name: declaration.name,
     kind: declaration.kind,
     exported: exported.has(`${declaration.kind}\0${declaration.name}`),
+    nativeCExport: declaration.kind === "function"
+      && declaration.nativeExport?.language === "c",
     targetModule: null,
     importedName: declaration.kind === "type" ? canonicalTypeName(declaration.target.name) : declaration.name,
     functionSignature: declaration.kind === "function" ? stage0FunctionSignature(declaration) : null,
@@ -212,6 +214,7 @@ function stage0ModuleSymbols(
           name: binding.localName,
           kind: "imported",
           exported: false,
+          nativeCExport: false,
           targetModule,
           importedName: binding.importedName,
           functionSignature: null,
@@ -228,6 +231,7 @@ function stage0ModuleSymbols(
         name: declaration.moduleName,
         kind: "namespace",
         exported: false,
+        nativeCExport: false,
         targetModule,
         importedName: declaration.header,
         functionSignature: null,
@@ -306,6 +310,7 @@ function sameModuleSymbol(left: Stage1ModuleSymbol, right: Stage1ModuleSymbol | 
     && left.name === right.name
     && left.kind === right.kind
     && left.exported === right.exported
+    && left.nativeCExport === right.nativeCExport
     && left.targetModule === right.targetModule
     && left.importedName === right.importedName
     && sameModuleFunctionSignature(left.functionSignature, right.functionSignature)

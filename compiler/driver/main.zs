@@ -3,7 +3,10 @@ import { Set } from "std/collections";
 import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
-import { emitModulesC } from "../frontend/c-emitter.zs";
+import {
+  emitModulesC,
+  emitModulesCHeader,
+} from "../frontend/c-emitter.zs";
 import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
@@ -16,6 +19,7 @@ import {
 } from "../frontend/module-graph.zs";
 import {
   importedModulePath,
+  directoryName,
   isLocalModuleHeader,
   isStandardModuleHeader,
   normalizedModulePath,
@@ -25,6 +29,7 @@ import {
 } from "../frontend/module-resolver.zs";
 import {
   appendProjectCompilerArguments,
+  appendProjectCompileArguments,
   loadProjectConfig,
   NativeProjectConfig,
 } from "./project-manifest.zs";
@@ -299,6 +304,104 @@ function buildProject(
   return try buildLoadedProject(project, outputPath, release);
 }
 
+function staticLibraryEntryPath(in projectPath: String): String throws String {
+  const normalized = normalizedModulePath(projectPath);
+  let probe = copy normalized;
+  if (fs.isDirectory(normalized)) {
+    probe = normalizedModulePath(`${normalized}/__z_project_probe.zs`);
+  } else if (
+    normalized.byteLength >= 6
+    && normalized.copyBytes(normalized.byteLength - 6, normalized.byteLength)
+      == "z.json"
+  ) {
+    const directory = directoryName(normalized);
+    probe = normalizedModulePath(`${directory}/__z_project_probe.zs`);
+  }
+  const config = try loadProjectConfig(probe);
+  if (config.targetKind != "static-library") {
+    throw "z build project target.kind must be \"static-library\" for project-directory builds";
+  }
+  const entry = match (in config.entry) {
+    some(entry) => entry.copyBytes(0, entry.byteLength);
+    none => throw "a static-library project requires target.entry";
+  };
+  return normalizedModulePath(`${config.directory}/${entry}`);
+}
+
+function hasNativeCExport(in project: NativeProject): boolean {
+  for (const module of project.modules) {
+    for (const declaration of module.program.functions) {
+      if (declaration.nativeCExport) return true;
+    }
+  }
+  return false;
+}
+
+function buildStaticLibrary(
+  in projectPath: String,
+  release: boolean
+): i32 throws String {
+  const entryPath = try staticLibraryEntryPath(projectPath);
+  const project = try loadProject(entryPath);
+  if (!hasNativeCExport(project)) {
+    throw "a static-library project must declare at least one `export c function`";
+  }
+  const targetName = match (in project.config.targetName) {
+    some(name) => name.copyBytes(0, name.byteLength);
+    none => throw "a static-library project requires target.name";
+  };
+  const emitted = try emitModulesC(project.modules, project.graph);
+  const header = try emitModulesCHeader(project.modules, project.graph);
+  const outputDirectory = normalizedModulePath(
+    `${project.config.directory}/build`
+  );
+  const cacheDirectory = normalizedModulePath(
+    `${project.config.directory}/.z-cache/build`
+  );
+  try fs.createDirectories(outputDirectory);
+  try fs.createDirectories(cacheDirectory);
+  const cPath = `${cacheDirectory}/${targetName}.c`;
+  const objectPath = `${cacheDirectory}/${targetName}.o`;
+  const libraryPath = `${outputDirectory}/lib${targetName}.a`;
+  const headerPath = `${outputDirectory}/${targetName}.h`;
+  try fs.writeText(cPath, emitted);
+
+  let compilerArguments = Array<String>();
+  compilerArguments.push("-x");
+  compilerArguments.push("c");
+  compilerArguments.push("-std=c11");
+  if (release) {
+    compilerArguments.push("-O2");
+    compilerArguments.push("-DNDEBUG");
+  } else {
+    compilerArguments.push("-O0");
+  }
+  compilerArguments.push("-Wall");
+  compilerArguments.push("-Wextra");
+  compilerArguments.push("-Werror");
+  try appendProjectCompileArguments(
+    project.config,
+    inout compilerArguments
+  );
+  compilerArguments.push("-c");
+  compilerArguments.push(copy cPath);
+  compilerArguments.push("-o");
+  compilerArguments.push(copy objectPath);
+  const compilationExitCode = try process.run("clang", compilerArguments);
+  if (compilationExitCode != 0) return compilationExitCode;
+
+  let archiveArguments = Array<String>();
+  archiveArguments.push("rcs");
+  archiveArguments.push(copy libraryPath);
+  archiveArguments.push(copy objectPath);
+  const archiveExitCode = try process.run("ar", archiveArguments);
+  if (archiveExitCode != 0) return archiveExitCode;
+  try fs.writeText(headerPath, header);
+  console.log(`built ${libraryPath}`);
+  console.log(`generated ${headerPath}`);
+  return 0;
+}
+
 function appendCacheField(
   inout output: TextBuffer,
   in name: String,
@@ -556,17 +659,25 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 
 function main(): i32 {
   const arguments = process.args();
-  if (arguments.length < 2) {
-    console.error("usage: z <check|emit|build|run|foreign-inspect|foreign-contract-inspect> <input> [output] [--release] [-- args]");
+  if (arguments.length < 1) {
+    console.error("usage: z <check|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
     return 2;
   }
 
   const command = copy arguments[0];
   if (command == "check") {
+    if (arguments.length < 2) {
+      console.error("usage: z check <entry.zs>");
+      return 2;
+    }
     const outcome = attempt checkProject(arguments[1]);
     return reportOutcome(outcome);
   }
   if (command == "foreign-inspect") {
+    if (arguments.length < 2) {
+      console.error("usage: z foreign-inspect <declarations.zfdcl>");
+      return 2;
+    }
     const outcome = attempt inspectForeignDeclarations(arguments[1]);
     return reportOutcome(outcome);
   }
@@ -591,14 +702,30 @@ function main(): i32 {
     return reportOutcome(outcome);
   }
   if (command == "build") {
-    if (arguments.length < 3) {
-      console.error("usage: z build <entry.zs> <output>");
-      return 2;
+    const legacyExecutableBuild = (
+      arguments.length >= 3
+      && arguments[2] != "--release"
+    );
+    if (legacyExecutableBuild) {
+      const release = arguments.length > 3 && arguments[3] == "--release";
+      const outcome = attempt buildProject(
+        arguments[1],
+        arguments[2],
+        release
+      );
+      return reportOutcome(outcome);
     }
-    const release = arguments.length > 3 && arguments[3] == "--release";
-    const outcome = attempt buildProject(
-      arguments[1],
-      arguments[2],
+    let projectPath = ".";
+    let release = false;
+    if (arguments.length > 1 && arguments[1] != "--release") {
+      projectPath = copy arguments[1];
+    }
+    if (
+      (arguments.length > 1 && arguments[1] == "--release")
+      || (arguments.length > 2 && arguments[2] == "--release")
+    ) release = true;
+    const outcome = attempt buildStaticLibrary(
+      projectPath,
       release
     );
     return reportOutcome(outcome);

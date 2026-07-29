@@ -157,6 +157,9 @@ function appendSymbol(
   if (symbol.exported) output.appendAscii(49);
   else output.appendAscii(48);
   output.appendAscii(9);
+  if (symbol.nativeCExport) output.appendAscii(49);
+  else output.appendAscii(48);
+  output.appendAscii(9);
   appendTarget(inout output, symbol.targetModule);
   output.appendAscii(9);
   appendHexText(inout output, symbol.importedName);

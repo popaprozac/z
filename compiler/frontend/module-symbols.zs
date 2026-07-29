@@ -55,6 +55,13 @@ export function moduleExports(in module: ParsedModule, in name: String): boolean
 
 function ownSymbol(in module: ParsedModule, in declaration: Declaration): ModuleSymbol {
   let importedName = declaration.name.copyBytes(0, declaration.name.byteLength);
+  let nativeCExport = false;
+  if (declaration.kind == DeclarationKind.functionDeclaration) {
+    for (const functionDeclaration of module.program.functions) {
+      if (functionDeclaration.name != declaration.name) continue;
+      nativeCExport = functionDeclaration.nativeCExport;
+    }
+  }
   if (declaration.kind == DeclarationKind.typeAliasDeclaration) {
     for (const alias of module.program.typeAliases) {
       if (alias.name != declaration.name) continue;
@@ -65,6 +72,7 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     kind: declarationSymbolKind(declaration.kind),
     exported: declaration.exported,
+    nativeCExport,
     targetModule: Option<usize>.none,
     importedName,
     valueType: "",
@@ -91,6 +99,7 @@ function importedSymbol(
     name: name.copyBytes(0, name.byteLength),
     kind,
     exported: false,
+    nativeCExport: false,
     targetModule,
     importedName: importedName.copyBytes(0, importedName.byteLength),
     valueType: "",

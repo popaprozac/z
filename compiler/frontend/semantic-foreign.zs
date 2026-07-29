@@ -217,6 +217,7 @@ function attachNamespaceFunctions(
       name: name.copyBytes(0, name.byteLength),
       kind: ModuleSymbolKind.importedSymbol,
       exported: false,
+      nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contract.nativeName.copyBytes(
         0,
@@ -257,6 +258,7 @@ function attachNamespaceConstants(
       name,
       kind: ModuleSymbolKind.importedSymbol,
       exported: false,
+      nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contract.nativeName.copyBytes(
         0,
@@ -323,6 +325,7 @@ function attachForeignTypes(
       name: namespace.copyBytes(0, namespace.byteLength),
       kind: ModuleSymbolKind.namespaceSymbol,
       exported: false,
+      nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contracts.moduleSpecifier.copyBytes(
         0,
@@ -350,6 +353,7 @@ function attachForeignTypes(
       name,
       kind: ModuleSymbolKind.enumSymbol,
       exported: false,
+      nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
       valueType: "",

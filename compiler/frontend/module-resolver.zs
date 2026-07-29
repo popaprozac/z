@@ -184,6 +184,7 @@ import {
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  ParameterMode,
   StatementArena,
   StatementKind,
   TraitDeclaration,
@@ -4378,6 +4379,121 @@ function validateExpressionTypesAndLocals(
   return evidence;
 }
 
+function isNativeCExportScalarType(in name: String): boolean {
+  return name == "i8"
+    || name == "u8"
+    || name == "i16"
+    || name == "u16"
+    || name == "i32"
+    || name == "u32"
+    || name == "i64"
+    || name == "u64"
+    || name == "isize"
+    || name == "usize"
+    || name == "f32"
+    || name == "f64"
+    || name == "boolean"
+    || name == "void";
+}
+
+function nativeCExportError(
+  in module: ParsedModule,
+  in declaration: FunctionDeclaration,
+  in message: String
+): ModuleResolveError {
+  return resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    message,
+    declaration.line,
+    declaration.column
+  );
+}
+
+function validateNativeCExports(
+  in parsed: Array<ParsedModule>
+): void throws ModuleResolveError {
+  let symbols = Array<String>();
+  for (const module of parsed) {
+    for (const declaration of module.program.functions) {
+      if (!declaration.nativeCExport) continue;
+      if (containsString(symbols, declaration.name)) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          `duplicate C export symbol "${declaration.name}"`
+        );
+      }
+      symbols.push(declaration.name.copyBytes(
+        0,
+        declaration.name.byteLength
+      ));
+      if (declaration.name == "main") {
+        throw nativeCExportError(
+          module,
+          declaration,
+          "`main` cannot also be published as a C export"
+        );
+      }
+      if (declaration.asynchronous) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          "a C-exported function cannot be async in the first ABI tier"
+        );
+      }
+      match (in declaration.errorType) {
+        some(_) => throw nativeCExportError(
+          module,
+          declaration,
+          "a C-exported function cannot throw in the first ABI tier"
+        );
+        none => {}
+      }
+      if (declaration.typeParameters.length > 0) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          "a C-exported function cannot be generic in the first ABI tier"
+        );
+      }
+      if (declaration.executorAffinity.byteLength > 0) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          "a C-exported function cannot have executor affinity in the first ABI tier"
+        );
+      }
+      for (const parameter of declaration.parameters) {
+        if (parameter.mode != ParameterMode.value) {
+          throw nativeCExportError(
+            module,
+            declaration,
+            `C export parameter "${parameter.name}" must be an ordinary by-value scalar`
+          );
+        }
+        if (
+          parameter.type.name == "void"
+          || !isNativeCExportScalarType(parameter.type.name)
+        ) {
+          throw nativeCExportError(
+            module,
+            declaration,
+            `C export parameter "${parameter.name}" has unsupported boundary type "${parameter.type.name}"`
+          );
+        }
+      }
+      if (!isNativeCExportScalarType(declaration.returnType.name)) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          `C export return type "${declaration.returnType.name}" is unsupported in the first ABI tier`
+        );
+      }
+    }
+  }
+}
+
 export function resolveModules(
   in sources: Array<ModuleSource>,
   in entryPath: String
@@ -4404,6 +4520,7 @@ export function resolveParsedModulesWithForeignContracts(
   in foreignContracts: Array<NativeForeignModuleContract>
 ): ModuleGraph throws ModuleResolveError {
   const entry = try findEntryModule(parsed, entryPath);
+  try validateNativeCExports(parsed);
   let modules = try buildResolvedModules(parsed);
   let index: usize = 0;
   while (index < parsed.length) {

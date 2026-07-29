@@ -18,6 +18,13 @@ clang -std=c11 -Wall -Wextra -Werror \
 examples/interop/c/z-export/build/consumer
 ```
 
+The bootstrapped native compiler provides the same project command:
+
+```sh
+bun run bootstrap
+.z-cache/bootstrap/z build examples/interop/c/z-export
+```
+
 Expected output:
 
 ```text

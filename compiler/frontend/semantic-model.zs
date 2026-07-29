@@ -118,6 +118,7 @@ export struct ModuleSymbol {
   name: String;
   kind: ModuleSymbolKind;
   exported: boolean;
+  nativeCExport: boolean;
   targetModule: Option<usize>;
   importedName: String;
   valueType: String;

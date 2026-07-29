@@ -203,7 +203,15 @@ archives the emitted object through `z build`, and runs a handwritten strict-C
 consumer. The accepted `static-library` manifest fields make `main` optional
 and select the public artifact name and directory.
 
-The native frontend accepts the contextual declaration during hybrid checking.
-Carrying the export fact through native lowering and header emission, then
-teaching the standalone native driver the project-library command, remains part
-of self-hosted backend parity.
+The native semantic graph carries the C-export fact and checks it during hybrid
+parity. Native lowering emits the same private-implementation/public-wrapper
+shape and guarded header, and the standalone fixed-point `z` accepts the same
+project-library command:
+
+```sh
+.z-cache/bootstrap/z build path/to/project
+```
+
+The native archive and header pass the same handwritten C consumer unchanged.
+Broader ABI tiers and the remaining bootstrap-distribution work are independent
+follow-ups rather than hidden dependencies of scalar Z-to-C use.

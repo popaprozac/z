@@ -1710,6 +1710,7 @@ typedef struct {
   uint64_t imported_name_length;
   uint64_t kind;
   uint64_t exported;
+  uint64_t native_c_export;
   uint64_t has_target;
   uint64_t target;
   uint64_t offset;
@@ -2334,6 +2335,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_symbol_records(
         ),
         .exported = response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_offset].exported ? 1 : 0,
+        .native_c_export = response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_offset].nativeCExport ? 1 : 0,
         .has_target = stage1SymbolHasTarget(
           &response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_offset]

@@ -1436,6 +1436,13 @@ This is useful composition evidence: source-language identifier freedom has to
 survive every backend position, and readable native examples expose hygiene
 holes that compiler-internal fixtures can miss.
 
+The same project now builds through the fixed-point native `z`. Its semantic
+graph and C bridge carry an explicit `nativeCExport` fact, lowering rewrites
+ordinary Z calls to a private implementation symbol, and native emission owns
+the exact public wrapper and guarded header. The Stage-0 and native archives
+run the same C consumer unchanged. This closes a real self-hosting seam: native
+parity covers an outward ABI artifact, not only executable programs.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -81,9 +81,9 @@ bun run z build examples/interop/c/z-export
 ```
 
 See [Calling Z from C](../examples/interop/c/z-export/README.md) for the
-handwritten consumer. This project-artifact command currently belongs to Stage
-0; the standalone native compiler's existing `build` form still builds one
-executable from an explicit entry and output path.
+handwritten consumer. The standalone native compiler supports the same
+project-directory form after `bun run bootstrap`; its explicit
+`z build <entry.zs> <output>` form remains available for executable builds.
 
 ## Local native compiler
 

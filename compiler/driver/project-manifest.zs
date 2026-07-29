@@ -8,6 +8,8 @@ import {
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
+  targetKind: String;
+  targetName: Option<String>;
   entry: Option<String>;
   platform: Option<String>;
   minimumVersion: Option<String>;
@@ -27,6 +29,8 @@ function emptyProjectConfig(): NativeProjectConfig {
   return NativeProjectConfig({
     manifestPath: Option<String>.none,
     directory: "",
+    targetKind: "executable",
+    targetName: Option<String>.none,
     entry: Option<String>.none,
     platform: Option<String>.none,
     minimumVersion: Option<String>.none,
@@ -334,7 +338,12 @@ function parseTarget(
   while (true) {
     const key = try parseJsonString(inout cursor);
     try expectByte(inout cursor, 58, "\":\"");
-    if (key == "entry") {
+    if (key == "kind") {
+      config.targetKind = try parseJsonString(inout cursor);
+    } else if (key == "name") {
+      const name = try parseJsonString(inout cursor);
+      config.targetName = Option.some(name);
+    } else if (key == "entry") {
       const entry = try parseJsonString(inout cursor);
       config.entry = Option.some(entry);
     } else if (key == "platform") {
@@ -557,6 +566,24 @@ function validateProjectConfig(
     if (!containsString(libraries, library)) libraries.push(copy library);
   }
   config.linkLibraries = move libraries;
+  if (
+    config.targetKind != "executable"
+    && config.targetKind != "static-library"
+  ) {
+    throw `${manifestPath}:1:1: error: z.json target.kind must be "executable" or "static-library"`;
+  }
+  match (in config.targetName) {
+    some(name) => {
+      if (!validLibraryName(name)) {
+        throw `${manifestPath}:1:1: error: z.json target.name must be a portable native artifact name`;
+      }
+    }
+    none => {
+      if (config.targetKind == "static-library") {
+        throw `${manifestPath}:1:1: error: z.json static-library target requires target.name`;
+      }
+    }
+  }
   if (config.hasSwiftTarget) {
     throw `${manifestPath}:1:1: error: Swift target preparation remains in the Stage-0 project driver`;
   }
@@ -571,6 +598,12 @@ function validateProjectConfig(
       }
     }
     none => {}
+  }
+  if (config.targetKind == "static-library") {
+    match (in config.entry) {
+      some(_) => {}
+      none => throw `${manifestPath}:1:1: error: z.json static-library target requires target.entry`;
+    }
   }
 
   let platform = "";
@@ -622,19 +655,13 @@ export function loadProjectConfig(
   throw "project manifest search did not terminate";
 }
 
-export function appendProjectCompilerArguments(
+export function appendProjectCompileArguments(
   in config: NativeProjectConfig,
   inout arguments: Array<String>
 ): void throws String {
   for (const directory of config.includeDirectories) {
     arguments.push("-I");
     arguments.push(copy directory);
-  }
-  for (const directory of config.linkDirectories) {
-    arguments.push(`-L${directory}`);
-  }
-  for (const library of config.linkLibraries) {
-    arguments.push(`-l${library}`);
   }
   match (in config.platform) {
     some(platform) => {
@@ -647,5 +674,18 @@ export function appendProjectCompilerArguments(
       }
     }
     none => {}
+  }
+}
+
+export function appendProjectCompilerArguments(
+  in config: NativeProjectConfig,
+  inout arguments: Array<String>
+): void throws String {
+  try appendProjectCompileArguments(config, inout arguments);
+  for (const directory of config.linkDirectories) {
+    arguments.push(`-L${directory}`);
+  }
+  for (const library of config.linkLibraries) {
+    arguments.push(`-l${library}`);
   }
 }

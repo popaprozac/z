@@ -10511,6 +10511,93 @@ test("compiles a multi-module Z application through the standalone native driver
     driverEmission.stdout,
   );
 
+  const cExportProject = resolve(
+    projectRoot,
+    "examples/interop/c/z-export",
+  );
+  const nativeLibraryBuild = spawnSync(
+    driver,
+    ["build"],
+    {
+      cwd: cExportProject,
+      encoding: "utf8",
+    },
+  );
+  assert.equal(
+    nativeLibraryBuild.status,
+    0,
+    nativeLibraryBuild.stderr,
+  );
+  assert.match(nativeLibraryBuild.stdout, /build\/libzmath\.a/);
+  assert.match(nativeLibraryBuild.stdout, /build\/zmath\.h/);
+  const nativeExportSource = readFileSync(
+    resolve(cExportProject, ".z-cache/build/zmath.c"),
+    "utf8",
+  );
+  assert.match(
+    nativeExportSource,
+    /int32_t __z_c_impl_0_z_math_add\(int32_t left, int32_t right\)/,
+  );
+  assert.match(
+    nativeExportSource,
+    /Z_API int32_t z_math_add\(int32_t left, int32_t right\)/,
+  );
+  const nativeConsumer = resolve(directory, "native-zmath-consumer");
+  const nativeConsumerCompilation = spawnSync(
+    "clang",
+    [
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I",
+      resolve(cExportProject, "build"),
+      resolve(cExportProject, "consumer.c"),
+      resolve(cExportProject, "build/libzmath.a"),
+      "-o",
+      nativeConsumer,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    nativeConsumerCompilation.status,
+    0,
+    nativeConsumerCompilation.stderr,
+  );
+  const nativeConsumerRun = spawnSync(
+    nativeConsumer,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeConsumerRun.status, 0, nativeConsumerRun.stderr);
+  assert.equal(
+    nativeConsumerRun.stdout,
+    "sum=42 answer=42 even=true\n",
+  );
+  const invalidNativeExport = resolve(
+    directory,
+    "invalid-native-export.zs",
+  );
+  writeFileSync(
+    invalidNativeExport,
+    [
+      "export c function z_invalid(value: String): String {",
+      "  return value;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const invalidNativeExportCheck = spawnSync(
+    driver,
+    ["check", invalidNativeExport],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidNativeExportCheck.status, 1);
+  assert.match(
+    invalidNativeExportCheck.stderr,
+    /C export parameter "value" has unsupported boundary type "String"/,
+  );
+
   const moduleOnlySource = resolve(
     projectRoot,
     "examples/language/modules/geometry.zs",
@@ -13348,7 +13435,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   const callEvidenceGraph = decodeStage1ModuleGraphStream(
     "entry\t0000000000000000\n"
     + "module\t2f612e7a73\n"
-    + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
+    + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t0\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
@@ -13657,6 +13744,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     name: "renamed",
     kind: "imported",
     exported: false,
+    nativeCExport: false,
     targetModule: 0,
     importedName: "value",
     functionSignature: null,
@@ -13672,7 +13760,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "symbol\t0000000000000000\tunknown\t76616c7565\t1\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "symbol\t0000000000000000\tunknown\t76616c7565\t1\t0\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 module symbol kind/,
@@ -13690,7 +13778,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "symbol\t0000000000000000\tfunction\t76616c7565\t1\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "symbol\t0000000000000000\tfunction\t76616c7565\t1\t0\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
@@ -13700,7 +13788,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "symbol\t0000000000000000\tclass\t536563726574\t1\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "symbol\t0000000000000000\tclass\t536563726574\t1\t0\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\t\n"
       + "constructorSignature\t0000000000000000\t0000000000000000\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
@@ -13711,7 +13799,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "symbol\t0000000000000000\tenum\t5374617465\t1\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "symbol\t0000000000000000\tenum\t5374617465\t1\t0\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\t\n"
       + "order\t0000000000000000\n",
     ),
@@ -13721,7 +13809,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
+      + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t0\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\t\n"
       + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",

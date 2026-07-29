@@ -131,6 +131,7 @@ export type Stage1ModuleSymbol = {
   readonly name: string;
   readonly kind: Stage1ModuleSymbolKind;
   readonly exported: boolean;
+  readonly nativeCExport: boolean;
   readonly targetModule: number | null;
   readonly importedName: string;
   readonly functionSignature: Stage1ModuleFunctionSignature | null;
@@ -206,6 +207,7 @@ export type Stage1ModuleGraphStructure = {
       readonly name: string;
       readonly kind: Stage1ModuleSymbolKind;
       readonly exported: boolean;
+      readonly nativeCExport?: boolean;
       readonly targetModule: number | null;
       readonly importedName: string;
       readonly functionSignature?: Stage1ModuleFunctionSignature | null;
@@ -322,6 +324,7 @@ export function decodeStage1ModuleGraphStream(
           name: symbol.name,
           kind: symbol.kind,
           exported: symbol.exported,
+          nativeCExport: symbol.nativeCExport ?? false,
           targetModule: symbol.targetModule,
           importedName: symbol.importedName,
           functionSignature: symbol.functionSignature
@@ -369,8 +372,8 @@ export function decodeStage1ModuleGraphStream(
       continue;
     }
     if (fields[0] === "symbol") {
-      if (fields.length !== 10) throw new Error(`malformed stage-1 module symbol line: ${line}`);
-      const [, moduleText, kind, nameText, exportedText, targetText, importedNameText, offsetText, lineText, columnText] = fields;
+      if (fields.length !== 11) throw new Error(`malformed stage-1 module symbol line: ${line}`);
+      const [, moduleText, kind, nameText, exportedText, nativeCExportText, targetText, importedNameText, offsetText, lineText, columnText] = fields;
       const moduleIndex = parseProtocolHexInteger(moduleText, "symbol module");
       const module = modules[moduleIndex];
       if (!module) throw new Error("stage-1 module symbol appeared before its module");
@@ -381,10 +384,14 @@ export function decodeStage1ModuleGraphStream(
       if (exportedText !== "0" && exportedText !== "1") {
         throw new Error(`malformed stage-1 module symbol export state: ${exportedText}`);
       }
+      if (nativeCExportText !== "0" && nativeCExportText !== "1") {
+        throw new Error(`malformed stage-1 module symbol C-export state: ${nativeCExportText}`);
+      }
       (module.symbols as Stage1ModuleSymbol[]).push({
         name: Buffer.from(nameText, "hex").toString("utf8"),
         kind,
         exported: exportedText === "1",
+        nativeCExport: nativeCExportText === "1",
         targetModule: targetText === "-" ? null : parseProtocolHexInteger(targetText, "symbol target"),
         importedName: Buffer.from(importedNameText, "hex").toString("utf8"),
         functionSignature: null,

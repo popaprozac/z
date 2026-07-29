@@ -491,7 +491,7 @@ export function resolveWithNativeFrontendLibrary(
       if (structuralSymbolCount !== summary.symbolCount) {
         throw new Error("the native frontend symbol counts do not match its structural summary");
       }
-      const symbolRecordWidth = 11 * 8;
+      const symbolRecordWidth = 12 * 8;
       const symbolRecords = Buffer.alloc(
         Math.max(1, structuralSymbolCount * symbolRecordWidth),
       );
@@ -520,15 +520,17 @@ export function resolveWithNativeFrontendLibrary(
           const importedNamePointer = field(2, "imported-name pointer");
           const importedNameLength = field(3, "imported-name length");
           const exported = field(5, "export state");
-          const hasTarget = field(6, "target state");
-          if (exported > 1 || hasTarget > 1) {
+          const nativeCExport = field(6, "C-export state");
+          const hasTarget = field(7, "target state");
+          if (exported > 1 || nativeCExport > 1 || hasTarget > 1) {
             throw new Error(`the native frontend returned invalid symbol flags for module ${moduleIndex}`);
           }
           modules[moduleIndex].symbols.push({
             name: nativeString(namePointer, nameLength, "symbol name"),
             kind: nativeSymbolKind(field(4, "kind")),
             exported: exported === 1,
-            targetModule: hasTarget === 1 ? field(7, "target module") : null,
+            nativeCExport: nativeCExport === 1,
+            targetModule: hasTarget === 1 ? field(8, "target module") : null,
             importedName: nativeString(
               importedNamePointer,
               importedNameLength,
@@ -537,9 +539,9 @@ export function resolveWithNativeFrontendLibrary(
             functionSignature: null,
             typeSignature: null,
             location: {
-              offset: field(8, "offset"),
-              line: field(9, "line"),
-              column: field(10, "column"),
+              offset: field(9, "offset"),
+              line: field(10, "line"),
+              column: field(11, "column"),
             },
           });
           recordIndex += 1;

@@ -21,11 +21,18 @@ import {
 } from "./semantic-model.zs";
 
 function cType(in type: LoweredType): String throws String {
+  if (type.kind == LoweredTypeKind.i8Type) return "int8_t";
+  if (type.kind == LoweredTypeKind.i16Type) return "int16_t";
   if (type.kind == LoweredTypeKind.i32Type) return "int32_t";
+  if (type.kind == LoweredTypeKind.i64Type) return "int64_t";
   if (type.kind == LoweredTypeKind.u8Type) return "uint8_t";
+  if (type.kind == LoweredTypeKind.u16Type) return "uint16_t";
   if (type.kind == LoweredTypeKind.u32Type) return "uint32_t";
   if (type.kind == LoweredTypeKind.u64Type) return "uint64_t";
+  if (type.kind == LoweredTypeKind.isizeType) return "intptr_t";
   if (type.kind == LoweredTypeKind.usizeType) return "size_t";
+  if (type.kind == LoweredTypeKind.f32Type) return "float";
+  if (type.kind == LoweredTypeKind.f64Type) return "double";
   if (type.kind == LoweredTypeKind.fsLockType) return "Z_FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
@@ -41,11 +48,21 @@ function cType(in type: LoweredType): String throws String {
   throw "native C emission received an unsupported lowered type";
 }
 
+function nativeCExportType(in type: LoweredType): String throws String {
+  if (type.kind == LoweredTypeKind.usizeType) return "uintptr_t";
+  return try cType(type);
+}
+
 function integerCType(in name: String): String throws String {
+  if (name == "i8") return "int8_t";
+  if (name == "i16") return "int16_t";
   if (name == "i32") return "int32_t";
+  if (name == "i64") return "int64_t";
   if (name == "u8") return "uint8_t";
+  if (name == "u16") return "uint16_t";
   if (name == "u32") return "uint32_t";
   if (name == "u64") return "uint64_t";
+  if (name == "isize") return "intptr_t";
   if (name == "usize") return "size_t";
   throw `native C emission does not support integer type ${name}`;
 }
@@ -1736,6 +1753,7 @@ function appendFunctionSignature(
   processArguments: boolean
 ): void throws String {
   const returnType = try cType(declaration.returnType);
+  if (declaration.nativeCExportName.byteLength > 0) output.append("static ");
   output.append(returnType);
   output.append(" ");
   appendCBindingName(inout output, declaration.name);
@@ -1808,6 +1826,54 @@ function appendFunction(
     appendCleanups(inout output, declaration.fallthroughCleanups, 1);
   }
   output.append("}\n\n");
+}
+
+function appendNativeCExportSignature(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  in name: String
+): void throws String {
+  const returnType = try nativeCExportType(declaration.returnType);
+  output.append("Z_API ");
+  output.append(returnType);
+  output.append(" ");
+  output.append(name);
+  output.append("(");
+  let first = true;
+  for (const parameter of declaration.parameters) {
+    if (!first) output.append(", ");
+    first = false;
+    const parameterType = try nativeCExportType(parameter.type);
+    output.append(parameterType);
+    output.append(" ");
+    appendCBindingName(inout output, parameter.name);
+  }
+  if (first) output.append("void");
+  output.append(")");
+}
+
+function appendNativeCExportDefinition(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction
+): void throws String {
+  try appendNativeCExportSignature(
+    inout output,
+    declaration,
+    declaration.nativeCExportName
+  );
+  output.append(" {\n  ");
+  if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+    output.append("return ");
+  }
+  appendCBindingName(inout output, declaration.name);
+  output.append("(");
+  let first = true;
+  for (const parameter of declaration.parameters) {
+    if (!first) output.append(", ");
+    first = false;
+    appendCBindingName(inout output, parameter.name);
+  }
+  output.append(");\n}\n\n");
 }
 
 function loweredStructNeedsDeinit(
@@ -2123,11 +2189,18 @@ function appendTypeDefinitions(
 
 function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
+  if (type.kind == LoweredTypeKind.i8Type) return "i8";
+  if (type.kind == LoweredTypeKind.i16Type) return "i16";
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
+  if (type.kind == LoweredTypeKind.i64Type) return "i64";
   if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.u16Type) return "u16";
   if (type.kind == LoweredTypeKind.u32Type) return "u32";
   if (type.kind == LoweredTypeKind.u64Type) return "u64";
+  if (type.kind == LoweredTypeKind.isizeType) return "isize";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
+  if (type.kind == LoweredTypeKind.f32Type) return "f32";
+  if (type.kind == LoweredTypeKind.f64Type) return "f64";
   throw "native C emission cannot form an intrinsic identity for this type";
 }
 
@@ -3074,6 +3147,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
   output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  output.append("#ifndef Z_API\n#define Z_API\n#endif\n");
   for (const header of program.foreignHeaders) {
     output.append("#include \"");
     output.append(header);
@@ -3700,6 +3774,39 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       usesProcessArguments
     );
   }
+  let hasNativeCExports = false;
+  for (const declaration of program.functions) {
+    if (declaration.nativeCExportName.byteLength > 0) {
+      hasNativeCExports = true;
+    }
+  }
+  if (hasNativeCExports) {
+    output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
+    for (const declaration of program.functions) {
+      if (declaration.nativeCExportName.byteLength == 0) continue;
+      try appendNativeCExportDefinition(inout output, declaration);
+    }
+    output.append("#if defined(__cplusplus)\n}\n#endif\n");
+  }
+  return output.finish();
+}
+
+function emitLoweredCHeader(in program: LoweredProgram): String throws String {
+  let output = TextBuffer();
+  output.append("#pragma once\n\n");
+  output.append("#include <stdbool.h>\n#include <stdint.h>\n\n");
+  output.append("#ifndef Z_API\n#define Z_API\n#endif\n\n");
+  output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
+  for (const declaration of program.functions) {
+    if (declaration.nativeCExportName.byteLength == 0) continue;
+    try appendNativeCExportSignature(
+      inout output,
+      declaration,
+      declaration.nativeCExportName
+    );
+    output.append(";\n");
+  }
+  output.append("\n#if defined(__cplusplus)\n}\n#endif\n");
   return output.finish();
 }
 
@@ -3717,4 +3824,12 @@ export function emitModulesC(
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
   return try emitLoweredC(lowered);
+}
+
+export function emitModulesCHeader(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): String throws String {
+  const lowered = try lowerModules(parsed, graph);
+  return try emitLoweredCHeader(lowered);
 }

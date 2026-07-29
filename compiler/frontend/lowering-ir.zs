@@ -34,11 +34,18 @@ import { genericTypeShape } from "./semantic-type-shapes.zs";
 export enum LoweredTypeKind {
   voidType,
   booleanType,
+  i8Type,
+  i16Type,
   i32Type,
+  i64Type,
   u8Type,
+  u16Type,
   u32Type,
   u64Type,
+  isizeType,
   usizeType,
+  f32Type,
+  f64Type,
   fsLockType,
   stringType,
   arrayType,
@@ -217,6 +224,7 @@ export struct LoweredLiveFlag {
 
 export struct LoweredFunction {
   name: String;
+  nativeCExportName: String;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
   fallthroughExpression: Option<usize>;
@@ -303,11 +311,18 @@ function stringStartsWith(in value: String, in prefix: String): boolean {
 function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.booleanType) return "boolean";
+  if (type.kind == LoweredTypeKind.i8Type) return "i8";
+  if (type.kind == LoweredTypeKind.i16Type) return "i16";
   if (type.kind == LoweredTypeKind.i32Type) return "i32";
+  if (type.kind == LoweredTypeKind.i64Type) return "i64";
   if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.u16Type) return "u16";
   if (type.kind == LoweredTypeKind.u32Type) return "u32";
   if (type.kind == LoweredTypeKind.u64Type) return "u64";
+  if (type.kind == LoweredTypeKind.isizeType) return "isize";
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
+  if (type.kind == LoweredTypeKind.f32Type) return "f32";
+  if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   return type.name.copyBytes(0, type.name.byteLength);
@@ -360,13 +375,22 @@ function lowerTypeName(
   if (name == "boolean") {
     return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   }
+  if (name == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
+  if (name == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });
   if (name == "i32") return LoweredType({ kind: LoweredTypeKind.i32Type, name: "" });
+  if (name == "i64") return LoweredType({ kind: LoweredTypeKind.i64Type, name: "" });
   if (name == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
+  if (name == "u16") return LoweredType({ kind: LoweredTypeKind.u16Type, name: "" });
   if (name == "u32") return LoweredType({ kind: LoweredTypeKind.u32Type, name: "" });
   if (name == "u64") return LoweredType({ kind: LoweredTypeKind.u64Type, name: "" });
+  if (name == "isize") {
+    return LoweredType({ kind: LoweredTypeKind.isizeType, name: "" });
+  }
   if (name == "usize") {
     return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
   }
+  if (name == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
+  if (name == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
   if (name == "__z_std_fs_Lock" || name == "fs.Lock") {
     return LoweredType({
       kind: LoweredTypeKind.fsLockType,
@@ -6257,6 +6281,9 @@ function lowerFunction(
   }
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
+    nativeCExportName: declaration.nativeCExport
+      ? declaration.name.copyBytes(0, declaration.name.byteLength)
+      : "",
     parameters,
     returnType: move returnType,
     fallthroughExpression,
@@ -6315,6 +6342,7 @@ function lowerDeinitializer(
   attachMoveLiveFlags(inout expressions, liveFlags);
   return LoweredFunction({
     name: `${ownerName}.deinit`,
+    nativeCExportName: "",
     parameters: Array<LoweredParameter>(),
     returnType: LoweredType({ kind: LoweredTypeKind.voidType, name: "" }),
     fallthroughExpression: Option<usize>.none,
@@ -6455,6 +6483,13 @@ function emittedPrivateFunctionName(
   return `__z_module_${moduleIndex}_${name}`;
 }
 
+function emittedNativeCExportImplementationName(
+  moduleIndex: usize,
+  in name: String
+): String {
+  return `__z_c_impl_${moduleIndex}_${name}`;
+}
+
 function typeIsExported(
   in program: Program,
   in name: String
@@ -6574,6 +6609,60 @@ function rewritePrivateCallTargets(
       }
     }
     index = index + 1;
+  }
+}
+
+function rewriteNativeCExportCallTargets(
+  inout functions: Array<LoweredFunction>
+): void {
+  let exportIndex: usize = 0;
+  while (exportIndex < functions.length) {
+    const publicName = functions[exportIndex].nativeCExportName.copyBytes(
+      0,
+      functions[exportIndex].nativeCExportName.byteLength
+    );
+    const implementationName = functions[exportIndex].name.copyBytes(
+      0,
+      functions[exportIndex].name.byteLength
+    );
+    if (publicName.byteLength == 0) {
+      exportIndex = exportIndex + 1;
+      continue;
+    }
+    let functionIndex: usize = 0;
+    while (functionIndex < functions.length) {
+      let index: usize = 0;
+      while (index < functions[functionIndex].expressions.length) {
+        if (
+          functions[functionIndex].expressions[index].kind
+            == LoweredExpressionKind.directCall
+          && functions[functionIndex].expressions[index].children.length > 0
+        ) {
+          const callee = functions[functionIndex].expressions[
+            index
+          ].children[0];
+          if (
+            functions[functionIndex].expressions[callee].kind
+              == LoweredExpressionKind.localValue
+            && functions[functionIndex].expressions[callee].value
+              == publicName
+          ) {
+            functions[functionIndex].expressions[callee] = LoweredExpression({
+              kind: LoweredExpressionKind.localValue,
+              value: implementationName.copyBytes(
+                0,
+                implementationName.byteLength
+              ),
+              children: Array<usize>(),
+              labels: Array<String>(),
+            });
+          }
+        }
+        index = index + 1;
+      }
+      functionIndex = functionIndex + 1;
+    }
+    exportIndex = exportIndex + 1;
   }
 }
 
@@ -7372,7 +7461,12 @@ function appendLoweredProgram(
       entryIndex,
       inout loweredFunction
     );
-    if (privateFunctionNeedsMangle(
+    if (declaration.nativeCExport) {
+      loweredFunction.name = emittedNativeCExportImplementationName(
+        moduleIndex,
+        declaration.name
+      );
+    } else if (privateFunctionNeedsMangle(
       program,
       privateFunctionCollisionNames,
       moduleIndex,
@@ -7421,6 +7515,7 @@ export function lowerProgram(
     inout enums,
     inout functions
   );
+  rewriteNativeCExportCallTargets(inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
@@ -7488,6 +7583,7 @@ export function lowerModules(
       }
     }
   }
+  rewriteNativeCExportCallTargets(inout functions);
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
