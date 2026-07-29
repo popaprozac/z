@@ -712,10 +712,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     }
     if (
       at("identifier")
-      && (peek().text === "copy" || peek().text === "move")
-      // Keep `move(...)` available as an ordinary call/alias and preserve the
-      // existing `move (...) =>` closure spelling. Ownership operators use the
-      // intentionally readable, whitespace-separated form `move value`.
+      && (peek().text === "copy" || peek().text === "move" || peek().text === "view")
+      // Keep `copy(...)`, `move(...)`, and `view(...)` available as ordinary
+      // calls/aliases and preserve the existing `move (...) =>` closure
+      // spelling. Ownership operators use readable whitespace-separated forms.
       && tokens[current + 1]?.kind === "identifier"
     ) {
       const token = take();

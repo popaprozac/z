@@ -791,13 +791,16 @@ element according to its ordinary ownership rules. Safe indexing uses the same
 bounds check as fixed arrays. Destruction walks initialized elements in reverse
 order before freeing the buffer.
 
-A growable array can be borrowed as `Slice<T>` for a non-escaping call. A
-value-struct method may also return a direct element as `view T`; the compiler
-ties that read-only projection to the receiver and prevents invalidating
-mutation until last use. The first slice intentionally omits removal,
-reservation, fallible allocation, escaping slices, subslices, class-owned
-views, and general lifetime parameters. Allocation failure currently traps.
-`T[]` remains unassigned until those broader contracts are proven.
+A growable array can be borrowed as `Slice<T>` for a non-escaping call. A local
+may name a direct field or element projection with
+`const value = view owner.items[index]`; a value-struct method may also return a
+direct projection as `view T`. The compiler ties either read-only view to its
+named value-storage owner and prevents invalidating mutation until last use.
+The local form lowers to `const T *` and does not copy the projected value. The
+first slice intentionally omits removal, reservation, fallible allocation,
+escaping slices, subslices, class-owned views, and general lifetime parameters.
+Allocation failure currently traps. `T[]` remains unassigned until those
+broader contracts are proven.
 
 ## Generics
 

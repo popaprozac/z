@@ -369,7 +369,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (token.kind !== "identifier" && !keywordMember) continue;
     const contextualTask = token.text === "task"
       && (next?.kind === "on" || next?.kind === "identifier");
-    const contextualOwnership = (token.text === "copy" || token.text === "move")
+    const contextualOwnership = (token.text === "copy" || token.text === "move" || token.text === "view")
       && next?.kind === "identifier";
     if (contextualTask || contextualOwnership) continue;
     if (keywordMember && tokens[index - 2]?.text === "String" && token.text === "from") {
@@ -775,6 +775,24 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   ) {
     const type = context.semanticInfo.expressionTypes.get(word.start)!;
     return markdownHover(explicitMoveHover(type, context), source, word.start, word.end);
+  }
+  if (
+    word.text === "view"
+    && /^\s+[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(word.end))
+    && context.semanticInfo.expressionTypes.has(word.start)
+  ) {
+    const type = displayType(
+      context.semanticInfo.expressionTypes.get(word.start)!,
+      context.typeDisplayNames,
+    );
+    const ownerName = localViewOwnerAt(context, word.start);
+    const owner = ownerName ? ` of ${ownerName}` : "";
+    return markdownHover(
+      `${type}${owner}  // read-only projection; the owner's shared loan ends after the view's last use`,
+      source,
+      word.start,
+      word.end,
+    );
   }
   if (
     word.text === "inout"
@@ -1266,6 +1284,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (type) {
     const binding = collectBindings(context)
       .filter((candidate) => candidate.name === word.text && candidate.offset <= word.start)
+      .sort((left, right) => left.offset - right.offset)
       .at(-1);
     const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
     const borrowedResource = String(type).startsWith("__z_borrowed:");
@@ -3551,6 +3570,36 @@ function sourceAliasDisplayType(context: AnalyzedSource, typeName: string): stri
   ));
   const module = declaration ? localSourceModule(context, declaration) : null;
   return module && sourceExportDeclaration(module, member)?.kind === "type" ? typeName : null;
+}
+
+function localViewOwnerAt(context: AnalyzedSource, operatorOffset: number): string | null {
+  let owner: string | null = null;
+  const visit = (value: unknown): void => {
+    if (owner || !value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
+    }
+    const node = value as {
+      readonly kind?: string;
+      readonly initializer?: Expression;
+      readonly nameLocation?: SourceLocation;
+    };
+    if (
+      node.kind === "variable"
+      && node.initializer?.kind === "unary"
+      && node.initializer.operator === "view"
+      && node.initializer.location.offset === operatorOffset
+    ) {
+      owner = node.nameLocation
+        ? context.semanticInfo.viewBindingOwners.get(node.nameLocation.offset) ?? null
+        : null;
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) visit(child);
+  };
+  visit(context.sourceProgram);
+  return owner;
 }
 
 function collectBindings(context: AnalyzedSource): Binding[] {

@@ -423,6 +423,7 @@ type AnalysisState = {
   readonly viewBindingOwners: Map<number, string>;
   readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
+  readonly localViewInitializers: Set<number>;
   readonly connectionCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly connectionOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
@@ -766,6 +767,7 @@ export function analyze(
     viewBindingOwners: new Map(),
     viewCallOrigins: new Map(),
     viewOrigins: new Map(),
+    localViewInitializers: new Set(),
     connectionCallOrigins: new Map(),
     connectionOrigins: new Map(),
     movedExpressions: new Set(),
@@ -3095,10 +3097,28 @@ function analyzeStatement(
         return;
       }
       if (statement.type && parseViewType(statement.type.name)) {
-        throw new DiagnosticError(fileName, statement.type.location, "view locals are inferred from a receiver-tied method call", {
+        throw new DiagnosticError(fileName, statement.type.location, "view locals are inferred from their producing expression", {
           code: "Z0206",
-          helps: ["omit the annotation and bind the view with `const`"],
+          helps: ["omit the annotation and bind a view-producing call or `view projection` with `const`"],
         });
+      }
+      const localViewInitializer = statement.initializer.kind === "unary"
+        && statement.initializer.operator === "view";
+      if (localViewInitializer) {
+        if (statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "`view expression` must initialize a const binding", {
+            code: "Z0206",
+            notes: ["the projection is read-only and tied to its named owner until last use"],
+            helps: ["replace `let` with `const`"],
+          });
+        }
+        if (statement.type) {
+          throw new DiagnosticError(fileName, statement.type.location, "`view expression` uses an inferred view type", {
+            code: "Z0206",
+            helps: ["omit the type annotation; hover shows the projected type and owner"],
+          });
+        }
+        state.localViewInitializers.add(statement.initializer.location.offset);
       }
       if (statement.initializer.kind === "closure") {
         if (statement.mutable) {
@@ -3216,7 +3236,10 @@ function analyzeStatement(
         }
         const origin = state.viewCallOrigins.get(statement.initializer.location.offset);
         if (!origin) {
-          throw new DiagnosticError(fileName, statement.initializer.location, "a view-bearing value must be bound directly from a receiver-tied method call", { code: "Z0206" });
+          throw new DiagnosticError(fileName, statement.initializer.location, "a view-bearing value must be bound directly from its producing expression", {
+            code: "Z0206",
+            helps: ["bind a view-returning method call or `view projection` directly to const storage"],
+          });
         }
         locals.set(statement.name, String(variableType));
         state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
@@ -6499,6 +6522,66 @@ function inferExpressionInner(
         `${expression.access} is only valid for a classified imported C record-pointer parameter`,
       );
     case "unary": {
+      if (expression.operator === "view") {
+        if (!state.localViewInitializers.has(expression.location.offset)) {
+          throw new DiagnosticError(fileName, expression.location, "`view expression` must directly initialize an inferred const local", {
+            code: "Z0206",
+            notes: ["the first local-view tier keeps provenance visible in one named lexical binding"],
+            helps: ["use `const projected = view owner.field;` or `const projected = view owner.items[index];`"],
+          });
+        }
+        if (expression.operand.kind !== "member" && expression.operand.kind !== "index") {
+          throw new DiagnosticError(fileName, expression.operand.location, "`view` requires a direct field or indexed projection", {
+            code: "Z0206",
+            helps: ["project named owner storage such as `view tree.nodes[index]`"],
+          });
+        }
+        const root = storageRoot(expression.operand);
+        const storedRoot = root ? locals.get(root.name) : null;
+        if (!root || !storedRoot) {
+          throw new DiagnosticError(fileName, expression.operand.location, "`view` requires a named local owner", {
+            code: "Z0206",
+            helps: ["bind the owner before creating a local view"],
+          });
+        }
+        const rootType = String(underlyingType(storedRoot));
+        const rootValueType = parseViewType(rootType)?.target ?? rootType;
+        if (
+          structs.get(rootValueType)?.kind === "class"
+          || state.foreignNamedTypes.get(rootValueType)?.kind === "object"
+          || rootValueType.startsWith("__z_objc:")
+        ) {
+          throw new DiagnosticError(fileName, expression.operand.location, "`view` local owners must have value storage", {
+            code: "Z0206",
+            notes: ["class aliases could mutate the projected storage without passing through this binding"],
+            helps: ["use a borrowed class method or an owned snapshot instead"],
+          });
+        }
+        const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
+        if (sourceType === "unknown" || sourceType === "never") return sourceType;
+        const target = String(underlyingType(sourceType));
+        if (parseViewType(target)) {
+          throw new DiagnosticError(fileName, expression.operand.location, "nested view values are not valid", {
+            code: "Z0206",
+          });
+        }
+        if (
+          structs.get(target)?.kind === "class"
+          || state.foreignNamedTypes.get(target)?.kind === "object"
+          || target.startsWith("__z_objc:")
+        ) {
+          throw new DiagnosticError(fileName, expression.operand.location, "`view` projects value storage rather than reference identity", {
+            code: "Z0206",
+            helps: ["borrow the class reference directly with an `in` parameter"],
+          });
+        }
+        const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
+        state.viewCallOrigins.set(expression.location.offset, {
+          owner: ownerName,
+          location: expression.operand.location,
+        });
+        return viewTypeName(target);
+      }
       if (expression.operator === "copy") {
         const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
         if (sourceType === "unknown" || sourceType === "never") return sourceType;
@@ -10086,7 +10169,7 @@ function rejectOwnerMutationWhileViewed(
   throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while view ${JSON.stringify(viewName)} is live`, {
     code: "Z0205",
     labels: [{ location: active.location, message: `view ${JSON.stringify(viewName)} begins here`, length: owner.length }],
-    notes: ["a receiver-tied view reads directly from its owner's storage"],
+    notes: ["an owner-tied view reads directly from its owner's storage"],
     helps: [`finish using ${JSON.stringify(viewName)} before mutating or moving ${JSON.stringify(owner)}`],
   });
 }

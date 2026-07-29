@@ -314,6 +314,11 @@ export function generateC(
     "#include <stddef.h>",
     "#include <stdint.h>",
     "#include <stdlib.h>",
+    "#if defined(__GNUC__) || defined(__clang__)",
+    "#define Z_UNUSED_FUNCTION __attribute__((unused))",
+    "#else",
+    "#define Z_UNUSED_FUNCTION",
+    "#endif",
   );
   if (usesNativeMove) {
     lines.push("#include <utility>");
@@ -377,7 +382,7 @@ export function generateC(
   if (programUsesIndex(program)) {
     lines.push(
       "",
-      "static inline uintptr_t z_bounds_index(uintptr_t index, uintptr_t length) {",
+      "static Z_UNUSED_FUNCTION inline uintptr_t z_bounds_index(uintptr_t index, uintptr_t length) {",
       "  if (index >= length) abort();",
       "  return index;",
       "}",
@@ -2088,13 +2093,7 @@ function programUsesString(program: Program, semanticInfo: SemanticInfo): boolea
 }
 
 function generateStringRuntime(): string {
-  return `#if defined(__GNUC__) || defined(__clang__)
-#define Z_UNUSED_FUNCTION __attribute__((unused))
-#else
-#define Z_UNUSED_FUNCTION
-#endif
-
-typedef struct {
+  return `typedef struct {
   const char *data;
   uintptr_t length;
   uintptr_t capacity;
@@ -6662,6 +6661,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         if (explicitCopy.kind === "aggregate") return `${explicitCopyName(explicitCopy.type)}(${value})`;
         return value;
       }
+      if (expression.operator === "view") {
+        return `&(${generateExpression(expression.operand, context)})`;
+      }
       if (expression.operator === "move") return generateExpression(expression.operand, context);
       const contextualType = context.semanticInfo.numericLiteralTypes.get(expression.location.offset);
       if (
@@ -8341,7 +8343,7 @@ function generateIntegerConversion(conversion: IntegerConversion): string {
     throw new Error(`checked integer conversion ${conversion.sourceType} to ${conversion.targetType} has no range check`);
   }
   return [
-    `static inline ${targetCType} ${integerConversionName(conversion)}(${sourceCType} value) {`,
+    `static Z_UNUSED_FUNCTION inline ${targetCType} ${integerConversionName(conversion)}(${sourceCType} value) {`,
     `  if (${checks.join(" || ")}) abort();`,
     `  return (${targetCType})value;`,
     "}",
@@ -8408,11 +8410,11 @@ function generateIntegerOperation(operation: IntegerOperation): string {
     usize: { maximum: "UINTPTR_MAX" },
   };
   const limit = limits[operation.type]!;
-  const binaryHeader = `static inline ${cType} ${name}(${cType} left, ${cType} right) {`;
+  const binaryHeader = `static Z_UNUSED_FUNCTION inline ${cType} ${name}(${cType} left, ${cType} right) {`;
   const result = `  ${cType} result;`;
   if (operation.kind === "checkedNegate") {
     return [
-      `static inline ${cType} ${name}(${cType} value) {`,
+      `static Z_UNUSED_FUNCTION inline ${cType} ${name}(${cType} value) {`,
       result,
       "  if (__builtin_sub_overflow(0, value, &result)) abort();",
       "  return result;",

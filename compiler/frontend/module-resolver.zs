@@ -980,6 +980,30 @@ function inferSignatureCallType(
         substitutions
       );
       const inferredNode = access == "in" ? bindingIndex : nodeIndex;
+      let inferenceExpectedType = expectedArgumentType.copyBytes(
+        0,
+        expectedArgumentType.byteLength
+      );
+      if (mode == "in" && tree.nodes[inferredNode].kind == ExpressionKind.identifierExpression) {
+        const inferredName = identifierLookupName(tree.nodes[inferredNode].value);
+        const inferredBindingType = valueBindingType(bindings, inferredName);
+        if (stringStartsWith(inferredBindingType, "view ")) {
+          const viewTarget = inferredBindingType.copyBytes(
+            5,
+            inferredBindingType.byteLength
+          );
+          let acceptsView = equivalentTypes(
+            modules,
+            moduleIndex,
+            expectedArgumentType,
+            viewTarget
+          );
+          for (const typeParameter of valueTypeParameters) {
+            if (expectedArgumentType == typeParameter) acceptsView = true;
+          }
+          if (acceptsView) inferenceExpectedType = move inferredBindingType;
+        }
+      }
       const argumentType = try inferExpressionNodeTypeExpected(
         module,
         modules,
@@ -987,7 +1011,7 @@ function inferSignatureCallType(
         arena,
         tree,
         inferredNode,
-        expectedArgumentType,
+        inferenceExpectedType,
         inout bindings,
         inout evidence
       );
@@ -1009,6 +1033,20 @@ function inferSignatureCallType(
       argumentTypes.push(argumentType);
     }
     if (!explicitTypeArguments) {
+      let genericArgumentType = argumentTypes[argumentIndex].copyBytes(
+        0,
+        argumentTypes[argumentIndex].byteLength
+      );
+      if (
+        mode == "in"
+        && stringStartsWith(genericArgumentType, "view ")
+        && !stringStartsWith(signature.parameterTypes[argumentIndex], "view ")
+      ) {
+        genericArgumentType = genericArgumentType.copyBytes(
+          5,
+          genericArgumentType.byteLength
+        );
+      }
       try bindGenericType(
         module,
         modules,
@@ -1017,7 +1055,7 @@ function inferSignatureCallType(
         nodeIndex,
         functionName,
         signature.parameterTypes[argumentIndex],
-        argumentTypes[argumentIndex],
+        genericArgumentType,
         valueTypeParameters,
         inout substitutions
       );
@@ -1044,13 +1082,29 @@ function inferSignatureCallType(
       signature.parameterTypes[parameterIndex],
       substitutions
     );
+    let requiredExpected = expected.copyBytes(0, expected.byteLength);
+    if (
+      signature.parameterModes[parameterIndex] == "in"
+      && stringStartsWith(argumentTypes[parameterIndex], "view ")
+    ) {
+      const viewTarget = argumentTypes[parameterIndex].copyBytes(
+        5,
+        argumentTypes[parameterIndex].byteLength
+      );
+      if (equivalentTypes(modules, moduleIndex, expected, viewTarget)) {
+        requiredExpected = argumentTypes[parameterIndex].copyBytes(
+          0,
+          argumentTypes[parameterIndex].byteLength
+        );
+      }
+    }
     try requireExpressionType(
       module,
       modules,
       moduleIndex,
       tree,
       argumentNodes[parameterIndex],
-      expected,
+      requiredExpected,
       argumentTypes[parameterIndex]
     );
     parameterIndex = parameterIndex + 1;
@@ -1943,7 +1997,11 @@ function inferExpressionNodeType(
       }
       return "";
     }
-    match (genericTypeShape(receiverType)) {
+    let receiverValueType = receiverType.copyBytes(0, receiverType.byteLength);
+    if (stringStartsWith(receiverValueType, "view ")) {
+      receiverValueType = receiverValueType.copyBytes(5, receiverValueType.byteLength);
+    }
+    match (genericTypeShape(receiverValueType)) {
       some(generic) => {
         if (
           memberName == "length"
@@ -1956,11 +2014,11 @@ function inferExpressionNodeType(
       }
       none => {}
     }
-    if (receiverType == "String") {
+    if (receiverValueType == "String") {
       if (memberName == "byteLength") return "usize";
       if (memberName == "isEmpty") return "boolean";
     }
-    match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
+    match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
         try requireVisibleField(
           module,
@@ -1987,11 +2045,11 @@ function inferExpressionNodeType(
       }
       none => {}
     }
-    if (hasKnownAggregate(modules, moduleIndex, receiverType)) {
+    if (hasKnownAggregate(modules, moduleIndex, receiverValueType)) {
       throw resolutionError(
         ModuleResolveErrorKind.unknownMember,
         module.path,
-        `type ${receiverType} has no field ${memberName}`,
+        `type ${receiverValueType} has no field ${memberName}`,
         tree.nodes[index].line,
         tree.nodes[index].column
       );

@@ -2494,6 +2494,116 @@ test("supports explicit copy and move ownership expressions", () => {
   assert.match(uncopyable.message, /cannot be explicitly copied/);
 });
 
+test("supports inferred local views into named value storage", () => {
+  const example = resolve(projectRoot, "examples/language/ownership/local-views.zs");
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /const Z_SyntaxNode \* const node = &\(/);
+  assert.match(generated, /evidence\)\), \(node\)->kind\)/);
+  assert.match(generated, /return \(\(node\)->text\)\.length/);
+
+  const bindingOffset = source.indexOf("const node") + "const ".length;
+  const bindingHover = hover(source, example, bindingOffset)?.contents.value ?? "";
+  assert.match(bindingHover, /node: view SyntaxNode/);
+  assert.match(bindingHover, /view of tree/);
+
+  const operatorOffset = source.indexOf("view tree");
+  const operatorHover = hover(source, example, operatorOffset)?.contents.value ?? "";
+  assert.match(operatorHover, /view SyntaxNode of tree/);
+  assert.match(operatorHover, /read-only projection/);
+  assert.match(operatorHover, /loan ends after the view's last use/);
+
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const operatorPosition = positionForOffset(source, operatorOffset);
+  assert.ok(!tokens.some((token) => (
+    token.line === operatorPosition.line
+    && token.character === operatorPosition.character
+  )));
+
+  const testResult = spawnSync(process.execPath, [cli, "test", example], { encoding: "utf8" });
+  assert.equal(testResult.status, 0, testResult.stderr);
+  assert.match(testResult.stdout, /1 passed; 0 failed/);
+
+  const liveMutation = source.replace(
+    "evidence.record(node.kind);",
+    "tree.append(SyntaxNode({ kind: 7, text: \"number\" }));\n  evidence.record(node.kind);",
+  );
+  const mutationDiagnostic = diagnostics(liveMutation, "local-view-live-mutation.zs")[0];
+  assert.equal(mutationDiagnostic.code, "Z0205");
+  assert.match(mutationDiagnostic.message, /cannot mutate "tree" while view "node" is live/);
+
+  const mutableBinding = source.replace(
+    "const node = view tree.nodes[index];",
+    "let node = view tree.nodes[index];",
+  );
+  const mutableDiagnostic = diagnostics(mutableBinding, "mutable-local-view.zs")[0];
+  assert.equal(mutableDiagnostic.code, "Z0206");
+  assert.match(mutableDiagnostic.message, /must initialize a const binding/);
+
+  const annotatedBinding = source.replace(
+    "const node = view tree.nodes[index];",
+    "const node: SyntaxNode = view tree.nodes[index];",
+  );
+  const annotationDiagnostic = diagnostics(annotatedBinding, "annotated-local-view.zs")[0];
+  assert.equal(annotationDiagnostic.code, "Z0206");
+  assert.match(annotationDiagnostic.message, /uses an inferred view type/);
+
+  const returnedProjection = `
+    struct Item { value: i32; }
+    struct Store {
+      item: Item;
+      function current(): view Item {
+        return view this.item;
+      }
+    }
+  `;
+  const returnedDiagnostic = diagnostics(returnedProjection, "returned-local-view.zs")[0];
+  assert.equal(returnedDiagnostic.code, "Z0206");
+  assert.match(returnedDiagnostic.message, /view method must return a field or indexed element derived directly from this/);
+
+  const nonProjection = `
+    struct Item { value: i32; }
+    function main(): i32 {
+      const item = Item({ value: 42 });
+      const alias = view item;
+      return alias.value - 42;
+    }
+  `;
+  const projectionDiagnostic = diagnostics(nonProjection, "non-projection-view.zs")[0];
+  assert.equal(projectionDiagnostic.code, "Z0206");
+  assert.match(projectionDiagnostic.message, /requires a direct field or indexed projection/);
+
+  const contextualName = `
+    struct Item { value: i32; }
+    function view(value: i32): i32 { return value; }
+    function main(): i32 {
+      const item = Item({ value: 42 });
+      const view = view item.value;
+      return view - 42;
+    }
+  `;
+  assert.deepEqual(diagnostics(contextualName, "contextual-view.zs"), []);
+  const contextualTokens = decodeSemanticTokens(semanticTokens(contextualName, "contextual-view.zs").data);
+  const viewBindingOffset = contextualName.indexOf("const view") + "const ".length;
+  const viewOperatorOffset = contextualName.indexOf("= view") + 2;
+  const viewUseOffset = contextualName.indexOf("return view") + "return ".length;
+  for (const offset of [viewBindingOffset, viewUseOffset]) {
+    const position = positionForOffset(contextualName, offset);
+    assert.ok(contextualTokens.some((token) => (
+      token.line === position.line
+      && token.character === position.character
+      && token.type === semanticTokenTypes.indexOf("variable")
+    )));
+  }
+  const viewOperatorPosition = positionForOffset(contextualName, viewOperatorOffset);
+  assert.ok(!contextualTokens.some((token) => (
+    token.line === viewOperatorPosition.line
+    && token.character === viewOperatorPosition.character
+  )));
+});
+
 test("exposes Map imports, members, and source-level types to editor services", () => {
   const source = `
     import { Map as Dictionary } from "std/collections";

@@ -29,12 +29,13 @@ function invalidOperator(
   index: usize,
   in message: String
 ): ModuleResolveError {
+  const node = view tree.nodes[index];
   return moduleResolutionError(
     ModuleResolveErrorKind.invalidOperator,
     module.path,
     message,
-    tree.nodes[index].line,
-    tree.nodes[index].column
+    node.line,
+    node.column
   );
 }
 
@@ -61,6 +62,17 @@ export function unaryOperatorType(
   in operand: String
 ): String throws ModuleResolveError {
   if (operand.byteLength == 0) return "";
+  if (operator == "view") {
+    if (stringStartsWith(operand, "view ")) {
+      throw invalidOperator(
+        module,
+        tree,
+        index,
+        "nested view values are not valid"
+      );
+    }
+    return `view ${operand}`;
+  }
   if (operator == "copy") {
     let copiedType = operand.copyBytes(0, operand.byteLength);
     if (stringStartsWith(copiedType, "view ")) {

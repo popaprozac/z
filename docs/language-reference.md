@@ -311,9 +311,22 @@ call initializes the binding, Z asks for an explicit type annotation instead of
 leaving an implicit undefined value.
 
 Borrow lifetimes are inferred and lexical. Safe code does not expose general
-lifetime parameters. Ordinary borrows cannot be retained or stored. A narrow
-`view T` method result may project read-only value-struct storage into an
-inferred `const` local:
+lifetime parameters. Ordinary borrows cannot be retained or stored. A local
+projection uses the same readable ownership vocabulary as `copy` and `move`:
+
+```z
+const node = view tree.nodes[index];
+inspect(node);
+tree.append(next); // valid after node's last use
+```
+
+`view expression` must directly initialize an inferred `const` local and must
+project a field or indexed element from named value storage. Hover reports both
+the projected `view T` and its owner. It creates a `const T *` in generated C;
+there is no value copy, allocation, retain, or cleanup.
+
+A narrow `view T` method result may provide the same read-only projection
+through owner behavior:
 
 ```z
 struct DocumentStore {
@@ -329,16 +342,18 @@ console.log(document.title);
 store.open(next); // valid after document's last use
 ```
 
-The first tier is deliberately receiver-tied and zero-overhead: only a
-synchronous, non-throwing borrowed method on a value struct may return a direct
-field or indexed projection. The view itself cannot be annotated as storage,
-duplicated, stored, returned again, or held across `await`. It may be forwarded
-to a synchronous `in T` parameter or read through an inline closure passed to a
-synchronous `in` function parameter. The latter closure is compiler-proven
-nonescaping and copies only the view pointer into its stack environment; owned,
-stored, mutable, escaping, and async forwarding remain rejected. Its owner cannot
-mutate or move before the view's last use. ARC class owners are excluded because
-another alias could invalidate growable projected storage.
+The first tier is deliberately owner-tied and zero-overhead. A method producer
+must be synchronous and non-throwing, borrow a value-struct receiver, and return
+a direct field or indexed projection. A local producer has the same value-storage
+and direct-projection restrictions. The view itself cannot be annotated as
+storage, duplicated, stored, returned again, or held across `await`. It may be
+forwarded to a synchronous `in T` parameter or read through an inline closure
+passed to a synchronous `in` function parameter. The latter closure is
+compiler-proven nonescaping and copies only the view pointer into its stack
+environment; owned, stored, mutable, escaping, and async forwarding remain
+rejected. Its owner cannot mutate or move before the view's last use. ARC class
+owners are excluded because another alias could invalidate growable projected
+storage.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
 load an independent `T` from `view T` implicitly. This is an ordinary by-value
@@ -493,13 +508,14 @@ An expression arm may be concise or use a block with `select value`. `return`
 and `throw` always target the enclosing function. `yield` is reserved for
 generators rather than overloaded for match blocks.
 
-## Explicit copy and move
+## Explicit copy, move, and view
 
 Z uses readable prefix keywords when ownership intent should be visible:
 
 ```z
 const snapshot = copy library.current();
 const transferred = move library;
+const selected = view library.documents[index];
 ```
 
 `copy value` produces an independent owned value and leaves its source usable.
@@ -517,9 +533,15 @@ never owns the referenced value. To extract an element from a container, use an
 owner operation such as `remove`; moving a field or indexed element directly
 would leave a hole in its containing owner.
 
+`view projection` creates a read-only, non-owning local projection without
+duplicating the value. The owner remains usable for reads, but mutation,
+movement, and destruction are rejected until the view's last use. Use `copy`
+instead when the result must be independent of the owner.
+
 The keywords are contextual: the ownership forms require whitespace
-(`copy value`, `move value`), preserving an unambiguous imported call such as
-`move(value)` and the existing `move (...) =>` closure capture syntax.
+(`copy value`, `move value`, `view projection`), preserving unambiguous calls
+such as `move(value)` or `view(value)` and the existing `move (...) =>` closure
+capture syntax.
 
 ## Control flow and expressions
 

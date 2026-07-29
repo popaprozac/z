@@ -866,6 +866,31 @@ closed, statically selected pipeline and can be ordinary functions in acyclic
 modules. Dynamic visitor storage would add indirection without solving the
 borrowed-context problem.
 
+The native frontend also supplied quantitative evidence for a smaller,
+independent feature. A pre-feature corpus query found 840 direct
+`tree.nodes[index]` projections across the frontend modules, while
+`module-resolver.zs` still contains 87 `String.copyBytes` calls. Those counts are
+not all optimization opportunities, but repeated AST navigation and defensive
+field copies made the inability to name a temporary borrow concrete. Z now
+accepts:
+
+```z
+const node = view tree.nodes[index];
+record(node.kind);
+return node.text.byteLength;
+```
+
+The first local-view tier lowers `node` to `const SyntaxNode *`, ties its shared
+loan to `tree`, and releases that loan after `node`'s last use. It rejects
+mutable or explicitly typed bindings, non-projections, storage, returns,
+escaping capture, class-owned projections, suspension, and owner mutation while
+live. A compiler-shaped Z test exercises the syntax, ownership conflict, editor
+provenance, generated C, and native parser/type parity. Native lowering now
+preserves that pointer representation, forwards it directly to synchronous `in`
+parameters, and schedules cleanup only for the owner. `semantic-operators.zs`
+is the first self-hosted compiler module to use the form; the complete frontend
+graph still emits, compiles under strict C warnings, and executes.
+
 The first extractions moved the public graph, symbol, signature, and evidence
 values into `semantic-model.zs`, isolated lexical module paths, then separated
 declaration-signature projection, symbol construction, graph construction, and

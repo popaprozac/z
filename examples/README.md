@@ -39,6 +39,7 @@ inspect the generated C-family source. The broader guided index lives in
 
 - [`borrowed-parameters.zs`](language/ownership/borrowed-parameters.zs) and [`consuming-methods.zs`](language/ownership/consuming-methods.zs)
 - [`deinit.zs`](language/ownership/deinit.zs) and [`replacement.zs`](language/ownership/replacement.zs)
+- [`local-views.zs`](language/ownership/local-views.zs): name a zero-copy field/index projection until its last use
 - [`optional-views.zs`](language/ownership/optional-views.zs): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
 - [`arena.zs`](language/ownership/arena.zs): stable region allocation, synchronous `in` views, reset, and reverse cleanup
 - [`owned-closures.zs`](language/ownership/owned-closures.zs), [`owned-enums.zs`](language/ownership/owned-enums.zs), and [`weak-references.zs`](language/ownership/weak-references.zs)

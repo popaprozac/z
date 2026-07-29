@@ -654,6 +654,19 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.viewProjection
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed view projection";
+    }
+    output.append("&(");
+    const operand = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, operand);
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.borrowedTemporary
   ) {
     output.append(`_z_stage1_borrow_${index}`);
@@ -964,6 +977,15 @@ function appendExpression(
       output.append(declaration.expressions[index].value);
       return;
     }
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view"
+    ) {
+      try appendExpression(inout output, declaration, receiver);
+      output.append("->");
+      output.append(declaration.expressions[index].value);
+      return;
+    }
     try appendExpression(inout output, declaration, receiver);
     output.append(".");
     output.append(declaration.expressions[index].value);
@@ -1196,6 +1218,11 @@ function appendStatement(
       some(_) => true;
       none => false;
     };
+    const viewStorage = match (in declaration.statements[index].expression) {
+      some(initializer) => declaration.expressions[initializer].kind
+        == LoweredExpressionKind.viewProjection;
+      none => false;
+    };
     match (in declaration.statements[index].expression) {
       some(initializer) => try appendBorrowedTemporaryInitializers(
         inout output,
@@ -1206,15 +1233,22 @@ function appendStatement(
       none => {}
     }
     appendIndent(inout output, depth);
-    if (
+    if (viewStorage) {
+      output.append("const ");
+      output.append(type);
+      output.append(" * const ");
+    } else if (
       !declaration.statements[index].mutableBinding
       && constStorage
       && hasInitializer
     ) {
       output.append("const ");
+      output.append(type);
+      output.append(" ");
+    } else {
+      output.append(type);
+      output.append(" ");
     }
-    output.append(type);
-    output.append(" ");
     appendCBindingName(inout output, declaration.statements[index].name);
     if (
       !localNameIsUsed(

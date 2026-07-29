@@ -1941,7 +1941,11 @@ function parseUnaryTree(
   }
   if (
     kind == TokenKind.identifier
-    && (tokens[current].text == "copy" || tokens[current].text == "move")
+    && (
+      tokens[current].text == "copy"
+      || tokens[current].text == "move"
+      || tokens[current].text == "view"
+    )
     && current + 1 < end
     && tokens[current + 1].kind == TokenKind.identifier
   ) {

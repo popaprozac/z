@@ -140,6 +140,7 @@ export enum LoweredExpressionKind {
   fsLockUnlock,
   moveValue,
   copyValue,
+  viewProjection,
   borrowedTemporary,
   unaryOperation,
   binaryOperation,
@@ -1844,7 +1845,18 @@ function planCleanupSequence(
             kind: type.kind,
             name: type.name.copyBytes(0, type.name.byteLength),
           });
-          if (moduleTypeNeedsCleanup(program, importedTypes, ownedType)) {
+          let borrowedView = false;
+          for (const binding of evidence.bindingResolutions) {
+            if (
+              binding.offset == arena.nodes[sourceIndex].nameOffset
+              && binding.name == arena.nodes[sourceIndex].name
+              && stringStartsWith(binding.typeName, "view ")
+            ) borrowedView = true;
+          }
+          if (
+            !borrowedView
+            && moduleTypeNeedsCleanup(program, importedTypes, ownedType)
+          ) {
             const moved = arenaMovesName(
               program,
               evidence,
@@ -2990,12 +3002,34 @@ function lowerExpression(
       }
       kind = LoweredExpressionKind.copyValue;
     }
+    else if (tree.nodes[index].value == "view") {
+      const operandTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        operandInput
+      )) {
+        some(name) => name;
+        none => throw "native view lowering could not resolve its projected type";
+      };
+      const operandType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        operandTypeName
+      );
+      if (operandType.kind != LoweredTypeKind.structType) {
+        throw `native view lowering currently supports value-struct projections, found ${operandTypeName}`;
+      }
+      kind = LoweredExpressionKind.viewProjection;
+    }
     else if (
       tree.nodes[index].value != "!"
       && tree.nodes[index].value != "+"
       && tree.nodes[index].value != "~"
       && tree.nodes[index].value != "move"
       && tree.nodes[index].value != "copy"
+      && tree.nodes[index].value != "view"
     ) {
       throw `native lowering does not support unary operator ${tree.nodes[index].value} at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
     }
@@ -4070,6 +4104,10 @@ function lowerExpression(
       tree,
       index
     );
+    let callLabels = Array<String>();
+    for (const mode of parameterModes) {
+      callLabels.push(mode.copyBytes(0, mode.byteLength));
+    }
     let children = Array<usize>();
     children.push(callee);
     let argument: usize = 1;
@@ -4117,6 +4155,25 @@ function lowerExpression(
           Array<String>()
         );
       }
+      if (
+        callLabels.length >= argument
+        && callLabels[argument - 1] == "in"
+      ) {
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput
+        )) {
+          some(argumentType) => {
+            if (stringStartsWith(argumentType, "view ")) {
+              callLabels[argument - 1] = "view";
+            }
+          }
+          none => {}
+        }
+      }
       children.push(value);
       argument = argument + 1;
     }
@@ -4125,7 +4182,7 @@ function lowerExpression(
       LoweredExpressionKind.directCall,
       "",
       children,
-      parameterModes
+      callLabels
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.indexExpression) {
@@ -4349,12 +4406,19 @@ function lowerExpression(
     );
     let children = Array<usize>();
     children.push(receiver);
+    let labels = Array<String>();
+    match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+      some(receiverType) => {
+        if (stringStartsWith(receiverType, "view ")) labels.push("view");
+      }
+      none => {}
+    }
     return pushExpression(
       inout output,
       LoweredExpressionKind.fieldValue,
       tree.nodes[index].value,
       children,
-      Array<String>()
+      labels
     );
   }
   const unsupportedKind = expressionKindName(tree.nodes[index].kind);
