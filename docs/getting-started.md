@@ -73,8 +73,9 @@ z run <file.zs> [-- program arguments]
 a native GUI event loop.
 
 The first project build tier accepts a `z.json` target with
-`"kind": "static-library"` and one or more scalar `export c function`
-declarations. It publishes a guarded C/C++ header and native archive:
+`"kind": "static-library"` and one or more checked `export c function`
+declarations. Signatures may use scalars and `c struct` values. The build
+publishes a guarded C/C++ header and native archive:
 
 ```sh
 bun run z build examples/interop/c/z-export

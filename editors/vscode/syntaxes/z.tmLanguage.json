@@ -377,6 +377,9 @@
         "name": "support.language.native.z",
         "match": "(?<=\\bexport\\s)c(?=\\s+(?:async\\s+)?function\\b)"
       }, {
+        "name": "support.language.native.z",
+        "match": "\\bc(?=\\s+(?:struct|enum)\\b)"
+      }, {
         "name": "keyword.control.declaration.z",
         "match": "\\bdeclare\\b"
       }, {

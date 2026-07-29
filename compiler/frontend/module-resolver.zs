@@ -190,6 +190,7 @@ import {
   TraitDeclaration,
   TypeParameter,
   TypeReference,
+  Visibility,
 } from "./parser.zs";
 
 function resolutionError(
@@ -4410,10 +4411,106 @@ function nativeCExportError(
   );
 }
 
+function isNativeCLayoutType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, name)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+      ) {
+        some(signature) => return signature.nativeCName.byteLength > 0;
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
+function validateNativeCLayouts(
+  in parsed: Array<ParsedModule>,
+  in modules: Array<ResolvedModule>
+): void throws ModuleResolveError {
+  let moduleIndex: usize = 0;
+  for (const module of parsed) {
+    for (const aggregate of module.program.aggregates) {
+      if (!aggregate.nativeCLayout) continue;
+      if (aggregate.kind != DeclarationKind.structDeclaration) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "`c class` is not supported",
+          aggregate.line,
+          aggregate.column
+        );
+      }
+      if (aggregate.typeParameters.length > 0) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct cannot be generic", aggregate.line, aggregate.column);
+      }
+      if (aggregate.executorAffinity.byteLength > 0) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct cannot have executor affinity", aggregate.line, aggregate.column);
+      }
+      if (aggregate.implementedTraits.length > 0) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct cannot implement traits in the first ABI tier", aggregate.line, aggregate.column);
+      }
+      match (in aggregate.constructorDeclaration) {
+        some(_) => throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct cannot declare a constructor in the first ABI tier", aggregate.line, aggregate.column);
+        none => {}
+      }
+      match (in aggregate.deinitializer) {
+        some(_) => throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct cannot declare `deinit`", aggregate.line, aggregate.column);
+        none => {}
+      }
+      if (aggregate.fields.length == 0) {
+        throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct must declare at least one field", aggregate.line, aggregate.column);
+      }
+      for (const field of aggregate.fields) {
+        if (field.visibility != Visibility.publicVisibility) {
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be private`, field.line, field.column);
+        }
+        if (field.readonlyField) {
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be readonly`, field.line, field.column);
+        }
+        if (
+          field.type.name == "void"
+          || (
+            !isNativeCExportScalarType(field.type.name)
+            && !isNativeCLayoutType(modules, moduleIndex, field.type.name)
+          )
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `C-layout field type "${field.type.name}" does not have a C representation`,
+            field.line,
+            field.column
+          );
+        }
+      }
+    }
+    for (const enumDeclaration of module.program.enums) {
+      if (!enumDeclaration.nativeCLayout) continue;
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "`c enum` requires an explicit integer representation; enum ABI lowering lands in the next slice",
+        enumDeclaration.line,
+        enumDeclaration.column
+      );
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+}
+
 function validateNativeCExports(
-  in parsed: Array<ParsedModule>
+  in parsed: Array<ParsedModule>,
+  in modules: Array<ResolvedModule>
 ): void throws ModuleResolveError {
   let symbols = Array<String>();
+  let moduleIndex: usize = 0;
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
       if (!declaration.nativeCExport) continue;
@@ -4474,7 +4571,10 @@ function validateNativeCExports(
         }
         if (
           parameter.type.name == "void"
-          || !isNativeCExportScalarType(parameter.type.name)
+          || (
+            !isNativeCExportScalarType(parameter.type.name)
+            && !isNativeCLayoutType(modules, moduleIndex, parameter.type.name)
+          )
         ) {
           throw nativeCExportError(
             module,
@@ -4483,7 +4583,10 @@ function validateNativeCExports(
           );
         }
       }
-      if (!isNativeCExportScalarType(declaration.returnType.name)) {
+      if (
+        !isNativeCExportScalarType(declaration.returnType.name)
+        && !isNativeCLayoutType(modules, moduleIndex, declaration.returnType.name)
+      ) {
         throw nativeCExportError(
           module,
           declaration,
@@ -4491,6 +4594,7 @@ function validateNativeCExports(
         );
       }
     }
+    moduleIndex = moduleIndex + 1;
   }
 }
 
@@ -4520,8 +4624,9 @@ export function resolveParsedModulesWithForeignContracts(
   in foreignContracts: Array<NativeForeignModuleContract>
 ): ModuleGraph throws ModuleResolveError {
   const entry = try findEntryModule(parsed, entryPath);
-  try validateNativeCExports(parsed);
   let modules = try buildResolvedModules(parsed);
+  try validateNativeCLayouts(parsed, modules);
+  try validateNativeCExports(parsed, modules);
   let index: usize = 0;
   while (index < parsed.length) {
     try validateModuleTypes(parsed[index], modules, index);

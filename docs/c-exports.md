@@ -1,6 +1,7 @@
 # C Export Design
 
-Status: first scalar Stage-0 compiler and project-artifact slice implemented.
+Status: scalar functions and checked by-value C-layout structs implemented in
+both the Stage-0 and fixed-point native compilers.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -25,8 +26,8 @@ export c function z_math_add(left: i32, right: i32): i32 {
 }
 ```
 
-`c` is contextual after `export`; it does not reserve ordinary bindings named
-`c`. The source function name is initially the exact public C symbol. C APIs
+`c` is contextual at a native ABI declaration; it does not reserve ordinary
+bindings named `c`. The source function name is initially the exact public C symbol. C APIs
 normally prefix global symbols, and requiring that spelling keeps the first
 tier explicit without adding ABI-alias grammar prematurely. A project that
 wants a different internal name can use a boundary wrapper:
@@ -55,7 +56,7 @@ external ABI contract.
 - `as c`, because TypeScript-shaped `as` does not perform conversion or create
   linkage.
 
-## First ABI tier
+## Scalar ABI tier
 
 The first executable slice accepts only types with an unambiguous scalar C ABI:
 
@@ -68,11 +69,10 @@ The first executable slice accepts only types with an unambiguous scalar C ABI:
 | `boolean` | `bool` |
 | `void` | `void` |
 
-Tier one rejects strings, collections, slices, nullable values, structs,
-classes, enums, closures, generic functions, typed errors, async functions,
-and executor-affine functions at the export declaration. A targeted diagnostic
-must name the unsupported boundary type or effect rather than letting generated
-C fail.
+The boundary still rejects strings, collections, slices, nullable values,
+ordinary Z structs, classes, enums, closures, generic functions, typed errors,
+async functions, and executor-affine functions. A targeted diagnostic must name
+the unsupported boundary type or effect rather than letting generated C fail.
 
 The initial proof uses ordinary by-value scalar parameters. Mapping `in`,
 `inout`, and `out` onto a public pointer ABI is an explicit follow-up design
@@ -81,6 +81,57 @@ decision; the compiler must not silently reinterpret those capabilities.
 This narrow start is deliberate. Z-owned values must never escape through an
 accidental layout, and a C caller cannot be assumed to understand Z cleanup,
 ARC, task, or error representations.
+
+## C-layout structs
+
+`c struct` is a representation contract independent from ordinary Z module
+visibility:
+
+```z
+c struct ZMathPoint {
+  x: i32;
+  y: i32;
+}
+
+export c function z_math_translate(
+  point: ZMathPoint,
+  dx: i32,
+  dy: i32
+): ZMathPoint {
+  return ZMathPoint({
+    x: point.x + dx,
+    y: point.y + dy,
+  });
+}
+```
+
+The generated header contains the reachable value type and exact public
+function signature:
+
+```c
+typedef struct ZMathPoint {
+  int32_t x;
+  int32_t y;
+} ZMathPoint;
+
+Z_API ZMathPoint z_math_translate(
+  ZMathPoint point,
+  int32_t dx,
+  int32_t dy
+);
+```
+
+`export c struct` composes ordinary Z module export with the same C layout
+contract. Header generation follows reachability from C-exported function
+signatures, so an internal `c struct` can still define a public function's ABI
+without becoming a general Z module export.
+
+The first struct tier permits public mutable fields containing fixed-width
+scalars or other `c struct` values. It rejects empty and generic structs,
+classes, private or readonly fields, traits, executor affinity, constructors,
+and `deinit`. These restrictions prevent the C representation from bypassing
+an invariant or cleanup obligation that the header cannot express. Methods do
+not affect layout and remain Z-only.
 
 ## Generated interface
 

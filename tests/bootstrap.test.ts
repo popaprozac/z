@@ -197,6 +197,79 @@ test("exports checked scalar Z functions through a stable C ABI", () => {
   );
 });
 
+test("exports checked C-layout structs by value", () => {
+  const source = `
+    c struct Point {
+      x: f64;
+      y: f64;
+    }
+
+    c struct Segment {
+      start: Point;
+      end: Point;
+    }
+
+    export c function z_point_translate(point: Point, dx: f64, dy: f64): Point {
+      return Point({ x: point.x + dx, y: point.y + dy });
+    }
+
+    export c function z_segment_end(segment: Segment): Point {
+      return segment.end;
+    }
+  `;
+  const artifact = compileToNative(source, "zgeometry.zs", { requireMain: false });
+  assert.ok(artifact.header);
+  assert.match(artifact.header, /typedef struct Point \{\s+double x;\s+double y;\s+\} Point;/);
+  assert.match(artifact.header, /typedef struct Segment \{\s+Point start;\s+Point end;\s+\} Segment;/);
+  assert.match(artifact.header, /Z_API Point z_point_translate\(Point point, double dx, double dy\);/);
+  assert.match(artifact.source, /typedef struct Point Point;\s+typedef Point Z_Point;/);
+  assert.match(artifact.source, /struct Point \{\s+double x;\s+double y;\s+\};/);
+
+  const directory = mkdtempSync("/tmp/z-c-layout-struct-");
+  const implementation = resolve(directory, "zgeometry.c");
+  const header = resolve(directory, "zgeometry.h");
+  const object = resolve(directory, "zgeometry.o");
+  const library = resolve(directory, "libzgeometry.a");
+  const consumer = resolve(directory, "consumer.c");
+  const executable = resolve(directory, "consumer");
+  writeFileSync(implementation, artifact.source);
+  writeFileSync(header, artifact.header);
+  writeFileSync(consumer, `
+    #include "zgeometry.h"
+    int main(void) {
+      const Point translated = z_point_translate((Point){ .x = 20.0, .y = 21.0 }, 1.0, 1.0);
+      const Segment segment = {
+        .start = { .x = 0.0, .y = 0.0 },
+        .end = translated,
+      };
+      const Point end = z_segment_end(segment);
+      return end.x == 21.0 && end.y == 22.0 ? 0 : 1;
+    }
+  `);
+  const compileLibrary = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-c", implementation, "-o", object,
+  ], { encoding: "utf8" });
+  assert.equal(compileLibrary.status, 0, compileLibrary.stderr);
+  const archive = spawnSync("ar", ["rcs", library, object], { encoding: "utf8" });
+  assert.equal(archive.status, 0, archive.stderr);
+  const compileConsumer = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", consumer, library, "-o", executable,
+  ], { encoding: "utf8" });
+  assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
+  const result = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  assert.throws(
+    () => compileToNative(`
+      c struct Invalid {
+        value: String;
+      }
+      export c function z_invalid(value: Invalid): void {}
+    `, "invalid-c-struct.zs", { requireMain: false }),
+    /C-layout field type "String" does not have a C representation/,
+  );
+});
+
 test("checks the first C-export ABI tier and its editor surface", () => {
   const unsupported = `
     export c function z_name(value: String): String {
@@ -221,10 +294,12 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   assert.equal(
     completions(completionSource, "export-completion.zs", completionSource.length)
       .find((item) => item.label === "c")?.detail,
-    "publish the Z function through a stable C ABI symbol",
+    "declare a checked public C ABI function or C-layout value type",
   );
   const cOffset = source.indexOf("c function");
-  assert.match(hover(source, "export-hover.zs", cOffset)?.contents.value ?? "", /ordinary Z export/);
+  assert.match(hover(source, "export-hover.zs", cOffset)?.contents.value ?? "", /checked C ABI contract/);
+  const layoutSource = "c struct Point { x: i32; }";
+  assert.match(hover(layoutSource, "layout-hover.zs", 0)?.contents.value ?? "", /C ABI contract/);
   const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
   assert.match(grammar, /export\\\\s\)c/);
 
@@ -276,7 +351,7 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "sum=42 answer=42 even=true\n");
+  assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22)\n");
 });
 
 test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
@@ -10542,6 +10617,10 @@ test("compiles a multi-module Z application through the standalone native driver
     nativeExportSource,
     /Z_API int32_t z_math_add\(int32_t left, int32_t right\)/,
   );
+  assert.match(
+    nativeExportSource,
+    /typedef struct ZMathPoint \{\s+int32_t x;\s+int32_t y;\s+\} ZMathPoint;/,
+  );
   const nativeConsumer = resolve(directory, "native-zmath-consumer");
   const nativeConsumerCompilation = spawnSync(
     "clang",
@@ -10572,7 +10651,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(nativeConsumerRun.status, 0, nativeConsumerRun.stderr);
   assert.equal(
     nativeConsumerRun.stdout,
-    "sum=42 answer=42 even=true\n",
+    "sum=42 answer=42 even=true point=(21,22)\n",
   );
   const invalidNativeExport = resolve(
     directory,

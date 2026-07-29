@@ -200,7 +200,7 @@ export function completions(source: string, fileName: string, offset: number): C
     return filterCompletions([{
       label: "c",
       kind: completionKinds.keyword,
-      detail: "publish the Z function through a stable C ABI symbol",
+      detail: "declare a checked public C ABI function or C-layout value type",
       insertText: "c ",
       sortText: "0-c",
     }], nativeExport[1], 3);
@@ -626,10 +626,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   if (
     word.text === "c"
-    && /\bexport\s+$/.test(source.slice(Math.max(0, word.start - 24), word.start))
+    && (
+      /\bexport\s+$/.test(source.slice(Math.max(0, word.start - 24), word.start))
+      || /^\s*(?:struct|enum)\b/.test(source.slice(word.end))
+    )
   ) {
     return markdownHover(
-      "export c function  // ordinary Z export plus a stable checked C ABI entry point",
+      "c  // checked C ABI contract: `export c function`, `c struct`, or fixed-representation `c enum`",
       source,
       word.start,
       word.end,

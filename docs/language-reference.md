@@ -34,8 +34,18 @@ export c function z_math_add(left: i32, right: i32): i32 {
 ```
 
 Z callers import and call `z_math_add` normally. Native consumers use the exact
-source name from the generated header. The first implemented ABI tier accepts
-only synchronous, non-throwing, non-generic by-value scalar signatures; see
+source name from the generated header. `c struct` independently guarantees
+target C field layout while retaining ordinary Z value semantics:
+
+```z
+c struct Point {
+  x: f64;
+  y: f64;
+}
+```
+
+The implemented ABI tier accepts synchronous, non-throwing, non-generic
+signatures containing fixed-width scalars and checked C-layout structs; see
 [C exports](c-exports.md) for the exact mapping and growth path.
 
 The filename contract is `.zs` for Z source and `.zd` for foreign declarations.

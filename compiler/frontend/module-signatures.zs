@@ -190,6 +190,9 @@ export function programTypeSignature(
         none => {}
       }
       return Option.some(ModuleTypeSignature({
+        nativeCName: aggregate.nativeCLayout
+          ? aggregate.name.copyBytes(0, aggregate.name.byteLength)
+          : "",
         typeParameters,
         typeParameterConstraints,
         executorAffinity: aggregate.executorAffinity.copyBytes(0, aggregate.executorAffinity.byteLength),
@@ -219,6 +222,7 @@ export function programTypeSignature(
         }));
       }
       return Option.some(ModuleTypeSignature({
+        nativeCName: "",
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         executorAffinity: "",
@@ -250,6 +254,9 @@ export function programTypeSignature(
         }));
       }
       return Option.some(ModuleTypeSignature({
+        nativeCName: enumDeclaration.nativeCLayout
+          ? enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength)
+          : "",
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         executorAffinity: "",

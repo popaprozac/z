@@ -46,6 +46,12 @@ export type ImportBinding = {
 export type StructDeclaration = {
   readonly kind: "struct" | "class";
   readonly name: string;
+  /** Exact public C type identity and layout contract. */
+  readonly nativeLayout?: {
+    readonly language: "c";
+    readonly name: string;
+    readonly location: SourceLocation;
+  };
   readonly typeParameters?: string[];
   readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly executorAffinity?: ExecutorAffinity;
@@ -92,6 +98,13 @@ export type ConstructorDeclaration = {
 export type EnumDeclaration = {
   readonly kind: "enum";
   readonly name: string;
+  /** Exact public C type identity and representation contract. */
+  readonly nativeLayout?: {
+    readonly language: "c";
+    readonly name: string;
+    readonly location: SourceLocation;
+  };
+  readonly underlyingType?: TypeReference | null;
   readonly variants: EnumVariant[];
   readonly location: SourceLocation;
 };

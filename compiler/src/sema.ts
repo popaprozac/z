@@ -1223,6 +1223,7 @@ export function analyze(
   for (const declaration of program.enums) {
     analyzeEnumDeclaration(declaration, structs, enums, foreignNamedTypes, fileName);
   }
+  validateNativeLayouts(program.structs, program.enums, structs, enums, fileName);
 
   for (const declaration of program.functions) {
     validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
@@ -1234,7 +1235,7 @@ export function analyze(
       );
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
-    validateNativeExport(declaration, fileName);
+    validateNativeExport(declaration, structs, enums, fileName);
     if (parseReceiverViewReturnType(declaration.returnType.name)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "view returns require a borrowed instance method receiver", {
         code: "Z0206",
@@ -1336,17 +1337,104 @@ const nativeExportScalarTypes = new Set([
   "isize", "usize", "f32", "f64", "boolean", "void",
 ]);
 
-function validateNativeExport(declaration: FunctionDeclaration, fileName: string): void {
+const cReservedIdentifiers = new Set(
+  "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local"
+    .split(" "),
+);
+
+function validPublicCIdentifier(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !cReservedIdentifiers.has(name);
+}
+
+function validateNativeLayouts(
+  declarations: readonly StructDeclaration[],
+  enumDeclarations: readonly EnumDeclaration[],
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  fileName: string,
+): void {
+  const reject = (location: SourceLocation, summary: string, help?: string): never => {
+    throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
+      code: "Z0831",
+      notes: ["a `c struct` is an exact public C layout contract, not Z's ordinary evolvable value layout"],
+      helps: help ? [help] : undefined,
+    });
+  };
+  const visiting = new Set<string>();
+  const validated = new Set<string>();
+  const validateCType = (type: string, location: SourceLocation): void => {
+    if (nativeExportScalarTypes.has(type) && type !== "void") return;
+    const nested = structs.get(type);
+    if (!nested?.nativeLayout || nested.kind !== "struct") {
+      reject(
+        location,
+        `C-layout field type ${JSON.stringify(type)} does not have a C representation`,
+        "use a fixed-width scalar or another `c struct`",
+      );
+    }
+    validateStruct(nested);
+  };
+  const validateStruct = (declaration: StructDeclaration): void => {
+    if (!declaration.nativeLayout || validated.has(declaration.name)) return;
+    const location = declaration.nativeLayout.location;
+    if (!validPublicCIdentifier(declaration.nativeLayout.name)) {
+      reject(location, `C-layout type name ${JSON.stringify(declaration.nativeLayout.name)} is not a valid public C identifier`);
+    }
+    if (visiting.has(declaration.name)) {
+      reject(location, `C-layout struct ${JSON.stringify(declaration.nativeLayout.name)} contains itself by value`);
+    }
+    visiting.add(declaration.name);
+    if (declaration.kind !== "struct") reject(location, "`c class` is not supported");
+    if ((declaration.typeParameters?.length ?? 0) > 0) reject(location, "a C-layout struct cannot be generic");
+    if (declaration.executorAffinity) reject(location, "a C-layout struct cannot have executor affinity");
+    if (declaration.implements.length > 0) reject(location, "a C-layout struct cannot implement traits in the first ABI tier");
+    if (declaration.constructor) reject(location, "a C-layout struct cannot declare a constructor in the first ABI tier");
+    if (declaration.deinitializer) {
+      reject(
+        location,
+        "a C-layout struct cannot declare `deinit`",
+        "export explicit create/use/destroy functions when the value owns a resource",
+      );
+    }
+    if (declaration.fields.length === 0) reject(location, "a C-layout struct must declare at least one field");
+    for (const field of declaration.fields) {
+      if (!validPublicCIdentifier(field.name)) {
+        reject(field.location, `C-layout field name ${JSON.stringify(field.name)} is not a valid public C identifier`);
+      }
+      if (field.visibility !== "public") reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be private`);
+      if (field.readonly) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be readonly`);
+      validateCType(field.type.name, field.location);
+    }
+    visiting.delete(declaration.name);
+    validated.add(declaration.name);
+  };
+  for (const declaration of declarations) validateStruct(declaration);
+  for (const declaration of enumDeclarations) {
+    if (declaration.nativeLayout) {
+      reject(declaration.nativeLayout.location, "`c enum` requires an explicit integer representation; enum ABI lowering lands in the next slice");
+    }
+  }
+}
+
+function validateNativeExport(
+  declaration: FunctionDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  fileName: string,
+): void {
   if (!declaration.nativeExport) return;
   const location = declaration.nativeExport.location;
   const reject = (summary: string, help?: string): never => {
     throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
       code: "Z0830",
-      notes: ["the first C-export tier supports synchronous, non-throwing, non-generic scalar functions"],
+    notes: ["the current C-export tier supports synchronous, non-throwing, non-generic functions over scalars and checked C-layout values"],
       helps: help ? [help] : undefined,
     });
   };
   if (declaration.nativeExport.language !== "c") reject("unsupported native export language");
+  if (!validPublicCIdentifier(declaration.nativeExport.name)) {
+    reject(`C export name ${JSON.stringify(declaration.nativeExport.name)} is not a valid public C identifier`);
+  }
   if (declaration.nativeExport.name === "main") reject("`main` cannot also be published as a C export");
   if (declaration.async) reject("a C-exported function cannot be async in the first ABI tier");
   if (declaration.errorType) reject("a C-exported function cannot throw in the first ABI tier");
@@ -1360,11 +1448,24 @@ function validateNativeExport(declaration: FunctionDeclaration, fileName: string
         "pass an ordinary by-value scalar parameter; explicit pointer ABI contracts are a later tier",
       );
     }
-    if (!nativeExportScalarTypes.has(parameter.type.name) || parameter.type.name === "void") {
+    const aggregate = structs.get(parameter.type.name);
+    const cLayoutStruct = aggregate?.kind === "struct" && Boolean(aggregate.nativeLayout);
+    const cLayoutEnum = Boolean(enums.get(parameter.type.name)?.nativeLayout);
+    if (
+      (!nativeExportScalarTypes.has(parameter.type.name) && !cLayoutStruct && !cLayoutEnum)
+      || parameter.type.name === "void"
+    ) {
       reject(`C export parameter ${JSON.stringify(parameter.name)} has unsupported boundary type ${JSON.stringify(parameter.type.name)}`);
     }
   }
-  if (!nativeExportScalarTypes.has(declaration.returnType.name)) {
+  const resultStruct = structs.get(declaration.returnType.name);
+  const cLayoutResultStruct = resultStruct?.kind === "struct" && Boolean(resultStruct.nativeLayout);
+  const cLayoutResultEnum = Boolean(enums.get(declaration.returnType.name)?.nativeLayout);
+  if (
+    !nativeExportScalarTypes.has(declaration.returnType.name)
+    && !cLayoutResultStruct
+    && !cLayoutResultEnum
+  ) {
     reject(`C export return type ${JSON.stringify(declaration.returnType.name)} is unsupported in the first ABI tier`);
   }
 }

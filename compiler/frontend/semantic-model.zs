@@ -157,6 +157,7 @@ export struct ModuleTypeParameterConstraint {
 }
 
 export struct ModuleTypeSignature {
+  nativeCName: String;
   typeParameters: Array<String>;
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   executorAffinity: String;

@@ -415,7 +415,13 @@ export function generateC(
   }
 
   for (const declaration of program.structs) {
-    lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
+    if (declaration.nativeLayout?.language === "c") {
+      const publicName = declaration.nativeLayout.name;
+      lines.push(`typedef struct ${publicName} ${publicName};`);
+      lines.push(`typedef ${publicName} ${structName(declaration.name)};`);
+    } else {
+      lines.push(`typedef struct ${structName(declaration.name)} ${structName(declaration.name)};`);
+    }
   }
   for (const type of arrayTypes) lines.push(`typedef struct ${arrayName(type)} ${arrayName(type)};`);
   for (const type of sliceTypes) lines.push(`typedef struct ${sliceName(type)} ${sliceName(type)};`);
@@ -628,7 +634,7 @@ export function generateC(
   }
   const nativeExports = program.functions.filter((declaration) => declaration.nativeExport?.language === "c");
   if (nativeExports.length > 0) {
-    lines.push(generateNativeExportDefinitions(nativeExports), "");
+    lines.push(generateNativeExportDefinitions(nativeExports, structs, enums), "");
   }
   return `${lines.join("\n")}\n`;
 }
@@ -650,21 +656,38 @@ const nativeExportCTypes: Readonly<Record<string, string>> = {
   void: "void",
 };
 
-function nativeExportCType(type: string): string {
+function nativeExportCType(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): string {
   const mapped = nativeExportCTypes[type];
-  if (!mapped) throw new Error(`unsupported C export type ${JSON.stringify(type)}`);
-  return mapped;
+  if (mapped) return mapped;
+  const aggregate = structs.get(type);
+  if (aggregate?.kind === "struct" && aggregate.nativeLayout?.language === "c") {
+    return aggregate.nativeLayout.name;
+  }
+  const enumeration = enums.get(type);
+  if (enumeration?.nativeLayout?.language === "c") return enumeration.nativeLayout.name;
+  throw new Error(`unsupported C export type ${JSON.stringify(type)}`);
 }
 
-function nativeExportSignature(declaration: FunctionDeclaration, terminator: string): string {
+function nativeExportSignature(
+  declaration: FunctionDeclaration,
+  terminator: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): string {
   const parameters = declaration.parameters.map((parameter) => (
-    `${nativeExportCType(parameter.type.name)} ${cBindingName(parameter.name)}`
+    `${nativeExportCType(parameter.type.name, structs, enums)} ${cBindingName(parameter.name)}`
   ));
-  return `Z_API ${nativeExportCType(declaration.returnType.name)} ${declaration.nativeExport!.name}(${parameters.join(", ") || "void"})${terminator}`;
+  return `Z_API ${nativeExportCType(declaration.returnType.name, structs, enums)} ${declaration.nativeExport!.name}(${parameters.join(", ") || "void"})${terminator}`;
 }
 
 function generateNativeExportDefinitions(
   declarations: readonly FunctionDeclaration[],
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
 ): string {
   const definitions = declarations.map((declaration) => {
     const arguments_ = declaration.parameters.map((parameter) => cBindingName(parameter.name)).join(", ");
@@ -672,7 +695,7 @@ function generateNativeExportDefinitions(
     const body = declaration.returnType.name === "void"
       ? `  ${invocation};`
       : `  return ${invocation};`;
-    return `${nativeExportSignature(declaration, "")} {\n${body}\n}`;
+    return `${nativeExportSignature(declaration, "", structs, enums)} {\n${body}\n}`;
   });
   return `#ifndef Z_API
 #define Z_API
@@ -692,6 +715,29 @@ ${definitions.join("\n\n")}
 export function generateCHeader(program: Program): string | null {
   const declarations = program.functions.filter((declaration) => declaration.nativeExport?.language === "c");
   if (declarations.length === 0) return null;
+  const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
+  const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
+  const reachableStructs: StructDeclaration[] = [];
+  const visited = new Set<string>();
+  const visit = (type: string): void => {
+    if (nativeExportCTypes[type] || visited.has(type)) return;
+    visited.add(type);
+    const declaration = structs.get(type);
+    if (!declaration?.nativeLayout || declaration.kind !== "struct") return;
+    for (const field of declaration.fields) visit(field.type.name);
+    reachableStructs.push(declaration);
+  };
+  for (const declaration of declarations) {
+    for (const parameter of declaration.parameters) visit(parameter.type.name);
+    visit(declaration.returnType.name);
+  }
+  const typeDeclarations = reachableStructs.map((declaration) => {
+    const name = declaration.nativeLayout!.name;
+    const fields = declaration.fields.map((field) => (
+      `  ${nativeExportCType(field.type.name, structs, enums)} ${field.name};`
+    )).join("\n");
+    return `typedef struct ${name} {\n${fields}\n} ${name};`;
+  }).join("\n\n");
   return `/* Generated by the Z bootstrap compiler. */
 #pragma once
 
@@ -702,11 +748,11 @@ export function generateCHeader(program: Program): string | null {
 #define Z_API
 #endif
 
-#if defined(__cplusplus)
+${typeDeclarations}${typeDeclarations ? "\n\n" : ""}#if defined(__cplusplus)
 extern "C" {
 #endif
 
-${declarations.map((declaration) => nativeExportSignature(declaration, ";")).join("\n")}
+${declarations.map((declaration) => nativeExportSignature(declaration, ";", structs, enums)).join("\n")}
 
 #if defined(__cplusplus)
 }
@@ -923,7 +969,10 @@ function generateStruct(
   ];
   if (fieldLines.length === 0) fieldLines.push("  unsigned char _z_empty;");
   const fields = fieldLines.join("\n");
-  return `struct ${structName(declaration.name)} {\n${fields}\n};`;
+  const name = declaration.nativeLayout?.language === "c"
+    ? declaration.nativeLayout.name
+    : structName(declaration.name);
+  return `struct ${name} {\n${fields}\n};`;
 }
 
 function generateWeakRuntime(): string {

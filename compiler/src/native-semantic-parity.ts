@@ -122,6 +122,7 @@ function stage0ModuleSymbols(
     importedName: declaration.kind === "type" ? canonicalTypeName(declaration.target.name) : declaration.name,
     functionSignature: declaration.kind === "function" ? stage0FunctionSignature(declaration) : null,
     typeSignature: declaration.kind === "struct" || declaration.kind === "class" ? {
+      nativeCName: declaration.nativeLayout?.language === "c" ? declaration.nativeLayout.name : "",
       typeParameters: declaration.typeParameters ?? [],
       typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
         constraint.traits.map((trait) => ({
@@ -163,6 +164,7 @@ function stage0ModuleSymbols(
       customConstructor: Boolean(declaration.constructor),
       constructorSignature: stage0ConstructorSignature(declaration),
     } : declaration.kind === "trait" ? {
+      nativeCName: "",
       typeParameters: declaration.typeParameters ?? [],
       typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
         constraint.traits.map((trait) => ({
@@ -185,6 +187,7 @@ function stage0ModuleSymbols(
       customConstructor: false,
       constructorSignature: null,
     } : declaration.kind === "enum" ? {
+      nativeCName: declaration.nativeLayout?.language === "c" ? declaration.nativeLayout.name : "",
       typeParameters: [],
       typeParameterConstraints: [],
       executorAffinity: null,
@@ -326,6 +329,7 @@ function sameModuleTypeSignature(
 ): boolean {
   if (left === null || right === null) return left === right;
   return left.customDeinit === right.customDeinit
+    && left.nativeCName === right.nativeCName
     && left.customConstructor === right.customConstructor
     && left.executorAffinity === right.executorAffinity
     && sameModuleFunctionSignature(left.constructorSignature, right.constructorSignature)

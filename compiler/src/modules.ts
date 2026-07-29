@@ -180,7 +180,45 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
   visit(entry);
 
   const nativeExports = new Map<string, FunctionDeclaration>();
+  const nativeNames = new Map<string, {
+    readonly location: SourceLocation;
+    readonly kind: "function" | "type";
+  }>();
+  const registerNativeName = (
+    name: string,
+    location: SourceLocation,
+    kind: "function" | "type",
+    fileName: string,
+  ): void => {
+    const existing = nativeNames.get(name);
+    if (existing) {
+      throw new DiagnosticError(
+        location.fileName ?? fileName,
+        location,
+        `duplicate public C ${kind === "type" ? "type" : "symbol"} name ${JSON.stringify(name)}`,
+        {
+          code: "Z0830",
+          labels: [{
+            location: existing.location,
+            message: `first public C ${existing.kind} is declared here`,
+            length: name.length,
+          }],
+          notes: ["C typedef names and function names share one public identifier namespace"],
+        },
+      );
+    }
+    nativeNames.set(name, { location, kind });
+  };
   for (const node of ordered) {
+    for (const declaration of [...node.program.structs, ...node.program.enums]) {
+      if (!declaration.nativeLayout) continue;
+      registerNativeName(
+        declaration.nativeLayout.name,
+        declaration.nativeLayout.location,
+        "type",
+        node.fileName,
+      );
+    }
     for (const declaration of node.program.functions) {
       if (!declaration.nativeExport) continue;
       const existing = nativeExports.get(declaration.nativeExport.name);
@@ -201,6 +239,12 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
         );
       }
       nativeExports.set(declaration.nativeExport.name, declaration);
+      registerNativeName(
+        declaration.nativeExport.name,
+        declaration.nativeExport.location,
+        "function",
+        node.fileName,
+      );
     }
   }
 

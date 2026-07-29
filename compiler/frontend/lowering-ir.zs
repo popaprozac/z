@@ -68,6 +68,7 @@ export struct LoweredField {
 
 export struct LoweredStruct {
   name: String;
+  nativeCName: String;
   fields: Array<LoweredField>;
   needsDeinit: boolean;
   deinitializer: Option<LoweredFunction>;
@@ -7399,6 +7400,9 @@ function appendLoweredProgram(
     );
     structs.push(LoweredStruct({
       name: emittedName,
+      nativeCName: aggregate.nativeCLayout
+        ? aggregate.name.copyBytes(0, aggregate.name.byteLength)
+        : "",
       fields,
       needsDeinit,
       deinitializer,

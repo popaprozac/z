@@ -61,7 +61,7 @@ bun run z run examples/language/control-flow/result.zs
 
 | Boundary | Example | Notes |
 | --- | --- | --- |
-| Z library called from C | [`z-export`](../examples/interop/c/z-export) | Scalar `export c function`, generated guarded header/static archive, ordinary Z-to-Z calls, and a handwritten strict-C consumer |
+| Z library called from C | [`z-export`](../examples/interop/c/z-export) | Scalar and `c struct` exports, generated guarded header/static archive, ordinary Z-to-Z calls, and a handwritten strict-C consumer |
 | Selective C import | [`selective-import.zs`](../examples/interop/c/selective-import.zs) | Header declarations with local aliases |
 | C records and enums | [`foreign-types.zs`](../examples/interop/c/foreign-types.zs) | Native layouts and constants |
 | C enum conversion | [`foreign-enum-conversion.zs`](../examples/interop/c/foreign-enum-conversion.zs) | Explicit nominal-enum extraction through checked integer construction |

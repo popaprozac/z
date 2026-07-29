@@ -48,8 +48,19 @@ function cType(in type: LoweredType): String throws String {
   throw "native C emission received an unsupported lowered type";
 }
 
-function nativeCExportType(in type: LoweredType): String throws String {
+function nativeCExportType(
+  in program: LoweredProgram,
+  in type: LoweredType
+): String throws String {
   if (type.kind == LoweredTypeKind.usizeType) return "uintptr_t";
+  if (type.kind == LoweredTypeKind.structType) {
+    for (const aggregate of program.structs) {
+      if (aggregate.name != type.name) continue;
+      if (aggregate.nativeCName.byteLength > 0) {
+        return aggregate.nativeCName.copyBytes(0, aggregate.nativeCName.byteLength);
+      }
+    }
+  }
   return try cType(type);
 }
 
@@ -1830,10 +1841,11 @@ function appendFunction(
 
 function appendNativeCExportSignature(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in declaration: LoweredFunction,
   in name: String
 ): void throws String {
-  const returnType = try nativeCExportType(declaration.returnType);
+  const returnType = try nativeCExportType(program, declaration.returnType);
   output.append("Z_API ");
   output.append(returnType);
   output.append(" ");
@@ -1843,7 +1855,7 @@ function appendNativeCExportSignature(
   for (const parameter of declaration.parameters) {
     if (!first) output.append(", ");
     first = false;
-    const parameterType = try nativeCExportType(parameter.type);
+    const parameterType = try nativeCExportType(program, parameter.type);
     output.append(parameterType);
     output.append(" ");
     appendCBindingName(inout output, parameter.name);
@@ -1854,10 +1866,12 @@ function appendNativeCExportSignature(
 
 function appendNativeCExportDefinition(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in declaration: LoweredFunction
 ): void throws String {
   try appendNativeCExportSignature(
     inout output,
+    program,
     declaration,
     declaration.nativeCExportName
   );
@@ -2058,8 +2072,17 @@ function appendStructDefinition(
       none => {}
     }
   }
-  output.append("typedef struct Z_");
-  output.append(program.structs[index].name);
+  const nativeCName = program.structs[index].nativeCName.copyBytes(
+    0,
+    program.structs[index].nativeCName.byteLength
+  );
+  if (nativeCName.byteLength > 0) {
+    output.append("typedef struct ");
+    output.append(nativeCName);
+  } else {
+    output.append("typedef struct Z_");
+    output.append(program.structs[index].name);
+  }
   output.append(" {\n");
   for (const field of program.structs[index].fields) {
     const fieldType = try cType(field.type);
@@ -2069,9 +2092,19 @@ function appendStructDefinition(
     output.append(field.name);
     output.append(";\n");
   }
-  output.append("} Z_");
-  output.append(program.structs[index].name);
-  output.append(";\n\n");
+  if (nativeCName.byteLength > 0) {
+    output.append("} ");
+    output.append(nativeCName);
+    output.append(";\ntypedef ");
+    output.append(nativeCName);
+    output.append(" Z_");
+    output.append(program.structs[index].name);
+    output.append(";\n\n");
+  } else {
+    output.append("} Z_");
+    output.append(program.structs[index].name);
+    output.append(";\n\n");
+  }
   structStates[index] = 2;
 }
 
@@ -3784,7 +3817,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
     for (const declaration of program.functions) {
       if (declaration.nativeCExportName.byteLength == 0) continue;
-      try appendNativeCExportDefinition(inout output, declaration);
+      try appendNativeCExportDefinition(inout output, program, declaration);
     }
     output.append("#if defined(__cplusplus)\n}\n#endif\n");
   }
@@ -3796,11 +3829,33 @@ function emitLoweredCHeader(in program: LoweredProgram): String throws String {
   output.append("#pragma once\n\n");
   output.append("#include <stdbool.h>\n#include <stdint.h>\n\n");
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n\n");
+  let emittedTypes = Array<String>();
+  let visitingTypes = Array<String>();
+  for (const declaration of program.functions) {
+    if (declaration.nativeCExportName.byteLength == 0) continue;
+    for (const parameter of declaration.parameters) {
+      try appendNativeCHeaderType(
+        inout output,
+        program,
+        parameter.type,
+        inout emittedTypes,
+        inout visitingTypes
+      );
+    }
+    try appendNativeCHeaderType(
+      inout output,
+      program,
+      declaration.returnType,
+      inout emittedTypes,
+      inout visitingTypes
+    );
+  }
   output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
   for (const declaration of program.functions) {
     if (declaration.nativeCExportName.byteLength == 0) continue;
     try appendNativeCExportSignature(
       inout output,
+      program,
       declaration,
       declaration.nativeCExportName
     );
@@ -3808,6 +3863,57 @@ function emitLoweredCHeader(in program: LoweredProgram): String throws String {
   }
   output.append("\n#if defined(__cplusplus)\n}\n#endif\n");
   return output.finish();
+}
+
+function stringArrayContains(in values: Array<String>, in target: String): boolean {
+  for (const value of values) {
+    if (value == target) return true;
+  }
+  return false;
+}
+
+function appendNativeCHeaderType(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in type: LoweredType,
+  inout emitted: Array<String>,
+  inout visiting: Array<String>
+): void throws String {
+  if (type.kind != LoweredTypeKind.structType) return;
+  if (stringArrayContains(emitted, type.name)) return;
+  if (stringArrayContains(visiting, type.name)) {
+    throw `C-layout struct ${type.name} contains itself by value`;
+  }
+  for (const aggregate of program.structs) {
+    if (aggregate.name != type.name) continue;
+    if (aggregate.nativeCName.byteLength == 0) return;
+    visiting.push(type.name.copyBytes(0, type.name.byteLength));
+    for (const field of aggregate.fields) {
+      try appendNativeCHeaderType(
+        inout output,
+        program,
+        field.type,
+        inout emitted,
+        inout visiting
+      );
+    }
+    output.append("typedef struct ");
+    output.append(aggregate.nativeCName);
+    output.append(" {\n");
+    for (const field of aggregate.fields) {
+      output.append("  ");
+      const fieldType = try nativeCExportType(program, field.type);
+      output.append(fieldType);
+      output.append(" ");
+      output.append(field.name);
+      output.append(";\n");
+    }
+    output.append("} ");
+    output.append(aggregate.nativeCName);
+    output.append(";\n\n");
+    emitted.push(type.name.copyBytes(0, type.name.byteLength));
+    return;
+  }
 }
 
 export function emitC(

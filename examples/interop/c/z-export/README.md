@@ -1,8 +1,9 @@
 # Calling Z from C
 
-`library.zs` exports ordinary Z functions through an explicit stable C ABI.
-Those functions remain callable and importable from Z; `c` adds the generated
-native entry point and header declaration.
+`library.zs` exports ordinary Z functions through an explicit stable C ABI and
+passes a checked `c struct` by value. Exported functions remain callable and
+importable from Z. The `c struct` keeps ordinary Z value semantics while
+guaranteeing the field order and target C ABI layout printed in the header.
 
 From the repository root:
 
@@ -28,7 +29,7 @@ bun run bootstrap
 Expected output:
 
 ```text
-sum=42 answer=42 even=true
+sum=42 answer=42 even=true point=(21,22)
 ```
 
 The project build publishes:

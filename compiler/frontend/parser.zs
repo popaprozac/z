@@ -242,6 +242,7 @@ export struct DeinitDeclaration {
 export struct AggregateDeclaration {
   kind: DeclarationKind;
   name: String;
+  nativeCLayout: boolean;
   typeParameters: Array<TypeParameter>;
   executorAffinity: String;
   implementedTraits: Array<TypeReference>;
@@ -281,6 +282,7 @@ export struct EnumVariant {
 
 export struct EnumDeclaration {
   name: String;
+  nativeCLayout: boolean;
   variants: Array<EnumVariant>;
   offset: usize;
   line: usize;
@@ -3054,6 +3056,7 @@ function parseAggregateDeclaration(
   inout current: usize,
   keyword: TokenKind,
   kind: DeclarationKind,
+  nativeCLayout: boolean,
   aggregateReadonly: boolean,
   in description: String
 ): AggregateDeclaration throws ParserError {
@@ -3145,6 +3148,7 @@ function parseAggregateDeclaration(
   return AggregateDeclaration({
     kind,
     name: name.text.copyBytes(0, name.text.byteLength),
+    nativeCLayout,
     typeParameters,
     executorAffinity,
     implementedTraits,
@@ -3213,7 +3217,8 @@ function parseTypeAliasDeclaration(
 
 function parseEnumDeclaration(
   in tokens: Array<Token>,
-  inout current: usize
+  inout current: usize,
+  nativeCLayout: boolean
 ): EnumDeclaration throws ParserError {
   let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, TokenKind.enumKeyword, "an enum declaration");
@@ -3239,6 +3244,7 @@ function parseEnumDeclaration(
   try expectKind(tokens, inout current, TokenKind.rightBrace, "`}` after an enum declaration");
   return EnumDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
+    nativeCLayout,
     variants,
     offset: start.offset,
     line: start.line,
@@ -3262,15 +3268,12 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       exported = true;
       current = current + 1;
     }
-    let nativeCExport = false;
-    if (
-      exported
-      && tokens[current].kind == TokenKind.identifier
-      && tokens[current].text == "c"
-    ) {
-      nativeCExport = true;
+    let nativeCModifier = false;
+    if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "c") {
+      nativeCModifier = true;
       current = current + 1;
     }
+    const nativeCExport = exported && nativeCModifier;
 
     let aggregateReadonly = false;
     if (tokens[current].kind == TokenKind.readonlyKeyword) {
@@ -3285,8 +3288,17 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     }
 
     const kind = tokens[current].kind;
-    if (nativeCExport && kind != TokenKind.functionKeyword && kind != TokenKind.asyncKeyword) {
-      throw fail(tokens[current], "`c` after `export` can only modify a function declaration");
+    if (
+      nativeCModifier
+      && kind != TokenKind.functionKeyword
+      && kind != TokenKind.asyncKeyword
+      && kind != TokenKind.structKeyword
+      && kind != TokenKind.enumKeyword
+    ) {
+      throw fail(tokens[current], "`c` can only modify a function, struct, or enum declaration");
+    }
+    if (nativeCModifier && !exported && (kind == TokenKind.functionKeyword || kind == TokenKind.asyncKeyword)) {
+      throw fail(tokens[current], "a C ABI function must use `export c function`");
     }
     if (kind == TokenKind.importKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
@@ -3351,6 +3363,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         inout current,
         TokenKind.structKeyword,
         DeclarationKind.structDeclaration,
+        nativeCModifier,
         aggregateReadonly,
         "a struct declaration"
       );
@@ -3366,12 +3379,14 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       declarations.push(declaration);
       aggregates.push(aggregate);
     } else if (kind == TokenKind.classKeyword) {
+      if (nativeCModifier) throw fail(tokens[current], "`c class` is not supported; use a C-layout struct or an opaque exported handle");
       if (asynchronous) throw fail(tokens[current], "a class declaration cannot be async");
       const aggregate = try parseAggregateDeclaration(
         tokens,
         inout current,
         TokenKind.classKeyword,
         DeclarationKind.classDeclaration,
+        false,
         aggregateReadonly,
         "a class declaration"
       );
@@ -3404,7 +3419,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     } else if (kind == TokenKind.enumKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (asynchronous) throw fail(tokens[current], "an enum declaration cannot be async");
-      const enumDeclaration = try parseEnumDeclaration(tokens, inout current);
+      const enumDeclaration = try parseEnumDeclaration(tokens, inout current, nativeCModifier);
       const declaration = Declaration({
         kind: DeclarationKind.enumDeclaration,
         name: enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength),

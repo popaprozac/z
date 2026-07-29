@@ -255,6 +255,8 @@ function appendTypeSignature(
       else output.appendAscii(48);
       output.appendAscii(9);
       appendHexText(inout output, signature.executorAffinity);
+      output.appendAscii(9);
+      appendHexText(inout output, signature.nativeCName);
       for (const typeParameter of signature.typeParameters) {
         output.appendAscii(9);
         appendHexText(inout output, typeParameter);
