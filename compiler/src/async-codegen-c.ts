@@ -5638,7 +5638,7 @@ function awaitCompletion(
         const value = `${cResult}::make_${nativePart(variant)}(${payload ?? ""})`;
         return `new (${destination}) ${cResult}(${value});`;
       }
-      const initialized = payload === null ? "" : `, .data.${variant} = ${payload}`;
+      const initialized = payload === null ? "" : `, .data = { .${variant} = ${payload} }`;
       return `${destination} = (${cResult}){ .tag = ${resultTag(result, variant)}${initialized} };`;
     };
     lines.push(`if (${child}->failed) {`);
@@ -7300,7 +7300,7 @@ function emitAsyncEnumVariant(
   if (requiresNativeFramePlacement(enumType, types)) {
     return `${cType}::make_${nativePart(variant)}(${payload ?? ""})`;
   }
-  const initialized = payload === null ? "" : `, .data.${variant} = ${payload}`;
+  const initialized = payload === null ? "" : `, .data = { .${variant} = ${payload} }`;
   return `(${cType}){ .tag = ${resultTag(enumType, variant)}${initialized} }`;
 }
 

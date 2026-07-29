@@ -3633,8 +3633,8 @@ function nativeExtension(language: NativeArtifact["language"]): string {
 
 function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
   if (language === "objective-c") return ["-fobjc-arc"];
-  if (language === "c++") return ["-std=c++20"];
-  if (language === "objective-c++") return ["-std=c++20", "-fobjc-arc"];
+  if (language === "c++") return ["-std=c++20", "-Wc99-designator"];
+  if (language === "objective-c++") return ["-std=c++20", "-Wc99-designator", "-fobjc-arc"];
   return ["-std=c11"];
 }
 

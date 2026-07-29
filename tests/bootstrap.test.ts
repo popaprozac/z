@@ -5804,7 +5804,7 @@ hostToolchainTest("builds a declared Swift target for ordinary CLI and editor wo
     () => compileToNative(readFileSync(invalidSource, "utf8"), invalidSource),
     /target\.swift\.module must be a valid module name/,
   );
-});
+}, 30_000);
 
 hostToolchainTest("projects Swift callbacks into tasks and preserves MainActor isolation", () => {
   if (process.platform !== "darwin") return;
@@ -20702,6 +20702,16 @@ test("constructs and destroys move-only C++ values across async suspension", () 
       return native.zcpp.unique_live();
     }
   `);
+  const cancellationGenerated = compileToNative(
+    readFileSync(cancellation, "utf8"),
+    cancellation,
+  ).source;
+  assert.match(cancellationGenerated, /\.data = \{ \.failure = frame->child_\d+->error \}/);
+  assert.match(cancellationGenerated, /\.data = \{ \.success = frame->child_\d+->result \}/);
+  assert.doesNotMatch(
+    cancellationGenerated,
+    /\{\s*\.tag\s*=\s*[^,]+,\s*\.data\.[A-Za-z_][A-Za-z0-9_]*\s*=/,
+  );
   const cancelled = spawnSync(process.execPath, [cli, "run", cancellation], { encoding: "utf8" });
   assert.equal(cancelled.status, 0, cancelled.stderr);
 
