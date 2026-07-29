@@ -502,12 +502,15 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("rightBrace", "`}`");
       return { kind: "objectExpression", fields, location: token.location };
     }
-    if (match("out") || match("inout")) {
+    if (match("in") || match("out") || match("inout")) {
       const token = previous();
-      const name = expect("identifier", "a mutable binding");
+      const name = expect(
+        "identifier",
+        token.kind === "in" ? "a borrowed binding" : "a mutable binding",
+      );
       return {
         kind: "argumentReference",
-        access: token.kind as "out" | "inout",
+        access: token.kind as "in" | "out" | "inout",
         name: name.text,
         nameLocation: name.location,
         location: token.location,
@@ -1043,7 +1046,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       receiverMode: null,
       parameters: [],
       returnType: { name: "void", location: start.location },
-      errorType: null,
+      errorType: { name: "String", location: start.location },
       body: block.statements,
       location: start.location,
     };

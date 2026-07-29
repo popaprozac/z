@@ -50,14 +50,43 @@ The first native test-runner slice is implemented. Tests are top-level
 declarations and may live beside the code they exercise:
 
 ```z
+import { expect } from "std/test";
+
 function add(left: i32, right: i32): i32 {
   return left + right;
 }
 
 test "add combines two values" {
   const answer = add(20, 22);
+  expect(answer).toEqual(42);
 }
 ```
+
+Expectation helpers are ordinary imports rather than additional test-only
+syntax:
+
+```z
+import { expect, fail } from "std/test";
+
+test "an owned value can be checked without moving it" {
+  const status = "ready";
+  expect(in status).toEqual("ready");
+}
+```
+
+`expect(actual).toEqual(expected)` uses the same `==` semantics as ordinary Z
+code. It does not introduce deep structural comparison. Both operands are
+borrowed for the expectation statement; the explicit `in` spelling is optional
+and is equivalent to the inferred immutable borrow. `fail(message)` ends the
+current test explicitly. Cleanup-bearing expression results must first be bound
+to named storage so their lifetime remains visible. Tests do not acquire an
+implicit user-facing `throws` channel; use `fail` for an unconditional failure.
+
+Expectation failures run deterministic cleanup, return an internal owned
+`String` failure to the runner, and do not prevent later tests from running.
+The first tier keeps `expect` and `fail` directly inside test declarations;
+reusable assertion-helper functions require a future public test-context
+mechanism.
 
 Run a source module and tests in its project-owned import graph with:
 
@@ -71,6 +100,6 @@ test modules exercise exported APIs through ordinary imports. Normal `build`,
 `run`, and `emit` paths omit test bodies, names, and runner code.
 
 The current executable tier runs synchronous test bodies in one native runner.
-The imported `std/test` expectation API, rich failure continuation, filtering,
-project-wide discovery, and async tests are the next testing layers. Their
-surface is not inferred from Bun's bootstrap API.
+Filtering, project-wide discovery, reusable assertion helpers, and async tests
+are the next testing layers. Their surface is not inferred from Bun's bootstrap
+API.

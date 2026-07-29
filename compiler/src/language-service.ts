@@ -255,6 +255,18 @@ export function completions(source: string, fileName: string, offset: number): C
       ...symbols.filter((item) => !["in", "inout", "out", "move"].includes(item.label)),
     ];
   }
+  const testMatcher = before.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
+  if (
+    testMatcher
+    && importedTestBinding(source, testMatcher[1]) === "expect"
+  ) {
+    return filterCompletions([{
+      label: "toEqual",
+      kind: completionKinds.method,
+      detail: "toEqual(expected: T): void  // statement-bounded equality expectation",
+      insertText: "toEqual()",
+    }], testMatcher[2] ?? "", 100);
+  }
   const member = before.match(/([A-Za-z_][A-Za-z0-9_]*(?:<[^<>]+>)?(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\.([A-Za-z_][A-Za-z0-9_]*)?$/);
   if (member) return memberCompletions(source, fileName, offset, member[1], member[2] ?? "");
   const objectFields = objectFieldCompletions(source, fileName, offset);
@@ -371,6 +383,17 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
     }
+    const testMatcherMember = previous?.kind === "dot"
+      && token.text === "toEqual"
+      && (() => {
+        const prefix = source.slice(0, previous.location.offset);
+        const match = prefix.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)$/);
+        return Boolean(match && importedTestBinding(source, match[1]) === "expect");
+      })();
+    if (testMatcherMember) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
+      continue;
+    }
     const optionVariantMember = previous?.kind === "dot"
       && (token.text === "some" || token.text === "none")
       && /Option(?:<[^<>]+>)?\.$/.test(source.slice(0, token.location.offset));
@@ -432,6 +455,10 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       continue;
     }
     if (context.semanticInfo.standardFunctionBindings.has(token.text)) {
+      classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
+      continue;
+    }
+    if (context.semanticInfo.testBindings.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("function"), modifiers: 4 });
       continue;
     }
@@ -864,6 +891,25 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const standardFunction = context.semanticInfo.standardFunctionBindings.get(word.text);
   if (standardFunction) {
     return markdownHover(standardFunctionDetail(word.text, standardFunction), source, word.start, word.end);
+  }
+  const testBinding = context.semanticInfo.testBindings.get(word.text);
+  if (testBinding === "expect") {
+    return markdownHover("expect<T>(value: in T): Expectation<T>  // borrows for one expectation statement", source, word.start, word.end);
+  }
+  if (testBinding === "fail") {
+    return markdownHover("fail(message: in String): void  // ends the current test with a cleanup-aware failure", source, word.start, word.end);
+  }
+  if (word.text === "toEqual") {
+    const prefix = source.slice(0, word.start).replace(/\.\s*$/, "");
+    const match = prefix.match(/\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()]*(?:\([^()]*\)[^()]*)*\)$/);
+    if (match && importedTestBinding(source, match[1]) === "expect") {
+      return markdownHover(
+        "toEqual(expected: T): void  // uses Z `==`; failure ends this test after deterministic cleanup",
+        source,
+        word.start,
+        word.end,
+      );
+    }
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "TextBuffer") {
     return markdownHover("standard value type TextBuffer  // move-only UTF-8 construction storage", source, word.start, word.end);
@@ -1422,6 +1468,22 @@ export function offsetAt(source: string, position: Position): number {
   return Math.min(offset + position.character, source.length);
 }
 
+function importedTestBinding(
+  source: string,
+  localName: string,
+): "expect" | "fail" | null {
+  const pattern = /\bimport\s*\{([\s\S]*?)\}\s*from\s*["']std\/test["']\s*;/g;
+  for (const match of source.matchAll(pattern)) {
+    for (const item of match[1].split(",")) {
+      const binding = /^\s*(expect|fail)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/.exec(item);
+      if (binding && (binding[2] ?? binding[1]) === localName) {
+        return binding[1] as "expect" | "fail";
+      }
+    }
+  }
+  return null;
+}
+
 function selectiveImportCompletions(
   source: string,
   fileName: string,
@@ -1460,6 +1522,20 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       kind: completionKinds.function,
       detail: standardFunctionDetail(name, name),
     }));
+  }
+  if (specifier === "std/test") {
+    return [
+      {
+        label: "expect",
+        kind: completionKinds.function,
+        detail: "expect<T>(value: in T): Expectation<T>",
+      },
+      {
+        label: "fail",
+        kind: completionKinds.function,
+        detail: "fail(message: in String): void",
+      },
+    ];
   }
   if (specifier === "std/text") {
     return [{
@@ -2088,6 +2164,16 @@ function symbolCompletions(
       label: name,
       kind: completionKinds.function,
       detail: standardFunctionDetail(name, standardFunction),
+      sortText: `0-${name}`,
+    });
+  }
+  for (const [name, testBinding] of context.semanticInfo.testBindings) {
+    items.push({
+      label: name,
+      kind: completionKinds.function,
+      detail: testBinding === "expect"
+        ? "expect<T>(value: in T): Expectation<T>"
+        : "fail(message: in String): void",
       sortText: `0-${name}`,
     });
   }

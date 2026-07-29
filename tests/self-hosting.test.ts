@@ -205,6 +205,42 @@ test("keeps raw native bodies opaque across native lexer and parser parity", () 
   assert.equal(ordinary.status, 0, ordinary.stderr);
 }, 20_000);
 
+test("keeps explicit immutable call-site borrows in native frontend parity", () => {
+  const input = resolve(projectRoot, "tests/fixtures/native-explicit-in.zs");
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /uses 2 function, 0 method, and 0 constructor native-authoritative contracts/,
+  );
+  assert.match(
+    result.stdout,
+    /uses 11 expression native-authoritative contracts/,
+  );
+});
+
+test("keeps native test expectations in parser and semantic parity", () => {
+  const input = resolve(projectRoot, "tests/fixtures/native-test-expectations.zs");
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(
+    result.stdout,
+    /uses 1 inferred local binding native-authoritative contract/,
+  );
+  assert.match(
+    result.stdout,
+    /uses 2 expression native-authoritative contracts/,
+  );
+});
+
 test("emits and runs the first program directly from the native Z AST", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs");
   const emission = spawnSync(

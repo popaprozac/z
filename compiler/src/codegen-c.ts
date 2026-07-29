@@ -656,6 +656,9 @@ export function generateC(
       options.testRunner,
       semanticInfo.objectiveC,
       usesProcess,
+      structs,
+      enums,
+      semanticInfo,
     ), "");
   }
   return `${lines.join("\n")}\n`;
@@ -665,20 +668,44 @@ function generateTestRunner(
   tests: readonly FunctionDeclaration[],
   objectiveC: boolean,
   usesProcess: boolean,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
 ): string {
+  const resultType = resultTypeName("void", "String");
+  const mappedResult = mapType(
+    resultType,
+    structs,
+    enums,
+    semanticInfo.foreignNamedTypes,
+  );
   const statements = [
     usesProcess
       ? "z_process_set_arguments(argc, argv);"
       : "(void)argc;\n(void)argv;",
     `printf("running ${tests.length} ${tests.length === 1 ? "test" : "tests"}\\n");`,
-    ...tests.flatMap((declaration) => [
+    "uintptr_t passed = 0;",
+    "uintptr_t failed = 0;",
+    ...tests.flatMap((declaration, index) => [
       `printf("test %s ... ", ${cTestNameLiteral(declaration.testName!)});`,
       "fflush(stdout);",
-      `${cFunctionName(declaration.name)}();`,
-      'puts("ok");',
+      `${mappedResult} _z_test_result_${index} = ${cFunctionName(declaration.name)}();`,
+      `if (_z_test_result_${index}.tag == ${variantTag(resultType, "failure")}) {`,
+      '  puts("FAILED");',
+      `  if (_z_test_result_${index}.data.failure.length > 0) {`,
+      `    fwrite(_z_test_result_${index}.data.failure.data, 1, _z_test_result_${index}.data.failure.length, stdout);`,
+      "  }",
+      "  fputc('\\n', stdout);",
+      "  fflush(stdout);",
+      `  if (_z_test_result_${index}.data.failure.capacity > 0) free((void *)_z_test_result_${index}.data.failure.data);`,
+      "  failed += 1;",
+      "} else {",
+      '  puts("ok");',
+      "  passed += 1;",
+      "}",
     ]),
-    `printf("test result: ok. ${tests.length} passed; 0 failed\\n");`,
-    "return 0;",
+    'printf("test result: %s. %llu passed; %llu failed\\n", failed == 0 ? "ok" : "FAILED", (unsigned long long)passed, (unsigned long long)failed);',
+    "return failed == 0 ? 0 : 1;",
   ];
   const body = statements.map((statement) => indent(statement, objectiveC ? 4 : 2)).join("\n");
   return objectiveC
@@ -4112,6 +4139,18 @@ bool ${liveFlag} = true;`;
       if (statement.expression.kind === "executorPlacement") {
         throw new Error("executor placement must be lowered through task frames");
       }
+      if (
+        statement.expression.kind === "call"
+        && context.semanticInfo.testExpectationCalls.has(statement.expression.location.offset)
+      ) {
+        return generateTestExpectation(statement.expression, context);
+      }
+      if (
+        statement.expression.kind === "call"
+        && context.semanticInfo.testFailureCalls.has(statement.expression.location.offset)
+      ) {
+        return generateTestFailure(statement.expression, context);
+      }
       if (statement.expression.kind === "call" && context.semanticInfo.consoleCalls.has(statement.expression.location.offset)) {
         return generateConsoleCall(statement.expression, context);
       }
@@ -4124,6 +4163,116 @@ bool ${liveFlag} = true;`;
     case "match":
       return generateMatch(statement, context);
   }
+}
+
+function generateTestFailureReturn(
+  failure: string,
+  context: GenerationContext,
+): string {
+  const cleanup = generateCleanup(context.cleanupScopes, context);
+  const result = resultTypeName("void", "String");
+  const returned = generateCompilerVariantConstruction(result, "failure", failure, context);
+  return `${cleanup ? `${cleanup}\n` : ""}return ${returned};`;
+}
+
+function appendTestFailureLiteral(
+  target: string,
+  value: string,
+): string {
+  return `z_string_append_bytes(&${target}, ${JSON.stringify(value)}, sizeof(${JSON.stringify(value)}) - 1);`;
+}
+
+function testEqualityExpression(
+  actual: string,
+  expected: string,
+  actualType: string,
+  expectedType: string,
+  context: GenerationContext,
+): string {
+  if (actualType === "String" && expectedType === "String") {
+    return `z_string_equal(${actual}, ${expected})`;
+  }
+  const enumeration = context.enums.get(actualType);
+  if (enumeration?.variants.every((variant) => variant.payload === null)) {
+    if (enumeration.nativeLayout?.language === "c") return `(${actual} == ${expected})`;
+    return `((${actual}).tag == (${expected}).tag)`;
+  }
+  return `(${actual} == ${expected})`;
+}
+
+function generateTestExpectation(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+): string {
+  const plan = context.semanticInfo.testExpectationCalls.get(expression.location.offset);
+  if (!plan) throw new Error("missing test expectation plan");
+  return generateDirectValue(plan.actual, context, (actualValue, actualContext) => (
+    generateDirectValue(plan.expected, actualContext, (expectedValue, expectedContext) => {
+      const actual = `_z_test_actual_${expectedContext.valueCounter.value++}`;
+      const expected = `_z_test_expected_${expectedContext.valueCounter.value++}`;
+      const failure = `_z_test_failure_${expectedContext.valueCounter.value++}`;
+      const actualStorageType = plan.actualType === "null" ? plan.expectedType : plan.actualType;
+      const expectedStorageType = plan.expectedType === "null" ? plan.actualType : plan.expectedType;
+      const actualDeclaration = generateLocalDeclaration(
+        actualStorageType,
+        actual,
+        true,
+        expectedContext.structs,
+        expectedContext.enums,
+        expectedContext.semanticInfo.foreignNamedTypes,
+      );
+      const expectedDeclaration = generateLocalDeclaration(
+        expectedStorageType,
+        expected,
+        true,
+        expectedContext.structs,
+        expectedContext.enums,
+        expectedContext.semanticInfo.foreignNamedTypes,
+      );
+      const location = `${plan.location.fileName ?? "<z-source>"}:${plan.location.line}:${plan.location.column}: expected `;
+      const comparison = testEqualityExpression(
+        actual,
+        expected,
+        actualStorageType,
+        expectedStorageType,
+        expectedContext,
+      );
+      const failureLines = [
+        `Z_String ${failure} = z_string_new();`,
+        appendTestFailureLiteral(failure, location),
+        ...renderStringValue(actual, plan.actualType, failure, expectedContext),
+        appendTestFailureLiteral(failure, " to equal "),
+        ...renderStringValue(expected, plan.expectedType, failure, expectedContext),
+        generateTestFailureReturn(failure, expectedContext),
+      ];
+      return [
+        `${actualDeclaration} = ${actualValue};`,
+        `${expectedDeclaration} = ${expectedValue};`,
+        `if (!${comparison}) {`,
+        ...failureLines.map((line) => indent(line, 2)),
+        "}",
+      ].join("\n");
+    })
+  ));
+}
+
+function generateTestFailure(
+  expression: Extract<Expression, { kind: "call" }>,
+  context: GenerationContext,
+): string {
+  const plan = context.semanticInfo.testFailureCalls.get(expression.location.offset);
+  if (!plan) throw new Error("missing test failure plan");
+  return generateDirectValue(plan.message, context, (message, messageContext) => {
+    const failure = `_z_test_failure_${messageContext.valueCounter.value++}`;
+    const location = `${plan.location.fileName ?? "<z-source>"}:${plan.location.line}:${plan.location.column}: `;
+    const lines = [
+      `Z_String ${failure} = z_string_new();`,
+      appendTestFailureLiteral(failure, location),
+      ...renderStringValue(message, "String", failure, messageContext),
+      generateTestFailureReturn(failure, messageContext),
+    ];
+    return lines.join("\n");
+  });
 }
 
 function generateConsoleCall(
@@ -5097,6 +5246,9 @@ function generateLoweredCall(
     if (borrowedTemplate && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
       borrowedTemporaries.push({ name: temporary, type });
     }
+  }
+  if (lines.length === 0 && overrides.size === 0) {
+    return consumeValue(generateExpression(expression, context), context);
   }
   const loweredContext = withExpressionOverrides(context, overrides);
   if (borrowedTemporaries.length === 0) {
@@ -7318,6 +7470,7 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
+  if (nativeIn && expression.kind === "argumentReference") return value;
   if (nativeIn && parseViewType(inferExpressionType(expression, context))) return value;
   const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
   return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"

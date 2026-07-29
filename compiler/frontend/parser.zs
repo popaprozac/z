@@ -1342,9 +1342,18 @@ function parsePrimaryTree(
 ): usize throws ParserError {
   if (current >= end) throw fail(tokens[current], "expected a primary expression");
   const start = snapshot(tokens[current]);
-  if (start.kind == TokenKind.outKeyword || start.kind == TokenKind.inoutKeyword) {
+  if (
+    start.kind == TokenKind.inKeyword
+    || start.kind == TokenKind.outKeyword
+    || start.kind == TokenKind.inoutKeyword
+  ) {
     current = current + 1;
-    const binding = try expect(tokens, inout current, TokenKind.identifier, "a mutable binding");
+    const binding = try expect(
+      tokens,
+      inout current,
+      TokenKind.identifier,
+      "a capability binding"
+    );
     const bindingNode = pushExpressionNode(
       inout nodes,
       ExpressionKind.argumentBindingExpression,
@@ -3056,7 +3065,13 @@ function parseTestDeclaration(
       line: start.line,
       column: start.column,
     }),
-    errorType: Option<TypeReference>.none,
+    errorType: Option.some(TypeReference({
+      name: "String",
+      references: Array<TypeNameReference>(),
+      offset: start.offset,
+      line: start.line,
+      column: start.column,
+    })),
     executorAffinity: "",
     body: StatementArena({ nodes: bodyNodes, roots: bodyRoots }),
     offset: start.offset,

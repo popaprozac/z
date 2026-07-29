@@ -66,8 +66,10 @@ suffix on Unix systems.
 A test is a compiler-known top-level declaration:
 
 ```z
-test "Map.remove transfers the value" {
-  // Test body.
+import { expect } from "std/test";
+
+test "the answer is stable" {
+  expect(42).toEqual(42);
 }
 ```
 
@@ -76,11 +78,30 @@ exported or callable as functions. An inline test shares its module's private
 declaration scope; a dedicated `*.test.zs` module uses ordinary imports to test
 public APIs. Test names must be nonempty and unique within their source module.
 
-Ordinary builds exclude test declarations completely. `z test <file.zs>`
-discovers the tests in that module and its project-owned import graph, emits a
-native runner, and executes it. The first runner tier is synchronous. Assertions
-are standard-library behavior rather than additional language syntax; the
-`std/test` matcher API is the next implementation layer.
+Expectation behavior is imported explicitly:
+
+```z
+import { expect, fail } from "std/test";
+
+test "answer" {
+  const answer = 42;
+  expect(answer).toEqual(42);
+}
+```
+
+`toEqual` follows Z's existing `==` semantics. Expectation operands use
+statement-bounded immutable borrows, inferred by default or written explicitly
+as `expect(in value)`. `fail(message)` and failed expectations run deterministic
+cleanup and end only the current test; the runner continues with later tests.
+Cleanup-bearing expression results must be bound before they are checked, and
+tests do not gain an implicit source-level `throws` channel.
+
+Ordinary builds exclude test declarations and their helper machinery
+completely. `z test <file.zs>` discovers the tests in that module and its
+project-owned import graph, emits a native runner, and executes it. The first
+runner tier is synchronous, and expectation helpers currently appear directly
+in test bodies. Assertions are standard-library behavior rather than
+additional language syntax.
 
 ## Comments
 
@@ -269,7 +290,7 @@ callee may use the argument:
 | Capability | Callee contract | Caller spelling | Typical use |
 | --- | --- | --- | --- |
 | value/default | receives ownership or an ordinary copy/share according to the type | `use(value)` | transfer a unique value; share a class |
-| `in` | read-only, non-escaping borrow | `inspect(value)` | inspect without transfer |
+| `in` | read-only, non-escaping borrow | `inspect(value)` or `inspect(in value)` | inspect without transfer |
 | `inout` | exclusive, initialized mutable borrow | `mutate(inout value)` | mutate caller-owned storage |
 | `out` | exclusive write into possibly uninitialized storage | `fill(out value)` | initialize caller storage |
 | `move` | declaration or closure explicitly consumes captured/receiver ownership | `consume(value)`; `move () => ...` for a closure | consuming captures and receivers |
@@ -389,9 +410,10 @@ function each(in visit: (in item: Item) => void): void {
 }
 ```
 
-The immutable `in` capability appears in the function type; its call site does
-not repeat `in`. Mutable `inout` and initializing `out` remain explicit at both
-declaration and call sites.
+The immutable `in` capability appears in the function type. Its call site
+normally infers the borrow, while an explicit matching `in` may be written when
+that makes ownership intent clearer. Mutable `inout` and initializing `out`
+remain explicit at both declaration and call sites.
 
 ## Cleanup and weak references
 

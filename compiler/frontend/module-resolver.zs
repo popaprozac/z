@@ -964,7 +964,7 @@ function inferSignatureCallType(
       }
       argumentTypes.push(valueBindingType(bindings, bindingName));
     } else {
-      if (access.byteLength > 0) {
+      if (access.byteLength > 0 && !(mode == "in" && access == "in")) {
         const expectation = mode == "in" ? "an immutable borrow" : "an owned value parameter";
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
@@ -979,13 +979,14 @@ function inferSignatureCallType(
         signature.typeParameters,
         substitutions
       );
+      const inferredNode = access == "in" ? bindingIndex : nodeIndex;
       const argumentType = try inferExpressionNodeTypeExpected(
         module,
         modules,
         moduleIndex,
         arena,
         tree,
-        nodeIndex,
+        inferredNode,
         expectedArgumentType,
         inout bindings,
         inout evidence

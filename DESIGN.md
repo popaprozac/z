@@ -189,7 +189,7 @@ cleanup-bearing values move. Borrowing is the non-default declaration:
 | Shape | Declaration | Call | Contract |
 |---|---|---|---|
 | owned/value | `value: T` | `use(value)` | Callee owns the parameter; copy or move follows the type. |
-| immutable borrow | `in value: T` | `inspect(value)` | Read-only, non-escaping borrow for the call. |
+| immutable borrow | `in value: T` | `inspect(value)` or `inspect(in value)` | Read-only, non-escaping borrow for the call. |
 | mutable borrow | `inout value: T` | `update(inout value)` | Exclusive read/write borrow for the call. |
 | output | `out value: T` | `create(out value)` | Callee fully initializes storage. |
 | consuming receiver | `move this` | `value.consume()` | Receiver ownership transfers; copyable values copy. |
@@ -197,11 +197,12 @@ cleanup-bearing values move. Borrowing is the non-default declaration:
 Capabilities precede parameter bindings because they modify access to storage,
 not the value's type. The annotation after `:` is always a type.
 
-`in` stays quiet at the call site because it cannot change ownership or caller
-storage. `inout` and `out` remain explicit at free-function calls because their
-effects are externally visible. Borrowed bindings cannot move into returns,
-owned parameters, or owning fields. Borrowed cleanup-bearing parameters do not
-run cleanup; their owner remains responsible.
+`in` is inferred at the call site because it cannot change ownership or caller
+storage, but `inspect(in value)` is accepted as an equivalent explicit spelling.
+`inout` and `out` remain required at free-function calls because their effects
+are externally visible. Borrowed bindings cannot move into returns, owned
+parameters, or owning fields. Borrowed cleanup-bearing parameters do not run
+cleanup; their owner remains responsible.
 
 The bootstrap requires `inout` to name direct initialized mutable storage.
 Immutable borrows accept stored expressions and non-cleanup struct literals;
@@ -1284,6 +1285,23 @@ remain runner policy.
 Only the declaration is intrinsic syntax. Assertions and expectations come
 from imported standard modules such as `std/test`; normal ownership remains
 enforced even when test helpers provide ergonomic statement-bounded borrows.
+The first expectation tier is:
+
+```z
+import { expect, fail } from "std/test";
+
+test "answer is stable" {
+  const answer = 42;
+  expect(answer).toEqual(42);
+  expect(in answer).toEqual(42); // Equivalent explicit immutable borrow.
+}
+```
+
+`toEqual` deliberately reuses ordinary Z `==`; it is not implicit deep
+structural equality. A failed expectation or `fail(message)` runs deterministic
+cleanup, returns an internal owned failure to the runner, and allows later tests
+to continue. Reusable assertion helpers require a future explicit test-context
+surface rather than ambient hidden state.
 
 ## Async and concurrency
 

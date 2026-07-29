@@ -366,6 +366,9 @@ export type SemanticInfo = {
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
   readonly consoleBindings: ReadonlySet<string>;
+  readonly testExpectationCalls: ReadonlyMap<number, TestExpectationPlan>;
+  readonly testFailureCalls: ReadonlyMap<number, TestFailurePlan>;
+  readonly testBindings: ReadonlyMap<string, "expect" | "fail">;
   readonly standardFunctionReferences: ReadonlyMap<number, StandardFunctionName>;
   readonly standardFunctionBindings: ReadonlyMap<string, StandardFunctionName>;
   readonly standardModuleBindings: ReadonlyMap<string, StandardModuleName>;
@@ -383,6 +386,19 @@ export type ExecutorAffinityInfo = {
   readonly declared: boolean;
   readonly originType: string;
   readonly fieldPath: readonly string[];
+};
+
+export type TestExpectationPlan = {
+  readonly actual: Expression;
+  readonly expected: Expression;
+  readonly actualType: string;
+  readonly expectedType: string;
+  readonly location: SourceLocation;
+};
+
+export type TestFailurePlan = {
+  readonly message: Expression;
+  readonly location: SourceLocation;
 };
 
 type StandardTypeName =
@@ -472,6 +488,9 @@ type AnalysisState = {
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
   readonly consoleBindings: Set<string>;
+  readonly testExpectationCalls: Map<number, TestExpectationPlan>;
+  readonly testFailureCalls: Map<number, TestFailurePlan>;
+  readonly testBindings: Map<string, "expect" | "fail">;
   readonly standardFunctionReferences: Map<number, StandardFunctionName>;
   readonly standardFunctionBindings: Map<string, StandardFunctionName>;
   readonly standardModuleBindings: Map<string, StandardModuleName>;
@@ -558,6 +577,8 @@ type SymbolValue =
   | { readonly kind: "foreignModule"; readonly module: ForeignModule }
   | { readonly kind: "foreignNamespace"; readonly module: ForeignModule; readonly namespacePath: readonly string[] }
   | { readonly kind: "console" }
+  | { readonly kind: "testExpect" }
+  | { readonly kind: "testFail" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
   | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" }
@@ -810,6 +831,9 @@ export function analyze(
     closures: new Map(),
     consoleCalls: new Set(),
     consoleBindings: new Set(),
+    testExpectationCalls: new Map(),
+    testFailureCalls: new Map(),
+    testBindings: new Map(),
     standardFunctionReferences: new Map(),
     standardFunctionBindings: new Map(),
     standardModuleBindings: new Map(),
@@ -904,6 +928,32 @@ export function analyze(
             fileName,
           );
           state.standardFunctionBindings.set(binding.localName, name);
+        }
+        continue;
+      }
+      if (declaration.header === "std/test") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/test requires a selective import", {
+            code: "Z0501",
+            helps: ['use `import { expect, fail } from "std/test";`'],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "expect" && binding.importedName !== "fail") {
+            throw new DiagnosticError(fileName, binding.location, `std/test has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["std/test currently exports `expect` and `fail`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(
+            globals,
+            binding.localName,
+            { kind: binding.importedName === "expect" ? "testExpect" : "testFail" },
+            binding.location,
+            fileName,
+          );
+          state.testBindings.set(binding.localName, binding.importedName);
         }
         continue;
       }
@@ -1087,7 +1137,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -3629,6 +3679,13 @@ function analyzeStatement(
       return;
     }
     case "throw": {
+      if (owner.testName) {
+        throw new DiagnosticError(fileName, statement.location, "tests do not declare an ordinary throws channel", {
+          code: "Z0901",
+          notes: ["the runner's cleanup-aware failure channel is an internal testing mechanism"],
+          helps: ['import `fail` from "std/test" and call `fail("reason")`'],
+        });
+      }
       const errorType = state.placementErrorTypes.length > 0
         ? state.placementErrorTypes.at(-1)
         : owner.errorType;
@@ -5912,6 +5969,156 @@ function requireConsoleFormattable(
   });
 }
 
+function testBorrowExpression(
+  expression: Expression,
+  fileName: string,
+): Expression {
+  if (expression.kind !== "argumentReference") return expression;
+  if (expression.access !== "in") {
+    throw new DiagnosticError(fileName, expression.location, `${expression.access} is not valid for a read-only test value`, {
+      code: "Z0901",
+      helps: ["use the value directly or borrow named storage with `in`"],
+    });
+  }
+  return {
+    kind: "identifier",
+    name: expression.name,
+    location: expression.nameLocation,
+  };
+}
+
+function requireTestBody(
+  expression: Expression,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (state.activeFunction?.testName) return;
+  throw new DiagnosticError(fileName, expression.location, "std/test expectations are only available inside a test declaration", {
+    code: "Z0901",
+    helps: ['move this expectation into `test "name" { ... }`'],
+  });
+}
+
+function requireTestBorrowable(
+  type: ValueType,
+  expression: Expression,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const borrowedType = parseViewType(String(underlyingType(type)))?.target ?? type;
+  if (
+    hasOwnershipType(borrowedType, structs, enums, state)
+    && !isNamedStorageExpression(expression)
+    && expression.kind !== "string"
+    && expression.kind !== "template"
+  ) {
+    throw new DiagnosticError(fileName, expression.location, "a cleanup-bearing test temporary must be bound before the expectation", {
+      code: "Z0901",
+      notes: ["expectation operands are borrowed for the statement and do not consume temporary owners"],
+      helps: ["bind the value to const storage, then pass that binding to `expect` or `toEqual`"],
+    });
+  }
+}
+
+function inferTestExpectationCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType | null {
+  if (expression.callee.kind !== "member") return null;
+  const expectation = expression.callee.object;
+  if (
+    expectation.kind !== "call"
+    || expectation.callee.kind !== "identifier"
+    || globals.get(expectation.callee.name)?.kind !== "testExpect"
+  ) return null;
+  requireTestBody(expression, fileName, state);
+  rejectLabeledArguments(expectation.argumentLabels, expectation.location, fileName);
+  rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+  if (expression.callee.property !== "toEqual") {
+    throw new DiagnosticError(fileName, expression.callee.location, `expect has no matcher ${JSON.stringify(expression.callee.property)}`, {
+      code: "Z0901",
+      helps: ["the first matcher tier provides `toEqual`"],
+    });
+  }
+  if (expectation.arguments.length !== 1) {
+    throw new DiagnosticError(fileName, expectation.location, `expect expects 1 value, received ${expectation.arguments.length}`, {
+      code: "Z0901",
+    });
+  }
+  if (expression.arguments.length !== 1) {
+    throw new DiagnosticError(fileName, expression.location, `toEqual expects 1 value, received ${expression.arguments.length}`, {
+      code: "Z0901",
+    });
+  }
+  const actual = testBorrowExpression(expectation.arguments[0], fileName);
+  const expected = testBorrowExpression(expression.arguments[0], fileName);
+  const comparison: Expression = {
+    kind: "binary",
+    operator: "==",
+    left: actual,
+    right: expected,
+    location: expression.location,
+  };
+  inferExpression(comparison, locals, globals, structs, enums, fileName, state);
+  const actualType = state.expressionTypes.get(actual.location.offset)
+    ?? inferExpression(actual, locals, globals, structs, enums, fileName, state);
+  const expectedType = state.expressionTypes.get(expected.location.offset)
+    ?? inferExpression(expected, locals, globals, structs, enums, fileName, state);
+  requireTestBorrowable(actualType, actual, structs, enums, fileName, state);
+  requireTestBorrowable(expectedType, expected, structs, enums, fileName, state);
+  requireConsoleFormattable(actualType, actual, structs, enums, fileName, state);
+  requireConsoleFormattable(expectedType, expected, structs, enums, fileName, state);
+  state.testExpectationCalls.set(expression.location.offset, {
+    actual,
+    expected,
+    actualType: String(underlyingType(actualType)),
+    expectedType: String(underlyingType(expectedType)),
+    location: expression.location,
+  });
+  state.expressionTypes.set(expectation.location.offset, `__z_TestExpectation_${String(underlyingType(actualType))}`);
+  state.expressionTypes.set(expression.location.offset, "void");
+  return "void";
+}
+
+function inferTestFailureCall(
+  expression: Extract<Expression, { kind: "call" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType | null {
+  if (
+    expression.callee.kind !== "identifier"
+    || globals.get(expression.callee.name)?.kind !== "testFail"
+  ) return null;
+  requireTestBody(expression, fileName, state);
+  rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+  if (expression.arguments.length !== 1) {
+    throw new DiagnosticError(fileName, expression.location, `fail expects 1 message, received ${expression.arguments.length}`, {
+      code: "Z0901",
+    });
+  }
+  const message = testBorrowExpression(expression.arguments[0], fileName);
+  const type = inferExpression(message, locals, globals, structs, enums, fileName, state);
+  requireAssignable("String", type, message, fileName, structs, enums, state);
+  requireTestBorrowable(type, message, structs, enums, fileName, state);
+  state.testFailureCalls.set(expression.location.offset, {
+    message,
+    location: expression.location,
+  });
+  state.expressionTypes.set(expression.location.offset, "void");
+  return "void";
+}
+
 function inferExpression(
   expression: Expression,
   locals: Map<string, ValueType>,
@@ -6459,6 +6666,18 @@ function inferExpressionInner(
       }
       if (global?.kind === "console") {
         throw new DiagnosticError(fileName, expression.location, "the console module must be followed by a method name");
+      }
+      if (global?.kind === "testExpect") {
+        throw new DiagnosticError(fileName, expression.location, "expect must be called and completed with a matcher", {
+          code: "Z0901",
+          helps: ["use `expect(value).toEqual(expected)`"],
+        });
+      }
+      if (global?.kind === "testFail") {
+        throw new DiagnosticError(fileName, expression.location, "fail must be called with a failure message", {
+          code: "Z0901",
+          helps: ['use `fail("reason")`'],
+        });
       }
       if (global?.kind === "standardModule") {
         throw new DiagnosticError(fileName, expression.location, `the ${global.module} module must be followed by a method name`);
@@ -7152,6 +7371,26 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `struct ${JSON.stringify(declaration.name)} has no member ${JSON.stringify(expression.property)}`);
     }
     case "call": {
+      const testExpectation = inferTestExpectationCall(
+        expression,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+      if (testExpectation) return testExpectation;
+      const testFailure = inferTestFailureCall(
+        expression,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+      if (testFailure) return testFailure;
       if (expression.callee.kind === "identifier") {
         if (integerTypes.has(expression.callee.name)) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -8949,6 +9188,18 @@ function inferExpressionInner(
         return closure!.declaration.returnType.name;
       }
       const target = globals.get(expression.callee.name);
+      if (target?.kind === "testExpect") {
+        throw new DiagnosticError(fileName, expression.location, "expect must be completed with a matcher", {
+          code: "Z0901",
+          helps: ["use `expect(value).toEqual(expected)`"],
+        });
+      }
+      if (target?.kind === "testFail") {
+        throw new DiagnosticError(fileName, expression.location, "fail expects one String message", {
+          code: "Z0901",
+          helps: ['use `fail("reason")`'],
+        });
+      }
       if (target?.kind === "standardFunction") {
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         state.standardFunctionReferences.set(expression.callee.location.offset, target.name);
@@ -9251,11 +9502,24 @@ function checkArguments(
       continue;
     }
     if (argument.kind === "argumentReference") {
-      throw new DiagnosticError(
-        fileName,
-        argument.location,
-        `${argument.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
-      );
+      if (argument.access !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `${argument.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
+        );
+      }
+      if (parameter.mode !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          `${JSON.stringify(target.name)} expects an owned value, not an explicit in borrow`,
+          {
+            code: "Z0300",
+            helps: [`pass \`${argument.name}\` directly to transfer ownership`],
+          },
+        );
+      }
     }
     if (argument.kind === "closure") {
       const expectedFunction = parseFunctionType(parameter.type.name);
@@ -9278,13 +9542,20 @@ function checkArguments(
       continue;
     }
     if (parameter.mode === "in") {
+      const borrowedArgument = argument.kind === "argumentReference"
+        ? {
+            kind: "identifier" as const,
+            name: argument.name,
+            location: argument.nameLocation,
+          }
+        : argument;
       const aggregateTemporary = argument.kind === "call"
         && argument.callee.kind === "identifier"
         && structs.has(argument.callee.name)
         && argument.arguments.length === 1
         && argument.arguments[0].kind === "objectExpression";
       if (
-        !isNamedStorageExpression(argument)
+        !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "structExpression"
         && !aggregateTemporary
         && argument.kind !== "template"
@@ -9296,11 +9567,11 @@ function checkArguments(
           `borrowed argument to ${JSON.stringify(target.name)} must be stored or a struct literal`,
         );
       }
-      const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+      const actual = inferExpression(borrowedArgument, locals, globals, structs, enums, fileName, state);
       const borrowedActual = parseViewType(String(actual))?.target ?? actual;
       if (
         hasOwnershipType(borrowedActual, structs, enums, state)
-        && !isNamedStorageExpression(argument)
+        && !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "template"
         && argument.kind !== "string"
       ) {
@@ -9308,6 +9579,10 @@ function checkArguments(
       }
       requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
+      if (argument.kind === "argumentReference") {
+        state.expressionTypes.set(argument.location.offset, String(borrowedActual));
+        state.expressionTypes.set(argument.nameLocation.offset, String(borrowedActual));
+      }
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
         const borrowedRoot = storageRoot(argument)?.name ?? null;

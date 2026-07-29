@@ -5,11 +5,15 @@ import {
   compileTestsToNative,
   compileToNative,
   completions,
+  decodeSemanticTokens,
   diagnostics,
+  hover,
   hostToolchainTest,
   mkdtempSync,
   readFileSync,
   resolve,
+  semanticTokens,
+  semanticTokenTypes,
   spawnSync,
   test,
   writeFileSync,
@@ -57,6 +61,26 @@ test("ordinary native builds omit test declarations completely", () => {
   assert.doesNotMatch(artifact.source, /running 1 test/);
 });
 
+test("ordinary builds also erase imported test helpers", () => {
+  const fileName = "/tmp/z-test-helper-omission.zs";
+  const source = `
+    import { expect, fail } from "std/test";
+
+    test "hidden expectation" {
+      expect(42).toEqual(42);
+      fail("also hidden");
+    }
+
+    function main(): i32 {
+      return 0;
+    }
+  `;
+  const artifact = compileToNative(source, fileName);
+  assert.doesNotMatch(artifact.source, /__z_test_/);
+  assert.doesNotMatch(artifact.source, /hidden expectation|also hidden/);
+  assert.doesNotMatch(artifact.source, /Z_Result_void_String/);
+});
+
 test("test compilation emits a runner and ignores an ordinary main", () => {
   const fileName = "/tmp/z-test-runner.zs";
   const source = `
@@ -75,7 +99,7 @@ test("test compilation emits a runner and ignores an ordinary main", () => {
   const artifact = compileTestsToNative(source, fileName);
   assert.deepEqual(artifact.testNames, ["first", 'quotes: " and unicode: λ']);
   assert.match(artifact.source, /running 2 tests/);
-  assert.match(artifact.source, /test result: ok\. 2 passed; 0 failed/);
+  assert.match(artifact.source, /test result: %s\. %llu passed; %llu failed/);
   assert.equal((artifact.source.match(/int main\(int argc, char \*\*argv\)/g) ?? []).length, 1);
   assert.doesNotMatch(artifact.source, /return 1;/);
 });
@@ -108,6 +132,205 @@ test("offers test as a source keyword completion", () => {
     .find((candidate) => candidate.label === "test");
   assert.equal(item?.detail, "Z keyword");
 });
+
+test("completes and explains std/test expectations", () => {
+  const fileName = "/tmp/z-test-editor.zs";
+  const importSource = 'import { ex } from "std/test";';
+  const importItems = completions(
+    importSource,
+    fileName,
+    importSource.indexOf("ex") + 2,
+  );
+  assert.ok(importItems.some((item) => item.label === "expect"));
+
+  const completionSource = `
+    import { expect, fail } from "std/test";
+
+    test "editor" {
+      const answer = 42;
+      expect(answer).toE
+    }
+  `;
+  const matcherOffset = completionSource.indexOf("toE") + 3;
+  const matcherItems = completions(completionSource, fileName, matcherOffset);
+  assert.ok(matcherItems.some((item) => item.label === "toEqual"));
+
+  const hoverSource = completionSource.replace("toE", "toEqual(42);");
+  const expectOffset = hoverSource.indexOf("expect(answer)");
+  const matcherHoverOffset = hoverSource.indexOf("toEqual");
+  assert.match(
+    hover(hoverSource, fileName, expectOffset)?.contents.value ?? "",
+    /borrows for one expectation statement/,
+  );
+  assert.match(
+    hover(hoverSource, fileName, matcherHoverOffset)?.contents.value ?? "",
+    /uses Z `==`/,
+  );
+
+  const decoded = decodeSemanticTokens(semanticTokens(hoverSource, fileName).data);
+  for (const [offset, type] of [
+    [expectOffset, "function"],
+    [matcherHoverOffset, "method"],
+    [hoverSource.indexOf("fail }"), "function"],
+  ] as const) {
+    const beforeToken = hoverSource.slice(0, offset);
+    const line = beforeToken.split("\n").length - 1;
+    const character = offset - (beforeToken.lastIndexOf("\n") + 1);
+    assert.ok(decoded.some((token) => (
+      token.line === line
+      && token.character === character
+      && token.type === semanticTokenTypes.indexOf(type)
+    )));
+  }
+});
+
+test("accepts inferred and explicit immutable call-site borrows", () => {
+  const fileName = "/tmp/z-explicit-in.zs";
+  const source = `
+    function byteCount(in value: String): usize {
+      return value.byteLength;
+    }
+
+    function main(): i32 {
+      const value = "answer";
+      const inferred = byteCount(value);
+      const explicit = byteCount(in value);
+      return i32(inferred + explicit) - 12;
+    }
+  `;
+  assert.deepEqual(diagnostics(source, fileName), []);
+  const artifact = compileToNative(source, fileName);
+  assert.match(artifact.source, /byteCount\(&\(value\)\)/);
+  assert.doesNotMatch(artifact.source, /&\(&\(value\)\)/);
+});
+
+test("rejects an explicit immutable borrow for an owned parameter", () => {
+  const source = `
+    function consume(value: String): usize {
+      return value.byteLength;
+    }
+
+    function main(): i32 {
+      const value = "answer";
+      return i32(consume(in value));
+    }
+  `;
+  assert.match(
+    diagnostics(source, "/tmp/z-wrong-explicit-in.zs")[0]?.message ?? "",
+    /expects an owned value, not an explicit in borrow/,
+  );
+});
+
+test("rejects malformed and misplaced std/test expectations", () => {
+  const outside = `
+    import { expect } from "std/test";
+
+    function main(): i32 {
+      expect(42).toEqual(42);
+      return 0;
+    }
+  `;
+  assert.match(
+    diagnostics(outside, "/tmp/z-expect-outside-test.zs")[0]?.message ?? "",
+    /only available inside a test declaration/,
+  );
+
+  const matcher = `
+    import { expect } from "std/test";
+
+    test "unknown matcher" {
+      expect(42).toBe(42);
+    }
+  `;
+  assert.match(
+    diagnostics(matcher, "/tmp/z-expect-matcher.zs")[0]?.message ?? "",
+    /expect has no matcher "toBe"/,
+  );
+
+  const temporary = `
+    import { expect } from "std/test";
+
+    function status(): String {
+      return "ready";
+    }
+
+    test "owned temporary" {
+      expect(status()).toEqual("ready");
+    }
+  `;
+  assert.match(
+    diagnostics(temporary, "/tmp/z-expect-temporary.zs")[0]?.message ?? "",
+    /cleanup-bearing test temporary must be bound/,
+  );
+
+  const thrown = `
+    test "throw is not the test API" {
+      throw "failure";
+    }
+  `;
+  assert.match(
+    diagnostics(thrown, "/tmp/z-test-throw.zs")[0]?.message ?? "",
+    /tests do not declare an ordinary throws channel/,
+  );
+});
+
+test("runs deterministic cleanup before returning a test failure", () => {
+  const source = `
+    import { expect } from "std/test";
+
+    struct Resource {
+      id: i32;
+      deinit {}
+    }
+
+    test "cleanup before failure" {
+      const resource = Resource({ id: 41 });
+      expect(resource.id).toEqual(42);
+    }
+  `;
+  const artifact = compileTestsToNative(source, "/tmp/z-test-cleanup.zs");
+  assert.match(
+    artifact.source,
+    /if \(!\(_z_test_actual_\d+ == _z_test_expected_\d+\)\) \{[\s\S]*if \(_z_live_resource_\d+\) Z_Resource_deinit\(&\(resource\)\);[\s\S]*return \(Z_Result_void_String\)\{ \.tag = Z_Result_void_String_failure/,
+  );
+});
+
+hostToolchainTest("reports expectation failures and continues with later tests", () => {
+  const directory = mkdtempSync("/tmp/z-test-expectation-");
+  const input = resolve(directory, "expectation.test.zs");
+  writeFileSync(input, `
+    import { expect, fail } from "std/test";
+
+    test "explicit and inferred borrows pass" {
+      const answer = 42;
+      expect(answer).toEqual(42);
+      expect(in answer).toEqual(42);
+    }
+
+    test "a failed equality is reported" {
+      expect(41).toEqual(42);
+    }
+
+    test "an explicit failure is reported" {
+      fail("deliberate failure");
+    }
+
+    test "later tests still run" {
+      expect("still running").toEqual("still running");
+    }
+  `);
+  const result = spawnSync(process.execPath, [cli, "test", input], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /test explicit and inferred borrows pass \.\.\. ok/);
+  assert.match(result.stdout, /test a failed equality is reported \.\.\. FAILED/);
+  assert.match(result.stdout, /expected 41 to equal 42/);
+  assert.match(result.stdout, /test an explicit failure is reported \.\.\. FAILED/);
+  assert.match(result.stdout, /deliberate failure/);
+  assert.match(result.stdout, /test later tests still run \.\.\. ok/);
+  assert.match(result.stdout, /test result: FAILED\. 2 passed; 2 failed/);
+}, 20_000);
 
 hostToolchainTest("runs tests from an entry module and its project-owned imports", () => {
   const directory = mkdtempSync("/tmp/z-test-command-");
