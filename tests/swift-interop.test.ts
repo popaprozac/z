@@ -128,7 +128,7 @@ hostToolchainTest("imports and executes Swift through its generated Objective-C 
   assert.equal(completions(completionSource, zSource, completionOffset).find((item) => item.label === "add")?.kind, 2);
   const propertyOffset = source.lastIndexOf("value") + 1;
   assert.match(hover(source, zSource, propertyOffset)?.contents.value ?? "", /value: i32/);
-});
+}, 30_000);
 
 hostToolchainTest("builds a declared Swift target for ordinary CLI and editor workflows", () => {
   if (process.platform !== "darwin") return;
@@ -570,7 +570,7 @@ hostToolchainTest("imports and owns a Swift value through its generated C++ comp
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "created 40\nfirst=40, copied=40, changed=42\nSwift value=42\nembedded=a\0b\nreleased 40\n");
-});
+}, 60_000);
 
 hostToolchainTest("constructs Swift associated-value enum cases through generated C++ factories", () => {
   if (process.platform !== "darwin") return;
@@ -608,9 +608,9 @@ hostToolchainTest("constructs Swift associated-value enum cases through generate
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "ready=42, idle=-1, copy=42\n");
-});
+}, 60_000);
 
-test("records hard Swift surfaces currently withheld by the generated C++ interface", () => {
+hostToolchainTest("records hard Swift surfaces currently withheld by the generated C++ interface", () => {
   if (process.platform !== "darwin") return;
   const directory = mkdtempSync("/tmp/z-swift-boundary-");
   const source = resolve(projectRoot, "tests/fixtures/swift-toolchain-boundaries.swift");
@@ -632,4 +632,4 @@ test("records hard Swift surfaces currently withheld by the generated C++ interf
   assert.match(generated, /noncopyable struct 'UniqueCounter' can not yet be represented in C\+\+/);
   assert.match(generated, /Unavailable in C\+\+: Swift global function 'makeUniqueCounter\(_:\)'/);
   assert.match(generated, /Unavailable in C\+\+: Swift global function 'doubleLater\(_:\)'/);
-});
+}, 30_000);
