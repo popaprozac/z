@@ -82,10 +82,6 @@ jobs:
             name: async and threads
             script: test:async
             swift_cache: false
-    env:
-      CLANG_MODULE_CACHE_PATH: ${{ runner.temp }}/z-clang-module-cache
-      SWIFT_MODULECACHE_PATH: ${{ runner.temp }}/z-swift-module-cache
-
     steps:
       - name: Check out Z
         uses: actions/checkout@v6
@@ -94,6 +90,12 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
+
+      - name: Configure toolchain module caches
+        shell: bash
+        run: |
+          echo "CLANG_MODULE_CACHE_PATH=${RUNNER_TEMP}/z-clang-module-cache" >> "${GITHUB_ENV}"
+          echo "SWIFT_MODULECACHE_PATH=${RUNNER_TEMP}/z-swift-module-cache" >> "${GITHUB_ENV}"
 
       - name: Fingerprint Apple toolchain
         id: toolchain
@@ -108,8 +110,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.CLANG_MODULE_CACHE_PATH }}
-            ${{ env.SWIFT_MODULECACHE_PATH }}
+            ${{ runner.temp }}/z-clang-module-cache
+            ${{ runner.temp }}/z-swift-module-cache
           key: z-toolchain-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ matrix.id }}
 
       - name: Restore native frontend
