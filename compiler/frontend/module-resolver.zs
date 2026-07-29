@@ -10,7 +10,10 @@ import {
   moduleSymbolIndex,
   moduleBindingName as bindingName,
 } from "./module-symbols.zs";
-import { validateModuleNames } from "./semantic-names.zs";
+import {
+  isPublicCAbiReservedWord,
+  validateModuleNames,
+} from "./semantic-names.zs";
 import {
   NativeCallAccess,
   pendingAsyncCallShape,
@@ -4439,6 +4442,15 @@ function validateNativeCLayouts(
   for (const module of parsed) {
     for (const aggregate of module.program.aggregates) {
       if (!aggregate.nativeCLayout) continue;
+      if (isPublicCAbiReservedWord(aggregate.name)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `C-layout type name "${aggregate.name}" is not a valid public C identifier`,
+          aggregate.line,
+          aggregate.column
+        );
+      }
       if (containsString(publicNames, aggregate.name)) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
@@ -4479,6 +4491,15 @@ function validateNativeCLayouts(
         throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, "a C-layout struct must declare at least one field", aggregate.line, aggregate.column);
       }
       for (const field of aggregate.fields) {
+        if (isPublicCAbiReservedWord(field.name)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `C-layout field name "${field.name}" is not a valid public C identifier`,
+            field.line,
+            field.column
+          );
+        }
         if (field.visibility != Visibility.publicVisibility) {
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be private`, field.line, field.column);
         }
@@ -4504,6 +4525,15 @@ function validateNativeCLayouts(
     }
     for (const enumDeclaration of module.program.enums) {
       if (!enumDeclaration.nativeCLayout) continue;
+      if (isPublicCAbiReservedWord(enumDeclaration.name)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `C enum name "${enumDeclaration.name}" is not a valid public C identifier`,
+          enumDeclaration.line,
+          enumDeclaration.column
+        );
+      }
       if (containsString(publicNames, enumDeclaration.name)) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
@@ -4552,6 +4582,15 @@ function validateNativeCLayouts(
         );
       }
       for (const variant of enumDeclaration.variants) {
+        if (isPublicCAbiReservedWord(variant.name)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `C enum variant "${variant.name}" is not a valid public C identifier`,
+            variant.line,
+            variant.column
+          );
+        }
         match (in variant.payload) {
           some(_) => throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
@@ -4577,6 +4616,13 @@ function validateNativeCExports(
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
       if (!declaration.nativeCExport) continue;
+      if (isPublicCAbiReservedWord(declaration.name)) {
+        throw nativeCExportError(
+          module,
+          declaration,
+          `C export name "${declaration.name}" is not a valid public C identifier`
+        );
+      }
       if (containsString(symbols, declaration.name)) {
         throw nativeCExportError(
           module,

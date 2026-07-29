@@ -375,6 +375,32 @@ test("checks the first C-export ABI tier and its editor surface", () => {
     ),
     /C-exported function cannot be async/,
   );
+  for (const reserved of ["double", "namespace"]) {
+    const reservedSource = `export c function ${reserved}(): i32 { return 42; }`;
+    assert.throws(
+      () => compileToNative(
+        reservedSource,
+        `reserved-${reserved}-export.zs`,
+        { requireMain: false },
+      ),
+      new RegExp(`C export name "${reserved}" is not a valid public C identifier`),
+    );
+
+    const directory = mkdtempSync("/tmp/z-native-reserved-export-");
+    const entry = resolve(directory, "library.zs");
+    writeFileSync(entry, reservedSource);
+    const native = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", entry],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 1);
+    assert.match(
+      native.stderr,
+      new RegExp(`C export name "${reserved}" is not a valid public C identifier`),
+    );
+    assert.doesNotMatch(native.stderr, /errors generated|expected identifier/);
+  }
 
   const source = "export c function z_value(): i32 { return 42; }";
   const completionSource = "export c";
@@ -409,7 +435,7 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   const nativeCheck = spawnSync(process.execPath, [cli, "check", entry, "--native-frontend"], { encoding: "utf8" });
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
   assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
-});
+}, 15_000);
 
 test("builds the Z-to-C example project and runs its handwritten C consumer", () => {
   const project = resolve(projectRoot, "examples/interop/c/z-export");
@@ -9871,6 +9897,108 @@ test("runs the source stager through native file, process, and console runtimes"
     readFileSync(source, "utf8"),
   );
 }, 15_000);
+
+test("runs Stage 0 and the native compiler against the same executable corpus", () => {
+  const corpus: readonly {
+    readonly entry: string;
+    readonly arguments?: readonly string[];
+  }[] = [
+    { entry: "tests/fixtures/self-host-emit-input.zs" },
+    { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
+    { entry: "tests/fixtures/self-host-emit-map.zs" },
+    { entry: "tests/fixtures/self-host-emit-set.zs" },
+    { entry: "tests/fixtures/self-host-emit-option.zs" },
+    { entry: "tests/fixtures/self-host-emit-result.zs" },
+    { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
+    {
+      entry: "examples/applications/source-inspector/main.zs",
+      arguments: [resolve(
+        projectRoot,
+        "examples/applications/source-inspector/lexer-smoke.zs",
+      )],
+    },
+  ];
+  const directory = mkdtempSync("/tmp/z-stage0-native-differential-");
+
+  for (let index = 0; index < corpus.length; index += 1) {
+    const testCase = corpus[index]!;
+    const input = resolve(projectRoot, testCase.entry);
+    const source = readFileSync(input, "utf8");
+    const stage0 = compileToNative(source, input);
+    assert.equal(
+      stage0.language,
+      "c",
+      `${testCase.entry} left the portable native differential tier`,
+    );
+
+    const nativeEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(
+      nativeEmission.status,
+      0,
+      `${testCase.entry}\n${nativeEmission.stderr}`,
+    );
+
+    const stage0Executable = resolve(directory, `stage0-${index}`);
+    const nativeExecutable = resolve(directory, `native-${index}`);
+    const stage0Compilation = spawnSync(
+      "clang",
+      [
+        "-x", "c", "-std=c11", "-O2", "-DNDEBUG",
+        "-Wall", "-Wextra", "-Werror", "-", "-o", stage0Executable,
+      ],
+      { encoding: "utf8", input: stage0.source },
+    );
+    assert.equal(
+      stage0Compilation.status,
+      0,
+      `${testCase.entry} Stage-0 C\n${stage0Compilation.stderr}`,
+    );
+    const nativeCompilation = spawnSync(
+      "clang",
+      [
+        "-x", "c", "-std=c11", "-O2", "-DNDEBUG",
+        "-Wall", "-Wextra", "-Werror", "-", "-o", nativeExecutable,
+      ],
+      { encoding: "utf8", input: nativeEmission.stdout },
+    );
+    assert.equal(
+      nativeCompilation.status,
+      0,
+      `${testCase.entry} native C\n${nativeCompilation.stderr}`,
+    );
+
+    const programArguments = [...(testCase.arguments ?? [])];
+    const stage0Run = spawnSync(
+      stage0Executable,
+      programArguments,
+      { encoding: "utf8" },
+    );
+    const nativeRun = spawnSync(
+      nativeExecutable,
+      programArguments,
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      nativeRun.status,
+      stage0Run.status,
+      `${testCase.entry} returned different exit statuses`,
+    );
+    assert.equal(
+      nativeRun.stdout,
+      stage0Run.stdout,
+      `${testCase.entry} produced different stdout`,
+    );
+    assert.equal(
+      nativeRun.stderr,
+      stage0Run.stderr,
+      `${testCase.entry} produced different stderr`,
+    );
+  }
+}, 60_000);
 
 test("bootstraps a fixed-point native z executable for local use", () => {
   const directory = mkdtempSync("/tmp/z-native-bootstrap-");

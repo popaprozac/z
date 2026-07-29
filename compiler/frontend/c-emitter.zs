@@ -1150,7 +1150,8 @@ function appendCondition(
 ): void throws String {
   const alreadyGrouped =
     declaration.expressions[index].kind == LoweredExpressionKind.unaryOperation
-    || declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation;
+    || declaration.expressions[index].kind == LoweredExpressionKind.binaryOperation
+    || declaration.expressions[index].kind == LoweredExpressionKind.stringIsEmpty;
   if (!alreadyGrouped) output.append("(");
   try appendExpression(inout output, declaration, index);
   if (!alreadyGrouped) output.append(")");

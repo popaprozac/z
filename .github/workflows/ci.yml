@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS verification
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out Z
+        uses: actions/checkout@v6
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Report toolchain
+        run: |
+          bun --version
+          xcrun clang --version
+
+      - name: Run full suite and fixed-point bootstrap
+        run: bun test

@@ -1045,11 +1045,18 @@ Continue focused self-hosting work in this order:
    executes that native compiler to emit itself again, and requires byte-exact
    C output before caching the library. The standalone command follows the same
    rule: generation one builds its own 37-module graph, generation-two C must be
-   byte-identical, and the rebuilt command checks a separate project.
-   `bun run bootstrap [output]` now executes that complete gate and publishes
-   the resulting local executable under the public name `z` plus its adjacent
-   standalone metadata adapter. The remaining release step is to sign,
-   version, and ship those trusted platform artifacts so ordinary
+   byte-identical, and the rebuilt command checks a separate project. A separate
+   eight-program differential corpus sends the same supported Z sources through
+   Stage 0 and the native compiler, strict-compiles both C artifacts in release
+   mode, executes them with identical arguments, and requires matching exit
+   status, standard output, and standard error. This covers collections, typed
+   results, cleanup-bearing values, native lexing, and a multi-module filesystem
+   application rather than relying on the compiler fixed point alone. The macOS
+   CI gate runs the complete suite, including both proofs, on every push and
+   pull request. `bun run bootstrap [output]` now executes that complete gate
+   and publishes the resulting local executable under the public name `z` plus
+   its adjacent standalone metadata adapter. The remaining release step is to
+   sign, version, and ship those trusted platform artifacts so ordinary
    installations do not need Stage 0.
 
 The next self-hosting sprint should begin when duplicated Stage-0 semantics are

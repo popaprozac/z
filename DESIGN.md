@@ -1235,6 +1235,27 @@ namespace access exposes the same export set. Re-exports, directory indexes,
 package resolution, separate compilation, and a package registry remain later
 layers.
 
+The deferred package model must preserve Z's bidirectional native boundary
+rather than treating every dependency as downloaded Z source. Its planned
+package kinds are pure Z source, reviewed native `.zd` contracts, declared
+system-native requirements, and Z libraries published with generated C
+headers. Resolution must be deterministic and lock contract content,
+provenance, target, and native-version expectations alongside source identity.
+System-native dependencies should first be declared and verified through the
+existing Clang evidence path; target-specific artifacts and constrained
+source-build recipes remain later acquisition strategies. Packages must not
+execute arbitrary host code during resolution or compilation. Future generated
+artifacts should instead use compiler-owned declarative transformations with
+explicit inputs and outputs.
+
+Package implementation is intentionally queued behind native-compiler
+verification. The intended sequence is local path packages and a deterministic
+lockfile, system-native dependency verification, a curated contract index, and
+only then remote Z package resolution. Contract policy must distinguish
+machine-verifiable ABI facts from behavioral ownership, lifetime, callback, and
+threading assertions, and must record whether a dependency uses `unsafe` or
+`raw`.
+
 A source file does not need a module declaration or a `main` function. Checking
 and editor analysis accept declaration-only and export-only modules. Executable
 context supplies the distinction: a file selected by `z run`, the current

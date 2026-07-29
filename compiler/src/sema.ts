@@ -1337,8 +1337,8 @@ const nativeExportScalarTypes = new Set([
   "isize", "usize", "f32", "f64", "boolean", "void",
 ]);
 
-const cReservedIdentifiers = new Set(
-  "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local"
+const cFamilyReservedIdentifiers = new Set(
+  "alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept auto bitand bitor bool break case catch char char8_t char16_t char32_t class compl concept const consteval constexpr constinit const_cast continue co_await co_return co_yield decltype default delete do double dynamic_cast else enum explicit export extern false final float for friend goto if import inline int long module mutable namespace new noexcept not not_eq nullptr operator or or_eq override private protected public reflexpr register reinterpret_cast requires restrict return short signed sizeof static static_assert static_cast struct switch synchronized template this thread_local throw true try typedef typeid typename typeof typeof_unqual union unsigned using virtual void volatile wchar_t while xor xor_eq _Alignas _Alignof _Atomic _BitInt _Bool _Complex _Decimal32 _Decimal64 _Decimal128 _Generic _Imaginary _Noreturn _Static_assert _Thread_local"
     .split(" "),
 );
 const cEnumIntegerTypes = new Set([
@@ -1346,7 +1346,7 @@ const cEnumIntegerTypes = new Set([
 ]);
 
 function validPublicCIdentifier(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !cReservedIdentifiers.has(name);
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !cFamilyReservedIdentifiers.has(name);
 }
 
 function validateNativeLayouts(
