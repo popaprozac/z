@@ -162,12 +162,16 @@ On macOS, Xcode Command Line Tools provide Clang, Apple frameworks, and Swift
 for the interop probes.
 
 ```sh
-bun test
+bun run test
 bun run z check examples/language/basics/first.zs
 bun run z emit examples/language/basics/first.zs
 bun run z run examples/language/basics/first.zs
 bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
 ```
+
+The bootstrap suite is split into independently runnable language, native
+interop, Objective-C, Swift, self-hosting, and async tiers. See
+[`docs/testing.md`](docs/testing.md) for the commands and CI architecture.
 
 `bun run bootstrap` additionally produces `.z-cache/bootstrap/z` and an
 adjacent standalone foreign-metadata adapter. That native toolchain runs its
@@ -227,7 +231,7 @@ docs/              focused reference, model, and status documents
 ```
 
 The integration suite is the executable truth for the bootstrap. Before a
-change lands, run `bun test` and keep generated native code readable enough to
+change lands, run `bun run test` and keep generated native code readable enough to
 inspect with `bun run z emit <file.zs>`.
 
 Browse the categorized runnable index in [`examples/README.md`](examples/README.md).

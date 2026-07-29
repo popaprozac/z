@@ -207,8 +207,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
 - [`examples/async/async-collection-slices.zs`](../examples/async/async-collection-slices.zs): growable
   and cleanup-bearing collection owners borrowed as Slices across direct await,
   scoped task, and cancellation, followed by safe growth and reverse cleanup.
-- `bun test`: compiler, runtime, diagnostics, interop, async, and editor
-  regression suite.
+- `bun run test`: compiler, runtime, diagnostics, interop, async, self-hosting, and
+  editor regression suite. The independently runnable tiers and parallel CI
+  architecture are documented in [`testing.md`](testing.md).
 
 ## Agreed foundation sequence
 

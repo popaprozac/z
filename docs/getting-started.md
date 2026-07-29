@@ -18,8 +18,11 @@ confirm the toolchain with:
 ```sh
 bun --version
 clang --version
-bun test
+bun run test
 ```
+
+Use the focused commands in [Testing Z](testing.md) when working on one compiler
+subsystem. CI runs those same tiers independently.
 
 ## Your first Z program
 

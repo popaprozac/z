@@ -157,6 +157,9 @@ export function prepareProject(fileName: string): ProjectBuild {
     mkdirSync(buildDirectory, { recursive: true });
     const result = spawnSync("xcrun", [
       "swiftc",
+      ...(process.env.SWIFT_MODULECACHE_PATH
+        ? ["-module-cache-path", process.env.SWIFT_MODULECACHE_PATH]
+        : []),
       ...(deploymentTarget ? ["-target", deploymentTargetTriple(deploymentTarget)] : []),
       "-emit-library",
       "-emit-module",

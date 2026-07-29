@@ -13,10 +13,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  macos:
-    name: macOS verification
+  native-frontend-cache:
+    name: Prepare native frontend
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
 
     steps:
       - name: Check out Z
@@ -27,10 +27,116 @@ jobs:
         with:
           bun-version: 1.3.14
 
+      - name: Fingerprint Apple toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          xcrun clang --version > "${RUNNER_TEMP}/z-toolchain.txt"
+          xcrun swiftc --version >> "${RUNNER_TEMP}/z-toolchain.txt"
+          sw_vers >> "${RUNNER_TEMP}/z-toolchain.txt"
+          echo "key=$(shasum -a 256 "${RUNNER_TEMP}/z-toolchain.txt" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore native frontend
+        id: native-frontend
+        uses: actions/cache@v4
+        with:
+          path: |
+            .z-cache/stage1-parser-library-*.dylib
+            .z-cache/stage1-self-hosted-strings-*.dylib
+          key: z-stage1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('compiler/src/**/*.ts', 'compiler/frontend/**/*.zs', 'package.json') }}
+
+      - name: Build native frontend
+        if: steps.native-frontend.outputs.cache-hit != 'true'
+        run: bun run z check examples/language/basics/first.zs --native-frontend
+
+  verification:
+    name: macOS / ${{ matrix.name }}
+    needs: native-frontend-cache
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: language
+            name: language and standard library
+            script: test:language
+            swift_cache: false
+          - id: native-interop
+            name: native interop
+            script: test:native-interop
+            swift_cache: false
+          - id: objc-interop
+            name: Objective-C interop
+            script: test:objc-interop
+            swift_cache: false
+          - id: swift-interop
+            name: Swift interop
+            script: test:swift-interop
+            swift_cache: true
+          - id: self-hosting
+            name: self-hosting
+            script: test:self-hosting
+            swift_cache: false
+          - id: async
+            name: async and threads
+            script: test:async
+            swift_cache: false
+    env:
+      CLANG_MODULE_CACHE_PATH: ${{ runner.temp }}/z-clang-module-cache
+      SWIFT_MODULECACHE_PATH: ${{ runner.temp }}/z-swift-module-cache
+
+    steps:
+      - name: Check out Z
+        uses: actions/checkout@v6
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Fingerprint Apple toolchain
+        id: toolchain
+        shell: bash
+        run: |
+          xcrun clang --version > "${RUNNER_TEMP}/z-toolchain.txt"
+          xcrun swiftc --version >> "${RUNNER_TEMP}/z-toolchain.txt"
+          sw_vers >> "${RUNNER_TEMP}/z-toolchain.txt"
+          echo "key=$(shasum -a 256 "${RUNNER_TEMP}/z-toolchain.txt" | cut -d ' ' -f 1)" >> "${GITHUB_OUTPUT}"
+
+      - name: Restore Clang and Swift module caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CLANG_MODULE_CACHE_PATH }}
+            ${{ env.SWIFT_MODULECACHE_PATH }}
+          key: z-toolchain-modules-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ matrix.id }}
+
+      - name: Restore native frontend
+        uses: actions/cache@v4
+        with:
+          path: |
+            .z-cache/stage1-parser-library-*.dylib
+            .z-cache/stage1-self-hosted-strings-*.dylib
+          key: z-stage1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('compiler/src/**/*.ts', 'compiler/frontend/**/*.zs', 'package.json') }}
+
+      - name: Restore generated Swift compatibility targets
+        if: matrix.swift_cache
+        id: swift-target-cache
+        uses: actions/cache@v4
+        with:
+          path: examples/interop/swift/**/.z-cache
+          key: z-swift-targets-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.key }}-${{ hashFiles('examples/interop/swift/**/*.swift', 'examples/interop/swift/**/z.json') }}
+
+      - name: Mark restored Swift targets current
+        if: matrix.swift_cache && steps.swift-target-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: find examples/interop/swift -path '*/.z-cache/*' -type f -exec touch {} +
+
       - name: Report toolchain
         run: |
           bun --version
-          xcrun clang --version
+          cat "${RUNNER_TEMP}/z-toolchain.txt"
 
-      - name: Run full suite and fixed-point bootstrap
-        run: bun test
+      - name: Run ${{ matrix.name }} tier
+        run: bun run ${{ matrix.script }}
