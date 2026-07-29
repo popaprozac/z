@@ -401,6 +401,15 @@ export type TestFailurePlan = {
   readonly location: SourceLocation;
 };
 
+type ViewOriginSource = {
+  readonly owner: string;
+  readonly location: SourceLocation;
+};
+
+type ViewOrigin = {
+  readonly sources: readonly ViewOriginSource[];
+};
+
 type StandardTypeName =
   | "TextBuffer"
   | "Arena"
@@ -421,8 +430,8 @@ type AnalysisState = {
   readonly viewReturnExpressions: Set<number>;
   readonly viewLoadExpressions: Set<number>;
   readonly viewBindingOwners: Map<number, string>;
-  readonly viewCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
-  readonly viewOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
+  readonly viewCallOrigins: Map<number, ViewOrigin>;
+  readonly viewOrigins: Map<string, ViewOrigin>;
   readonly localViewInitializers: Set<number>;
   readonly connectionCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly connectionOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
@@ -1309,11 +1318,48 @@ export function analyze(
     }
     validateFunctionSignature(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName);
     validateNativeExport(declaration, structs, enums, fileName);
-    if (parseReceiverViewReturnType(declaration.returnType.name)) {
-      throw new DiagnosticError(fileName, declaration.returnType.location, "view returns require a borrowed instance method receiver", {
-        code: "Z0206",
-        helps: ["declare the projection as a synchronous instance method on the owner type"],
-      });
+    const returnedView = parseReceiverViewReturnType(
+      declaration.returnType.name,
+    );
+    if (returnedView) {
+      if (
+        declaration.async
+        || declaration.errorType
+        || declaration.rawBody
+        || isGeneratorFunction(declaration)
+        || isAsyncGeneratorFunction(declaration)
+      ) {
+        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view return requires a synchronous, non-throwing Z function", {
+          code: "Z0206",
+        });
+      }
+      if (structs.get(returnedView.target)?.kind !== "struct") {
+        throw new DiagnosticError(fileName, declaration.returnType.location, "the first parameter-view tier requires a concrete Z struct target", {
+          code: "Z0206",
+        });
+      }
+      const sources = parameterViewSourceIndices(declaration);
+      if (sources.length === 0) {
+        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view requires at least one direct return from an immutable `in` parameter", {
+          code: "Z0206",
+          helps: ["return the borrowed parameter itself, one of its fields, or one of its indexed elements"],
+        });
+      }
+      for (const source of sources) {
+        const parameter = declaration.parameters[source];
+        const parameterType = parameter.type.name;
+        if (
+          structs.get(parameterType)?.kind === "class"
+          || state.foreignNamedTypes.get(parameterType)?.kind === "object"
+          || parameterType.startsWith("__z_objc:")
+        ) {
+          throw new DiagnosticError(fileName, parameter.location, "parameter-provenanced views require value-storage owners", {
+            code: "Z0206",
+            notes: ["class aliases could mutate projected storage without passing through this loan"],
+            helps: ["use a value struct or return an owned snapshot"],
+          });
+        }
+      }
     }
   }
 
@@ -2588,8 +2634,10 @@ function analyzeConstructorInitialization(
       case "string":
       case "boolean":
       case "null":
-      case "dynamicArrayExpression":
       case "argumentReference":
+        return;
+      case "dynamicArrayExpression":
+        for (const element of expression.elements) checkExpression(element, initialized);
         return;
       case "raw":
         for (const capture of expression.captures) {
@@ -3244,7 +3292,10 @@ function analyzeStatement(
         locals.set(statement.name, String(variableType));
         state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
         bindViewOrigin(statement.name, origin, fileName, state);
-        state.viewBindingOwners.set(statement.nameLocation.offset, origin.owner);
+        state.viewBindingOwners.set(
+          statement.nameLocation.offset,
+          viewOriginOwnerLabel(origin),
+        );
         return;
       }
       if (String(variableType) === nativeConnectionTypeName) {
@@ -3623,11 +3674,34 @@ function analyzeStatement(
       const view = parseViewType(expected);
       if (view) {
         const root = storageRoot(statement.expression);
-        if (!root || root.name !== "this" || (statement.expression.kind !== "member" && statement.expression.kind !== "index")) {
-          throw new DiagnosticError(fileName, statement.expression.location, "a view method must return a field or indexed element derived directly from this", {
-            code: "Z0206",
-            notes: ["forwarding another view or returning local storage would let it escape the wrong owner"],
-          });
+        const directProjection = statement.expression.kind === "identifier"
+          || statement.expression.kind === "member"
+          || statement.expression.kind === "index";
+        if (state.activeReceiver) {
+          if (
+            !root
+            || root.name !== "this"
+            || (
+              statement.expression.kind !== "member"
+              && statement.expression.kind !== "index"
+            )
+          ) {
+            throw new DiagnosticError(fileName, statement.expression.location, "a view method must return a field or indexed element derived directly from this", {
+              code: "Z0206",
+              notes: ["forwarding another view or returning local storage would let it escape the wrong owner"],
+            });
+          }
+        } else {
+          const parameter = root
+            ? owner.parameters.find((candidate) => candidate.name === root.name)
+            : null;
+          if (!root || !parameter || parameter.mode !== "in" || !directProjection) {
+            throw new DiagnosticError(fileName, statement.expression.location, "a parameter-provenanced view must return an immutable input, one of its fields, or one of its indexed elements", {
+              code: "Z0206",
+              notes: ["local storage and forwarded view bindings cannot escape their owner"],
+              helps: ["derive the result directly from an `in` parameter"],
+            });
+          }
         }
         const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
         requireAssignable(view.target, actual, statement.expression, fileName, structs, enums, state);
@@ -3669,11 +3743,11 @@ function analyzeStatement(
       if (state.asyncScopeDepth > 0) {
         throw new DiagnosticError(fileName, statement.location, "yield cannot suspend through an async scope");
       }
-      const liveView = state.viewOrigins.entries().next().value as [string, { readonly owner: string }] | undefined;
+      const liveView = state.viewOrigins.entries().next().value as [string, ViewOrigin] | undefined;
       if (liveView) {
         throw new DiagnosticError(fileName, statement.location, `generator cannot suspend while view ${JSON.stringify(liveView[0])} is live`, {
           code: "Z0206",
-          notes: [`the view borrows storage owned by ${JSON.stringify(liveView[1].owner)}`],
+          notes: [`the view may borrow storage owned by ${JSON.stringify(viewOriginOwnerLabel(liveView[1]))}`],
           helps: ["copy the needed value before yield or end the view's last use before suspension"],
         });
       }
@@ -3955,7 +4029,12 @@ function analyzeStatement(
         if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
         if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
           bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
-          if (arm.bindingLocation) state.viewBindingOwners.set(arm.bindingLocation.offset, optionalViewOrigin.owner);
+          if (arm.bindingLocation) {
+            state.viewBindingOwners.set(
+              arm.bindingLocation.offset,
+              viewOriginOwnerLabel(optionalViewOrigin),
+            );
+          }
         }
         if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
           state.borrowOrigins.set(arm.binding, { location: statement.location, kind: "match" });
@@ -4667,7 +4746,11 @@ function collectClosureCaptures(
       case "string":
       case "boolean":
       case "null":
+        return;
       case "dynamicArrayExpression":
+        for (const element of expression.elements) {
+          walkExpression(element, localNames);
+        }
         return;
       case "raw":
         for (const capture of expression.captures) {
@@ -5251,7 +5334,12 @@ function inferMatchExpression(
     if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
     if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
       bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
-      if (arm.bindingLocation) state.viewBindingOwners.set(arm.bindingLocation.offset, optionalViewOrigin.owner);
+      if (arm.bindingLocation) {
+        state.viewBindingOwners.set(
+          arm.bindingLocation.offset,
+          viewOriginOwnerLabel(optionalViewOrigin),
+        );
+      }
     }
     if (borrowed && arm.binding && variant.payload && hasOwnershipType(variant.payload.name, structs, enums, state)) {
       state.borrowOrigins.set(arm.binding, { location: expression.location, kind: "match" });
@@ -6360,7 +6448,7 @@ function isTaskCancellationCall(expression: Expression): expression is Extract<E
 function firstLiveBorrow(
   locals: ReadonlyMap<string, ValueType>,
   activeFunction: FunctionDeclaration | null,
-  viewOrigins: ReadonlyMap<string, { readonly owner: string; readonly location: SourceLocation }>,
+  viewOrigins: ReadonlyMap<string, ViewOrigin>,
   borrowOrigins: ReadonlyMap<string, {
     readonly location: SourceLocation;
     readonly kind: "closure" | "iteration" | "match" | "ownedMatch";
@@ -6576,11 +6664,10 @@ function inferExpressionInner(
             helps: ["borrow the class reference directly with an `in` parameter"],
           });
         }
-        const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
-        state.viewCallOrigins.set(expression.location.offset, {
-          owner: ownerName,
-          location: expression.operand.location,
-        });
+        state.viewCallOrigins.set(
+          expression.location.offset,
+          viewOriginForRoot(root.name, expression.operand.location, state),
+        );
         return viewTypeName(target);
       }
       if (expression.operator === "copy") {
@@ -7062,6 +7149,38 @@ function inferExpressionInner(
       return fixedArrayTypeName(String(elementType), expression.elements.length);
     }
     case "dynamicArrayExpression":
+      for (const element of expression.elements) {
+        const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
+        rejectBorrowedNativeResourceEscape(
+          actual,
+          element,
+          locals,
+          fileName,
+          state,
+          "stored in an Array",
+        );
+        requireAssignable(
+          expression.elementType,
+          actual,
+          element,
+          fileName,
+          structs,
+          enums,
+          state,
+        );
+        consumeOwnedValue(
+          element,
+          expression.elementType,
+          locals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+      }
+      if (expression.elements.length > 0) {
+        state.dynamicArrayPushTypes.add(dynamicArrayTypeName(expression.elementType));
+      }
       return dynamicArrayTypeName(expression.elementType);
     case "index": {
       const ownerType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
@@ -8571,7 +8690,10 @@ function inferExpressionInner(
             consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state);
           }
           state.arenaCreateCalls.set(expression.location.offset, actual);
-          state.viewCallOrigins.set(expression.location.offset, { owner: root.name, location: expression.callee.object.location });
+          state.viewCallOrigins.set(
+            expression.location.offset,
+            directViewOrigin(root.name, expression.callee.object.location),
+          );
           return viewTypeName(actual);
         }
         if (receiverValueType === "Hasher") {
@@ -8657,8 +8779,10 @@ function inferExpressionInner(
             if (mapValueHasReferenceIdentity(map.valueType, structs, state)) {
               return optionTypeName(map.valueType);
             }
-            const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
-            state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
+            state.viewCallOrigins.set(
+              expression.location.offset,
+              viewOriginForRoot(root.name, expression.callee.object.location, state),
+            );
             return optionTypeName(viewTypeName(map.valueType));
           }
           if (method === "set") {
@@ -9219,8 +9343,10 @@ function inferExpressionInner(
               helps: ["bind the owner before requesting a view"],
             });
           }
-          const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
-          state.viewCallOrigins.set(expression.location.offset, { owner: ownerName, location: expression.callee.object.location });
+          state.viewCallOrigins.set(
+            expression.location.offset,
+            viewOriginForRoot(root.name, expression.callee.object.location, state),
+          );
         }
         return callable.returnType.name;
       }
@@ -9347,6 +9473,16 @@ function inferExpressionInner(
       ) {
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(callable.returnType.name, callable.errorType.name);
+      }
+      if (parseReceiverViewReturnType(callable.returnType.name)) {
+        const origin = parameterViewCallOrigin(
+          callable,
+          expression.arguments,
+          locals,
+          fileName,
+          state,
+        );
+        if (origin) state.viewCallOrigins.set(expression.location.offset, origin);
       }
       return callable.returnType.name;
     }
@@ -9942,25 +10078,137 @@ function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan 
   return null;
 }
 
+function directViewOrigin(owner: string, location: SourceLocation): ViewOrigin {
+  return { sources: [{ owner, location }] };
+}
+
+function viewOriginForRoot(
+  root: string,
+  location: SourceLocation,
+  state: AnalysisState,
+): ViewOrigin {
+  return state.viewOrigins.get(root) ?? directViewOrigin(root, location);
+}
+
+function mergeViewOrigins(origins: readonly ViewOrigin[]): ViewOrigin {
+  const sources: ViewOriginSource[] = [];
+  for (const origin of origins) {
+    for (const source of origin.sources) {
+      if (sources.some((candidate) => candidate.owner === source.owner)) continue;
+      sources.push(source);
+    }
+  }
+  return { sources };
+}
+
+function viewOriginOwnerLabel(origin: ViewOrigin): string {
+  return origin.sources.map((source) => source.owner).join(" | ");
+}
+
+function parameterViewSourceIndices(
+  declaration: FunctionDeclaration,
+): readonly number[] {
+  if (!parseReceiverViewReturnType(declaration.returnType.name)) return [];
+  const sources = new Set<number>();
+  const record = (expression: Expression | null): void => {
+    if (!expression) return;
+    const root = storageRoot(expression);
+    if (!root) return;
+    const index = declaration.parameters.findIndex((parameter) => (
+      parameter.name === root.name && parameter.mode === "in"
+    ));
+    if (index >= 0) sources.add(index);
+  };
+  const visit = (statement: Statement): void => {
+    switch (statement.kind) {
+      case "return":
+        record(statement.expression);
+        return;
+      case "block":
+        statement.statements.forEach(visit);
+        return;
+      case "unsafe":
+        visit(statement.body);
+        return;
+      case "asyncScope":
+        visit(statement.body);
+        return;
+      case "if":
+        visit(statement.thenBranch);
+        if (statement.elseBranch) visit(statement.elseBranch);
+        return;
+      case "while":
+      case "for":
+        visit(statement.body);
+        return;
+      case "match":
+        statement.arms.forEach((arm) => visit(arm.body));
+        return;
+      default:
+        return;
+    }
+  };
+  declaration.body.forEach(visit);
+  return [...sources];
+}
+
+function parameterViewCallOrigin(
+  declaration: FunctionDeclaration,
+  arguments_: readonly Expression[],
+  locals: ReadonlyMap<string, ValueType>,
+  fileName: string,
+  state: AnalysisState,
+): ViewOrigin | null {
+  const origins: ViewOrigin[] = [];
+  for (const sourceIndex of parameterViewSourceIndices(declaration)) {
+    const argument = arguments_[sourceIndex];
+    const rootName = argument?.kind === "argumentReference"
+      ? argument.name
+      : argument
+        ? storageRoot(argument)?.name ?? null
+        : null;
+    if (!argument || !rootName || !locals.has(rootName)) {
+      throw new DiagnosticError(
+        fileName,
+        argument?.location ?? declaration.location,
+        `view-returning function ${JSON.stringify(declaration.name)} requires named storage for borrowed parameter ${JSON.stringify(declaration.parameters[sourceIndex].name)}`,
+        {
+          code: "Z0206",
+          helps: ["bind the owner before requesting a view"],
+        },
+      );
+    }
+    origins.push(viewOriginForRoot(rootName, argument.location, state));
+  }
+  return origins.length > 0 ? mergeViewOrigins(origins) : null;
+}
+
 function bindViewOrigin(
   binding: string,
-  origin: { readonly owner: string; readonly location: SourceLocation },
+  origin: ViewOrigin,
   fileName: string,
   state: AnalysisState,
 ): void {
   unbindViewOrigin(binding, state);
-  const conflict = registerAccessLoan(state.activeLoans, {
-    root: origin.owner,
-    capability: "in",
-    lifetime: { kind: "view", binding },
-    location: origin.location,
-  });
-  if (conflict) {
-    throw new DiagnosticError(fileName, origin.location, `cannot create view ${JSON.stringify(binding)} while ${JSON.stringify(origin.owner)} has an active ${conflict.capability} loan`, {
-      code: conflict.lifetime.kind === "task" ? "Z0704" : "Z0205",
-      labels: [{ location: conflict.location, message: `active ${conflict.capability} loan begins here`, length: origin.owner.length }],
-      notes: ["views and call- or task-lifetime access use the same exclusivity rules"],
-      helps: ["finish the conflicting access before creating the view"],
+  for (const source of origin.sources) {
+    const conflict = (state.activeLoans.get(source.owner) ?? []).find((loan) => (
+      accessCapabilitiesConflict(loan.capability, "in")
+    ));
+    if (conflict) {
+      throw new DiagnosticError(fileName, source.location, `cannot create view ${JSON.stringify(binding)} while ${JSON.stringify(source.owner)} has an active ${conflict.capability} loan`, {
+        code: conflict.lifetime.kind === "task" ? "Z0704" : "Z0205",
+        labels: [{ location: conflict.location, message: `active ${conflict.capability} loan begins here`, length: source.owner.length }],
+        notes: ["views and call- or task-lifetime access use the same exclusivity rules"],
+        helps: ["finish the conflicting access before creating the view"],
+      });
+    }
+  }
+  for (const source of origin.sources) {
+    registerAccessLoan(state.activeLoans, {
+      root: source.owner,
+      capability: "in",
+      lifetime: { kind: "view", binding },
+      location: source.location,
     });
   }
   state.viewOrigins.set(binding, origin);
@@ -9991,11 +10239,13 @@ function unbindConnectionOrigin(binding: string, state: AnalysisState): void {
 function unbindViewOrigin(binding: string, state: AnalysisState): void {
   const origin = state.viewOrigins.get(binding);
   if (!origin) return;
-  const remaining = (state.activeLoans.get(origin.owner) ?? []).filter((loan) => (
-    loan.lifetime.kind !== "view" || loan.lifetime.binding !== binding
-  ));
-  if (remaining.length > 0) state.activeLoans.set(origin.owner, remaining);
-  else state.activeLoans.delete(origin.owner);
+  for (const source of origin.sources) {
+    const remaining = (state.activeLoans.get(source.owner) ?? []).filter((loan) => (
+      loan.lifetime.kind !== "view" || loan.lifetime.binding !== binding
+    ));
+    if (remaining.length > 0) state.activeLoans.set(source.owner, remaining);
+    else state.activeLoans.delete(source.owner);
+  }
   state.viewOrigins.delete(binding);
 }
 
@@ -13188,8 +13438,10 @@ function checkForeignCall(
         helps: ["bind the native owner before requesting its text view"],
       });
     }
-    const ownerName = state.viewOrigins.get(root.name)?.owner ?? root.name;
-    state.viewCallOrigins.set(location.offset, { owner: ownerName, location: argument.location });
+    state.viewCallOrigins.set(
+      location.offset,
+      viewOriginForRoot(root.name, argument.location, state),
+    );
   }
   let result = target.returnType.kind === "z"
     ? target.returnType.name

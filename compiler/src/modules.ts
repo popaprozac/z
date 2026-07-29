@@ -753,7 +753,11 @@ function transformExpression(
     case "arrayExpression":
       return { ...expression, elements: expression.elements.map((item) => transformExpression(item, scope, locals, typeParameters)) };
     case "dynamicArrayExpression":
-      return { ...expression, elementType: renameTypeName(expression.elementType, scope, typeParameters) };
+      return {
+        ...expression,
+        elementType: renameTypeName(expression.elementType, scope, typeParameters),
+        elements: expression.elements.map((item) => transformExpression(item, scope, locals, typeParameters)),
+      };
     case "structExpression":
       return {
         ...expression,

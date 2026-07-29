@@ -1,4 +1,4 @@
-import type { EnumDeclaration, FunctionDeclaration, Program, StructDeclaration, TraitDeclaration } from "./ast.ts";
+import type { EnumDeclaration, Expression, FunctionDeclaration, Program, StructDeclaration, TraitDeclaration } from "./ast.ts";
 import { DiagnosticError } from "./diagnostics.ts";
 import {
   dynamicArrayTypeName,
@@ -258,12 +258,16 @@ export function materializeGenerics(
     if (value.kind === "call" && value.callee?.kind === "identifier") {
       const generic = parseGenericType(value.callee.name);
       if (generic?.base === "Array") {
-        if (generic.arguments.length !== 1 || value.arguments.length !== 0) {
-          throw new DiagnosticError(fileName, value.location, "Array<T>() expects one type argument and no values");
+        if (generic.arguments.length !== 1) {
+          throw new DiagnosticError(fileName, value.location, "Array<T>(...) expects one type argument");
+        }
+        if (value.argumentLabels.some((label: string | null) => label !== null)) {
+          throw new DiagnosticError(fileName, value.location, "Array<T>(...) does not accept labeled elements");
         }
         return {
           kind: "dynamicArrayExpression",
           elementType: substituteName(generic.arguments[0], substitutions),
+          elements: value.arguments.map((argument: Expression) => transform(argument, substitutions)),
           location: value.location,
         };
       }

@@ -9,10 +9,8 @@ struct Item {
 }
 
 function main(): i32 {
-  let items = Array<Item>();
   const first = Item({ id: 1 });
   const second = Item({ id: 2 });
-  items.push(first);
-  items.push(second);
+  const items = Array<Item>(first, second);
   return 0;
 }

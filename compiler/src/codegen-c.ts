@@ -4980,6 +4980,9 @@ function generateDirectValue(
   if (expression.kind === "closure") {
     return generateClosureValue(expression, context, consumeValue);
   }
+  if (expression.kind === "dynamicArrayExpression" && expression.elements.length > 0) {
+    return generateDynamicArrayValue(expression, context, consumeValue);
+  }
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, (value, valueContext) => (
       consumeValue(generateBridgedStringValue(expression, value, valueContext), valueContext)
@@ -5061,6 +5064,7 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
   if (["template", "try", "matchExpression", "ifExpression", "unsafeExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
+  if (expression.kind === "dynamicArrayExpression") return expression.elements.length > 0;
   if (expression.kind === "conditional") {
     return requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
@@ -5079,6 +5083,47 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
   if (expression.kind === "variantExpression") return requiresStatementValue(expression.payload, context);
   if (expression.kind === "attempt") return requiresStatementValue(expression.expression, context);
   return false;
+}
+
+function generateDynamicArrayValue(
+  expression: Extract<Expression, { kind: "dynamicArrayExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const type = dynamicArrayTypeName(expression.elementType);
+  const mapped = mapType(
+    type,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  const temporary = `_z_array_${context.valueCounter.value++}`;
+  const liveFlag = `_z_live_array_${context.liveFlagCounter.value++}`;
+  const lines = [
+    `${mapped} ${temporary} = (${mapped}){ .data = NULL, .length = 0, .capacity = 0 };`,
+    `bool ${liveFlag} = true;`,
+    `(void)${liveFlag};`,
+  ];
+  const cleanupScope = context.cleanupScopes.at(-1);
+  cleanupScope?.push({
+    name: temporary,
+    type,
+    liveFlag,
+  });
+  try {
+    for (const element of expression.elements) {
+      lines.push(generateDirectValue(
+        element,
+        context,
+        (value) => `${dynamicArrayPushName(type)}(&(${temporary}), ${value});`,
+      ));
+    }
+    lines.push(`${liveFlag} = false;`);
+    lines.push(consumeValue(temporary, context));
+  } finally {
+    cleanupScope?.pop();
+  }
+  return lines.join("\n");
 }
 
 function callArgumentNeedsLowering(expression: Expression, context: GenerationContext): boolean {
@@ -6840,6 +6885,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
     case "dynamicArrayExpression": {
       const type = dynamicArrayTypeName(expression.elementType);
       const mapped = mapType(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
+      if (expression.elements.length > 0) {
+        throw new Error("populated Array construction must be lowered through generateDirectValue");
+      }
       return `(${mapped}){ .data = NULL, .length = 0, .capacity = 0 }`;
     }
     case "index": {

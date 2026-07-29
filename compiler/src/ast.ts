@@ -497,6 +497,7 @@ export type ArrayExpression = {
 export type DynamicArrayExpression = {
   readonly kind: "dynamicArrayExpression";
   readonly elementType: string;
+  readonly elements: Expression[];
   readonly location: SourceLocation;
 };
 

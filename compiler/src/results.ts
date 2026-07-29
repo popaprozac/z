@@ -360,9 +360,11 @@ function collectClosureResults(
       case "boolean":
       case "null":
       case "identifier":
-      case "dynamicArrayExpression":
       case "argumentReference":
       case "raw":
+        break;
+      case "dynamicArrayExpression":
+        expression.elements.forEach(visitExpression);
         break;
     }
   };

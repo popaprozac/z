@@ -37,7 +37,9 @@ export function collectPlacementCaptures(
       case "string":
       case "boolean":
       case "null":
+        return;
       case "dynamicArrayExpression":
+        for (const element of value.elements) visitExpression(element, localNames);
         return;
       case "identifier":
         record(value.name, value.location, localNames, mutated);

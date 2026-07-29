@@ -51,18 +51,21 @@ exercises candidates 1 through 3 against the same lookup:
 | `documentSnapshot(id)` | returns owned `Option<Document>` | option tag plus a new `String` allocation and exact byte copy | straight-line and remains valid across workspace mutation |
 | `documentAt(index): view Document` | inferred receiver-tied borrow | `const Document *`, bounds check, no document or string copy | straight-line until the view's last use; owner mutation is then permitted |
 | `document(id): Option<view Document>` | optional receiver-tied borrow, inspected with `match (in result)` | one `const Document *`; `NULL` is `none`, no tag or string copy | natural fallible lookup; `some` inherits owner provenance and `none` carries no borrow |
+| `chooseDocument(flag, in drafts, in published): view Document` | direct parameter-provenanced borrow | one `const Document *`; no provenance tag, retain, or copy | both possible owners remain read-only until the selected view's last use |
 
 The scoped form reads naturally for enumeration and one operation. It becomes
 awkward when several later statements need the selected document. The snapshot
 is semantically honest when the result must survive `Workspace.open`, but its
 copy would be accidental overhead for immediate read-only use.
 
-This evidence produced a narrow receiver-tied read-only view rather than general
-lifetime parameters. Its provenance is one borrowed value-struct receiver; it
-is non-storable, may enter a synchronous `in T` call, and may be read through an
-inline closure whose synchronous `in` destination proves nonescape. Stored,
-owned, and escaping captures remain rejected, and receiver mutation is
-rejected until the view's last use. `Option<view T>` carries the same provenance
+This evidence produced narrow owner-tied read-only views rather than general
+lifetime parameters. Provenance may be one borrowed value-struct receiver or
+the conservative set of immutable value-struct parameters selected by direct
+return paths. A view is non-storable, may enter a synchronous `in T` call, and
+may be read through an inline closure whose synchronous `in` destination proves
+nonescape. Stored, owned, and escaping captures remain rejected, and source
+owner mutation is rejected until the view's last use. `Option<view T>` currently
+carries receiver provenance
 through a constrained local enum shape without admitting general borrowed enum
 storage. ARC class owners remain excluded because an alias could mutate the same
 storage. Callers needing aliasing or survival across reallocation must use an
@@ -80,6 +83,25 @@ Concise and block-bodied `match`/`if` expression arms now apply that conversion
 before their result types are unified. This preserves the distinction between
 `select`, which supplies a local expression value, and `return`, which exits the
 enclosing function at any nesting depth.
+
+The [`parameter-views.zs`](../examples/language/ownership/parameter-views.zs)
+probe extended that result to ordinary module functions. `chooseDocument`
+returns a direct element from either `drafts` or `published`. Semantic analysis
+records both possible call-site roots, installs an immutable loan for each, and
+removes both loans after the result's final use. Mutating either library before
+that use is a `Z0205` error; both can grow immediately afterward. Generated C
+still returns one checked `const Document *`, so conservative source provenance
+does not become a runtime discriminant.
+
+The same probe exposed a separate usability cost: application-shaped setup was
+dominated by creating empty `Array<T>()` values and then issuing repeated
+`push` calls. `Array<T>(first, second)` now performs source-ordered populated
+construction under the same ownership rules as `push`. A guarded temporary
+owns each element as soon as it is inserted, then transfers the completed
+buffer to its destination. This preserves deterministic ownership internally
+without exposing a sequence of user-authored mutations. The one-argument form
+is deliberately one element, leaving capacity reservation to a future
+explicitly named factory.
 
 The follow-up [`arena.zs`](../examples/language/ownership/arena.zs) probe gives a
 region owner stable allocation addresses. Multiple direct views coexist across
@@ -1526,8 +1548,9 @@ remain separate composition slices.
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
-- accepted parameter-provenanced or retained views; rejected parameter and
-  class-owner shapes now have explicit evidence;
+- optional parameter-provenanced containers and retained views; direct
+  immutable parameter provenance now has positive, negative, native-frontend,
+  hover, and one-pointer lowering evidence;
 - mutable shared ARC identity, concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

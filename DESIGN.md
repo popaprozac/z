@@ -783,19 +783,29 @@ cancellation, or scope exit. The first executable backing-storage tier is a
 cleanup-free fixed array in an async frame. Growable arrays and cleanup-bearing
 fixed-array elements require their own async-frame cleanup lowering.
 
-`Array<T>()` explicitly creates a growable owned buffer; array literals remain
-fixed inline arrays. `Array<T>` carries its allocation, initialized length, and
-capacity as one move-only value. `push` requires addressable `let` storage,
-checks capacity arithmetic, grows geometrically, and transfers or copies the
-element according to its ordinary ownership rules. Safe indexing uses the same
-bounds check as fixed arrays. Destruction walks initialized elements in reverse
-order before freeing the buffer.
+`Array<T>()` explicitly creates an empty growable owned buffer, while
+`Array<T>(first, second)` constructs a populated growable buffer and array
+literals remain fixed inline arrays. Constructor elements are evaluated in
+source order and transfer or copy according to the same ownership rules as
+`push`. `Array<T>(value)` therefore means one initialized element, not reserved
+capacity; a future reservation operation will use an explicitly named factory.
+`Array<T>` carries its allocation, initialized length, and capacity as one
+move-only value. `push` requires addressable `let` storage, checks capacity
+arithmetic, grows geometrically, and transfers or copies the element according
+to its ordinary ownership rules. Safe indexing uses the same bounds check as
+fixed arrays. Destruction walks initialized elements in reverse order before
+freeing the buffer.
 
 A growable array can be borrowed as `Slice<T>` for a non-escaping call. A local
 may name a direct field or element projection with
 `const value = view owner.items[index]`; a value-struct method may also return a
-direct projection as `view T`. The compiler ties either read-only view to its
-named value-storage owner and prevents invalidating mutation until last use.
+direct projection as `view T`. A synchronous non-throwing module function may
+return a direct projection from one or more immutable `in` value-struct
+parameters. When different return paths select different parameters, the
+caller conservatively loans every possible source owner until the result's last
+use; the runtime result remains one pointer and carries no provenance tag. The
+compiler ties each read-only view to its named value-storage owner or owners and
+prevents invalidating mutation until last use.
 The local form lowers to `const T *` and does not copy the projected value. The
 same pointer representation survives read-only `Array<T>` indexing, length,
 and iteration plus read-only `String` inspection, comparison, and formatting;
@@ -1894,11 +1904,14 @@ an owned `documentSnapshot(id)`. Generated C confirms every borrowed shape uses
 copies the selected title. Optional views niche-lower to that same pointer:
 `NULL` is `none`, and `some(document)` inherits the receiver provenance during
 `match (in result)`. This is a constrained borrowed container, not permission
-for general view-bearing enum storage. The implemented `view` tier has one
-provenance source: a synchronous borrowed value-struct receiver returning one
-of its direct fields or indexed elements.
-Last use ends the borrow; the view cannot be stored, returned again, or held
-across receiver mutation or suspension. It can enter a synchronous `in T` call
+for general view-bearing enum storage. The implemented `view` tier accepts
+either a synchronous borrowed value-struct receiver or immutable value-struct
+parameters returning themselves, direct fields, or indexed elements. A
+parameter function may select among multiple inputs; the call conservatively
+borrows all possible source owners without changing the one-pointer runtime
+representation. Last use ends every associated borrow; the view cannot be
+stored, returned again, or held across owner mutation or suspension. It can
+enter a synchronous `in T` call
 or be read by an inline closure whose `in` destination proves it cannot escape;
 neither form extends provenance beyond that call. Stored, owned, and escaping
 captures remain rejected. ARC class

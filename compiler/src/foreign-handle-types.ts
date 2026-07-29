@@ -138,7 +138,11 @@ export function transformProgramTypeNames(
       case "arrayExpression":
         return { ...value, elements: value.elements.map(expression) };
       case "dynamicArrayExpression":
-        return { ...value, elementType: transformName(value.elementType) };
+        return {
+          ...value,
+          elementType: transformName(value.elementType),
+          elements: value.elements.map(expression),
+        };
       case "structExpression":
         return {
           ...value,

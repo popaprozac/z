@@ -646,7 +646,13 @@ export function inferGenericCalls(
         };
       }
       case "dynamicArrayExpression":
-        return { expression, type: dynamicArrayTypeName(expression.elementType) };
+        return {
+          expression: {
+            ...expression,
+            elements: expression.elements.map((item) => rewriteExpression(item, environment).expression),
+          },
+          type: dynamicArrayTypeName(expression.elementType),
+        };
       case "structExpression": {
         const fields = expression.fields.map((field) => {
           const value = rewriteExpression(field.expression, environment);
@@ -1324,8 +1330,8 @@ export function inferGenericCalls(
           }
           const explicit = parseGenericType(rewrittenCallee.name);
           if (explicit?.base === "Array") {
-            if (explicit.arguments.length !== 1 || args.length !== 0) {
-              throw new DiagnosticError(fileName, expression.location, "Array<T>() expects one type argument and no values");
+            if (explicit.arguments.length !== 1) {
+              throw new DiagnosticError(fileName, expression.location, "Array<T>(...) expects one type argument");
             }
             returnType = dynamicArrayTypeName(explicit.arguments[0]);
           } else if (callee.type && closureReturns.has(callee.type)) {

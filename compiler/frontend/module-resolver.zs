@@ -3043,9 +3043,66 @@ function inferExpressionNodeType(
           node.column
         );
       }
+      if (base == "Array") {
+        match (genericTypeShape(callee)) {
+          some(array) => {
+            if (array.arguments.length == 1) {
+              const elementType = array.arguments[0].copyBytes(
+                0,
+                array.arguments[0].byteLength
+              );
+              const arguments = callArgumentNodes(children);
+              for (const argument of arguments) {
+                const actual = try inferExpressionNodeTypeExpected(
+                  module,
+                  modules,
+                  moduleIndex,
+                  arena,
+                  tree,
+                  argument,
+                  elementType,
+                  inout bindings,
+                  inout evidence
+                );
+                try requireExpressionType(
+                  module,
+                  modules,
+                  moduleIndex,
+                  tree,
+                  argument,
+                  elementType,
+                  actual
+                );
+                try consumeOwnedExpressionNode(
+                  module,
+                  modules,
+                  moduleIndex,
+                  tree,
+                  argument,
+                  elementType,
+                  false,
+                  inout bindings
+                );
+              }
+              return copiedString(callee);
+            }
+          }
+          none => {}
+        }
+        try inferUnclassifiedCallArguments(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          children,
+          inout bindings,
+          inout evidence
+        );
+        return copiedString(callee);
+      }
       if (
-        base == "Array"
-        || base == "Map"
+        base == "Map"
         || base == "Set"
         || base == "TextBuffer"
       ) {
@@ -4049,14 +4106,45 @@ function inferStatement(
           (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0)
           || (kind == StatementKind.selectStatement && contextualExpected.byteLength > 0)
         ) {
-          try requireExpressionSyntaxType(
-            module,
-            modules,
-            moduleIndex,
-            expression,
-            contextualExpected,
-            actual
-          );
+          let acceptsBorrowedView = false;
+          if (
+            kind == StatementKind.returnStatement
+            && stringStartsWith(contextualExpected, "view ")
+          ) {
+            const target = contextualExpected.copyBytes(
+              5,
+              contextualExpected.byteLength
+            );
+            if (equivalentTypes(modules, moduleIndex, target, actual)) {
+              match (in expression.tree) {
+                some(tree) => {
+                  const root = tree.root;
+                  const expressionKind = tree.nodes[root].kind;
+                  const owner = expressionStorageRootName(tree, root);
+                  if (
+                    (
+                      expressionKind == ExpressionKind.identifierExpression
+                      || expressionKind == ExpressionKind.memberExpression
+                      || expressionKind == ExpressionKind.indexExpression
+                    )
+                    && valueBindingIsBorrowed(bindings, owner)
+                    && !valueBindingIsMatchBorrowed(bindings, owner)
+                  ) acceptsBorrowedView = true;
+                }
+                none => {}
+              }
+            }
+          }
+          if (!acceptsBorrowedView) {
+            try requireExpressionSyntaxType(
+              module,
+              modules,
+              moduleIndex,
+              expression,
+              contextualExpected,
+              actual
+            );
+          }
         }
         let consumedType = actual.copyBytes(0, actual.byteLength);
         if (contextualExpected.byteLength > 0) {

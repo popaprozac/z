@@ -2392,8 +2392,10 @@ function collectNestedAwaitOperations(
       case "null":
       case "identifier":
       case "argumentReference":
-      case "dynamicArrayExpression":
       case "closure":
+        return;
+      case "dynamicArrayExpression":
+        for (const element of candidate.elements) walk(element);
         return;
       case "template":
         for (const part of candidate.parts) {
@@ -6057,7 +6059,9 @@ function emitPreparedFrameExpression(
       case "null":
       case "identifier":
       case "argumentReference":
+        return;
       case "dynamicArrayExpression":
+        for (const element of candidate.elements) visit(element);
         return;
       case "template":
         for (const part of candidate.parts) if (part.kind === "value") visit(part.expression);
@@ -6494,6 +6498,13 @@ function emitFrameExpressionInner(
       return `(${cFrameType(type, plan.types)}){ .data = { ${elements.join(", ")} } }`;
     }
     case "dynamicArrayExpression": {
+      if (expression.elements.length > 0) {
+        unsupported(
+          fileName,
+          expression.location,
+          "populated Array construction is not executable in an async frame yet",
+        );
+      }
       const type = dynamicArrayTypeName(expression.elementType);
       return `(${cFrameType(type, plan.types)}){ .data = NULL, .length = 0, .capacity = 0 }`;
     }

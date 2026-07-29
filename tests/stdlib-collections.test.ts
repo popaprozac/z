@@ -1932,6 +1932,77 @@ test("grows owned Array values with checked indexing and generic inout mutation"
   assert.match(generated, /free\(\(values\)\.data\)/);
 });
 
+test("constructs populated Array values with owned elements in source order", () => {
+  const source = `
+    import { expect } from "std/test";
+
+    struct Entry {
+      id: i32;
+      label: String;
+    }
+
+    function next(inout sequence: i32): i32 {
+      sequence = sequence + 1;
+      return sequence;
+    }
+
+    function exercise(): i32 {
+      const entries = Array<Entry>(
+        Entry({ id: 20, label: "draft" }),
+        Entry({ id: 22, label: "published" })
+      );
+      const single = Array<i32>(7);
+      let sequence: i32 = 0;
+      const ordered = Array<i32>(
+        next(inout sequence),
+        next(inout sequence)
+      );
+      return entries[0].id + entries[1].id + single[0]
+        + ordered[0] * 10 + ordered[1];
+    }
+
+    test "populated arrays retain every supplied element" {
+      expect(exercise()).toEqual(61);
+    }
+
+    function main(): i32 {
+      return exercise() - 61;
+    }
+  `;
+
+  assert.deepEqual(diagnostics(source, "populated-array.zs"), []);
+  const generated = compileToC(source, "populated-array.zs");
+  assert.match(generated, /Z_DynamicArray_.*Entry_push\(&\(_z_array_/);
+  assert.match(generated, /Z_DynamicArray_.*i32_push\(&\(_z_array_/);
+
+  const directory = mkdtempSync("/tmp/z-populated-array-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const run = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const tests = spawnSync(process.execPath, [cli, "test", fileName], { encoding: "utf8" });
+  assert.equal(tests.status, 0, tests.stderr);
+  assert.match(tests.stdout, /1 passed; 0 failed/);
+
+  const wrongElement = diagnostics(`
+    function main(): i32 {
+      const values = Array<i32>(1, true);
+      return values[0];
+    }
+  `, "populated-array-type.zs")[0];
+  assert.match(wrongElement.message, /expected i32, found boolean/);
+
+  assert.throws(
+    () => compileToC(`
+      async function main(): i32 {
+        const values = Array<i32>(20, 22);
+        return values[0] + values[1] - 42;
+      }
+    `, "populated-array-async.zs"),
+    /populated Array construction is not executable in an async frame yet/,
+  );
+});
+
 test("borrows growable Array storage as read-only and mutable Slice values", () => {
   const source = `
     function first<T>(values: Slice<T>): T { return values[0]; }
@@ -2602,6 +2673,134 @@ test("supports inferred local views into named value storage", () => {
     token.line === viewOperatorPosition.line
     && token.character === viewOperatorPosition.character
   )));
+});
+
+test("ties returned parameter views to every possible input owner", () => {
+  const source = `
+    struct Item {
+      value: i32;
+    }
+
+    struct Store {
+      items: Array<Item>;
+
+      function append(inout this, item: Item): void {
+        this.items.push(item);
+      }
+    }
+
+    function choose(condition: boolean, in left: Store, in right: Store): view Item {
+      if (condition) return left.items[0];
+      return right.items[0];
+    }
+
+    function main(): i32 {
+      let left = Store({ items: Array<Item>() });
+      let right = Store({ items: Array<Item>() });
+      left.append(Item({ value: 20 }));
+      right.append(Item({ value: 22 }));
+
+      const selected = choose(true, in left, in right);
+      const observed = selected.value;
+
+      left.append(Item({ value: 1 }));
+      right.append(Item({ value: 2 }));
+      return observed - 20;
+    }
+  `;
+
+  assert.deepEqual(diagnostics(source, "parameter-views.zs"), []);
+  const generated = compileToC(source, "parameter-views.zs");
+  assert.match(
+    generated,
+    /const Z_Item \*\s*choose\(bool condition, const Z_Store \*left, const Z_Store \*right\)/,
+  );
+  assert.match(generated, /return &\([^;]*\(\*left\)[^;]*items[^;]*data[^;]*\);/);
+  assert.match(generated, /return &\([^;]*\(\*right\)[^;]*items[^;]*data[^;]*\);/);
+
+  const directory = mkdtempSync("/tmp/z-parameter-views-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const selectedOffset = source.indexOf("selected =");
+  assert.match(
+    hover(source, "parameter-views.zs", selectedOffset)?.contents.value ?? "",
+    /selected: view Item.*view of left \| right/,
+  );
+
+  const leftMutation = source.replace(
+    "const observed = selected.value;",
+    "left.append(Item({ value: 1 }));\n      const observed = selected.value;",
+  );
+  const leftDiagnostic = diagnostics(leftMutation, "parameter-view-left-loan.zs")[0];
+  assert.equal(leftDiagnostic.code, "Z0205");
+  assert.match(leftDiagnostic.message, /cannot mutate "left" while view "selected" is live/);
+
+  const rightMutation = source.replace(
+    "const observed = selected.value;",
+    "right.append(Item({ value: 2 }));\n      const observed = selected.value;",
+  );
+  const rightDiagnostic = diagnostics(rightMutation, "parameter-view-right-loan.zs")[0];
+  assert.equal(rightDiagnostic.code, "Z0205");
+  assert.match(rightDiagnostic.message, /cannot mutate "right" while view "selected" is live/);
+
+  const localReturn = `
+    struct Item { value: i32; }
+    function invalid(in item: Item): view Item {
+      const local = Item({ value: item.value });
+      return local;
+    }
+  `;
+  const localDiagnostic = diagnostics(localReturn, "parameter-view-local.zs")[0];
+  assert.equal(localDiagnostic.code, "Z0206");
+  assert.match(localDiagnostic.message, /requires at least one direct return from an immutable `in` parameter/);
+
+  const classOwner = `
+    struct Item { value: i32; }
+    class Store { item: Item; }
+    function current(in store: Store): view Item {
+      return store.item;
+    }
+  `;
+  const classDiagnostic = diagnostics(classOwner, "parameter-view-class.zs")[0];
+  assert.equal(classDiagnostic.code, "Z0206");
+  assert.match(classDiagnostic.message, /require value-storage owners/);
+
+  const moduleDirectory = mkdtempSync("/tmp/z-parameter-view-modules-");
+  const libraryFile = resolve(moduleDirectory, "library.zs");
+  const mainFile = resolve(moduleDirectory, "main.zs");
+  writeFileSync(libraryFile, `
+    export struct Item { value: i32; }
+    export struct Store { items: Array<Item>; }
+    export function choose(
+      first: boolean,
+      in left: Store,
+      in right: Store
+    ): view Item {
+      if (first) return left.items[0];
+      return right.items[0];
+    }
+  `);
+  writeFileSync(mainFile, `
+    import { Item, Store, choose } from "./library.zs";
+
+    function main(): i32 {
+      const left = Store({ items: Array<Item>(Item({ value: 20 })) });
+      const right = Store({ items: Array<Item>(Item({ value: 22 })) });
+      const selected = choose(false, left, right);
+      return selected.value - 22;
+    }
+  `);
+  const moduleRun = spawnSync(process.execPath, [cli, "run", mainFile], { encoding: "utf8" });
+  assert.equal(moduleRun.status, 0, moduleRun.stderr);
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", mainFile, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
 });
 
 test("exposes Map imports, members, and source-level types to editor services", () => {

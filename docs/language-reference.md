@@ -350,10 +350,32 @@ console.log(document.title);
 store.open(next); // valid after document's last use
 ```
 
+Module functions can express the same relationship through immutable inputs:
+
+```z
+function choose(
+  preferDraft: boolean,
+  in drafts: DocumentStore,
+  in published: DocumentStore
+): view Document {
+  if (preferDraft) return drafts.documents[0];
+  return published.documents[0];
+}
+
+const selected = choose(true, in drafts, in published);
+console.log(selected.title);
+```
+
+The runtime result is still one `const Document *`. Because either input may
+own that pointer, the compiler conservatively keeps both stores under immutable
+loans until `selected` is last used. Hover reports both possible owners.
+
 The first tier is deliberately owner-tied and zero-overhead. A method producer
 must be synchronous and non-throwing, borrow a value-struct receiver, and return
-a direct field or indexed projection. A local producer has the same value-storage
-and direct-projection restrictions. The view itself cannot be annotated as
+a direct field or indexed projection. A module producer must likewise be
+synchronous and non-throwing and return an immutable `in` parameter, its field,
+or an indexed element. Local producers have the same value-storage and
+direct-projection restrictions. The view itself cannot be annotated as
 storage, duplicated, stored, returned again, or held across `await`. It may be
 forwarded to a synchronous `in T` parameter or read through an inline closure
 passed to a synchronous `in` function parameter. The latter closure is
@@ -361,7 +383,8 @@ compiler-proven nonescaping and copies only the view pointer into its stack
 environment; owned, stored, mutable, escaping, and async forwarding remain
 rejected. Its owner cannot mutate or move before the view's last use. ARC class
 owners are excluded because another alias could invalidate growable projected
-storage.
+storage. Parameter provenance currently remains direct and synchronous;
+optional parameter-view results and retained views are later layers.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
 load an independent `T` from `view T` implicitly. This is an ordinary by-value
@@ -626,6 +649,18 @@ Indexing is bounds-checked in safe code. Owned elements are destroyed in reverse
 initialization order. Mutation that may reallocate requires exclusive mutable
 storage. A slice borrow cannot outlive its backing storage or cross a mutation
 that invalidates it.
+
+`Array<T>()` constructs an empty growable array. Values may be supplied directly
+without a sequence of `push` calls:
+
+```z
+const names = Array<String>("lexer", "parser", "emitter");
+const oneNumber = Array<i32>(42);
+```
+
+Arguments are evaluated in source order and enter the array under the same
+copy/move rules as `push`. The one-argument form contains one element; it does
+not reserve capacity. A future capacity operation will have an explicit name.
 
 `Array<T>` supports move-only native C++ values. `push(value)` transfers the
 element into the buffer. Growth allocates native storage, move-constructs each

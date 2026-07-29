@@ -712,16 +712,6 @@ test("keeps ownership boundary alternatives explicit across async suspension", (
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "value view=1, class callback=2, delayed snapshot=2\n");
 
-  const parameterView = `
-    struct Item { value: i32; }
-    struct Store { item: Item; }
-    function current(in store: Store): view Item { return store.item; }
-    function main(): i32 { return 0; }
-  `;
-  const parameterDiagnostic = diagnostics(parameterView, "parameter-view-return.zs")[0];
-  assert.equal(parameterDiagnostic.code, "Z0206");
-  assert.match(parameterDiagnostic.message, /view returns require a borrowed instance method receiver/);
-
   const viewAcrossAwait = `
     struct Item { value: i32; }
     struct Store {
