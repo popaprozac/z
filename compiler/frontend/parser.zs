@@ -283,6 +283,7 @@ export struct EnumVariant {
 export struct EnumDeclaration {
   name: String;
   nativeCLayout: boolean;
+  underlyingType: Option<TypeReference>;
   variants: Array<EnumVariant>;
   offset: usize;
   line: usize;
@@ -3223,6 +3224,12 @@ function parseEnumDeclaration(
   let pendingGreater: usize = 0;
   const start = try expect(tokens, inout current, TokenKind.enumKeyword, "an enum declaration");
   const name = try expect(tokens, inout current, TokenKind.identifier, "an enum name");
+  let underlyingType = Option<TypeReference>.none;
+  if (nativeCLayout) {
+    try expectKind(tokens, inout current, TokenKind.colon, "`:` before a C enum representation type");
+    const representation = try parseType(tokens, inout current, inout pendingGreater);
+    underlyingType = Option.some(representation);
+  }
   try expectKind(tokens, inout current, TokenKind.leftBrace, `the body of ${name.text}`);
   let variants = Array<EnumVariant>();
   while (tokens[current].kind != TokenKind.rightBrace && tokens[current].kind != TokenKind.eof) {
@@ -3245,6 +3252,7 @@ function parseEnumDeclaration(
   return EnumDeclaration({
     name: name.text.copyBytes(0, name.text.byteLength),
     nativeCLayout,
+    underlyingType,
     variants,
     offset: start.offset,
     line: start.line,

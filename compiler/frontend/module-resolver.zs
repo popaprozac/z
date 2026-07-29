@@ -4435,9 +4435,20 @@ function validateNativeCLayouts(
   in modules: Array<ResolvedModule>
 ): void throws ModuleResolveError {
   let moduleIndex: usize = 0;
+  let publicNames = Array<String>();
   for (const module of parsed) {
     for (const aggregate of module.program.aggregates) {
       if (!aggregate.nativeCLayout) continue;
+      if (containsString(publicNames, aggregate.name)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `duplicate public C type name "${aggregate.name}"`,
+          aggregate.line,
+          aggregate.column
+        );
+      }
+      publicNames.push(aggregate.name.copyBytes(0, aggregate.name.byteLength));
       if (aggregate.kind != DeclarationKind.structDeclaration) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
@@ -4493,13 +4504,65 @@ function validateNativeCLayouts(
     }
     for (const enumDeclaration of module.program.enums) {
       if (!enumDeclaration.nativeCLayout) continue;
-      throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "`c enum` requires an explicit integer representation; enum ABI lowering lands in the next slice",
-        enumDeclaration.line,
-        enumDeclaration.column
-      );
+      if (containsString(publicNames, enumDeclaration.name)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `duplicate public C type name "${enumDeclaration.name}"`,
+          enumDeclaration.line,
+          enumDeclaration.column
+        );
+      }
+      publicNames.push(enumDeclaration.name.copyBytes(
+        0,
+        enumDeclaration.name.byteLength
+      ));
+      let representation = "";
+      match (in enumDeclaration.underlyingType) {
+        some(type) => representation = type.name.copyBytes(0, type.name.byteLength);
+        none => {}
+      }
+      if (
+        representation != "i8"
+        && representation != "u8"
+        && representation != "i16"
+        && representation != "u16"
+        && representation != "i32"
+        && representation != "u32"
+        && representation != "i64"
+        && representation != "u64"
+        && representation != "isize"
+        && representation != "usize"
+      ) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `C enum "${enumDeclaration.name}" requires a fixed integer representation`,
+          enumDeclaration.line,
+          enumDeclaration.column
+        );
+      }
+      if (enumDeclaration.variants.length == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "a C enum must declare at least one variant",
+          enumDeclaration.line,
+          enumDeclaration.column
+        );
+      }
+      for (const variant of enumDeclaration.variants) {
+        match (in variant.payload) {
+          some(_) => throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `C enum variant "${variant.name}" cannot carry a payload`,
+            variant.line,
+            variant.column
+          );
+          none => {}
+        }
+      }
     }
     moduleIndex = moduleIndex + 1;
   }

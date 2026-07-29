@@ -270,6 +270,93 @@ test("exports checked C-layout structs by value", () => {
   );
 });
 
+test("exports fixed-representation C enums as checked scalar values", () => {
+  const source = `
+    c enum Status: i32 {
+      ready,
+      busy,
+      stopped,
+    }
+
+    c struct Report {
+      status: Status;
+      code: i32;
+    }
+
+    function statusCode(status: Status): i32 {
+      return match (status) {
+        ready => 20;
+        busy => 21;
+        stopped => 22;
+      };
+    }
+
+    export c function z_next_status(status: Status): Status {
+      if (statusCode(status) == 20) return Status.busy;
+      return Status.stopped;
+    }
+
+    export c function z_status_report(status: Status): Report {
+      return Report({ status, code: statusCode(status) });
+    }
+  `;
+  const artifact = compileToNative(source, "zstatus.zs", { requireMain: false });
+  assert.ok(artifact.header);
+  assert.match(artifact.header, /typedef int32_t Status;/);
+  assert.match(artifact.header, /#define Status_ready \(\(Status\)0\)/);
+  assert.match(artifact.header, /#define Status_busy \(\(Status\)1\)/);
+  assert.match(artifact.header, /Z_API Status z_next_status\(Status status\);/);
+  assert.match(artifact.header, /typedef struct Report \{\s+Status status;\s+int32_t code;\s+\} Report;/);
+  assert.match(artifact.header, /Z_API Report z_status_report\(Status status\);/);
+  assert.match(artifact.source, /typedef int32_t Status;\s+typedef Status Z_Status;/);
+  assert.match(
+    artifact.source,
+    /switch \(status\) \{\s+case Status_ready:\s+break;[\s\S]*default:\s+abort\(\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-c-layout-enum-");
+  const implementation = resolve(directory, "zstatus.c");
+  const header = resolve(directory, "zstatus.h");
+  const object = resolve(directory, "zstatus.o");
+  const consumer = resolve(directory, "consumer.c");
+  const executable = resolve(directory, "consumer");
+  writeFileSync(implementation, artifact.source);
+  writeFileSync(header, artifact.header);
+  writeFileSync(consumer, `
+    #include "zstatus.h"
+    int main(void) {
+      const Report report = z_status_report(Status_stopped);
+      return z_next_status(Status_ready) == Status_busy
+        && report.status == Status_stopped
+        && report.code == 22
+        ? 0 : 1;
+    }
+  `);
+  const compileLibrary = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-c", implementation, "-o", object,
+  ], { encoding: "utf8" });
+  assert.equal(compileLibrary.status, 0, compileLibrary.stderr);
+  const compileConsumer = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", consumer, object, "-o", executable,
+  ], { encoding: "utf8" });
+  assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
+  const result = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  assert.throws(
+    () => compileToNative("c enum Invalid { ready }", "invalid-c-enum.zs", { requireMain: false }),
+    /expected `:` before a C enum representation type/,
+  );
+  assert.throws(
+    () => compileToNative("c enum Invalid: f64 { ready }", "invalid-c-enum.zs", { requireMain: false }),
+    /requires a fixed integer representation/,
+  );
+  assert.throws(
+    () => compileToNative("c enum Invalid: i32 { ready i32 }", "invalid-c-enum.zs", { requireMain: false }),
+    /cannot carry a payload/,
+  );
+});
+
 test("checks the first C-export ABI tier and its editor surface", () => {
   const unsupported = `
     export c function z_name(value: String): String {
@@ -300,6 +387,8 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   assert.match(hover(source, "export-hover.zs", cOffset)?.contents.value ?? "", /checked C ABI contract/);
   const layoutSource = "c struct Point { x: i32; }";
   assert.match(hover(layoutSource, "layout-hover.zs", 0)?.contents.value ?? "", /C ABI contract/);
+  const enumLayoutSource = "c enum Status: i32 { ready }";
+  assert.match(hover(enumLayoutSource, "enum-layout-hover.zs", 0)?.contents.value ?? "", /C ABI contract/);
   const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
   assert.match(grammar, /export\\\\s\)c/);
 
@@ -351,7 +440,7 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22)\n");
+  assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22) status=1\n");
 });
 
 test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
@@ -10651,7 +10740,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(nativeConsumerRun.status, 0, nativeConsumerRun.stderr);
   assert.equal(
     nativeConsumerRun.stdout,
-    "sum=42 answer=42 even=true point=(21,22)\n",
+    "sum=42 answer=42 even=true point=(21,22) status=1\n",
   );
   const invalidNativeExport = resolve(
     directory,
@@ -13740,6 +13829,8 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
   assert.deepEqual(
     structuralTopology.modules[0].symbols[1].typeSignature,
     {
+      nativeCName: "",
+      nativeCUnderlyingType: "",
       typeParameters: ["T"],
       typeParameterConstraints: [{ parameter: "T", traitName: "Named" }],
       executorAffinity: "thread.main",
@@ -13868,7 +13959,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tclass\t536563726574\t1\t0\t-\t536563726574\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\t\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t1\t\t\t\n"
       + "constructorSignature\t0000000000000000\t0000000000000000\t0\t536563726574\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
@@ -13879,7 +13970,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tenum\t5374617465\t1\t0\t-\t5374617465\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\t\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000001\t0\t0\t\t\t\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 type signature arity/,
@@ -13889,7 +13980,7 @@ test("resolves a canonical module graph directly from native Z ASTs", () => {
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t0\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\t\n"
+      + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\t\t\t\n"
       + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),

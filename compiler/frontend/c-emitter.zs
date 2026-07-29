@@ -61,6 +61,17 @@ function nativeCExportType(
       }
     }
   }
+  if (type.kind == LoweredTypeKind.enumType) {
+    for (const enumeration of program.enums) {
+      if (enumeration.name != type.name) continue;
+      if (enumeration.nativeCName.byteLength > 0) {
+        return enumeration.nativeCName.copyBytes(
+          0,
+          enumeration.nativeCName.byteLength
+        );
+      }
+    }
+  }
   return try cType(type);
 }
 
@@ -76,6 +87,11 @@ function integerCType(in name: String): String throws String {
   if (name == "isize") return "intptr_t";
   if (name == "usize") return "size_t";
   throw `native C emission does not support integer type ${name}`;
+}
+
+function nativeCIntegerType(in name: String): String throws String {
+  if (name == "usize") return "uintptr_t";
+  return try integerCType(name);
 }
 
 function isCReservedWord(in name: String): boolean {
@@ -1628,6 +1644,10 @@ function appendStatement(
       appendIndent(inout output, depth + 1);
       output.append("}\n");
     }
+    appendIndent(inout output, depth + 1);
+    output.append("default:\n");
+    appendIndent(inout output, depth + 2);
+    output.append("abort();\n");
     appendIndent(inout output, depth);
     output.append("}\n");
     return;
@@ -1875,7 +1895,28 @@ function appendNativeCExportDefinition(
     declaration,
     declaration.nativeCExportName
   );
-  output.append(" {\n  ");
+  output.append(" {\n");
+  for (const parameter of declaration.parameters) {
+    if (parameter.type.kind != LoweredTypeKind.enumType) continue;
+    match (loweredEnumIndex(program, parameter.type.name)) {
+      some(index) => {
+        if (program.enums[index].nativeCName.byteLength == 0) continue;
+        output.append("  switch (");
+        appendCBindingName(inout output, parameter.name);
+        output.append(") {\n");
+        for (const variant of program.enums[index].variants) {
+          output.append("    case ");
+          output.append(program.enums[index].nativeCName);
+          output.append("_");
+          output.append(variant.name);
+          output.append(":\n      break;\n");
+        }
+        output.append("    default:\n      abort();\n  }\n");
+      }
+      none => {}
+    }
+  }
+  output.append("  ");
   if (declaration.returnType.kind != LoweredTypeKind.voidType) {
     output.append("return ");
   }
@@ -1966,6 +2007,44 @@ function appendEnumDefinition(
     throw `native C emission found a by-value type cycle through ${program.enums[index].name}`;
   }
   enumStates[index] = 1;
+  if (program.enums[index].nativeCName.byteLength > 0) {
+    const underlying = try nativeCIntegerType(
+      program.enums[index].nativeCUnderlyingType
+    );
+    output.append("typedef ");
+    output.append(underlying);
+    output.append(" ");
+    output.append(program.enums[index].nativeCName);
+    output.append(";\ntypedef ");
+    output.append(program.enums[index].nativeCName);
+    output.append(" Z_");
+    output.append(program.enums[index].name);
+    output.append(";\n");
+    let nativeVariant: usize = 0;
+    while (nativeVariant < program.enums[index].variants.length) {
+      output.append("#define Z_");
+      output.append(program.enums[index].name);
+      output.append("_");
+      output.append(program.enums[index].variants[nativeVariant].name);
+      output.append(" ((Z_");
+      output.append(program.enums[index].name);
+      output.append(")");
+      output.append(`${nativeVariant}`);
+      output.append(")\n#define ");
+      output.append(program.enums[index].nativeCName);
+      output.append("_");
+      output.append(program.enums[index].variants[nativeVariant].name);
+      output.append(" ((");
+      output.append(program.enums[index].nativeCName);
+      output.append(")");
+      output.append(`${nativeVariant}`);
+      output.append(")\n");
+      nativeVariant = nativeVariant + 1;
+    }
+    output.append("\n");
+    enumStates[index] = 2;
+    return;
+  }
   for (const item of program.enums[index].variants) {
     match (in item.payload) {
       some(type) => {
@@ -3879,6 +3958,38 @@ function appendNativeCHeaderType(
   inout emitted: Array<String>,
   inout visiting: Array<String>
 ): void throws String {
+  if (type.kind == LoweredTypeKind.enumType) {
+    if (stringArrayContains(emitted, type.name)) return;
+    for (const enumeration of program.enums) {
+      if (enumeration.name != type.name) continue;
+      if (enumeration.nativeCName.byteLength == 0) return;
+      const underlying = try nativeCIntegerType(
+        enumeration.nativeCUnderlyingType
+      );
+      output.append("typedef ");
+      output.append(underlying);
+      output.append(" ");
+      output.append(enumeration.nativeCName);
+      output.append(";\n");
+      let variant: usize = 0;
+      while (variant < enumeration.variants.length) {
+        output.append("#define ");
+        output.append(enumeration.nativeCName);
+        output.append("_");
+        output.append(enumeration.variants[variant].name);
+        output.append(" ((");
+        output.append(enumeration.nativeCName);
+        output.append(")");
+        output.append(`${variant}`);
+        output.append(")\n");
+        variant = variant + 1;
+      }
+      output.append("\n");
+      emitted.push(type.name.copyBytes(0, type.name.byteLength));
+      return;
+    }
+    return;
+  }
   if (type.kind != LoweredTypeKind.structType) return;
   if (stringArrayContains(emitted, type.name)) return;
   if (stringArrayContains(visiting, type.name)) {

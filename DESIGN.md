@@ -1589,11 +1589,13 @@ export c function z_math_add(left: i32, right: i32): i32 {
 
 The source name is initially the exact C symbol. The compiler must reject
 cross-module collisions rather than silently module-mangling public ABI names.
-Its first tier is limited to ABI-stable scalar parameters and results, emits a
-public wrapper plus a C/C++-compatible header, and rejects generics, errors,
-async, affinity, and Z-owned representations at the source declaration.
-Static-library output and a handwritten C consumer come before structs,
-strings/slices, projected errors, owned results, callbacks, or async exports.
+Its implemented value tier accepts ABI-stable scalars, checked by-value
+`c struct` records, and payload-free `c enum Name: integerType` values; emits a
+public wrapper plus a C/C++-compatible header; validates enum inputs from C; and
+rejects generics, errors, async, affinity, and Z-owned representations at the
+source declaration. Static-library output and a handwritten strict-C consumer
+prove that boundary before strings/slices, projected errors, owned results,
+callbacks, or async exports.
 The wrapper keeps Z's internal identity private and should optimize away when
 the implementation is trivial. The complete accepted direction is recorded in
 [`docs/c-exports.md`](docs/c-exports.md).

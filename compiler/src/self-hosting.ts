@@ -170,6 +170,7 @@ export type Stage1ModuleTypeParameterConstraint = {
 
 export type Stage1ModuleTypeSignature = {
   readonly nativeCName: string;
+  readonly nativeCUnderlyingType: string;
   readonly typeParameters: readonly string[];
   readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
   readonly executorAffinity: string | null;
@@ -259,7 +260,8 @@ function copyStage1ModuleTypeSignature(
   signature: Stage1ModuleTypeSignature,
 ): Stage1ModuleTypeSignature {
   return {
-    nativeCName: signature.nativeCName,
+    nativeCName: signature.nativeCName ?? "",
+    nativeCUnderlyingType: signature.nativeCUnderlyingType ?? "",
     typeParameters: [...signature.typeParameters],
     typeParameterConstraints: signature.typeParameterConstraints
       .map((constraint) => ({ ...constraint })),
@@ -593,7 +595,7 @@ export function decodeStage1ModuleGraphStream(
       continue;
     }
     if (fields[0] === "typeSignature") {
-      if (fields.length < 10) throw new Error(`malformed stage-1 type signature line: ${line}`);
+      if (fields.length < 11) throw new Error(`malformed stage-1 type signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "type signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "type signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -615,13 +617,17 @@ export function decodeStage1ModuleGraphStream(
       if (customConstructor !== "0" && customConstructor !== "1") {
         throw new Error(`malformed stage-1 type signature constructor state: ${line}`);
       }
-      if (!/^(?:[0-9a-f]{2})*$/.test(fields[8]) || !/^(?:[0-9a-f]{2})*$/.test(fields[9])) {
+      if (
+        !/^(?:[0-9a-f]{2})*$/.test(fields[8])
+        || !/^(?:[0-9a-f]{2})*$/.test(fields[9])
+        || !/^(?:[0-9a-f]{2})*$/.test(fields[10])
+      ) {
         throw new Error(`malformed stage-1 type executor affinity: ${line}`);
       }
-      if (fields.length !== 10 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
+      if (fields.length !== 11 + typeParameterCount + (fieldCount * 4) + (variantCount * 2)) {
         throw new Error(`malformed stage-1 type signature arity: ${line}`);
       }
-      const encoded = fields.slice(10);
+      const encoded = fields.slice(11);
       const typeParameters = encoded.slice(0, typeParameterCount);
       const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 4));
       const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 4));
@@ -660,6 +666,7 @@ export function decodeStage1ModuleGraphStream(
       }
       (symbol as { typeSignature: Stage1ModuleTypeSignature | null }).typeSignature = {
         nativeCName: Buffer.from(fields[9], "hex").toString("utf8"),
+        nativeCUnderlyingType: Buffer.from(fields[10], "hex").toString("utf8"),
         typeParameters: typeParameters.map((field) => Buffer.from(field, "hex").toString("utf8")),
         typeParameterConstraints: [],
         executorAffinity: fields[8].length === 0 ? null : Buffer.from(fields[8], "hex").toString("utf8"),

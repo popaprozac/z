@@ -1160,6 +1160,11 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parseEnum = (nativeLayoutToken: Token | null = null): EnumDeclaration => {
     const start = expect("enum", "`enum`").location;
     const name = expect("identifier", "an enum name").text;
+    let underlyingType = null;
+    if (nativeLayoutToken) {
+      expect("colon", "`:` before a C enum representation type");
+      underlyingType = parseType();
+    }
     expect("leftBrace", "`{`");
     const variants = [];
     while (!at("rightBrace") && !at("eof")) {
@@ -1179,7 +1184,7 @@ export function parse(tokens: Token[], fileName: string): Program {
             location: nativeLayoutToken.location,
           }
         : undefined,
-      underlyingType: null,
+      underlyingType,
       variants,
       location: start,
     };

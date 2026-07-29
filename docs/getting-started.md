@@ -74,8 +74,9 @@ a native GUI event loop.
 
 The first project build tier accepts a `z.json` target with
 `"kind": "static-library"` and one or more checked `export c function`
-declarations. Signatures may use scalars and `c struct` values. The build
-publishes a guarded C/C++ header and native archive:
+declarations. Signatures may use scalars, `c struct` values, and
+fixed-representation `c enum` values. The build publishes a guarded C/C++
+header and native archive:
 
 ```sh
 bun run z build examples/interop/c/z-export

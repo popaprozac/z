@@ -92,6 +92,8 @@ export struct LoweredSet {
 
 export struct LoweredEnum {
   name: String;
+  nativeCName: String;
+  nativeCUnderlyingType: String;
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
   needsDeinit: boolean;
@@ -1066,6 +1068,8 @@ function intrinsicOptionDeclaration(
       }));
       return Option.some(LoweredEnum({
         name: intrinsicOptionName(payload),
+        nativeCName: "",
+        nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
         needsDeinit: moduleTypeNeedsCleanup(
@@ -1101,6 +1105,8 @@ function intrinsicOptionDeclaration(
       }));
       return Option.some(LoweredEnum({
         name: intrinsicOptionName(payload),
+        nativeCName: "",
+        nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
         needsDeinit: moduleTypeNeedsCleanup(program, importedTypes, payload),
@@ -1151,6 +1157,8 @@ function intrinsicResultDeclaration(
       }));
       return Option.some(LoweredEnum({
         name: intrinsicResultName(successType, errorType),
+        nativeCName: "",
+        nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
         needsDeinit: moduleTypeNeedsCleanup(
@@ -2398,6 +2406,8 @@ function importedEnumDeclaration(
         0,
         importedTypes[importedIndex].targetName.byteLength
       ),
+      nativeCName: "",
+      nativeCUnderlyingType: "",
       variants,
       payloadBearing: importedTypes[importedIndex].payloadBearing,
       needsDeinit: importedTypes[importedIndex].needsDeinit,
@@ -4502,8 +4512,21 @@ function loweredSourceEnum(
     importedTypes,
     program.enums[index].name
   );
+  let nativeCUnderlyingType = "";
+  if (program.enums[index].nativeCLayout) {
+    match (in program.enums[index].underlyingType) {
+      some(type) => {
+        nativeCUnderlyingType = type.name.copyBytes(0, type.name.byteLength);
+      }
+      none => {}
+    }
+  }
   return LoweredEnum({
     name: loweredName.name.copyBytes(0, loweredName.name.byteLength),
+    nativeCName: program.enums[index].nativeCLayout
+      ? program.enums[index].name.copyBytes(0, program.enums[index].name.byteLength)
+      : "",
+    nativeCUnderlyingType,
     variants,
     payloadBearing,
     needsDeinit: moduleEnumNeedsCleanup(program, importedTypes, index, 0),
@@ -7019,6 +7042,14 @@ function loweredEnumCopy(
     }
     return Option.some(LoweredEnum({
       name: declaration.name.copyBytes(0, declaration.name.byteLength),
+      nativeCName: declaration.nativeCName.copyBytes(
+        0,
+        declaration.nativeCName.byteLength
+      ),
+      nativeCUnderlyingType: declaration.nativeCUnderlyingType.copyBytes(
+        0,
+        declaration.nativeCUnderlyingType.byteLength
+      ),
       variants,
       payloadBearing: declaration.payloadBearing,
       needsDeinit: declaration.needsDeinit,
@@ -7311,12 +7342,25 @@ function appendLoweredProgram(
       declarationIndex,
       0
     );
+    let nativeCUnderlyingType = "";
+    if (declaration.nativeCLayout) {
+      match (in declaration.underlyingType) {
+        some(type) => {
+          nativeCUnderlyingType = type.name.copyBytes(0, type.name.byteLength);
+        }
+        none => {}
+      }
+    }
     let importedVariants = Array<LoweredVariant>();
     for (const variant of variants) {
       importedVariants.push(copyLoweredVariant(variant));
     }
     enums.push(LoweredEnum({
       name: emittedName.copyBytes(0, emittedName.byteLength),
+      nativeCName: declaration.nativeCLayout
+        ? declaration.name.copyBytes(0, declaration.name.byteLength)
+        : "",
+      nativeCUnderlyingType,
       variants,
       payloadBearing,
       needsDeinit,

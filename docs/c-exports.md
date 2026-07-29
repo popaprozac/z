@@ -1,7 +1,8 @@
 # C Export Design
 
-Status: scalar functions and checked by-value C-layout structs implemented in
-both the Stage-0 and fixed-point native compilers.
+Status: scalar functions, checked by-value C-layout structs, and
+fixed-representation C enums implemented in both the Stage-0 and fixed-point
+native compilers.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -70,9 +71,11 @@ The first executable slice accepts only types with an unambiguous scalar C ABI:
 | `void` | `void` |
 
 The boundary still rejects strings, collections, slices, nullable values,
-ordinary Z structs, classes, enums, closures, generic functions, typed errors,
-async functions, and executor-affine functions. A targeted diagnostic must name
-the unsupported boundary type or effect rather than letting generated C fail.
+ordinary Z structs and enums, classes, closures, generic functions, typed
+errors, async functions, and executor-affine functions. Checked `c struct` and
+`c enum` values are the deliberate exceptions described below. A targeted
+diagnostic must name the unsupported boundary type or effect rather than
+letting generated C fail.
 
 The initial proof uses ordinary by-value scalar parameters. Mapping `in`,
 `inout`, and `out` onto a public pointer ABI is an explicit follow-up design
@@ -132,6 +135,49 @@ classes, private or readonly fields, traits, executor affinity, constructors,
 and `deinit`. These restrictions prevent the C representation from bypassing
 an invariant or cleanup obligation that the header cannot express. Methods do
 not affect layout and remain Z-only.
+
+## Fixed-representation C enums
+
+`c enum` keeps Z's nominal enum and exhaustive-match semantics while fixing its
+public scalar representation:
+
+```z
+c enum ZMathStatus: i32 {
+  negative,
+  zero,
+  positive,
+}
+
+export c function z_math_classify(value: i32): ZMathStatus {
+  if (value < 0) return ZMathStatus.negative;
+  if (value == 0) return ZMathStatus.zero;
+  return ZMathStatus.positive;
+}
+
+export c function z_math_status_code(status: ZMathStatus): i32 {
+  return match (status) {
+    negative => -1;
+    zero => 0;
+    positive => 1;
+  };
+}
+```
+
+The generated header uses the declared fixed-width integer and sequential
+constants:
+
+```c
+typedef int32_t ZMathStatus;
+#define ZMathStatus_negative ((ZMathStatus)0)
+#define ZMathStatus_zero ((ZMathStatus)1)
+#define ZMathStatus_positive ((ZMathStatus)2)
+```
+
+The first tier requires an integer representation, at least one payload-free
+variant, and valid C identifiers. Explicit discriminants are a later extension.
+A C caller can manufacture any integer, so every exported function accepting a
+`c enum` validates the input before it enters ordinary safe Z. An unknown value
+traps at that boundary rather than making an exhaustive Z match unsound.
 
 ## Generated interface
 
@@ -225,7 +271,7 @@ plus the same public header. Executables remain the default target kind.
 Broader exports should land only with an end-to-end C consumer:
 
 1. ABI-stable scalar functions and static-library/header output.
-2. Explicit C-layout structs and payload-free enums.
+2. Explicit C-layout structs and fixed-representation payload-free enums.
 3. Borrowed strings and slices projected as pointer-plus-length inputs.
 4. Typed `throws` projected into explicit status and output channels.
 5. Owned results paired with generated destruction functions.
@@ -242,9 +288,10 @@ Z source
   └─> generated adjacent .zd       ─> checked binary-only Z import
 ```
 
-The first implementation checkpoint is complete only when a handwritten C
-program includes the generated header, links the generated static library,
-calls a Z scalar function, and passes strict compilation and execution tests.
+The current value-ABI checkpoint is complete only when a handwritten C program
+includes the generated header, links the generated static library, passes
+scalars, structs, and enums in both directions, and passes strict compilation
+and execution tests.
 
 The bootstrap compiler now satisfies that executable boundary in both its test
 suite and the readable example: it parses and checks `export c function`, keeps
@@ -263,6 +310,8 @@ project-library command:
 .z-cache/bootstrap/z build path/to/project
 ```
 
-The native archive and header pass the same handwritten C consumer unchanged.
-Broader ABI tiers and the remaining bootstrap-distribution work are independent
-follow-ups rather than hidden dependencies of scalar Z-to-C use.
+The native archive and header pass the same handwritten C consumer unchanged,
+including struct construction, enum constants, and an enum parameter validated
+by the public wrapper. Broader ABI tiers and the remaining
+bootstrap-distribution work are independent follow-ups rather than hidden
+dependencies of value-oriented Z-to-C use.

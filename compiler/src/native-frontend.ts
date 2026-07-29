@@ -364,7 +364,7 @@ export function resolveWithNativeFrontendLibrary(
       library.symbols.z_stage1_resolve_api_version(),
       "resolver API version",
     );
-    if (apiVersion !== 1) {
+    if (apiVersion !== 2) {
       throw new Error(`unsupported native frontend resolver API version ${apiVersion}`);
     }
     const entryBytes = Buffer.from(entryPath, "utf8");
@@ -802,7 +802,7 @@ export function resolveWithNativeFrontendLibrary(
         library.symbols.z_stage1_resolve_type_signature_item_count(responsePointer),
         "type-signature item count",
       );
-      const typeSignatureRecordWidth = 12 * 8;
+      const typeSignatureRecordWidth = 16 * 8;
       const typeSignatureRecords = Buffer.alloc(
         Math.max(1, typeSignatureCount * typeSignatureRecordWidth),
       );
@@ -844,18 +844,30 @@ export function resolveWithNativeFrontendLibrary(
           field(3, "executor-affinity length"),
           "type executor affinity",
         );
-        const customDeinit = field(4, "custom-deinit state");
-        const customConstructor = field(5, "custom-constructor state");
+        const nativeCName = nativeString(
+          field(4, "native C name pointer"),
+          field(5, "native C name length"),
+          "type native C name",
+        );
+        const nativeCUnderlyingType = nativeString(
+          field(6, "native C underlying-type pointer"),
+          field(7, "native C underlying-type length"),
+          "type native C underlying type",
+        );
+        const customDeinit = field(8, "custom-deinit state");
+        const customConstructor = field(9, "custom-constructor state");
         if (customDeinit > 1 || customConstructor > 1) {
           throw new Error("the native frontend returned invalid type-signature flags");
         }
-        const typeParameterCount = field(6, "type-parameter count");
-        const constraintCount = field(7, "constraint count");
-        const implementedTraitCount = field(8, "implemented-trait count");
-        const fieldCount = field(9, "field count");
-        const methodCount = field(10, "method count");
-        const variantCount = field(11, "variant count");
+        const typeParameterCount = field(10, "type-parameter count");
+        const constraintCount = field(11, "constraint count");
+        const implementedTraitCount = field(12, "implemented-trait count");
+        const fieldCount = field(13, "field count");
+        const methodCount = field(14, "method count");
+        const variantCount = field(15, "variant count");
         const signature = {
+          nativeCName,
+          nativeCUnderlyingType,
           typeParameters: new Array<string>(typeParameterCount),
           typeParameterConstraints: new Array<{
             parameter: string;

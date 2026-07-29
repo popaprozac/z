@@ -1749,6 +1749,10 @@ typedef struct {
   uint64_t symbol_index;
   uint64_t executor_affinity_data;
   uint64_t executor_affinity_length;
+  uint64_t native_c_name_data;
+  uint64_t native_c_name_length;
+  uint64_t native_c_underlying_type_data;
+  uint64_t native_c_underlying_type_length;
   uint64_t custom_deinit;
   uint64_t custom_constructor;
   uint64_t type_parameter_count;
@@ -1905,7 +1909,7 @@ Z_STAGE1_EXPORT void *z_stage1_emit(
 }
 
 Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_api_version(void) {
-  return 1;
+  return 2;
 }
 
 Z_STAGE1_EXPORT void *z_stage1_resolve(
@@ -2567,6 +2571,18 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_records(
         .executor_affinity_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].symbols.data[symbol_index]
           .typeSignature.data.some.executorAffinity.length,
+        .native_c_name_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .typeSignature.data.some.nativeCName.data,
+        .native_c_name_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .typeSignature.data.some.nativeCName.length,
+        .native_c_underlying_type_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .typeSignature.data.some.nativeCUnderlyingType.data,
+        .native_c_underlying_type_length = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].symbols.data[symbol_index]
+          .typeSignature.data.some.nativeCUnderlyingType.length,
         .custom_deinit = response->result.graph.resolved.modules.data[module_index]
           .symbols.data[symbol_index].typeSignature.data.some.customDeinit ? 1 : 0,
         .custom_constructor = response->result.graph.resolved.modules.data[module_index]

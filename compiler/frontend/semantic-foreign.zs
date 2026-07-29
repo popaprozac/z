@@ -291,6 +291,7 @@ function foreignTypeSignature(
 ): ModuleTypeSignature {
   return ModuleTypeSignature({
     nativeCName: "",
+    nativeCUnderlyingType: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     executorAffinity: "",

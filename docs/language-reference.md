@@ -44,9 +44,18 @@ c struct Point {
 }
 ```
 
+c enums add a mandatory scalar representation and retain exhaustive matching:
+
+```z
+c enum Status: i32 {
+  ready,
+  stopped,
+}
+```
+
 The implemented ABI tier accepts synchronous, non-throwing, non-generic
-signatures containing fixed-width scalars and checked C-layout structs; see
-[C exports](c-exports.md) for the exact mapping and growth path.
+signatures containing fixed-width scalars and checked C-layout structs/enums;
+see [C exports](c-exports.md) for the exact mapping and growth path.
 
 The filename contract is `.zs` for Z source and `.zd` for foreign declarations.
 Z intentionally leaves `.z` to its established use as a compressed-archive

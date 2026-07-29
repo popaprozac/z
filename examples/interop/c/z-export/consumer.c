@@ -13,20 +13,25 @@ int main(void) {
     1,
     1
   );
+  const ZMathStatus status = z_math_classify(answer);
+  const int32_t status_code = z_math_status_code(status);
 
   printf(
-    "sum=%d answer=%d even=%s point=(%d,%d)\n",
+    "sum=%d answer=%d even=%s point=(%d,%d) status=%d\n",
     sum,
     answer,
     even ? "true" : "false",
     translated.x,
-    translated.y
+    translated.y,
+    status_code
   );
   return sum == 42
     && answer == 42
     && even
     && translated.x == 21
     && translated.y == 22
+    && status == ZMathStatus_positive
+    && status_code == 1
     ? 0
     : 1;
 }

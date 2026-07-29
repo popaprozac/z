@@ -193,6 +193,7 @@ export function programTypeSignature(
         nativeCName: aggregate.nativeCLayout
           ? aggregate.name.copyBytes(0, aggregate.name.byteLength)
           : "",
+        nativeCUnderlyingType: "",
         typeParameters,
         typeParameterConstraints,
         executorAffinity: aggregate.executorAffinity.copyBytes(0, aggregate.executorAffinity.byteLength),
@@ -223,6 +224,7 @@ export function programTypeSignature(
       }
       return Option.some(ModuleTypeSignature({
         nativeCName: "",
+        nativeCUnderlyingType: "",
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         executorAffinity: "",
@@ -253,10 +255,20 @@ export function programTypeSignature(
           payloadType,
         }));
       }
+      let nativeCUnderlyingType = "";
+      if (enumDeclaration.nativeCLayout) {
+        match (in enumDeclaration.underlyingType) {
+          some(type) => {
+            nativeCUnderlyingType = type.name.copyBytes(0, type.name.byteLength);
+          }
+          none => {}
+        }
+      }
       return Option.some(ModuleTypeSignature({
         nativeCName: enumDeclaration.nativeCLayout
           ? enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength)
           : "",
+        nativeCUnderlyingType,
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         executorAffinity: "",

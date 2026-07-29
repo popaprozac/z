@@ -1341,6 +1341,9 @@ const cReservedIdentifiers = new Set(
   "auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local"
     .split(" "),
 );
+const cEnumIntegerTypes = new Set([
+  "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize",
+]);
 
 function validPublicCIdentifier(name: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !cReservedIdentifiers.has(name);
@@ -1356,20 +1359,33 @@ function validateNativeLayouts(
   const reject = (location: SourceLocation, summary: string, help?: string): never => {
     throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
       code: "Z0831",
-      notes: ["a `c struct` is an exact public C layout contract, not Z's ordinary evolvable value layout"],
+      notes: ["a `c struct` or `c enum` is an exact public C representation contract"],
       helps: help ? [help] : undefined,
     });
   };
   const visiting = new Set<string>();
   const validated = new Set<string>();
+  const publicNames = new Set<string>();
+  for (const declaration of [...declarations, ...enumDeclarations]) {
+    if (!declaration.nativeLayout) continue;
+    if (publicNames.has(declaration.nativeLayout.name)) {
+      reject(
+        declaration.nativeLayout.location,
+        `duplicate public C type name ${JSON.stringify(declaration.nativeLayout.name)}`,
+        "give every C-layout type a unique name across the linked module graph",
+      );
+    }
+    publicNames.add(declaration.nativeLayout.name);
+  }
   const validateCType = (type: string, location: SourceLocation): void => {
     if (nativeExportScalarTypes.has(type) && type !== "void") return;
+    if (enums.get(type)?.nativeLayout?.language === "c") return;
     const nested = structs.get(type);
     if (!nested?.nativeLayout || nested.kind !== "struct") {
       reject(
         location,
         `C-layout field type ${JSON.stringify(type)} does not have a C representation`,
-        "use a fixed-width scalar or another `c struct`",
+        "use a fixed-width scalar, `c struct`, or fixed-representation `c enum`",
       );
     }
     validateStruct(nested);
@@ -1410,8 +1426,30 @@ function validateNativeLayouts(
   };
   for (const declaration of declarations) validateStruct(declaration);
   for (const declaration of enumDeclarations) {
-    if (declaration.nativeLayout) {
-      reject(declaration.nativeLayout.location, "`c enum` requires an explicit integer representation; enum ABI lowering lands in the next slice");
+    if (!declaration.nativeLayout) continue;
+    const location = declaration.nativeLayout.location;
+    if (!validPublicCIdentifier(declaration.nativeLayout.name)) {
+      reject(location, `C enum name ${JSON.stringify(declaration.nativeLayout.name)} is not a valid public C identifier`);
+    }
+    if (!declaration.underlyingType || !cEnumIntegerTypes.has(declaration.underlyingType.name)) {
+      reject(
+        declaration.underlyingType?.location ?? location,
+        `C enum ${JSON.stringify(declaration.nativeLayout.name)} requires a fixed integer representation`,
+        "use `c enum Name: i32` or another fixed-width integer type",
+      );
+    }
+    if (declaration.variants.length === 0) reject(location, "a C enum must declare at least one variant");
+    for (const variant of declaration.variants) {
+      if (!validPublicCIdentifier(variant.name)) {
+        reject(variant.location, `C enum variant ${JSON.stringify(variant.name)} is not a valid public C identifier`);
+      }
+      if (variant.payload) {
+        reject(
+          variant.location,
+          `C enum variant ${JSON.stringify(variant.name)} cannot carry a payload`,
+          "use an ordinary Z enum internally and project it through explicit C-layout values",
+        );
+      }
     }
   }
 }
