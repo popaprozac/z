@@ -6,6 +6,7 @@ import { TextBuffer } from "std/text";
 import {
   emitModulesC,
   emitModulesCHeader,
+  emitTestModulesC,
 } from "../frontend/c-emitter.zs";
 import {
   decodeRawForeignDeclarations,
@@ -302,6 +303,23 @@ function buildProject(
 ): i32 throws String {
   const project = try loadProject(entryPath);
   return try buildLoadedProject(project, outputPath, release);
+}
+
+function testProject(in entryPath: String): i32 throws String {
+  const project = try loadProject(entryPath);
+  const emitted = try emitTestModulesC(project.modules, project.graph);
+  const outputDirectory = `${project.config.directory}/.z-cache/test`;
+  try fs.createDirectories(outputDirectory);
+  const outputPath = `${outputDirectory}/tests`;
+  const compilationExitCode = try compileEmittedProject(
+    project,
+    emitted,
+    outputPath,
+    false
+  );
+  if (compilationExitCode != 0) return compilationExitCode;
+  const arguments = Array<String>();
+  return try process.run(outputPath, arguments);
 }
 
 function staticLibraryEntryPath(in projectPath: String): String throws String {
@@ -660,7 +678,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1) {
-    console.error("usage: z <check|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
+    console.error("usage: z <check|test|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
     return 2;
   }
 
@@ -671,6 +689,14 @@ function main(): i32 {
       return 2;
     }
     const outcome = attempt checkProject(arguments[1]);
+    return reportOutcome(outcome);
+  }
+  if (command == "test") {
+    if (arguments.length != 2) {
+      console.error("usage: z test <entry.zs>");
+      return 2;
+    }
+    const outcome = attempt testProject(arguments[1]);
     return reportOutcome(outcome);
   }
   if (command == "foreign-inspect") {

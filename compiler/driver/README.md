@@ -17,6 +17,7 @@ its supported surface is:
 
 ```text
 z check <entry.zs>
+z test <entry.zs>
 z emit <entry.zs> <output.c>
 z build <entry.zs> <output> [--release]
 z run <entry.zs> [--release] [-- args...]
@@ -42,6 +43,12 @@ rebuild. Misses compile into pending paths; successful builds atomically publish
 the C and executable before committing metadata. A failed compilation preserves
 the previous executable but leaves metadata invalid, so it cannot become a
 false cache hit.
+
+`test` discovers top-level tests in the selected entry module and its
+project-owned import graph, lowers `std/test` expectations and explicit
+failures into one cleanup-aware native runner, and keeps running after a failed
+test. It returns a nonzero status when any test fails. Ordinary `emit`, `build`,
+and `run` continue to erase test declarations and test-only helper machinery.
 
 For each configured native library, the driver searches the explicit link
 directories in order for the platform spellings it already passes to Clang. An

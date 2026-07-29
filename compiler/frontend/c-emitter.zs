@@ -12,6 +12,7 @@ import {
   LoweredTypeKind,
   lowerModules,
   lowerProgram,
+  lowerTestModules,
 } from "./lowering-ir.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { Program } from "./parser.zs";
@@ -19,6 +20,7 @@ import {
   ModuleGraph,
   ModuleSemanticEvidence,
 } from "./semantic-model.zs";
+import { stringStartsWith } from "./semantic-type-shapes.zs";
 
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i8Type) return "int8_t";
@@ -1231,12 +1233,331 @@ function localNameIsUsed(
   return false;
 }
 
+function testValueTargetType(in typeName: String): String {
+  if (stringStartsWith(typeName, "view ") && typeName.byteLength > 5) {
+    return typeName.copyBytes(5, typeName.byteLength);
+  }
+  return typeName.copyBytes(0, typeName.byteLength);
+}
+
+function testValueIsView(in typeName: String): boolean {
+  return stringStartsWith(typeName, "view ") && typeName.byteLength > 5;
+}
+
+function testValueCType(
+  in typeName: String,
+  in comparison: String
+): String throws String {
+  const target = testValueTargetType(typeName);
+  let type = "";
+  if (target == "String") type = "Z_String";
+  else if (target == "boolean") type = "bool";
+  else if (target == "i8") type = "int8_t";
+  else if (target == "i16") type = "int16_t";
+  else if (target == "i32") type = "int32_t";
+  else if (target == "i64") type = "int64_t";
+  else if (target == "isize") type = "intptr_t";
+  else if (target == "u8") type = "uint8_t";
+  else if (target == "u16") type = "uint16_t";
+  else if (target == "u32") type = "uint32_t";
+  else if (target == "u64") type = "uint64_t";
+  else if (target == "usize") type = "size_t";
+  else if (target == "f32") type = "float";
+  else if (target == "f64") type = "double";
+  else if (comparison == "foreignEnum") type = target;
+  else if (comparison == "enum") type = `Z_${target}`;
+  else throw `native C emission cannot store test value type ${target}`;
+  if (testValueIsView(typeName)) return `const ${type} *`;
+  return type;
+}
+
+function appendTestStoredValue(
+  inout output: TextBuffer,
+  in name: String,
+  in typeName: String
+): void {
+  if (testValueIsView(typeName)) {
+    output.append("(*(");
+    output.append(name);
+    output.append("))");
+  } else output.append(name);
+}
+
+function appendTestFailureLiteral(
+  inout output: TextBuffer,
+  in failure: String,
+  in value: String,
+  depth: usize
+): void {
+  appendIndent(inout output, depth);
+  output.append("z_string_append_bytes(&");
+  output.append(failure);
+  output.append(", ");
+  appendCStringLiteral(inout output, value);
+  output.append(", ");
+  output.append(`${value.byteLength}`);
+  output.append(");\n");
+}
+
+function appendTestFormattedValue(
+  inout output: TextBuffer,
+  in failure: String,
+  in value: String,
+  in typeName: String,
+  in comparison: String,
+  depth: usize
+): void throws String {
+  const target = testValueTargetType(typeName);
+  if (target == "String") {
+    appendIndent(inout output, depth);
+    output.append("z_text_buffer_append(&");
+    output.append(failure);
+    output.append(", ");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(");\n");
+    return;
+  }
+  if (target == "boolean") {
+    appendIndent(inout output, depth);
+    output.append("if (");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(") z_string_append_bytes(&");
+    output.append(failure);
+    output.append(", \"true\", 4); else z_string_append_bytes(&");
+    output.append(failure);
+    output.append(", \"false\", 5);\n");
+    return;
+  }
+  if (
+    target == "i8"
+    || target == "i16"
+    || target == "i32"
+    || target == "i64"
+    || target == "isize"
+  ) {
+    appendIndent(inout output, depth);
+    output.append("char _z_test_format_");
+    output.append(value);
+    output.append("[32];\n");
+    appendIndent(inout output, depth);
+    output.append("int _z_test_format_length_");
+    output.append(value);
+    output.append(" = snprintf(_z_test_format_");
+    output.append(value);
+    output.append(", sizeof(_z_test_format_");
+    output.append(value);
+    output.append("), \"%lld\", (long long)");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(");\n");
+    appendIndent(inout output, depth);
+    output.append("if (_z_test_format_length_");
+    output.append(value);
+    output.append(" < 0) abort();\n");
+    appendIndent(inout output, depth);
+    output.append("z_string_append_bytes(&");
+    output.append(failure);
+    output.append(", _z_test_format_");
+    output.append(value);
+    output.append(", (size_t)_z_test_format_length_");
+    output.append(value);
+    output.append(");\n");
+    return;
+  }
+  if (
+    target == "u8"
+    || target == "u16"
+    || target == "u32"
+    || target == "u64"
+    || target == "usize"
+    || comparison == "foreignEnum"
+  ) {
+    appendIndent(inout output, depth);
+    output.append("char _z_test_format_");
+    output.append(value);
+    output.append("[32];\n");
+    appendIndent(inout output, depth);
+    output.append("int _z_test_format_length_");
+    output.append(value);
+    output.append(" = snprintf(_z_test_format_");
+    output.append(value);
+    output.append(", sizeof(_z_test_format_");
+    output.append(value);
+    output.append("), \"%llu\", (unsigned long long)");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(");\n");
+    appendIndent(inout output, depth);
+    output.append("if (_z_test_format_length_");
+    output.append(value);
+    output.append(" < 0) abort();\n");
+    appendIndent(inout output, depth);
+    output.append("z_string_append_bytes(&");
+    output.append(failure);
+    output.append(", _z_test_format_");
+    output.append(value);
+    output.append(", (size_t)_z_test_format_length_");
+    output.append(value);
+    output.append(");\n");
+    return;
+  }
+  if (target == "f32" || target == "f64") {
+    appendIndent(inout output, depth);
+    output.append("char _z_test_format_");
+    output.append(value);
+    output.append("[64];\n");
+    appendIndent(inout output, depth);
+    output.append("int _z_test_format_length_");
+    output.append(value);
+    output.append(" = snprintf(_z_test_format_");
+    output.append(value);
+    output.append(", sizeof(_z_test_format_");
+    output.append(value);
+    output.append("), \"%g\", (double)");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(");\n");
+    appendIndent(inout output, depth);
+    output.append("if (_z_test_format_length_");
+    output.append(value);
+    output.append(" < 0) abort();\n");
+    appendIndent(inout output, depth);
+    output.append("z_string_append_bytes(&");
+    output.append(failure);
+    output.append(", _z_test_format_");
+    output.append(value);
+    output.append(", (size_t)_z_test_format_length_");
+    output.append(value);
+    output.append(");\n");
+    return;
+  }
+  if (comparison == "enum") {
+    appendIndent(inout output, depth);
+    output.append("z_string_append_unsigned_decimal(&");
+    output.append(failure);
+    output.append(", (uint64_t)");
+    appendTestStoredValue(inout output, value, typeName);
+    output.append(".tag);\n");
+    return;
+  }
+  throw `native C emission cannot format test value type ${target}`;
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
   index: usize,
   depth: usize
 ): void throws String {
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.testExpectationStatement
+  ) {
+    if (declaration.statements[index].labels.length != 5) {
+      throw "native C emission received a malformed test expectation";
+    }
+    const actualType = view declaration.statements[index].labels[0];
+    const expectedType = view declaration.statements[index].labels[1];
+    const comparison = view declaration.statements[index].labels[2];
+    const actualName = `_z_test_actual_${index}`;
+    const expectedName = `_z_test_expected_${index}`;
+    const failureName = `_z_test_failure_${index}`;
+    appendIndent(inout output, depth);
+    const actualCType = try testValueCType(actualType, comparison);
+    output.append(actualCType);
+    output.append(" ");
+    output.append(actualName);
+    output.append(" = ");
+    match (in declaration.statements[index].expression) {
+      some(actual) => try appendExpression(
+        inout output,
+        declaration,
+        actual
+      );
+      none => throw "native C emission lost a test actual value";
+    }
+    output.append(";\n");
+    appendIndent(inout output, depth);
+    const expectedCType = try testValueCType(expectedType, comparison);
+    output.append(expectedCType);
+    output.append(" ");
+    output.append(expectedName);
+    output.append(" = ");
+    match (in declaration.statements[index].secondExpression) {
+      some(expected) => try appendExpression(
+        inout output,
+        declaration,
+        expected
+      );
+      none => throw "native C emission lost a test expected value";
+    }
+    output.append(";\n");
+    appendIndent(inout output, depth);
+    output.append("if (!(");
+    if (comparison == "string") {
+      output.append("z_string_equal(");
+      appendTestStoredValue(inout output, actualName, actualType);
+      output.append(", ");
+      appendTestStoredValue(inout output, expectedName, expectedType);
+      output.append(")");
+    } else if (comparison == "enum") {
+      appendTestStoredValue(inout output, actualName, actualType);
+      output.append(".tag == ");
+      appendTestStoredValue(inout output, expectedName, expectedType);
+      output.append(".tag");
+    } else {
+      appendTestStoredValue(inout output, actualName, actualType);
+      output.append(" == ");
+      appendTestStoredValue(inout output, expectedName, expectedType);
+    }
+    output.append(")) {\n");
+    appendIndent(inout output, depth + 1);
+    output.append("Z_String ");
+    output.append(failureName);
+    output.append(" = (Z_String){ NULL, 0, 0 };\n");
+    const location = `${declaration.sourcePath}:${declaration.statements[index].labels[3]}:${declaration.statements[index].labels[4]}: expected `;
+    appendTestFailureLiteral(
+      inout output,
+      failureName,
+      location,
+      depth + 1
+    );
+    try appendTestFormattedValue(
+      inout output,
+      failureName,
+      actualName,
+      actualType,
+      comparison,
+      depth + 1
+    );
+    appendTestFailureLiteral(
+      inout output,
+      failureName,
+      " to equal ",
+      depth + 1
+    );
+    try appendTestFormattedValue(
+      inout output,
+      failureName,
+      expectedName,
+      expectedType,
+      comparison,
+      depth + 1
+    );
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth + 1
+    );
+    appendIndent(inout output, depth + 1);
+    output.append("return (Z_");
+    output.append(declaration.returnType.name);
+    output.append("){ .tag = Z_");
+    output.append(declaration.returnType.name);
+    output.append("Tag_failure, .payload.failure = ");
+    output.append(failureName);
+    output.append(" };\n");
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    return;
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.localStatement) {
     const type = match (in declaration.statements[index].type) {
       some(type) => try cType(type);
@@ -1937,6 +2258,59 @@ function appendFunction(
   if (declaration.returnType.kind == LoweredTypeKind.voidType) {
     appendCleanups(inout output, declaration.fallthroughCleanups, 1);
   }
+  output.append("}\n\n");
+}
+
+function appendTestRunner(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  processArguments: boolean
+): void throws String {
+  const count = programTestCount(program);
+  if (count == 0) return;
+  output.append("int main(int argc, char **argv) {\n");
+  if (processArguments) {
+    output.append("  z_stage1_process_argc = argc;\n");
+    output.append("  z_stage1_process_argv = argv;\n");
+  } else {
+    output.append("  (void)argc;\n");
+    output.append("  (void)argv;\n");
+  }
+  output.append("  printf(\"running ");
+  output.append(`${count}`);
+  if (count == 1) output.append(" test\\n\");\n");
+  else output.append(" tests\\n\");\n");
+  output.append("  size_t passed = 0;\n");
+  output.append("  size_t failed = 0;\n");
+  let testIndex: usize = 0;
+  for (const declaration of program.functions) {
+    if (declaration.testName.byteLength == 0) continue;
+    output.append("  printf(\"test %s ... \", ");
+    appendCStringLiteral(inout output, declaration.testName);
+    output.append(");\n");
+    output.append("  fflush(stdout);\n");
+    output.append("  Z_");
+    output.append(declaration.returnType.name);
+    output.append(` _z_test_result_${testIndex} = `);
+    appendCBindingName(inout output, declaration.name);
+    output.append("();\n");
+    output.append(`  if (_z_test_result_${testIndex}.tag == Z_`);
+    output.append(declaration.returnType.name);
+    output.append("Tag_failure) {\n");
+    output.append("    puts(\"FAILED\");\n");
+    output.append(`    if (_z_test_result_${testIndex}.payload.failure.length > 0) fwrite(_z_test_result_${testIndex}.payload.failure.data, 1, _z_test_result_${testIndex}.payload.failure.length, stdout);\n`);
+    output.append("    fputc('\\n', stdout);\n");
+    output.append("    fflush(stdout);\n");
+    output.append(`    Z_String_deinit(&_z_test_result_${testIndex}.payload.failure);\n`);
+    output.append("    failed += 1;\n");
+    output.append("  } else {\n");
+    output.append("    puts(\"ok\");\n");
+    output.append("    passed += 1;\n");
+    output.append("  }\n");
+    testIndex = testIndex + 1;
+  }
+  output.append("  printf(\"test result: %s. %zu passed; %zu failed\\n\", failed == 0 ? \"ok\" : \"FAILED\", passed, failed);\n");
+  output.append("  return failed == 0 ? 0 : 1;\n");
   output.append("}\n\n");
 }
 
@@ -2672,6 +3046,14 @@ function programUsesStandardCall(
   return false;
 }
 
+function programTestCount(in program: LoweredProgram): usize {
+  let count: usize = 0;
+  for (const declaration of program.functions) {
+    if (declaration.testName.byteLength > 0) count = count + 1;
+  }
+  return count;
+}
+
 function appendSystemStandardRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -3310,6 +3692,7 @@ function appendWrappingIntegerRuntime(
 
 function emitLoweredC(in program: LoweredProgram): String throws String {
   let output = TextBuffer();
+  const testCount = programTestCount(program);
   const usesProcessArguments = programUsesStandardCall(
     program,
     "process.args"
@@ -3365,6 +3748,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     || usesWriteText
     || usesReplace
     || usesConsole
+    || testCount > 0
   ) {
     output.append("#include <stdio.h>\n");
   }
@@ -3967,6 +4351,11 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
       usesProcessArguments
     );
   }
+  try appendTestRunner(
+    inout output,
+    program,
+    usesProcessArguments
+  );
   let hasNativeCExports = false;
   for (const declaration of program.functions) {
     if (declaration.nativeCExportName.byteLength > 0) {
@@ -4121,6 +4510,17 @@ export function emitModulesC(
   in graph: ModuleGraph
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
+  return try emitLoweredC(lowered);
+}
+
+export function emitTestModulesC(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): String throws String {
+  const lowered = try lowerTestModules(parsed, graph);
+  if (programTestCount(lowered) == 0) {
+    throw "no tests were found in this module or its imports";
+  }
   return try emitLoweredC(lowered);
 }
 

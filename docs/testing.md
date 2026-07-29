@@ -92,6 +92,9 @@ Run a source module and tests in its project-owned import graph with:
 
 ```sh
 bun run z test path/to/module.test.zs
+
+# After `bun run bootstrap`:
+.z-cache/bootstrap/z test path/to/module.test.zs
 ```
 
 `*.test.zs` is an organizational convention, not a separate source mode.
@@ -99,7 +102,10 @@ Inline tests can use private declarations from their own module; dedicated
 test modules exercise exported APIs through ordinary imports. Normal `build`,
 `run`, and `emit` paths omit test bodies, names, and runner code.
 
-The current executable tier runs synchronous test bodies in one native runner.
+Both Stage 0 and the fixed-point native `z` compile synchronous test bodies
+into one native runner. The native command discovers tests in the entry
+module's owned import graph, preserves source locations in expectation
+failures, continues after failures, and exits nonzero when any test fails.
 Filtering, project-wide discovery, reusable assertion helpers, and async tests
 are the next testing layers. Their surface is not inferred from Bun's bootstrap
 API.

@@ -197,6 +197,7 @@ export enum LoweredStatementKind {
   matchArmStatement,
   breakStatement,
   continueStatement,
+  testExpectationStatement,
 }
 
 export struct LoweredStatement {
@@ -228,6 +229,8 @@ export struct LoweredLiveFlag {
 
 export struct LoweredFunction {
   name: String;
+  testName: String;
+  sourcePath: String;
   nativeCExportName: String;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
@@ -1595,6 +1598,13 @@ function planCleanupStatement(
     return;
   }
   if (
+    statements[loweredIndex].kind
+      == LoweredStatementKind.testExpectationStatement
+  ) {
+    appendStatementCleanupCopies(inout statements, loweredIndex, live);
+    return;
+  }
+  if (
     statements[loweredIndex].kind == LoweredStatementKind.localStatement
     && statements[loweredIndex].children.length == 1
     && statements[statements[loweredIndex].children[0]].kind
@@ -2566,7 +2576,10 @@ function staticallyResolvedExpressionTypeName(
     }
     none => {}
   }
-  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+  if (
+    tree.nodes[index].kind == ExpressionKind.identifierExpression
+    || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+  ) {
     const name = tree.nodes[index].value.copyBytes(
       0,
       tree.nodes[index].value.byteLength
@@ -2583,6 +2596,33 @@ function staticallyResolvedExpressionTypeName(
       some(typeName) => return Option.some(move typeName);
       none => {}
     }
+    let declaredType = "";
+    let declaredOffset: usize = 0;
+    let declarationIndex: usize = 0;
+    while (declarationIndex < arena.nodes.length) {
+      if (
+        arena.nodes[declarationIndex].kind == StatementKind.variableStatement
+        && arena.nodes[declarationIndex].name == name
+        && arena.nodes[declarationIndex].nameOffset <= offset
+        && (
+          declaredType.byteLength == 0
+          || arena.nodes[declarationIndex].nameOffset >= declaredOffset
+        )
+      ) {
+        match (in arena.nodes[declarationIndex].typeAnnotation) {
+          some(annotation) => {
+            declaredType = annotation.name.copyBytes(
+              0,
+              annotation.name.byteLength
+            );
+            declaredOffset = arena.nodes[declarationIndex].nameOffset;
+          }
+          none => {}
+        }
+      }
+      declarationIndex = declarationIndex + 1;
+    }
+    if (declaredType.byteLength > 0) return Option.some(move declaredType);
     let loopIndex: usize = 0;
     let loopOffset: usize = 0;
     while (loopIndex < arena.nodes.length) {
@@ -5486,6 +5526,94 @@ function lowerMatchTree(
   return outputIndex;
 }
 
+function standardTestBindingName(
+  in program: Program,
+  in importedName: String
+): String {
+  for (const declaration of program.imports) {
+    if (declaration.header != "std/test") continue;
+    for (const binding of declaration.bindings) {
+      if (binding.importedName == importedName) {
+        return binding.localName.copyBytes(0, binding.localName.byteLength);
+      }
+    }
+  }
+  return "";
+}
+
+function testBorrowInput(in tree: ExpressionTree, index: usize): usize {
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].value == "in"
+    && tree.nodes[index].children.length == 1
+  ) return tree.nodes[index].children[0];
+  return index;
+}
+
+function testExpressionTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in tree: ExpressionTree,
+  index: usize,
+  in contextualType: String
+): Option<String> {
+  match (staticallyResolvedExpressionTypeName(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    tree,
+    index
+  )) {
+    some(name) => return Option.some(move name);
+    none => {}
+  }
+  if (tree.nodes[index].kind == ExpressionKind.stringExpression) {
+    return Option.some("String");
+  }
+  if (tree.nodes[index].kind == ExpressionKind.booleanExpression) {
+    return Option.some("boolean");
+  }
+  if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
+    if (
+      contextualType == "i8"
+      || contextualType == "i16"
+      || contextualType == "i32"
+      || contextualType == "i64"
+      || contextualType == "isize"
+      || contextualType == "u8"
+      || contextualType == "u16"
+      || contextualType == "u32"
+      || contextualType == "u64"
+      || contextualType == "usize"
+      || contextualType == "f32"
+      || contextualType == "f64"
+    ) return Option.some(contextualType.copyBytes(
+      0,
+      contextualType.byteLength
+    ));
+    return Option.some("i32");
+  }
+  if (tree.nodes[index].kind == ExpressionKind.callExpression) {
+    for (const resolution of evidence.callResolutions) {
+      if (
+        resolution.offset == tree.nodes[index].offset
+        && resolution.line == tree.nodes[index].line
+        && resolution.column == tree.nodes[index].column
+        && resolution.returnType.byteLength > 0
+      ) return Option.some(resolution.returnType.copyBytes(
+        0,
+        resolution.returnType.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
+}
+
 function lowerStatement(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -5496,6 +5624,253 @@ function lowerStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.expressionStatement) {
+    match (in arena.nodes[index].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (
+            tree.nodes[root].kind == ExpressionKind.callExpression
+            && tree.nodes[root].children.length == 2
+          ) {
+            const callee = tree.nodes[root].children[0];
+            const failName = standardTestBindingName(program, "fail");
+            if (
+              failName.byteLength > 0
+              && tree.nodes[callee].kind == ExpressionKind.identifierExpression
+              && tree.nodes[callee].value == failName
+            ) {
+              const messageArgument = tree.nodes[root].children[1];
+              const messageInput = testBorrowInput(
+                tree,
+                messageArgument
+              );
+              const message = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                messageInput,
+                inout expressions
+              );
+              const resultOutcome = try throwingFunctionResult(
+                program,
+                importedTypes,
+                ownerName
+              );
+              const result = match (resultOutcome) {
+                some(declaration) => declaration;
+                none => throw "native test failure lowering requires a throwing test body";
+              };
+              let children = Array<usize>();
+              children.push(message);
+              let labels = Array<String>();
+              labels.push("failure");
+              const failure = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.enumPayloadValue,
+                result.name,
+                children,
+                labels
+              );
+              const lowered = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.returnStatement,
+                mutableBinding: false,
+                name: "",
+                type: Option<LoweredType>.none,
+                expression: Option.some(failure),
+                secondExpression: Option<usize>.none,
+                children: Array<usize>(),
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: Array<String>(),
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              return lowered;
+            }
+
+            if (
+              tree.nodes[callee].kind == ExpressionKind.memberExpression
+              && tree.nodes[callee].value == "toEqual"
+              && tree.nodes[callee].children.length == 1
+            ) {
+              const expectation = tree.nodes[callee].children[0];
+              if (
+                tree.nodes[expectation].kind == ExpressionKind.callExpression
+                && tree.nodes[expectation].children.length == 2
+              ) {
+                const expectCallee = tree.nodes[expectation].children[0];
+                const expectName = standardTestBindingName(program, "expect");
+                if (
+                  expectName.byteLength > 0
+                  && tree.nodes[expectCallee].kind
+                    == ExpressionKind.identifierExpression
+                  && tree.nodes[expectCallee].value == expectName
+                ) {
+                  const actualArgument =
+                    tree.nodes[expectation].children[1];
+                  const expectedArgument = tree.nodes[root].children[1];
+                  const actualInput = testBorrowInput(
+                    tree,
+                    actualArgument
+                  );
+                  const expectedInput = testBorrowInput(
+                    tree,
+                    expectedArgument
+                  );
+                  const actualType = match (testExpressionTypeName(
+                    program,
+                    importedTypes,
+                    evidence,
+                    arena,
+                    ownerName,
+                    tree,
+                    actualInput,
+                    ""
+                  )) {
+                    some(name) => name;
+                    none => {
+                      const actualKind = expressionKindName(
+                        tree.nodes[actualInput].kind
+                      );
+                      throw `native test expectation lowering could not resolve the ${actualKind} actual value type at ${tree.nodes[actualInput].line}:${tree.nodes[actualInput].column}`;
+                    }
+                  };
+                  const expectedType = match (testExpressionTypeName(
+                    program,
+                    importedTypes,
+                    evidence,
+                    arena,
+                    ownerName,
+                    tree,
+                    expectedInput,
+                    actualType
+                  )) {
+                    some(name) => name;
+                    none => {
+                      const expectedKind = expressionKindName(
+                        tree.nodes[expectedInput].kind
+                      );
+                      throw `native test expectation lowering could not resolve the ${expectedKind} expected value type at ${tree.nodes[expectedInput].line}:${tree.nodes[expectedInput].column}`;
+                    }
+                  };
+                  let actualValueType = actualType.copyBytes(
+                    0,
+                    actualType.byteLength
+                  );
+                  if (
+                    stringStartsWith(actualValueType, "view ")
+                    && actualValueType.byteLength > 5
+                  ) {
+                    actualValueType = actualValueType.copyBytes(
+                      5,
+                      actualValueType.byteLength
+                    );
+                  }
+                  let expectedValueType = expectedType.copyBytes(
+                    0,
+                    expectedType.byteLength
+                  );
+                  if (
+                    stringStartsWith(expectedValueType, "view ")
+                    && expectedValueType.byteLength > 5
+                  ) {
+                    expectedValueType = expectedValueType.copyBytes(
+                      5,
+                      expectedValueType.byteLength
+                    );
+                  }
+                  let comparison = "scalar";
+                  if (
+                    actualValueType == "String"
+                    && expectedValueType == "String"
+                  ) {
+                    comparison = "string";
+                  } else {
+                    const comparableType = try lowerModuleTypeName(
+                      program,
+                      importedTypes,
+                      actualValueType
+                    );
+                    if (comparableType.kind == LoweredTypeKind.enumType) {
+                      comparison = "enum";
+                    } else if (
+                      comparableType.kind == LoweredTypeKind.foreignEnumType
+                    ) {
+                      comparison = "foreignEnum";
+                    }
+                  }
+                  if (
+    actualValueType != "String"
+    && actualValueType != "boolean"
+    && actualValueType != "i8"
+    && actualValueType != "i16"
+    && actualValueType != "i32"
+    && actualValueType != "i64"
+    && actualValueType != "isize"
+    && actualValueType != "u8"
+    && actualValueType != "u16"
+    && actualValueType != "u32"
+    && actualValueType != "u64"
+    && actualValueType != "usize"
+    && actualValueType != "f32"
+    && actualValueType != "f64"
+                    && comparison != "enum"
+                    && comparison != "foreignEnum"
+                  ) {
+                    throw `native test failure formatting does not support ${actualValueType} yet`;
+                  }
+                  const actual = try lowerExpression(
+                    program,
+                    importedTypes,
+                    evidence,
+                    tree,
+                    actualInput,
+                    inout expressions
+                  );
+                  const expected = try lowerExpressionExpected(
+                    program,
+                    importedTypes,
+                    evidence,
+                    tree,
+                    expectedInput,
+                    actualType,
+                    inout expressions
+                  );
+                  let labels = Array<String>();
+                  labels.push(actualType);
+                  labels.push(expectedType);
+                  labels.push(comparison);
+                  labels.push(`${arena.nodes[index].line}`);
+                  labels.push(`${arena.nodes[index].column}`);
+                  const lowered = statements.length;
+                  statements.push(LoweredStatement({
+                    kind: LoweredStatementKind.testExpectationStatement,
+                    mutableBinding: false,
+                    name: "",
+                    type: Option<LoweredType>.none,
+                    expression: Option.some(actual),
+                    secondExpression: Option.some(expected),
+                    children: Array<usize>(),
+                    cleanups: Array<LoweredCleanup>(),
+                    liveFlag: "",
+                    labels,
+                    matchConsumesSubject: false,
+                    matchBindingNeedsCleanup: false,
+                  }));
+                  return lowered;
+                }
+              }
+            }
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
     match (in arena.nodes[index].secondExpression) {
       some(syntax) => match (in syntax.tree) {
@@ -6325,7 +6700,8 @@ function lowerFunction(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
-  in declaration: FunctionDeclaration
+  in declaration: FunctionDeclaration,
+  in sourcePath: String
 ): LoweredFunction throws String {
   if (declaration.asynchronous) {
     throw `native lowering does not support async function ${declaration.name} yet`;
@@ -6452,6 +6828,8 @@ function lowerFunction(
   }
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
+    testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),
+    sourcePath: sourcePath.copyBytes(0, sourcePath.byteLength),
     nativeCExportName: declaration.nativeCExport
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
@@ -6513,6 +6891,8 @@ function lowerDeinitializer(
   attachMoveLiveFlags(inout expressions, liveFlags);
   return LoweredFunction({
     name: `${ownerName}.deinit`,
+    testName: "",
+    sourcePath: "",
     nativeCExportName: "",
     parameters: Array<LoweredParameter>(),
     returnType: LoweredType({ kind: LoweredTypeKind.voidType, name: "" }),
@@ -6606,17 +6986,19 @@ function containsName(in names: Array<String>, in name: String): boolean {
 }
 
 function collisionSafePrivateFunctionNames(
-  in parsed: Array<ParsedModule>
+  in parsed: Array<ParsedModule>,
+  includeTests: boolean
 ): Array<String> {
   let names = Array<String>();
   for (const module of parsed) {
     for (const declaration of module.program.functions) {
-      if (declaration.testDeclaration) continue;
+      if (declaration.testDeclaration && !includeTests) continue;
       if (containsName(names, declaration.name)) continue;
       let count: usize = 0;
       let exportedCount: usize = 0;
       for (const candidateModule of parsed) {
         for (const candidate of candidateModule.program.functions) {
+          if (candidate.testDeclaration && !includeTests) continue;
           if (candidate.name != declaration.name) continue;
           count = count + 1;
           if (functionIsExported(
@@ -6988,6 +7370,7 @@ function collectIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
+  includeTests: boolean,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
@@ -7070,7 +7453,7 @@ function collectIntrinsicEnums(
     }
   }
   for (const declaration of program.functions) {
-    if (declaration.testDeclaration) continue;
+    if (declaration.testDeclaration && !includeTests) continue;
     for (const parameter of declaration.parameters) {
       try collectIntrinsicTypeName(
         program,
@@ -7375,12 +7758,14 @@ function importedTypesForModule(
 
 function appendLoweredProgram(
   in program: Program,
+  in sourcePath: String,
   inout importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in privateFunctionCollisionNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
   moduleIndex: usize,
   entryIndex: usize,
+  includeTests: boolean,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
@@ -7445,6 +7830,7 @@ function appendLoweredProgram(
     program,
     importedTypes,
     evidence,
+    includeTests,
     inout arrays,
     inout maps,
     inout sets,
@@ -7629,7 +8015,12 @@ function appendLoweredProgram(
   }
 
   for (const declaration of program.functions) {
-    if (declaration.testDeclaration) continue;
+    if (declaration.testDeclaration && !includeTests) continue;
+    if (
+      includeTests
+      && moduleIndex == entryIndex
+      && declaration.name == "main"
+    ) continue;
     if (
       containsLoweredFunction(functions, declaration.name)
       && !containsName(privateFunctionCollisionNames, declaration.name)
@@ -7640,7 +8031,8 @@ function appendLoweredProgram(
       program,
       importedTypes,
       evidence,
-      declaration
+      declaration,
+      sourcePath
     );
     let loweredFunction = match (loweredFunctionOutcome) {
       success(lowered) => lowered;
@@ -7700,12 +8092,14 @@ export function lowerProgram(
   const privateTypeCollisionNames = Array<String>();
   try appendLoweredProgram(
     program,
+    "",
     inout importedTypes,
     evidence,
     privateCollisionNames,
     privateTypeCollisionNames,
     0,
     0,
+    false,
     inout arrays,
     inout maps,
     inout sets,
@@ -7730,6 +8124,21 @@ export function lowerModules(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): LoweredProgram throws String {
+  return try lowerModulesIncludingTests(parsed, graph, false);
+}
+
+export function lowerTestModules(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph
+): LoweredProgram throws String {
+  return try lowerModulesIncludingTests(parsed, graph, true);
+}
+
+function lowerModulesIncludingTests(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  includeTests: boolean
+): LoweredProgram throws String {
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
@@ -7738,7 +8147,10 @@ export function lowerModules(
   let sets = Array<LoweredSet>();
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
-  const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(parsed);
+  const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
+    parsed,
+    includeTests
+  );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
@@ -7757,12 +8169,14 @@ export function lowerModules(
     );
     const moduleOutcome = attempt appendLoweredProgram(
       parsed[moduleIndex].program,
+      parsed[moduleIndex].path,
       inout importedTypes,
       graph.modules[moduleIndex].semanticEvidence,
       privateFunctionCollisionNames,
       privateTypeCollisionNames,
       moduleIndex,
       entryIndex,
+      includeTests,
       inout arrays,
       inout maps,
       inout sets,

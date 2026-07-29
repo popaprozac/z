@@ -171,6 +171,8 @@ bun run z emit examples/language/basics/first.zs
 bun run z run examples/language/basics/first.zs
 bun run z test path/to/module.test.zs
 bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
+bun run bootstrap
+.z-cache/bootstrap/z test path/to/module.test.zs
 ```
 
 The bootstrap suite is split into independently runnable language, native
@@ -179,7 +181,7 @@ interop, Objective-C, Swift, self-hosting, and async tiers. See
 
 `bun run bootstrap` additionally produces `.z-cache/bootstrap/z` and an
 adjacent standalone foreign-metadata adapter. That native toolchain runs its
-supported `check`, `emit`, `build`, and cached `run` paths without Bun on
+supported `check`, `test`, `emit`, `build`, and cached `run` paths without Bun on
 `PATH`; Bun remains the trusted local seed and powers the development language
 server until versioned native toolchain artifacts are distributed.
 

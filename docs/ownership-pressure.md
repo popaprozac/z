@@ -1498,6 +1498,31 @@ the exact public wrapper and guarded header. The Stage-0 and native archives
 run the same C consumer unchanged. This closes a real self-hosting seam: native
 parity covers an outward ABI artifact, not only executable programs.
 
+## Native test runner through the fixed-point driver
+
+The fixed-point native `z` now owns the first end-to-end `test` command. It
+discovers inline tests across the selected module graph, lowers
+`expect(...).toEqual(...)` and `fail(...)` into the existing
+`Result<void, String>` function contract, emits one native runner, preserves
+source locations in expectation failures, continues after a failure, and
+returns a process failure only after the suite finishes.
+
+This exposed an evidence-composition boundary rather than a new language rule.
+Capability arguments such as `expect(in answer)` contain an
+`argumentBindingExpression`, not an ordinary identifier node. Native lowering
+already treated both as the same local value, but its fallback type lookup only
+recognized the ordinary identifier shape. Call expressions nested inside
+expectations similarly needed to consume the already-recorded call-result
+evidence. Extending the shared type lookup closed both cases without special
+test-only ownership semantics.
+
+The runner reuses ordinary cleanup planning on every conditional failure path.
+Tests remain normal Z functions internally, production emission still erases
+them, and the fixed-point compiler can now validate its own Z test surface
+without returning to the TypeScript command driver. Filtering, reusable
+assertion helpers, discovery beyond the selected import graph, and async tests
+remain separate composition slices.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

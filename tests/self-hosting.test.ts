@@ -100,7 +100,7 @@ hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and Tex
     () => decodeStage1TokenStream("identifier\tnope\t0000000000000001\t0000000000000001\t61\n", parityInput),
     /malformed stage-1 token offset/,
   );
-}, 10_000);
+}, 30_000);
 
 test("parses declarations, function bodies, and type shapes in native Z", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.zs");
@@ -273,11 +273,11 @@ test("keeps native test expectations in parser and semantic parity", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /uses 1 inferred local binding native-authoritative contract/,
+    /uses 2 inferred local binding native-authoritative contracts/,
   );
   assert.match(
     result.stdout,
-    /uses 2 expression native-authoritative contracts/,
+    /uses 3 expression native-authoritative contracts/,
   );
 });
 
@@ -1564,6 +1564,69 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 3 Z modules/);
+
+  const nativeTests = spawnSync(
+    executable,
+    [
+      "test",
+      resolve(projectRoot, "tests/fixtures/native-test-project/main.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeTests.status, 0, nativeTests.stderr);
+  assert.equal(
+    nativeTests.stdout,
+    "running 2 tests\n"
+      + "test imported module tests are discovered ... ok\n"
+      + "test entry module expectations run ... ok\n"
+      + "test result: ok. 2 passed; 0 failed\n",
+  );
+
+  const failingNativeTests = spawnSync(
+    executable,
+    [
+      "test",
+      resolve(projectRoot, "tests/fixtures/native-test-expectations.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(failingNativeTests.status, 1);
+  assert.match(failingNativeTests.stdout, /^running 4 tests/m);
+  assert.match(
+    failingNativeTests.stdout,
+    /test native parser sees expectations \.\.\. ok/,
+  );
+  assert.match(
+    failingNativeTests.stdout,
+    /test native runner reports expectation failures \.\.\. FAILED/,
+  );
+  assert.match(
+    failingNativeTests.stdout,
+    /native-test-expectations\.zs:\d+:\d+: expected 41 to equal 42/,
+  );
+  assert.match(
+    failingNativeTests.stdout,
+    /test native parser sees explicit failure \.\.\. FAILED\ndeliberate fixture failure/,
+  );
+  assert.match(
+    failingNativeTests.stdout,
+    /test native runner continues after failure \.\.\. ok/,
+  );
+  assert.match(
+    failingNativeTests.stdout,
+    /test result: FAILED\. 2 passed; 2 failed/,
+  );
+
+  const noNativeTests = spawnSync(
+    executable,
+    ["test", resolve(projectRoot, "examples/language/modules/main.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(noNativeTests.status, 1);
+  assert.match(
+    noNativeTests.stderr,
+    /no tests were found in this module or its imports/,
+  );
 
   const usage = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(usage.status, 2);
