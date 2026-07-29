@@ -1,5 +1,7 @@
 # Z
 
+[![CI](https://github.com/popaprozac/z/actions/workflows/ci.yml/badge.svg)](https://github.com/popaprozac/z/actions/workflows/ci.yml)
+
 Z is an experimental native systems language with TypeScript-inspired syntax,
 deterministic cleanup, typed errors, memory-safe ownership, and direct interop
 with C-family platform APIs.
