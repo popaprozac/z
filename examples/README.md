@@ -11,6 +11,12 @@ Use `bun run z check <path>` for type checking and `bun run z emit <path>` to
 inspect the generated C-family source. The broader guided index lives in
 [`docs/examples.md`](../docs/examples.md).
 
+Directories containing `z.json` are complete projects. The repository wrapper
+accepts that directory, as in the Z Notes README; a native `z` on `PATH`
+supports `z check .`, `z run .`, and `z build .` from inside it. Both forms
+select the named `target.entry`. Passing a `.zs` path explicitly overrides the
+entry for focused smoke programs while retaining the project configuration.
+
 ## Language
 
 ### Basics

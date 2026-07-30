@@ -25,11 +25,11 @@ parameters, but not stored in a Z struct, collection, enum, closure, or return
 value until `.zd` can name its runtime lifetime. `RaylibRuntime` ensures
 `CloseWindow()` runs only after the owned texture and image are released.
 
-On macOS, install raylib with Homebrew and run from the repository root:
+On macOS, install raylib with Homebrew and run the project target:
 
 ```sh
 brew install raylib
-bun run z run examples/applications/z-raylib/main.zs
+bun run z run examples/applications/z-raylib
 ```
 
 The source uses the portable header spelling `"raylib.h"` rather than embedding

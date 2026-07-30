@@ -31,6 +31,7 @@ import {
 import {
   appendProjectCompilerArguments,
   appendProjectCompileArguments,
+  configuredProjectEntryPath,
   loadProjectConfig,
   NativeProjectConfig,
 } from "./project-manifest.zs";
@@ -62,6 +63,74 @@ struct NativeProject {
 struct RunCacheMetadata {
   value: String;
   reusable: boolean;
+}
+
+struct NativeCommandInput {
+  entryPath: String;
+  projectMode: boolean;
+}
+
+function hasPathSuffix(in path: String, in suffix: String): boolean {
+  if (path.byteLength < suffix.byteLength) return false;
+  return (
+    path.copyBytes(path.byteLength - suffix.byteLength, path.byteLength)
+    == suffix
+  );
+}
+
+function isZSourceInput(in path: String): boolean {
+  return hasPathSuffix(path, ".zs");
+}
+
+function isProjectManifestInput(in path: String): boolean {
+  return (
+    path == "z.json"
+    || hasPathSuffix(path, "/z.json")
+    || hasPathSuffix(path, "\\z.json")
+  );
+}
+
+function isOptionArgument(in argument: String): boolean {
+  return (
+    argument.byteLength >= 2
+    && argument.byteAt(0) == 45
+    && argument.byteAt(1) == 45
+  );
+}
+
+function resolveCommandInput(
+  in suppliedPath: String
+): NativeCommandInput throws String {
+  let normalized = normalizedModulePath(suppliedPath);
+  if (normalized.byteLength == 0 && suppliedPath == ".") normalized = ".";
+  if (isZSourceInput(normalized)) {
+    return NativeCommandInput({
+      entryPath: normalized,
+      projectMode: false,
+    });
+  }
+
+  let probe = "";
+  if (fs.isDirectory(normalized)) {
+    probe = normalizedModulePath(`${normalized}/__z_project_probe.zs`);
+  } else if (isProjectManifestInput(normalized)) {
+    if (!fs.exists(normalized) || fs.isDirectory(normalized)) {
+      throw `project manifest "${normalized}" does not exist`;
+    }
+    const manifestDirectory = directoryName(normalized);
+    probe = normalizedModulePath(
+      `${manifestDirectory}/__z_project_probe.zs`
+    );
+  } else {
+    throw `expected a .zs source file, project directory, or z.json manifest, found "${suppliedPath}"`;
+  }
+
+  const config = try loadProjectConfig(probe);
+  const entryPath = try configuredProjectEntryPath(config);
+  return NativeCommandInput({
+    entryPath: normalizedModulePath(entryPath),
+    projectMode: true,
+  });
 }
 
 function loadModule(
@@ -201,8 +270,19 @@ function emitProject(in project: NativeProject): String throws String {
 }
 
 function checkProject(in entryPath: String): i32 throws String {
-  const project = try loadProject(entryPath);
+  const input = try resolveCommandInput(entryPath);
+  const project = try loadProject(input.entryPath);
   try validateExecutableEntry(project, false);
+  if (input.projectMode) {
+    if (project.config.targetKind == "executable") {
+      try validateExecutableEntry(project, true);
+    } else if (
+      project.config.targetKind == "static-library"
+      && !hasNativeCExport(project)
+    ) {
+      throw "a static-library project must declare at least one `export c function`";
+    }
+  }
   console.log(`checked ${project.modules.length} Z modules`);
   return 0;
 }
@@ -240,10 +320,23 @@ function emitProjectFile(
   in entryPath: String,
   in cPath: String
 ): i32 throws String {
+  if (!isZSourceInput(entryPath)) {
+    throw "z emit currently requires an explicit .zs source file and output path";
+  }
   const project = try loadProject(entryPath);
   const emitted = try emitProject(project);
   try fs.writeText(cPath, emitted);
   console.log(`emitted ${project.modules.length} Z modules to ${cPath}`);
+  return 0;
+}
+
+function emitProjectStandardOutput(in entryPath: String): i32 throws String {
+  if (!isZSourceInput(entryPath)) {
+    throw "z emit currently requires an explicit .zs source file";
+  }
+  const project = try loadProject(entryPath);
+  const emitted = try emitProject(project);
+  console.write(emitted);
   return 0;
 }
 
@@ -306,7 +399,8 @@ function buildProject(
 }
 
 function testProject(in entryPath: String): i32 throws String {
-  const project = try loadProject(entryPath);
+  const input = try resolveCommandInput(entryPath);
+  const project = try loadProject(input.entryPath);
   const emitted = try emitTestModulesC(project.modules, project.graph);
   const outputDirectory = `${project.config.directory}/.z-cache/test`;
   try fs.createDirectories(outputDirectory);
@@ -322,30 +416,6 @@ function testProject(in entryPath: String): i32 throws String {
   return try process.run(outputPath, arguments);
 }
 
-function staticLibraryEntryPath(in projectPath: String): String throws String {
-  const normalized = normalizedModulePath(projectPath);
-  let probe = copy normalized;
-  if (fs.isDirectory(normalized)) {
-    probe = normalizedModulePath(`${normalized}/__z_project_probe.zs`);
-  } else if (
-    normalized.byteLength >= 6
-    && normalized.copyBytes(normalized.byteLength - 6, normalized.byteLength)
-      == "z.json"
-  ) {
-    const directory = directoryName(normalized);
-    probe = normalizedModulePath(`${directory}/__z_project_probe.zs`);
-  }
-  const config = try loadProjectConfig(probe);
-  if (config.targetKind != "static-library") {
-    throw "z build project target.kind must be \"static-library\" for project-directory builds";
-  }
-  const entry = match (in config.entry) {
-    some(entry) => entry.copyBytes(0, entry.byteLength);
-    none => throw "a static-library project requires target.entry";
-  };
-  return normalizedModulePath(`${config.directory}/${entry}`);
-}
-
 function hasNativeCExport(in project: NativeProject): boolean {
   for (const module of project.modules) {
     for (const declaration of module.program.functions) {
@@ -355,19 +425,23 @@ function hasNativeCExport(in project: NativeProject): boolean {
   return false;
 }
 
+function requiredProjectTargetName(
+  in project: NativeProject
+): String throws String {
+  return match (in project.config.targetName) {
+    some(name) => name.copyBytes(0, name.byteLength);
+    none => throw `a ${project.config.targetKind} project requires target.name`;
+  };
+}
+
 function buildStaticLibrary(
-  in projectPath: String,
+  in project: NativeProject,
   release: boolean
 ): i32 throws String {
-  const entryPath = try staticLibraryEntryPath(projectPath);
-  const project = try loadProject(entryPath);
   if (!hasNativeCExport(project)) {
     throw "a static-library project must declare at least one `export c function`";
   }
-  const targetName = match (in project.config.targetName) {
-    some(name) => name.copyBytes(0, name.byteLength);
-    none => throw "a static-library project requires target.name";
-  };
+  const targetName = try requiredProjectTargetName(project);
   const emitted = try emitModulesC(project.modules, project.graph);
   const header = try emitModulesCHeader(project.modules, project.graph);
   const outputDirectory = normalizedModulePath(
@@ -418,6 +492,54 @@ function buildStaticLibrary(
   console.log(`built ${libraryPath}`);
   console.log(`generated ${headerPath}`);
   return 0;
+}
+
+function buildExecutableTarget(
+  in project: NativeProject,
+  release: boolean
+): i32 throws String {
+  try validateExecutableEntry(project, true);
+  const targetName = try requiredProjectTargetName(project);
+  const emitted = try emitModulesC(project.modules, project.graph);
+  const outputDirectory = normalizedModulePath(
+    `${project.config.directory}/build`
+  );
+  const cacheDirectory = normalizedModulePath(
+    `${project.config.directory}/.z-cache/build`
+  );
+  try fs.createDirectories(outputDirectory);
+  try fs.createDirectories(cacheDirectory);
+  const cachedOutputPath = `${cacheDirectory}/${targetName}`;
+  const outputPath = `${outputDirectory}/${targetName}`;
+  const exitCode = try compileEmittedProject(
+    project,
+    emitted,
+    cachedOutputPath,
+    release
+  );
+  if (exitCode != 0) return exitCode;
+  try fs.replace(cachedOutputPath, outputPath);
+  console.log(`built ${outputPath}`);
+  return 0;
+}
+
+function buildManifestProject(
+  in projectPath: String,
+  release: boolean
+): i32 throws String {
+  const input = try resolveCommandInput(projectPath);
+  if (!input.projectMode) {
+    throw "project build expects a directory or z.json manifest; use `z build <entry.zs> <output>` for the compatibility file build";
+  }
+  const project = try loadProject(input.entryPath);
+  try validateExecutableEntry(project, false);
+  if (project.config.targetKind == "executable") {
+    return try buildExecutableTarget(project, release);
+  }
+  if (project.config.targetKind == "static-library") {
+    return try buildStaticLibrary(project, release);
+  }
+  throw `unsupported project target kind "${project.config.targetKind}"`;
 }
 
 function appendCacheField(
@@ -608,7 +730,14 @@ function runProject(
   in childArguments: Array<String>,
   release: boolean
 ): i32 throws String {
-  const project = try loadProject(entryPath);
+  const input = try resolveCommandInput(entryPath);
+  const project = try loadProject(input.entryPath);
+  if (
+    input.projectMode
+    && project.config.targetKind != "executable"
+  ) {
+    throw `z run requires an executable project, but target.kind is "${project.config.targetKind}"`;
+  }
   const outputDirectory = `${project.config.directory}/.z-cache/run`;
   try fs.createDirectories(outputDirectory);
   const outputPath = `${outputDirectory}/program`;
@@ -684,23 +813,35 @@ function main(): i32 {
 
   const command = copy arguments[0];
   if (command == "check") {
-    if (arguments.length < 2) {
-      console.error("usage: z check <entry.zs>");
+    if (arguments.length > 2) {
+      console.error("usage: z check [entry.zs|project]");
       return 2;
     }
-    const outcome = attempt checkProject(arguments[1]);
+    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
+      console.error(`unknown check option ${arguments[1]}`);
+      return 2;
+    }
+    let inputPath = ".";
+    if (arguments.length == 2) inputPath = copy arguments[1];
+    const outcome = attempt checkProject(inputPath);
     return reportOutcome(outcome);
   }
   if (command == "test") {
-    if (arguments.length != 2) {
-      console.error("usage: z test <entry.zs>");
+    if (arguments.length > 2) {
+      console.error("usage: z test [entry.zs|project]");
       return 2;
     }
-    const outcome = attempt testProject(arguments[1]);
+    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
+      console.error(`unknown test option ${arguments[1]}`);
+      return 2;
+    }
+    let inputPath = ".";
+    if (arguments.length == 2) inputPath = copy arguments[1];
+    const outcome = attempt testProject(inputPath);
     return reportOutcome(outcome);
   }
   if (command == "foreign-inspect") {
-    if (arguments.length < 2) {
+    if (arguments.length != 2) {
       console.error("usage: z foreign-inspect <declarations.zfdcl>");
       return 2;
     }
@@ -720,20 +861,38 @@ function main(): i32 {
     return reportOutcome(outcome);
   }
   if (command == "emit") {
-    if (arguments.length < 3) {
-      console.error("usage: z emit <entry.zs> <output.c>");
+    if (arguments.length != 2 && arguments.length != 3) {
+      console.error("usage: z emit <entry.zs> [output.c]");
       return 2;
     }
-    const outcome = attempt emitProjectFile(arguments[1], arguments[2]);
+    if (arguments.length == 2) {
+      const outcome = attempt emitProjectStandardOutput(arguments[1]);
+      return reportOutcome(outcome);
+    }
+    const outcome = attempt emitProjectFile(
+      arguments[1],
+      arguments[2]
+    );
     return reportOutcome(outcome);
   }
   if (command == "build") {
-    const legacyExecutableBuild = (
-      arguments.length >= 3
-      && arguments[2] != "--release"
+    const compatibilityFileBuild = (
+      arguments.length > 1
+      && isZSourceInput(arguments[1])
     );
-    if (legacyExecutableBuild) {
-      const release = arguments.length > 3 && arguments[3] == "--release";
+    if (compatibilityFileBuild) {
+      if (
+        (arguments.length != 3 && arguments.length != 4)
+        || arguments[2] == "--release"
+      ) {
+        console.error("usage: z build <entry.zs> <output> [--release]");
+        return 2;
+      }
+      if (arguments.length == 4 && arguments[3] != "--release") {
+        console.error(`unknown build option ${arguments[3]}`);
+        return 2;
+      }
+      const release = arguments.length == 4;
       const outcome = attempt buildProject(
         arguments[1],
         arguments[2],
@@ -743,29 +902,61 @@ function main(): i32 {
     }
     let projectPath = ".";
     let release = false;
-    if (arguments.length > 1 && arguments[1] != "--release") {
+    let index: usize = 1;
+    if (index < arguments.length && arguments[index] != "--release") {
+      if (isOptionArgument(arguments[index])) {
+        console.error(`unknown build option ${arguments[index]}`);
+        return 2;
+      }
       projectPath = copy arguments[1];
+      index = index + 1;
     }
-    if (
-      (arguments.length > 1 && arguments[1] == "--release")
-      || (arguments.length > 2 && arguments[2] == "--release")
-    ) release = true;
-    const outcome = attempt buildStaticLibrary(
+    if (index < arguments.length) {
+      if (arguments[index] != "--release") {
+        console.error(`unknown build option ${arguments[index]}`);
+        return 2;
+      }
+      release = true;
+      index = index + 1;
+    }
+    if (index != arguments.length) {
+      console.error(`unknown build option ${arguments[index]}`);
+      return 2;
+    }
+    const outcome = attempt buildManifestProject(
       projectPath,
       release
     );
     return reportOutcome(outcome);
   }
   if (command == "run") {
-    if (arguments.length < 2) {
-      console.error("usage: z run <entry.zs> [--release] [-- args]");
-      return 2;
-    }
+    let inputPath = ".";
     let childArguments = Array<String>();
-    const release = arguments.length > 2 && arguments[2] == "--release";
-    let index: usize = 2;
-    if (release) index = 3;
-    if (index < arguments.length && arguments[index] == "--") {
+    let release = false;
+    let index: usize = 1;
+    if (
+      index < arguments.length
+      && arguments[index] != "--release"
+      && arguments[index] != "--"
+    ) {
+      if (isOptionArgument(arguments[index])) {
+        console.error(`unknown run option ${arguments[index]}`);
+        return 2;
+      }
+      inputPath = copy arguments[index];
+      index = index + 1;
+    }
+    if (index < arguments.length && arguments[index] == "--release") {
+      release = true;
+      index = index + 1;
+    }
+    if (index < arguments.length) {
+      if (arguments[index] != "--") {
+        console.error(
+          `unknown run option ${arguments[index]}; pass program arguments after --`
+        );
+        return 2;
+      }
       index = index + 1;
     }
     while (index < arguments.length) {
@@ -773,7 +964,7 @@ function main(): i32 {
       index = index + 1;
     }
     const outcome = attempt runProject(
-      arguments[1],
+      inputPath,
       childArguments,
       release
     );

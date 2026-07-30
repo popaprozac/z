@@ -4,6 +4,13 @@ The examples are small executable specifications for the stage-0 compiler. Run
 them from the repository root with `bun run z run <path>`; use `check` for
 compile-only probes and `emit` to inspect generated native code.
 
+Applications and interop probes with `z.json` are also runnable as projects.
+The repository wrapper accepts the directory, while a native `z` on `PATH`
+supports `z check .`, `z run .`, and `z build .` from inside it. The manifest's
+required `target.name` and `target.entry` select the artifact and entry module.
+An explicit `.zs` path remains the entry override for a project's alternate
+smoke programs.
+
 ## Start here
 
 | Area | Example | What it demonstrates |

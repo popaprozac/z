@@ -54,41 +54,86 @@ tooling commonly recognizes it as a compressed archive.
 
 ## CLI commands
 
-The repository Stage-0 command currently exposes:
+The repository Stage-0 command accepts either a source file or a project
+directory where shown:
 
 ```text
-z build [project-directory] [--release]
-z check <file.zs> [--native-frontend] [--timings]
+z build <project-directory | z.json> [--release]
+z check <file.zs | project-directory | z.json> [--native-frontend] [--timings]
 z emit <file.zs>
-z run <file.zs> [-- program arguments]
+z run <file.zs | project-directory | z.json> [--release] [-- program arguments]
+z test <file.zs | project-directory | z.json>
 ```
 
 | Command | Purpose |
 | --- | --- |
 | `bun run z check file.zs` | Parse, type-check, and validate ownership without producing a binary |
+| `bun run z check path/to/project` | Check the `target.entry` selected by that project's `z.json` |
 | `bun run z check file.zs --native-frontend --timings` | Run the opt-in hybrid native frontend and report parity timings |
 | `bun run z emit file.zs` | Print the generated C-family source for inspection |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
-| `bun run z build path/to/project` | Build a `static-library` project into its public `build/` directory |
-| `bun run z build path/to/project --release` | Build the same C-facing library with optimization enabled |
+| `bun run z run path/to/project` | Run the executable target selected by that project's `z.json` |
+| `bun run z run path/to/project --release` | Run that target through an optimized native build |
+| `bun run z build path/to/project` | Build an executable or static-library target into its public `build/` directory |
+| `bun run z build path/to/project --release` | Build the same target with optimization enabled |
+| `bun run z test path/to/project` | Run tests reachable from the selected entry without requiring `main` |
 
 `z run` streams stdout and stderr while the program is alive, including during
 a native GUI event loop.
 
-The first project build tier accepts a `z.json` target with
-`"kind": "static-library"` and one or more checked `export c function`
-declarations. Signatures may use scalars, `c struct` values, and
-fixed-representation `c enum` values. The build publishes a guarded C/C++
-header and native archive:
+Every `z.json` target names its artifact and entry module. Omitting `kind`
+selects an executable:
 
-```sh
-bun run z build examples/interop/c/z-export
+```json
+{
+  "target": {
+    "name": "hello",
+    "entry": "main.zs"
+  }
+}
 ```
 
-See [Calling Z from C](../examples/interop/c/z-export/README.md) for the
-handwritten consumer. The standalone native compiler supports the same
-project-directory form after `bun run bootstrap`; its explicit
-`z build <entry.zs> <output>` form remains available for executable builds.
+With the native `z` executable on `PATH`, project mode makes the current
+manifest authoritative:
+
+```sh
+cd path/to/project
+z check .
+z run .
+z build .
+```
+
+The repository's `bun run z` script itself runs from the repository package
+root, so pass it the project path instead:
+
+```sh
+bun run z check path/to/project
+bun run z run path/to/project
+bun run z build path/to/project
+```
+
+Passing a `.zs` path remains an explicit entry override. It uses the surrounding
+project's deployment and native-link settings but does not replace
+`target.entry`, which keeps focused smoke programs convenient:
+
+```sh
+bun run z check path/to/project/smoke.zs
+bun run z run path/to/project/smoke.zs
+```
+
+An executable build publishes the target's named native binary. A
+`"kind": "static-library"` target instead requires one or more checked
+`export c function` declarations and publishes a guarded C/C++ header plus a
+native archive. See
+[Calling Z from C](../examples/interop/c/z-export/README.md) for the complete
+manifest and handwritten consumer.
+
+Shared-library output and project-mode source emission are deliberate next
+artifact layers; `shared-library` is not yet an accepted target kind, and
+`z emit` still requires an explicit `.zs` file.
+
+A checked `z.json` JSON Schema and manifest completion are follow-up DX; the
+compiler's validated fields remain the authority in this first slice.
 
 ## Local native compiler
 
@@ -117,13 +162,17 @@ internally; compiling it as a standalone executable removes the user's runtime
 dependency without pretending Z has reimplemented Clang. A future release will
 ship trusted platform artifacts so end users do not perform this seed ceremony.
 
-The bootstrapped native command has its own explicit artifact surface:
+The bootstrapped native command accepts the same project-directory forms for
+`check`, `run`, and `build`, alongside its explicit artifact surface:
 
 ```text
-z check <entry.zs>
-z emit <entry.zs> <output.c>
-z build <entry.zs> <output> [--release]
-z run <entry.zs> [--release] [-- args...]
+z check [entry.zs | project-directory | z.json]
+z test [entry.zs | project-directory | z.json]
+z emit <entry.zs>
+z emit <entry.zs> <output.c>                 # bootstrap compatibility
+z build [project-directory | z.json] [--release]
+z build <entry.zs> <output> [--release]      # bootstrap compatibility
+z run [entry.zs | project-directory | z.json] [--release] [-- args...]
 ```
 
 `emit` writes readable C without invoking Clang. `build` retains that C beside
@@ -212,6 +261,7 @@ and the system libraries the final binary must link:
 ```json
 {
   "target": {
+    "name": "deployment-target",
     "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "13.0",
@@ -239,10 +289,11 @@ search paths to both compiler and editor analysis, while
 resolve from the `z.json` directory; absolute paths remain absolute. Every
 configured path must name an existing directory. Importing a header describes
 the API; selecting a library describes where its implementation comes from, so
-the two concerns remain explicit and independent. Run the macOS probe with:
+the two concerns remain explicit and independent. Run the macOS probe in
+project mode:
 
 ```sh
-bun run z run examples/interop/c/deployment-target/main.zs
+bun run z run examples/interop/c/deployment-target
 ```
 
 ## Editor setup

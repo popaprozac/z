@@ -1,5 +1,6 @@
 {
   "target": {
+    "name": "deployment-target",
     "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "13.0"

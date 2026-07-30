@@ -239,7 +239,15 @@ Library output is project configuration rather than declaration syntax:
 }
 ```
 
-Build the project from the repository root or from inside its directory:
+With `z` on `PATH`, build from the project directory:
+
+```sh
+cd path/to/project
+z build .
+z build . --release
+```
+
+The repository Stage-0 wrapper runs from the package root, so its equivalent is:
 
 ```sh
 bun run z build path/to/project
@@ -256,15 +264,19 @@ build/zmath.h
 
 On Windows the archive uses `zmath.lib`. Compiler-owned generated source and
 object files remain under `.z-cache/build`; consumers do not need them.
-A library entry is an export-only module graph and does not require
-`function main()`.
+A static-library entry is an export-only module graph and does not require
+`function main()`. All manifest targets require `target.name` and
+`target.entry`; omitting `target.kind` selects an executable instead. Project
+`check` accepts either kind, while project `run` requires an executable.
 
 See [`examples/interop/c/z-export`](../examples/interop/c/z-export) for a
 complete Z library and handwritten strict-C consumer.
 
-An inspectable project-level `z emit` form remains to be designed. A later
-`shared-library` target kind will produce the platform dynamic-library spelling
-plus the same public header. Executables remain the default target kind.
+An inspectable project-level `z emit` form remains to be designed; source
+emission still selects an explicit `.zs` file. A later `shared-library` target
+kind will produce the platform dynamic-library spelling plus the same public
+header. Neither is implemented by the first project-artifact contract.
+Executables remain the default target kind.
 
 ## Growth path
 
@@ -307,7 +319,8 @@ shape and guarded header, and the standalone fixed-point `z` accepts the same
 project-library command:
 
 ```sh
-.z-cache/bootstrap/z build path/to/project
+cd examples/interop/c/z-export
+../../../../.z-cache/bootstrap/z build .
 ```
 
 The native archive and header pass the same handwritten C consumer unchanged,

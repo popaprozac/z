@@ -19,10 +19,10 @@ semantic facts the C header does not express:
 - `failure CURL_WRITEFUNC_ERROR;`, which narrows a thrown Z callback error to
   libcurl's callback ABI failure sentinel.
 
-Run it from the repository root:
+Run it as a manifest-selected executable:
 
 ```sh
-bun run z run examples/applications/z-curl/main.zs
+bun run z run examples/applications/z-curl
 ```
 
 The application performs a real HTTPS `GET https://example.com`. libcurl

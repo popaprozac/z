@@ -6,7 +6,7 @@ Exported functions remain callable and importable from Z. The C-layout types
 keep ordinary Z value and exhaustive-match semantics while guaranteeing the
 representation printed in the generated header.
 
-From the repository root:
+From the repository root, build the manifest-selected static-library target:
 
 ```sh
 bun run z build examples/interop/c/z-export
@@ -24,7 +24,8 @@ The bootstrapped native compiler provides the same project command:
 
 ```sh
 bun run bootstrap
-.z-cache/bootstrap/z build examples/interop/c/z-export
+cd examples/interop/c/z-export
+../../../../.z-cache/bootstrap/z build .
 ```
 
 Expected output:

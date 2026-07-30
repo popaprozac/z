@@ -4,7 +4,7 @@ This probe constructs a Swift-native associated-value enum directly from Z
 through Swift's generated C++ compatibility header:
 
 ```sh
-bun run z run examples/interop/swift/swift-enum-interop/main.zs
+bun run z run examples/interop/swift/swift-enum-interop
 ```
 
 The Z source calls the generated Swift case factories with ordinary namespaced

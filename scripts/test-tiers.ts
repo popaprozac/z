@@ -25,7 +25,10 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
   },
   "native-interop": {
     timeoutMilliseconds: 60_000,
-    files: ["tests/native-interop.test.ts"],
+    files: [
+      "tests/native-interop.test.ts",
+      "tests/project-commands.test.ts",
+    ],
   },
   "objc-interop": {
     timeoutMilliseconds: 60_000,

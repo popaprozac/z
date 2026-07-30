@@ -1831,6 +1831,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     resolve(foreignProject, "z.json"),
     JSON.stringify({
       target: {
+        name: "foreign-project",
         entry: "main.zs",
         includeDirectories: ["."],
       },
@@ -2554,6 +2555,17 @@ test("compiles a multi-module Z application through the standalone native driver
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
   );
+  const nativeStandardOutputEmission = spawnSync(
+    driver,
+    ["emit", driverSource],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(
+    nativeStandardOutputEmission.status,
+    0,
+    nativeStandardOutputEmission.stderr,
+  );
+  assert.equal(nativeStandardOutputEmission.stdout, driverEmission.stdout);
 
   const cExportProject = resolve(
     projectRoot,
@@ -2793,6 +2805,7 @@ test("compiles a multi-module Z application through the standalone native driver
     resolve(foreignProject, "z.json"),
     `${JSON.stringify({
       target: {
+        name: "foreign-project",
         entry: "main.zs",
         includeDirectories: ["."],
         link: {
@@ -2885,6 +2898,7 @@ test("compiles a multi-module Z application through the standalone native driver
     resolve(foreignProject, "z.json"),
     `${JSON.stringify({
       target: {
+        name: "foreign-project",
         entry: "main.zs",
         includeDirectories: [".", "additional-include"],
         link: {
@@ -3026,6 +3040,7 @@ test("compiles a multi-module Z application through the standalone native driver
     resolve(headerOnlyProject, "z.json"),
     `${JSON.stringify({
       target: {
+        name: "header-only-project",
         entry: "main.zs",
         includeDirectories: ["."],
       },
@@ -3097,6 +3112,7 @@ test("compiles a multi-module Z application through the standalone native driver
     resolve(headerOnlyProject, "z.json"),
     `${JSON.stringify({
       target: {
+        name: "header-only-project",
         entry: "main.zs",
         includeDirectories: [".", "cache-include"],
       },
@@ -3292,6 +3308,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(nativeLibraryArchiving.status, 0, nativeLibraryArchiving.stderr);
   const manifest = {
     target: {
+      name: "manifest-application",
       entry: "main.zs",
       ...(process.platform === "darwin"
         ? { platform: "macos", minimumVersion: "14.0" }
@@ -3317,9 +3334,258 @@ test("compiles a multi-module Z application through the standalone native driver
   const manifestExecution = spawnSync(manifestApplication, [], { encoding: "utf8" });
   assert.equal(manifestExecution.status, 42, manifestExecution.stderr);
 
+  const manifestProjectCheck = spawnSync(
+    driver,
+    ["check", manifestProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    manifestProjectCheck.status,
+    0,
+    manifestProjectCheck.stderr,
+  );
+  const defaultManifestProjectCheck = spawnSync(
+    driver,
+    ["check"],
+    { cwd: manifestProject, encoding: "utf8" },
+  );
+  assert.equal(
+    defaultManifestProjectCheck.status,
+    0,
+    defaultManifestProjectCheck.stderr,
+  );
+  const manifestFileCheck = spawnSync(
+    driver,
+    ["check", resolve(manifestProject, "value.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(manifestFileCheck.status, 0, manifestFileCheck.stderr);
+
+  const manifestProjectBuild = spawnSync(
+    driver,
+    ["build", resolve(manifestProject, "z.json")],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    manifestProjectBuild.status,
+    0,
+    manifestProjectBuild.stderr,
+  );
+  assert.match(
+    manifestProjectBuild.stdout,
+    /build\/manifest-application/,
+  );
+  const builtManifestApplication = resolve(
+    manifestProject,
+    "build/manifest-application",
+  );
+  const builtManifestExecution = spawnSync(
+    builtManifestApplication,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    builtManifestExecution.status,
+    42,
+    builtManifestExecution.stderr,
+  );
+  const manifestProjectRun = spawnSync(
+    driver,
+    ["run", manifestProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(manifestProjectRun.status, 42, manifestProjectRun.stderr);
+  const defaultManifestProjectRun = spawnSync(
+    driver,
+    ["run"],
+    { cwd: manifestProject, encoding: "utf8" },
+  );
+  assert.equal(
+    defaultManifestProjectRun.status,
+    42,
+    defaultManifestProjectRun.stderr,
+  );
+
+  const projectWithoutMain = resolve(directory, "project-without-main");
+  mkdirSync(projectWithoutMain);
+  const projectWithoutMainEntry = resolve(projectWithoutMain, "tests.zs");
+  writeFileSync(
+    projectWithoutMainEntry,
+    [
+      "export function answer(): i32 { return 42; }",
+      'test "project tests do not require main" {}',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(projectWithoutMain, "z.json"),
+    JSON.stringify({
+      target: {
+        name: "project-without-main",
+        entry: "tests.zs",
+      },
+    }),
+  );
+  const missingProjectMainCheck = spawnSync(
+    driver,
+    ["check", projectWithoutMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingProjectMainCheck.status, 1);
+  assert.match(
+    missingProjectMainCheck.stderr,
+    /program must declare `function main\(\): i32`/,
+  );
+  const missingFileMainCheck = spawnSync(
+    driver,
+    ["check", projectWithoutMainEntry],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    missingFileMainCheck.status,
+    0,
+    missingFileMainCheck.stderr,
+  );
+  const projectTestWithoutMain = spawnSync(
+    driver,
+    ["test", projectWithoutMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    projectTestWithoutMain.status,
+    0,
+    projectTestWithoutMain.stderr,
+  );
+  const defaultProjectTestWithoutMain = spawnSync(
+    driver,
+    ["test"],
+    { cwd: projectWithoutMain, encoding: "utf8" },
+  );
+  assert.equal(
+    defaultProjectTestWithoutMain.status,
+    0,
+    defaultProjectTestWithoutMain.stderr,
+  );
+
+  const staticProjectCheck = spawnSync(
+    driver,
+    ["check", cExportProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(staticProjectCheck.status, 0, staticProjectCheck.stderr);
+  const staticProjectRun = spawnSync(
+    driver,
+    ["run", cExportProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(staticProjectRun.status, 1);
+  assert.match(
+    staticProjectRun.stderr,
+    /z run requires an executable project, but target.kind is "static-library"/,
+  );
+
+  const staticFileModeProject = resolve(directory, "static-file-mode");
+  mkdirSync(staticFileModeProject);
+  writeFileSync(
+    resolve(staticFileModeProject, "library.zs"),
+    "export c function z_static_answer(): i32 { return 42; }\n",
+  );
+  const staticFileModeMain = resolve(staticFileModeProject, "main.zs");
+  writeFileSync(
+    staticFileModeMain,
+    "function main(): i32 { return 0; }\n",
+  );
+  writeFileSync(
+    resolve(staticFileModeProject, "z.json"),
+    JSON.stringify({
+      target: {
+        kind: "static-library",
+        name: "static-file-mode",
+        entry: "library.zs",
+      },
+    }),
+  );
+  const staticAdHocRun = spawnSync(
+    driver,
+    ["run", staticFileModeMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(staticAdHocRun.status, 0, staticAdHocRun.stderr);
+
+  const invalidExecutableManifest = resolve(
+    directory,
+    "invalid-executable-manifest",
+  );
+  mkdirSync(invalidExecutableManifest);
+  writeFileSync(
+    resolve(invalidExecutableManifest, "main.zs"),
+    "function main(): i32 { return 0; }\n",
+  );
+  writeFileSync(
+    resolve(invalidExecutableManifest, "z.json"),
+    JSON.stringify({ target: { entry: "main.zs" } }),
+  );
+  const missingTargetName = spawnSync(
+    driver,
+    ["check", invalidExecutableManifest],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingTargetName.status, 1);
+  assert.match(
+    missingTargetName.stderr,
+    /executable target requires target.name/,
+  );
+  writeFileSync(
+    resolve(invalidExecutableManifest, "z.json"),
+    JSON.stringify({ target: { name: "missing-entry" } }),
+  );
+  const missingTargetEntry = spawnSync(
+    driver,
+    ["check", invalidExecutableManifest],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingTargetEntry.status, 1);
+  assert.match(
+    missingTargetEntry.stderr,
+    /executable target requires target.entry/,
+  );
+
+  const strictCheckOptions = spawnSync(
+    driver,
+    ["check", resolve(manifestProject, "main.zs"), "--unexpected"],
+    { encoding: "utf8" },
+  );
+  assert.equal(strictCheckOptions.status, 2);
+  const strictRunArguments = spawnSync(
+    driver,
+    ["run", resolve(manifestProject, "main.zs"), "argument"],
+    { encoding: "utf8" },
+  );
+  assert.equal(strictRunArguments.status, 2);
+  assert.match(
+    strictRunArguments.stderr,
+    /pass program arguments after --/,
+  );
+  const projectEmit = spawnSync(
+    driver,
+    ["emit", manifestProject, resolve(directory, "project-output.c")],
+    { encoding: "utf8" },
+  );
+  assert.equal(projectEmit.status, 1);
+  assert.match(
+    projectEmit.stderr,
+    /z emit currently requires an explicit .zs source file/,
+  );
+
   writeFileSync(
     resolve(manifestProject, "z.json"),
-    JSON.stringify({ target: { includeDirectories: ["missing"] } }),
+    JSON.stringify({
+      target: {
+        name: "manifest-application",
+        entry: "main.zs",
+        includeDirectories: ["missing"],
+      },
+    }),
   );
   const missingDirectoryCheck = spawnSync(
     driver,
@@ -3420,6 +3686,8 @@ test("compiles a multi-module Z application through the standalone native driver
     failingManifest,
     JSON.stringify({
       target: {
+        name: "argument-application",
+        entry: "main.zs",
         link: {
           libraries: ["z_intentionally_missing_cache_publication"],
         },

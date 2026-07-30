@@ -1967,6 +1967,8 @@ Native library selection is explicit project configuration:
 ```json
 {
   "target": {
+    "name": "native-example",
+    "entry": "main.zs",
     "includeDirectories": ["vendor/include"],
     "link": {
       "directories": ["vendor/lib"],
@@ -1984,6 +1986,12 @@ library search paths. Relative entries resolve from the directory containing
 existing directories. Raw linker flags are intentionally not part of this
 contract. A header import supplies declarations while `target.link.libraries`
 supplies link-time implementations.
+
+Every manifest target also supplies a portable `target.name` and a `.zs`
+`target.entry`. Omitting `target.kind` selects an executable; a
+`static-library` entry is an export-only graph. Project-directory `check`,
+`run`, and `build` select that entry, while an explicit `.zs` argument is an
+entry override that retains the surrounding target configuration.
 
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored

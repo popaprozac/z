@@ -5,13 +5,14 @@ dylib and generated Objective-C compatibility header, compiles the Z source
 through the Objective-C ARC backend, links both products, and runs the result:
 
 ```sh
-bun run z run examples/interop/swift/swift-interop/main.zs
+bun run z run examples/interop/swift/swift-interop
 ```
 
 The Z source imports `ZSwiftExample-Swift.h` directly and uses the Swift class,
 initializer, method, and writable property with ordinary Z syntax. Compiler and
 language-server analysis share the manifest build graph and generated include
-directory. `run.sh` remains only as a convenience wrapper for the command above.
+directory. `run.sh` remains only as a compatibility convenience; project mode
+is the canonical invocation.
 
 The manifest also carries `Foundation` into the final native link plan. Build
 products live under this example's ignored `.z-cache` directory and are rebuilt

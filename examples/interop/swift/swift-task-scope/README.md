@@ -20,7 +20,7 @@ This example composes six native boundaries:
 Run it on macOS:
 
 ```sh
-bun run z run examples/interop/swift/swift-task-scope/main.zs
+bun run z run examples/interop/swift/swift-task-scope
 ```
 
 The expected output is:

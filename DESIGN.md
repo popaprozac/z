@@ -1394,10 +1394,17 @@ threading assertions, and must record whether a dependency uses `unsafe` or
 
 A source file does not need a module declaration or a `main` function. Checking
 and editor analysis accept declaration-only and export-only modules. Executable
-context supplies the distinction: a file selected by `z run`, the current
-executable-oriented `z emit`, or as a manifest entry must declare
-`function main(): i32`. This keeps module identity in the
-import/build graph rather than duplicating it in source syntax.
+context supplies the distinction: an explicit file selected by `z run`, the
+current executable-oriented `z emit`, or an executable project's
+`target.entry` must declare `function main(): i32`. A static-library entry is
+an export-only graph and does not. Every manifest target has a portable
+`target.name` and `.zs` `target.entry`; omitting `target.kind` selects an
+executable. Project-directory `check`, `run`, and `build` use that entry, while
+an explicit `.zs` argument overrides entry selection without discarding the
+surrounding deployment and native-link configuration. This keeps module
+identity in the import/build graph rather than duplicating it in source syntax.
+Shared libraries and project-level source emission remain later artifact
+layers.
 
 Tests follow the same module model rather than introducing a second source
 language or required filename:

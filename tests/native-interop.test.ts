@@ -3370,7 +3370,12 @@ test("checks native availability against an explicit deployment target", () => {
     function main(): i32 { return native.${name}(1); }
   `;
   const configure = (minimumVersion: string) => writeFileSync(manifest, JSON.stringify({
-    target: { platform: "macos", minimumVersion },
+    target: {
+      name: "deployment-target",
+      entry: "main.zs",
+      platform: "macos",
+      minimumVersion,
+    },
   }));
 
   configure("12.0");
@@ -3405,9 +3410,22 @@ test("checks native availability against an explicit deployment target", () => {
   writeFileSync(sourceFile, currentSource);
   assert.deepEqual(diagnostics(currentSource, sourceFile), []);
 
-  writeFileSync(manifest, JSON.stringify({ target: { minimumVersion: "13.0" } }));
+  writeFileSync(manifest, JSON.stringify({
+    target: {
+      name: "deployment-target",
+      entry: "main.zs",
+      minimumVersion: "13.0",
+    },
+  }));
   assert.match(diagnostics(currentSource, sourceFile)[0]?.message ?? "", /target\.platform must be a platform name/);
-  writeFileSync(manifest, JSON.stringify({ target: { platform: "macos", minimumVersion: "latest" } }));
+  writeFileSync(manifest, JSON.stringify({
+    target: {
+      name: "deployment-target",
+      entry: "main.zs",
+      platform: "macos",
+      minimumVersion: "latest",
+    },
+  }));
   assert.match(diagnostics(currentSource, sourceFile)[0]?.message ?? "", /target\.minimumVersion must be a numeric version/);
 });
 
@@ -3428,6 +3446,7 @@ test("adds explicit target native libraries without exposing raw linker flags", 
   writeFileSync(sourceFile, source);
   writeFileSync(manifest, JSON.stringify({
     target: {
+      name: "native-link",
       entry: "main.zs",
       link: { libraries: ["sqlite3", "sqlite3"] },
     },
@@ -3437,7 +3456,11 @@ test("adds explicit target native libraries without exposing raw linker flags", 
   assert.deepEqual(artifact.nativeLinkerArguments, ["-lsqlite3"]);
 
   writeFileSync(manifest, JSON.stringify({
-    target: { entry: "main.zs", link: { libraries: ["-Wl,unsafe"] } },
+    target: {
+      name: "native-link",
+      entry: "main.zs",
+      link: { libraries: ["-Wl,unsafe"] },
+    },
   }));
   assert.match(
     diagnostics(source, sourceFile)[0]?.message ?? "",
@@ -3461,6 +3484,7 @@ test("uses project header and library search directories across analysis and nat
   writeFileSync(sourceFile, source);
   writeFileSync(manifest, JSON.stringify({
     target: {
+      name: "native-search-paths",
       entry: "main.zs",
       includeDirectories: ["include", "include"],
       link: {
@@ -3479,7 +3503,11 @@ test("uses project header and library search directories across analysis and nat
   assert.match(artifact.source, /z_project_answer\(\)/);
 
   writeFileSync(manifest, JSON.stringify({
-    target: { includeDirectories: ["missing"] },
+    target: {
+      name: "native-search-paths",
+      entry: "main.zs",
+      includeDirectories: ["missing"],
+    },
   }));
   assert.match(
     diagnostics(source, sourceFile)[0]?.message ?? "",
@@ -3487,7 +3515,11 @@ test("uses project header and library search directories across analysis and nat
   );
 
   writeFileSync(manifest, JSON.stringify({
-    target: { link: { directories: "lib" } },
+    target: {
+      name: "native-search-paths",
+      entry: "main.zs",
+      link: { directories: "lib" },
+    },
   }));
   assert.match(
     diagnostics(source, sourceFile)[0]?.message ?? "",

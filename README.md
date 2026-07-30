@@ -142,7 +142,7 @@ ownership-aware growth path.
 The first native application composition probe is Z Notes:
 
 ```sh
-bun run z run examples/applications/z-notes/main.zs
+bun run z run examples/applications/z-notes
 bun run z run examples/applications/z-notes/smoke.zs
 bun run z run examples/applications/z-notes/persistence-smoke.zs
 ```
@@ -169,6 +169,9 @@ bun run test
 bun run z check examples/language/basics/first.zs
 bun run z emit examples/language/basics/first.zs
 bun run z run examples/language/basics/first.zs
+bun run z check path/to/project
+bun run z run path/to/project
+bun run z build path/to/project
 bun run z test path/to/module.test.zs
 bun run z run examples/applications/source-stager/main.zs -- examples/language/basics/first.zs
 bun run bootstrap

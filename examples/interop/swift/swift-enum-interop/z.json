@@ -1,5 +1,6 @@
 {
   "target": {
+    "name": "swift-enum-interop",
     "entry": "main.zs",
     "swift": {
       "module": "ZSwiftState",

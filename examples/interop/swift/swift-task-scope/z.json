@@ -1,5 +1,6 @@
 {
   "target": {
+    "name": "swift-task-scope",
     "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "14.0",

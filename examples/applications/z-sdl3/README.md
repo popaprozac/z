@@ -26,11 +26,11 @@ because `SDL_Event` is an ABI union and the current importer exposes its scalar
 members. This example therefore proves the checked window, renderer, scalar
 output, enum-conversion, and cleanup paths—not complete SDL event handling.
 
-On macOS, install SDL3 with Homebrew and run from the repository root:
+On macOS, install SDL3 with Homebrew and run the project target:
 
 ```sh
 brew install sdl3
-bun run z run examples/applications/z-sdl3/main.zs
+bun run z run examples/applications/z-sdl3
 ```
 
 `z.json` supplies the Apple Silicon Homebrew header and library directories to

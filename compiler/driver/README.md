@@ -16,24 +16,31 @@ fixed-point bootstrap publishes this command under the public local name `z`;
 its supported surface is:
 
 ```text
-z check <entry.zs>
-z test <entry.zs>
-z emit <entry.zs> <output.c>
+z check [entry.zs | project-directory | z.json]
+z test [entry.zs | project-directory | z.json]
+z emit <entry.zs>
+z emit <entry.zs> <output.c>                 # bootstrap compatibility
+z build [project-directory | z.json] [--release]
 z build <entry.zs> <output> [--release]
-z run <entry.zs> [--release] [-- args...]
+z run [entry.zs | project-directory | z.json] [--release] [-- args...]
 ```
 
 This is still narrower than the Stage-0 compiler in language and foreign
 coverage even though it already has a more artifact-oriented command surface.
-The native driver finds the nearest `z.json`, parses the existing target entry,
-deployment,
-include-directory, link-directory, and library fields, validates configured
-paths, deduplicates native libraries, and projects those settings into Clang.
+The native driver finds the nearest `z.json`, requires a portable target name
+and `.zs` entry, and parses its kind, deployment, include-directory,
+link-directory, and library fields. Project-directory `check`, `test`, `run`,
+and `build` select that entry; an explicit `.zs` file overrides entry selection
+while retaining its surrounding project settings. Omitted kind means
+executable, while a static-library build publishes its named archive and
+header. The driver validates configured paths, deduplicates native libraries,
+and projects those settings into Clang.
 Swift target preparation, broader foreign declaration records, cross-platform
 target selection, custom profiles, polished diagnostics, cache eviction, and
 the complete production command options remain with Stage 0
-until equivalent native paths are proven. `run` creates missing project-local
-cache parents and retains its generated C and executable at
+until equivalent native paths are proven. Shared-library output and
+project-level source emission are not implemented yet. `run` creates missing
+project-local cache parents and retains its generated C and executable at
 `.z-cache/run/program.c` and `.z-cache/run/program`. An unchanged run compares
 the exact newly emitted C, debug/release profile, target configuration, Clang
 predefined-macro identity, and foreign producer evidence, then skips Clang and

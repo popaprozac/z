@@ -610,7 +610,12 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   `;
   writeFileSync(availabilityFile, availabilitySource);
   writeFileSync(resolve(availabilityDirectory, "z.json"), JSON.stringify({
-    target: { platform: "macos", minimumVersion: "13.0" },
+    target: {
+      name: "availability",
+      entry: "main.zs",
+      platform: "macos",
+      minimumVersion: "13.0",
+    },
   }));
   const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
   assert.equal(availabilityDiagnostic?.code, "Z0802");

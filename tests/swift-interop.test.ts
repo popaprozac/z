@@ -50,6 +50,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "./support/bootstrap.ts";
+import { prepareProject } from "../compiler/src/project.ts";
 import type {
   ForeignFunctionDeclaration,
   ForeignModuleDeclarations,
@@ -135,7 +136,13 @@ hostToolchainTest("builds a declared Swift target for ordinary CLI and editor wo
   const example = resolve(projectRoot, "examples/interop/swift/swift-interop/main.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
+  const project = prepareProject(example);
+  assert.equal(project.targetKind, "executable");
+  assert.equal(project.targetName, "swift-interop");
+  assert.equal(project.entryPath, example);
   assert.equal(artifact.language, "objective-c");
+  assert.equal(artifact.targetKind, "executable");
+  assert.equal(artifact.targetName, "swift-interop");
   assert.deepEqual(artifact.frameworks, ["Foundation"]);
   assert.equal(artifact.includeDirectories.length, 1);
   assert.match(artifact.includeDirectories[0], /\.z-cache\/swift\/ZSwiftExample$/);
@@ -160,7 +167,11 @@ hostToolchainTest("builds a declared Swift target for ordinary CLI and editor wo
   const invalidSource = resolve(invalidDirectory, "main.zs");
   writeFileSync(invalidSource, "function main(): i32 { return 0; }");
   writeFileSync(resolve(invalidDirectory, "z.json"), JSON.stringify({
-    target: { entry: "main.zs", swift: { module: "not-valid!", sources: ["Counter.swift"] } },
+    target: {
+      name: "invalid-swift",
+      entry: "main.zs",
+      swift: { module: "not-valid!", sources: ["Counter.swift"] },
+    },
   }));
   assert.throws(
     () => compileToNative(readFileSync(invalidSource, "utf8"), invalidSource),

@@ -26,7 +26,11 @@ import {
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
-import { deploymentTargetFlags, prepareProject } from "./project.ts";
+import {
+  deploymentTargetFlags,
+  prepareProject,
+  type ProjectBuild,
+} from "./project.ts";
 import {
   decodeStage1ProgramBatchStream,
   decodeStage1TokenStream,
@@ -40,23 +44,38 @@ import {
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 
-const [command, suppliedInputArgument, ...suppliedTrailingArguments] = process.argv.slice(2);
-const buildUsesCurrentDirectory = command === "build"
+const [command, ...commandArguments] = process.argv.slice(2);
+const projectAwareCommands = new Set(["build", "check", "emit", "run", "test"]);
+const projectAware = command ? projectAwareCommands.has(command) : false;
+const suppliedInputArgument = commandArguments[0];
+const usesDefaultProject = projectAware
   && (suppliedInputArgument === undefined || suppliedInputArgument.startsWith("--"));
-const inputArgument = buildUsesCurrentDirectory ? "." : suppliedInputArgument;
-const trailingArguments = buildUsesCurrentDirectory
-  ? process.argv.slice(3)
-  : suppliedTrailingArguments;
-const programArguments = trailingArguments[0] === "--" ? trailingArguments.slice(1) : trailingArguments;
+const inputArgument = projectAware
+  ? usesDefaultProject
+    ? "."
+    : suppliedInputArgument
+  : suppliedInputArgument;
+const trailingArguments = projectAware
+  ? usesDefaultProject
+    ? commandArguments
+    : commandArguments.slice(1)
+  : commandArguments.slice(1);
 
 if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
-  const inputPath = resolve(inputArgument);
+  const suppliedInputPath = resolve(inputArgument);
   try {
+    const input = projectAware
+      ? resolveCliInput(suppliedInputPath)
+      : { mode: "file" as const, path: suppliedInputPath };
+    const inputPath = input.mode === "project" ? input.project.entryPath! : input.path;
     if (command === "build") {
-      buildStaticLibraryProject(inputPath, trailingArguments);
+      if (input.mode !== "project") {
+        throw new Error("z build requires a project directory or z.json manifest");
+      }
+      buildProject(input.project, trailingArguments);
     } else if (command === "self-host-lex") {
       verifyStage1Lexer([inputPath, ...trailingArguments.map((argument) => resolve(argument))]);
     } else if (command === "self-host-parse") {
@@ -101,6 +120,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
         artifact,
         [],
         `${basename(inputPath, ".zs")}-tests`,
+        false,
       );
     } else if (command === "check") {
       const nativeFrontend = trailingArguments.includes("--native-frontend");
@@ -117,7 +137,8 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
       } else {
         let nativeRun: Stage1ResolverRun | null = null;
         const analysis = analyzeSource(source, inputPath, {
-          requireMain: false,
+          requireMain: input.mode === "project"
+            && input.project.targetKind === "executable",
           nativeFrontendResolver: nativeFrontend
             ? (sourceBatch) => {
               nativeRun = runStage1Resolver(inputPath, sourceBatch);
@@ -153,17 +174,53 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
             analysis.nativeAuthoritativeExpressionResolutionCount,
           );
         }
+        if (
+          input.mode === "project"
+          && input.project.targetKind === "static-library"
+          && !analysis.program.functions.some((declaration) => (
+            declaration.nativeExport?.language === "c"
+          ))
+        ) {
+          throw new DiagnosticError(
+            inputPath,
+            { offset: 0, line: 1, column: 1, fileName: inputPath },
+            "a static-library project must declare at least one `export c function`",
+          );
+        }
       }
       console.log(`${inputPath}: ok`);
-    } else {
+    } else if (command === "emit") {
+      if (input.mode === "project") {
+        throw new Error("z emit project output is deferred; pass an explicit .zs source file");
+      }
+      if (trailingArguments.length > 0) {
+        throw new Error(`unknown emit option ${JSON.stringify(trailingArguments[0])}`);
+      }
+      if (!inputPath.endsWith(".zs")) {
+        throw new Error("emit currently requires an explicit .zs source module");
+      }
       const source = readFileSync(inputPath, "utf8");
       const artifact = compileToNative(source, inputPath);
       for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, source));
-      if (command === "emit") {
-        process.stdout.write(artifact.source);
-      } else {
-        runNative(inputPath, artifact, programArguments);
+      process.stdout.write(artifact.source);
+    } else {
+      const run = parseRunArguments(trailingArguments);
+      if (!inputPath.endsWith(".zs")) {
+        throw new Error("run currently requires a .zs source module");
       }
+      if (input.mode === "project" && input.project.targetKind !== "executable") {
+        throw new Error("z run requires an executable project; use z build for a static-library target");
+      }
+      const source = readFileSync(inputPath, "utf8");
+      const artifact = compileToNative(source, inputPath, { requireMain: true });
+      for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, source));
+      runNative(
+        inputPath,
+        artifact,
+        run.programArguments,
+        input.mode === "project" ? input.project.targetName! : undefined,
+        run.release,
+      );
     }
   } catch (error) {
     console.error(error instanceof DiagnosticError
@@ -1392,101 +1449,104 @@ function readSourceIfAvailable(path: string): string | undefined {
   }
 }
 
+type CliInput =
+  | { readonly mode: "file"; readonly path: string }
+  | { readonly mode: "project"; readonly project: ProjectBuild };
+
+function resolveCliInput(path: string): CliInput {
+  if (path.endsWith(".zs") || path.endsWith(".zd")) {
+    return { mode: "file", path };
+  }
+  if (!existsSync(path)) {
+    throw new Error(`input path ${JSON.stringify(path)} does not exist`);
+  }
+  const stats = statSync(path);
+  const probePath = stats.isDirectory()
+    ? join(path, "__z_project_probe.zs")
+    : basename(path) === "z.json"
+      ? join(dirname(path), "__z_project_probe.zs")
+      : null;
+  if (!probePath) {
+    throw new Error("expected a .zs/.zd source file, project directory, or z.json manifest");
+  }
+  const project = prepareProject(probePath);
+  if (!project.manifestPath) {
+    throw new Error(`could not find z.json from ${JSON.stringify(path)}`);
+  }
+  if (!project.manifestPath || !project.entryPath || !project.targetName) {
+    throw new Error("project configuration is missing its checked entry or name");
+  }
+  return { mode: "project", project };
+}
+
+function parseRunArguments(arguments_: readonly string[]): {
+  readonly release: boolean;
+  readonly programArguments: readonly string[];
+} {
+  const delimiter = arguments_.indexOf("--");
+  const options = delimiter >= 0 ? arguments_.slice(0, delimiter) : arguments_;
+  const programArguments = delimiter >= 0 ? arguments_.slice(delimiter + 1) : [];
+  const unexpected = options.find((argument) => argument !== "--release");
+  if (unexpected) throw new Error(`unknown run option ${JSON.stringify(unexpected)}`);
+  return {
+    release: options.includes("--release"),
+    programArguments,
+  };
+}
+
 function runNative(
   inputPath: string,
   artifact: NativeArtifact,
   programArguments: readonly string[],
   outputStem?: string,
+  release = false,
 ): void {
-  const executablePath = buildNative(inputPath, artifact, outputStem);
+  const executablePath = buildNative(inputPath, artifact, outputStem, release);
   const execution = spawnSync(executablePath, programArguments, { stdio: "inherit" });
   if (execution.error) throw execution.error;
   if (execution.status !== 0) process.exitCode = execution.status ?? 1;
 }
 
-function buildNative(inputPath: string, artifact: NativeArtifact, outputStem?: string): string {
-  const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
-  const cacheDirectory = join(projectRoot, ".z-cache");
+function buildNative(
+  inputPath: string,
+  artifact: NativeArtifact,
+  outputStem?: string,
+  release = false,
+): string {
+  const project = prepareProject(inputPath);
+  const cacheRoot = project.manifestPath
+    ? dirname(project.manifestPath)
+    : dirname(inputPath);
+  const cacheDirectory = join(cacheRoot, ".z-cache", "run");
   mkdirSync(cacheDirectory, { recursive: true });
-  const stem = outputStem ?? basename(inputPath).replace(/\.zs$/, "");
+  const requestedStem = outputStem ?? basename(inputPath).replace(/\.zs$/, "");
+  const inputFingerprint = createHash("sha256")
+    .update(resolve(inputPath))
+    .digest("hex")
+    .slice(0, 12);
+  const stem = `${requestedStem}-${inputFingerprint}`;
   const sourcePath = join(cacheDirectory, `${stem}.${nativeExtension(artifact.language)}`);
   const executablePath = join(cacheDirectory, `${stem}${process.platform === "win32" ? ".exe" : ""}`);
   writeFileSync(sourcePath, artifact.source);
-
-  const compiler = nativeCompiler(artifact.language);
-  const compilerArguments = [
-    ...nativeLanguageFlags(artifact.language),
-    ...deploymentTargetFlags(artifact.deploymentTarget),
-    "-Wall",
-    "-Wextra",
-    "-Werror",
-    ...(artifact.deploymentTarget ? ["-Wno-deprecated-declarations"] : []),
-    "-I", dirname(inputPath),
-    ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
+  compileNativeArtifact(
+    inputPath,
+    artifact,
     sourcePath,
-    ...artifact.nativeLibraries,
-    ...artifact.nativeLinkerArguments,
-    ...artifact.frameworks.flatMap((framework) => ["-framework", framework]),
-    "-o",
     executablePath,
-  ];
-  const compilation = process.platform === "darwin"
-    ? spawnSync("xcrun", [compiler, ...compilerArguments], { encoding: "utf8" })
-    : spawnSync(compiler, compilerArguments, { encoding: "utf8" });
-  if (compilation.status !== 0) {
-    throw new Error(compilation.stderr || "Clang failed");
-  }
+    release,
+    true,
+  );
   return executablePath;
 }
 
-function buildStaticLibraryProject(
-  projectArgument: string,
-  options: readonly string[],
+function compileNativeArtifact(
+  inputPath: string,
+  artifact: NativeArtifact,
+  sourcePath: string,
+  outputPath: string,
+  release: boolean,
+  link: boolean,
 ): void {
-  const unexpected = options.filter((argument) => argument !== "--release");
-  if (unexpected.length > 0) throw new Error(`unknown build option ${JSON.stringify(unexpected[0])}`);
-  const release = options.includes("--release");
-  const probePath = (() => {
-    if (!existsSync(projectArgument)) {
-      throw new Error(`project path ${JSON.stringify(projectArgument)} does not exist`);
-    }
-    const stats = statSync(projectArgument);
-    if (stats.isDirectory()) return join(projectArgument, "__z_project_probe.zs");
-    if (basename(projectArgument) === "z.json") return join(dirname(projectArgument), "__z_project_probe.zs");
-    if (projectArgument.endsWith(".zs")) return projectArgument;
-    throw new Error("z build expects a project directory, z.json manifest, or .zs project entry");
-  })();
-  const project = prepareProject(probePath);
-  if (!project.manifestPath) {
-    throw new Error(`z build could not find z.json from ${JSON.stringify(projectArgument)}`);
-  }
-  if (project.targetKind !== "static-library") {
-    throw new Error('z build project target.kind must be "static-library" in the first project artifact tier');
-  }
-  if (!project.entryPath || !project.targetName) {
-    throw new Error("static-library project configuration is missing its checked entry or name");
-  }
-
-  const source = readFileSync(project.entryPath, "utf8");
-  const artifact = compileToNative(source, project.entryPath);
-  if (!artifact.header) {
-    throw new Error("a static-library project must declare at least one `export c function`");
-  }
-  const projectDirectory = dirname(project.manifestPath);
-  const outputDirectory = join(projectDirectory, "build");
-  const cacheDirectory = join(projectDirectory, ".z-cache", "build");
-  mkdirSync(outputDirectory, { recursive: true });
-  mkdirSync(cacheDirectory, { recursive: true });
-
-  const sourcePath = join(cacheDirectory, `${project.targetName}.${nativeExtension(artifact.language)}`);
-  const objectPath = join(cacheDirectory, `${project.targetName}${process.platform === "win32" ? ".obj" : ".o"}`);
-  const libraryName = process.platform === "win32"
-    ? `${project.targetName}.lib`
-    : `lib${project.targetName}.a`;
-  const libraryPath = join(outputDirectory, libraryName);
-  const headerPath = join(outputDirectory, `${project.targetName}.h`);
-  writeFileSync(sourcePath, artifact.source);
-
   const compiler = nativeCompiler(artifact.language);
   const compilerArguments = [
     ...nativeLanguageFlags(artifact.language),
@@ -1497,18 +1557,85 @@ function buildStaticLibraryProject(
     "-Wextra",
     "-Werror",
     ...(artifact.deploymentTarget ? ["-Wno-deprecated-declarations"] : []),
-    "-I", dirname(project.entryPath),
+    "-I", dirname(inputPath),
     ...artifact.includeDirectories.flatMap((directory) => ["-I", directory]),
-    "-c",
+    ...(!link ? ["-c"] : []),
     sourcePath,
+    ...(link ? artifact.nativeLibraries : []),
+    ...(link ? artifact.nativeLinkerArguments : []),
+    ...(link ? artifact.frameworks.flatMap((framework) => ["-framework", framework]) : []),
     "-o",
-    objectPath,
+    outputPath,
   ];
   const compilation = process.platform === "darwin"
     ? spawnSync("xcrun", [compiler, ...compilerArguments], { encoding: "utf8" })
     : spawnSync(compiler, compilerArguments, { encoding: "utf8" });
   if (compilation.error) throw compilation.error;
-  if (compilation.status !== 0) throw new Error(compilation.stderr || "Clang failed");
+  if (compilation.status !== 0) {
+    throw new Error(compilation.stderr || "Clang failed");
+  }
+}
+
+function buildProject(
+  project: ProjectBuild,
+  options: readonly string[],
+): void {
+  const unexpected = options.filter((argument) => argument !== "--release");
+  if (unexpected.length > 0) throw new Error(`unknown build option ${JSON.stringify(unexpected[0])}`);
+  const release = options.includes("--release");
+  if (!project.entryPath || !project.targetName) {
+    throw new Error("project configuration is missing its checked entry or name");
+  }
+
+  const source = readFileSync(project.entryPath, "utf8");
+  const artifact = compileToNative(source, project.entryPath, {
+    requireMain: project.targetKind === "executable",
+  });
+  for (const warning of artifact.warnings) {
+    console.error(formatDiagnostic(warning, source));
+  }
+  const projectDirectory = dirname(project.manifestPath);
+  const outputDirectory = join(projectDirectory, "build");
+  const cacheDirectory = join(projectDirectory, ".z-cache", "build");
+  mkdirSync(outputDirectory, { recursive: true });
+  mkdirSync(cacheDirectory, { recursive: true });
+
+  const sourcePath = join(cacheDirectory, `${project.targetName}.${nativeExtension(artifact.language)}`);
+  writeFileSync(sourcePath, artifact.source);
+  if (project.targetKind === "executable") {
+    const executablePath = join(
+      outputDirectory,
+      `${project.targetName}${process.platform === "win32" ? ".exe" : ""}`,
+    );
+    compileNativeArtifact(
+      project.entryPath,
+      artifact,
+      sourcePath,
+      executablePath,
+      release,
+      true,
+    );
+    console.log(`built ${executablePath}`);
+    return;
+  }
+
+  if (!artifact.header) {
+    throw new Error("a static-library project must declare at least one `export c function`");
+  }
+  const objectPath = join(cacheDirectory, `${project.targetName}${process.platform === "win32" ? ".obj" : ".o"}`);
+  const libraryName = process.platform === "win32"
+    ? `${project.targetName}.lib`
+    : `lib${project.targetName}.a`;
+  const libraryPath = join(outputDirectory, libraryName);
+  const headerPath = join(outputDirectory, `${project.targetName}.h`);
+  compileNativeArtifact(
+    project.entryPath,
+    artifact,
+    sourcePath,
+    objectPath,
+    release,
+    false,
+  );
 
   const archive = process.platform === "darwin"
     ? spawnSync("xcrun", ["ar", "rcs", libraryPath, objectPath], { encoding: "utf8" })
@@ -3692,10 +3819,11 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z build [project-directory] [--release]");
-  console.error("usage: z check <file.zs> [--native-frontend] [--timings]");
-  console.error("       z test <file.zs>");
-  console.error("       z <emit|run> <file.zs> [-- program arguments]");
+  console.error("usage: z build [project-directory|z.json] [--release]");
+  console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings]");
+  console.error("       z test [project-directory|z.json|file.zs]");
+  console.error("       z emit <file.zs>");
+  console.error("       z run [project-directory|z.json|file.zs] [--release] [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
   console.error("       z self-host-resolve <entry.zs> [--timings]");

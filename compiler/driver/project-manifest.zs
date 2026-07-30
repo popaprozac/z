@@ -579,9 +579,7 @@ function validateProjectConfig(
       }
     }
     none => {
-      if (config.targetKind == "static-library") {
-        throw `${manifestPath}:1:1: error: z.json static-library target requires target.name`;
-      }
+      throw `${manifestPath}:1:1: error: z.json ${config.targetKind} target requires target.name`;
     }
   }
   if (config.hasSwiftTarget) {
@@ -599,11 +597,9 @@ function validateProjectConfig(
     }
     none => {}
   }
-  if (config.targetKind == "static-library") {
-    match (in config.entry) {
-      some(_) => {}
-      none => throw `${manifestPath}:1:1: error: z.json static-library target requires target.entry`;
-    }
+  match (in config.entry) {
+    some(_) => {}
+    none => throw `${manifestPath}:1:1: error: z.json ${config.targetKind} target requires target.entry`;
   }
 
   let platform = "";
@@ -628,6 +624,21 @@ function validateProjectConfig(
   if (platform.byteLength > 0) {
     config.platform = Option.some(platform);
   }
+}
+
+export function configuredProjectEntryPath(
+  in config: NativeProjectConfig
+): String throws String {
+  let manifestPath = "";
+  match (in config.manifestPath) {
+    some(path) => manifestPath = copy path;
+    none => throw "project mode requires a z.json manifest";
+  }
+  const entry = match (in config.entry) {
+    some(entry) => entry.copyBytes(0, entry.byteLength);
+    none => throw `${manifestPath}:1:1: error: z.json ${config.targetKind} target requires target.entry`;
+  };
+  return configuredPath(config.directory, entry);
 }
 
 export function loadProjectConfig(

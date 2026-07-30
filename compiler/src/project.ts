@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes } from "./foreign-api-notes.ts";
@@ -75,11 +75,11 @@ export function prepareProject(fileName: string): ProjectBuild {
     throw projectDiagnostic(fileName, 'z.json target.kind must be either "executable" or "static-library"');
   }
   const targetName = manifest.target?.name ?? null;
-  if (targetName !== null && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
-    throw projectDiagnostic(fileName, "z.json target.name must be a portable artifact name");
+  if (targetName === null) {
+    throw projectDiagnostic(fileName, "z.json targets require target.name");
   }
-  if (targetKind === "static-library" && targetName === null) {
-    throw projectDiagnostic(fileName, "z.json static-library targets require target.name");
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
+    throw projectDiagnostic(fileName, "z.json target.name must be a portable artifact name");
   }
   let entryPath: string | null = null;
   if (manifest.target?.entry !== undefined) {
@@ -88,8 +88,8 @@ export function prepareProject(fileName: string): ProjectBuild {
     }
     entryPath = resolve(directory, manifest.target.entry);
     if (!existsSync(entryPath)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entryPath)} does not exist`);
-  } else if (targetKind === "static-library") {
-    throw projectDiagnostic(fileName, "z.json static-library targets require target.entry");
+  } else {
+    throw projectDiagnostic(fileName, "z.json targets require target.entry");
   }
   const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
   const includeDirectories = parseProjectDirectories(
@@ -180,6 +180,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     }
     if (!cxxInterop) {
       mkdirSync(symbolGraphDirectory, { recursive: true });
+      if (existsSync(symbolGraph)) unlinkSync(symbolGraph);
       const graphResult = spawnSync("xcrun", [
         "swift-symbolgraph-extract",
         "-module-name", moduleName,
@@ -204,8 +205,7 @@ export function prepareProject(fileName: string): ProjectBuild {
 
   const compatibilityHeader = `${moduleName}-Swift.${cxxInterop ? "hpp" : "h"}`;
   const build: ProjectBuild = {
-    manifestPath,
-    deploymentTarget,
+    ...baseBuild,
     includeDirectories: [...baseBuild.includeDirectories, buildDirectory],
     nativeLibraries: [library],
     nativeLinkerArguments: [

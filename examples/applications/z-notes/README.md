@@ -76,8 +76,12 @@ bun run z run examples/applications/z-notes/background-load-smoke.zs
 Open the native application with:
 
 ```sh
-bun run z run examples/applications/z-notes/main.zs
+bun run z run examples/applications/z-notes
 ```
+
+The directory form selects `target.entry` from `z.json`. Passing a smoke
+`.zs` file explicitly overrides only the entry while retaining the same macOS
+deployment and SQLite link configuration.
 
 Today `bun` launches the stage-0 TypeScript driver. The driver resolves Z
 modules and native headers, emits Objective-C ARC into `.z-cache/main.m`, asks

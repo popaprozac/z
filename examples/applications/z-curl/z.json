@@ -1,5 +1,6 @@
 {
   "target": {
+    "name": "z-curl",
     "entry": "main.zs",
     "platform": "macos",
     "minimumVersion": "14.0",
