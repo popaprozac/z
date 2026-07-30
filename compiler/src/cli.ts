@@ -1116,8 +1116,30 @@ function flattenExpression(
     return children ? append("arrayExpression", "", children, []) : null;
   }
   if (expression.kind === "objectExpression") {
-    const children = flattenExpressions(expression.fields.map((field) => field.expression), nodes, tokens);
-    return children ? append("objectExpression", "", children, expression.fields.map((field) => field.name)) : null;
+    if (!expression.spread) {
+      const fieldChildren = flattenExpressions(expression.fields.map((field) => field.expression), nodes, tokens);
+      if (!fieldChildren) return null;
+      return append("objectExpression", "", fieldChildren, expression.fields.map((field) => field.name));
+    }
+    const source = flattenExpression(expression.spread.expression, nodes, tokens);
+    if (source === null) return null;
+    const spread = expression.spread.mode === "value"
+      ? source
+      : appendAt(
+          "unary",
+          expression.spread.mode,
+          [source],
+          [],
+          expression.spread.location,
+        );
+    const fieldChildren = flattenExpressions(expression.fields.map((field) => field.expression), nodes, tokens);
+    if (!fieldChildren) return null;
+    return append(
+      "objectExpression",
+      "",
+      [spread, ...fieldChildren],
+      ["...", ...expression.fields.map((field) => field.name)],
+    );
   }
   if (expression.kind === "member") {
     const object = flattenExpression(expression.object, nodes, tokens);

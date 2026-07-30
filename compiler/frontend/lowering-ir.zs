@@ -4067,6 +4067,11 @@ function lowerExpression(
           ) {
             throw "native lowering received a malformed object initializer";
           }
+          for (const label of tree.nodes[objectInput].labels) {
+            if (label == "...") {
+              throw "native struct-spread lowering remains deferred; Stage 0 is authoritative for executable spread construction";
+            }
+          }
           let field: usize = 0;
           while (field < tree.nodes[objectInput].children.length) {
             const valueInput = tree.nodes[objectInput].children[field];

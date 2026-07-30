@@ -44,7 +44,7 @@ export function materializeStructDefaults(program: Program, fileName: string): P
         location: call.location,
       };
       const provided = new Set(object.fields.map((field: { readonly name: string }) => field.name));
-      const defaults = declaration.fields
+      const defaults = object.spread ? [] : declaration.fields
         .filter((field) => !provided.has(field.name) && (field.defaultValue || field.optional))
         .map((field) => {
           if (field.defaultValue && expanding.has(declaration.name)) {

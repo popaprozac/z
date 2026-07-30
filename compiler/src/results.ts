@@ -327,6 +327,7 @@ function collectClosureResults(
         break;
       case "structExpression":
       case "objectExpression":
+        if (expression.spread) visitExpression(expression.spread.expression);
         for (const field of expression.fields) visitExpression(field.expression);
         break;
       case "variantExpression":

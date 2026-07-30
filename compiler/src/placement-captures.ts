@@ -92,6 +92,7 @@ export function collectPlacementCaptures(
         return;
       case "structExpression":
       case "objectExpression":
+        if (value.spread) visitExpression(value.spread.expression, localNames);
         for (const field of value.fields) visitExpression(field.expression, localNames);
         return;
       case "variantExpression":

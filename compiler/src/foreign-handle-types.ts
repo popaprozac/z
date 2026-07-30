@@ -147,11 +147,17 @@ export function transformProgramTypeNames(
         return {
           ...value,
           typeName: transformName(value.typeName),
+          spread: value.spread
+            ? { ...value.spread, expression: expression(value.spread.expression) }
+            : value.spread,
           fields: value.fields.map((field) => ({ ...field, expression: expression(field.expression) })),
         };
       case "objectExpression":
         return {
           ...value,
+          spread: value.spread
+            ? { ...value.spread, expression: expression(value.spread.expression) }
+            : value.spread,
           fields: value.fields.map((field) => ({ ...field, expression: expression(field.expression) })),
         };
       case "variantExpression":

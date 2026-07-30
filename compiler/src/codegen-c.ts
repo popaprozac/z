@@ -26,6 +26,7 @@ import type {
   OptionalChainPlan,
   RawExpressionPlan,
   SemanticInfo,
+  StructSpreadPlan,
 } from "./sema.ts";
 import {
   parsePointerTypeName,
@@ -969,6 +970,11 @@ function collectExplicitCopyTypes(
   };
   for (const plan of semanticInfo.explicitCopies.values()) {
     if (plan.kind === "aggregate") visit(plan.type);
+  }
+  for (const spread of semanticInfo.structSpreads.values()) {
+    for (const field of spread.retained) {
+      if (field.action === "copy" && field.copy === "aggregate") visit(field.type);
+    }
   }
   return [...collected];
 }
@@ -4985,6 +4991,12 @@ function generateDirectValue(
   if (expression.kind === "closure") {
     return generateClosureValue(expression, context, consumeValue);
   }
+  if (
+    (expression.kind === "structExpression" || expression.kind === "objectExpression")
+    && context.semanticInfo.structSpreads.has(expression.location.offset)
+  ) {
+    return generateStructSpreadValue(expression, context, consumeValue);
+  }
   if (expression.kind === "dynamicArrayExpression" && expression.elements.length > 0) {
     return generateDynamicArrayValue(expression, context, consumeValue);
   }
@@ -5081,6 +5093,7 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
       || expression.arguments.some((argument) => requiresStatementValue(argument, context));
   }
   if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
+    if (context.semanticInfo.structSpreads.has(expression.location.offset)) return true;
     return expression.fields.some((field) => requiresStatementValue(field.expression, context));
   }
   if (expression.kind === "arrayExpression") {
@@ -5560,6 +5573,67 @@ function generateLoweredAggregate(
   }
   const loweredContext = withExpressionOverrides(context, overrides);
   lines.push(generateDirectValue(expression, loweredContext, consumeValue, consumeTerminates));
+  return lines.join("\n");
+}
+
+function generateStructSpreadValue(
+  expression: Extract<Expression, { kind: "structExpression" | "objectExpression" }>,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const plan = context.semanticInfo.structSpreads.get(expression.location.offset);
+  if (!plan) throw new Error(`missing struct spread plan at ${expression.location.offset}`);
+  const declaration = context.structs.get(plan.type);
+  if (!declaration || declaration.kind !== "struct") {
+    throw new Error(`missing value struct for spread ${JSON.stringify(plan.type)}`);
+  }
+  const lines: string[] = [];
+  const overrides = new Map<string, string>();
+  for (const field of expression.fields) {
+    const type = declaration.fields.find((candidate) => candidate.name === field.name)?.type.name;
+    if (!type) throw new Error(`missing spread override field ${JSON.stringify(field.name)}`);
+    const temporary = `_z_spread_field_${context.valueCounter.value++}`;
+    lines.push(`${generateLocalDeclaration(
+      type,
+      temporary,
+      true,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    )};`);
+    lines.push(generateDirectValue(field.expression, context, (value) => `${temporary} = ${value};`));
+    overrides.set(field.name, temporary);
+  }
+
+  const source = generateStoredValue(plan.sourceName, context);
+  const retained = new Map(plan.retained.map((field) => [field.name, field]));
+  const fields = declaration.fields.map((field) => {
+    const overridden = overrides.get(field.name);
+    if (overridden) return `.${field.name} = ${overridden}`;
+    const spread = retained.get(field.name);
+    if (!spread) throw new Error(`missing retained spread field ${JSON.stringify(field.name)}`);
+    const value = `(${source}).${field.name}`;
+    if (spread.action === "retain") return `.${field.name} = ${retainName(spread.type)}(${value})`;
+    if (spread.action === "copy") {
+      return `.${field.name} = ${explicitCopyValue(value, spread.type, context.structs, context.enums)}`;
+    }
+    return `.${field.name} = ${value}`;
+  });
+  const temporary = `_z_spread_${context.valueCounter.value++}`;
+  lines.push(
+    `${structName(plan.type)} ${temporary} = (${structName(plan.type)}){ ${fields.join(", ")} };`,
+  );
+
+  if (plan.mode === "move") {
+    for (const field of [...plan.overridden].reverse()) {
+      if (!hasSemanticCleanupType(field.type, context.structs, context.enums, context.semanticInfo)) continue;
+      lines.push(generateValueCleanup(`(${source}).${field.name}`, field.type, null, context));
+    }
+    const liveFlag = context.liveFlags.get(plan.sourceName);
+    if (!liveFlag) throw new Error(`missing ownership flag for moved spread source ${JSON.stringify(plan.sourceName)}`);
+    lines.push(`${liveFlag} = false;`);
+  }
+  lines.push(consumeValue(temporary, context));
   return lines.join("\n");
 }
 
@@ -7121,6 +7195,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return maybeRetainClass(expression, value, context);
     }
     case "structExpression": {
+      if (context.semanticInfo.structSpreads.has(expression.location.offset)) {
+        throw new Error("struct spread must be lowered through generateDirectValue");
+      }
       const declaration = context.structs.get(expression.typeName);
       if (declaration?.kind === "class") {
         const provided = new Map(expression.fields.map((field) => [field.name, field.expression]));
@@ -7138,6 +7215,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `(${type}){ ${fields} }`;
     }
     case "objectExpression": {
+      if (context.semanticInfo.structSpreads.has(expression.location.offset)) {
+        throw new Error("struct spread must be lowered through generateDirectValue");
+      }
       const typeName = context.semanticInfo.expressionTypes.get(expression.location.offset)!;
       const declaration = context.structs.get(typeName);
       if (declaration?.kind === "class") {

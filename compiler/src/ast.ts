@@ -509,12 +509,20 @@ export type StructExpression = {
   readonly kind: "structExpression";
   readonly typeName: string;
   readonly fields: FieldInitializer[];
+  readonly spread?: StructSpreadInitializer | null;
   readonly location: SourceLocation;
 };
 
 export type ObjectExpression = {
   readonly kind: "objectExpression";
   readonly fields: FieldInitializer[];
+  readonly spread?: StructSpreadInitializer | null;
+  readonly location: SourceLocation;
+};
+
+export type StructSpreadInitializer = {
+  readonly mode: "value" | "copy" | "move";
+  readonly expression: Expression;
   readonly location: SourceLocation;
 };
 

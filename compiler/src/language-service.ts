@@ -383,7 +383,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const contextualTask = token.text === "task"
       && (next?.kind === "on" || next?.kind === "identifier");
     const contextualOwnership = (token.text === "copy" || token.text === "move" || token.text === "view")
-      && next?.kind === "identifier";
+      && (next?.kind === "identifier" || next?.kind === "ellipsis");
     if (contextualTask || contextualOwnership) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("keyword"),

@@ -14,6 +14,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Struct defaults | [`struct-defaults.zs`](../examples/language/basics/struct-defaults.zs) | Independent field defaults, `Type()`, explicit empty construction, and partial overrides |
+| Struct spread | [`struct-spread.zs`](../examples/language/basics/struct-spread.zs) | Same-type derivation, explicit copy/move capability, later overrides, default suppression, and whole-source transfer |
 | Optional struct fields | [`optional-fields.zs`](../examples/language/basics/optional-fields.zs) | Optional presence with `field?: T`, contextual `some` lifting, explicit `Option<T>`, and cleanup-bearing payloads |
 | Optional chaining | [`optional-chaining.zs`](../examples/language/basics/optional-chaining.zs) | Conditional field/method access, flat `Option` results, borrowed stored fields, owned results, void no-op, and preserved typed errors |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |

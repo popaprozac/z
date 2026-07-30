@@ -485,6 +485,20 @@ export function inferGenericCalls(
     } else if (originalArguments.length === 1 && originalArguments[0].kind === "objectExpression") {
       arguments_ = originalArguments.map((argument) => rewriteExpression(argument, environment, expectedType));
       const fieldTypes = objectFieldTypes.get(originalArguments[0].location.offset);
+      if (originalArguments[0].spread) {
+        const spreadType = rewriteExpression(
+          originalArguments[0].spread.expression,
+          environment,
+        ).type;
+        unify(
+          genericTypeName(declaration.name, typeParameters),
+          spreadType,
+          valueParameters,
+          inferred,
+          callName,
+          originalArguments[0].spread.location,
+        );
+      }
       for (const initializer of originalArguments[0].fields) {
         const field = declaration.fields.find((candidate) => candidate.name === initializer.name);
         if (!field) continue;
@@ -668,11 +682,27 @@ export function inferGenericCalls(
           const value = rewriteExpression(field.expression, environment);
           return { ...field, expression: value.expression };
         });
-        return { expression: { ...expression, fields }, type: expression.typeName };
+        const spread = expression.spread
+          ? {
+              ...expression.spread,
+              expression: rewriteExpression(expression.spread.expression, environment).expression,
+            }
+          : expression.spread;
+        return { expression: { ...expression, fields, spread }, type: expression.typeName };
       }
       case "objectExpression": {
         const contextualOwner = expectedType ? aggregate(expectedType) : null;
         const fieldTypes = new Map<string, string | null>();
+        const spread = expression.spread
+          ? {
+              ...expression.spread,
+              expression: rewriteExpression(
+                expression.spread.expression,
+                environment,
+                expectedType,
+              ).expression,
+            }
+          : expression.spread;
         const fields = expression.fields.map((field) => {
           const declaration = contextualOwner?.declaration.fields.find((candidate) => candidate.name === field.name);
           const contextualFieldType = declaration
@@ -710,7 +740,7 @@ export function inferGenericCalls(
           return { ...field, expression: value.expression };
         });
         objectFieldTypes.set(expression.location.offset, fieldTypes);
-        return { expression: { ...expression, fields }, type: null };
+        return { expression: { ...expression, fields, spread }, type: null };
       }
       case "member": {
         const contextualOption = expectedType ? parseGenericType(expectedType) : null;

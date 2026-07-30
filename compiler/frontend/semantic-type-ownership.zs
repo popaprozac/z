@@ -362,6 +362,105 @@ export function typeSupportsExplicitCopy(
   return !typeHasCleanup(modules, moduleIndex, actual, cleanupVisiting);
 }
 
+export function typeContainsForeignValueStorage(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
+    return false;
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeContainsForeignValueStorage(
+      modules,
+      moduleIndex,
+      array.elementType,
+      visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+        if (typeContainsForeignValueStorage(
+          modules,
+          moduleIndex,
+          argument,
+          visiting
+        )) return true;
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
+      if (containsString(visiting, identity)) return false;
+      let nextVisiting = copyStrings(visiting);
+      nextVisiting.push(identity);
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => {
+          if (signature.foreignNativeName.byteLength > 0) return true;
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            const argument = rebaseTypeName(
+              modules,
+              moduleIndex,
+              location.moduleIndex,
+              arguments[typeIndex]
+            );
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              argument
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            const fieldType = substituteGenericType(
+              field.typeName,
+              substitutions
+            );
+            if (typeContainsForeignValueStorage(
+              modules,
+              location.moduleIndex,
+              fieldType,
+              nextVisiting
+            )) return true;
+          }
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength == 0) continue;
+            const payloadType = substituteGenericType(
+              variant.payloadType,
+              substitutions
+            );
+            if (typeContainsForeignValueStorage(
+              modules,
+              location.moduleIndex,
+              payloadType,
+              nextVisiting
+            )) return true;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 export function typeHasCustomConstructor(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

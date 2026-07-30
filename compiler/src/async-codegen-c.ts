@@ -2449,6 +2449,7 @@ function collectNestedAwaitOperations(
         return;
       case "structExpression":
       case "objectExpression":
+        if (candidate.spread) walk(candidate.spread.expression);
         for (const field of candidate.fields) walk(field.expression);
         return;
       case "variantExpression":
@@ -2517,7 +2518,10 @@ function containsAwait(expression: Expression): boolean {
       case "index": visit(candidate.object); visit(candidate.index); return;
       case "arrayExpression": for (const value of candidate.elements) visit(value); return;
       case "structExpression":
-      case "objectExpression": for (const field of candidate.fields) visit(field.expression); return;
+      case "objectExpression":
+        if (candidate.spread) visit(candidate.spread.expression);
+        for (const field of candidate.fields) visit(field.expression);
+        return;
       case "variantExpression": visit(candidate.payload); return;
       case "matchExpression":
         visit(candidate.expression);
@@ -6102,6 +6106,7 @@ function emitPreparedFrameExpression(
         return;
       case "structExpression":
       case "objectExpression":
+        if (candidate.spread) visit(candidate.spread.expression);
         for (const field of candidate.fields) visit(field.expression);
         return;
       case "variantExpression":
@@ -6351,6 +6356,14 @@ function emitFrameExpressionInner(
       expression.location,
       "optional chaining is not executable in Phase 1 async frames yet",
       "bind and inspect the Option with match while async expression lowering is expanded",
+    );
+  }
+  if (plan.types.semanticInfo.structSpreads.has(expression.location.offset)) {
+    unsupported(
+      fileName,
+      expression.location,
+      "struct spread is not executable in Phase 1 async frames yet",
+      "construct the value before entering the async function, or spell the fields explicitly until task-frame spread lowering lands",
     );
   }
   const suspension = plan.suspensions?.get(expression.location.offset);
@@ -6691,6 +6704,14 @@ function emitFrameExpressionInner(
         && expression.arguments.length === 1
         && expression.arguments[0].kind === "objectExpression"
       ) {
+        if (plan.types.semanticInfo.structSpreads.has(expression.arguments[0].location.offset)) {
+          unsupported(
+            fileName,
+            expression.arguments[0].location,
+            "struct spread is not executable in Phase 1 async frames yet",
+            "construct the value before entering the async function, or spell the fields explicitly until task-frame spread lowering lands",
+          );
+        }
         return emitStructValue(
           expression.callee.name,
           expression.arguments[0].fields,

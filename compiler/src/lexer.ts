@@ -66,6 +66,7 @@ export type TokenKind =
   | "question"
   | "comma"
   | "semicolon"
+  | "ellipsis"
   | "dot"
   | "equal"
   | "equalEqual"
@@ -370,6 +371,14 @@ export function lex(
       }
       advance();
       tokens.push({ kind: "string", text: value, location: start });
+      continue;
+    }
+
+    if (character === "." && peek(1) === "." && peek(2) === ".") {
+      advance();
+      advance();
+      advance();
+      tokens.push({ kind: "ellipsis", text: "...", location: start });
       continue;
     }
 

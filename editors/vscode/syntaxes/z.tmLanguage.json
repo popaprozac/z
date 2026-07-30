@@ -405,7 +405,7 @@
         "match": "\\busing(?=\\s*\\()"
       }, {
         "name": "keyword.operator.ownership.z",
-        "match": "\\b(?:copy|move|view)(?=\\s+[A-Za-z_][A-Za-z0-9_]*)"
+        "match": "\\b(?:copy|move|view)(?=\\s+(?:[A-Za-z_][A-Za-z0-9_]*|\\.\\.\\.\\s*[A-Za-z_][A-Za-z0-9_]*))"
       }, {
         "name": "storage.modifier.capture.z",
         "match": "\\bmove(?=\\s*\\([^)]*\\)\\s*(?:(?::|throws\\b)[^=]*)?=>)"
@@ -431,6 +431,7 @@
       "patterns": [
         { "name": "keyword.operator.arrow.z", "match": "=>" },
         { "name": "keyword.operator.optional-chaining.z", "match": "\\?\\." },
+        { "name": "keyword.operator.spread.z", "match": "\\.\\.\\." },
         { "name": "keyword.operator.z", "match": "(?:==|!=|<=|>=|<<|>>|&&|\\|\\||[=!<>+\\-*/%&|^~])" }
       ]
     },

@@ -46,10 +46,13 @@ export struct NativeFieldShape {
 
 export struct NativeAggregateConstructionShape {
   name: String;
+  valueStruct: boolean;
+  customDeinit: boolean;
   genericInstance: boolean;
   typeParameters: Array<String>;
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   fields: Array<String>;
+  allFields: Array<String>;
 }
 
 export struct NativeMethodCallShape {
@@ -293,7 +296,9 @@ export function aggregateConstructionShape(
             }));
           }
           let fields = Array<String>();
+          let allFields = Array<String>();
           for (const field of signature.fields) {
+            allFields.push(field.name.copyBytes(0, field.name.byteLength));
             if (!field.hasDefault) {
               fields.push(field.name.copyBytes(0, field.name.byteLength));
             }
@@ -303,10 +308,15 @@ export function aggregateConstructionShape(
               0,
               modules[location.moduleIndex].symbols[location.symbolIndex].name.byteLength
             ),
+            valueStruct: modules[location.moduleIndex].symbols[
+              location.symbolIndex
+            ].kind == ModuleSymbolKind.structSymbol,
+            customDeinit: signature.customDeinit,
             genericInstance,
             typeParameters,
             typeParameterConstraints,
             fields,
+            allFields,
           }));
         }
         none => {}

@@ -67,6 +67,7 @@ export enum TokenKind {
   comma,
   semicolon,
   dot,
+  ellipsis,
   equal,
   equalEqual,
   bang,
@@ -565,6 +566,25 @@ function tokenizeInto(
       continue;
     }
 
+    if (
+      byte == 46
+      && offset + 2 < source.byteLength
+      && source.byteAt(offset + 1) == 46
+      && source.byteAt(offset + 2) == 46
+    ) {
+      offset = offset + 3;
+      column = column + 3;
+      pushToken(
+        inout tokens,
+        TokenKind.ellipsis,
+        "...",
+        baseOffset + tokenCoordinateOffset,
+        tokenLine,
+        tokenColumn
+      );
+      continue;
+    }
+
     const paired: Option<TokenKind> = offset + 1 < source.byteLength
       ? pairedSymbolKind(byte, source.byteAt(offset + 1))
       : Option<TokenKind>.none;
@@ -790,6 +810,7 @@ export function tokenKindName(kind: TokenKind): String {
     comma => "comma";
     semicolon => "semicolon";
     dot => "dot";
+    ellipsis => "ellipsis";
     equal => "equal";
     equalEqual => "equalEqual";
     bang => "bang";

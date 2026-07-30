@@ -491,7 +491,35 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (match("leftBrace")) {
       const token = previous();
       const fields = [];
+      let spread = null;
+      const spreadMode = at("ellipsis")
+        ? "value" as const
+        : at("identifier")
+            && (peek().text === "copy" || peek().text === "move")
+            && tokens[current + 1]?.kind === "ellipsis"
+          ? peek().text as "copy" | "move"
+          : null;
+      if (spreadMode) {
+        const capability = spreadMode === "value" ? null : take();
+        const ellipsis = expect("ellipsis", "`...` starting a struct spread");
+        spread = {
+          mode: spreadMode,
+          expression: parseExpression(),
+          location: capability?.location ?? ellipsis.location,
+        };
+        if (!at("rightBrace")) expect("comma", "`,` after a struct spread");
+      }
       while (!at("rightBrace")) {
+        if (
+          at("ellipsis")
+          || (
+            at("identifier")
+            && (peek().text === "copy" || peek().text === "move")
+            && tokens[current + 1]?.kind === "ellipsis"
+          )
+        ) {
+          throw new DiagnosticError(fileName, peek().location, "a struct spread must be the first entry and only one spread is allowed");
+        }
         const field = expect("identifier", "an object field name");
         const expression = match("colon")
           ? parseExpression()
@@ -500,7 +528,7 @@ export function parse(tokens: Token[], fileName: string): Program {
         if (!match("comma")) break;
       }
       expect("rightBrace", "`}`");
-      return { kind: "objectExpression", fields, location: token.location };
+      return { kind: "objectExpression", fields, spread, location: token.location };
     }
     if (match("in") || match("out") || match("inout")) {
       const token = previous();

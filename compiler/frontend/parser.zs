@@ -1770,21 +1770,87 @@ function parsePrimaryTree(
     let children = Array<usize>();
     let labels = Array<String>();
     while (tokens[current].kind != TokenKind.rightBrace) {
-      const field = try expect(tokens, inout current, TokenKind.identifier, "an object field name");
-      labels.push(field.text.copyBytes(0, field.text.byteLength));
-      if (takeIf(tokens, inout current, TokenKind.colon)) {
-        const value = try parseConditionalTree(tokens, inout current, end, inout nodes, inout statementNodes);
-        children.push(value);
-      } else {
-        const value = pushExpressionNode(
-          inout nodes,
-          ExpressionKind.identifierExpression,
-          field.text.copyBytes(0, field.text.byteLength),
-          Array<usize>(),
-          Array<String>(),
-          field
+      let spreadMode = "";
+      let spreadStart = snapshot(tokens[current]);
+      let spreadDots = current;
+      if (
+        tokens[current].kind == TokenKind.identifier
+        && (
+          tokens[current].text == "copy"
+          || tokens[current].text == "move"
+        )
+      ) {
+        spreadMode = tokens[current].text.copyBytes(
+          0,
+          tokens[current].text.byteLength
         );
-        children.push(value);
+        spreadDots = current + 1;
+      }
+      const hasSpread = spreadDots < end
+        && tokens[spreadDots].kind == TokenKind.ellipsis;
+      if (hasSpread) {
+        if (children.length > 0) {
+          throw fail(
+            tokens[spreadDots],
+            "a struct spread must be the first object initializer entry"
+          );
+        }
+        current = spreadDots + 1;
+        let source = try parseConditionalTree(
+          tokens,
+          inout current,
+          end,
+          inout nodes,
+          inout statementNodes
+        );
+        if (spreadMode.byteLength > 0) {
+          let spreadChildren = Array<usize>();
+          spreadChildren.push(source);
+          source = pushExpressionNode(
+            inout nodes,
+            ExpressionKind.unaryExpression,
+            spreadMode,
+            spreadChildren,
+            Array<String>(),
+            spreadStart
+          );
+        }
+        labels.push("...");
+        children.push(source);
+      } else {
+        if (tokens[current].kind == TokenKind.ellipsis) {
+          throw fail(
+            tokens[current],
+            "a struct spread must be the first object initializer entry"
+          );
+        }
+        const field = try expect(
+          tokens,
+          inout current,
+          TokenKind.identifier,
+          "an object field name"
+        );
+        labels.push(field.text.copyBytes(0, field.text.byteLength));
+        if (takeIf(tokens, inout current, TokenKind.colon)) {
+          const value = try parseConditionalTree(
+            tokens,
+            inout current,
+            end,
+            inout nodes,
+            inout statementNodes
+          );
+          children.push(value);
+        } else {
+          const value = pushExpressionNode(
+            inout nodes,
+            ExpressionKind.identifierExpression,
+            field.text.copyBytes(0, field.text.byteLength),
+            Array<usize>(),
+            Array<String>(),
+            field
+          );
+          children.push(value);
+        }
       }
       if (!takeIf(tokens, inout current, TokenKind.comma)) break;
       if (tokens[current].kind == TokenKind.rightBrace) break;

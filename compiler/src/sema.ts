@@ -306,6 +306,22 @@ export type OptionalChainPlan = {
   } | null;
 };
 
+export type StructSpreadPlan = {
+  readonly mode: "value" | "copy" | "move";
+  readonly sourceName: string;
+  readonly type: string;
+  readonly retained: readonly {
+    readonly name: string;
+    readonly type: string;
+    readonly action: "value" | "retain" | "copy" | "move";
+    readonly copy?: ExplicitCopyPlan["kind"];
+  }[];
+  readonly overridden: readonly {
+    readonly name: string;
+    readonly type: string;
+  }[];
+};
+
 export type ObjCProtocolConformance = {
   readonly declaration: StructDeclaration;
   readonly protocols: readonly ForeignObjCProtocol[];
@@ -332,6 +348,7 @@ export type SemanticInfo = {
   readonly explicitCopies: ReadonlyMap<number, ExplicitCopyPlan>;
   readonly rawExpressions: ReadonlyMap<number, RawExpressionPlan>;
   readonly optionalChains: ReadonlyMap<number, OptionalChainPlan>;
+  readonly structSpreads: ReadonlyMap<number, StructSpreadPlan>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -457,6 +474,7 @@ type AnalysisState = {
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
   readonly rawExpressions: Map<number, RawExpressionPlan>;
   readonly optionalChains: Map<number, OptionalChainPlan>;
+  readonly structSpreads: Map<number, StructSpreadPlan>;
   readonly generatedOptionalEnums: Map<string, EnumDeclaration>;
   unsafeDepth: number;
   readonly unsafeExpectedTypes: Map<number, string>;
@@ -803,6 +821,7 @@ export function analyze(
     explicitCopies: new Map(),
     rawExpressions: new Map(),
     optionalChains: new Map(),
+    structSpreads: new Map(),
     generatedOptionalEnums: new Map(),
     unsafeDepth: 0,
     unsafeExpectedTypes: new Map(),
@@ -2760,6 +2779,7 @@ function analyzeConstructorInitialization(
         return;
       case "structExpression":
       case "objectExpression":
+        if (expression.spread) checkExpression(expression.spread.expression, initialized);
         for (const field of expression.fields) checkExpression(field.expression, initialized);
         return;
       case "variantExpression":
@@ -4905,6 +4925,7 @@ function collectClosureCaptures(
         return;
       case "structExpression":
       case "objectExpression":
+        if (expression.spread) walkExpression(expression.spread.expression, localNames);
         for (const field of expression.fields) walkExpression(field.expression, localNames);
         return;
       case "variantExpression":
@@ -7408,6 +7429,138 @@ function inferExpressionInner(
         state,
         constructionAffinity,
       );
+      if (expression.spread) {
+        if (!declaration || declaration.kind !== "struct" || foreignDeclaration) {
+          throw new DiagnosticError(fileName, expression.spread.location, "struct spread is limited to Z value structs in the first tier", {
+            code: "Z0221",
+            notes: ["classes preserve shared identity, while foreign records require ABI-specific construction rules"],
+          });
+        }
+        if (declaration.deinitializer) {
+          throw new DiagnosticError(fileName, expression.spread.location, `cannot spread ${declaration.name} because it defines deinit`, {
+            code: "Z0221",
+            notes: ["field-wise reconstruction cannot preserve a custom whole-value destructor contract"],
+            helps: ["provide a type-specific update, copy, or consuming method that preserves the destructor invariant"],
+          });
+        }
+        if (containsForeignValueStorage(declaration.name, structs, enums, state.foreignNamedTypes)) {
+          throw new DiagnosticError(fileName, expression.spread.location, `cannot spread ${declaration.name} while it contains native value storage`, {
+            code: "Z0240",
+            notes: ["the first spread tier does not partially copy or relocate native RAII fields"],
+            helps: ["move the complete aggregate or provide a type-specific native-aware operation"],
+          });
+        }
+        if (expression.spread.expression.kind !== "identifier") {
+          throw new DiagnosticError(fileName, expression.spread.expression.location, "a struct spread source must be a named local in the first tier", {
+            code: "Z0221",
+            notes: ["named storage lets the compiler prove source availability and exact cleanup"],
+            helps: ["bind the source value before spreading it"],
+          });
+        }
+        const sourceType = inferExpression(
+          expression.spread.expression,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+        const sourceValueType = String(underlyingType(sourceType));
+        if (parseViewType(sourceValueType) || sourceValueType !== declaration.name) {
+          throw new DiagnosticError(
+            fileName,
+            expression.spread.expression.location,
+            `struct spread for ${JSON.stringify(declaration.name)} requires the exact same nominal struct type, found ${describeValueType(sourceType, state)}`,
+            {
+              code: "Z0221",
+              notes: ["structural spreading between unrelated types is intentionally deferred"],
+            },
+          );
+        }
+        if (
+          expression.spread.mode === "move"
+          && !hasOwnershipType(declaration.name, structs, enums, state)
+        ) {
+          throw new DiagnosticError(fileName, expression.spread.location, `type ${declaration.name} has no unique ownership to move`, {
+            code: "Z0218",
+            notes: ["cleanup-free value structs already copy their retained fields by value"],
+            helps: ["use ordinary `...source` spread"],
+          });
+        }
+        const overriddenNames = new Set(expression.fields.map((field) => field.name));
+        const retained = declaration.fields
+          .filter((field) => !overriddenNames.has(field.name))
+          .map((declaredField) => {
+            const field = resolveSemanticField(expression.spread!.location, declaration, declaredField, state);
+            const fieldType = field.type.name;
+            if (expression.spread!.mode === "move") {
+              return { name: field.name, type: fieldType, action: "move" as const };
+            }
+            if (expression.spread!.mode === "copy") {
+              const copy = explicitCopyPlanForType(fieldType, structs, enums, state);
+              if (!copy) {
+                throw new DiagnosticError(
+                  fileName,
+                  expression.spread!.location,
+                  `retained field ${JSON.stringify(field.name)} of type ${displayAssignableType(fieldType)} cannot be explicitly copied`,
+                  {
+                    code: "Z0217",
+                    notes: ["overridden fields are not copied; only retained spread fields must support independent copying"],
+                    helps: ["override this field, provide a domain-specific snapshot, or use `move ...source`"],
+                  },
+                );
+              }
+              return { name: field.name, type: fieldType, action: "copy" as const, copy: copy.kind };
+            }
+            const fieldAggregate = structs.get(fieldType);
+            const foreignField = state.foreignNamedTypes.get(fieldType);
+            if (fieldAggregate?.kind === "class") {
+              return { name: field.name, type: fieldType, action: "retain" as const };
+            }
+            if (foreignField?.kind === "object") {
+              return { name: field.name, type: fieldType, action: "value" as const };
+            }
+            if (hasOwnershipType(fieldType, structs, enums, state)) {
+              throw new DiagnosticError(
+                fileName,
+                expression.spread!.location,
+                `ordinary spread cannot implicitly duplicate ownership-bearing field ${JSON.stringify(field.name)} of type ${displayAssignableType(fieldType)}`,
+                {
+                  code: "Z0221",
+                  notes: ["overridden fields do not constrain ordinary spread because their source values are not retained"],
+                  helps: ["use `copy ...source` for independently copyable fields, `move ...source` to consume the source, or override this field"],
+                },
+              );
+            }
+            return { name: field.name, type: fieldType, action: "value" as const };
+          });
+        const overridden = declaration.fields
+          .filter((field) => overriddenNames.has(field.name))
+          .map((declaredField) => {
+            const field = resolveSemanticField(expression.spread!.location, declaration, declaredField, state);
+            return { name: field.name, type: field.type.name };
+          });
+        state.structSpreads.set(expression.location.offset, {
+          mode: expression.spread.mode,
+          sourceName: expression.spread.expression.name,
+          type: declaration.name,
+          retained,
+          overridden,
+        });
+        if (expression.spread.mode === "move") {
+          consumeOwnedValue(
+            expression.spread.expression,
+            sourceType,
+            locals,
+            structs,
+            enums,
+            fileName,
+            state,
+            true,
+          );
+        }
+      }
       const provided = new Set<string>();
       for (const initializer of expression.fields) {
         if (provided.has(initializer.name)) {
@@ -7430,7 +7583,9 @@ function inferExpressionInner(
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
-      const missing = expectedFields.find((field) => !provided.has(field.name));
+      const missing = expression.spread
+        ? null
+        : expectedFields.find((field) => !provided.has(field.name));
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
       }
@@ -9854,7 +10009,13 @@ function inferContextualObjectExpression(
     );
   }
   const actual = inferExpression(
-    { kind: "structExpression", typeName: expectedType, fields: expression.fields, location: expression.location },
+    {
+      kind: "structExpression",
+      typeName: expectedType,
+      fields: expression.fields,
+      spread: expression.spread,
+      location: expression.location,
+    },
     locals,
     globals,
     structs,
@@ -10259,6 +10420,7 @@ function validateDeinitExpression(expression: Expression, fileName: string): voi
     for (const element of expression.elements) validateDeinitExpression(element, fileName);
   }
   if (expression.kind === "structExpression" || expression.kind === "objectExpression") {
+    if (expression.spread) validateDeinitExpression(expression.spread.expression, fileName);
     for (const field of expression.fields) validateDeinitExpression(field.expression, fileName);
   }
   if (expression.kind === "variantExpression") validateDeinitExpression(expression.payload, fileName);

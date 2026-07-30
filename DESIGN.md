@@ -346,6 +346,65 @@ specialize with their generic aggregate. C-layout records cannot attach Z
 defaults. Class-field defaults remain deferred until synthesized and declared
 constructors share one cleanup-safe initialization rule.
 
+Value-struct construction supports one leading, same-type spread:
+
+```zs
+const resized = WindowOptions({
+  ...defaults,
+  width: 1200,
+});
+
+const snapshot = WindowOptions({
+  copy ...current,
+  title: "Snapshot",
+});
+
+const transferred = WindowOptions({
+  move ...pending,
+  title: "Ready",
+});
+```
+
+The source must be a named local with the exact nominal struct type being
+constructed, including the same generic specialization. Arbitrary spread
+expressions remain deferred so ownership diagnostics can name a stable source.
+A spread is evaluated once and must precede all explicit fields. Later fields
+override the corresponding source fields; there is no order-dependent merging
+after those overrides.
+
+Bare `...source` is an immutable spread. It may retain ordinary cleanup-free
+values and shared identities, but it never transfers a unique owner.
+`copy ...source` applies Z's explicit-copy operation to every retained field,
+leaving the source available. A retained ARC/class identity is not independently
+copyable and therefore rejects this form unless explicitly overridden. Both
+checks apply only to fields retained from the source, so an explicitly
+overridden move-only field does not make a copy spread invalid.
+`move ...source` is accepted only when the struct carries unique ownership,
+transfers retained fields, and consumes the entire source binding. An
+overridden cleanup-bearing field from a moved source is destroyed exactly once
+rather than transferred; Z does not expose a partially available aggregate.
+
+Because the source is already a complete value of the same type, it supplies
+every non-overridden field and no field default is evaluated. Explicit
+initializers are evaluated in source order after the spread. Construction
+temporaries participate in ordinary ownership liveness, so an exit while
+evaluating an override destroys already acquired fields and any remaining
+consumed source storage exactly once.
+
+The initial lowering supports nested Z-owned resources, including
+`String`, collections, enums, options, classes, and Z structs with their own
+`deinit`. It rejects a spread when the outer struct itself declares custom
+`deinit`, because field-wise reconstruction would bypass its aggregate
+invariant. It also temporarily rejects nested native C++/Swift/foreign value
+storage until relocation and destruction use native-aware lowering.
+
+The first tier deliberately permits only one leading spread. Multiple
+construction spreads need a separate rule for per-spread capability and
+left-to-right conflict order. Object-rest destructuring is also deferred:
+`const { foo, ...rest } = value` needs either a named nominal remainder type or
+a deliberately designed anonymous remainder-record model. Neither future
+surface has a locked syntax or type rule yet.
+
 Optional presence on a value struct uses `field?: T`. It preserves that source
 fact for tooling and foreign adapters while storing an ordinary `Option<T>`.
 Omission initializes `Option.none`; a supplied `T` is contextually lifted to
@@ -369,7 +428,9 @@ owned result remains `Option<U>`. The receiver is evaluated once.
 `attempt` remain explicit at the call site. The first tier rejects `inout this`
 and `move this` methods through `?.`; an explicit `match` must expose mutation
 or ownership transfer. This keeps optional chaining as compact control-flow
-sugar rather than a hidden capability-changing operation.
+sugar rather than a hidden capability-changing operation. The first executable
+tier is synchronous; async source is checked, while Phase-1 async-frame
+execution remains deferred.
 
 Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is

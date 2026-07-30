@@ -159,9 +159,11 @@ import {
 import { validateModuleTypes } from "./semantic-type-validation.zs";
 import {
   substituteGenericType,
+  typeContainsForeignValueStorage,
   typeHasCleanup,
   typeHasCustomConstructor,
   typeMovesOnOwnedUse,
+  typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
@@ -402,10 +404,13 @@ function inferContextualObjectExpressionNode(
   if (tree.nodes[index].kind != ExpressionKind.objectExpression) return "";
   let construction = NativeAggregateConstructionShape({
     name: "",
+    valueStruct: false,
+    customDeinit: false,
     genericInstance: false,
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     fields: Array<String>(),
+    allFields: Array<String>(),
   });
   match (aggregateConstructionShape(modules, moduleIndex, expectedType)) {
     some(shape) => construction = move shape;
@@ -418,9 +423,323 @@ function inferContextualObjectExpressionNode(
     }
   }
   const children = copyIndices(tree.nodes[index].children);
+  if (children.length != tree.nodes[index].labels.length) {
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "malformed object initializer",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
+  let hasSpread = children.length > 0
+    && tree.nodes[index].labels[0] == "...";
+  let labelIndex: usize = 1;
+  while (labelIndex < tree.nodes[index].labels.length) {
+    if (tree.nodes[index].labels[labelIndex] == "...") {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a struct spread must be the first object initializer entry",
+        tree.nodes[children[labelIndex]].line,
+        tree.nodes[children[labelIndex]].column
+      );
+    }
+    labelIndex = labelIndex + 1;
+  }
+  let explicitFields = Array<String>();
+  let explicitIndex: usize = hasSpread ? usize(1) : usize(0);
+  while (explicitIndex < tree.nodes[index].labels.length) {
+    const explicitName = tree.nodes[index].labels[explicitIndex].copyBytes(
+      0,
+      tree.nodes[index].labels[explicitIndex].byteLength
+    );
+    if (containsString(explicitFields, explicitName)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `duplicate field initializer "${explicitName}"`,
+        tree.nodes[children[explicitIndex]].line,
+        tree.nodes[children[explicitIndex]].column
+      );
+    }
+    explicitFields.push(move explicitName);
+    explicitIndex = explicitIndex + 1;
+  }
   let covered = Array<String>();
   let substitutions = Array<NativeValueBinding>();
-  let childIndex: usize = 0;
+  if (hasSpread) {
+    if (!construction.valueStruct) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "struct spread requires a Z value struct",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    if (construction.customDeinit) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `struct spread is not available for ${expectedType} because it declares deinit`,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    let nativeVisiting = Array<String>();
+    if (typeContainsForeignValueStorage(
+      modules,
+      moduleIndex,
+      expectedType,
+      nativeVisiting
+    )) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `struct spread is not available for ${expectedType} because it contains native value storage`,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+
+    const spreadIndex = children[0];
+    let spreadMode = "";
+    let sourceIndex = spreadIndex;
+    if (tree.nodes[spreadIndex].kind == ExpressionKind.unaryExpression) {
+      spreadMode = tree.nodes[spreadIndex].value.copyBytes(
+        0,
+        tree.nodes[spreadIndex].value.byteLength
+      );
+      if (
+        (spreadMode != "copy" && spreadMode != "move")
+        || tree.nodes[spreadIndex].children.length != 1
+      ) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "struct spread accepts only plain, copy, or move capability",
+          tree.nodes[spreadIndex].line,
+          tree.nodes[spreadIndex].column
+        );
+      }
+      sourceIndex = tree.nodes[spreadIndex].children[0];
+    }
+    if (tree.nodes[sourceIndex].kind != ExpressionKind.identifierExpression) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "struct spread currently requires a named local source",
+        tree.nodes[sourceIndex].line,
+        tree.nodes[sourceIndex].column
+      );
+    }
+    const sourceName = identifierLookupName(tree.nodes[sourceIndex].value);
+    const sourceBindingType = valueBindingType(bindings, sourceName);
+    if (sourceBindingType.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "struct spread currently requires a named local source",
+        tree.nodes[sourceIndex].line,
+        tree.nodes[sourceIndex].column
+      );
+    }
+    try requireInitializedBinding(
+      module,
+      tree,
+      sourceIndex,
+      bindings,
+      sourceName
+    );
+    const sourceType = try inferExpressionNodeType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      sourceIndex,
+      inout bindings,
+      inout evidence
+    );
+    try requireSettledExpressionType(module, tree, sourceIndex, sourceType);
+    recordExpressionResolution(
+      modules,
+      moduleIndex,
+      tree,
+      sourceIndex,
+      sourceType,
+      inout evidence
+    );
+
+    const expectedLocation = typeSymbolLocation(
+      modules,
+      moduleIndex,
+      expectedType
+    );
+    const sourceLocation = typeSymbolLocation(
+      modules,
+      moduleIndex,
+      sourceType
+    );
+    let sameNominal = false;
+    match (in expectedLocation) {
+      some(expectedIdentity) => match (in sourceLocation) {
+        some(sourceIdentity) => {
+          sameNominal = expectedIdentity.moduleIndex
+            == sourceIdentity.moduleIndex
+            && expectedIdentity.symbolIndex == sourceIdentity.symbolIndex;
+        }
+        none => {}
+      }
+      none => {}
+    }
+    if (!sameNominal) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `struct spread for ${expectedType} requires the same nominal struct, found ${sourceType}`,
+        tree.nodes[sourceIndex].line,
+        tree.nodes[sourceIndex].column
+      );
+    }
+
+    if (construction.genericInstance) {
+      if (!equivalentTypes(
+        modules,
+        moduleIndex,
+        expectedType,
+        sourceType
+      )) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `struct spread for ${expectedType} requires the same nominal specialization, found ${sourceType}`,
+          tree.nodes[sourceIndex].line,
+          tree.nodes[sourceIndex].column
+        );
+      }
+    } else if (genericParameters.length > 0) {
+      match (genericTypeShape(sourceType)) {
+        some(generic) => {
+          if (generic.arguments.length != genericParameters.length) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `struct spread for ${expectedType} cannot infer its generic arguments from ${sourceType}`,
+              tree.nodes[sourceIndex].line,
+              tree.nodes[sourceIndex].column
+            );
+          }
+          let genericIndex: usize = 0;
+          while (genericIndex < genericParameters.length) {
+            addValueBinding(
+              inout substitutions,
+              genericParameters[genericIndex],
+              generic.arguments[genericIndex]
+            );
+            genericIndex = genericIndex + 1;
+          }
+        }
+        none => {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `struct spread for ${expectedType} requires concrete generic arguments`,
+            tree.nodes[sourceIndex].line,
+            tree.nodes[sourceIndex].column
+          );
+        }
+      }
+    } else if (!equivalentTypes(modules, moduleIndex, expectedType, sourceType)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `struct spread for ${expectedType} requires the same nominal specialization, found ${sourceType}`,
+        tree.nodes[sourceIndex].line,
+        tree.nodes[sourceIndex].column
+      );
+    }
+
+    for (const fieldName of construction.allFields) {
+      if (containsString(explicitFields, fieldName)) continue;
+      match (aggregateFieldShape(
+        modules,
+        moduleIndex,
+        expectedType,
+        fieldName
+      )) {
+        some(field) => {
+          const retainedType = substituteGenericType(
+            field.typeName,
+            substitutions
+          );
+          if (
+            spreadMode.byteLength == 0
+            && typeMovesOnOwnedUse(modules, moduleIndex, retainedType)
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `plain struct spread cannot retain ownership-bearing field "${fieldName}" of type ${retainedType}`,
+              tree.nodes[spreadIndex].line,
+              tree.nodes[spreadIndex].column
+            );
+          }
+          if (spreadMode == "copy") {
+            let copyVisiting = Array<String>();
+            if (!typeSupportsExplicitCopy(
+              modules,
+              moduleIndex,
+              retainedType,
+              copyVisiting
+            )) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `copy struct spread cannot copy field "${fieldName}" of type ${retainedType}`,
+                tree.nodes[spreadIndex].line,
+                tree.nodes[spreadIndex].column
+              );
+            }
+          }
+        }
+        none => {}
+      }
+    }
+    if (spreadMode == "move") {
+      if (!typeMovesOnOwnedUse(modules, moduleIndex, sourceType)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `type ${sourceType} has no unique ownership to move`,
+          tree.nodes[spreadIndex].line,
+          tree.nodes[spreadIndex].column
+        );
+      }
+      try consumeOwnedExpressionNode(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        sourceIndex,
+        sourceType,
+        true,
+        inout bindings
+      );
+    }
+    if (spreadIndex != sourceIndex) {
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        spreadIndex,
+        sourceType,
+        inout evidence
+      );
+    }
+  }
+  let childIndex: usize = hasSpread ? usize(1) : usize(0);
   while (childIndex < children.length && childIndex < tree.nodes[index].labels.length) {
     const fieldName = tree.nodes[index].labels[childIndex].copyBytes(
       0,
@@ -587,7 +906,7 @@ function inferContextualObjectExpressionNode(
     childIndex = childIndex + 1;
   }
   for (const fieldName of construction.fields) {
-    if (!containsString(covered, fieldName)) {
+    if (!hasSpread && !containsString(covered, fieldName)) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,

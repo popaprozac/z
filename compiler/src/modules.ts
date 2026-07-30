@@ -768,6 +768,12 @@ function transformExpression(
       return {
         ...expression,
         typeName: renameTypeName(expression.typeName, scope, typeParameters),
+        spread: expression.spread
+          ? {
+              ...expression.spread,
+              expression: transformExpression(expression.spread.expression, scope, locals, typeParameters),
+            }
+          : expression.spread,
         fields: expression.fields.map((field) => ({
           ...field,
           expression: transformExpression(field.expression, scope, locals, typeParameters),
@@ -776,6 +782,12 @@ function transformExpression(
     case "objectExpression":
       return {
         ...expression,
+        spread: expression.spread
+          ? {
+              ...expression.spread,
+              expression: transformExpression(expression.spread.expression, scope, locals, typeParameters),
+            }
+          : expression.spread,
         fields: expression.fields.map((field) => ({
           ...field,
           expression: transformExpression(field.expression, scope, locals, typeParameters),

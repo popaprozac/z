@@ -6319,3 +6319,112 @@ hostToolchainTest("keeps top-level test declarations in native frontend parity",
   assert.match(result.stdout, /native frontend hybrid matches/);
   assert.match(result.stdout, /uses 1 function/);
 }, 60_000);
+
+hostToolchainTest("preserves first-tier struct spread capability evidence natively", () => {
+  const directory = mkdtempSync("/tmp/z-native-struct-spread-");
+  const valid = resolve(directory, "valid.zs");
+  writeFileSync(valid, `
+    struct Label {
+      value: String;
+    }
+
+    struct Pair<T> {
+      first: T;
+      second: T;
+    }
+
+    function main(): i32 {
+      const baseline = Pair<i32>({ first: 20, second: 22 });
+      const plain = Pair<i32>({ ...baseline, first: 21 });
+      const copied = Pair<i32>({ copy ...baseline, second: 23 });
+      const label = Label({ value: "ready" });
+      const moved = Label({ move ...label });
+      return plain.first + copied.second + i32(moved.value.byteLength) - 49;
+    }
+  `);
+
+  const parsed = spawnSync(
+    process.execPath,
+    [cli, "self-host-parse", valid],
+    { encoding: "utf8" },
+  );
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.match(parsed.stdout, /stage-1 parser matches/);
+
+  const resolved = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", valid],
+    { encoding: "utf8" },
+  );
+  assert.equal(resolved.status, 0, resolved.stderr);
+  assert.match(resolved.stdout, /stage-1 resolver exports \d+ expression type contracts/);
+
+  const useAfterMove = resolve(directory, "use-after-move.zs");
+  writeFileSync(useAfterMove, `
+    struct Label {
+      value: String;
+    }
+
+    function main(): i32 {
+      const source = Label({ value: "ready" });
+      const moved = Label({ move ...source });
+      const retained = i32(moved.value.byteLength);
+      return retained + i32(source.value.byteLength);
+    }
+  `);
+  const moved = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", useAfterMove],
+    { encoding: "utf8" },
+  );
+  assert.equal(moved.status, 1, moved.stdout);
+  assert.match(moved.stderr, /use of moved value "source"/);
+
+  const specialization = resolve(directory, "specialization.zs");
+  writeFileSync(specialization, `
+    struct Pair<T> {
+      first: T;
+      second: T;
+    }
+
+    function main(): i32 {
+      const source = Pair<i32>({ first: 20, second: 22 });
+      const invalid = Pair<i64>({ ...source });
+      return i32(invalid.first);
+    }
+  `);
+  const specialized = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", specialization],
+    { encoding: "utf8" },
+  );
+  assert.equal(specialized.status, 1, specialized.stdout);
+  assert.match(
+    specialized.stderr,
+    /requires the same nominal specialization, found Pair<i32>/,
+  );
+
+  const emitBoundary = resolve(directory, "emit-boundary.zs");
+  writeFileSync(emitBoundary, `
+    struct Point {
+      x: i32;
+      y: i32;
+    }
+
+    function main(): i32 {
+      const source = Point({ x: 20, y: 22 });
+      const spread = Point({ ...source, x: 21 });
+      return spread.x + spread.y;
+    }
+  `);
+  const emitted = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", emitBoundary],
+    { encoding: "utf8" },
+  );
+  assert.equal(emitted.status, 1, emitted.stdout);
+  assert.match(
+    emitted.stderr,
+    /native struct-spread lowering remains deferred; Stage 0 is authoritative/,
+  );
+}, 90_000);

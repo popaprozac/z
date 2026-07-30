@@ -236,6 +236,62 @@ fresh values owned and destroyed by each resulting struct. Defaults cannot
 refer to `this` or sibling fields in the first tier. Class-field defaults remain
 deferred; class constructors establish their fields explicitly.
 
+One leading spread can derive a value from another value of the same nominal
+struct type:
+
+```zs
+const resized = WindowOptions({
+  ...defaults,
+  width: 1200,
+});
+
+const copied = WindowOptions({
+  copy ...saved,
+  title: "Copy",
+});
+
+const installed = WindowOptions({
+  move ...pending,
+  title: "Installed",
+});
+```
+
+The source must be a named local with the exact constructed type, including
+generic arguments. Arbitrary spread expressions are not accepted in the first
+tier. The spread is evaluated once, appears before every explicit field, and
+supplies all fields not explicitly overridden. Explicit fields are evaluated
+afterward in source order and win over their spread counterpart. Because the
+source is a complete value, defaults do not run during spread construction.
+
+| Form | Retained fields | Source afterward |
+| --- | --- | --- |
+| `...source` | ordinary cleanup-free copies and shared identities | available |
+| `copy ...source` | explicit Z copies; every retained field must support `copy` | available |
+| `move ...source` | ownership transfers; the struct must carry unique ownership | entirely unavailable |
+
+Capability checks apply only to retained fields. Overriding a move-only field
+therefore does not prevent `copy ...source`, because that source field is never
+copied. Explicit copy follows Z's ordinary copy semantics, so a shared class
+identity is not silently deep-cloned: a retained class field rejects
+`copy ...source` unless that field is explicitly overridden. A move spread is
+intentionally whole-source consumption rather than a partial move: retained
+fields transfer, while overridden cleanup-bearing source fields are destroyed
+exactly once. Cleanup also remains correct if evaluating a later override exits
+before construction completes.
+
+Nested Z-owned resources are supported, including `String`, collections,
+options, enums, classes, and Z structs that define `deinit`. The first tier
+rejects spreading an outer struct that defines its own custom `deinit`, because
+field-wise reconstruction could violate its aggregate invariant. It also
+temporarily rejects nested native C++/Swift/foreign value storage until native
+relocation and destruction participate in this lowering.
+
+Multiple construction spreads are deferred until Z defines per-spread
+capability and left-to-right conflict rules. Object-rest destructuring is a
+separate future design: `const { foo, ...rest } = value` needs either a named
+nominal remainder type or an intentionally designed anonymous remainder record.
+No syntax or type model for either extension is locked by this tier.
+
 An optional struct field uses `?` after its name. It describes optional
 presence, not a nullable Z value:
 
@@ -322,6 +378,8 @@ The first tier is an immutable conditional borrow. Calling an `inout this` or
 mutation or ownership transfer must be visible. The receiver is evaluated once.
 Nullable native receivers keep their native null representation, and ordinary
 `Option<T>` uses its existing niche or tag-plus-payload representation.
+This first executable tier is synchronous. Async source is parsed and checked,
+but optional-chain execution inside Phase-1 async frames remains deferred.
 
 `class` declares an ARC-managed reference type with identity. Construction uses
 `new`; copying a class reference shares the instance:
