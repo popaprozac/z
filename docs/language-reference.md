@@ -281,6 +281,48 @@ already supplies the `none` default. Native Z values remain non-null:
 `Option<T>` is Z optionality, while `T | null` primarily represents honest
 nullable foreign values.
 
+Optional chaining conditionally reads an immutable member or calls an immutable
+method. Its receiver may be an `Option<T>` or a nullable foreign reference:
+
+```zs
+const userId = dashboard.activeSession?.userId;          // Option<i32>
+const selection = dashboard.activeSession?.selection();  // Option<i32>, flattened
+dashboard.activeSession?.report();                       // void; absent is a no-op
+```
+
+An ordinary result is lifted to `Option<U>`. If the member or method already
+produces `Option<U>`, the result stays flat rather than becoming
+`Option<Option<U>>`. Chaining composes through that rule:
+
+```zs
+const scale = dashboard.activeSession?.display()?.scale;
+```
+
+Stored cleanup-bearing values are not implicitly copied. Reading a stored
+`String`, move-only struct, or other cleanup-bearing field through `?.` produces
+`Option<view U>` tied to the named receiver owner. A method that constructs and
+returns a fresh owned `U` instead produces `Option<U>`:
+
+```zs
+const title = dashboard.activeSession?.displayName;  // Option<view String>
+const label = dashboard.activeSession?.summary();    // Option<String>
+```
+
+Throwing behavior is preserved rather than swallowed. For a method returning
+`U throws E`, absence is a successful `none`, while a call on a present receiver
+may still fail with `E`:
+
+```zs
+const loaded = try dashboard.activeSession?.loadSummary();       // Option<String>
+const observed = attempt dashboard.activeSession?.loadSummary(); // Result<Option<String>, E>
+```
+
+The first tier is an immutable conditional borrow. Calling an `inout this` or
+`move this` method through `?.` is rejected; use an explicit `match` when
+mutation or ownership transfer must be visible. The receiver is evaluated once.
+Nullable native receivers keep their native null representation, and ordinary
+`Option<T>` uses its existing niche or tag-plus-payload representation.
+
 `class` declares an ARC-managed reference type with identity. Construction uses
 `new`; copying a class reference shares the instance:
 

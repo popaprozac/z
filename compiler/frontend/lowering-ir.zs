@@ -4470,6 +4470,9 @@ function lowerExpression(
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    if (tree.nodes[index].optionalAccess) {
+      throw "native optional-chain C emission remains deferred; Stage 0 is authoritative";
+    }
     if (tree.nodes[index].value == "length") {
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
         some(receiverTypeName) => {

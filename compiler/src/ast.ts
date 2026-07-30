@@ -481,6 +481,7 @@ export type MemberExpression = {
   readonly kind: "member";
   readonly object: Expression;
   readonly property: string;
+  readonly optional?: boolean;
   readonly location: SourceLocation;
 };
 

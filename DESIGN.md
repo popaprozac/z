@@ -356,6 +356,21 @@ as an explicit `Option.some`. Optional fields cannot also declare an explicit
 default, and the first tier excludes class and C-layout fields. Native Z
 optionality remains distinct from nullable foreign references.
 
+Optional chaining uses `receiver?.member` and `receiver?.method()` for
+conditional immutable access through either `Option<T>` or a nullable foreign
+reference. A value result becomes `Option<U>`, an existing `Option<U>` result
+flattens, and `void` performs a no-op when absent. Nested chains therefore
+compose without creating `Option<Option<U>>`. A stored cleanup-bearing field
+projects as `Option<view U>` tied to a named receiver owner; a method-created
+owned result remains `Option<U>`. The receiver is evaluated once.
+
+`throws E` remains an independent effect: an absent receiver is successful
+`none`, while a present receiver may still produce `failure E`, so `try` and
+`attempt` remain explicit at the call site. The first tier rejects `inout this`
+and `move this` methods through `?.`; an explicit `match` must expose mutation
+or ownership transfer. This keeps optional chaining as compact control-flow
+sugar rather than a hidden capability-changing operation.
+
 Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is
 reserved for native class construction and is not a general allocation operator.

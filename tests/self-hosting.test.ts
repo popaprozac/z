@@ -297,6 +297,66 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   rmSync(directory, { recursive: true, force: true });
 }, 20_000);
 
+test("parses and resolves optional field projection natively", () => {
+  const directory = mkdtempSync("/tmp/z-native-optional-chain-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(
+    input,
+    "struct Item {\n"
+      + "  value: i32;\n"
+      + "}\n"
+      + "\n"
+      + "struct Envelope {\n"
+      + "  item?: Item;\n"
+      + "}\n"
+      + "\n"
+      + "function main(): i32 {\n"
+      + "  const presentEnvelope = Envelope({ item: Item({ value: 42 }) });\n"
+      + "  const present = presentEnvelope.item;\n"
+      + "  const selected = present?.value;\n"
+      + "  const absentEnvelope = Envelope();\n"
+      + "  const absent = absentEnvelope.item;\n"
+      + "  const missing = absent?.value;\n"
+      + "  const selectedValue = match (selected) {\n"
+      + "    some(value) => value;\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  const missingValue = match (missing) {\n"
+      + "    some(value) => value;\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  return selectedValue + missingValue - 42;\n"
+      + "}\n",
+  );
+
+  const parsed = spawnSync(
+    process.execPath,
+    [cli, "self-host-parse", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(parsed.status, 0, parsed.stderr);
+
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 1);
+  assert.match(
+    emission.stderr,
+    /native optional-chain C emission remains deferred; Stage 0 is authoritative/,
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 20_000);
+
 test("preserves local views through native lowering and C emission", () => {
   const input = resolve(projectRoot, "tests/fixtures/native-local-view.zs");
   const parity = spawnSync(

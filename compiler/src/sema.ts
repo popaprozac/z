@@ -290,6 +290,22 @@ export type RawExpressionPlan = {
   }[];
 };
 
+export type OptionalChainPlan = {
+  readonly receiver: Expression;
+  readonly access: Extract<Expression, { kind: "member" | "call" }>;
+  readonly sourceType: string;
+  readonly payloadType: string;
+  readonly valueType: string;
+  readonly resultType: string;
+  readonly sourceKind: "option" | "nullableObject" | "nullablePointer";
+  readonly flatten: boolean;
+  readonly view: boolean;
+  readonly throwing: {
+    readonly successType: string;
+    readonly errorType: string;
+  } | null;
+};
+
 export type ObjCProtocolConformance = {
   readonly declaration: StructDeclaration;
   readonly protocols: readonly ForeignObjCProtocol[];
@@ -315,6 +331,7 @@ export type SemanticInfo = {
   readonly managedCopies: ReadonlySet<number>;
   readonly explicitCopies: ReadonlyMap<number, ExplicitCopyPlan>;
   readonly rawExpressions: ReadonlyMap<number, RawExpressionPlan>;
+  readonly optionalChains: ReadonlyMap<number, OptionalChainPlan>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -439,6 +456,8 @@ type AnalysisState = {
   readonly managedCopies: Set<number>;
   readonly explicitCopies: Map<number, ExplicitCopyPlan>;
   readonly rawExpressions: Map<number, RawExpressionPlan>;
+  readonly optionalChains: Map<number, OptionalChainPlan>;
+  readonly generatedOptionalEnums: Map<string, EnumDeclaration>;
   unsafeDepth: number;
   readonly unsafeExpectedTypes: Map<number, string>;
   readonly unsafeUnverifiedExpressions: Set<number>;
@@ -783,6 +802,8 @@ export function analyze(
     managedCopies: new Set(),
     explicitCopies: new Map(),
     rawExpressions: new Map(),
+    optionalChains: new Map(),
+    generatedOptionalEnums: new Map(),
     unsafeDepth: 0,
     unsafeExpectedTypes: new Map(),
     unsafeUnverifiedExpressions: new Set(),
@@ -1490,6 +1511,9 @@ export function analyze(
       notes: ["the first atomic ARC tier covers strong references; concurrent weak upgrade needs a shared side-table protocol"],
       helps: ["keep the class thread-local, remove the weak reference, or pass an owned immutable value snapshot"],
     });
+  }
+  if (state.generatedOptionalEnums.size > 0) {
+    (program.enums as EnumDeclaration[]).push(...state.generatedOptionalEnums.values());
   }
   return state;
 }
@@ -6314,10 +6338,247 @@ function inferExpression(
       state.genericAggregateMaterializations,
     ),
   };
-  const type = state.observer?.resolveExpressionType?.(resolution) ?? inferred;
-  state.observer?.onExpressionResolution?.(resolution);
+  const synthetic = expression.location.offset < 0;
+  const type = synthetic
+    ? inferred
+    : state.observer?.resolveExpressionType?.(resolution) ?? inferred;
+  if (!synthetic) state.observer?.onExpressionResolution?.(resolution);
   state.expressionTypes.set(expression.location.offset, String(type));
   return type as ValueType;
+}
+
+function ensureOptionalChainEnum(
+  target: string,
+  location: SourceLocation,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): string {
+  const name = optionTypeName(target);
+  if (enums.has(name)) return name;
+  const declaration: EnumDeclaration = {
+    kind: "enum",
+    name,
+    location,
+    variants: [
+      {
+        name: "some",
+        payload: { name: target, location },
+        location,
+      },
+      { name: "none", payload: null, location },
+    ],
+  };
+  enums.set(name, declaration);
+  state.generatedOptionalEnums.set(name, declaration);
+  const display = state.typeDisplayNames.get(target) ?? target;
+  (state.typeDisplayNames as Map<string, string>).set(name, `Option<${display}>`);
+  return name;
+}
+
+function ensureOptionalChainResult(
+  successType: string,
+  errorType: string,
+  location: SourceLocation,
+  enums: Map<string, EnumDeclaration>,
+  state: AnalysisState,
+): string {
+  const name = resultTypeName(successType, errorType);
+  if (enums.has(name)) return name;
+  const declaration: EnumDeclaration = {
+    kind: "enum",
+    name,
+    location,
+    variants: [
+      {
+        name: "success",
+        payload: successType === "void" ? null : { name: successType, location },
+        location,
+      },
+      {
+        name: "failure",
+        payload: { name: errorType, location },
+        location,
+      },
+    ],
+  };
+  enums.set(name, declaration);
+  state.generatedOptionalEnums.set(name, declaration);
+  const successDisplay = state.typeDisplayNames.get(successType) ?? successType;
+  const errorDisplay = state.typeDisplayNames.get(errorType) ?? errorType;
+  (state.typeDisplayNames as Map<string, string>).set(name, `Result<${successDisplay}, ${errorDisplay}>`);
+  return name;
+}
+
+function optionalChainReceiver(
+  type: ValueType,
+  state: AnalysisState,
+): {
+  readonly sourceType: string;
+  readonly payloadType: string;
+  readonly sourceKind: OptionalChainPlan["sourceKind"];
+} | null {
+  const sourceType = String(underlyingType(type));
+  const option = parseOptionType(sourceType);
+  if (option) return { sourceType, payloadType: option.target, sourceKind: "option" };
+  const object = foreignObject(type, state);
+  if (object?.nullable) {
+    return {
+      sourceType,
+      payloadType: publicObjCTypeName(object.typeName),
+      sourceKind: "nullableObject",
+    };
+  }
+  const pointer = foreignPointer(type, state);
+  if (pointer?.nullable) {
+    return {
+      sourceType,
+      payloadType: pointerTypeName(pointer.identity, pointer.ownership, false),
+      sourceKind: "nullablePointer",
+    };
+  }
+  return null;
+}
+
+function optionalChainResultParts(
+  type: string,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): { readonly successType: string; readonly errorType: string } | null {
+  const declaration = enums.get(type);
+  if (!declaration?.name.startsWith("__z_Result_")) return null;
+  const success = declaration.variants.find((variant) => variant.name === "success");
+  const failure = declaration.variants.find((variant) => variant.name === "failure");
+  if (!success || !failure?.payload) return null;
+  return {
+    successType: success.payload?.name ?? "void",
+    errorType: failure.payload.name,
+  };
+}
+
+function inferOptionalChain(
+  expression: Extract<Expression, { kind: "member" | "call" }>,
+  member: Extract<Expression, { kind: "member" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+  allowThrowingCall: boolean,
+): ValueType {
+  const receiverType = inferExpression(member.object, locals, globals, structs, enums, fileName, state);
+  const receiver = optionalChainReceiver(receiverType, state);
+  if (!receiver) {
+    throw new DiagnosticError(fileName, member.location, "optional chaining requires Option<T> or a nullable native reference", {
+      code: "Z0206",
+      helps: ["use ordinary `.` for a value that is always present"],
+    });
+  }
+  const syntheticName = `__z_optional_receiver_${member.location.offset}`;
+  const syntheticLocation = {
+    ...member.object.location,
+    offset: -Math.abs(member.location.offset) - 1,
+  };
+  const syntheticReceiver: Expression = {
+    kind: "identifier",
+    name: syntheticName,
+    location: syntheticLocation,
+  };
+  const accessMember: Extract<Expression, { kind: "member" }> = {
+    ...member,
+    object: syntheticReceiver,
+    optional: false,
+  };
+  const access: Extract<Expression, { kind: "member" | "call" }> = expression.kind === "call"
+    ? { ...expression, callee: accessMember }
+    : accessMember;
+  const receiverPayloadView = parseViewType(receiver.payloadType);
+  const receiverAggregateType = receiverPayloadView?.target ?? receiver.payloadType;
+
+  if (expression.kind === "call") {
+    const declaration = structs.get(receiverAggregateType);
+    const method = declaration?.methods.find((candidate) => (
+      !candidate.static && candidate.name === member.property
+    ));
+    if (method?.receiverMode === "inout" || method?.receiverMode === "move") {
+      throw new DiagnosticError(
+        fileName,
+        member.location,
+        `${method.receiverMode === "move" ? "consuming" : "mutable"} method ${JSON.stringify(method.name)} cannot be called through optional chaining`,
+        {
+          code: "Z0205",
+          notes: ["the first optional-chaining tier is an immutable conditional borrow"],
+          helps: [`use \`match (in value) { some(value) => value.${method.name}(...); none => ...; }\``],
+        },
+      );
+    }
+  }
+
+  const accessLocals = new Map(locals);
+  accessLocals.set(
+    syntheticName,
+    parseViewType(receiver.payloadType)
+      ? receiver.payloadType
+      : `${borrowedPrefix}${receiver.payloadType}`,
+  );
+  const valueType = String(inferExpression(
+    access,
+    accessLocals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    allowThrowingCall,
+  ));
+  const throwing = optionalChainResultParts(valueType, enums);
+  const unwrappedValueType = throwing?.successType ?? valueType;
+  const isVoid = unwrappedValueType === "void";
+  const alreadyOptional = parseOptionType(unwrappedValueType);
+  let view = false;
+  let chainedValueType = unwrappedValueType;
+
+  if (!isVoid && !alreadyOptional && expression.kind === "member") {
+    const owner = structs.get(receiverAggregateType);
+    const field = owner?.fields.find((candidate) => candidate.name === member.property);
+    if (field && hasOwnershipType(field.type.name, structs, enums, state)) {
+      const root = storageRoot(member.object);
+      if (!root || !locals.has(root.name)) {
+        throw new DiagnosticError(fileName, member.object.location, "a cleanup-bearing optional field projection requires a named owner binding", {
+          code: "Z0206",
+          helps: ["bind the Option or nullable owner before using `?.`"],
+        });
+      }
+      view = true;
+      chainedValueType = viewTypeName(field.type.name);
+      state.viewCallOrigins.set(
+        expression.location.offset,
+        viewOriginForRoot(root.name, member.object.location, state),
+      );
+    }
+  }
+
+  const optionalValueType = isVoid
+    ? "void"
+    : alreadyOptional
+      ? unwrappedValueType
+      : ensureOptionalChainEnum(chainedValueType, expression.location, enums, state);
+  const resultType = throwing
+    ? ensureOptionalChainResult(optionalValueType, throwing.errorType, expression.location, enums, state)
+    : optionalValueType;
+
+  state.optionalChains.set(expression.location.offset, {
+    receiver: member.object,
+    access,
+    sourceType: receiver.sourceType,
+    payloadType: receiver.payloadType,
+    valueType: unwrappedValueType,
+    resultType,
+    sourceKind: receiver.sourceKind,
+    flatten: Boolean(alreadyOptional),
+    view,
+    throwing,
+  });
+  return resultType;
 }
 
 function readonlyFieldOnPath(
@@ -7418,6 +7679,19 @@ function inferExpressionInner(
     case "forExpression":
       throw new DiagnosticError(fileName, expression.location, "for must be the direct value of a binding, return, or expression statement");
     case "member": {
+      if (expression.optional) {
+        return inferOptionalChain(
+          expression,
+          expression,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+          allowThrowingCall,
+        );
+      }
       if (expression.object.kind === "identifier" && !locals.has(expression.object.name)) {
         const standard = globals.get(expression.object.name);
         if (standard?.kind === "standardModule" && standard.module === "thread" && expression.property === "main") {
@@ -7626,6 +7900,19 @@ function inferExpressionInner(
       throw new DiagnosticError(fileName, expression.location, `struct ${JSON.stringify(declaration.name)} has no member ${JSON.stringify(expression.property)}`);
     }
     case "call": {
+      if (expression.callee.kind === "member" && expression.callee.optional) {
+        return inferOptionalChain(
+          expression,
+          expression.callee,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+          allowThrowingCall,
+        );
+      }
       const testExpectation = inferTestExpectationCall(
         expression,
         locals,

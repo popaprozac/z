@@ -828,6 +828,59 @@ function callArgumentNodes(in children: Array<usize>): Array<usize> {
   return arguments;
 }
 
+function optionalReceiverPayloadType(in typeName: String): Option<String> {
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        return Option.some(generic.arguments[0].copyBytes(
+          0,
+          generic.arguments[0].byteLength
+        ));
+      }
+    }
+    none => {}
+  }
+  return Option<String>.none;
+}
+
+function optionalValueType(in typeName: String): String {
+  if (typeName == "void") return "void";
+  match (optionalReceiverPayloadType(typeName)) {
+    some(_) => return typeName.copyBytes(0, typeName.byteLength);
+    none => {}
+  }
+  return `Option<${typeName}>`;
+}
+
+function optionalCallType(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in typeName: String
+): String throws ModuleResolveError {
+  match (pendingThrowingCallShape(typeName)) {
+    some(_) => throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "native optional-call effect projection remains deferred; Stage 0 is authoritative",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+    none => {}
+  }
+  match (pendingAsyncCallShape(typeName)) {
+    some(_) => throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "native optional-call effect projection remains deferred; Stage 0 is authoritative",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+    none => {}
+  }
+  return optionalValueType(typeName);
+}
+
 function inferExpressionNodeTypeExpected(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2072,6 +2125,21 @@ function inferExpressionNodeType(
       return "";
     }
     let receiverValueType = receiverType.copyBytes(0, receiverType.byteLength);
+    if (node.optionalAccess) {
+      match (optionalReceiverPayloadType(receiverType)) {
+        some(payload) => receiverValueType = payload.copyBytes(
+          0,
+          payload.byteLength
+        );
+        none => throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `optional access requires Option<T>, found ${receiverType}`,
+          tree.nodes[children[0]].line,
+          tree.nodes[children[0]].column
+        );
+      }
+    }
     if (stringStartsWith(receiverValueType, "view ")) {
       receiverValueType = receiverValueType.copyBytes(5, receiverValueType.byteLength);
     }
@@ -2103,10 +2171,21 @@ function inferExpressionNodeType(
           bindings,
           field
         );
-        const fieldType = field.typeName.copyBytes(
+        let fieldType = field.typeName.copyBytes(
           0,
           field.typeName.byteLength
         );
+        if (node.optionalAccess) {
+          let projectedType = fieldType.copyBytes(0, fieldType.byteLength);
+          let visiting = Array<String>();
+          if (typeHasCleanup(
+            modules,
+            moduleIndex,
+            projectedType,
+            visiting
+          )) projectedType = `view ${projectedType}`;
+          fieldType = optionalValueType(projectedType);
+        }
         recordExpressionResolution(
           modules,
           moduleIndex,
@@ -3302,6 +3381,7 @@ function inferExpressionNodeType(
       && tree.nodes[calleeIndex].children.length == 1
     ) {
       const receiverIndex = tree.nodes[calleeIndex].children[0];
+      const optionalMethodCall = tree.nodes[calleeIndex].optionalAccess;
       if (
         tree.nodes[receiverIndex].kind
           == ExpressionKind.identifierExpression
@@ -3373,6 +3453,21 @@ function inferExpressionNodeType(
         ownerType,
         inout evidence
       );
+      if (optionalMethodCall) {
+        match (optionalReceiverPayloadType(ownerType)) {
+          some(payload) => ownerType = payload.copyBytes(
+            0,
+            payload.byteLength
+          );
+          none => throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `optional call requires Option<T>, found ${ownerType}`,
+            tree.nodes[receiverIndex].line,
+            tree.nodes[receiverIndex].column
+          );
+        }
+      }
       let staticMethod = false;
       if (ownerType.byteLength == 0) {
         const candidate = typeExpressionName(tree, receiverIndex);
@@ -3397,6 +3492,15 @@ function inferExpressionNodeType(
             let receiverRoot = "";
             let receiverAccess = "";
             if (collectionMethodMutates(ownerType, methodName)) {
+              if (optionalMethodCall) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `optional call cannot invoke mutating method "${methodName}"; use an explicit match`,
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
               receiverRoot = expressionStorageRootName(tree, receiverIndex);
               if (
                 receiverRoot.byteLength == 0
@@ -3414,7 +3518,7 @@ function inferExpressionNodeType(
             }
             const substitutions = Array<NativeValueBinding>();
             const argumentNodes = callArgumentNodes(children);
-            return try inferSignatureCallType(
+            const callType = try inferSignatureCallType(
               module,
               modules,
               moduleIndex,
@@ -3434,6 +3538,15 @@ function inferExpressionNodeType(
               "value",
               inout evidence
             );
+            if (optionalMethodCall) {
+              return try optionalCallType(
+                module,
+                tree,
+                calleeIndex,
+                callType
+              );
+            }
+            return callType;
           }
           none => {}
         }
@@ -3463,7 +3576,7 @@ function inferExpressionNodeType(
                 some(signature) => {
                   const substitutions = Array<NativeValueBinding>();
                   const argumentNodes = callArgumentNodes(children);
-                  return try inferSignatureCallType(
+                  const callType = try inferSignatureCallType(
                     module,
                     modules,
                     moduleIndex,
@@ -3483,6 +3596,15 @@ function inferExpressionNodeType(
                     "value",
                     inout evidence
                   );
+                  if (optionalMethodCall) {
+                    return try optionalCallType(
+                      module,
+                      tree,
+                      calleeIndex,
+                      callType
+                    );
+                  }
+                  return callType;
                 }
                 none => {}
               }
@@ -3515,6 +3637,21 @@ function inferExpressionNodeType(
               !method.staticMethod
               && method.ownerTypeParameters.length != method.ownerTypeArguments.length
             ) return "";
+            if (
+              optionalMethodCall
+              && (
+                method.receiverMode == "inout"
+                || method.receiverMode == "move"
+              )
+            ) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `optional call cannot invoke ${method.receiverMode} receiver method "${method.name}"; use an explicit match`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
             let receiverRoot = "";
             let receiverAccess = "";
             if (!method.staticMethod && method.receiverMode == "inout") {
@@ -3613,6 +3750,14 @@ function inferExpressionNodeType(
                 inout bindings,
                 receiverRoot,
                 NativeOwnershipState.moved
+              );
+            }
+            if (optionalMethodCall) {
+              return try optionalCallType(
+                module,
+                tree,
+                calleeIndex,
+                callType
               );
             }
             return callType;

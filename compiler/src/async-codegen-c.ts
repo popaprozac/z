@@ -6344,6 +6344,15 @@ function emitFrameExpressionInner(
   plan: FrameExpressionContext,
   fileName: string,
 ): string {
+  const optionalChain = plan.types.semanticInfo.optionalChains.get(expression.location.offset);
+  if (optionalChain && optionalChain.access !== expression) {
+    unsupported(
+      fileName,
+      expression.location,
+      "optional chaining is not executable in Phase 1 async frames yet",
+      "bind and inspect the Option with match while async expression lowering is expanded",
+    );
+  }
   const suspension = plan.suspensions?.get(expression.location.offset);
   if (suspension) return frameSuspensionValue(suspension, plan.types);
   const prepared = plan.expressionBindings?.get(expression.location.offset);

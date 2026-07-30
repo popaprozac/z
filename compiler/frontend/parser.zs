@@ -150,6 +150,7 @@ export enum ExpressionKind {
 export struct ExpressionNode {
   kind: ExpressionKind;
   value: String;
+  optionalAccess: boolean;
   children: Array<usize>;
   statements: Array<usize>;
   labels: Array<String>;
@@ -697,6 +698,7 @@ function pushExpressionNodeAt(
   nodes.push(ExpressionNode({
     kind,
     value,
+    optionalAccess: false,
     children,
     statements: Array<usize>(),
     labels,
@@ -721,6 +723,7 @@ function pushExpressionNodeWithStatements(
   nodes.push(ExpressionNode({
     kind,
     value,
+    optionalAccess: false,
     children,
     statements,
     labels,
@@ -745,6 +748,7 @@ function pushExpressionNodeWithTypes(
   nodes.push(ExpressionNode({
     kind,
     value,
+    optionalAccess: false,
     children,
     statements: Array<usize>(),
     labels,
@@ -770,6 +774,7 @@ function pushExpressionNodeWithStatementsAndTypes(
   nodes.push(ExpressionNode({
     kind,
     value,
+    optionalAccess: false,
     children,
     statements,
     labels,
@@ -1806,7 +1811,25 @@ function parsePostfixTree(
 ): usize throws ParserError {
   let root = try parsePrimaryTree(tokens, inout current, end, inout nodes, inout statementNodes);
   while (current < end) {
-    if (takeIf(tokens, inout current, TokenKind.dot)) {
+    let optionalAccess = false;
+    let memberAccess = takeIf(tokens, inout current, TokenKind.dot);
+    if (
+      !memberAccess
+      && current + 1 < end
+      && tokens[current].kind == TokenKind.question
+      && tokens[current + 1].kind == TokenKind.dot
+    ) {
+      current = current + 1;
+      try expectKind(
+        tokens,
+        inout current,
+        TokenKind.dot,
+        "`.` after `?` in optional member access"
+      );
+      memberAccess = true;
+      optionalAccess = true;
+    }
+    if (memberAccess) {
       if (!isAsciiMemberName(tokens[current])) throw fail(tokens[current], "expected a member name");
       const property = snapshot(tokens[current]);
       current = current + 1;
@@ -1838,6 +1861,7 @@ function parsePostfixTree(
         typeReferences,
         property
       );
+      nodes[root].optionalAccess = optionalAccess;
       continue;
     }
     if (tokens[current].kind == TokenKind.leftParen) {
@@ -3660,6 +3684,7 @@ function expressionTreeText(in tree: ExpressionTree, in arena: StatementArena): 
   output.append(`root:${tree.root};`);
   for (const node of tree.nodes) {
     output.append(expressionKindName(node.kind));
+    if (node.optionalAccess) output.append("?");
     output.append("@");
     output.append(`${node.offset},${node.line},${node.column}`);
     output.append(":");

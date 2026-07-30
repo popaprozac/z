@@ -1122,7 +1122,9 @@ function flattenExpression(
   if (expression.kind === "member") {
     const object = flattenExpression(expression.object, nodes, tokens);
     const property = parseGenericType(expression.property) ? canonicalTypeName(expression.property) : expression.property;
-    return object === null ? null : append("member", property, [object], []);
+    return object === null
+      ? null
+      : append(expression.optional ? "member?" : "member", property, [object], []);
   }
   if (expression.kind === "call") {
     const callee = flattenExpression(expression.callee, nodes, tokens);

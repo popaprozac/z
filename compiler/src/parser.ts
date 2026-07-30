@@ -655,6 +655,8 @@ export function parse(tokens: Token[], fileName: string): Program {
   const parsePostfix = (): Expression => {
     let expression = parsePrimary();
     while (true) {
+      const optional = at("question") && tokens[current + 1]?.kind === "dot";
+      if (optional) take();
       if (match("dot")) {
         const property = peek();
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(property.text)) {
@@ -675,7 +677,13 @@ export function parse(tokens: Token[], fileName: string): Program {
             current = checkpoint;
           }
         }
-        expression = { kind: "member", object: expression, property: propertyName, location: property.location };
+        expression = {
+          kind: "member",
+          object: expression,
+          property: propertyName,
+          optional,
+          location: property.location,
+        };
         continue;
       }
       if (match("leftParen")) {

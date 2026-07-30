@@ -23,6 +23,7 @@ import type {
   IntegerOperation,
   ObjCBindingPlan,
   ObjCProtocolConformance,
+  OptionalChainPlan,
   RawExpressionPlan,
   SemanticInfo,
 } from "./sema.ts";
@@ -4977,6 +4978,10 @@ function generateDirectValue(
   if (context.expressionOverrides.has(expression.location.offset)) {
     return consumeValue(generateExpression(expression, context), context);
   }
+  const optionalChain = context.semanticInfo.optionalChains.get(expression.location.offset);
+  if (optionalChain && optionalChain.access !== expression) {
+    return generateOptionalChainValue(expression, optionalChain, context, consumeValue);
+  }
   if (expression.kind === "closure") {
     return generateClosureValue(expression, context, consumeValue);
   }
@@ -5063,6 +5068,7 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
 
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
+  if (context.semanticInfo.optionalChains.has(expression.location.offset)) return true;
   if (["template", "try", "matchExpression", "ifExpression", "unsafeExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
   if (expression.kind === "dynamicArrayExpression") return expression.elements.length > 0;
   if (expression.kind === "conditional") {
@@ -5083,6 +5089,215 @@ function requiresStatementValue(expression: Expression, context: GenerationConte
   if (expression.kind === "variantExpression") return requiresStatementValue(expression.payload, context);
   if (expression.kind === "attempt") return requiresStatementValue(expression.expression, context);
   return false;
+}
+
+function optionalChainSome(
+  optionType: string,
+  value: string,
+  context: GenerationContext,
+): string {
+  const declaration = context.enums.get(optionType);
+  if (!declaration) throw new Error(`missing optional-chain result enum ${JSON.stringify(optionType)}`);
+  if (nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes)) return value;
+  return generateCompilerVariantConstruction(optionType, "some", value, context);
+}
+
+function optionalChainNone(
+  optionType: string,
+  context: GenerationContext,
+): string {
+  const declaration = context.enums.get(optionType);
+  if (!declaration) throw new Error(`missing optional-chain result enum ${JSON.stringify(optionType)}`);
+  const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+  return niche
+    ? nicheOptionNull(niche)
+    : generateCompilerVariantConstruction(optionType, "none", null, context);
+}
+
+function optionalChainPresence(
+  source: string,
+  plan: OptionalChainPlan,
+  context: GenerationContext,
+): { readonly condition: string; readonly payload: string } {
+  if (plan.sourceKind === "nullableObject") {
+    return { condition: `${source} != nil`, payload: source };
+  }
+  if (plan.sourceKind === "nullablePointer") {
+    return { condition: `${source} != NULL`, payload: source };
+  }
+  const declaration = context.enums.get(plan.sourceType);
+  if (!declaration) throw new Error(`missing optional-chain receiver enum ${JSON.stringify(plan.sourceType)}`);
+  const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
+  if (niche) {
+    return {
+      condition: `${source} != ${nicheOptionNull(niche)}`,
+      payload: source,
+    };
+  }
+  return {
+    condition: `${source}.tag == ${variantTag(plan.sourceType, "some")}`,
+    payload: `${source}.data.some`,
+  };
+}
+
+function generateOptionalChainValue(
+  expression: Expression,
+  plan: OptionalChainPlan,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+): string {
+  const lines: string[] = [];
+  const stable = isStableStorageExpression(plan.receiver)
+    && !context.semanticInfo.optionalChains.has(plan.receiver.location.offset);
+  let source = "";
+  let sourceCleanup = "";
+  if (stable) {
+    source = generateExpression(plan.receiver, context);
+  } else {
+    const temporary = `_z_optional_source_${context.valueCounter.value++}`;
+    lines.push(`${generateLocalDeclaration(
+      plan.sourceType,
+      temporary,
+      true,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    )};`);
+    lines.push(generateDirectValue(plan.receiver, context, (value) => `${temporary} = ${value};`));
+    source = temporary;
+    if (hasCleanupType(
+      plan.sourceType,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignTypes,
+    )) {
+      sourceCleanup = generateValueCleanup(temporary, plan.sourceType, null, context);
+    }
+  }
+
+  const { condition, payload } = optionalChainPresence(source, plan, context);
+  const syntheticReceiver = plan.access.kind === "call"
+    ? plan.access.callee.kind === "member"
+      ? plan.access.callee.object
+      : null
+    : plan.access.object;
+  if (!syntheticReceiver) throw new Error("optional-chain access lost its synthetic receiver");
+  const overriddenContext = withExpressionOverrides(
+    context,
+    new Map([[syntheticReceiver.location.offset, payload]]),
+  );
+  const accessContext = {
+    ...overriddenContext,
+    localTypes: new Map([
+      ...overriddenContext.localTypes,
+      [
+        syntheticReceiver.kind === "identifier"
+          ? syntheticReceiver.name
+          : `__z_optional_receiver_${syntheticReceiver.location.offset}`,
+        plan.payloadType,
+      ],
+    ]),
+  };
+
+  if (plan.resultType === "void") {
+    const present = generateDirectValue(
+      plan.access,
+      accessContext,
+      (value) => `(void)(${value});`,
+    );
+    lines.push(`if (${condition}) {\n${indent(present, 2)}\n}`);
+    if (sourceCleanup) lines.push(sourceCleanup);
+    lines.push(consumeValue("0", context));
+    return lines.join("\n");
+  }
+
+  const output = `_z_optional_result_${context.valueCounter.value++}`;
+  lines.push(`${generateLocalDeclaration(
+    plan.resultType,
+    output,
+    true,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  )};`);
+
+  const optionalValueType = plan.throwing
+    ? context.enums.get(plan.resultType)!.variants.find((variant) => variant.name === "success")!.payload?.name ?? "void"
+    : plan.resultType;
+  const wrapPresent = (value: string): string => {
+    if (plan.flatten) return value;
+    return optionalChainSome(
+      optionalValueType,
+      plan.view ? `&(${value})` : value,
+      context,
+    );
+  };
+  const absentValue = optionalValueType === "void"
+    ? "0"
+    : optionalChainNone(optionalValueType, context);
+
+  let present: string;
+  let absent: string;
+  if (!plan.throwing) {
+    present = generateDirectValue(
+      plan.access,
+      accessContext,
+      (value) => `${output} = ${wrapPresent(value)};`,
+    );
+    absent = `${output} = ${absentValue};`;
+  } else {
+    const nativeResultType = resultTypeName(plan.throwing.successType, plan.throwing.errorType);
+    const raw = `_z_optional_call_${context.valueCounter.value++}`;
+    const rawDeclaration = generateLocalDeclaration(
+      nativeResultType,
+      raw,
+      true,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    );
+    const successValue = plan.throwing.successType === "void"
+      ? null
+      : requiresNativeMove(
+          plan.throwing.successType,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        )
+        ? `std::move(${raw}.data.success)`
+        : `${raw}.data.success`;
+    const wrappedSuccess = plan.throwing.successType === "void"
+      ? null
+      : wrapPresent(successValue!);
+    const failureValue = requiresNativeMove(
+      plan.throwing.errorType,
+      context.structs,
+      context.enums,
+      context.semanticInfo.foreignNamedTypes,
+    )
+      ? `std::move(${raw}.data.failure)`
+      : `${raw}.data.failure`;
+    present = generateDirectValue(plan.access, accessContext, (value) => (
+      `${rawDeclaration} = ${value};\n`
+      + `if (${raw}.tag == ${variantTag(nativeResultType, "failure")}) {\n`
+      + `${indent(`${output} = ${generateCompilerVariantConstruction(plan.resultType, "failure", failureValue, context)};`, 2)}\n`
+      + `} else {\n`
+      + `${indent(`${output} = ${generateCompilerVariantConstruction(plan.resultType, "success", wrappedSuccess, context)};`, 2)}\n`
+      + `}`
+    ));
+    const absentSuccess = generateCompilerVariantConstruction(
+      plan.resultType,
+      "success",
+      plan.throwing.successType === "void" ? null : absentValue,
+      context,
+    );
+    absent = `${output} = ${absentSuccess};`;
+  }
+
+  lines.push(`if (${condition}) {\n${indent(present, 2)}\n} else {\n${indent(absent, 2)}\n}`);
+  if (sourceCleanup) lines.push(sourceCleanup);
+  lines.push(consumeValue(output, context));
+  return lines.join("\n");
 }
 
 function generateDynamicArrayValue(
@@ -5884,6 +6099,8 @@ function trySuccessType(expression: Extract<Expression, { kind: "try" }>, contex
 }
 
 function throwingCallResultType(expression: Expression, context: GenerationContext): string {
+  const optionalChain = context.semanticInfo.optionalChains.get(expression.location.offset);
+  if (optionalChain?.throwing) return optionalChain.resultType;
   if (expression.kind === "call") {
     const connection = context.semanticInfo.foreignConnectionCalls.get(expression.location.offset);
     if (connection) {
