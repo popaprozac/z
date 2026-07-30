@@ -147,6 +147,7 @@ export enum LoweredExpressionKind {
   binaryOperation,
   conditionalValue,
   optionalFieldValue,
+  optionalCallValue,
   directCall,
   fieldValue,
   structValue,
@@ -3309,7 +3310,97 @@ function lowerExpression(
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].optionalAccess
     ) {
-      throw "native optional-chain method-call lowering remains deferred; Stage 0 is authoritative";
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      if (!stableOptionalChainSource(tree, receiverInput)) {
+        throw "native optional-chain method-call emission currently requires a named stable receiver; temporary receiver lowering remains deferred";
+      }
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => throw "native optional-chain method-call lowering could not resolve its receiver type";
+      };
+      if (!sourceTypeIsOption(receiverTypeName)) {
+        throw `native optional-chain method-call lowering currently supports Option<T> receivers, found ${receiverTypeName}`;
+      }
+      let payloadTypeName = "";
+      match (genericTypeShape(receiverTypeName)) {
+        some(generic) => {
+          payloadTypeName = generic.arguments[0].copyBytes(
+            0,
+            generic.arguments[0].byteLength
+          );
+        }
+        none => match (intrinsicOptionPayloadName(receiverTypeName)) {
+          some(payload) => payloadTypeName = move payload;
+          none => {}
+        }
+      }
+      if (
+        payloadTypeName != "String"
+        || tree.nodes[calleeInput].value != "byteAt"
+        || tree.nodes[index].children.length != 2
+      ) {
+        throw "native optional-chain method-call lowering currently supports stable Option<String>?.byteAt(index); other methods remain Stage 0 authoritative";
+      }
+      const resultTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      )) {
+        some(name) => name;
+        none => throw "native optional-chain method-call lowering could not resolve its result type";
+      };
+      const sourceType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        receiverTypeName
+      );
+      const resultType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        resultTypeName
+      );
+      const receiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput,
+        inout output
+      );
+      const argumentInput = tree.nodes[index].children[1];
+      const argument = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(receiver);
+      children.push(argument);
+      let labels = Array<String>();
+      labels.push(sourceType.name.copyBytes(
+        0,
+        sourceType.name.byteLength
+      ));
+      labels.push("String.byteAt");
+      labels.push("wrap");
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.optionalCallValue,
+        resultType.name,
+        children,
+        labels
+      );
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression

@@ -782,6 +782,39 @@ function appendExpression(
     output.append("Tag_none})");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.optionalCallValue
+  ) {
+    if (
+      declaration.expressions[index].children.length != 2
+      || declaration.expressions[index].labels.length != 3
+      || declaration.expressions[index].labels[1] != "String.byteAt"
+      || declaration.expressions[index].labels[2] != "wrap"
+    ) {
+      throw "native C emission received a malformed optional call";
+    }
+    const optionalCallSource = declaration.expressions[index].children[0];
+    const optionalCallArgument = declaration.expressions[index].children[1];
+    output.append("((");
+    try appendExpression(inout output, declaration, optionalCallSource);
+    output.append(").tag == Z_");
+    output.append(declaration.expressions[index].labels[0]);
+    output.append("Tag_some ? (Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){.tag = Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("Tag_some, .payload.some = z_string_byte_at((");
+    try appendExpression(inout output, declaration, optionalCallSource);
+    output.append(").payload.some, ");
+    try appendExpression(inout output, declaration, optionalCallArgument);
+    output.append(")} : (Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){.tag = Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("Tag_none})");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.stringEqual) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed String comparison";

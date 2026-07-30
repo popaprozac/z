@@ -297,7 +297,7 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   rmSync(directory, { recursive: true, force: true });
 }, 20_000);
 
-test("parses, lowers, and runs stable optional field projection natively", () => {
+test("parses, lowers, and runs stable optional field and intrinsic call projection natively", () => {
   const directory = mkdtempSync("/tmp/z-native-optional-chain-");
   const input = resolve(directory, "main.zs");
   writeFileSync(
@@ -317,6 +317,8 @@ test("parses, lowers, and runs stable optional field projection natively", () =>
       + "  const absentEnvelope = Envelope();\n"
       + "  const absent = absentEnvelope.item;\n"
       + "  const missing = absent?.value;\n"
+      + "  const text = Option<String>.some(\"z\");\n"
+      + "  const byte = text?.byteAt(0);\n"
       + "  const selectedValue = match (selected) {\n"
       + "    some(value) => value;\n"
       + "    none => 0;\n"
@@ -325,7 +327,11 @@ test("parses, lowers, and runs stable optional field projection natively", () =>
       + "    some(value) => value;\n"
       + "    none => 0;\n"
       + "  };\n"
-      + "  return selectedValue + missingValue - 42;\n"
+      + "  const byteValue = match (byte) {\n"
+      + "    some(value) => i32(value);\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  return selectedValue + missingValue + byteValue - 164;\n"
       + "}\n",
   );
 
@@ -354,6 +360,7 @@ test("parses, lowers, and runs stable optional field projection natively", () =>
     emission.stdout,
     /Tag_some \? \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some/,
   );
+  assert.match(emission.stdout, /z_string_byte_at/);
   const executable = resolve(directory, "program");
   const compilation = spawnSync(
     "clang",
@@ -406,14 +413,14 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
       source: `
         function main(): i32 {
           const text = Option<String>.some("z");
-          const selected = text?.byteAt(0);
+          const selected = text?.copyBytes(0, 1);
           return match (selected) {
-            some(value) => i32(value) - 122;
+            some(value) => i32(value.byteLength) - 1;
             none => 1;
           };
         }
       `,
-      expected: /method-call lowering remains deferred/,
+      expected: /supports stable Option<String>\?\.byteAt\(index\)/,
     },
   ] as const;
 

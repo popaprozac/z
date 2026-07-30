@@ -20,6 +20,8 @@ function main(): i32 {
   const absentEnvelope = Envelope();
   const absent = absentEnvelope.item;
   const missing = absent?.value;
+  const text = Option<String>.some("z");
+  const byte = text?.byteAt(0);
   const selectedValue = match (selected) {
     some(value) => value;
     none => 0;
@@ -32,5 +34,9 @@ function main(): i32 {
     some(value) => value;
     none => 0;
   };
-  return selectedValue + flattenedValue + missingValue - 49;
+  const byteValue = match (byte) {
+    some(value) => i32(value);
+    none => 0;
+  };
+  return selectedValue + flattenedValue + missingValue + byteValue - 171;
 }
