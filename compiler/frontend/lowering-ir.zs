@@ -4180,6 +4180,10 @@ function lowerExpression(
       ) {
         let children = Array<usize>();
         let labels = Array<String>();
+        let hasSpread = false;
+        let spreadMode = "";
+        let spreadSourceInput: usize = 0;
+        let spreadSource: usize = 0;
         if (tree.nodes[index].children.length == 2) {
           const objectInput = tree.nodes[index].children[1];
           if (tree.nodes[objectInput].kind != ExpressionKind.objectExpression) {
@@ -4191,12 +4195,46 @@ function lowerExpression(
           ) {
             throw "native lowering received a malformed object initializer";
           }
-          for (const label of tree.nodes[objectInput].labels) {
-            if (label == "...") {
-              throw "native struct-spread lowering remains deferred; Stage 0 is authoritative for executable spread construction";
+          hasSpread = tree.nodes[objectInput].labels.length > 0
+            && tree.nodes[objectInput].labels[0] == "...";
+          if (hasSpread) {
+            match (in localAggregate) {
+              some(_) => {}
+              none => throw "native struct-spread lowering requires a local Z value struct";
             }
+            const spreadInput = tree.nodes[objectInput].children[0];
+            spreadSourceInput = spreadInput;
+            if (
+              tree.nodes[spreadInput].kind == ExpressionKind.unaryExpression
+            ) {
+              spreadMode = tree.nodes[spreadInput].value.copyBytes(
+                0,
+                tree.nodes[spreadInput].value.byteLength
+              );
+              if (
+                (spreadMode != "copy" && spreadMode != "move")
+                || tree.nodes[spreadInput].children.length != 1
+              ) {
+                throw "native struct-spread lowering received an unsupported capability";
+              }
+              spreadSourceInput = tree.nodes[spreadInput].children[0];
+            }
+            if (
+              tree.nodes[spreadSourceInput].kind
+                != ExpressionKind.identifierExpression
+            ) {
+              throw "native struct-spread lowering requires a named source";
+            }
+            spreadSource = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              spreadSourceInput,
+              inout output
+            );
           }
-          let field: usize = 0;
+          let field: usize = hasSpread ? usize(1) : usize(0);
           while (field < tree.nodes[objectInput].children.length) {
             const valueInput = tree.nodes[objectInput].children[field];
             const fieldName = tree.nodes[objectInput].labels[field].copyBytes(
@@ -4267,8 +4305,88 @@ function lowerExpression(
         }
         match (in localAggregate) {
           some(aggregateIndex) => {
+            let attachedMove = false;
             for (const field of program.aggregates[aggregateIndex].fields) {
-              if (containsString(labels, field.name)) continue;
+              if (containsString(labels, field.name)) {
+                if (hasSpread && spreadMode == "move") {
+                  const overriddenType = try lowerModuleType(
+                    program,
+                    importedTypes,
+                    field.type
+                  );
+                  if (moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    overriddenType
+                  )) {
+                    throw `native move struct-spread lowering cannot clean an overridden ownership-bearing field "${field.name}" yet`;
+                  }
+                }
+                continue;
+              }
+              if (hasSpread) {
+                const fieldType = try lowerModuleType(
+                  program,
+                  importedTypes,
+                  field.type
+                );
+                let source = spreadSource;
+                if (spreadMode == "move" && !attachedMove) {
+                  let moveChildren = Array<usize>();
+                  moveChildren.push(source);
+                  source = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.moveValue,
+                    "",
+                    moveChildren,
+                    Array<String>()
+                  );
+                  attachedMove = true;
+                }
+                let fieldChildren = Array<usize>();
+                fieldChildren.push(source);
+                let value = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.fieldValue,
+                  field.name,
+                  fieldChildren,
+                  Array<String>()
+                );
+                if (spreadMode == "copy") {
+                  if (fieldType.kind == LoweredTypeKind.stringType) {
+                    let copyChildren = Array<usize>();
+                    copyChildren.push(value);
+                    value = pushExpression(
+                      inout output,
+                      LoweredExpressionKind.copyValue,
+                      "",
+                      copyChildren,
+                      Array<String>()
+                    );
+                  } else if (moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    fieldType
+                  )) {
+                    throw `native copy struct-spread lowering does not support field "${field.name}" of type ${field.type.name} yet`;
+                  }
+                } else if (
+                  spreadMode.byteLength == 0
+                  && moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    fieldType
+                  )
+                ) {
+                  throw `native plain struct-spread lowering cannot retain ownership-bearing field "${field.name}"`;
+                }
+                children.push(value);
+                labels.push(field.name.copyBytes(
+                  0,
+                  field.name.byteLength
+                ));
+                continue;
+              }
               match (in field.defaultValue) {
                 some(defaultSyntax) => match (in defaultSyntax.tree) {
                   some(defaultTree) => {
@@ -4312,6 +4430,9 @@ function lowerExpression(
                   }
                 }
               }
+            }
+            if (hasSpread && spreadMode == "move" && !attachedMove) {
+              throw "native move struct-spread lowering requires at least one retained field";
             }
           }
           none => {}

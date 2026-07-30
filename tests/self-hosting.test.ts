@@ -1679,6 +1679,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
     { entry: "tests/fixtures/self-host-emit-option.zs" },
     { entry: "tests/fixtures/self-host-emit-optional-field-direct.zs" },
     { entry: "tests/fixtures/self-host-emit-optional-chain.zs" },
+    { entry: "tests/fixtures/self-host-emit-struct-spread.zs" },
     { entry: "tests/fixtures/self-host-emit-result.zs" },
     { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
     {
@@ -6819,6 +6820,51 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   );
   assert.equal(resolved.status, 0, resolved.stderr);
   assert.match(resolved.stdout, /stage-1 resolver exports \d+ expression type contracts/);
+  const executableSource = resolve(directory, "executable.zs");
+  writeFileSync(executableSource, `
+    struct Label {
+      value: String;
+    }
+
+    struct Pair {
+      first: i32;
+      second: i32;
+    }
+
+    function main(): i32 {
+      const baseline = Pair({ first: 20, second: 22 });
+      const plain = Pair({ ...baseline, first: 21 });
+      const copied = Pair({ copy ...baseline, second: 23 });
+      const copySource = Label({ value: "ready" });
+      const copiedLabel = Label({ copy ...copySource });
+      const label = Label({ value: "ready" });
+      const moved = Label({ move ...label });
+      return plain.first
+        + copied.second
+        + i32(copiedLabel.value.byteLength)
+        + i32(moved.value.byteLength)
+        - 54;
+    }
+  `);
+  const emitted = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", executableSource],
+    { encoding: "utf8" },
+  );
+  assert.equal(emitted.status, 0, emitted.stderr);
+  assert.match(emitted.stdout, /\.first = 21, \.second = baseline\.second/);
+  assert.match(emitted.stdout, /\.second = 23, \.first = baseline\.first/);
+  assert.match(emitted.stdout, /\.value = z_string_copy\(copySource\.value\)/);
+  assert.match(emitted.stdout, /\.value = label\.value/);
+  const executable = resolve(directory, "valid");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emitted.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
 
   const useAfterMove = resolve(directory, "use-after-move.zs");
   writeFileSync(useAfterMove, `
@@ -6865,27 +6911,27 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
     /requires the same nominal specialization, found Pair<i32>/,
   );
 
-  const emitBoundary = resolve(directory, "emit-boundary.zs");
-  writeFileSync(emitBoundary, `
-    struct Point {
-      x: i32;
-      y: i32;
+  const cleanupBoundary = resolve(directory, "cleanup-boundary.zs");
+  writeFileSync(cleanupBoundary, `
+    struct Bundle {
+      retained: String;
+      replaced: String;
     }
 
     function main(): i32 {
-      const source = Point({ x: 20, y: 22 });
-      const spread = Point({ ...source, x: 21 });
-      return spread.x + spread.y;
+      const source = Bundle({ retained: "kept", replaced: "old" });
+      const spread = Bundle({ move ...source, replaced: "new" });
+      return i32(spread.retained.byteLength) - 4;
     }
   `);
-  const emitted = spawnSync(
+  const boundary = spawnSync(
     process.execPath,
-    [cli, "self-host-emit", emitBoundary],
+    [cli, "self-host-emit", cleanupBoundary],
     { encoding: "utf8" },
   );
-  assert.equal(emitted.status, 1, emitted.stdout);
+  assert.equal(boundary.status, 1, boundary.stdout);
   assert.match(
-    emitted.stderr,
-    /native struct-spread lowering remains deferred; Stage 0 is authoritative/,
+    boundary.stderr,
+    /cannot clean an overridden ownership-bearing field "replaced" yet/,
   );
 }, 90_000);
