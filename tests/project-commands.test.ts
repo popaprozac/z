@@ -3,11 +3,61 @@ import {
   cli,
   existsSync,
   mkdtempSync,
+  projectRoot,
+  readFileSync,
   resolve,
   spawnSync,
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+
+test("associates z.json with the implemented project-manifest schema", () => {
+  const packagePath = resolve(projectRoot, "editors/vscode/package.json");
+  const schemaPath = resolve(
+    projectRoot,
+    "editors/vscode/schemas/z.schema.json",
+  );
+  const extension = JSON.parse(readFileSync(packagePath, "utf8")) as {
+    readonly contributes?: {
+      readonly jsonValidation?: readonly {
+        readonly fileMatch?: readonly string[];
+        readonly url?: string;
+      }[];
+    };
+  };
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+    readonly required?: readonly string[];
+    readonly properties?: {
+      readonly target?: {
+        readonly required?: readonly string[];
+        readonly properties?: {
+          readonly kind?: { readonly enum?: readonly string[] };
+          readonly swift?: {
+            readonly properties?: {
+              readonly interop?: { readonly enum?: readonly string[] };
+            };
+          };
+        };
+      };
+    };
+  };
+
+  assert.deepEqual(extension.contributes?.jsonValidation, [{
+    fileMatch: ["z.json"],
+    url: "./schemas/z.schema.json",
+  }]);
+  assert.deepEqual(schema.required, ["target"]);
+  assert.deepEqual(schema.properties?.target?.required, ["name", "entry"]);
+  assert.deepEqual(schema.properties?.target?.properties?.kind?.enum, [
+    "executable",
+    "static-library",
+    "shared-library",
+  ]);
+  assert.deepEqual(
+    schema.properties?.target?.properties?.swift?.properties?.interop?.enum,
+    ["objc", "cxx"],
+  );
+});
 
 function writeManifest(
   directory: string,
@@ -57,6 +107,18 @@ test("requires a named entry for every discovered project target", () => {
   assert.match(
     invalidKind.stderr,
     /target\.kind must be "executable", "static-library", or "shared-library"/,
+  );
+
+  writeManifest(directory, {
+    name: "required-fields",
+    entry: "main.zs",
+    artifact: "typo",
+  });
+  const unknownField = invoke(["check", directory]);
+  assert.equal(unknownField.status, 1);
+  assert.match(
+    unknownField.stderr,
+    /target contains unknown field "artifact"/,
   );
 });
 

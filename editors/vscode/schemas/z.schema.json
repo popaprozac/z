@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/popaprozac/z/main/editors/vscode/schemas/z.schema.json",
+  "title": "Z project manifest",
+  "description": "Build target and native dependency configuration for a Z project.",
+  "type": "object",
+  "required": ["target"],
+  "properties": {
+    "target": {
+      "type": "object",
+      "required": ["name", "entry"],
+      "properties": {
+        "kind": {
+          "description": "Native artifact produced by z build. Omitted means executable.",
+          "type": "string",
+          "enum": ["executable", "static-library", "shared-library"],
+          "default": "executable"
+        },
+        "name": {
+          "description": "Portable native artifact name.",
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+        },
+        "entry": {
+          "description": "Project entry module, relative to this manifest.",
+          "type": "string",
+          "pattern": "\\.zs$"
+        },
+        "platform": {
+          "description": "Host platform used for availability checking and native compilation.",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "minimumVersion": {
+          "description": "Minimum target platform version. Must be paired with platform.",
+          "type": "string",
+          "pattern": "^[0-9]+(?:\\.[0-9]+){0,3}$"
+        },
+        "includeDirectories": {
+          "description": "Header search directories, resolved relative to this manifest.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "link": {
+          "type": "object",
+          "properties": {
+            "directories": {
+              "description": "Native library search directories, resolved relative to this manifest.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "libraries": {
+              "description": "Native library names without platform linker prefixes.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*$"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "swift": {
+          "description": "Swift compatibility target prepared by the Stage-0 compiler on macOS.",
+          "type": "object",
+          "required": ["module", "sources"],
+          "properties": {
+            "module": {
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            },
+            "sources": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "\\.swift$"
+              }
+            },
+            "frameworks": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              }
+            },
+            "interop": {
+              "type": "string",
+              "enum": ["objc", "cxx"],
+              "default": "objc"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": ["platform"]
+          },
+          "then": {
+            "required": ["minimumVersion"]
+          }
+        },
+        {
+          "if": {
+            "required": ["minimumVersion"]
+          },
+          "then": {
+            "required": ["platform"]
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

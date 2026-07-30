@@ -197,7 +197,8 @@ Install the development editor extension for VS Code and Cursor:
 ```
 
 Then reload the editor window and open a `.zs` source or `.zd` declaration file.
-The extension starts the Bun-based language server automatically.
+The extension starts the Bun-based language server automatically and provides
+schema-backed completion and validation in project `z.json` files.
 
 Continue with [Getting started](docs/getting-started.md), then use the
 [examples guide](docs/examples.md) to explore the implemented language in small

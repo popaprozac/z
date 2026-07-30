@@ -3596,6 +3596,26 @@ test("compiles a multi-module Z application through the standalone native driver
     missingTargetEntry.stderr,
     /executable target requires target.entry/,
   );
+  writeFileSync(
+    resolve(invalidExecutableManifest, "z.json"),
+    JSON.stringify({
+      target: {
+        name: "unknown-field",
+        entry: "main.zs",
+        artifact: "typo",
+      },
+    }),
+  );
+  const unknownTargetField = spawnSync(
+    driver,
+    ["check", invalidExecutableManifest],
+    { encoding: "utf8" },
+  );
+  assert.equal(unknownTargetField.status, 1);
+  assert.match(
+    unknownTargetField.stderr,
+    /target contains unknown field "artifact"/,
+  );
 
   const strictCheckOptions = spawnSync(
     driver,

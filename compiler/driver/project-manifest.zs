@@ -307,7 +307,10 @@ function parseLink(
         "target.link.libraries"
       );
     } else {
-      try skipJsonValue(inout cursor);
+      throw jsonError(
+        cursor,
+        `z.json target.link contains unknown field "${key}"`
+      );
     }
     skipWhitespace(inout cursor);
     if (
@@ -363,7 +366,10 @@ function parseTarget(
       config.hasSwiftTarget = true;
       try skipJsonValue(inout cursor);
     } else {
-      try skipJsonValue(inout cursor);
+      throw jsonError(
+        cursor,
+        `z.json target contains unknown field "${key}"`
+      );
     }
     skipWhitespace(inout cursor);
     if (
@@ -405,7 +411,10 @@ function parseProjectManifest(
       if (key == "target") {
         try parseTarget(inout cursor, inout config);
       } else {
-        try skipJsonValue(inout cursor);
+        throw jsonError(
+          cursor,
+          `z.json root contains unknown field "${key}"`
+        );
       }
       skipWhitespace(inout cursor);
       if (

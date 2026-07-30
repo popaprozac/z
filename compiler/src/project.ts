@@ -57,17 +57,84 @@ const emptyBuild: ProjectBuild = {
 };
 const buildCache = new Map<string, { readonly freshness: number; readonly build: ProjectBuild }>();
 
+function projectObject(
+  value: unknown,
+  field: string,
+  fileName: string,
+): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw projectDiagnostic(fileName, `z.json ${field} must be an object`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function rejectUnknownProjectFields(
+  value: Readonly<Record<string, unknown>>,
+  known: readonly string[],
+  field: string,
+  fileName: string,
+): void {
+  const unexpected = Object.keys(value).find((key) => !known.includes(key));
+  if (unexpected) {
+    throw projectDiagnostic(
+      fileName,
+      `z.json ${field} contains unknown field ${JSON.stringify(unexpected)}`,
+    );
+  }
+}
+
+function validateProjectManifestShape(value: unknown, fileName: string): void {
+  const manifest = projectObject(value, "root", fileName);
+  rejectUnknownProjectFields(manifest, ["target"], "root", fileName);
+  const target = projectObject(manifest.target, "target", fileName);
+  rejectUnknownProjectFields(
+    target,
+    [
+      "kind",
+      "name",
+      "entry",
+      "platform",
+      "minimumVersion",
+      "includeDirectories",
+      "link",
+      "swift",
+    ],
+    "target",
+    fileName,
+  );
+  if (target.link !== undefined) {
+    const link = projectObject(target.link, "target.link", fileName);
+    rejectUnknownProjectFields(
+      link,
+      ["directories", "libraries"],
+      "target.link",
+      fileName,
+    );
+  }
+  if (target.swift !== undefined) {
+    const swift = projectObject(target.swift, "target.swift", fileName);
+    rejectUnknownProjectFields(
+      swift,
+      ["module", "sources", "frameworks", "interop"],
+      "target.swift",
+      fileName,
+    );
+  }
+}
+
 export function prepareProject(fileName: string): ProjectBuild {
   const manifestPath = findManifest(fileName);
   if (!manifestPath) return emptyBuild;
   const directory = dirname(manifestPath);
-  let manifest: ProjectManifest;
+  let parsed: unknown;
   try {
-    manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as ProjectManifest;
+    parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw projectDiagnostic(fileName, `could not read project manifest ${JSON.stringify(manifestPath)}: ${detail}`);
   }
+  validateProjectManifestShape(parsed, fileName);
+  const manifest = parsed as ProjectManifest;
 
   const swift = manifest.target?.swift;
   const targetKind = manifest.target?.kind ?? "executable";

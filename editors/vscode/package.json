@@ -20,6 +20,10 @@
       "scopeName": "source.z",
       "path": "./syntaxes/z.tmLanguage.json"
     }],
+    "jsonValidation": [{
+      "fileMatch": ["z.json"],
+      "url": "./schemas/z.schema.json"
+    }],
     "configuration": {
       "title": "Z Lang",
       "properties": {

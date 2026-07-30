@@ -60,4 +60,4 @@ if [ "$installed" -eq 0 ]; then
   exit 1
 fi
 
-printf '%s\n' 'Reload the editor window, then open a .zs or .zd file. Bun must be available on PATH.'
+printf '%s\n' 'Reload the editor window, then open a .zs, .zd, or z.json file. Bun must be available on PATH.'

@@ -134,8 +134,12 @@ Versioned shared-library identities, installation layout, Windows import
 libraries, and project-mode source emission remain deliberate next artifact
 layers. `z emit` still requires an explicit `.zs` file.
 
-A checked `z.json` JSON Schema and manifest completion are follow-up DX; the
-compiler's validated fields remain the authority in this first slice.
+The VS Code/Cursor extension associates every `z.json` with Z's bundled JSON
+Schema. Target fields, artifact kinds, native-link settings, and Swift settings
+therefore complete and validate while the manifest is edited. The compiler's
+path-existence, host-platform, and ABI checks remain authoritative at build
+time. Unknown manifest keys are rejected by the schema, Stage 0, and the native
+compiler so misspelled configuration cannot silently become a no-op.
 
 ## Local native compiler
 
@@ -319,6 +323,8 @@ declaration-aware highlighting and diagnostics, plus header-backed completion
 for native functions, parameter names, and `deinit` targets. Hovering a native
 declaration, parameter, inferred `_` type, or `deinit` target shows the resolved
 Clang type or signature.
+Project `z.json` files receive schema-backed field and value completion,
+descriptions, required-field diagnostics, and primitive shape validation.
 Definitions include Z modules plus imported project, SDK, and generated native
 headers when the toolchain reports a concrete declaration location.
 
