@@ -297,7 +297,7 @@ test("keeps optional struct fields ownership-safe through native parsing and emi
   rmSync(directory, { recursive: true, force: true });
 }, 20_000);
 
-test("parses and resolves optional field projection natively", () => {
+test("parses, lowers, and runs stable optional field projection natively", () => {
   const directory = mkdtempSync("/tmp/z-native-optional-chain-");
   const input = resolve(directory, "main.zs");
   writeFileSync(
@@ -349,11 +349,85 @@ test("parses and resolves optional field projection natively", () => {
     [cli, "self-host-emit", input],
     { encoding: "utf8" },
   );
-  assert.equal(emission.status, 1);
+  assert.equal(emission.status, 0, emission.stderr);
   assert.match(
-    emission.stderr,
-    /native optional-chain C emission remains deferred; Stage 0 is authoritative/,
+    emission.stdout,
+    /Tag_some \? \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some/,
   );
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 20_000);
+
+test("keeps unsupported native optional-chain shapes explicit", () => {
+  const directory = mkdtempSync("/tmp/z-native-optional-chain-boundaries-");
+  const cases = [
+    {
+      name: "temporary",
+      source: `
+        struct Item { value: i32; }
+        function find(): Option<Item> {
+          return Option<Item>.some(Item({ value: 42 }));
+        }
+        function main(): i32 {
+          const selected = find()?.value;
+          return match (selected) { some(value) => value - 42; none => 1; };
+        }
+      `,
+      expected: /requires a named stable receiver/,
+    },
+    {
+      name: "view",
+      source: `
+        struct Document { title: String; }
+        struct Library { document: Document; }
+        function main(): i32 {
+          const library = Option<Library>.some(Library({
+            document: Document({ title: "draft" }),
+          }));
+          const document = library?.document;
+          return match (in document) {
+            some(value) => i32(value.title.byteLength) - 5;
+            none => 1;
+          };
+        }
+      `,
+      expected: /cleanup-bearing view projection remains deferred/,
+    },
+    {
+      name: "method",
+      source: `
+        function main(): i32 {
+          const text = Option<String>.some("z");
+          const selected = text?.byteAt(0);
+          return match (selected) {
+            some(value) => i32(value) - 122;
+            none => 1;
+          };
+        }
+      `,
+      expected: /method-call lowering remains deferred/,
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const input = resolve(directory, `${testCase.name}.zs`);
+    writeFileSync(input, testCase.source);
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 1);
+    assert.match(emission.stderr, testCase.expected);
+  }
   rmSync(directory, { recursive: true, force: true });
 }, 20_000);
 
@@ -1597,6 +1671,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
     { entry: "tests/fixtures/self-host-emit-set.zs" },
     { entry: "tests/fixtures/self-host-emit-option.zs" },
     { entry: "tests/fixtures/self-host-emit-optional-field-direct.zs" },
+    { entry: "tests/fixtures/self-host-emit-optional-chain.zs" },
     { entry: "tests/fixtures/self-host-emit-result.zs" },
     { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
     {

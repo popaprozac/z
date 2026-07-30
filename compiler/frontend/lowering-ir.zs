@@ -146,6 +146,7 @@ export enum LoweredExpressionKind {
   unaryOperation,
   binaryOperation,
   conditionalValue,
+  optionalFieldValue,
   directCall,
   fieldValue,
   structValue,
@@ -373,6 +374,32 @@ function intrinsicOptionPayloadName(in name: String): Option<String> {
   const prefix = "__z_Option_";
   if (!stringStartsWith(name, prefix)) return Option<String>.none;
   return Option.some(name.copyBytes(prefix.byteLength, name.byteLength));
+}
+
+function sourceTypeIsOption(in name: String): boolean {
+  match (genericTypeShape(name)) {
+    some(generic) => return generic.base == "Option"
+      && generic.arguments.length == 1;
+    none => return stringStartsWith(name, "__z_Option_");
+  }
+}
+
+function stableOptionalChainSource(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.identifierExpression
+    || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+    || tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+  ) return true;
+  if (
+    tree.nodes[index].kind != ExpressionKind.memberExpression
+    || tree.nodes[index].optionalAccess
+    || tree.nodes[index].children.length != 1
+  ) return false;
+  const receiver = tree.nodes[index].children[0];
+  return stableOptionalChainSource(tree, receiver);
 }
 
 function lowerTypeName(
@@ -3279,6 +3306,12 @@ function lowerExpression(
     }
     const calleeInput = tree.nodes[index].children[0];
     if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].optionalAccess
+    ) {
+      throw "native optional-chain method-call lowering remains deferred; Stage 0 is authoritative";
+    }
+    if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
       && (
@@ -4476,7 +4509,106 @@ function lowerExpression(
     }
     const receiverInput = tree.nodes[index].children[0];
     if (tree.nodes[index].optionalAccess) {
-      throw "native optional-chain C emission remains deferred; Stage 0 is authoritative";
+      if (!stableOptionalChainSource(tree, receiverInput)) {
+        throw "native optional-chain emission currently requires a named stable receiver; temporary receiver lowering remains deferred";
+      }
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => throw "native optional-chain lowering could not resolve its receiver type";
+      };
+      if (!sourceTypeIsOption(receiverTypeName)) {
+        throw `native optional-chain lowering currently supports Option<T> receivers, found ${receiverTypeName}`;
+      }
+      let payloadTypeName = "";
+      match (genericTypeShape(receiverTypeName)) {
+        some(generic) => {
+          payloadTypeName = generic.arguments[0].copyBytes(
+            0,
+            generic.arguments[0].byteLength
+          );
+        }
+        none => match (intrinsicOptionPayloadName(receiverTypeName)) {
+          some(payload) => payloadTypeName = move payload;
+          none => {}
+        }
+      }
+      if (payloadTypeName.byteLength == 0) {
+        throw `native optional-chain lowering could not resolve ${receiverTypeName}`;
+      }
+      const fieldTypeName = match (fieldTypeNameForOwner(
+        program,
+        importedTypes,
+        payloadTypeName,
+        tree.nodes[index].value
+      )) {
+        some(name) => name;
+        none => throw `native optional-chain lowering could not resolve ${payloadTypeName}.${tree.nodes[index].value}`;
+      };
+      const resultTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      )) {
+        some(name) => name;
+        none => throw "native optional-chain lowering could not resolve its result type";
+      };
+      match (genericTypeShape(resultTypeName)) {
+        some(result) => {
+          if (
+            result.base == "Option"
+            && result.arguments.length == 1
+            && stringStartsWith(result.arguments[0], "view ")
+          ) {
+            throw "native optional-chain cleanup-bearing view projection remains deferred";
+          }
+        }
+        none => {}
+      }
+      const receiverType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        receiverTypeName
+      );
+      const resultType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        resultTypeName
+      );
+      const receiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(receiver);
+      let labels = Array<String>();
+      labels.push(receiverType.name.copyBytes(
+        0,
+        receiverType.name.byteLength
+      ));
+      labels.push(tree.nodes[index].value.copyBytes(
+        0,
+        tree.nodes[index].value.byteLength
+      ));
+      labels.push(sourceTypeIsOption(fieldTypeName) ? "flatten" : "wrap");
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.optionalFieldValue,
+        resultType.name,
+        children,
+        labels
+      );
     }
     if (tree.nodes[index].value == "length") {
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {

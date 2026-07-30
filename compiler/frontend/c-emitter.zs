@@ -741,6 +741,47 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.optionalFieldValue
+  ) {
+    if (
+      declaration.expressions[index].children.length != 1
+      || declaration.expressions[index].labels.length != 3
+    ) {
+      throw "native C emission received a malformed optional field projection";
+    }
+    const optionalSource = declaration.expressions[index].children[0];
+    output.append("((");
+    try appendExpression(inout output, declaration, optionalSource);
+    output.append(").tag == Z_");
+    output.append(declaration.expressions[index].labels[0]);
+    output.append("Tag_some ? ");
+    if (declaration.expressions[index].labels[2] == "wrap") {
+      output.append("(Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("){.tag = Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("Tag_some, .payload.some = ");
+    } else if (
+      declaration.expressions[index].labels[2] != "flatten"
+    ) {
+      throw "native C emission received an unknown optional field mode";
+    }
+    output.append("(");
+    try appendExpression(inout output, declaration, optionalSource);
+    output.append(").payload.some.");
+    output.append(declaration.expressions[index].labels[1]);
+    if (declaration.expressions[index].labels[2] == "wrap") {
+      output.append("}");
+    }
+    output.append(" : (Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){.tag = Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("Tag_none})");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.stringEqual) {
     if (declaration.expressions[index].children.length != 2) {
       throw "native C emission received a malformed String comparison";
