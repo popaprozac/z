@@ -1596,6 +1596,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
     { entry: "tests/fixtures/self-host-emit-map.zs" },
     { entry: "tests/fixtures/self-host-emit-set.zs" },
     { entry: "tests/fixtures/self-host-emit-option.zs" },
+    { entry: "tests/fixtures/self-host-emit-optional-field-direct.zs" },
     { entry: "tests/fixtures/self-host-emit-result.zs" },
     { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
     {

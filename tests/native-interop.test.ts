@@ -285,6 +285,51 @@ test("exports checked C-layout structs by value", () => {
   );
 });
 
+test("rejects duplicate public C names across linked modules and declaration kinds", () => {
+  const directory = mkdtempSync("/tmp/z-c-public-names-");
+  const first = resolve(directory, "first.zs");
+  const second = resolve(directory, "second.zs");
+  const duplicateTypes = resolve(directory, "duplicate-types.zs");
+  const functionCollision = resolve(directory, "function-collision.zs");
+  writeFileSync(first, `
+    export c struct Shared {
+      value: i32;
+    }
+  `);
+  writeFileSync(second, `
+    export c struct Shared {
+      value: i32;
+    }
+  `);
+  writeFileSync(duplicateTypes, `
+    import { Shared as FirstShared } from "./first.zs";
+    import { Shared as SecondShared } from "./second.zs";
+  `);
+  assert.throws(
+    () => compileToNative(
+      readFileSync(duplicateTypes, "utf8"),
+      duplicateTypes,
+      { requireMain: false },
+    ),
+    /duplicate public C type name "Shared"/,
+  );
+
+  writeFileSync(functionCollision, `
+    import { Shared } from "./first.zs";
+    export c function Shared(): i32 {
+      return 42;
+    }
+  `);
+  assert.throws(
+    () => compileToNative(
+      readFileSync(functionCollision, "utf8"),
+      functionCollision,
+      { requireMain: false },
+    ),
+    /duplicate public C symbol name "Shared"/,
+  );
+});
+
 test("exports fixed-representation C enums as checked scalar values", () => {
   const source = `
     c enum Status: i32 {

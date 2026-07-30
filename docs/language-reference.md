@@ -364,6 +364,22 @@ const title = dashboard.activeSession?.displayName;  // Option<view String>
 const label = dashboard.activeSession?.summary();    // Option<String>
 ```
 
+A method declared to return `view U` likewise produces `Option<view U>`, but
+the optional receiver must have a stable named owner. The view's provenance is
+tied to that binding:
+
+```zs
+const shelf = makeShelf();
+const current = shelf?.current();  // Option<view Book>, tied to shelf
+
+const invalid = makeShelf()?.current(); // rejected: temporary owner
+```
+
+Optional chains are value-producing conditional access, never lvalues.
+`value?.child = replacement` and nested targets such as
+`value?.child.name = "updated"` are rejected. Use an explicit `match` to unwrap
+the receiver before mutation.
+
 Throwing behavior is preserved rather than swallowed. For a method returning
 `U throws E`, absence is a successful `none`, while a call on a present receiver
 may still fail with `E`:

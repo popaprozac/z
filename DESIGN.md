@@ -421,7 +421,10 @@ reference. A value result becomes `Option<U>`, an existing `Option<U>` result
 flattens, and `void` performs a no-op when absent. Nested chains therefore
 compose without creating `Option<Option<U>>`. A stored cleanup-bearing field
 projects as `Option<view U>` tied to a named receiver owner; a method-created
-owned result remains `Option<U>`. The receiver is evaluated once.
+owned result remains `Option<U>`. A method-declared `view U` result becomes
+`Option<view U>` and requires a named optional-owner binding; chaining from a
+temporary such as `make()?.current()` is rejected because no stable provenance
+can be exported. The receiver is evaluated once.
 
 `throws E` remains an independent effect: an absent receiver is successful
 `none`, while a present receiver may still produce `failure E`, so `try` and
@@ -431,6 +434,10 @@ or ownership transfer. This keeps optional chaining as compact control-flow
 sugar rather than a hidden capability-changing operation. The first executable
 tier is synchronous; async source is checked, while Phase-1 async-frame
 execution remains deferred.
+
+Optional-chain expressions are never assignment targets, including when the
+optional segment is nested inside a longer member path. Mutation requires an
+explicit `match` that establishes present, addressable storage.
 
 Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is

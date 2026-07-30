@@ -77,7 +77,7 @@ requiring lifetime syntax throughout ordinary application code.
 | Area | Current implemented slice |
 | --- | --- |
 | Values | Structs, classes, traits, generics, arrays, slices, owned strings |
-| Standard library | Explicit console/time/test/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, RAII interprocess `fs.Lock`, same-filesystem atomic replacement, `Arena` region storage, ownership-aware `Map<K, V>` / `Set<T>`, and cleanup-aware `expect(...).toEqual(...)` / `fail(...)` |
+| Standard library | Explicit console/time/test/text/memory/collections plus initial `std/fs`, `std/process`, `std/objc`, owned program arguments, move-only `TextBuffer`, RAII interprocess `fs.Lock`, same-filesystem atomic replacement, `Arena` region storage, ownership-aware `Map<K, V>` / `Set<T>`, and cleanup-preserving `expect(...).toEqual(...)` / `fail(...)` |
 | Tests | Inline top-level `test "name" {}` declarations, project-import-graph discovery, production erasure, native execution, statement-bounded expectations, deterministic cleanup on failure, and continuation through later tests |
 | Ownership | Lexical borrows, readable `copy` / `move` / `view` expressions, deterministic cleanup, ARC, `Weak<T>`, field-level and whole-aggregate `readonly`, inferred shareable classes, owner-tied views, and synchronous arena regions |
 | Errors | Typed `throws`, `try` propagation, `attempt`, `Result<T, E>` |

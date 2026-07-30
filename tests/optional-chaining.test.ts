@@ -126,6 +126,94 @@ hostToolchainTest("keeps fresh owned results owned and flattens existing Option 
   assert.equal(result.status, 0, result.stderr);
 });
 
+hostToolchainTest("requires a stable named owner for view-returning methods", () => {
+  const source = `
+    struct Book {
+      title: String;
+    }
+
+    struct Shelf {
+      book: Book;
+
+      function current(): view Book {
+        return this.book;
+      }
+    }
+
+    function makeShelf(): Option<Shelf> {
+      return Option<Shelf>.some(Shelf({
+        book: Book({ title: \`hello\` }),
+      }));
+    }
+
+    function main(): i32 {
+      const shelf = makeShelf();
+      const book = shelf?.current();
+      return match (in book) {
+        some(value) => i32(value.title.byteAt(0)) - 104;
+        none => 1;
+      };
+    }
+  `;
+  const result = runSource(source, "view-returning-method.zs");
+  assert.equal(result.status, 0, result.stderr);
+
+  const temporary = source.replace(
+    "const shelf = makeShelf();\n      const book = shelf?.current();",
+    "const book = makeShelf()?.current();",
+  );
+  const diagnostic = diagnostics(
+    temporary,
+    "/tmp/z-optional-chain-temporary-view-method.zs",
+  )[0];
+  assert.equal(diagnostic?.code, "Z0206");
+  assert.match(
+    diagnostic?.message ?? "",
+    /a view-returning optional method requires a named owner binding/,
+  );
+});
+
+test("rejects optional chains anywhere along an assignment storage path", () => {
+  const prefix = `
+    struct Child {
+      name: i32;
+    }
+
+    struct Container {
+      child: Child;
+    }
+  `;
+  const direct = `${prefix}
+    function main(): i32 {
+      let value = Option<Container>.some(Container({
+        child: Child({ name: 20 }),
+      }));
+      value?.child = Child({ name: 22 });
+      return 0;
+    }
+  `;
+  const nested = `${prefix}
+    function main(): i32 {
+      let value = Option<Container>.some(Container({
+        child: Child({ name: 20 }),
+      }));
+      value?.child.name = 22;
+      return 0;
+    }
+  `;
+  for (const [name, source] of [["direct", direct], ["nested", nested]] as const) {
+    const diagnostic = diagnostics(
+      source,
+      `/tmp/z-optional-chain-${name}-assignment.zs`,
+    )[0];
+    assert.equal(diagnostic?.code, "Z0206");
+    assert.match(
+      diagnostic?.message ?? "",
+      /optional chaining is never an assignment target/,
+    );
+  }
+});
+
 hostToolchainTest("preserves throwing calls beneath try and attempt", () => {
   const source = `
     struct LoadError {

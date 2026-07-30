@@ -716,6 +716,13 @@ export function inferGenericCalls(
             if (field.expression.kind === "objectExpression" && value.type === null) {
               value = rewriteExpression(field.expression, environment, option.arguments[0]);
             }
+            // Keep the compiler-created Option.some node distinct from its
+            // payload. Statement-valued lowering keys temporary overrides by
+            // source offset; sharing the payload offset would erase this wrapper.
+            const wrapperLocation = {
+              ...field.expression.location,
+              offset: -Math.abs(field.expression.location.offset) - 1,
+            };
             value = {
               expression: {
                 kind: "call",
@@ -724,14 +731,14 @@ export function inferGenericCalls(
                   object: {
                     kind: "identifier",
                     name: contextualFieldType!,
-                    location: field.expression.location,
+                    location: wrapperLocation,
                   },
                   property: "some",
-                  location: field.expression.location,
+                  location: wrapperLocation,
                 },
                 arguments: [value.expression],
                 argumentLabels: [null],
-                location: field.expression.location,
+                location: wrapperLocation,
               },
               type: contextualFieldType,
             };

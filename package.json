@@ -9,11 +9,12 @@
     "lsp": "bun compiler/src/lsp.ts",
     "bench": "bun benchmarks/run.ts",
     "test": "bun test --no-orphans --timeout 60000",
-    "test:language": "bun test --no-orphans --timeout 60000 tests/language-core.test.ts tests/stdlib-collections.test.ts tests/generators-errors.test.ts tests/testing.test.ts tests/editor-integration.test.ts",
-    "test:native-interop": "bun test --no-orphans --timeout 60000 tests/native-interop.test.ts",
-    "test:objc-interop": "bun test --no-orphans --timeout 60000 tests/objc-interop.test.ts",
-    "test:swift-interop": "bun test --no-orphans --timeout 60000 tests/swift-interop.test.ts",
-    "test:self-hosting": "bun test --no-orphans --timeout 120000 tests/self-hosting.test.ts",
-    "test:async": "bun test --no-orphans --timeout 60000 tests/async-expressions.test.ts tests/async-runtime.test.ts"
+    "test:tiers": "bun scripts/test-tiers.ts verify",
+    "test:language": "bun scripts/test-tiers.ts run language",
+    "test:native-interop": "bun scripts/test-tiers.ts run native-interop",
+    "test:objc-interop": "bun scripts/test-tiers.ts run objc-interop",
+    "test:swift-interop": "bun scripts/test-tiers.ts run swift-interop",
+    "test:self-hosting": "bun scripts/test-tiers.ts run self-hosting",
+    "test:async": "bun scripts/test-tiers.ts run async"
   }
 }

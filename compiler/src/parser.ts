@@ -984,6 +984,18 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (expression.kind !== "identifier" && expression.kind !== "member" && expression.kind !== "index") {
         throw new DiagnosticError(fileName, expression.location, "assignment target must be a mutable binding or one of its fields");
       }
+      if (assignmentPathContainsOptionalChain(expression)) {
+        throw new DiagnosticError(
+          fileName,
+          expression.location,
+          "optional chaining is never an assignment target",
+          {
+            code: "Z0206",
+            notes: ["an absent receiver cannot identify mutable storage"],
+            helps: ["use an explicit `match` to unwrap the receiver before assigning"],
+          },
+        );
+      }
       const value = parseExpression();
       expect("semicolon", "`;`");
       return { kind: "assignment", target: expression, expression: value, location: expression.location };
@@ -1374,6 +1386,20 @@ export function parse(tokens: Token[], fileName: string): Program {
 
 function startsPrimary(kind: TokenKind | undefined): boolean {
   return kind === "identifier" || kind === "number" || kind === "string" || kind === "true" || kind === "false" || kind === "null";
+}
+
+function assignmentPathContainsOptionalChain(expression: Expression): boolean {
+  if (expression.kind === "member") {
+    return Boolean(expression.optional)
+      || assignmentPathContainsOptionalChain(expression.object);
+  }
+  if (expression.kind === "index") {
+    return assignmentPathContainsOptionalChain(expression.object);
+  }
+  if (expression.kind === "call") {
+    return assignmentPathContainsOptionalChain(expression.callee);
+  }
+  return false;
 }
 
 function tokenDescription(token: Token): string {

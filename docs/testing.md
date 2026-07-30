@@ -21,6 +21,12 @@ Run one tier while developing:
 | `bun run test:self-hosting` | Native lexer, parser, resolver, semantic evidence, emission, fixed point, and standalone driver |
 | `bun run test:async` | Async expressions, tasks, cancellation, executor placement, native threads, and ownership across suspension |
 
+The tier manifest lives in `scripts/test-tiers.ts`. Run `bun run test:tiers`
+after adding or moving a top-level `tests/*.test.ts` file. The verifier fails
+when a test is missing from the manifest, appears in multiple tiers, or a tier
+still names a deleted file. CI runs this coverage check once before starting
+the tier matrix.
+
 The shared utilities in `tests/support/bootstrap.ts` provide repository paths,
 editor-token decoding, host-toolchain timeouts, and writable Clang/Swift module
 caches. Tests launch native child processes with Bun's orphan cleanup enabled,
@@ -40,9 +46,9 @@ This separates two different performance concerns:
 - native, Swift, application, and fixed-point tests receive explicit budgets
   because they intentionally execute external toolchains.
 
-The complete `bun run test` suite remains the local pre-commit authority. The tier split
-changes orchestration, not coverage: every test must belong to exactly one
-domain file.
+The complete `bun run test` suite remains the local pre-commit authority. The
+tier split changes orchestration, not coverage: every top-level test file must
+belong to exactly one manifest tier.
 
 ## Native Z tests
 
@@ -82,7 +88,7 @@ current test explicitly. Cleanup-bearing expression results must first be bound
 to named storage so their lifetime remains visible. Tests do not acquire an
 implicit user-facing `throws` channel; use `fail` for an unconditional failure.
 
-Expectation failures run deterministic cleanup, return an internal owned
+Expectation failures preserve deterministic cleanup, return an internal owned
 `String` failure to the runner, and do not prevent later tests from running.
 The first tier keeps `expect` and `fail` directly inside test declarations;
 reusable assertion-helper functions require a future public test-context

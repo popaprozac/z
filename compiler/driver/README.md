@@ -46,7 +46,7 @@ false cache hit.
 
 `test` discovers top-level tests in the selected entry module and its
 project-owned import graph, lowers `std/test` expectations and explicit
-failures into one cleanup-aware native runner, and keeps running after a failed
+failures into one cleanup-preserving native runner, and keeps running after a failed
 test. It returns a nonzero status when any test fails. Ordinary `emit`, `build`,
 and `run` continue to erase test declarations and test-only helper machinery.
 

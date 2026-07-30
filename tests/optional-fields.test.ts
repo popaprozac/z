@@ -137,6 +137,52 @@ test("moves cleanup-bearing payloads into optional fields", () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("lifts cleanup-bearing construction temporaries into optional fields", () => {
+  const source = `
+    import console from "std/console";
+
+    struct Resource {
+      id: i32;
+      label: String;
+
+      deinit {
+        console.log(\`released \${this.id}\`);
+      }
+    }
+
+    struct Holder {
+      resource?: Resource;
+    }
+
+    function main(): i32 {
+      const holder = Holder({
+        resource: Resource({
+          id: 42,
+          label: \`resource-\${42}\`,
+        }),
+      });
+      const observed = match (in holder.resource) {
+        some(value) => value.id;
+        none => 0;
+      };
+      return observed - 42;
+    }
+  `;
+  const generated = compileToC(source, "optional-direct-owned.zs");
+  assert.match(
+    generated,
+    /_z_aggregate_\d+ = \(Z_Option_Resource\)\{ \.tag = Z_Option_Resource_some, \.data = \{ \.some = _z_argument_\d+ \} \};/,
+  );
+  assert.match(generated, /\.resource = _z_aggregate_\d+/);
+  const directory = mkdtempSync("/tmp/z-optional-direct-owned-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released 42\n");
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves optional presence and direct lifting across source modules", () => {
   const directory = mkdtempSync("/tmp/z-optional-field-modules-");
   const model = resolve(directory, "model.zs");

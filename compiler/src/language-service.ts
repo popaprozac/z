@@ -947,7 +947,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("expect<T>(value: in T): Expectation<T>  // borrows for one expectation statement", source, word.start, word.end);
   }
   if (testBinding === "fail") {
-    return markdownHover("fail(message: in String): void  // ends the current test with a cleanup-aware failure", source, word.start, word.end);
+    return markdownHover("fail(message: in String): void  // ends the current test with a cleanup-preserving failure", source, word.start, word.end);
   }
   if (word.text === "toEqual") {
     const prefix = source.slice(0, word.start).replace(/\.\s*$/, "");

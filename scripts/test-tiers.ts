@@ -1,0 +1,126 @@
+import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+export type TestTier = {
+  readonly timeoutMilliseconds: number;
+  readonly files: readonly string[];
+};
+
+export const testTiers: Readonly<Record<string, TestTier>> = {
+  language: {
+    timeoutMilliseconds: 60_000,
+    files: [
+      "tests/language-core.test.ts",
+      "tests/stdlib-collections.test.ts",
+      "tests/generators-errors.test.ts",
+      "tests/testing.test.ts",
+      "tests/editor-integration.test.ts",
+      "tests/optional-chaining.test.ts",
+      "tests/optional-chaining-dx.test.ts",
+      "tests/optional-fields.test.ts",
+      "tests/struct-spread.test.ts",
+      "tests/struct-spread-dx.test.ts",
+      "tests/test-tiers.test.ts",
+    ],
+  },
+  "native-interop": {
+    timeoutMilliseconds: 60_000,
+    files: ["tests/native-interop.test.ts"],
+  },
+  "objc-interop": {
+    timeoutMilliseconds: 60_000,
+    files: ["tests/objc-interop.test.ts"],
+  },
+  "swift-interop": {
+    timeoutMilliseconds: 60_000,
+    files: ["tests/swift-interop.test.ts"],
+  },
+  "self-hosting": {
+    timeoutMilliseconds: 120_000,
+    files: ["tests/self-hosting.test.ts"],
+  },
+  async: {
+    timeoutMilliseconds: 60_000,
+    files: [
+      "tests/async-expressions.test.ts",
+      "tests/async-runtime.test.ts",
+    ],
+  },
+};
+
+export class TestTierCoverageError extends Error {
+  constructor(readonly problems: readonly string[]) {
+    super(`test tier coverage is invalid:\n${problems.map((problem) => `- ${problem}`).join("\n")}`);
+    this.name = "TestTierCoverageError";
+  }
+}
+
+export function verifyTestTierCoverage(
+  testsDirectory = resolve(import.meta.dir, "..", "tests"),
+  tiers: Readonly<Record<string, TestTier>> = testTiers,
+): void {
+  const discovered = readdirSync(testsDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".test.ts"))
+    .map((entry) => `tests/${entry.name}`)
+    .sort();
+  const discoveredSet = new Set(discovered);
+  const assignments = new Map<string, string[]>();
+  for (const [tier, definition] of Object.entries(tiers)) {
+    for (const file of definition.files) {
+      assignments.set(file, [...(assignments.get(file) ?? []), tier]);
+    }
+  }
+
+  const missing = discovered.filter((file) => !assignments.has(file));
+  const duplicates = discovered
+    .map((file) => ({ file, tiers: assignments.get(file) ?? [] }))
+    .filter((entry) => entry.tiers.length > 1);
+  const stale = [...assignments.keys()]
+    .filter((file) => !discoveredSet.has(file))
+    .sort();
+  const problems = [
+    ...missing.map((file) => `missing tier assignment: ${file}`),
+    ...duplicates.map((entry) => (
+      `duplicate tier assignment: ${entry.file} (${entry.tiers.join(", ")})`
+    )),
+    ...stale.map((file) => `tier lists a missing test file: ${file}`),
+  ];
+  if (problems.length > 0) throw new TestTierCoverageError(problems);
+}
+
+function runTier(name: string): never {
+  const tier = testTiers[name];
+  if (!tier) {
+    console.error(`unknown test tier ${JSON.stringify(name)}; expected one of ${Object.keys(testTiers).join(", ")}`);
+    process.exit(2);
+  }
+  verifyTestTierCoverage();
+  const result = Bun.spawnSync({
+    cmd: [
+      process.execPath,
+      "test",
+      "--no-orphans",
+      "--timeout",
+      String(tier.timeoutMilliseconds),
+      ...tier.files,
+    ],
+    cwd: resolve(import.meta.dir, ".."),
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  process.exit(result.exitCode);
+}
+
+if (import.meta.main) {
+  const [command, tier] = process.argv.slice(2);
+  if (command === "verify") {
+    verifyTestTierCoverage();
+    console.log(`test tier coverage: ${Object.keys(testTiers).length} tiers, all top-level test files assigned exactly once`);
+  } else if (command === "run" && tier) {
+    runTier(tier);
+  } else {
+    console.error("usage: bun scripts/test-tiers.ts verify | run <tier>");
+    process.exit(2);
+  }
+}

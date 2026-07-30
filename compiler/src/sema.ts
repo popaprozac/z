@@ -3603,6 +3603,18 @@ function analyzeStatement(
       return;
     }
     case "assignment": {
+      if (assignmentPathContainsOptionalChain(statement.target)) {
+        throw new DiagnosticError(
+          fileName,
+          statement.target.location,
+          "optional chaining is never an assignment target",
+          {
+            code: "Z0206",
+            notes: ["an absent receiver cannot identify mutable storage"],
+            helps: ["use an explicit `match` to unwrap the receiver before assigning"],
+          },
+        );
+      }
       if (statement.target.kind === "member") {
         inferExpression(statement.target, locals, globals, structs, enums, fileName, state);
         const property = state.objcProperties.get(statement.target.location.offset);
@@ -3874,7 +3886,7 @@ function analyzeStatement(
       if (owner.testName) {
         throw new DiagnosticError(fileName, statement.location, "tests do not declare an ordinary throws channel", {
           code: "Z0901",
-          notes: ["the runner's cleanup-aware failure channel is an internal testing mechanism"],
+          notes: ["the runner's cleanup-preserving failure channel is an internal testing mechanism"],
           helps: ['import `fail` from "std/test" and call `fail("reason")`'],
         });
       }
@@ -6555,8 +6567,31 @@ function inferOptionalChain(
   const unwrappedValueType = throwing?.successType ?? valueType;
   const isVoid = unwrappedValueType === "void";
   const alreadyOptional = parseOptionType(unwrappedValueType);
+  const returnedView = expression.kind === "call"
+    ? parseReceiverViewReturnType(unwrappedValueType)
+    : null;
   let view = false;
   let chainedValueType = unwrappedValueType;
+
+  if (returnedView) {
+    const root = storageRoot(member.object);
+    if (!root || !locals.has(root.name)) {
+      throw new DiagnosticError(
+        fileName,
+        member.object.location,
+        "a view-returning optional method requires a named owner binding",
+        {
+          code: "Z0206",
+          notes: ["the view must not outlive the storage held by the optional receiver"],
+          helps: ["bind the Option or nullable owner before calling the method through `?.`"],
+        },
+      );
+    }
+    state.viewCallOrigins.set(
+      expression.location.offset,
+      viewOriginForRoot(root.name, member.object.location, state),
+    );
+  }
 
   if (!isVoid && !alreadyOptional && expression.kind === "member") {
     const owner = structs.get(receiverAggregateType);
@@ -11007,6 +11042,20 @@ function storageRoot(expression: Expression): Extract<Expression, { kind: "ident
   let current: Expression = expression;
   while (current.kind === "member" || current.kind === "index") current = current.object;
   return current.kind === "identifier" ? current : null;
+}
+
+function assignmentPathContainsOptionalChain(expression: Expression): boolean {
+  if (expression.kind === "member") {
+    return Boolean(expression.optional)
+      || assignmentPathContainsOptionalChain(expression.object);
+  }
+  if (expression.kind === "index") {
+    return assignmentPathContainsOptionalChain(expression.object);
+  }
+  if (expression.kind === "call") {
+    return assignmentPathContainsOptionalChain(expression.callee);
+  }
+  return false;
 }
 
 function ownershipState(type: ValueType): "available" | "moved" | "maybeMoved" {
