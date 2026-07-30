@@ -190,14 +190,11 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
       }
       console.log(`${inputPath}: ok`);
     } else if (command === "emit") {
-      if (input.mode === "project") {
-        throw new Error("z emit project output is deferred; pass an explicit .zs source file");
-      }
       if (trailingArguments.length > 0) {
         throw new Error(`unknown emit option ${JSON.stringify(trailingArguments[0])}`);
       }
       if (!inputPath.endsWith(".zs")) {
-        throw new Error("emit currently requires an explicit .zs source module");
+        throw new Error("emit requires a .zs source module or project entry");
       }
       const source = readFileSync(inputPath, "utf8");
       const artifact = compileToNative(source, inputPath);
@@ -3863,7 +3860,7 @@ function usage(): void {
   console.error("usage: z build [project-directory|z.json] [--release]");
   console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings]");
   console.error("       z test [project-directory|z.json|file.zs]");
-  console.error("       z emit <file.zs>");
+  console.error("       z emit [project-directory|z.json|file.zs]");
   console.error("       z run [project-directory|z.json|file.zs] [--release] [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");

@@ -215,11 +215,33 @@ test("builds and runs executable projects with strict release and argument parsi
   assert.match(unknown.stderr, /unknown run option "not-an-option"/);
 
   const projectEmit = invoke(["emit", directory]);
-  assert.equal(projectEmit.status, 1);
-  assert.match(projectEmit.stderr, /project output is deferred/);
+  assert.equal(projectEmit.status, 0, projectEmit.stderr);
+  const manifestEmit = invoke(["emit", resolve(directory, "z.json")]);
+  assert.equal(manifestEmit.status, 0, manifestEmit.stderr);
+  const defaultProjectEmit = invoke(["emit"], directory);
+  assert.equal(defaultProjectEmit.status, 0, defaultProjectEmit.stderr);
   const fileEmit = invoke(["emit", entry]);
   assert.equal(fileEmit.status, 0, fileEmit.stderr);
   assert.match(fileEmit.stdout, /int32_t main\(int argc, char \*\*argv\)/);
+  const withoutSourcePath = (emitted: string) => (
+    emitted.replace(/^\/\* Source: .* \*\/\n/m, "")
+  );
+  assert.equal(
+    withoutSourcePath(projectEmit.stdout),
+    withoutSourcePath(fileEmit.stdout),
+  );
+  assert.equal(
+    withoutSourcePath(manifestEmit.stdout),
+    withoutSourcePath(fileEmit.stdout),
+  );
+  assert.equal(
+    withoutSourcePath(defaultProjectEmit.stdout),
+    withoutSourcePath(fileEmit.stdout),
+  );
+
+  const unknownEmitOption = invoke(["emit", directory, "--header"]);
+  assert.equal(unknownEmitOption.status, 1);
+  assert.match(unknownEmitOption.stderr, /unknown emit option "--header"/);
 });
 
 test("builds static projects, rejects project run, and keeps explicit file run ad hoc", () => {
@@ -270,6 +292,10 @@ test("builds a shared library and runs a handwritten C consumer", () => {
 
   const checked = invoke(["check", directory]);
   assert.equal(checked.status, 0, checked.stderr);
+  const emitted = invoke(["emit", directory]);
+  assert.equal(emitted.status, 0, emitted.stderr);
+  assert.match(emitted.stdout, /z_shared_answer/);
+  assert.doesNotMatch(emitted.stdout, /int32_t main\(/);
   const built = invoke(["build", directory, "--release"]);
   assert.equal(built.status, 0, built.stderr);
 

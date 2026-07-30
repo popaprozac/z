@@ -170,6 +170,7 @@ for the interop probes.
 bun run test
 bun run z check examples/language/basics/first.zs
 bun run z emit examples/language/basics/first.zs
+bun run z emit path/to/project
 bun run z run examples/language/basics/first.zs
 bun run z check path/to/project
 bun run z run path/to/project
@@ -243,7 +244,7 @@ docs/              focused reference, model, and status documents
 ```
 
 The integration suite is the executable truth for the bootstrap. Before a
-change lands, run `bun run test` and keep generated native code readable enough to
-inspect with `bun run z emit <file.zs>`.
+change lands, run `bun run test` and keep generated native code readable enough
+to inspect with `bun run z emit <file.zs | project-directory | z.json>`.
 
 Browse the categorized runnable index in [`examples/README.md`](examples/README.md).

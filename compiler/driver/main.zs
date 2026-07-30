@@ -264,8 +264,11 @@ function validateExecutableEntry(
   }
 }
 
-function emitProject(in project: NativeProject): String throws String {
-  try validateExecutableEntry(project, true);
+function emitProject(
+  in project: NativeProject,
+  requireMain: boolean
+): String throws String {
+  try validateExecutableEntry(project, requireMain);
   return try emitModulesC(project.modules, project.graph);
 }
 
@@ -327,18 +330,19 @@ function emitProjectFile(
     throw "z emit currently requires an explicit .zs source file and output path";
   }
   const project = try loadProject(entryPath);
-  const emitted = try emitProject(project);
+  const emitted = try emitProject(project, true);
   try fs.writeText(cPath, emitted);
   console.log(`emitted ${project.modules.length} Z modules to ${cPath}`);
   return 0;
 }
 
 function emitProjectStandardOutput(in entryPath: String): i32 throws String {
-  if (!isZSourceInput(entryPath)) {
-    throw "z emit currently requires an explicit .zs source file";
-  }
-  const project = try loadProject(entryPath);
-  const emitted = try emitProject(project);
+  const input = try resolveCommandInput(entryPath);
+  const project = try loadProject(input.entryPath);
+  const emitted = try emitProject(
+    project,
+    project.config.targetKind == "executable"
+  );
   console.write(emitted);
   return 0;
 }
@@ -379,7 +383,7 @@ function buildLoadedProject(
   in outputPath: String,
   release: boolean
 ): i32 throws String {
-  const emitted = try emitProject(project);
+  const emitted = try emitProject(project, true);
   const exitCode = try compileEmittedProject(
     project,
     emitted,
@@ -841,7 +845,7 @@ function runProject(
   const pendingCPath = `${pendingOutputPath}.c`;
   const pendingMetadataPath = `${metadataPath}.pending`;
   const cacheLock = try fs.lock(`${outputPath}.lock`);
-  const emitted = try emitProject(project);
+  const emitted = try emitProject(project, true);
   const toolchainIdentity = try loadToolchainIdentity(outputDirectory);
   const cacheMetadata = try runCacheMetadata(
     project,
@@ -955,9 +959,14 @@ function main(): i32 {
     return reportOutcome(outcome);
   }
   if (command == "emit") {
-    if (arguments.length != 2 && arguments.length != 3) {
-      console.error("usage: z emit <entry.zs> [output.c]");
+    if (arguments.length < 1 || arguments.length > 3) {
+      console.error("usage: z emit [entry.zs | project-directory | z.json]");
+      console.error("       z emit <entry.zs> <output.c>");
       return 2;
+    }
+    if (arguments.length == 1) {
+      const outcome = attempt emitProjectStandardOutput(".");
+      return reportOutcome(outcome);
     }
     if (arguments.length == 2) {
       const outcome = attempt emitProjectStandardOutput(arguments[1]);

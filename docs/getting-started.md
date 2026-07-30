@@ -60,7 +60,7 @@ directory where shown:
 ```text
 z build <project-directory | z.json> [--release]
 z check <file.zs | project-directory | z.json> [--native-frontend] [--timings]
-z emit <file.zs>
+z emit [file.zs | project-directory | z.json]
 z run <file.zs | project-directory | z.json> [--release] [-- program arguments]
 z test <file.zs | project-directory | z.json>
 ```
@@ -70,7 +70,8 @@ z test <file.zs | project-directory | z.json>
 | `bun run z check file.zs` | Parse, type-check, and validate ownership without producing a binary |
 | `bun run z check path/to/project` | Check the `target.entry` selected by that project's `z.json` |
 | `bun run z check file.zs --native-frontend --timings` | Run the opt-in hybrid native frontend and report parity timings |
-| `bun run z emit file.zs` | Print the generated C-family source for inspection |
+| `bun run z emit file.zs` | Print the generated C-family source for one source entry |
+| `bun run z emit path/to/project` | Print the generated C-family source selected by `target.entry` without writing artifacts |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 | `bun run z run path/to/project` | Run the executable target selected by that project's `z.json` |
 | `bun run z run path/to/project --release` | Run that target through an optimized native build |
@@ -131,8 +132,9 @@ static example and
 for the dynamic form.
 
 Versioned shared-library identities, installation layout, Windows import
-libraries, and project-mode source emission remain deliberate next artifact
-layers. `z emit` still requires an explicit `.zs` file.
+libraries, and installation-oriented artifact emission remain deliberate next
+layers. `z emit` accepts a source file, project directory, `z.json`, or the
+current project and writes the complete translation unit to standard output.
 
 The VS Code/Cursor extension associates every `z.json` with Z's bundled JSON
 Schema. Target fields, artifact kinds, native-link settings, and Swift settings
@@ -174,15 +176,17 @@ The bootstrapped native command accepts the same project-directory forms for
 ```text
 z check [entry.zs | project-directory | z.json]
 z test [entry.zs | project-directory | z.json]
-z emit <entry.zs>
+z emit [entry.zs | project-directory | z.json]
 z emit <entry.zs> <output.c>                 # bootstrap compatibility
 z build [project-directory | z.json] [--release]
 z build <entry.zs> <output> [--release]      # bootstrap compatibility
 z run [entry.zs | project-directory | z.json] [--release] [-- args...]
 ```
 
-`emit` writes readable C without invoking Clang. `build` retains that C beside
-the requested native output. Native `run` uses the project-local
+`emit` prints readable C without invoking Clang or writing a project artifact;
+the two-path bootstrap compatibility form writes the requested file. `build`
+retains generated C in its cache while publishing the requested native output.
+Native `run` uses the project-local
 `.z-cache/run` and skips Clang when emitted C, target/toolchain settings,
 foreign evidence, and resolved library bytes are unchanged.
 

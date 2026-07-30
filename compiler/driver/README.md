@@ -18,7 +18,7 @@ its supported surface is:
 ```text
 z check [entry.zs | project-directory | z.json]
 z test [entry.zs | project-directory | z.json]
-z emit <entry.zs>
+z emit [entry.zs | project-directory | z.json]
 z emit <entry.zs> <output.c>                 # bootstrap compatibility
 z build [project-directory | z.json] [--release]
 z build <entry.zs> <output> [--release]
@@ -40,9 +40,10 @@ Swift target preparation, broader foreign declaration records, cross-platform
 target selection, custom profiles, polished diagnostics, cache eviction, and
 the complete production command options remain with Stage 0
 until equivalent native paths are proven. Versioned shared-library policy,
-Windows import-library publication, and project-level source emission are not
-implemented yet. `run` creates missing
-project-local cache parents and retains its generated C and executable at
+Windows import-library publication, and header-only emission are not
+implemented yet. Project `emit` prints its selected complete translation unit
+without writing artifacts. `run` creates missing project-local cache parents
+and retains its generated C and executable at
 `.z-cache/run/program.c` and `.z-cache/run/program`. An unchanged run compares
 the exact newly emitted C, debug/release profile, target configuration, Clang
 predefined-macro identity, and foreign producer evidence, then skips Clang and

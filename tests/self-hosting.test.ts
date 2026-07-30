@@ -3360,6 +3360,42 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(manifestFileCheck.status, 0, manifestFileCheck.stderr);
+  const manifestProjectEmit = spawnSync(
+    driver,
+    ["emit", manifestProject],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(
+    manifestProjectEmit.status,
+    0,
+    manifestProjectEmit.stderr,
+  );
+  const manifestPathEmit = spawnSync(
+    driver,
+    ["emit", resolve(manifestProject, "z.json")],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(manifestPathEmit.status, 0, manifestPathEmit.stderr);
+  const defaultManifestProjectEmit = spawnSync(
+    driver,
+    ["emit"],
+    {
+      cwd: manifestProject,
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
+  );
+  assert.equal(
+    defaultManifestProjectEmit.status,
+    0,
+    defaultManifestProjectEmit.stderr,
+  );
+  assert.match(
+    manifestProjectEmit.stdout,
+    /int32_t main\(void\)/,
+  );
+  assert.equal(manifestPathEmit.stdout, manifestProjectEmit.stdout);
+  assert.equal(defaultManifestProjectEmit.stdout, manifestProjectEmit.stdout);
 
   const manifestProjectBuild = spawnSync(
     driver,
@@ -3506,6 +3542,13 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(sharedProjectCheck.status, 0, sharedProjectCheck.stderr);
+  const sharedProjectEmit = spawnSync(
+    driver,
+    ["emit", sharedProject],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(sharedProjectEmit.status, 0, sharedProjectEmit.stderr);
+  assert.match(sharedProjectEmit.stdout, /z_native_shared_answer/);
   const sharedProjectBuild = spawnSync(
     driver,
     ["build", sharedProject, "--release"],

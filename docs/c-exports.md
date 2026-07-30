@@ -285,9 +285,10 @@ the host-native dynamic artifact:
 [`examples/interop/c/z-shared-export`](../examples/interop/c/z-shared-export)
 builds and runs the dynamic form. Versioned sonames/install names, installation
 layout, and Windows import-library publication remain packaging work. An
-inspectable project-level `z emit` form also remains to be designed; source
-emission still selects an explicit `.zs` file. Executables remain the default
-target kind.
+inspectable project-level `z emit` prints the complete generated translation
+unit selected by `target.entry` without writing an artifact. Header publication
+remains part of `z build`; a separate header-emission command is not yet
+defined. Executables remain the default target kind.
 
 ## Growth path
 
