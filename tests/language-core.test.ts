@@ -3372,6 +3372,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(extension, /6: vscode\.CompletionItemKind\.Variable/);
   assert.match(extension, /20: vscode\.CompletionItemKind\.EnumMember/);
   assert.match(extension, /8: vscode\.CompletionItemKind\.Interface/);
+  assert.match(extension, /semanticTokensProvider\?\.legend/);
+  assert.match(extension, /new vscode\.SemanticTokensLegend\(legend\.tokenTypes, legend\.tokenModifiers\)/);
+  assert.match(extension, /semanticTokensRegistration\?\.dispose\(\)/);
   assert.match(extension, /createFileSystemWatcher/);
   assert.match(extension, /restartLanguageServer/);
 });

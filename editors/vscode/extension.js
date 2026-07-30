@@ -6,6 +6,8 @@ const path = require("node:path");
 
 let client = null;
 let restartTimer = null;
+let semanticTokensRegistration = null;
+let semanticLegendKey = null;
 
 async function activate(context) {
   const extensionPath = realpathSync(context.extensionPath);
@@ -36,11 +38,13 @@ async function activate(context) {
     nextClient.onNotification("window/logMessage", (params) => output.appendLine(params.message));
 
     try {
-      await nextClient.request("initialize", {
+      const initializeResult = await nextClient.request("initialize", {
         processId: process.pid,
         rootUri: vscode.workspace.workspaceFolders?.[0]?.uri.toString() || null,
         capabilities: {},
       });
+      const legend = initializeResult?.capabilities?.semanticTokensProvider?.legend;
+      if (legend) registerSemanticTokensProvider(legend);
     } catch (error) {
       nextClient.dispose();
       throw error;
@@ -68,6 +72,9 @@ async function activate(context) {
     dispose: () => {
       if (restartTimer) clearTimeout(restartTimer);
       restartTimer = null;
+      semanticTokensRegistration?.dispose();
+      semanticTokensRegistration = null;
+      semanticLegendKey = null;
       client?.dispose();
       client = null;
     },
@@ -150,19 +157,6 @@ async function activate(context) {
     },
   }));
 
-  const semanticLegend = new vscode.SemanticTokensLegend(
-    ["namespace", "type", "class", "enum", "function", "method", "property", "variable", "parameter", "interface"],
-    ["declaration", "readonly", "defaultLibrary"],
-  );
-  context.subscriptions.push(vscode.languages.registerDocumentSemanticTokensProvider("z", {
-    async provideDocumentSemanticTokens(document) {
-      const result = await client.request("textDocument/semanticTokens/full", {
-        textDocument: { uri: document.uri.toString() },
-      });
-      return new vscode.SemanticTokens(new Uint32Array(result?.data || []));
-    },
-  }, semanticLegend));
-
   function didOpen(document, targetClient = client) {
     targetClient?.notify("textDocument/didOpen", {
       textDocument: {
@@ -172,6 +166,21 @@ async function activate(context) {
         text: document.getText(),
       },
     });
+  }
+
+  function registerSemanticTokensProvider(legend) {
+    const key = JSON.stringify(legend);
+    if (semanticTokensRegistration && semanticLegendKey === key) return;
+    semanticTokensRegistration?.dispose();
+    semanticLegendKey = key;
+    semanticTokensRegistration = vscode.languages.registerDocumentSemanticTokensProvider("z", {
+      async provideDocumentSemanticTokens(document) {
+        const result = await client.request("textDocument/semanticTokens/full", {
+          textDocument: { uri: document.uri.toString() },
+        });
+        return new vscode.SemanticTokens(new Uint32Array(result?.data || []));
+      },
+    }, new vscode.SemanticTokensLegend(legend.tokenTypes, legend.tokenModifiers));
   }
 }
 
