@@ -303,6 +303,35 @@ test("emits and runs the first program directly from the native Z AST", () => {
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 42, execution.stderr);
 
+  const defaultsInput = resolve(
+    projectRoot,
+    "examples/language/basics/struct-defaults.zs",
+  );
+  const defaultsEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", defaultsInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(defaultsEmission.status, 0, defaultsEmission.stderr);
+  assert.match(
+    defaultsEmission.stdout,
+    /Z_RequestOptions defaults = \(Z_RequestOptions\)\{\.retries = 3, \.timeoutMilliseconds = 1000, \.headers = /,
+  );
+  assert.match(
+    defaultsEmission.stdout,
+    /Z_RequestOptions patient = \(Z_RequestOptions\)\{\.timeoutMilliseconds = 5000, \.retries = 3/,
+  );
+  const defaultsExecutable = resolve(directory, "defaults");
+  const defaultsCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", defaultsExecutable],
+    { encoding: "utf8", input: defaultsEmission.stdout },
+  );
+  assert.equal(defaultsCompilation.status, 0, defaultsCompilation.stderr);
+  const defaultsExecution = spawnSync(defaultsExecutable, [], { encoding: "utf8" });
+  assert.equal(defaultsExecution.status, 0, defaultsExecution.stderr);
+  assert.equal(defaultsExecution.stdout, "defaults=3, equivalent=3, timeout=5000\n");
+
   const mapInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-map.zs",
@@ -5401,6 +5430,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
               typeName: "T",
               visibility: "private",
               readonlyField: true,
+              hasDefault: false,
             }],
             methods: [{
               name: "read",
@@ -5556,6 +5586,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
         typeName: "T",
         visibility: "private",
         readonlyField: true,
+        hasDefault: false,
       }],
       methods: [{
         name: "read",

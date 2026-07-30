@@ -273,6 +273,9 @@ function appendTypeSignature(
         output.appendAscii(9);
         if (field.readonlyField) output.appendAscii(49);
         else output.appendAscii(48);
+        output.appendAscii(9);
+        if (field.hasDefault) output.appendAscii(49);
+        else output.appendAscii(48);
       }
       for (const variant of signature.variants) {
         output.appendAscii(9);

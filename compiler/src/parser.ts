@@ -1120,7 +1120,16 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       const field = expect("identifier", "a field or method declaration");
       expect("colon", "`:`");
-      fields.push({ name: field.text, type: parseType(), visibility, readonly: aggregateReadonly || fieldReadonly, location: field.location });
+      const type = parseType();
+      const defaultValue = match("equal") ? parseExpression() : null;
+      fields.push({
+        name: field.text,
+        type,
+        defaultValue,
+        visibility,
+        readonly: aggregateReadonly || fieldReadonly,
+        location: field.location,
+      });
       expect("semicolon", "`;`");
     }
     expect("rightBrace", "`}`");

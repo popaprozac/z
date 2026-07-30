@@ -2494,9 +2494,10 @@ test("supports explicit copy and move ownership expressions", () => {
     && token.character === copyBindingPosition.character
     && token.type === semanticTokenTypes.indexOf("variable")
   )));
-  assert.ok(!contextualOwnershipTokens.some((token) => (
+  assert.ok(contextualOwnershipTokens.some((token) => (
     token.line === copyOperatorPosition.line
     && token.character === copyOperatorPosition.character
+    && token.type === semanticTokenTypes.indexOf("keyword")
   )));
   const moveUseOffset = contextualKeywords.indexOf("move.byteLength");
   assert.match(
@@ -2588,9 +2589,10 @@ test("supports inferred local views into named value storage", () => {
 
   const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
   const operatorPosition = positionForOffset(source, operatorOffset);
-  assert.ok(!tokens.some((token) => (
+  assert.ok(tokens.some((token) => (
     token.line === operatorPosition.line
     && token.character === operatorPosition.character
+    && token.type === semanticTokenTypes.indexOf("keyword")
   )));
 
   const testResult = spawnSync(process.execPath, [cli, "test", example], { encoding: "utf8" });
@@ -2669,9 +2671,10 @@ test("supports inferred local views into named value storage", () => {
     )));
   }
   const viewOperatorPosition = positionForOffset(contextualName, viewOperatorOffset);
-  assert.ok(!contextualTokens.some((token) => (
+  assert.ok(contextualTokens.some((token) => (
     token.line === viewOperatorPosition.line
     && token.character === viewOperatorPosition.character
+    && token.type === semanticTokenTypes.indexOf("keyword")
   )));
 });
 

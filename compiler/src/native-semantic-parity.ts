@@ -138,6 +138,7 @@ function stage0ModuleSymbols(
         typeName: canonicalTypeName(field.type.name),
         visibility: field.visibility,
         readonlyField: field.readonly,
+        hasDefault: Boolean(field.defaultValue),
       })),
       methods: declaration.methods.map((method) => ({
         name: method.name,
@@ -351,7 +352,8 @@ function sameModuleTypeSignature(
         && field.name === other.name
         && field.typeName === other.typeName
         && field.visibility === other.visibility
-        && field.readonlyField === other.readonlyField;
+        && field.readonlyField === other.readonlyField
+        && field.hasDefault === other.hasDefault;
     })
     && left.methods.length === right.methods.length
     && left.methods.every((method, index) => {

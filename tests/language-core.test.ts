@@ -2103,6 +2103,114 @@ test("requires every struct field exactly once", () => {
   );
 });
 
+test("constructs value structs from independent field defaults", () => {
+  const source = `
+    struct RequestOptions {
+      retries: i32 = 3;
+      timeout: i32 = 1000;
+      labels: Array<String> = Array<String>("network");
+    }
+    struct Envelope<T> {
+      value: T;
+      readonly attempts: i32 = 1;
+    }
+    function main(): i32 {
+      let first = RequestOptions();
+      first.labels.push("mutated");
+      const second = RequestOptions({});
+      const custom = RequestOptions({ retries: 5 });
+      const envelope = Envelope<i32>({ value: 42 });
+      if (first.labels.length != 2) return 1;
+      if (second.labels.length != 1) return 2;
+      if (custom.retries != 5) return 3;
+      if (envelope.attempts != 1) return 4;
+      return custom.timeout - 1000;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-struct-defaults-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const native = spawnSync(process.execPath, [cli, "check", fileName, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /Z_RequestOptions/);
+  assert.match(generated, /\.retries = _z_aggregate_/);
+  const retries = source.indexOf("retries:");
+  assert.match(hover(source, fileName, retries + 1)?.contents.value ?? "", /retries: i32 = default/);
+  const completionSource = source.replace("      const custom = RequestOptions({ retries: 5 });", "      const custom = RequestOptions({ tim });");
+  const completionOffset = completionSource.indexOf("tim });") + 3;
+  assert.match(
+    completions(completionSource, fileName, completionOffset).find((item) => item.label === "timeout")?.detail ?? "",
+    /defaulted/,
+  );
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("diagnoses invalid and missing struct defaults at their source", () => {
+  const invalid = `
+    struct Broken {
+      count: i32 = "wrong";
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(invalid, "invalid-default.zs"),
+    /invalid-default\.zs:3:20: error: expected i32, found String/,
+  );
+
+  const missing = `
+    struct Request {
+      id: i32;
+      retries: i32 = 3;
+    }
+    function main(): i32 {
+      const request = Request();
+      return request.id;
+    }
+  `;
+  assert.throws(
+    () => compileToC(missing, "required-default.zs"),
+    /missing field "id" when constructing "Request"/,
+  );
+
+  const classDefault = `
+    class Session {
+      id: i32 = 1;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(classDefault, "class-default.zs"),
+    /class field defaults are deferred/,
+  );
+});
+
+test("preserves struct defaults across source-module imports", () => {
+  const directory = mkdtempSync("/tmp/z-module-struct-defaults-");
+  const optionsFile = resolve(directory, "options.zs");
+  const mainFile = resolve(directory, "main.zs");
+  writeFileSync(optionsFile, `
+    export struct Options {
+      retries: i32 = 3;
+      timeout: i32 = 1000;
+    }
+  `);
+  writeFileSync(mainFile, `
+    import { Options } from "./options.zs";
+    function main(): i32 {
+      const options = Options({ retries: 5 });
+      return options.retries + options.timeout - 1005;
+    }
+  `);
+  const result = spawnSync(process.execPath, [cli, "run", mainFile], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const native = spawnSync(process.execPath, [cli, "check", mainFile, "--native-frontend"], { encoding: "utf8" });
+  assert.equal(native.status, 0, native.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("checks struct method arguments", () => {
   const source = `
     struct Counter {
@@ -2331,6 +2439,35 @@ test("materializes inferred and explicitly empty Option values with owned payloa
     completions(variantCompletionSource, example, variantCompletionOffset).find((item) => item.label === "some")?.detail ?? "",
     /some\(value: T\): Option<T>/,
   );
+});
+
+test("highlights view capabilities and enum variants contextually", () => {
+  const viewExample = resolve(projectRoot, "examples/language/ownership/local-views.zs");
+  const viewSource = readFileSync(viewExample, "utf8");
+  const viewOffset = viewSource.indexOf("view tree");
+  const viewPosition = positionForOffset(viewSource, viewOffset);
+  const viewTokens = decodeSemanticTokens(semanticTokens(viewSource, viewExample).data);
+  assert.ok(viewTokens.some((token) => token.line === viewPosition.line
+    && token.character === viewPosition.character
+    && semanticTokenTypes[token.type] === "keyword"));
+
+  const enumExample = resolve(projectRoot, "examples/language/control-flow/match.zs");
+  const enumSource = readFileSync(enumExample, "utf8");
+  const constructorOffset = enumSource.indexOf("success(", enumSource.indexOf("UserResult.success"));
+  const constructorPosition = positionForOffset(enumSource, constructorOffset);
+  const enumTokens = decodeSemanticTokens(semanticTokens(enumSource, enumExample).data);
+  assert.ok(enumTokens.some((token) => token.line === constructorPosition.line
+    && token.character === constructorPosition.character
+    && semanticTokenTypes[token.type] === "enumMember"));
+
+  const optionExample = resolve(projectRoot, "examples/language/types/option.zs");
+  const optionSource = readFileSync(optionExample, "utf8");
+  const noneOffset = optionSource.indexOf("none =>");
+  const nonePosition = positionForOffset(optionSource, noneOffset);
+  const optionTokens = decodeSemanticTokens(semanticTokens(optionSource, optionExample).data);
+  assert.ok(optionTokens.some((token) => token.line === nonePosition.line
+    && token.character === nonePosition.character
+    && semanticTokenTypes[token.type] === "enumMember"));
 });
 
 test("materializes explicit Result type annotations independently of throwing-call discovery", () => {

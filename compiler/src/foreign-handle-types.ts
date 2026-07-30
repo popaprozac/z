@@ -270,7 +270,11 @@ export function transformProgramTypeNames(
     ...declaration,
     typeParameterConstraints: constraints(declaration.typeParameterConstraints),
     implements: declaration.implements.map(type),
-    fields: declaration.fields.map((field) => ({ ...field, type: type(field.type) })),
+    fields: declaration.fields.map((field) => ({
+      ...field,
+      type: type(field.type),
+      defaultValue: field.defaultValue ? expression(field.defaultValue) : null,
+    })),
     constructor: declaration.constructor ? {
       ...declaration.constructor,
       parameters: declaration.constructor.parameters.map((parameter) => ({ ...parameter, type: type(parameter.type) })),

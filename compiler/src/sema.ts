@@ -1363,6 +1363,49 @@ export function analyze(
     }
   }
 
+  for (const declaration of program.structs) {
+    for (const field of declaration.fields) {
+      if (!field.defaultValue) continue;
+      const defaultLocals = new Map<string, ValueType>();
+      let actual = inferExpression(
+        field.defaultValue,
+        defaultLocals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+      actual = contextualCStringLiteral(field.type.name, field.defaultValue, state) ?? actual;
+      rejectBorrowedNativeResourceEscape(
+        actual,
+        field.defaultValue,
+        defaultLocals,
+        fileName,
+        state,
+        "stored as a field default",
+      );
+      requireAssignable(
+        field.type.name,
+        actual,
+        field.defaultValue,
+        fileName,
+        structs,
+        enums,
+        state,
+      );
+      consumeOwnedValue(
+        field.defaultValue,
+        field.type.name,
+        defaultLocals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+    }
+  }
+
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
   collectAggregateExecutorAffinities(program, structs, enums, state);
 
@@ -1538,6 +1581,7 @@ function validateNativeLayouts(
       }
       if (field.visibility !== "public") reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be private`);
       if (field.readonly) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be readonly`);
+      if (field.defaultValue) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot declare a Z default value`);
       validateCType(field.type.name, field.location);
     }
     visiting.delete(declaration.name);
@@ -1757,6 +1801,12 @@ function analyzeStructDeclaration(
 ): void {
   if (declaration.constructor && declaration.kind !== "class") {
     throw new DiagnosticError(fileName, declaration.constructor.location, "constructors are currently class-only; structs use Type({ ... }) value construction");
+  }
+  if (declaration.kind === "class" && declaration.fields.some((field) => field.defaultValue)) {
+    const field = declaration.fields.find((candidate) => candidate.defaultValue)!;
+    throw new DiagnosticError(fileName, field.location, "class field defaults are deferred until synthesized and custom constructor initialization share one cleanup-safe rule", {
+      helps: ["initialize the field in the class constructor for now"],
+    });
   }
   if (declaration.kind === "class" && declaration.fields.some((field) => field.visibility === "private") && !declaration.constructor) {
     const field = declaration.fields.find((candidate) => candidate.visibility === "private")!;

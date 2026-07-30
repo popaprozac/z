@@ -213,6 +213,29 @@ value:
 const point = Point({ x: 20, y: 22 });
 ```
 
+Value-struct fields may declare defaults. Omitted fields evaluate their defaults
+independently for every construction; an explicit field suppresses its default:
+
+```zs
+struct RequestOptions {
+  retries: i32 = 3;
+  timeoutMilliseconds: i32 = 1000;
+  headers: Array<String> = Array<String>();
+}
+
+const defaults = RequestOptions();
+const equivalent = RequestOptions({});
+const patient = RequestOptions({ timeoutMilliseconds: 5000 });
+```
+
+`Type()` is zero-argument value construction, not punctuation sugar for an
+object literal. It is valid only when every field has a default. `Type({})`
+spells the same all-default construction explicitly, while partial object
+initializers override selected defaults. Owned defaults such as `Array<T>` are
+fresh values owned and destroyed by each resulting struct. Defaults cannot
+refer to `this` or sibling fields in the first tier. Class-field defaults remain
+deferred; class constructors establish their fields explicitly.
+
 `class` declares an ARC-managed reference type with identity. Construction uses
 `new`; copying a class reference shares the instance:
 

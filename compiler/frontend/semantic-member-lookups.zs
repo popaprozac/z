@@ -292,7 +292,9 @@ export function aggregateConstructionShape(
           }
           let fields = Array<String>();
           for (const field of signature.fields) {
-            fields.push(field.name.copyBytes(0, field.name.byteLength));
+            if (!field.hasDefault) {
+              fields.push(field.name.copyBytes(0, field.name.byteLength));
+            }
           }
           return Option.some(NativeAggregateConstructionShape({
             name: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(

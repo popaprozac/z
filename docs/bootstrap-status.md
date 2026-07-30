@@ -19,7 +19,7 @@ Status meanings:
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Bindings, functions, inference | Implemented | Local inference plus first-tier value-struct object destructuring and aliases; public/API contracts remain explicit |
-| Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup |
+| Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup, and independently evaluated value-field defaults through `Type()`, `Type({})`, or partial overrides; class-field defaults remain deferred |
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance, generic declarations/specializations, and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |

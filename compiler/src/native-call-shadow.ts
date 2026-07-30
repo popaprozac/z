@@ -224,6 +224,7 @@ export function createNativeSemanticBridge(
       || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
       || nativeField.visibility !== sourceField.visibility
       || nativeField.readonlyField !== sourceField.readonly
+      || nativeField.hasDefault !== Boolean(sourceField.defaultValue)
     ) {
       throw new Error(
         `native semantic bridge field mismatch for ${JSON.stringify(`${source.declaration.name}.${field.name}`)} resolved at ${callSite(location, sourceBatch)}`,

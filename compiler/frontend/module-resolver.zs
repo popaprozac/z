@@ -2883,6 +2883,20 @@ function inferExpressionNodeType(
         const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
         if (
           constructionKind == ModuleSymbolKind.structSymbol
+          && children.length == 1
+          && !typeHasCustomConstructor(modules, moduleIndex, constructionType)
+        ) {
+          match (aggregateConstructionShape(modules, moduleIndex, constructionType)) {
+            some(shape) => {
+              if (shape.fields.length == 0) {
+                return constructionType.copyBytes(0, constructionType.byteLength);
+              }
+            }
+            none => {}
+          }
+        }
+        if (
+          constructionKind == ModuleSymbolKind.structSymbol
           && children.length == 2
           && tree.nodes[children[1]].kind == ExpressionKind.objectExpression
           && !typeHasCustomConstructor(modules, moduleIndex, constructionType)
@@ -4653,6 +4667,10 @@ function validateNativeCLayouts(
         }
         if (field.readonlyField) {
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be readonly`, field.line, field.column);
+        }
+        match (in field.defaultValue) {
+          some(_) => throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot declare a Z default value`, field.line, field.column);
+          none => {}
         }
         if (
           field.type.name == "void"

@@ -218,6 +218,8 @@ export struct FunctionDeclaration {
 export struct FieldDeclaration {
   name: String;
   type: TypeReference;
+  defaultValue: Option<ExpressionSyntax>;
+  defaultStatements: StatementArena;
   visibility: Visibility;
   readonlyField: boolean;
   offset: usize;
@@ -3199,10 +3201,28 @@ function parseAggregateDeclaration(
     const field = try expect(tokens, inout current, TokenKind.identifier, "a field or method declaration");
     try expectKind(tokens, inout current, TokenKind.colon, "`:` after a field name");
     const type = try parseType(tokens, inout current, inout pendingGreater);
-    try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a field declaration");
+    let defaultValue = Option<ExpressionSyntax>.none;
+    let defaultNodes = Array<Statement>();
+    const hasDefault = takeIf(tokens, inout current, TokenKind.equal);
+    if (hasDefault) {
+      const value = try scanExpression(
+        tokens,
+        inout current,
+        "a field default value",
+        inout defaultNodes
+      );
+      defaultValue = Option.some(value);
+    } else {
+      try expectKind(tokens, inout current, TokenKind.semicolon, "`;` after a field declaration");
+    }
     fields.push(FieldDeclaration({
       name: field.text.copyBytes(0, field.text.byteLength),
       type,
+      defaultValue,
+      defaultStatements: StatementArena({
+        nodes: defaultNodes,
+        roots: Array<usize>(),
+      }),
       visibility,
       readonlyField: aggregateReadonly || fieldReadonly,
       offset: field.offset,

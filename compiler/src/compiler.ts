@@ -20,6 +20,7 @@ import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
 import { linkSourceModules, type SourceModuleBatch, type SourceModuleInfo } from "./modules.ts";
 import { materializeWeakTypes } from "./weak-types.ts";
+import { materializeStructDefaults } from "./struct-defaults.ts";
 import { generateAsyncC } from "./async-codegen-c.ts";
 import { parseForeignDeclarationContracts } from "./foreign-declarations.ts";
 import { DiagnosticError } from "./diagnostics.ts";
@@ -151,15 +152,18 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const foreignIdentityTypes = new Set(
     [...foreignModules.values()].flatMap((module) => [...module.interfaces.values()].map((type) => type.typeName)),
   );
-  const program = materializeResultTypes(
-    materializeWeakTypes(materializeGenerics(
-      inferredProgram,
-      fileName,
-      typeDisplayNames,
-      foreignIdentityTypes,
-      genericAggregateMaterializations,
-    )),
-    foreignModules,
+  const program = materializeStructDefaults(
+    materializeResultTypes(
+      materializeWeakTypes(materializeGenerics(
+        inferredProgram,
+        fileName,
+        typeDisplayNames,
+        foreignIdentityTypes,
+        genericAggregateMaterializations,
+      )),
+      foreignModules,
+    ),
+    fileName,
   );
   for (const declaration of program.enums) {
     if (!declaration.name.startsWith("__z_Result_")) continue;

@@ -155,11 +155,17 @@ export function programTypeSignature(
       }
       let fields = Array<ModuleFieldSignature>();
       for (const field of aggregate.fields) {
+        let hasDefault = false;
+        match (in field.defaultValue) {
+          some(_) => hasDefault = true;
+          none => {}
+        }
         fields.push(ModuleFieldSignature({
           name: field.name.copyBytes(0, field.name.byteLength),
           typeName: field.type.name.copyBytes(0, field.type.name.byteLength),
           visibility: visibilityName(field.visibility),
           readonlyField: field.readonlyField,
+          hasDefault,
         }));
       }
       let methods = Array<ModuleMethodSignature>();

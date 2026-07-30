@@ -3992,23 +3992,46 @@ function lowerExpression(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
-      && tree.nodes[index].children.length == 2
+      && (
+        tree.nodes[index].children.length == 1
+        || tree.nodes[index].children.length == 2
+      )
     ) {
       let constructionName = "";
+      let localAggregate = Option<usize>.none;
+      match (structIndex(program, tree.nodes[calleeInput].value)) {
+        some(aggregateIndex) => {
+          localAggregate = Option.some(aggregateIndex);
+        }
+        none => {}
+      }
       match (importedStructTarget(
         importedTypes,
         tree.nodes[calleeInput].value
       )) {
         some(name) => constructionName = move name;
-        none => match (structIndex(program, tree.nodes[calleeInput].value)) {
-          some(_) => constructionName = tree.nodes[calleeInput].value.copyBytes(
-            0,
-            tree.nodes[calleeInput].value.byteLength
-          );
+        none => match (in localAggregate) {
+          some(_) => {
+            constructionName = tree.nodes[calleeInput].value.copyBytes(
+              0,
+              tree.nodes[calleeInput].value.byteLength
+            );
+          }
           none => {}
         }
       }
-      if (constructionName.byteLength > 0) {
+      let localConstruction = false;
+      match (in localAggregate) {
+        some(_) => localConstruction = true;
+        none => {}
+      }
+      if (
+        constructionName.byteLength > 0
+        && (tree.nodes[index].children.length == 2 || localConstruction)
+      ) {
+        let children = Array<usize>();
+        let labels = Array<String>();
+        if (tree.nodes[index].children.length == 2) {
           const objectInput = tree.nodes[index].children[1];
           if (tree.nodes[objectInput].kind != ExpressionKind.objectExpression) {
             throw "native struct construction requires an object initializer";
@@ -4019,8 +4042,6 @@ function lowerExpression(
           ) {
             throw "native lowering received a malformed object initializer";
           }
-          let children = Array<usize>();
-          let labels = Array<String>();
           let field: usize = 0;
           while (field < tree.nodes[objectInput].children.length) {
             const valueInput = tree.nodes[objectInput].children[field];
@@ -4072,13 +4093,51 @@ function lowerExpression(
             ));
             field = field + 1;
           }
-          return pushExpression(
-            inout output,
-            LoweredExpressionKind.structValue,
-            constructionName,
-            children,
-            labels
-          );
+        }
+        match (in localAggregate) {
+          some(aggregateIndex) => {
+            for (const field of program.aggregates[aggregateIndex].fields) {
+              if (containsString(labels, field.name)) continue;
+              match (in field.defaultValue) {
+                some(defaultSyntax) => match (in defaultSyntax.tree) {
+                  some(defaultTree) => {
+                    const defaultRoot = defaultTree.root;
+                    let value = try lowerExpressionExpected(
+                      program,
+                      importedTypes,
+                      evidence,
+                      defaultTree,
+                      defaultRoot,
+                      field.type.name,
+                      inout output
+                    );
+                    value = wrapImplicitOwnedTransfer(
+                      defaultTree,
+                      defaultRoot,
+                      value,
+                      inout output
+                    );
+                    children.push(value);
+                    labels.push(field.name.copyBytes(
+                      0,
+                      field.name.byteLength
+                    ));
+                  }
+                  none => throw `native lowering could not project default value for ${constructionName}.${field.name}`;
+                }
+                none => {}
+              }
+            }
+          }
+          none => {}
+        }
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.structValue,
+          constructionName,
+          children,
+          labels
+        );
       }
     }
     let callee: usize = 0;

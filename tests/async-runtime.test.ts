@@ -585,9 +585,10 @@ test("allows root-scoped task and diagnoses unacknowledged async calls and async
     && token.character === taskBindingPosition.character
     && token.type === semanticTokenTypes.indexOf("variable")
   )));
-  assert.ok(!contextualTaskTokens.some((token) => (
+  assert.ok(contextualTaskTokens.some((token) => (
     token.line === taskOperatorPosition.line
     && token.character === taskOperatorPosition.character
+    && token.type === semanticTokenTypes.indexOf("keyword")
   )));
   assert.match(
     hover(contextualTask, "contextual-task.zs", taskOperatorOffset)?.contents.value ?? "",

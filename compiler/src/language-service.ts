@@ -289,6 +289,7 @@ export const semanticTokenTypes = [
   "parameter",
   "interface",
   "enumMember",
+  "keyword",
 ] as const;
 
 export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
@@ -371,7 +372,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       && (next?.kind === "on" || next?.kind === "identifier");
     const contextualOwnership = (token.text === "copy" || token.text === "move" || token.text === "view")
       && next?.kind === "identifier";
-    if (contextualTask || contextualOwnership) continue;
+    if (contextualTask || contextualOwnership) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
     if (keywordMember && tokens[index - 2]?.text === "String" && token.text === "from") {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("method"), modifiers: 4 });
       continue;
@@ -397,7 +404,20 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const optionVariantMember = previous?.kind === "dot"
       && (token.text === "some" || token.text === "none")
       && /Option(?:<[^<>]+>)?\.$/.test(source.slice(0, token.location.offset));
-    if (enumVariantDeclarations.has(token.location.offset) || matchVariants.has(token.location.offset) || optionVariantMember) {
+    const enumVariantMember = previous?.kind === "dot"
+      && (() => {
+        const owner = tokens[index - 2]?.text;
+        if (!owner) return false;
+        const declaration = [...context.sourceProgram.enums, ...context.program.enums]
+          .find((candidate) => candidate.name === owner);
+        return Boolean(declaration?.variants.some((variant) => variant.name === token.text));
+      })();
+    if (
+      enumVariantDeclarations.has(token.location.offset)
+      || matchVariants.has(token.location.offset)
+      || optionVariantMember
+      || enumVariantMember
+    ) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf("enumMember"),
         modifiers: enumVariantDeclarations.has(token.location.offset) ? 1 : 0,
@@ -1673,6 +1693,7 @@ type ObjectFieldShape = {
   readonly name: string;
   readonly type: string;
   readonly visibility: "public" | "private";
+  readonly defaulted?: boolean;
 };
 
 function objectFieldCompletions(
@@ -1739,7 +1760,7 @@ function objectFieldCompletions(
           .map((field) => ({
             label: field.name,
             kind: completionKinds.field,
-            detail: `${field.name}: ${field.type}`,
+            detail: `${field.name}: ${field.type}${field.defaulted ? " (defaulted)" : ""}`,
             insertText: field.name,
             sortText: `0-${field.name}`,
           }));
@@ -1794,7 +1815,7 @@ function objectFieldCompletions(
     .map((field) => ({
       label: field.name,
       kind: completionKinds.field,
-      detail: `${field.name}: ${field.type}`,
+      detail: `${field.name}: ${field.type}${field.defaulted ? " (defaulted)" : ""}`,
       insertText: patternBinding ? field.name : `${field.name}: `,
       sortText: `0-${field.name}`,
     }));
@@ -1813,6 +1834,7 @@ function objectFieldsForType(
         name: field.name,
         type: displaySubstitutedType(field.type.name, aggregate.substitutions, context.typeDisplayNames),
         visibility: field.visibility,
+        defaulted: Boolean(field.defaultValue),
       }));
     }
     const foreign = resolveForeignNamedTypeForText(context, typeName);
@@ -1887,12 +1909,20 @@ function localAggregateFields(source: string, typeName: string): ObjectFieldShap
       let end = nameIndex + 2;
       while (tokens[end] && tokens[end].kind !== "semicolon") end += 1;
       if (!tokens[end]) continue;
+      let equal = -1;
+      for (let tokenIndex = nameIndex + 2; tokenIndex < end; tokenIndex += 1) {
+        if (tokens[tokenIndex].kind === "equal") {
+          equal = tokenIndex;
+          break;
+        }
+      }
       const startOffset = tokens[nameIndex + 1].location.offset + 1;
-      let fieldType = source.slice(startOffset, tokens[end].location.offset).trim();
+      const typeEnd = equal >= 0 ? tokens[equal].location.offset : tokens[end].location.offset;
+      let fieldType = source.slice(startOffset, typeEnd).trim();
       for (const [parameter, argument] of substitutions) {
         fieldType = fieldType.replace(new RegExp(`\\b${parameter}\\b`, "g"), argument);
       }
-      fields.push({ name: tokens[nameIndex].text, type: fieldType, visibility });
+      fields.push({ name: tokens[nameIndex].text, type: fieldType, visibility, defaulted: equal >= 0 });
       cursor = end;
     }
     return fields;
@@ -5053,7 +5083,7 @@ function structCompletions(
       .map((field) => ({
         label: field.name,
         kind: completionKinds.field,
-        detail: `${field.visibility === "private" ? "private " : ""}${field.readonly ? "readonly " : ""}${displayType(field.type.name, typeDisplayNames)}`,
+        detail: `${field.visibility === "private" ? "private " : ""}${field.readonly ? "readonly " : ""}${displayType(field.type.name, typeDisplayNames)}${field.defaultValue ? " (defaulted)" : ""}`,
       })),
     ...methods
       .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
@@ -5069,7 +5099,8 @@ function structCompletions(
 function fieldDetail(field: StructDeclaration["fields"][number], typeDisplayNames: ReadonlyMap<string, string>): string {
   const visibility = field.visibility === "private" ? "private " : "";
   const readonly = field.readonly ? "readonly " : "";
-  return `${visibility}${readonly}${field.name}: ${displayType(field.type.name, typeDisplayNames)}`;
+  const defaulted = field.defaultValue ? " = default" : "";
+  return `${visibility}${readonly}${field.name}: ${displayType(field.type.name, typeDisplayNames)}${defaulted}`;
 }
 
 function staticCompletions(

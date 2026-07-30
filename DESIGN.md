@@ -322,6 +322,30 @@ const point = Point({ x: 20, y: 22 });
 const session = new Session({ id: 42 });
 ```
 
+Value-struct fields may carry ordinary Z default expressions:
+
+```zs
+struct RequestOptions {
+  retries: i32 = 3;
+  labels: Array<String> = Array<String>();
+}
+
+const defaults = RequestOptions();
+const explicitEmpty = RequestOptions({});
+const custom = RequestOptions({ retries: 5 });
+```
+
+An omitted field evaluates its default independently at the construction site;
+an explicit initializer suppresses that default. Consequently cleanup-bearing
+defaults create fresh owners rather than shared template storage, flow through
+ordinary move/deinit analysis, and are destroyed with the containing value.
+`Type()` means zero-argument value construction and is accepted only when all
+fields have defaults. Defaults are checked even if the type is never
+constructed, cannot refer to `this` or sibling fields in the first tier, and
+specialize with their generic aggregate. C-layout records cannot attach Z
+defaults. Class-field defaults remain deferred until synthesized and declared
+constructors share one cleanup-safe initialization rule.
+
 Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is
 reserved for native class construction and is not a general allocation operator.
