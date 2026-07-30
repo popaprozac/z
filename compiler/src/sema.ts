@@ -1581,6 +1581,7 @@ function validateNativeLayouts(
       }
       if (field.visibility !== "public") reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be private`);
       if (field.readonly) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot be readonly`);
+      if (field.optional) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot use Z optional-field storage`);
       if (field.defaultValue) reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot declare a Z default value`);
       validateCType(field.type.name, field.location);
     }

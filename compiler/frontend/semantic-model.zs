@@ -137,6 +137,7 @@ export struct ModuleFieldSignature {
   visibility: String;
   readonlyField: boolean;
   hasDefault: boolean;
+  optionalField: boolean;
 }
 
 export struct ModuleVariantSignature {

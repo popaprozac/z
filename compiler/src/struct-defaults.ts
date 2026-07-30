@@ -45,18 +45,30 @@ export function materializeStructDefaults(program: Program, fileName: string): P
       };
       const provided = new Set(object.fields.map((field: { readonly name: string }) => field.name));
       const defaults = declaration.fields
-        .filter((field) => !provided.has(field.name) && field.defaultValue)
+        .filter((field) => !provided.has(field.name) && (field.defaultValue || field.optional))
         .map((field) => {
-          if (expanding.has(declaration.name)) {
+          if (field.defaultValue && expanding.has(declaration.name)) {
             throw new DiagnosticError(
               fileName,
-              field.defaultValue!.location,
+              field.defaultValue.location,
               `default value for ${JSON.stringify(declaration.name)}.${field.name} recursively constructs ${JSON.stringify(declaration.name)}`,
             );
           }
+          const expression: Expression = field.defaultValue
+            ? transform(field.defaultValue, new Set([...expanding, declaration.name]))
+            : {
+                kind: "member",
+                object: {
+                  kind: "identifier",
+                  name: field.type.name,
+                  location: field.location,
+                },
+                property: "none",
+                location: field.location,
+              };
           return {
             name: field.name,
-            expression: transform(field.defaultValue, new Set([...expanding, declaration.name])),
+            expression,
             location: field.location,
           };
         });

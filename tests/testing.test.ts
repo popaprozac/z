@@ -374,3 +374,16 @@ test("the TextMate grammar highlights test declarations as language syntax", () 
   assert.match(grammar, /keyword\.control\.declaration\.test\.z/);
   assert.match(grammar, /\\\\btest\(\?=/);
 });
+
+test("the TextMate grammar distinguishes optional struct-field presence", () => {
+  const grammar = JSON.parse(readFileSync(
+    resolve(import.meta.dir, "../editors/vscode/syntaxes/z.tmLanguage.json"),
+    "utf8",
+  ));
+  const optionalField = grammar.repository.declarations.patterns.find(
+    (pattern: { name?: string }) => pattern.name === "meta.declaration.field.optional.z",
+  );
+  assert.ok(optionalField);
+  assert.match("icon?: Image;", new RegExp(optionalField.match));
+  assert.equal(optionalField.captures["2"].name, "keyword.operator.optional.z");
+});

@@ -346,6 +346,16 @@ specialize with their generic aggregate. C-layout records cannot attach Z
 defaults. Class-field defaults remain deferred until synthesized and declared
 constructors share one cleanup-safe initialization rule.
 
+Optional presence on a value struct uses `field?: T`. It preserves that source
+fact for tooling and foreign adapters while storing an ordinary `Option<T>`.
+Omission initializes `Option.none`; a supplied `T` is contextually lifted to
+`Option.some(T)`, and an explicit `Option<T>` remains valid. This differs from
+`field: Option<T>`, which is still required unless it declares a default.
+Cleanup-bearing direct values move through the same enum-payload ownership path
+as an explicit `Option.some`. Optional fields cannot also declare an explicit
+default, and the first tier excludes class and C-layout fields. Native Z
+optionality remains distinct from nullable foreign references.
+
 Struct declarations and class declarations retain brace-delimited bodies, while
 initialization data is an object expression inside call parentheses. `new` is
 reserved for native class construction and is not a general allocation operator.

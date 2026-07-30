@@ -452,18 +452,74 @@ function inferContextualObjectExpressionNode(
           genericParameters,
           substitutions
         );
-        const actual = try inferExpressionNodeTypeExpected(
-          module,
-          modules,
-          moduleIndex,
-          arena,
-          tree,
-          children[childIndex],
-          contextualFieldType,
-          inout bindings,
-          inout evidence
-        );
+        let optionalPayloadType = "";
+        if (field.optionalField) {
+          match (genericTypeShape(contextualFieldType)) {
+            some(generic) => {
+              if (generic.base == "Option" && generic.arguments.length == 1) {
+                optionalPayloadType = generic.arguments[0].copyBytes(
+                  0,
+                  generic.arguments[0].byteLength
+                );
+              }
+            }
+            none => {}
+          }
+        }
+        let actual = "";
+        if (
+          optionalPayloadType.byteLength > 0
+          && tree.nodes[children[childIndex]].kind == ExpressionKind.objectExpression
+        ) {
+          actual = try inferContextualObjectExpressionNode(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            children[childIndex],
+            optionalPayloadType,
+            inout bindings,
+            inout evidence
+          );
+        } else {
+          actual = try inferExpressionNodeTypeExpected(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            children[childIndex],
+            contextualFieldType,
+            inout bindings,
+            inout evidence
+          );
+        }
+        let liftsOptionalPayload = optionalPayloadType.byteLength > 0
+          && !equivalentTypes(
+            modules,
+            moduleIndex,
+            contextualFieldType,
+            actual
+          );
         if (genericParameters.length > 0) {
+          let genericPattern = field.typeName.copyBytes(
+            0,
+            field.typeName.byteLength
+          );
+          if (liftsOptionalPayload) {
+            match (genericTypeShape(genericPattern)) {
+              some(generic) => {
+                if (generic.base == "Option" && generic.arguments.length == 1) {
+                  genericPattern = generic.arguments[0].copyBytes(
+                    0,
+                    generic.arguments[0].byteLength
+                  );
+                }
+              }
+              none => {}
+            }
+          }
           try bindGenericType(
             module,
             modules,
@@ -471,7 +527,7 @@ function inferContextualObjectExpressionNode(
             tree,
             children[childIndex],
             expectedType,
-            field.typeName,
+            genericPattern,
             actual,
             genericParameters,
             inout substitutions
@@ -481,13 +537,30 @@ function inferContextualObjectExpressionNode(
           field.typeName,
           substitutions
         );
+        let consumedFieldType = concreteFieldType.copyBytes(
+          0,
+          concreteFieldType.byteLength
+        );
+        if (liftsOptionalPayload) {
+          match (genericTypeShape(concreteFieldType)) {
+            some(generic) => {
+              if (generic.base == "Option" && generic.arguments.length == 1) {
+                consumedFieldType = generic.arguments[0].copyBytes(
+                  0,
+                  generic.arguments[0].byteLength
+                );
+              }
+            }
+            none => {}
+          }
+        }
         try requireExpressionType(
           module,
           modules,
           moduleIndex,
           tree,
           children[childIndex],
-          concreteFieldType,
+          consumedFieldType,
           actual
         );
         try consumeOwnedExpressionNode(
@@ -496,7 +569,7 @@ function inferContextualObjectExpressionNode(
           moduleIndex,
           tree,
           children[childIndex],
-          concreteFieldType,
+          consumedFieldType,
           false,
           inout bindings
         );
@@ -4667,6 +4740,9 @@ function validateNativeCLayouts(
         }
         if (field.readonlyField) {
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be readonly`, field.line, field.column);
+        }
+        if (field.optionalField) {
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot use Z optional-field storage`, field.line, field.column);
         }
         match (in field.defaultValue) {
           some(_) => throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot declare a Z default value`, field.line, field.column);

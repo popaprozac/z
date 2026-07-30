@@ -236,6 +236,51 @@ fresh values owned and destroyed by each resulting struct. Defaults cannot
 refer to `this` or sibling fields in the first tier. Class-field defaults remain
 deferred; class constructors establish their fields explicitly.
 
+An optional struct field uses `?` after its name. It describes optional
+presence, not a nullable Z value:
+
+```zs
+struct WindowOptions {
+  url: String;
+  title: String = "Z App";
+  icon?: Image;
+  parent: Option<WindowHandle>;
+}
+```
+
+The declaration `icon?: Image` stores `Option<Image>` and behaves as though it
+had an implicit `Option.none` default. Omitting `icon` therefore constructs
+`none`. Supplying a direct `Image` contextually constructs `some(image)`, with
+the same ownership transfer that an explicit `Option.some(image)` would
+perform. Supplying an already constructed `Option<Image>` is also valid.
+
+```zs
+const withoutIcon = WindowOptions({
+  url: "https://example.com",
+  parent: Option.none,
+});
+
+const withIcon = WindowOptions({
+  url: "https://example.com",
+  icon: move loadedIcon,
+  parent: Option.none,
+});
+```
+
+The field shapes are deliberately distinct:
+
+| Declaration | May be omitted | Stored type |
+| --- | --- | --- |
+| `url: String` | No | `String` |
+| `title: String = "Z App"` | Yes; evaluates the default | `String` |
+| `icon?: Image` | Yes; becomes `none` | `Option<Image>` |
+| `parent: Option<WindowHandle>` | No; the caller supplies `some` or `none` | `Option<WindowHandle>` |
+
+`field?: T` cannot also declare an explicit default because optional presence
+already supplies the `none` default. Native Z values remain non-null:
+`Option<T>` is Z optionality, while `T | null` primarily represents honest
+nullable foreign values.
+
 `class` declares an ARC-managed reference type with identity. Construction uses
 `new`; copying a class reference shares the instance:
 

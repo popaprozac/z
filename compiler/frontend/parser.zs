@@ -218,6 +218,7 @@ export struct FunctionDeclaration {
 export struct FieldDeclaration {
   name: String;
   type: TypeReference;
+  optionalField: boolean;
   defaultValue: Option<ExpressionSyntax>;
   defaultStatements: StatementArena;
   visibility: Visibility;
@@ -3199,8 +3200,44 @@ function parseAggregateDeclaration(
     if (asynchronous) throw fail(tokens[current], "`async` must precede a function declaration");
     if (isStatic) throw fail(tokens[current], "static fields are not implemented");
     const field = try expect(tokens, inout current, TokenKind.identifier, "a field or method declaration");
+    const optionalField = takeIf(tokens, inout current, TokenKind.question);
+    if (optionalField && kind != DeclarationKind.structDeclaration) {
+      throw fail(field, "optional stored fields are currently supported only on value structs");
+    }
     try expectKind(tokens, inout current, TokenKind.colon, "`:` after a field name");
-    const type = try parseType(tokens, inout current, inout pendingGreater);
+    const declaredType = try parseType(tokens, inout current, inout pendingGreater);
+    if (optionalField && tokens[current].kind == TokenKind.equal) {
+      throw fail(
+        tokens[current],
+        `optional field "${field.text}" already defaults to Option.none; remove the default or declare "${field.text}: ${declaredType.name} = ..." when a concrete default is intended`
+      );
+    }
+    let typeReferences = Array<TypeNameReference>();
+    appendTypeNameReferences(inout typeReferences, declaredType.references);
+    let type = TypeReference({
+      name: declaredType.name.copyBytes(0, declaredType.name.byteLength),
+      references: typeReferences,
+      offset: declaredType.offset,
+      line: declaredType.line,
+      column: declaredType.column,
+    });
+    if (optionalField) {
+      let references = Array<TypeNameReference>();
+      references.push(TypeNameReference({
+        name: "Option",
+        offset: field.offset,
+        line: field.line,
+        column: field.column,
+      }));
+      appendTypeNameReferences(inout references, declaredType.references);
+      type = TypeReference({
+        name: `Option<${declaredType.name}>`,
+        references,
+        offset: declaredType.offset,
+        line: declaredType.line,
+        column: declaredType.column,
+      });
+    }
     let defaultValue = Option<ExpressionSyntax>.none;
     let defaultNodes = Array<Statement>();
     const hasDefault = takeIf(tokens, inout current, TokenKind.equal);
@@ -3218,6 +3255,7 @@ function parseAggregateDeclaration(
     fields.push(FieldDeclaration({
       name: field.text.copyBytes(0, field.text.byteLength),
       type,
+      optionalField,
       defaultValue,
       defaultStatements: StatementArena({
         nodes: defaultNodes,

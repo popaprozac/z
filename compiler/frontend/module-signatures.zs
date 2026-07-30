@@ -155,7 +155,7 @@ export function programTypeSignature(
       }
       let fields = Array<ModuleFieldSignature>();
       for (const field of aggregate.fields) {
-        let hasDefault = false;
+        let hasDefault = field.optionalField;
         match (in field.defaultValue) {
           some(_) => hasDefault = true;
           none => {}
@@ -166,6 +166,7 @@ export function programTypeSignature(
           visibility: visibilityName(field.visibility),
           readonlyField: field.readonlyField,
           hasDefault,
+          optionalField: field.optionalField,
         }));
       }
       let methods = Array<ModuleMethodSignature>();

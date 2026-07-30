@@ -488,7 +488,13 @@ export function inferGenericCalls(
       for (const initializer of originalArguments[0].fields) {
         const field = declaration.fields.find((candidate) => candidate.name === initializer.name);
         if (!field) continue;
-        unify(field.type.name, fieldTypes?.get(initializer.name) ?? null, valueParameters, inferred, callName, initializer.location);
+        const actual = fieldTypes?.get(initializer.name) ?? null;
+        const declaredOption = field.optional ? parseGenericType(field.type.name) : null;
+        const actualOption = actual ? parseGenericType(actual) : null;
+        const pattern = declaredOption?.base === "Option" && actualOption?.base !== "Option"
+          ? declaredOption.arguments[0]
+          : field.type.name;
+        unify(pattern, actual, valueParameters, inferred, callName, initializer.location);
       }
     } else {
       arguments_ = originalArguments.map((argument) => rewriteExpression(argument, environment));
@@ -501,10 +507,14 @@ export function inferGenericCalls(
         `cannot infer type parameter ${JSON.stringify(missing)} for ${JSON.stringify(callName)}; specify explicit type arguments`,
       );
     }
-    return {
-      typeName: genericTypeName(declaration.name, declaration.typeParameters!.map((parameter) => inferred.get(parameter)!)),
-      arguments: arguments_,
-    };
+    const typeName = genericTypeName(
+      declaration.name,
+      declaration.typeParameters!.map((parameter) => inferred.get(parameter)!),
+    );
+    if (!declaration.constructor && originalArguments.length === 1 && originalArguments[0].kind === "objectExpression") {
+      arguments_ = [rewriteExpression(originalArguments[0], environment, typeName)];
+    }
+    return { typeName, arguments: arguments_ };
   };
 
   const rewriteExpression = (
@@ -668,7 +678,34 @@ export function inferGenericCalls(
           const contextualFieldType = declaration
             ? substituteType(declaration.type.name, contextualOwner!.substitutions)
             : null;
-          const value = rewriteExpression(field.expression, environment, contextualFieldType);
+          const option = declaration?.optional && contextualFieldType
+            ? parseGenericType(contextualFieldType)
+            : null;
+          let value = rewriteExpression(field.expression, environment, contextualFieldType);
+          if (option?.base === "Option" && value.type !== contextualFieldType) {
+            if (field.expression.kind === "objectExpression" && value.type === null) {
+              value = rewriteExpression(field.expression, environment, option.arguments[0]);
+            }
+            value = {
+              expression: {
+                kind: "call",
+                callee: {
+                  kind: "member",
+                  object: {
+                    kind: "identifier",
+                    name: contextualFieldType!,
+                    location: field.expression.location,
+                  },
+                  property: "some",
+                  location: field.expression.location,
+                },
+                arguments: [value.expression],
+                argumentLabels: [null],
+                location: field.expression.location,
+              },
+              type: contextualFieldType,
+            };
+          }
           fieldTypes.set(field.name, value.type);
           return { ...field, expression: value.expression };
         });
@@ -1164,6 +1201,18 @@ export function inferGenericCalls(
                 rewriteExpression(argument, environment, expression.callee.name)
               ));
             }
+            return {
+              expression: {
+                ...expression,
+                arguments: rewrittenArguments.map((item) => item.expression),
+              },
+              type: expression.callee.name,
+            };
+          }
+          if (declaration && !declaration.constructor) {
+            const rewrittenArguments = expression.arguments.map((argument) => (
+              rewriteExpression(argument, environment, expression.callee.name)
+            ));
             return {
               expression: {
                 ...expression,

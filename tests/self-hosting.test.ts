@@ -223,6 +223,80 @@ test("keeps explicit immutable call-site borrows in native frontend parity", () 
   );
 });
 
+test("keeps optional struct fields ownership-safe through native parsing and emission", () => {
+  const directory = mkdtempSync("/tmp/z-native-optional-fields-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(
+    input,
+    "struct Resource {\n"
+      + "  value: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "\n"
+      + "struct Envelope {\n"
+      + "  payload?: Resource;\n"
+      + "}\n"
+      + "\n"
+      + "function main(): i32 {\n"
+      + "  const omitted = Envelope();\n"
+      + "  const resource = Resource({ value: 42 });\n"
+      + "  const lifted = Envelope({ payload: move resource });\n"
+      + "  const absent = match (in omitted.payload) {\n"
+      + "    some(value) => value.value;\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  const present = match (in lifted.payload) {\n"
+      + "    some(value) => value.value;\n"
+      + "    none => 0;\n"
+      + "  };\n"
+      + "  return absent + present - 42;\n"
+      + "}\n",
+  );
+
+  const parsed = spawnSync(
+    process.execPath,
+    [cli, "self-host-parse", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(parsed.status, 0, parsed.stderr);
+  assert.match(
+    parsed.stdout,
+    /main\.zs: stage-1 parser matches 3 declarations, 0 imports, 1 function signatures, 1 function bodies, and 2 type shapes/,
+  );
+
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_none\}/);
+  assert.match(
+    emission.stdout,
+    /\.payload = \(Z___z_Option_Resource\)\{\.tag = Z___z_Option_ResourceTag_some, \.payload\.some = resource\}/,
+  );
+  assert.doesNotMatch(emission.stdout, /Z_Resource_deinit\(&resource\);/);
+
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 20_000);
+
 test("preserves local views through native lowering and C emission", () => {
   const input = resolve(projectRoot, "tests/fixtures/native-local-view.zs");
   const parity = spawnSync(
@@ -5431,6 +5505,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
               visibility: "private",
               readonlyField: true,
               hasDefault: false,
+              optionalField: false,
             }],
             methods: [{
               name: "read",
@@ -5587,6 +5662,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
         visibility: "private",
         readonlyField: true,
         hasDefault: false,
+        optionalField: false,
       }],
       methods: [{
         name: "read",

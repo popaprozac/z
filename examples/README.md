@@ -18,6 +18,7 @@ inspect the generated C-family source. The broader guided index lives in
 - [`first.zs`](language/basics/first.zs): first native program and direct C call
 - [`console.zs`](language/basics/console.zs): typed logging and interpolation
 - [`construction.zs`](language/basics/construction.zs): struct construction and class-only `new`
+- [`struct-defaults.zs`](language/basics/struct-defaults.zs) and [`optional-fields.zs`](language/basics/optional-fields.zs): independently evaluated defaults and optional-presence fields backed by `Option<T>`
 - [`structs.zs`](language/basics/structs.zs), [`classes.zs`](language/basics/classes.zs), and [`constructors.zs`](language/basics/constructors.zs)
 - [`mutation.zs`](language/basics/mutation.zs), [`mutable-methods.zs`](language/basics/mutable-methods.zs), and [`static-methods.zs`](language/basics/static-methods.zs)
 - [`function-values.zs`](language/basics/function-values.zs) and [`closures.zs`](language/basics/closures.zs)

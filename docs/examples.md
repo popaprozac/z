@@ -14,6 +14,7 @@ compile-only probes and `emit` to inspect generated native code.
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Struct defaults | [`struct-defaults.zs`](../examples/language/basics/struct-defaults.zs) | Independent field defaults, `Type()`, explicit empty construction, and partial overrides |
+| Optional struct fields | [`optional-fields.zs`](../examples/language/basics/optional-fields.zs) | Optional presence with `field?: T`, contextual `some` lifting, explicit `Option<T>`, and cleanup-bearing payloads |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
 | Transparent type aliases | [`type-aliases/main.zs`](../examples/language/types/type-aliases/main.zs) | Exported callback alias, selective import, unchanged native function-value representation, and editor navigation |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |

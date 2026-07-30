@@ -149,6 +149,7 @@ export type Stage1ModuleFieldSignature = {
   readonly visibility: "public" | "private";
   readonly readonlyField: boolean;
   readonly hasDefault: boolean;
+  readonly optionalField: boolean;
 };
 
 export type Stage1ModuleVariantSignature = {
@@ -625,25 +626,26 @@ export function decodeStage1ModuleGraphStream(
       ) {
         throw new Error(`malformed stage-1 type executor affinity: ${line}`);
       }
-      if (fields.length !== 11 + typeParameterCount + (fieldCount * 5) + (variantCount * 2)) {
+      if (fields.length !== 11 + typeParameterCount + (fieldCount * 6) + (variantCount * 2)) {
         throw new Error(`malformed stage-1 type signature arity: ${line}`);
       }
       const encoded = fields.slice(11);
       const typeParameters = encoded.slice(0, typeParameterCount);
-      const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 5));
-      const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 5));
+      const encodedFields = encoded.slice(typeParameterCount, typeParameterCount + (fieldCount * 6));
+      const encodedVariants = encoded.slice(typeParameterCount + (fieldCount * 6));
       if (
         typeParameters.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
-        || encodedFields.some((field, index) => index % 5 < 3 && !/^(?:[0-9a-f]{2})*$/.test(field))
+        || encodedFields.some((field, index) => index % 6 < 3 && !/^(?:[0-9a-f]{2})*$/.test(field))
         || encodedVariants.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
       ) {
         throw new Error(`malformed stage-1 type signature text: ${line}`);
       }
       const decodedFields: Stage1ModuleFieldSignature[] = [];
-      for (let index = 0; index < encodedFields.length; index += 5) {
+      for (let index = 0; index < encodedFields.length; index += 6) {
         const visibility = Buffer.from(encodedFields[index + 2], "hex").toString("utf8");
         const readonlyField = encodedFields[index + 3];
         const hasDefault = encodedFields[index + 4];
+        const optionalField = encodedFields[index + 5];
         if (visibility !== "public" && visibility !== "private") {
           throw new Error(`malformed stage-1 field visibility: ${line}`);
         }
@@ -653,12 +655,16 @@ export function decodeStage1ModuleGraphStream(
         if (hasDefault !== "0" && hasDefault !== "1") {
           throw new Error(`malformed stage-1 field default state: ${line}`);
         }
+        if (optionalField !== "0" && optionalField !== "1") {
+          throw new Error(`malformed stage-1 field optional state: ${line}`);
+        }
         decodedFields.push({
           name: Buffer.from(encodedFields[index], "hex").toString("utf8"),
           typeName: Buffer.from(encodedFields[index + 1], "hex").toString("utf8"),
           visibility,
           readonlyField: readonlyField === "1",
           hasDefault: hasDefault === "1",
+          optionalField: optionalField === "1",
         });
       }
       const decodedVariants: Stage1ModuleVariantSignature[] = [];

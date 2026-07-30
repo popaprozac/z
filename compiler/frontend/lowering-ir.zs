@@ -64,6 +64,7 @@ export struct LoweredType {
 export struct LoweredField {
   name: String;
   type: LoweredType;
+  optionalField: boolean;
 }
 
 export struct LoweredStruct {
@@ -2558,6 +2559,30 @@ function fieldTypeNameForOwner(
   return Option<String>.none;
 }
 
+function fieldIsOptionalForOwner(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String,
+  in fieldName: String
+): boolean {
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name != ownerTypeName) continue;
+    for (const field of aggregate.fields) {
+      if (field.name == fieldName) return field.optionalField;
+    }
+  }
+  for (const imported of importedTypes) {
+    if (
+      imported.localName != ownerTypeName
+      && imported.targetName != ownerTypeName
+    ) continue;
+    for (const field of imported.fields) {
+      if (field.name == fieldName) return field.optionalField;
+    }
+  }
+  return false;
+}
+
 function staticallyResolvedExpressionTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -4061,15 +4086,32 @@ function lowerExpression(
             }
             let value: usize = 0;
             if (expectedTypeName.byteLength > 0) {
-              value = try lowerExpressionExpected(
+              if (fieldIsOptionalForOwner(
                 program,
                 importedTypes,
-                evidence,
-                tree,
-                valueInput,
-                expectedTypeName,
-                inout output
-              );
+                constructionName,
+                fieldName
+              )) {
+                value = try lowerOptionalFieldExpression(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  valueInput,
+                  expectedTypeName,
+                  inout output
+                );
+              } else {
+                value = try lowerExpressionExpected(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  valueInput,
+                  expectedTypeName,
+                  inout output
+                );
+              }
             } else {
               value = try lowerExpression(
                 program,
@@ -4125,11 +4167,51 @@ function lowerExpression(
                   }
                   none => throw `native lowering could not project default value for ${constructionName}.${field.name}`;
                 }
-                none => {}
+                none => {
+                  if (field.optionalField) {
+                    const value = try lowerOptionalFieldNone(
+                      program,
+                      importedTypes,
+                      field.type.name,
+                      inout output
+                    );
+                    children.push(value);
+                    labels.push(field.name.copyBytes(
+                      0,
+                      field.name.byteLength
+                    ));
+                  }
+                }
               }
             }
           }
           none => {}
+        }
+        if (!localConstruction) {
+          for (const imported of importedTypes) {
+            if (
+              imported.localName != constructionName
+              && imported.targetName != constructionName
+            ) continue;
+            for (const field of imported.fields) {
+              if (
+                !field.optionalField
+                || containsString(labels, field.name)
+              ) continue;
+              const optionalTypeName = loweredTypeIdentity(field.type);
+              const value = try lowerOptionalFieldNone(
+                program,
+                importedTypes,
+                optionalTypeName,
+                inout output
+              );
+              children.push(value);
+              labels.push(field.name.copyBytes(
+                0,
+                field.name.byteLength
+              ));
+            }
+          }
         }
         return pushExpression(
           inout output,
@@ -4696,6 +4778,139 @@ function lowerExpressionExpected(
     tree,
     index,
     inout output
+  );
+}
+
+function isExplicitOptionExpression(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  match (resolvedExpressionTypeName(evidence, tree, index)) {
+    some(typeName) => {
+      if (stringStartsWith(typeName, "__z_Option_")) return true;
+      match (genericTypeShape(typeName)) {
+        some(generic) => {
+          if (generic.base == "Option" && generic.arguments.length == 1) {
+            return true;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  let candidate = index;
+  if (
+    tree.nodes[candidate].kind == ExpressionKind.callExpression
+    && tree.nodes[candidate].children.length > 0
+  ) candidate = tree.nodes[candidate].children[0];
+  if (
+    tree.nodes[candidate].kind != ExpressionKind.memberExpression
+    || tree.nodes[candidate].children.length != 1
+  ) return false;
+  const receiver = tree.nodes[candidate].children[0];
+  if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression) {
+    return false;
+  }
+  const receiverName = view tree.nodes[receiver].value;
+  return receiverName == "Option" || stringStartsWith(receiverName, "Option<");
+}
+
+function lowerOptionalFieldExpression(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in expectedTypeName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (isExplicitOptionExpression(evidence, tree, index)) {
+    return try lowerExpressionExpected(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index,
+      expectedTypeName,
+      inout output
+    );
+  }
+  const intrinsicResult = try intrinsicOptionDeclaration(
+    program,
+    importedTypes,
+    expectedTypeName
+  );
+  const intrinsic = match (intrinsicResult) {
+    some(value) => value;
+    none => throw `native optional-field lowering could not materialize ${expectedTypeName}`;
+  };
+  let payloadTypeName = "";
+  match (genericTypeShape(expectedTypeName)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        payloadTypeName = generic.arguments[0].copyBytes(
+          0,
+          generic.arguments[0].byteLength
+        );
+      }
+    }
+    none => match (intrinsicOptionPayloadName(expectedTypeName)) {
+      some(payload) => payloadTypeName = move payload;
+      none => {}
+    }
+  }
+  if (payloadTypeName.byteLength == 0) {
+    throw `native optional-field lowering expected Option<T>, found ${expectedTypeName}`;
+  }
+  let payload = try lowerExpressionExpected(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    payloadTypeName,
+    inout output
+  );
+  payload = wrapImplicitOwnedTransfer(tree, index, payload, inout output);
+  let children = Array<usize>();
+  children.push(payload);
+  let labels = Array<String>();
+  labels.push("some");
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.enumPayloadValue,
+    intrinsic.name,
+    children,
+    labels
+  );
+}
+
+function lowerOptionalFieldNone(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in typeName: String,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const intrinsicResult = try intrinsicOptionDeclaration(
+    program,
+    importedTypes,
+    typeName
+  );
+  const intrinsic = match (intrinsicResult) {
+    some(value) => value;
+    none => throw `native optional-field lowering could not materialize ${typeName}`;
+  };
+  let labels = Array<String>();
+  labels.push("none");
+  labels.push("tagged");
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.enumValue,
+    intrinsic.name,
+    Array<usize>(),
+    labels
   );
 }
 
@@ -7600,6 +7815,7 @@ function loweredStructFields(
           kind: field.type.kind,
           name: field.type.name.copyBytes(0, field.type.name.byteLength),
         }),
+        optionalField: field.optionalField,
       }));
     }
   }
@@ -8009,6 +8225,7 @@ function appendLoweredProgram(
       fields.push(LoweredField({
         name: field.name.copyBytes(0, field.name.byteLength),
         type: move fieldType,
+        optionalField: field.optionalField,
       }));
     }
     let deinitializer = Option<LoweredFunction>.none;

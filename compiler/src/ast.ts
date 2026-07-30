@@ -82,6 +82,8 @@ export type DeinitDeclaration = {
 export type FieldDeclaration = {
   readonly name: string;
   readonly type: TypeReference;
+  /** True when the source declaration used `field?: T`. */
+  readonly optional?: boolean;
   readonly defaultValue?: Expression | null;
   readonly visibility: "public" | "private";
   readonly readonly: boolean;

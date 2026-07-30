@@ -317,6 +317,15 @@
     "declarations": {
       "patterns": [
         {
+          "name": "meta.declaration.field.optional.z",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\?)(\\s*)(:)",
+          "captures": {
+            "1": { "name": "variable.other.property.z" },
+            "2": { "name": "keyword.operator.optional.z" },
+            "4": { "name": "punctuation.separator.type-annotation.z" }
+          }
+        },
+        {
           "match": "\\b(function)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": { "1": { "name": "storage.type.function.z" }, "2": { "name": "entity.name.function.z" } }
         },

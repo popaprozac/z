@@ -41,6 +41,7 @@ export struct NativeFieldShape {
   typeName: String;
   visibility: String;
   readonlyField: boolean;
+  optionalField: boolean;
 }
 
 export struct NativeAggregateConstructionShape {
@@ -233,6 +234,7 @@ export function aggregateFieldShape(
                 typeName: substituteGenericType(fieldType, substitutions),
                 visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
                 readonlyField: field.readonlyField,
+                optionalField: field.optionalField,
               }));
             }
           }

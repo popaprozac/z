@@ -1,6 +1,6 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-07-28.
+Last reviewed: 2026-07-29.
 
 This document answers “what does the Bun/TypeScript stage-0 compiler implement
 today?” It is not the language specification. Accepted source semantics live in
@@ -19,7 +19,7 @@ Status meanings:
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Bindings, functions, inference | Implemented | Local inference plus first-tier value-struct object destructuring and aliases; public/API contracts remain explicit |
-| Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup, and independently evaluated value-field defaults through `Type()`, `Type({})`, or partial overrides; class-field defaults remain deferred |
+| Structs and methods | Implemented | Value layout, mutation, static methods, deterministic cleanup, independently evaluated value-field defaults through `Type()`, `Type({})`, or partial overrides, and value-struct optional presence through `field?: T` stored as `Option<T>` with omitted `none` and contextual direct-payload lifting; optional class/C-layout fields and class-field defaults remain deferred |
 | ARC classes | Implemented | Identity, sharing, constructors, private fields, weak references |
 | Traits | Partial | Nominal static conformance, generic declarations/specializations, and generic constraints; no trait values/dynamic dispatch |
 | Enums and `Option`/`Result` | Implemented | Payloads, nesting, exhaustive statement/expression matches, and tag equality for payload-free Z enums |

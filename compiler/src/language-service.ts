@@ -366,6 +366,18 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const token = tokens[index];
     const previous = tokens[index - 1];
     const next = tokens[index + 1];
+    if (
+      token.kind === "question"
+      && previous?.kind === "identifier"
+      && next?.kind === "colon"
+      && fieldDeclarations.has(previous.location.offset)
+    ) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
     if (token.kind !== "identifier" && !keywordMember) continue;
     const contextualTask = token.text === "task"
@@ -830,7 +842,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     .flatMap((declaration) => declaration.fields)
     .find((field) => field.location.offset === word.start && field.name === word.text);
   if (declaredField) {
-    return markdownHover(fieldDetail(declaredField, context.typeDisplayNames), source, word.start, word.end);
+    return markdownHover(fieldDetail(declaredField, context.typeDisplayNames, true), source, word.start, word.end);
   }
   const declaredMethod = context.sourceProgram.structs
     .flatMap((declaration) => declaration.methods)
@@ -1694,7 +1706,14 @@ type ObjectFieldShape = {
   readonly type: string;
   readonly visibility: "public" | "private";
   readonly defaulted?: boolean;
+  readonly optional?: boolean;
 };
+
+function objectFieldCompletionDetail(field: ObjectFieldShape): string {
+  if (!field.optional) return `${field.name}: ${field.type}${field.defaulted ? " (defaulted)" : ""}`;
+  const payload = /^Option<(.+)>$/.exec(field.type)?.[1] ?? field.type;
+  return `${field.name}?: ${payload} (optional/defaulted; accepts ${payload} or Option<${payload}>; omitted → none)`;
+}
 
 function objectFieldCompletions(
   source: string,
@@ -1760,7 +1779,7 @@ function objectFieldCompletions(
           .map((field) => ({
             label: field.name,
             kind: completionKinds.field,
-            detail: `${field.name}: ${field.type}${field.defaulted ? " (defaulted)" : ""}`,
+            detail: objectFieldCompletionDetail(field),
             insertText: field.name,
             sortText: `0-${field.name}`,
           }));
@@ -1815,7 +1834,7 @@ function objectFieldCompletions(
     .map((field) => ({
       label: field.name,
       kind: completionKinds.field,
-      detail: `${field.name}: ${field.type}${field.defaulted ? " (defaulted)" : ""}`,
+      detail: objectFieldCompletionDetail(field),
       insertText: patternBinding ? field.name : `${field.name}: `,
       sortText: `0-${field.name}`,
     }));
@@ -1834,7 +1853,8 @@ function objectFieldsForType(
         name: field.name,
         type: displaySubstitutedType(field.type.name, aggregate.substitutions, context.typeDisplayNames),
         visibility: field.visibility,
-        defaulted: Boolean(field.defaultValue),
+        defaulted: Boolean(field.defaultValue) || Boolean(field.optional),
+        optional: Boolean(field.optional),
       }));
     }
     const foreign = resolveForeignNamedTypeForText(context, typeName);
@@ -1905,8 +1925,10 @@ function localAggregateFields(source: string, typeName: string): ObjectFieldShap
       const nameIndex = tokens[cursor].kind === "private" || tokens[cursor].kind === "public"
         ? cursor + 1
         : cursor;
-      if (tokens[nameIndex]?.kind !== "identifier" || tokens[nameIndex + 1]?.kind !== "colon") continue;
-      let end = nameIndex + 2;
+      const optional = tokens[nameIndex + 1]?.kind === "question";
+      const colonIndex = optional ? nameIndex + 2 : nameIndex + 1;
+      if (tokens[nameIndex]?.kind !== "identifier" || tokens[colonIndex]?.kind !== "colon") continue;
+      let end = colonIndex + 1;
       while (tokens[end] && tokens[end].kind !== "semicolon") end += 1;
       if (!tokens[end]) continue;
       let equal = -1;
@@ -1916,13 +1938,19 @@ function localAggregateFields(source: string, typeName: string): ObjectFieldShap
           break;
         }
       }
-      const startOffset = tokens[nameIndex + 1].location.offset + 1;
+      const startOffset = tokens[colonIndex].location.offset + 1;
       const typeEnd = equal >= 0 ? tokens[equal].location.offset : tokens[end].location.offset;
       let fieldType = source.slice(startOffset, typeEnd).trim();
       for (const [parameter, argument] of substitutions) {
         fieldType = fieldType.replace(new RegExp(`\\b${parameter}\\b`, "g"), argument);
       }
-      fields.push({ name: tokens[nameIndex].text, type: fieldType, visibility, defaulted: equal >= 0 });
+      fields.push({
+        name: tokens[nameIndex].text,
+        type: optional ? `Option<${fieldType}>` : fieldType,
+        visibility,
+        defaulted: optional || equal >= 0,
+        optional,
+      });
       cursor = end;
     }
     return fields;
@@ -5083,7 +5111,7 @@ function structCompletions(
       .map((field) => ({
         label: field.name,
         kind: completionKinds.field,
-        detail: `${field.visibility === "private" ? "private " : ""}${field.readonly ? "readonly " : ""}${displayType(field.type.name, typeDisplayNames)}${field.defaultValue ? " (defaulted)" : ""}`,
+        detail: memberFieldCompletionDetail(field, typeDisplayNames),
       })),
     ...methods
       .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
@@ -5096,11 +5124,32 @@ function structCompletions(
   ];
 }
 
-function fieldDetail(field: StructDeclaration["fields"][number], typeDisplayNames: ReadonlyMap<string, string>): string {
+function memberFieldCompletionDetail(
+  field: StructDeclaration["fields"][number],
+  typeDisplayNames: ReadonlyMap<string, string>,
+): string {
+  const visibility = field.visibility === "private" ? "private " : "";
+  const readonly = field.readonly ? "readonly " : "";
+  const storedType = displayType(field.type.name, typeDisplayNames);
+  if (field.optional) return `${visibility}${readonly}${storedType} (optional presence; omitted → none)`;
+  return `${visibility}${readonly}${storedType}${field.defaultValue ? " (defaulted)" : ""}`;
+}
+
+function fieldDetail(
+  field: StructDeclaration["fields"][number],
+  typeDisplayNames: ReadonlyMap<string, string>,
+  sourceSpelling = false,
+): string {
   const visibility = field.visibility === "private" ? "private " : "";
   const readonly = field.readonly ? "readonly " : "";
   const defaulted = field.defaultValue ? " = default" : "";
-  return `${visibility}${readonly}${field.name}: ${displayType(field.type.name, typeDisplayNames)}${defaulted}`;
+  const storedType = displayType(field.type.name, typeDisplayNames);
+  if (!field.optional) return `${visibility}${readonly}${field.name}: ${storedType}${defaulted}`;
+  const payload = /^Option<(.+)>$/.exec(storedType)?.[1] ?? storedType;
+  if (sourceSpelling) {
+    return `${visibility}${readonly}${field.name}?: ${payload}  // stored as ${storedType}; omission initializes Option.none`;
+  }
+  return `${visibility}${readonly}${field.name}: ${storedType}  // optional presence; match some/none`;
 }
 
 function staticCompletions(
@@ -5648,7 +5697,12 @@ function structLiteralFieldHover(context: AnalyzedSource, offset: number): strin
     const concrete = context.program.structs.find((candidate) => candidate.name === typeName);
     const concreteField = concrete?.fields.find((candidate) => candidate.name === item.name);
     if (concreteField) {
-      return `${concreteField.name}: ${displayType(concreteField.type.name, context.typeDisplayNames)}`;
+      return concreteField.optional
+        ? optionalLiteralFieldDetail(
+            concreteField.name,
+            displayType(concreteField.type.name, context.typeDisplayNames),
+          )
+        : `${concreteField.name}: ${displayType(concreteField.type.name, context.typeDisplayNames)}`;
     }
     const foreign = context.semanticInfo.foreignNamedTypes.get(typeName);
     const field = foreign?.kind === "record" ? foreign.fields.find((candidate) => candidate.name === item.name) : null;
@@ -5659,7 +5713,15 @@ function structLiteralFieldHover(context: AnalyzedSource, offset: number): strin
   const substitutions = new Map(
     declaration.typeParameters?.map((parameter, index) => [parameter, generic?.arguments[index] ?? parameter]) ?? [],
   );
-  return `${field.name}: ${displaySubstitutedType(field.type.name, substitutions, context.typeDisplayNames)}`;
+  const fieldType = displaySubstitutedType(field.type.name, substitutions, context.typeDisplayNames);
+  return field.optional
+    ? optionalLiteralFieldDetail(field.name, fieldType)
+    : `${field.name}: ${fieldType}`;
+}
+
+function optionalLiteralFieldDetail(name: string, storedType: string): string {
+  const payload = /^Option<(.+)>$/.exec(storedType)?.[1] ?? storedType;
+  return `${name}?: ${payload}  // accepts ${payload} or ${storedType}; omission initializes Option.none`;
 }
 
 function collectStructLiteralFields(program: Program): Array<{

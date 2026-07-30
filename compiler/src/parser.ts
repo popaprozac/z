@@ -1119,12 +1119,36 @@ export function parse(tokens: Token[], fileName: string): Program {
         throw new DiagnosticError(fileName, previous().location, "static fields are not implemented; `static` currently applies only to functions");
       }
       const field = expect("identifier", "a field or method declaration");
+      const optional = match("question");
+      if (optional && kind !== "struct") {
+        throw new DiagnosticError(
+          fileName,
+          field.location,
+          "optional stored fields are currently supported only on value structs",
+        );
+      }
       expect("colon", "`:`");
-      const type = parseType();
+      const declaredType = parseType();
+      const type = optional
+        ? { ...declaredType, name: genericTypeName("Option", [declaredType.name]) }
+        : declaredType;
+      if (optional && at("equal")) {
+        throw new DiagnosticError(
+          fileName,
+          peek().location,
+          `optional field ${JSON.stringify(field.text)} already defaults to Option.none`,
+          {
+            helps: [
+              `remove the default, or declare ${field.text}: ${declaredType.name} = ... when a concrete default is intended`,
+            ],
+          },
+        );
+      }
       const defaultValue = match("equal") ? parseExpression() : null;
       fields.push({
         name: field.text,
         type,
+        optional,
         defaultValue,
         visibility,
         readonly: aggregateReadonly || fieldReadonly,
