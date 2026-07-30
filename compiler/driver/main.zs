@@ -277,10 +277,13 @@ function checkProject(in entryPath: String): i32 throws String {
     if (project.config.targetKind == "executable") {
       try validateExecutableEntry(project, true);
     } else if (
-      project.config.targetKind == "static-library"
+      (
+        project.config.targetKind == "static-library"
+        || project.config.targetKind == "shared-library"
+      )
       && !hasNativeCExport(project)
     ) {
-      throw "a static-library project must declare at least one `export c function`";
+      throw `a ${project.config.targetKind} project must declare at least one \`export c function\``;
     }
   }
   console.log(`checked ${project.modules.length} Z modules`);
@@ -494,6 +497,94 @@ function buildStaticLibrary(
   return 0;
 }
 
+function sharedLibraryExtension(
+  in config: NativeProjectConfig
+): String {
+  let extension = ".dylib";
+  match (in config.platform) {
+    some(platform) => {
+      if (platform == "windows") extension = ".dll";
+      else if (platform != "macos") extension = ".so";
+    }
+    // The fixed-point bootstrap is currently proven on macOS. The future
+    // std/target layer will make this host default intrinsic.
+    none => {}
+  }
+  return extension;
+}
+
+function sharedLibraryPrefix(
+  in config: NativeProjectConfig
+): String {
+  let prefix = "lib";
+  match (in config.platform) {
+    some(platform) => {
+      if (platform == "windows") prefix = "";
+    }
+    none => {}
+  }
+  return prefix;
+}
+
+function buildSharedLibrary(
+  in project: NativeProject,
+  release: boolean
+): i32 throws String {
+  if (!hasNativeCExport(project)) {
+    throw "a shared-library project must declare at least one `export c function`";
+  }
+  const targetName = try requiredProjectTargetName(project);
+  const emitted = try emitModulesC(project.modules, project.graph);
+  const header = try emitModulesCHeader(project.modules, project.graph);
+  const outputDirectory = normalizedModulePath(
+    `${project.config.directory}/build`
+  );
+  const cacheDirectory = normalizedModulePath(
+    `${project.config.directory}/.z-cache/build`
+  );
+  try fs.createDirectories(outputDirectory);
+  try fs.createDirectories(cacheDirectory);
+  const cPath = `${cacheDirectory}/${targetName}.c`;
+  const prefix = sharedLibraryPrefix(project.config);
+  const extension = sharedLibraryExtension(project.config);
+  const libraryPath = `${outputDirectory}/${prefix}${targetName}${extension}`;
+  const headerPath = `${outputDirectory}/${targetName}.h`;
+  try fs.writeText(cPath, emitted);
+
+  let compilerArguments = Array<String>();
+  compilerArguments.push("-x");
+  compilerArguments.push("c");
+  compilerArguments.push("-std=c11");
+  compilerArguments.push("-shared");
+  compilerArguments.push("-fPIC");
+  compilerArguments.push("-fvisibility=hidden");
+  compilerArguments.push(
+    "-DZ_API=__attribute__((visibility(\"default\")))"
+  );
+  if (release) {
+    compilerArguments.push("-O2");
+    compilerArguments.push("-DNDEBUG");
+  } else {
+    compilerArguments.push("-O0");
+  }
+  compilerArguments.push("-Wall");
+  compilerArguments.push("-Wextra");
+  compilerArguments.push("-Werror");
+  compilerArguments.push(copy cPath);
+  try appendProjectCompilerArguments(
+    project.config,
+    inout compilerArguments
+  );
+  compilerArguments.push("-o");
+  compilerArguments.push(copy libraryPath);
+  const compilationExitCode = try process.run("clang", compilerArguments);
+  if (compilationExitCode != 0) return compilationExitCode;
+  try fs.writeText(headerPath, header);
+  console.log(`built ${libraryPath}`);
+  console.log(`generated ${headerPath}`);
+  return 0;
+}
+
 function buildExecutableTarget(
   in project: NativeProject,
   release: boolean
@@ -538,6 +629,9 @@ function buildManifestProject(
   }
   if (project.config.targetKind == "static-library") {
     return try buildStaticLibrary(project, release);
+  }
+  if (project.config.targetKind == "shared-library") {
+    return try buildSharedLibrary(project, release);
   }
   throw `unsupported project target kind "${project.config.targetKind}"`;
 }

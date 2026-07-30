@@ -3484,6 +3484,53 @@ test("compiles a multi-module Z application through the standalone native driver
     /z run requires an executable project, but target.kind is "static-library"/,
   );
 
+  const sharedProject = resolve(directory, "shared-project");
+  mkdirSync(sharedProject);
+  writeFileSync(
+    resolve(sharedProject, "library.zs"),
+    "export c function z_native_shared_answer(): i32 { return 42; }\n",
+  );
+  writeFileSync(
+    resolve(sharedProject, "z.json"),
+    JSON.stringify({
+      target: {
+        kind: "shared-library",
+        name: "native_shared",
+        entry: "library.zs",
+      },
+    }),
+  );
+  const sharedProjectCheck = spawnSync(
+    driver,
+    ["check", sharedProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(sharedProjectCheck.status, 0, sharedProjectCheck.stderr);
+  const sharedProjectBuild = spawnSync(
+    driver,
+    ["build", sharedProject, "--release"],
+    { encoding: "utf8" },
+  );
+  assert.equal(sharedProjectBuild.status, 0, sharedProjectBuild.stderr);
+  assert.equal(
+    existsSync(resolve(sharedProject, "build/libnative_shared.dylib")),
+    true,
+  );
+  assert.equal(
+    existsSync(resolve(sharedProject, "build/native_shared.h")),
+    true,
+  );
+  const sharedProjectRun = spawnSync(
+    driver,
+    ["run", sharedProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(sharedProjectRun.status, 1);
+  assert.match(
+    sharedProjectRun.stderr,
+    /z run requires an executable project, but target.kind is "shared-library"/,
+  );
+
   const staticFileModeProject = resolve(directory, "static-file-mode");
   mkdirSync(staticFileModeProject);
   writeFileSync(

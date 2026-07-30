@@ -74,7 +74,7 @@ z test <file.zs | project-directory | z.json>
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 | `bun run z run path/to/project` | Run the executable target selected by that project's `z.json` |
 | `bun run z run path/to/project --release` | Run that target through an optimized native build |
-| `bun run z build path/to/project` | Build an executable or static-library target into its public `build/` directory |
+| `bun run z build path/to/project` | Build an executable, static library, or shared library into its public `build/` directory |
 | `bun run z build path/to/project --release` | Build the same target with optimization enabled |
 | `bun run z test path/to/project` | Run tests reachable from the selected entry without requiring `main` |
 
@@ -121,16 +121,18 @@ bun run z check path/to/project/smoke.zs
 bun run z run path/to/project/smoke.zs
 ```
 
-An executable build publishes the target's named native binary. A
-`"kind": "static-library"` target instead requires one or more checked
-`export c function` declarations and publishes a guarded C/C++ header plus a
-native archive. See
+An executable build publishes the target's named native binary. The
+`"static-library"` and `"shared-library"` kinds instead require one or more
+checked `export c function` declarations and publish a guarded C/C++ header
+plus the selected native library. See
 [Calling Z from C](../examples/interop/c/z-export/README.md) for the complete
-manifest and handwritten consumer.
+static example and
+[Calling a shared Z library from C](../examples/interop/c/z-shared-export/README.md)
+for the dynamic form.
 
-Shared-library output and project-mode source emission are deliberate next
-artifact layers; `shared-library` is not yet an accepted target kind, and
-`z emit` still requires an explicit `.zs` file.
+Versioned shared-library identities, installation layout, Windows import
+libraries, and project-mode source emission remain deliberate next artifact
+layers. `z emit` still requires an explicit `.zs` file.
 
 A checked `z.json` JSON Schema and manifest completion are follow-up DX; the
 compiler's validated fields remain the authority in this first slice.

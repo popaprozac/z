@@ -529,6 +529,40 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22) status=1\n");
 });
 
+hostToolchainTest("builds the shared Z-to-C example and runs its handwritten C consumer", () => {
+  if (process.platform === "win32") return;
+  const project = resolve(projectRoot, "examples/interop/c/z-shared-export");
+  const build = spawnSync(
+    process.execPath,
+    [cli, "build", project, "--release"],
+    { encoding: "utf8" },
+  );
+  assert.equal(build.status, 0, build.stderr);
+  const library = resolve(
+    project,
+    `build/libzshared${process.platform === "darwin" ? ".dylib" : ".so"}`,
+  );
+  assert.equal(existsSync(library), true);
+  assert.equal(existsSync(resolve(project, "build/zshared.h")), true);
+
+  const consumer = resolve(project, "build/consumer");
+  const compileConsumer = spawnSync("clang", [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-I", resolve(project, "build"),
+    resolve(project, "consumer.c"),
+    library,
+    `-Wl,-rpath,${resolve(project, "build")}`,
+    "-o", consumer,
+  ], { encoding: "utf8" });
+  assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
+  const run = spawnSync(consumer, [], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, "shared=42\n");
+});
+
 test("lowers raw native expressions through isolated helpers and supports raw function bodies", () => {
   const example = resolve(projectRoot, "examples/interop/raw/native-boundary.zs");
   const source = readFileSync(example, "utf8");

@@ -16,6 +16,9 @@ accepts that directory, as in the Z Notes README; a native `z` on `PATH`
 supports `z check .`, `z run .`, and `z build .` from inside it. Both forms
 select the named `target.entry`. Passing a `.zs` path explicitly overrides the
 entry for focused smoke programs while retaining the project configuration.
+[`interop/c/z-export`](interop/c/z-export) and
+[`interop/c/z-shared-export`](interop/c/z-shared-export) demonstrate the same
+checked Z-to-C exports as static and shared native artifacts.
 
 ## Language
 

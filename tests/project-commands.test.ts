@@ -46,6 +46,18 @@ test("requires a named entry for every discovered project target", () => {
   writeManifest(directory, { name: "required-fields", entry: "main.zs" });
   const configured = invoke(["check", resolve(directory, "z.json")]);
   assert.equal(configured.status, 0, configured.stderr);
+
+  writeManifest(directory, {
+    kind: "dynamic-library",
+    name: "required-fields",
+    entry: "main.zs",
+  });
+  const invalidKind = invoke(["check", directory]);
+  assert.equal(invalidKind.status, 1);
+  assert.match(
+    invalidKind.stderr,
+    /target\.kind must be "executable", "static-library", or "shared-library"/,
+  );
 });
 
 test("separates project validation from explicit source-file checking", () => {
@@ -74,6 +86,15 @@ test("separates project validation from explicit source-file checking", () => {
   const staticProject = invoke(["check", directory]);
   assert.equal(staticProject.status, 1);
   assert.match(staticProject.stderr, /must declare at least one `export c function`/);
+
+  writeManifest(directory, {
+    kind: "shared-library",
+    name: "check-modes",
+    entry: "main.zs",
+  });
+  const sharedProject = invoke(["check", directory]);
+  assert.equal(sharedProject.status, 1);
+  assert.match(sharedProject.stderr, /must declare at least one `export c function`/);
 
   const staticFile = invoke(["check", entry]);
   assert.equal(staticFile.status, 0, staticFile.stderr);
@@ -170,4 +191,71 @@ test("builds static projects, rejects project run, and keeps explicit file run a
 
   const fileRun = invoke(["run", executable]);
   assert.equal(fileRun.status, 0, fileRun.stderr);
+});
+
+test("builds a shared library and runs a handwritten C consumer", () => {
+  const directory = mkdtempSync("/tmp/z-project-shared-");
+  const library = resolve(directory, "library.zs");
+  writeFileSync(
+    library,
+    "export c function z_shared_answer(): i32 { return 42; }\n",
+  );
+  writeManifest(directory, {
+    kind: "shared-library",
+    name: "shared_math",
+    entry: "library.zs",
+  });
+
+  const checked = invoke(["check", directory]);
+  assert.equal(checked.status, 0, checked.stderr);
+  const built = invoke(["build", directory, "--release"]);
+  assert.equal(built.status, 0, built.stderr);
+
+  const buildDirectory = resolve(directory, "build");
+  const libraryPath = resolve(
+    buildDirectory,
+    `${process.platform === "win32" ? "" : "lib"}shared_math${
+      process.platform === "darwin"
+        ? ".dylib"
+        : process.platform === "win32"
+          ? ".dll"
+          : ".so"
+    }`,
+  );
+  const headerPath = resolve(buildDirectory, "shared_math.h");
+  assert.equal(existsSync(libraryPath), true);
+  assert.equal(existsSync(headerPath), true);
+
+  const consumerSource = resolve(directory, "consumer.c");
+  const consumer = resolve(
+    directory,
+    `consumer${process.platform === "win32" ? ".exe" : ""}`,
+  );
+  writeFileSync(consumerSource, [
+    '#include "shared_math.h"',
+    "int main(void) { return z_shared_answer() == 42 ? 0 : 1; }",
+    "",
+  ].join("\n"));
+  const compilerArguments = [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-I", buildDirectory,
+    consumerSource,
+    libraryPath,
+    ...(process.platform === "win32"
+      ? []
+      : [`-Wl,-rpath,${buildDirectory}`]),
+    "-o", consumer,
+  ];
+  const compiled = process.platform === "darwin"
+    ? spawnSync("xcrun", ["clang", ...compilerArguments], { encoding: "utf8" })
+    : spawnSync("clang", compilerArguments, { encoding: "utf8" });
+  assert.equal(compiled.status, 0, compiled.stderr);
+  assert.equal(spawnSync(consumer, [], { encoding: "utf8" }).status, 0);
+
+  const run = invoke(["run", directory]);
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /run requires an executable project/);
 });

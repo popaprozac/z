@@ -6,7 +6,7 @@ import type { ApiNotes } from "./foreign-api-notes.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
-  readonly targetKind: "executable" | "static-library";
+  readonly targetKind: "executable" | "static-library" | "shared-library";
   readonly targetName: string | null;
   readonly entryPath: string | null;
   readonly deploymentTarget: DeploymentTarget | null;
@@ -24,7 +24,7 @@ export type DeploymentTarget = {
 
 type ProjectManifest = {
   readonly target?: {
-    readonly kind?: "executable" | "static-library";
+    readonly kind?: "executable" | "static-library" | "shared-library";
     readonly name?: string;
     readonly entry?: string;
     readonly platform?: string;
@@ -71,8 +71,15 @@ export function prepareProject(fileName: string): ProjectBuild {
 
   const swift = manifest.target?.swift;
   const targetKind = manifest.target?.kind ?? "executable";
-  if (targetKind !== "executable" && targetKind !== "static-library") {
-    throw projectDiagnostic(fileName, 'z.json target.kind must be either "executable" or "static-library"');
+  if (
+    targetKind !== "executable"
+    && targetKind !== "static-library"
+    && targetKind !== "shared-library"
+  ) {
+    throw projectDiagnostic(
+      fileName,
+      'z.json target.kind must be "executable", "static-library", or "shared-library"',
+    );
   }
   const targetName = manifest.target?.name ?? null;
   if (targetName === null) {

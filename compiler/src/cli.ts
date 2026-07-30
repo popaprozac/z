@@ -176,7 +176,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
         }
         if (
           input.mode === "project"
-          && input.project.targetKind === "static-library"
+          && input.project.targetKind !== "executable"
           && !analysis.program.functions.some((declaration) => (
             declaration.nativeExport?.language === "c"
           ))
@@ -184,7 +184,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
           throw new DiagnosticError(
             inputPath,
             { offset: 0, line: 1, column: 1, fileName: inputPath },
-            "a static-library project must declare at least one `export c function`",
+            `a ${input.project.targetKind} project must declare at least one \`export c function\``,
           );
         }
       }
@@ -209,7 +209,9 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
         throw new Error("run currently requires a .zs source module");
       }
       if (input.mode === "project" && input.project.targetKind !== "executable") {
-        throw new Error("z run requires an executable project; use z build for a static-library target");
+        throw new Error(
+          `z run requires an executable project; use z build for a ${input.project.targetKind} target`,
+        );
       }
       const source = readFileSync(inputPath, "utf8");
       const artifact = compileToNative(source, inputPath, { requireMain: true });
@@ -1546,6 +1548,7 @@ function compileNativeArtifact(
   outputPath: string,
   release: boolean,
   link: boolean,
+  shared = false,
 ): void {
   const compiler = nativeCompiler(artifact.language);
   const compilerArguments = [
@@ -1553,6 +1556,22 @@ function compileNativeArtifact(
     ...deploymentTargetFlags(artifact.deploymentTarget),
     release ? "-O2" : "-O0",
     ...(release ? ["-DNDEBUG"] : ["-g"]),
+    ...(shared
+      ? process.platform === "darwin"
+        ? [
+            "-dynamiclib",
+            "-fvisibility=hidden",
+            '-DZ_API=__attribute__((visibility("default")))',
+          ]
+        : process.platform === "win32"
+          ? ["-shared", "-DZ_API=__declspec(dllexport)"]
+          : [
+              "-shared",
+              "-fPIC",
+              "-fvisibility=hidden",
+              '-DZ_API=__attribute__((visibility("default")))',
+            ]
+      : []),
     "-Wall",
     "-Wextra",
     "-Werror",
@@ -1620,14 +1639,36 @@ function buildProject(
   }
 
   if (!artifact.header) {
-    throw new Error("a static-library project must declare at least one `export c function`");
+    throw new Error(
+      `a ${project.targetKind} project must declare at least one \`export c function\``,
+    );
   }
+  const headerPath = join(outputDirectory, `${project.targetName}.h`);
+  if (project.targetKind === "shared-library") {
+    const libraryPath = join(
+      outputDirectory,
+      `${process.platform === "win32" ? "" : "lib"}${project.targetName}${nativeLibraryExtension()}`,
+    );
+    compileNativeArtifact(
+      project.entryPath,
+      artifact,
+      sourcePath,
+      libraryPath,
+      release,
+      true,
+      true,
+    );
+    writeFileSync(headerPath, artifact.header);
+    console.log(`built ${libraryPath}`);
+    console.log(`generated ${headerPath}`);
+    return;
+  }
+
   const objectPath = join(cacheDirectory, `${project.targetName}${process.platform === "win32" ? ".obj" : ".o"}`);
   const libraryName = process.platform === "win32"
     ? `${project.targetName}.lib`
     : `lib${project.targetName}.a`;
   const libraryPath = join(outputDirectory, libraryName);
-  const headerPath = join(outputDirectory, `${project.targetName}.h`);
   compileNativeArtifact(
     project.entryPath,
     artifact,

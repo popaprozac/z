@@ -126,16 +126,18 @@ are normalized.
 The reverse boundary now has an executable value-ABI compiler slice:
 `export c function` remains callable from Z while publishing an exact checked
 C ABI symbol and generated C/C++-compatible header. Checked `c struct` values
-and fixed-representation `c enum` values can cross that boundary by value. A
-strict handwritten C consumer is compiled and linked against the emitted
-static archive in both the test suite and a readable example:
+and fixed-representation `c enum` values can cross that boundary by value.
+Strict handwritten C consumers are compiled and linked against both emitted
+static and shared libraries:
 
 ```sh
 bun run z build examples/interop/c/z-export
+bun run z build examples/interop/c/z-shared-export
 ```
 
-That project publishes `build/libzmath.a` and `build/zmath.h`. See
-[the example](examples/interop/c/z-export) and
+These publish guarded headers beside their selected host-native artifacts. See
+[the static example](examples/interop/c/z-export),
+[the shared example](examples/interop/c/z-shared-export), and
 [the C export design](docs/c-exports.md) for the implemented boundary and its
 ownership-aware growth path.
 

@@ -569,8 +569,9 @@ function validateProjectConfig(
   if (
     config.targetKind != "executable"
     && config.targetKind != "static-library"
+    && config.targetKind != "shared-library"
   ) {
-    throw `${manifestPath}:1:1: error: z.json target.kind must be "executable" or "static-library"`;
+    throw `${manifestPath}:1:1: error: z.json target.kind must be "executable", "static-library", or "shared-library"`;
   }
   match (in config.targetName) {
     some(name) => {

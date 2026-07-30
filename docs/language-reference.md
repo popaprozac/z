@@ -1988,10 +1988,11 @@ contract. A header import supplies declarations while `target.link.libraries`
 supplies link-time implementations.
 
 Every manifest target also supplies a portable `target.name` and a `.zs`
-`target.entry`. Omitting `target.kind` selects an executable; a
-`static-library` entry is an export-only graph. Project-directory `check`,
-`run`, and `build` select that entry, while an explicit `.zs` argument is an
-entry override that retains the surrounding target configuration.
+`target.entry`. Omitting `target.kind` selects an executable; `static-library`
+and `shared-library` entries are export-only graphs using checked `export c`
+boundaries. Project-directory `check`, `run`, and `build` select that entry,
+while an explicit `.zs` argument is an entry override that retains the
+surrounding target configuration.
 
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored

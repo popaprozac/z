@@ -32,14 +32,16 @@ and `.zs` entry, and parses its kind, deployment, include-directory,
 link-directory, and library fields. Project-directory `check`, `test`, `run`,
 and `build` select that entry; an explicit `.zs` file overrides entry selection
 while retaining its surrounding project settings. Omitted kind means
-executable, while a static-library build publishes its named archive and
-header. The driver validates configured paths, deduplicates native libraries,
+executable, while static- and shared-library builds publish their named native
+artifact and generated header. The driver validates configured paths,
+deduplicates native libraries,
 and projects those settings into Clang.
 Swift target preparation, broader foreign declaration records, cross-platform
 target selection, custom profiles, polished diagnostics, cache eviction, and
 the complete production command options remain with Stage 0
-until equivalent native paths are proven. Shared-library output and
-project-level source emission are not implemented yet. `run` creates missing
+until equivalent native paths are proven. Versioned shared-library policy,
+Windows import-library publication, and project-level source emission are not
+implemented yet. `run` creates missing
 project-local cache parents and retains its generated C and executable at
 `.z-cache/run/program.c` and `.z-cache/run/program`. An unchanged run compares
 the exact newly emitted C, debug/release profile, target configuration, Clang

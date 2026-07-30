@@ -1,0 +1,7 @@
+{
+  "target": {
+    "kind": "shared-library",
+    "name": "zshared",
+    "entry": "library.zs"
+  }
+}

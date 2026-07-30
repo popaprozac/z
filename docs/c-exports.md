@@ -227,7 +227,8 @@ Swift without implementing the Swift ABI.
 
 ## Artifacts
 
-Library output is project configuration rather than declaration syntax:
+Library output is project configuration rather than declaration syntax. Static
+and shared libraries use the same source-level ABI contract:
 
 ```json
 {
@@ -264,25 +265,35 @@ build/zmath.h
 
 On Windows the archive uses `zmath.lib`. Compiler-owned generated source and
 object files remain under `.z-cache/build`; consumers do not need them.
-A static-library entry is an export-only module graph and does not require
-`function main()`. All manifest targets require `target.name` and
+Static- and shared-library entries are export-only module graphs and do not
+require `function main()`. All manifest targets require `target.name` and
 `target.entry`; omitting `target.kind` selects an executable instead. Project
-`check` accepts either kind, while project `run` requires an executable.
+`check` accepts every target kind, while project `run` requires an executable.
 
 See [`examples/interop/c/z-export`](../examples/interop/c/z-export) for a
 complete Z library and handwritten strict-C consumer.
 
-An inspectable project-level `z emit` form remains to be designed; source
-emission still selects an explicit `.zs` file. A later `shared-library` target
-kind will produce the platform dynamic-library spelling plus the same public
-header. Neither is implemented by the first project-artifact contract.
-Executables remain the default target kind.
+Changing the target kind to `"shared-library"` publishes the same header beside
+the host-native dynamic artifact:
+
+| Host | Shared artifact |
+| --- | --- |
+| macOS | `build/lib<name>.dylib` |
+| Linux | `build/lib<name>.so` |
+| Windows | `build/<name>.dll` |
+
+[`examples/interop/c/z-shared-export`](../examples/interop/c/z-shared-export)
+builds and runs the dynamic form. Versioned sonames/install names, installation
+layout, and Windows import-library publication remain packaging work. An
+inspectable project-level `z emit` form also remains to be designed; source
+emission still selects an explicit `.zs` file. Executables remain the default
+target kind.
 
 ## Growth path
 
 Broader exports should land only with an end-to-end C consumer:
 
-1. ABI-stable scalar functions and static-library/header output.
+1. ABI-stable scalar functions and static/shared-library header output.
 2. Explicit C-layout structs and fixed-representation payload-free enums.
 3. Borrowed strings and slices projected as pointer-plus-length inputs.
 4. Typed `throws` projected into explicit status and output channels.
@@ -300,18 +311,18 @@ Z source
   └─> generated adjacent .zd       ─> checked binary-only Z import
 ```
 
-The current value-ABI checkpoint is complete only when a handwritten C program
-includes the generated header, links the generated static library, passes
-scalars, structs, and enums in both directions, and passes strict compilation
-and execution tests.
+The current value-ABI checkpoint is complete only when handwritten C programs
+include the generated header, link the generated static and shared libraries,
+pass supported values in both directions, and pass strict compilation and
+execution tests.
 
 The bootstrap compiler now satisfies that executable boundary in both its test
 suite and the readable example: it parses and checks `export c function`, keeps
 the declaration available through ordinary Z imports and calls, emits a private
 implementation plus exact public C symbol, generates the guarded header,
-archives the emitted object through `z build`, and runs a handwritten strict-C
-consumer. The accepted `static-library` manifest fields make `main` optional
-and select the public artifact name and directory.
+builds the selected library artifact through `z build`, and runs handwritten
+strict-C consumers. The accepted `static-library` and `shared-library` manifest
+kinds make `main` optional and select the public artifact form.
 
 The native semantic graph carries the C-export fact and checks it during hybrid
 parity. Native lowering emits the same private-implementation/public-wrapper
