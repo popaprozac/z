@@ -147,6 +147,9 @@ export function collectPlacementCaptures(
       } else if (value.kind === "destructure") {
         visitExpression(value.initializer, localNames);
         for (const field of value.objectBindings) localNames.add(field.bindingName);
+        for (const binding of value.arrayBindings ?? []) {
+          if (binding.bindingName) localNames.add(binding.bindingName);
+        }
       } else {
         visitStatement(value, localNames);
       }
@@ -161,6 +164,9 @@ export function collectPlacementCaptures(
       case "destructure":
         visitExpression(value.initializer, localNames);
         for (const field of value.objectBindings) localNames.add(field.bindingName);
+        for (const binding of value.arrayBindings ?? []) {
+          if (binding.bindingName) localNames.add(binding.bindingName);
+        }
         return;
       case "assignment":
         visitExpression(value.target, localNames, true);

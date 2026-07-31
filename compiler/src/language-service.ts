@@ -361,6 +361,29 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     collectObjCArgumentLabelInfos(context, tokens)
       .map((info) => [info.offset, info] as const),
   );
+  const arrayDiscardOffsets = new Set<number>();
+  const collectArrayDiscards = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) collectArrayDiscards(item);
+      return;
+    }
+    const node = value as Record<string, unknown>;
+    if (node.kind === "destructure" && Array.isArray(node.arrayBindings)) {
+      for (const binding of node.arrayBindings as Array<{
+        readonly kind: string;
+        readonly location: SourceLocation;
+      }>) {
+        if (binding.kind === "discard") arrayDiscardOffsets.add(binding.location.offset);
+      }
+    }
+    for (const [key, child] of Object.entries(node)) {
+      if (key !== "location" && key !== "nameLocation" && key !== "bindingLocation") {
+        collectArrayDiscards(child);
+      }
+    }
+  };
+  collectArrayDiscards(context.sourceProgram);
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -380,6 +403,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     }
     const keywordMember = previous?.kind === "dot" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.text);
     if (token.kind !== "identifier" && !keywordMember) continue;
+    if (token.text === "_" && arrayDiscardOffsets.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
     const contextualTask = token.text === "task"
       && (next?.kind === "on" || next?.kind === "identifier");
     const contextualOwnership = (token.text === "copy" || token.text === "move" || token.text === "view")
@@ -3748,6 +3778,17 @@ function collectBindings(context: AnalyzedSource): Binding[] {
       }
       if (statement.kind === "destructure") {
         for (const binding of statement.objectBindings) {
+          bindings.push({
+            name: binding.bindingName,
+            type: context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset) ?? "unknown",
+            offset: binding.bindingLocation.offset,
+            readonly: !statement.mutable,
+            parameter: false,
+            fileName: binding.bindingLocation.fileName,
+          });
+        }
+        for (const binding of statement.arrayBindings ?? []) {
+          if (!binding.bindingName || !binding.bindingLocation) continue;
           bindings.push({
             name: binding.bindingName,
             type: context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset) ?? "unknown",

@@ -592,14 +592,20 @@ function canonicalStatementText(statement: Statement, tokens: readonly Token[]):
     const equalIndex = tokens.findIndex((token, index) => index > statementIndex && token.kind === "equal");
     const initializerStart = tokens[equalIndex + 1];
     if (statementIndex < 0 || equalIndex < 0 || !initializerStart) {
-      throw new Error(`could not locate object destructuring initializer at source offset ${statement.location.offset}`);
+      throw new Error(`could not locate destructuring initializer at source offset ${statement.location.offset}`);
     }
     const binding = statement.mutable ? "let" : "const";
-    const fields = statement.objectBindings.map((field) => (
-      `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
-    )).join(",");
+    const pattern = statement.arrayBindings
+      ? `[${statement.arrayBindings.map((item) => {
+        if (item.kind === "discard") return `_@${canonicalLocation(item.location)}`;
+        const name = `${item.bindingName}@${canonicalLocation(item.bindingLocation!)}`;
+        return item.kind === "rest" ? `...@${canonicalLocation(item.location)}${name}` : name;
+      }).join(",")}]`
+      : `{${statement.objectBindings.map((field) => (
+        `${field.fieldName}@${canonicalLocation(field.fieldLocation)}:${field.bindingName}@${canonicalLocation(field.bindingLocation)}`
+      )).join(",")}}`;
     const type = statement.type ? `:${canonicalTypeName(statement.type.name)}@${canonicalLocation(statement.type.location)}` : "";
-    return `destructure@${location}(${binding}:{${fields}}${type}`
+    return `destructure@${location}(${binding}:${pattern}${type}`
       + `=${canonicalLocation(initializerStart.location)}:${canonicalExpressionTokens(tokens, initializerStart.location.offset)}#${
         canonicalExpressionTree(statement.initializer, tokens) ?? "opaque"
       })`;

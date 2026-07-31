@@ -450,6 +450,11 @@ export function collectClosureStatementCaptures(
       for (const binding of arena.nodes[statementIndex].objectBindings) {
         addUniqueString(inout localNames, binding.bindingName);
       }
+      for (const binding of arena.nodes[statementIndex].arrayBindings) {
+        if (binding.bindingName.byteLength > 0) {
+          addUniqueString(inout localNames, binding.bindingName);
+        }
+      }
       continue;
     }
     let nestedNames = copyBindings(localNames);

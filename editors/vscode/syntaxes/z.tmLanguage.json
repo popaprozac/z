@@ -407,6 +407,11 @@
         "name": "keyword.operator.ownership.z",
         "match": "\\b(?:copy|move|view)(?=\\s+(?:[A-Za-z_][A-Za-z0-9_]*|\\.\\.\\.\\s*[A-Za-z_][A-Za-z0-9_]*))"
       }, {
+        "match": "(\\[|,)\\s*(_)(?=\\s*(?:,|\\]))",
+        "captures": {
+          "2": { "name": "keyword.operator.discard.z" }
+        }
+      }, {
         "name": "storage.modifier.capture.z",
         "match": "\\bmove(?=\\s*\\([^)]*\\)\\s*(?:(?::|throws\\b)[^=]*)?=>)"
       }, {

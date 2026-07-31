@@ -72,8 +72,22 @@ to retain the source or `move record` to consume it. Pattern bindings receive
 the selected fields, while unselected fields are destroyed. Types with custom
 `deinit`, foreign owned-handle cleanup, or embedded C++/Swift value storage are
 rejected until partial relocation can preserve their exact cleanup contract.
-Classes, nested/rest/default/array patterns, and parameter patterns remain later
+Classes plus nested, object-rest, default, and parameter patterns remain later
 extensions.
+
+Contiguous collections also support positional local patterns:
+
+```z
+const [first, _, third] = values;
+const [head, ...remaining] = view values;
+```
+
+Plain bindings perform checked reads and keep the collection alive. Cleanup-free
+elements load by value. An explicit `view` source permits cleanup-bearing
+element bindings as owner-tied `view T` values and is required for `...rest`;
+the rest binding is a zero-allocation local `Slice<T>`. `_` is the explicit
+discard spelling, rest must be final, and the backing collection cannot move or
+mutate structurally until every projected binding's last use.
 
 ## Type inference boundary
 
@@ -858,8 +872,9 @@ borrowed `Token` projection live in the generator frame, while `yield copy
 token` makes the transfer to the caller explicit.
 
 Mutable element iteration, consuming iterators, cleanup-bearing object
-destructuring, move-only foreign iterator elements, array and tuple patterns,
-and async iteration over non-generator iterator shapes remain later layers.
+destructuring, move-only foreign iterator elements, tuple and match-array
+patterns, and async iteration over non-generator iterator shapes remain later
+layers.
 
 ## Arrays and views
 
@@ -879,11 +894,13 @@ index order. Moving an individual cleanup-bearing element out is initially
 rejected because it would create partially initialized storage; whole arrays
 follow ordinary move rules.
 
-`Slice<T>` is a non-owning contiguous pointer/length view. Its first supported
-shape is parameter-only and non-escaping: a compatible fixed array converts to
-a slice for one call, but slices cannot yet be returned, stored in aggregates or
-enums, or captured by local bindings. This makes the source lifetime obvious to
-the compiler without requiring a source-level lifetime name.
+`Slice<T>` is a non-owning contiguous pointer/length view. Parameters remain its
+ordinary spelling: a compatible fixed or growable array converts to a slice for
+one call. Array-rest destructuring may additionally create a compiler-proven
+local subslice through `const [...rest] = view values`; that binding carries its
+named owner and cannot escape. Arbitrary Slice locals, returns, aggregate/enum
+storage, and captures remain rejected. This keeps source lifetime obvious
+without requiring a source-level lifetime name.
 
 A plain `values: Slice<T>` parameter is an immutable element borrow; spelling
 `in` would be redundant and is rejected. `inout values: Slice<T>` creates an

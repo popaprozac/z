@@ -1545,6 +1545,45 @@ without returning to the TypeScript command driver. Filtering, reusable
 assertion helpers, discovery beyond the selected import graph, and async tests
 remain separate composition slices.
 
+## Array destructuring and the first local Slice
+
+Source:
+[`examples/language/basics/array-destructuring.zs`](../examples/language/basics/array-destructuring.zs)
+
+TypeScript-shaped positional bindings composed cleanly with Z only after making
+the rest cost explicit:
+
+```z
+const [first, _, third] = values;
+const [head, ...remaining] = view values;
+```
+
+Copying JavaScript's rest behavior would have hidden an allocation. Z instead
+uses `view` to produce a two-word `Slice<T>` tied to the fixed array,
+`Array<T>`, or existing Slice owner. That made array rest the first justified
+local-Slice exception: arbitrary Slice locals are still rejected, while this
+compiler-produced subslice carries a named provenance loan, cannot escape, and
+blocks owner moves or reallocating mutation only until its last use.
+
+Cleanup-free selected elements load by value. Cleanup-bearing selected elements
+remain `view T`, so destructuring an `Array<Document>` neither copies titles nor
+relocates owners. Plain ownership-bearing extraction fails with guidance toward
+`view`; future owned `copy`/`move` patterns remain separate because dynamic
+buffer splitting and partial initialization need an honest cost model.
+
+The implementation exposed two useful backend constraints. First, a rest Slice
+from a `const T[N]` still uses the shared mutable-capable Slice ABI, so C
+lowering must perform an explicit internal pointer-qualification adaptation
+while Z keeps the binding immutable and rejects `inout`. Second, indexed or
+computed owner paths would make naïve lowering evaluate the source once for
+each selected element. The first tier therefore accepts direct named bindings
+and fields; callers bind a nested collection before destructuring it.
+
+The native parser and resolver carry positional binding kinds directly rather
+than encoding indexes and rest through object-field sentinels. This preserved
+Stage-0/native canonical parity and made `_`, named elements, and `...rest`
+available to native semantic evidence and editor services independently.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

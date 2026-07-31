@@ -1183,6 +1183,106 @@ test("exposes fixed array length and readable types to editor services", () => {
   assert.match(hover(valid, "array-editor.zs", valuesDeclaration + 1)?.contents.value ?? "", /values: i32\[3\]/);
 });
 
+test("destructures contiguous collections with explicit zero-copy rest views", () => {
+  const example = resolve(projectRoot, "examples/language/basics/array-destructuring.zs");
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "draft: 1\n");
+
+  const native = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(native.status, 0, native.stderr);
+  assert.match(native.stdout, /native frontend hybrid matches 1 modules/);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /_z_array_destructure_\d+.*\.data = \{ 20, 22 \}/);
+  assert.match(generated, /if \(\(\(values\)\.length\) < 1\) abort\(\);/);
+  assert.match(generated, /const Z_Slice_\S+ tail = .*\.data = .*?\(\(values\)\.data \+ 1\).*\.length = \(\(values\)\.length\) - 1/);
+  assert.match(generated, /const Z_Document \* const current = &\(\(\(documents\)\.data\[0\]\)\)/);
+
+  const headUse = source.indexOf("head +");
+  assert.match(hover(source, example, headUse)?.contents.value ?? "", /head: i32/);
+  const tailUse = source.indexOf("sum(tail)") + "sum(".length;
+  assert.match(hover(source, example, tailUse)?.contents.value ?? "", /tail: Slice<i32>/);
+  const currentUse = source.indexOf("current.title");
+  const currentHover = hover(source, example, currentUse)?.contents.value ?? "";
+  assert.match(currentHover, /current: view Document/);
+  assert.match(currentHover, /view of documents/);
+  const completionSource = source.replace("sum(tail)", "sum(tai)");
+  const completionOffset = completionSource.indexOf("sum(tai)") + "sum(tai".length;
+  assert.equal(
+    completions(completionSource, example, completionOffset)
+      .find((item) => item.label === "tail")?.detail,
+    "const tail: Slice<i32>",
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const tailBindingOffset = source.indexOf("...tail") + 3;
+  const tailBindingPosition = positionForOffset(source, tailBindingOffset);
+  assert.ok(tokens.some((token) => (
+    token.line === tailBindingPosition.line
+    && token.character === tailBindingPosition.character
+  )));
+  const discardOffset = source.indexOf("_, third");
+  const discardPosition = positionForOffset(source, discardOffset);
+  assert.ok(tokens.some((token) => (
+    token.line === discardPosition.line
+    && token.character === discardPosition.character
+    && token.type === semanticTokenTypes.indexOf("keyword")
+  )));
+
+  const noView = `
+    function main(): i32 {
+      const values = [1, 2, 3];
+      const [first, ...remaining] = values;
+      return first + i32(remaining.length);
+    }
+  `;
+  const noViewDiagnostic = diagnostics(noView, "array-rest-view.zs")[0];
+  assert.equal(noViewDiagnostic.code, "Z0206");
+  assert.match(noViewDiagnostic.message, /rest is a borrowed Slice and requires an explicit view/);
+
+  const tooShort = `
+    function main(): i32 {
+      const values = [1, 2];
+      const [first, _, third] = values;
+      return first + third;
+    }
+  `;
+  const tooShortDiagnostic = diagnostics(tooShort, "array-destructure-length.zs")[0];
+  assert.equal(tooShortDiagnostic.code, "Z0220");
+  assert.match(tooShortDiagnostic.message, /requires 3 elements.*length 2/);
+
+  const ownedWithoutView = `
+    struct Item { value: i32; deinit {} }
+    function main(): i32 {
+      const values = [Item({ value: 42 })];
+      const [item] = values;
+      return item.value;
+    }
+  `;
+  const ownedDiagnostic = diagnostics(ownedWithoutView, "array-destructure-owned.zs")[0];
+  assert.equal(ownedDiagnostic.code, "Z0220");
+  assert.match(ownedDiagnostic.message, /ownership-bearing Item elements requires an explicit view/);
+
+  const liveMutation = `
+    function main(): i32 {
+      let values = Array<i32>(1, 2, 3);
+      const [first, ...remaining] = view values;
+      values.push(4);
+      return first + i32(remaining.length);
+    }
+  `;
+  const mutationDiagnostic = diagnostics(liveMutation, "array-rest-live-mutation.zs")[0];
+  assert.equal(mutationDiagnostic.code, "Z0205");
+  assert.match(mutationDiagnostic.message, /cannot mutate "values" while view "remaining" is live/);
+});
+
 test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
   const example = resolve(projectRoot, "examples/language/collections/slices.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

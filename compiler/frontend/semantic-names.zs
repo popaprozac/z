@@ -411,6 +411,11 @@ function resolveStatement(
     for (const binding of arena.nodes[index].objectBindings) {
       bindings.push(binding.bindingName.copyBytes(0, binding.bindingName.byteLength));
     }
+    for (const binding of arena.nodes[index].arrayBindings) {
+      if (binding.bindingName.byteLength > 0) {
+        bindings.push(binding.bindingName.copyBytes(0, binding.bindingName.byteLength));
+      }
+    }
     return;
   }
   if (

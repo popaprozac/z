@@ -25,6 +25,7 @@ smoke programs.
 | Optional struct fields | [`optional-fields.zs`](../examples/language/basics/optional-fields.zs) | Optional presence with `field?: T`, contextual `some` lifting, explicit `Option<T>`, and cleanup-bearing payloads |
 | Optional chaining | [`optional-chaining.zs`](../examples/language/basics/optional-chaining.zs) | Conditional field/method access, flat `Option` results, borrowed stored fields, owned results, void no-op, and preserved typed errors |
 | Object destructuring | [`destructuring.zs`](../examples/language/basics/destructuring.zs) | Local field/alias patterns, explicit copy/move ownership, and borrowed Map-entry patterns |
+| Array destructuring | [`array-destructuring.zs`](../examples/language/basics/array-destructuring.zs) | Checked positional reads, explicit `_` discards, cleanup-bearing element views, and zero-allocation `Slice<T>` rest |
 | Transparent type aliases | [`type-aliases/main.zs`](../examples/language/types/type-aliases/main.zs) | Exported callback alias, selective import, unchanged native function-value representation, and editor navigation |
 | Results | [`result.zs`](../examples/language/control-flow/result.zs) | `return`, `throw`, `attempt`, and exhaustive matching |
 | Value-producing loops | [`loop-expressions.zs`](../examples/language/control-flow/loop-expressions.zs) | `select` from `for...of` and `while`, required exhaustion `else`, and expression typing |

@@ -142,7 +142,23 @@ cleanup-bearing struct requires `copy record` to preserve the source or
 `move record` to consume it. Selected fields become independent bindings and
 unselected owned fields are destroyed. Private fields are accessible only from
 the declaring type. The current tier rejects classes, custom-`deinit` or foreign
-RAII storage, and nested, rest, default, array, parameter, and async patterns.
+RAII storage, and nested, object-rest, default, parameter, and async patterns.
+
+Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
+
+```z
+const [first, _, third] = values;
+const [head, ...remaining] = view values;
+```
+
+Plain bindings are checked reads and leave the collection available.
+Cleanup-free elements load by value. `view` makes cleanup-bearing elements
+owner-tied `view T` bindings and is required for rest; `remaining` is a
+zero-allocation local `Slice<T>`. `_` is an explicit discard, rest must be last,
+and dynamic sources trap safely when shorter than the requested positions.
+Extra elements are ignored unless captured by rest. Assignment, parameter,
+match, nested, default, and owned `copy`/`move` collection patterns remain later
+tiers.
 
 ## Type vocabulary
 
@@ -833,6 +849,19 @@ Indexing is bounds-checked in safe code. Owned elements are destroyed in reverse
 initialization order. Mutation that may reallocate requires exclusive mutable
 storage. A slice borrow cannot outlive its backing storage or cross a mutation
 that invalidates it.
+
+Array-rest destructuring is the narrow local-Slice exception:
+
+```z
+let values = Array<i32>(10, 20, 30);
+const [first, ...remaining] = view values;
+inspect(remaining);
+values.push(40); // valid after remaining's last use
+```
+
+The Slice descriptor is two words and performs no allocation or cleanup. It is
+tied to the named source owner, cannot escape, and prevents moves or
+reallocating mutation until its last use.
 
 `Array<T>()` constructs an empty growable array. Values may be supplied directly
 without a sequence of `push` calls:

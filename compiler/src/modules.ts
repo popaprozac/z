@@ -554,6 +554,9 @@ function transformStatements(
     if (statement.kind === "variable") locals.add(statement.name);
     if (statement.kind === "destructure") {
       for (const binding of statement.objectBindings) locals.add(binding.bindingName);
+      for (const binding of statement.arrayBindings ?? []) {
+        if (binding.bindingName) locals.add(binding.bindingName);
+      }
     }
   }
   return transformed;

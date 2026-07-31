@@ -322,6 +322,20 @@ export type StructSpreadPlan = {
   }[];
 };
 
+export type ArrayDestructurePlan = {
+  readonly sourceType: string;
+  readonly elementType: string;
+  readonly fixedLength: number | null;
+  readonly viewed: boolean;
+  readonly bindings: readonly {
+    readonly kind: "binding" | "discard" | "rest";
+    readonly name: string | null;
+    readonly index: number;
+    readonly type: string | null;
+    readonly borrowed: boolean;
+  }[];
+};
+
 export type ObjCProtocolConformance = {
   readonly declaration: StructDeclaration;
   readonly protocols: readonly ForeignObjCProtocol[];
@@ -349,6 +363,7 @@ export type SemanticInfo = {
   readonly rawExpressions: ReadonlyMap<number, RawExpressionPlan>;
   readonly optionalChains: ReadonlyMap<number, OptionalChainPlan>;
   readonly structSpreads: ReadonlyMap<number, StructSpreadPlan>;
+  readonly arrayDestructures: ReadonlyMap<number, ArrayDestructurePlan>;
   readonly sliceConversions: ReadonlyMap<number, { readonly sourceType: string; readonly targetType: string }>;
   readonly foreignTypes: ReadonlyMap<string, ForeignPointerType>;
   readonly foreignCallTypes: ReadonlyMap<number, string>;
@@ -467,6 +482,7 @@ type AnalysisState = {
   readonly viewCallOrigins: Map<number, ViewOrigin>;
   readonly viewOrigins: Map<string, ViewOrigin>;
   readonly localViewInitializers: Set<number>;
+  readonly arrayViewInitializers: Set<number>;
   readonly connectionCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
   readonly connectionOrigins: Map<string, { readonly owner: string; readonly location: SourceLocation }>;
   readonly movedExpressions: Set<number>;
@@ -475,6 +491,7 @@ type AnalysisState = {
   readonly rawExpressions: Map<number, RawExpressionPlan>;
   readonly optionalChains: Map<number, OptionalChainPlan>;
   readonly structSpreads: Map<number, StructSpreadPlan>;
+  readonly arrayDestructures: Map<number, ArrayDestructurePlan>;
   readonly generatedOptionalEnums: Map<string, EnumDeclaration>;
   unsafeDepth: number;
   readonly unsafeExpectedTypes: Map<number, string>;
@@ -814,6 +831,7 @@ export function analyze(
     viewCallOrigins: new Map(),
     viewOrigins: new Map(),
     localViewInitializers: new Set(),
+    arrayViewInitializers: new Set(),
     connectionCallOrigins: new Map(),
     connectionOrigins: new Map(),
     movedExpressions: new Set(),
@@ -822,6 +840,7 @@ export function analyze(
     rawExpressions: new Map(),
     optionalChains: new Map(),
     structSpreads: new Map(),
+    arrayDestructures: new Map(),
     generatedOptionalEnums: new Map(),
     unsafeDepth: 0,
     unsafeExpectedTypes: new Map(),
@@ -3523,10 +3542,32 @@ function analyzeStatement(
     }
     case "destructure": {
       if (owner.async) {
-        throw new DiagnosticError(fileName, statement.location, "object destructuring is not executable in async functions yet", {
+        throw new DiagnosticError(fileName, statement.location, "destructuring is not executable in async functions yet", {
           code: "Z0700",
           helps: ["bind the aggregate normally in async code until destructuring is added to task-frame lowering"],
         });
+      }
+      const arrayViewInitializer = Boolean(
+        statement.arrayBindings
+        && statement.initializer.kind === "unary"
+        && statement.initializer.operator === "view"
+      );
+      if (arrayViewInitializer) {
+        if (statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "array view destructuring must use const", {
+            code: "Z0206",
+            notes: ["the projected elements and rest Slice are read-only and tied to their source owner"],
+            helps: ["replace `let` with `const`"],
+          });
+        }
+        if (statement.type) {
+          throw new DiagnosticError(fileName, statement.type.location, "array view destructuring uses an inferred source type", {
+            code: "Z0206",
+            helps: ["omit the pattern type annotation; hover shows each inferred binding type"],
+          });
+        }
+        state.localViewInitializers.add(statement.initializer.location.offset);
+        state.arrayViewInitializers.add(statement.initializer.location.offset);
       }
       let expected: ValueType | null = null;
       if (statement.type) {
@@ -3545,7 +3586,152 @@ function analyzeStatement(
         expected,
       );
       if (expected) requireAssignable(expected, initializerType, statement.initializer, fileName, structs, enums, state);
-      const sourceType = String(underlyingType(expected ?? initializerType));
+      const inferredSourceType = String(underlyingType(expected ?? initializerType));
+      const sourceType = parseViewType(inferredSourceType)?.target ?? inferredSourceType;
+      if (statement.arrayBindings) {
+        const fixed = parseFixedArrayType(sourceType);
+        const dynamic = parseDynamicArrayType(sourceType);
+        const slice = parseSliceType(sourceType);
+        const collection = fixed ?? dynamic ?? slice;
+        if (!collection) {
+          throw new DiagnosticError(fileName, statement.location, `array destructuring requires a fixed array, Array<T>, or Slice<T>, found ${displayArrayType(sourceType)}`, {
+            code: "Z0220",
+          });
+        }
+        const rootExpression = arrayViewInitializer
+          ? (statement.initializer as Extract<Expression, { kind: "unary" }>).operand
+          : statement.initializer;
+        const root = storageRoot(rootExpression);
+        if (
+          root
+          && rootExpression.kind !== "identifier"
+          && rootExpression.kind !== "member"
+        ) {
+          throw new DiagnosticError(fileName, rootExpression.location, "array destructuring requires a direct named collection or field", {
+            code: "Z0220",
+            notes: ["the first tier evaluates its source exactly once without retaining an indexed or computed owner path"],
+            helps: ["bind the nested collection first, then destructure that binding"],
+          });
+        }
+        if (!root && statement.initializer.kind !== "arrayExpression") {
+          throw new DiagnosticError(fileName, statement.initializer.location, "array destructuring requires named collection storage or a fixed array literal in the first tier", {
+            code: "Z0220",
+            helps: ["bind the collection first, then destructure that binding"],
+          });
+        }
+        const rest = statement.arrayBindings.find((binding) => binding.kind === "rest");
+        if (rest && !arrayViewInitializer) {
+          throw new DiagnosticError(fileName, rest.location, "array rest is a borrowed Slice and requires an explicit view source", {
+            code: "Z0206",
+            helps: ["write `const [first, ...remaining] = view values;`"],
+          });
+        }
+        const requiredLength = statement.arrayBindings.filter((binding) => binding.kind !== "rest").length;
+        if (fixed && requiredLength > fixed.length) {
+          throw new DiagnosticError(fileName, statement.location, `array pattern requires ${requiredLength} elements, but ${displayArrayType(sourceType)} has length ${fixed.length}`, {
+            code: "Z0220",
+          });
+        }
+        const namedBindings = statement.arrayBindings.filter(
+          (binding): binding is typeof binding & { readonly bindingName: string; readonly bindingLocation: SourceLocation } => (
+            binding.bindingName !== null && binding.bindingLocation !== null
+          ),
+        );
+        if (namedBindings.length === 0) {
+          throw new DiagnosticError(fileName, statement.location, "array destructuring requires at least one named binding", {
+            code: "Z0220",
+            helps: ["keep `_` for skipped positions alongside a named element or rest binding"],
+          });
+        }
+        const seen = new Set<string>();
+        for (const binding of namedBindings) {
+          validateUserName(binding.bindingName, binding.bindingLocation, fileName);
+          if (seen.has(binding.bindingName) || locals.has(binding.bindingName)) {
+            throw new DiagnosticError(fileName, binding.bindingLocation, `duplicate local ${JSON.stringify(binding.bindingName)}`);
+          }
+          seen.add(binding.bindingName);
+        }
+        const selectedElement = namedBindings.some((binding) => binding.kind === "binding");
+        if (!arrayViewInitializer && selectedElement && hasOwnershipType(collection.elementType, structs, enums, state)) {
+          throw new DiagnosticError(fileName, statement.initializer.location, `destructuring ownership-bearing ${displayArrayType(collection.elementType)} elements requires an explicit view`, {
+            code: "Z0220",
+            notes: ["plain array destructuring does not retain, copy, or move elements out of their collection"],
+            helps: ["use `view values` for borrowed element bindings, or copy individual elements explicitly"],
+          });
+        }
+        const origin = arrayViewInitializer
+          ? state.viewCallOrigins.get(statement.initializer.location.offset)
+          : null;
+        if (arrayViewInitializer && !origin) {
+          throw new DiagnosticError(fileName, statement.initializer.location, "array view destructuring requires named stable storage", {
+            code: "Z0206",
+          });
+        }
+        let elementIndex = 0;
+        const planBindings: ArrayDestructurePlan["bindings"][number][] = [];
+        for (const binding of statement.arrayBindings) {
+          if (binding.kind === "discard") {
+            planBindings.push({
+              kind: "discard",
+              name: null,
+              index: elementIndex,
+              type: null,
+              borrowed: false,
+            });
+            elementIndex += 1;
+            continue;
+          }
+          const name = binding.bindingName!;
+          const bindingLocation = binding.bindingLocation!;
+          if (binding.kind === "rest") {
+            const type = sliceTypeName(collection.elementType);
+            locals.set(name, type);
+            state.bindingTypes.set(bindingLocation.offset, type);
+            bindViewOrigin(name, origin!, fileName, state);
+            state.viewBindingOwners.set(bindingLocation.offset, viewOriginOwnerLabel(origin!));
+            planBindings.push({
+              kind: "rest",
+              name,
+              index: elementIndex,
+              type,
+              borrowed: true,
+            });
+            continue;
+          }
+          const borrowed = arrayViewInitializer
+            && hasOwnershipType(collection.elementType, structs, enums, state);
+          const referenceIdentity = borrowed && (
+            structs.get(collection.elementType)?.kind === "class"
+            || state.foreignNamedTypes.get(collection.elementType)?.kind === "object"
+            || collection.elementType.startsWith("__z_objc:")
+          );
+          const type = borrowed && !referenceIdentity
+            ? viewTypeName(collection.elementType)
+            : collection.elementType;
+          locals.set(name, referenceIdentity ? `${borrowedPrefix}${type}` : type);
+          state.bindingTypes.set(bindingLocation.offset, type);
+          if (borrowed) {
+            bindViewOrigin(name, origin!, fileName, state);
+            state.viewBindingOwners.set(bindingLocation.offset, viewOriginOwnerLabel(origin!));
+          }
+          planBindings.push({
+            kind: "binding",
+            name,
+            index: elementIndex,
+            type,
+            borrowed,
+          });
+          elementIndex += 1;
+        }
+        state.arrayDestructures.set(statement.location.offset, {
+          sourceType,
+          elementType: collection.elementType,
+          fixedLength: fixed?.length ?? null,
+          viewed: arrayViewInitializer,
+          bindings: planBindings,
+        });
+        return;
+      }
       const declaration = structs.get(sourceType);
       if (!declaration || declaration.kind !== "struct" || parseMapType(sourceType) || parseSetType(sourceType)) {
         throw new DiagnosticError(fileName, statement.location, `object destructuring requires a Z value struct, found ${displayArrayType(sourceType)}`, {
@@ -4997,6 +5183,9 @@ function collectClosureCaptures(
       } else if (statement.kind === "destructure") {
         walkExpression(statement.initializer, localNames);
         for (const binding of statement.objectBindings) localNames.add(binding.bindingName);
+        for (const binding of statement.arrayBindings ?? []) {
+          if (binding.bindingName) localNames.add(binding.bindingName);
+        }
       } else walkStatement(statement, localNames);
     }
   };
@@ -5010,6 +5199,9 @@ function collectClosureCaptures(
       case "destructure":
         walkExpression(statement.initializer, localNames);
         for (const binding of statement.objectBindings) localNames.add(binding.bindingName);
+        for (const binding of statement.arrayBindings ?? []) {
+          if (binding.bindingName) localNames.add(binding.bindingName);
+        }
         return;
       case "assignment":
         walkExpression(statement.target, localNames, true);
@@ -6987,10 +7179,17 @@ function inferExpressionInner(
             helps: ["use `const projected = view owner.field;` or `const projected = view owner.items[index];`"],
           });
         }
-        if (expression.operand.kind !== "member" && expression.operand.kind !== "index") {
+        const arrayView = state.arrayViewInitializers.has(expression.location.offset);
+        if (
+          expression.operand.kind !== "member"
+          && expression.operand.kind !== "index"
+          && (!arrayView || expression.operand.kind !== "identifier")
+        ) {
           throw new DiagnosticError(fileName, expression.operand.location, "`view` requires a direct field or indexed projection", {
             code: "Z0206",
-            helps: ["project named owner storage such as `view tree.nodes[index]`"],
+            helps: arrayView
+              ? ["use named contiguous storage such as `view values` or `view store.items`"]
+              : ["project named owner storage such as `view tree.nodes[index]`"],
           });
         }
         const root = storageRoot(expression.operand);
@@ -7030,6 +7229,17 @@ function inferExpressionInner(
           throw new DiagnosticError(fileName, expression.operand.location, "`view` projects value storage rather than reference identity", {
             code: "Z0206",
             helps: ["borrow the class reference directly with an `in` parameter"],
+          });
+        }
+        if (
+          arrayView
+          && !parseFixedArrayType(target)
+          && !parseDynamicArrayType(target)
+          && !parseSliceType(target)
+        ) {
+          throw new DiagnosticError(fileName, expression.operand.location, `array view destructuring requires contiguous collection storage, found ${displayArrayType(target)}`, {
+            code: "Z0206",
+            helps: ["use a fixed array, Array<T>, or Slice<T> source"],
           });
         }
         state.viewCallOrigins.set(

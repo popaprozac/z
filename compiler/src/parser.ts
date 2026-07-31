@@ -805,6 +805,47 @@ export function parse(tokens: Token[], fileName: string): Program {
     return bindings;
   };
 
+  const parseArrayBindings = () => {
+    const bindings = [];
+    if (at("rightBracket")) {
+      throw new DiagnosticError(fileName, peek().location, "array destructuring requires at least one binding");
+    }
+    while (!at("rightBracket") && !at("eof")) {
+      if (match("ellipsis")) {
+        const rest = previous();
+        const binding = expect("identifier", "a rest binding name");
+        if (binding.text === "_") {
+          throw new DiagnosticError(fileName, binding.location, "array rest requires a named binding");
+        }
+        bindings.push({
+          kind: "rest" as const,
+          bindingName: binding.text,
+          location: rest.location,
+          bindingLocation: binding.location,
+        });
+        if (!at("rightBracket")) {
+          throw new DiagnosticError(fileName, peek().location, "array rest must be the final binding");
+        }
+        break;
+      }
+      const binding = expect("identifier", "an array binding name or `_`");
+      bindings.push({
+        kind: binding.text === "_" ? "discard" as const : "binding" as const,
+        bindingName: binding.text === "_" ? null : binding.text,
+        location: binding.location,
+        bindingLocation: binding.text === "_" ? null : binding.location,
+      });
+      if (!match("comma")) break;
+      if (at("rightBracket")) {
+        throw new DiagnosticError(fileName, peek().location, "array destructuring does not use empty or trailing positions", {
+          helps: ["use `_` to skip an element explicitly"],
+        });
+      }
+    }
+    expect("rightBracket", "`]` ending an array pattern");
+    return bindings;
+  };
+
   const parseMatchArms = () => {
     expect("leftBrace", "`{`");
     const arms = [];
@@ -939,7 +980,31 @@ export function parse(tokens: Token[], fileName: string): Program {
         expect("equal", "`=` after an object binding pattern");
         const initializer = parseExpression();
         expect("semicolon", "`;`");
-        return { kind: "destructure", mutable, objectBindings, type, initializer, location: declarationToken.location };
+        return {
+          kind: "destructure",
+          mutable,
+          objectBindings,
+          arrayBindings: null,
+          type,
+          initializer,
+          location: declarationToken.location,
+        };
+      }
+      if (match("leftBracket")) {
+        const arrayBindings = parseArrayBindings();
+        const type = match("colon") ? parseType() : null;
+        expect("equal", "`=` after an array binding pattern");
+        const initializer = parseExpression();
+        expect("semicolon", "`;`");
+        return {
+          kind: "destructure",
+          mutable,
+          objectBindings: [],
+          arrayBindings,
+          type,
+          initializer,
+          location: declarationToken.location,
+        };
       }
       const nameToken = expect("identifier", "a variable name");
       const name = nameToken.text;

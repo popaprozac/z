@@ -104,6 +104,23 @@ export struct ObjectBinding {
   bindingColumn: usize;
 }
 
+export enum ArrayBindingKind {
+  binding,
+  discard,
+  rest,
+}
+
+export struct ArrayBinding {
+  kind: ArrayBindingKind;
+  bindingName: String;
+  offset: usize;
+  line: usize;
+  column: usize;
+  bindingOffset: usize;
+  bindingLine: usize;
+  bindingColumn: usize;
+}
+
 export enum ExpressionKind {
   identifierExpression,
   numberExpression,
@@ -185,6 +202,7 @@ export struct Statement {
   expression: Option<ExpressionSyntax>;
   secondExpression: Option<ExpressionSyntax>;
   objectBindings: Array<ObjectBinding>;
+  arrayBindings: Array<ArrayBinding> = Array<ArrayBinding>();
   children: Array<usize>;
   offset: usize;
   line: usize;
@@ -2422,6 +2440,80 @@ function parseObjectBindings(
   return bindings;
 }
 
+function parseArrayBindings(
+  in tokens: Array<Token>,
+  inout current: usize
+): Array<ArrayBinding> throws ParserError {
+  let bindings = Array<ArrayBinding>();
+  if (tokens[current].kind == TokenKind.rightBracket) {
+    throw fail(tokens[current], "array destructuring requires at least one binding");
+  }
+  while (
+    tokens[current].kind != TokenKind.rightBracket
+    && tokens[current].kind != TokenKind.eof
+  ) {
+    if (takeIf(tokens, inout current, TokenKind.ellipsis)) {
+      const spread = snapshot(tokens[current - 1]);
+      const binding = try expect(
+        tokens,
+        inout current,
+        TokenKind.identifier,
+        "a rest binding name"
+      );
+      if (binding.text == "_") {
+        throw fail(binding, "array rest requires a named binding");
+      }
+      bindings.push(ArrayBinding({
+        kind: ArrayBindingKind.rest,
+        bindingName: binding.text.copyBytes(0, binding.text.byteLength),
+        offset: spread.offset,
+        line: spread.line,
+        column: spread.column,
+        bindingOffset: binding.offset,
+        bindingLine: binding.line,
+        bindingColumn: binding.column,
+      }));
+      if (tokens[current].kind != TokenKind.rightBracket) {
+        throw fail(tokens[current], "array rest must be the final binding");
+      }
+      break;
+    }
+    const binding = try expect(
+      tokens,
+      inout current,
+      TokenKind.identifier,
+      "an array binding name or `_`"
+    );
+    const discard = binding.text == "_";
+    bindings.push(ArrayBinding({
+      kind: discard ? ArrayBindingKind.discard : ArrayBindingKind.binding,
+      bindingName: discard
+        ? ""
+        : binding.text.copyBytes(0, binding.text.byteLength),
+      offset: binding.offset,
+      line: binding.line,
+      column: binding.column,
+      bindingOffset: binding.offset,
+      bindingLine: binding.line,
+      bindingColumn: binding.column,
+    }));
+    if (!takeIf(tokens, inout current, TokenKind.comma)) break;
+    if (tokens[current].kind == TokenKind.rightBracket) {
+      throw fail(
+        tokens[current],
+        "array destructuring uses `_` instead of an empty or trailing position"
+      );
+    }
+  }
+  try expectKind(
+    tokens,
+    inout current,
+    TokenKind.rightBracket,
+    "`]` ending an array pattern"
+  );
+  return bindings;
+}
+
 function pushProjectedBlock(
   inout nodes: Array<Statement>,
   children: Array<usize>,
@@ -2786,10 +2878,15 @@ function parseProjectedStatement(
     let nameLine: usize = 0;
     let nameColumn: usize = 0;
     let objectBindings = Array<ObjectBinding>();
+    let arrayBindings = Array<ArrayBinding>();
     let objectPattern = false;
+    let arrayPattern = false;
     if (takeIf(tokens, inout current, TokenKind.leftBrace)) {
       objectPattern = true;
       objectBindings = try parseObjectBindings(tokens, inout current, "an object field name");
+    } else if (takeIf(tokens, inout current, TokenKind.leftBracket)) {
+      arrayPattern = true;
+      arrayBindings = try parseArrayBindings(tokens, inout current);
     } else {
       const binding = try expect(tokens, inout current, TokenKind.identifier, "a variable name");
       name = binding.text.copyBytes(0, binding.text.byteLength);
@@ -2805,7 +2902,9 @@ function parseProjectedStatement(
     }
     let expression = Option<ExpressionSyntax>.none;
     if (takeIf(tokens, inout current, TokenKind.semicolon)) {
-      if (objectPattern) throw fail(start, "object destructuring requires an initializer");
+      if (objectPattern || arrayPattern) {
+        throw fail(start, "destructuring requires an initializer");
+      }
       if (!mutableBinding) throw fail(start, "const declarations require an initializer");
     } else {
       try expectKind(tokens, inout current, TokenKind.equal, "`=` in a variable declaration");
@@ -2815,6 +2914,7 @@ function parseProjectedStatement(
     const index = nodes.length;
     nodes.push(Statement({
       kind: objectPattern
+        || arrayPattern
         ? StatementKind.destructureStatement
         : StatementKind.variableStatement,
       mutableBinding,
@@ -2826,6 +2926,7 @@ function parseProjectedStatement(
       expression,
       secondExpression: Option<ExpressionSyntax>.none,
       objectBindings,
+      arrayBindings,
       children: Array<usize>(),
       offset: start.offset,
       line: start.line,
@@ -3828,6 +3929,32 @@ function objectBindingsText(in bindings: Array<ObjectBinding>): String {
   return output.finish();
 }
 
+function arrayBindingsText(in bindings: Array<ArrayBinding>): String {
+  let output = TextBuffer();
+  output.append("[");
+  let first = true;
+  for (const binding of bindings) {
+    if (!first) output.append(",");
+    first = false;
+    if (binding.kind == ArrayBindingKind.discard) {
+      output.append("_@");
+      output.append(`${binding.offset},${binding.line},${binding.column}`);
+    } else {
+      if (binding.kind == ArrayBindingKind.rest) {
+        output.append("...@");
+        output.append(`${binding.offset},${binding.line},${binding.column}`);
+      }
+      output.append(binding.bindingName);
+      output.append("@");
+      output.append(
+        `${binding.bindingOffset},${binding.bindingLine},${binding.bindingColumn}`
+      );
+    }
+  }
+  output.append("]");
+  return output.finish();
+}
+
 function renderStatementText(in arena: StatementArena, in statement: Statement): String {
   let output = TextBuffer();
   if (statement.kind == StatementKind.variableStatement) output.append("variable@");
@@ -3869,7 +3996,9 @@ function renderStatementText(in arena: StatementArena, in statement: Statement):
   } else if (statement.kind == StatementKind.destructureStatement) {
     if (statement.mutableBinding) output.append("let:");
     else output.append("const:");
-    const pattern = objectBindingsText(statement.objectBindings);
+    const pattern = statement.arrayBindings.length > 0
+      ? arrayBindingsText(statement.arrayBindings)
+      : objectBindingsText(statement.objectBindings);
     output.append(pattern);
     match (in statement.typeAnnotation) {
       some(typeAnnotation) => {

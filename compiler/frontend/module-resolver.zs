@@ -181,6 +181,7 @@ import {
 } from "./semantic-model.zs";
 import {
   AggregateDeclaration,
+  ArrayBindingKind,
   ConstructorDeclaration,
   Declaration,
   DeclarationKind,
@@ -4331,16 +4332,53 @@ function inferStatement(
         } else {
           sourceType = inferred.copyBytes(0, inferred.byteLength);
         }
-        try consumeOwnedExpressionSyntax(
-          module,
-          modules,
-          moduleIndex,
-          expression,
-          sourceType,
-          inout bindings
-        );
+        if (arena.nodes[index].arrayBindings.length == 0) {
+          try consumeOwnedExpressionSyntax(
+            module,
+            modules,
+            moduleIndex,
+            expression,
+            sourceType,
+            inout bindings
+          );
+        }
       }
       none => {}
+    }
+    if (arena.nodes[index].arrayBindings.length > 0) {
+      const elementType = iterationElementType(sourceType);
+      if (elementType.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `array destructuring requires contiguous collection storage, found ${sourceType}`,
+          arena.nodes[index].line,
+          arena.nodes[index].column
+        );
+      }
+      for (const binding of arena.nodes[index].arrayBindings) {
+        if (binding.kind == ArrayBindingKind.discard) continue;
+        const bindingType = binding.kind == ArrayBindingKind.rest
+          ? `Slice<${elementType}>`
+          : elementType.copyBytes(0, elementType.byteLength);
+        const bindingName = binding.bindingName.copyBytes(
+          0,
+          binding.bindingName.byteLength
+        );
+        recordBindingResolution(
+          modules,
+          moduleIndex,
+          binding.bindingOffset,
+          binding.bindingLine,
+          binding.bindingColumn,
+          bindingName,
+          false,
+          bindingType,
+          inout evidence
+        );
+        addValueBinding(inout bindings, bindingName, bindingType);
+      }
+      return true;
     }
     for (const binding of arena.nodes[index].objectBindings) {
       let fieldType = "";

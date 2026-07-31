@@ -1495,11 +1495,28 @@ export function inferGenericCalls(
       case "destructure": {
         const initializer = rewriteExpression(statement.initializer, environment, statement.type?.name ?? null);
         const type = statement.type?.name ?? initializer.type;
-        const declaration = type ? structs.get(type) : null;
-        if (declaration) {
+        const sourceType = type ? parseViewType(type)?.target ?? type : null;
+        const declaration = sourceType ? structs.get(sourceType) : null;
+        if (declaration && !statement.arrayBindings) {
           for (const binding of statement.objectBindings) {
             const field = declaration.fields.find((candidate) => candidate.name === binding.fieldName);
             if (field) environment.set(binding.bindingName, field.type.name);
+          }
+        }
+        if (sourceType && statement.arrayBindings) {
+          const collection = parseFixedArrayType(sourceType)
+            ?? parseDynamicArrayType(sourceType)
+            ?? parseSliceType(sourceType);
+          if (collection) {
+            for (const binding of statement.arrayBindings) {
+              if (!binding.bindingName) continue;
+              environment.set(
+                binding.bindingName,
+                binding.kind === "rest"
+                  ? sliceTypeName(collection.elementType)
+                  : collection.elementType,
+              );
+            }
           }
         }
         return { ...statement, initializer: initializer.expression };

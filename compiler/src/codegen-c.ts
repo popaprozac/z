@@ -3962,7 +3962,9 @@ bool ${liveFlag} = true;`;
       return `${initialized}\nbool ${liveFlag} = true;`;
     }
     case "destructure":
-      return generateObjectDestructure(statement, context);
+      return statement.arrayBindings
+        ? generateArrayDestructure(statement, context)
+        : generateObjectDestructure(statement, context);
     case "assignment": {
       const objcProperty = context.semanticInfo.objcProperties.get(statement.target.location.offset);
       if (objcProperty?.setter && statement.target.kind === "member") {
@@ -4660,6 +4662,74 @@ function generateObjectDestructure(
     }
     return lines.join("\n");
   });
+}
+
+function generateArrayDestructure(
+  statement: Extract<Statement, { kind: "destructure" }>,
+  context: GenerationContext,
+): string {
+  const plan = context.semanticInfo.arrayDestructures.get(statement.location.offset);
+  if (!plan) throw new Error("missing array destructuring plan");
+  const sourceExpression = plan.viewed
+    ? (statement.initializer as Extract<Expression, { kind: "unary" }>).operand
+    : statement.initializer;
+  const requiredLength = plan.bindings.filter((binding) => binding.kind !== "rest").length;
+
+  const lower = (storage: string): string => {
+    const length = plan.fixedLength === null ? `((${storage}).length)` : String(plan.fixedLength);
+    const lines: string[] = [];
+    if (plan.fixedLength === null && requiredLength > 0) {
+      lines.push(`if (${length} < ${requiredLength}) abort();`);
+    }
+    for (const binding of plan.bindings) {
+      if (binding.kind === "discard") continue;
+      const declaration = generateLocalDeclaration(
+        binding.type!,
+        binding.name!,
+        statement.mutable,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      );
+      if (binding.kind === "rest") {
+        const elementType = mapType(
+          plan.elementType,
+          context.structs,
+          context.enums,
+          context.semanticInfo.foreignNamedTypes,
+        );
+        const data = `((${elementType} *)((${storage}).data + ${binding.index}))`;
+        lines.push(
+          `${declaration} = (${mapType(binding.type!, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)})`
+          + `{ .data = ${data}, .length = ${length} - ${binding.index} };`,
+        );
+      } else {
+        const element = `((${storage}).data[${binding.index}])`;
+        const value = parseViewType(binding.type!) ? `&(${element})` : element;
+        lines.push(`${declaration} = ${value};`);
+      }
+      lines.push(`(void)${cBindingName(binding.name!)};`);
+    }
+    return lines.join("\n");
+  };
+
+  if (sourceExpression.kind !== "arrayExpression") {
+    return lower(generateExpression(sourceExpression, context));
+  }
+  const temporary = `_z_array_destructure_${context.valueCounter.value++}`;
+  const declaration = generateLocalDeclaration(
+    plan.sourceType,
+    temporary,
+    true,
+    context.structs,
+    context.enums,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  return generateDirectValue(
+    sourceExpression,
+    context,
+    (value) => `${declaration} = ${value};\n${lower(temporary)}`,
+  );
 }
 
 function generateFor(statement: Extract<Statement, { kind: "for" }>, context: GenerationContext): string {
@@ -5854,6 +5924,24 @@ function indent(text: string, spaces: number): string {
 
 function recordVariableType(statement: Statement, context: GenerationContext): void {
   if (statement.kind === "destructure") {
+    const arrayPlan = context.semanticInfo.arrayDestructures.get(statement.location.offset);
+    if (arrayPlan) {
+      for (const binding of arrayPlan.bindings) {
+        if (!binding.name || !binding.type) continue;
+        context.localTypes.set(binding.name, binding.type);
+        if (
+          !binding.borrowed
+          && hasCleanupType(binding.type, context.structs, context.enums, context.semanticInfo.foreignTypes)
+        ) {
+          context.cleanupScopes.at(-1)!.push({
+            name: binding.name,
+            type: binding.type,
+            liveFlag: ensureLiveFlag(binding.name, context),
+          });
+        }
+      }
+      return;
+    }
     for (const binding of statement.objectBindings) {
       const type = context.semanticInfo.bindingTypes.get(binding.bindingLocation.offset);
       if (!type) throw new Error(`missing inferred type for destructured binding ${JSON.stringify(binding.bindingName)}`);

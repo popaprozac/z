@@ -238,6 +238,7 @@ export type DestructureStatement = {
   readonly kind: "destructure";
   readonly mutable: boolean;
   readonly objectBindings: MatchObjectBinding[];
+  readonly arrayBindings: MatchArrayBinding[] | null;
   readonly type: TypeReference | null;
   readonly initializer: Expression;
   readonly location: SourceLocation;
@@ -346,6 +347,13 @@ export type MatchObjectBinding = {
   readonly bindingName: string;
   readonly fieldLocation: SourceLocation;
   readonly bindingLocation: SourceLocation;
+};
+
+export type MatchArrayBinding = {
+  readonly kind: "binding" | "discard" | "rest";
+  readonly bindingName: string | null;
+  readonly location: SourceLocation;
+  readonly bindingLocation: SourceLocation | null;
 };
 
 export type Expression =
