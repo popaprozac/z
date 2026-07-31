@@ -269,6 +269,8 @@ function appendTypeSignature(
         output.appendAscii(9);
         appendHexText(inout output, field.typeName);
         output.appendAscii(9);
+        appendHexText(inout output, field.executorAffinity);
+        output.appendAscii(9);
         appendHexText(inout output, field.visibility);
         output.appendAscii(9);
         if (field.readonlyField) output.appendAscii(49);

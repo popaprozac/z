@@ -39,6 +39,7 @@ export struct NativeFieldShape {
   ownerModuleIndex: usize;
   ownerSymbolIndex: usize;
   typeName: String;
+  executorAffinity: String;
   visibility: String;
   readonlyField: boolean;
   optionalField: boolean;
@@ -235,6 +236,10 @@ export function aggregateFieldShape(
                 ownerModuleIndex: location.moduleIndex,
                 ownerSymbolIndex: location.symbolIndex,
                 typeName: substituteGenericType(fieldType, substitutions),
+                executorAffinity: field.executorAffinity.copyBytes(
+                  0,
+                  field.executorAffinity.byteLength
+                ),
                 visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
                 readonlyField: field.readonlyField,
                 optionalField: field.optionalField,

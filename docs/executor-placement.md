@@ -391,8 +391,8 @@ thread may exit after its synchronous body finishes, while the owning worker
 structured lifetime without parking the OS thread. Cross-thread captures must
 still satisfy transfer rules.
 
-A main-isolated Z ARC identity may be retained on main and carried opaquely by
-the worker:
+A wholly main-isolated Z ARC identity may be retained on main and carried
+opaquely by the worker:
 
 ```z
 class Presenter on thread.main {
@@ -418,6 +418,30 @@ The worker has no permission to dereference, alias, return, retain, or release
 its transferred retain is queued to the main executor for release. This is
 transport of an executor-bound capability, not general thread sharing or
 atomic ARC. Raw Objective-C references remain rejected as worker captures.
+
+A class with member-level isolation is less restrictive:
+
+```z
+class Application {
+  readonly name: String;
+  readonly state: Mutex<ApplicationState>;
+  window: AppKit.NSWindow on thread.main;
+
+  function revision(): i32 {
+    return this.state.withLock((in value): i32 => value.revision);
+  }
+
+  function show(): void on thread.main {
+    this.window.makeKeyAndOrderFront(null);
+  }
+}
+```
+
+Construction and destruction remain on main because `window` is stored there.
+The ARC identity may cross a native worker with the same explicit `move`
+closure boundary. `revision()` and the readonly thread-safe fields remain
+available on that worker; `window` and `show()` do not. Mutable or
+non-shareable unannotated fields are conservatively treated as main-only.
 
 When the worker itself needs a value or ordered completion from main, it may be
 explicitly async:
@@ -509,6 +533,41 @@ off-main caller invokes an async isolated function remains later lowering;
 today the caller enters through `await on thread.main`. Isolated function
 values are rejected rather than erasing the effect from an ordinary function
 type.
+
+## Member-level isolation
+
+The same suffix may follow a stored field type:
+
+```z
+class Application {
+  readonly identifier: String;
+  readonly state: Mutex<ApplicationState>;
+  window: AppKit.NSWindow on thread.main;
+
+  function identifierByteLength(): usize {
+    return this.identifier.byteLength;
+  }
+
+  function centerWindow(): void on thread.main {
+    this.window.center();
+  }
+}
+```
+
+This is a positive capability restriction. A whole declaration written
+`class Application on thread.main` remains wholly isolated; Z does not add a
+`nonisolated` member escape. For a mixed-affinity class, the isolated field
+still determines construction, destruction, and cleanup placement, while
+unrelated readonly thread-safe members retain any-thread access. `Mutex<T>` is
+the intended route to synchronized mutable state.
+
+An unrestricted method receives no implicit main proof. Accessing `window`
+therefore diagnoses at the method body and asks for `on thread.main`.
+Unrestricted methods cannot pass, return, copy, or otherwise escape bare
+`this`; they may use accessible members and call other unrestricted methods.
+Trait conformance follows substitutability: an unrestricted implementation may
+satisfy a main-only requirement, but a main-only implementation cannot satisfy
+an unrestricted requirement.
 
 ## Scheduling and cancellation
 

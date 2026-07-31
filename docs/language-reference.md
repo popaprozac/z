@@ -182,9 +182,14 @@ the meaning of ordinary `const`.
 When `T` is transferable and can be destroyed on any worker, a capturing
 `thread.spawn(move () => ...)` closure receives an atomically retained handle
 to the same mutex storage. The caller remains valid before and after joining
-the worker. Z does not duplicate the payload or native mutex, and `copy state`
-remains invalid. Payloads containing main-isolated identity, borrowed storage,
-or unknown destruction affinity are rejected when the Mutex is captured.
+the worker. The `move` closure marker is still required because it makes the
+native-thread capture boundary explicit. It does not promise that every source
+binding is consumed: the captured type chooses copy, unique transfer, retained
+sharing, or rejection. `Mutex<T>` chooses retained sharing, while `String` and
+`Array<T>` choose unique transfer. Z does not duplicate the payload or native
+mutex, and `copy state` remains invalid. Payloads containing main-isolated
+identity, borrowed storage, or unknown destruction affinity are rejected when
+the Mutex is captured.
 
 The scoped closure is Z's first-tier alternative to a user-visible lock guard.
 It makes unlocking and the lifetime of the protected borrow structural, so
@@ -2002,6 +2007,26 @@ class NotesController on thread.main { /* ... */ }
 struct WindowState on thread.main { /* ... */ }
 function updateWindow(): void on thread.main { /* ... */ }
 ```
+
+Stored fields use the same suffix after their type:
+
+```z
+class Application {
+  readonly name: String;
+  readonly state: Mutex<ApplicationState>;
+  window: AppKit.NSWindow on thread.main;
+
+  function revision(): i32 { /* any-thread synchronized read */ }
+  function show(): void on thread.main { /* may access window */ }
+}
+```
+
+The isolated field makes construction and destruction main-bound without
+automatically isolating every member. An unannotated field is accessible
+off-main only when it is readonly and transitively thread-safe; mutable or
+non-shareable fields are conservatively main-only. Unrestricted methods are
+checked without main proof and bare `this` cannot escape from them. A whole
+`class Application on thread.main` remains wholly isolated.
 
 For a long public return contract, prefer a semantic type alias so the executor
 requirement remains easy to scan:

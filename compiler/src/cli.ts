@@ -2005,6 +2005,8 @@ typedef struct {
   uint64_t second_length;
   uint64_t third_data;
   uint64_t third_length;
+  uint64_t fourth_data;
+  uint64_t fourth_length;
   uint64_t flag;
 } Z_Stage1TypeSignatureItemRecord;
 
@@ -2889,6 +2891,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .second_length = 0,
           .third_data = 0,
           .third_length = 0,
+          .fourth_data = 0,
+          .fourth_length = 0,
           .flag = 0,
         };
         written += 1;
@@ -2924,6 +2928,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
             .data[item_index].traitName.length,
           .third_data = 0,
           .third_length = 0,
+          .fourth_data = 0,
+          .fourth_length = 0,
           .flag = 0,
         };
         written += 1;
@@ -2950,6 +2956,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .second_length = 0,
           .third_data = 0,
           .third_length = 0,
+          .fourth_data = 0,
+          .fourth_length = 0,
           .flag = 0,
         };
         written += 1;
@@ -2984,6 +2992,12 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
           .third_length = (uint64_t)response->result.graph.resolved
             .modules.data[module_index].symbols.data[symbol_index]
             .typeSignature.data.some.fields.data[item_index].visibility.length,
+          .fourth_data = (uint64_t)(uintptr_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .typeSignature.data.some.fields.data[item_index].executorAffinity.data,
+          .fourth_length = (uint64_t)response->result.graph.resolved
+            .modules.data[module_index].symbols.data[symbol_index]
+            .typeSignature.data.some.fields.data[item_index].executorAffinity.length,
           .flag = response->result.graph.resolved.modules.data[module_index]
             .symbols.data[symbol_index].typeSignature.data.some
             .fields.data[item_index].readonlyField ? 1 : 0,
@@ -3016,6 +3030,8 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_type_signature_item_records(
             .typeSignature.data.some.variants.data[item_index].payloadType.length,
           .third_data = 0,
           .third_length = 0,
+          .fourth_data = 0,
+          .fourth_length = 0,
           .flag = 0,
         };
         written += 1;

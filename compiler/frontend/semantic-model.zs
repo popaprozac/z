@@ -135,6 +135,7 @@ export struct ModuleSymbol {
 export struct ModuleFieldSignature {
   name: String;
   typeName: String;
+  executorAffinity: String;
   visibility: String;
   readonlyField: boolean;
   hasDefault: boolean;

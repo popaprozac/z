@@ -1244,9 +1244,11 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       }
     }
     if (resolved?.kind === "struct") {
-      const affinity = context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name);
       const field = resolved.declaration.fields.find((item) => item.name === word.text);
       if (field) {
+        const affinity = resolved.declaration.executorAffinity
+          ? context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name)
+          : context.semanticInfo.fieldExecutorAffinities.get(`${resolved.declaration.name}.${field.name}`);
         return markdownHover(
           `${fieldDetail(field, context.typeDisplayNames)}${executorAffinityHover(affinity)}`,
           source,
@@ -1257,6 +1259,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const method = resolved.declaration.methods.find((item) => item.name === word.text)
         ?? resolved.sourceDeclaration?.methods.find((item) => item.name === word.text);
       if (method) {
+        const affinity = resolved.declaration.executorAffinity
+          ? context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name)
+          : undefined;
         return markdownHover(
           `${methodDetail(method, context.typeDisplayNames)}${executorAffinityHover(affinity)}`,
           source,
@@ -1420,8 +1425,16 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       ?? context.semanticInfo.aggregateExecutorAffinities.get(String(type))
       ?? (sourceType ? context.semanticInfo.aggregateExecutorAffinities.get(sourceType) : undefined)
       ?? foreignTypeExecutorAffinity(type, context);
+    const affinityDeclaration = context.program.structs.find((item) => (
+      item.name === String(type) || item.name === sourceType
+    ));
+    const affinityDetail = affinityDeclaration?.kind === "class"
+      && !affinityDeclaration.executorAffinity
+      && affinity
+      ? mixedClassLifecycleHover(affinity)
+      : executorAffinityHover(affinity);
     return markdownHover(
-      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${executorAffinityHover(affinity)}`,
+      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${affinityDetail}`,
       source,
       word.start,
       word.end,
@@ -2301,14 +2314,19 @@ function symbolCompletions(
   }
   for (const declaration of context.program.structs) {
     if (declaration.name.startsWith("__z_mono_") || declaration.name.startsWith("__z_module_")) continue;
-    const executor = context.semanticInfo.aggregateExecutorAffinities.has(declaration.name)
-      || declaration.executorAffinity
+    const affinity = context.semanticInfo.aggregateExecutorAffinities.get(declaration.name);
+    const mixedClass = declaration.kind === "class"
+      && !declaration.executorAffinity
+      && Boolean(affinity);
+    const executor = !mixedClass && (affinity || declaration.executorAffinity)
       ? " on thread.main"
       : "";
     items.push({
       label: declaration.name,
       kind: declaration.kind === "class" ? completionKinds.class : completionKinds.struct,
-      detail: `${declaration.kind} ${declaration.name}${executor}`,
+      detail: `${declaration.kind} ${declaration.name}${executor}${
+        mixedClass && affinity ? mixedClassLifecycleHover(affinity) : ""
+      }`,
     });
   }
   for (const declaration of context.sourceProgram.typeAliases) {
@@ -4842,12 +4860,19 @@ function sourceExportDetail(
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
     const affinity = sourceProgramExecutorAffinity(module.program, declaration.name);
-    const executor = affinity ? " on thread.main" : "";
+    const executor = affinity && (declaration.kind !== "class" || declaration.executorAffinity)
+      ? " on thread.main"
+      : "";
+    const affinityDetail = declaration.kind === "class"
+      && !declaration.executorAffinity
+      && affinity
+      ? mixedClassLifecycleHover(affinity)
+      : executorAffinityHover(affinity);
     return `${declaration.kind} ${displayName}${formatTypeParameters(
       declaration.typeParameters ?? [],
       declaration.typeParameterConstraints ?? [],
       typeDisplayNames,
-    )}${executor}${executorAffinityHover(affinity)}`;
+    )}${executor}${affinityDetail}`;
   }
   if (declaration.kind === "trait") {
     return `trait ${displayName}${formatTypeParameters(
@@ -4879,6 +4904,15 @@ function sourceProgramExecutorAffinity(
   }
   visiting.add(name);
   for (const field of declaration.fields) {
+    if (field.executorAffinity) {
+      visiting.delete(name);
+      return {
+        executor: "main",
+        declared: false,
+        originType: name,
+        fieldPath: [field.name],
+      };
+    }
     const inherited = sourceProgramExecutorAffinity(program, field.type.name, visiting);
     if (!inherited) continue;
     visiting.delete(name);
@@ -5418,8 +5452,9 @@ function memberFieldCompletionDetail(
   const visibility = field.visibility === "private" ? "private " : "";
   const readonly = field.readonly ? "readonly " : "";
   const storedType = displayType(field.type.name, typeDisplayNames);
-  if (field.optional) return `${visibility}${readonly}${storedType} (optional presence; omitted → none)`;
-  return `${visibility}${readonly}${storedType}${field.defaultValue ? " (defaulted)" : ""}`;
+  const executor = field.executorAffinity ? " on thread.main" : "";
+  if (field.optional) return `${visibility}${readonly}${storedType}${executor} (optional presence; omitted → none)`;
+  return `${visibility}${readonly}${storedType}${executor}${field.defaultValue ? " (defaulted)" : ""}`;
 }
 
 function fieldDetail(
@@ -5431,12 +5466,13 @@ function fieldDetail(
   const readonly = field.readonly ? "readonly " : "";
   const defaulted = field.defaultValue ? " = default" : "";
   const storedType = displayType(field.type.name, typeDisplayNames);
-  if (!field.optional) return `${visibility}${readonly}${field.name}: ${storedType}${defaulted}`;
+  const executor = field.executorAffinity ? " on thread.main" : "";
+  if (!field.optional) return `${visibility}${readonly}${field.name}: ${storedType}${executor}${defaulted}`;
   const payload = /^Option<(.+)>$/.exec(storedType)?.[1] ?? storedType;
   if (sourceSpelling) {
-    return `${visibility}${readonly}${field.name}?: ${payload}  // stored as ${storedType}; omission initializes Option.none`;
+    return `${visibility}${readonly}${field.name}?: ${payload}${executor}  // stored as ${storedType}; omission initializes Option.none`;
   }
-  return `${visibility}${readonly}${field.name}: ${storedType}  // optional presence; match some/none`;
+  return `${visibility}${readonly}${field.name}: ${storedType}${executor}  // optional presence; match some/none`;
 }
 
 function staticCompletions(
@@ -6089,9 +6125,13 @@ function declarationHover(
         typeDisplayNames,
       );
       const info = executorAffinities.get(struct.name);
-      const executor = info || struct.executorAffinity ? " on thread.main" : "";
+      const mixedClass = struct.kind === "class" && !struct.executorAffinity && Boolean(info);
+      const executor = !mixedClass && (info || struct.executorAffinity) ? " on thread.main" : "";
+      const affinityDetail = mixedClass && info
+        ? mixedClassLifecycleHover(info)
+        : executorAffinityHover(info);
       return markdownHover(
-        `${struct.kind} ${struct.name}${parameters}${executor}${executorAffinityHover(info)}`,
+        `${struct.kind} ${struct.name}${parameters}${executor}${affinityDetail}`,
         source,
         start,
         end,
@@ -6266,9 +6306,17 @@ function methodDetail(
 
 function executorAffinityHover(info: ExecutorAffinityInfo | undefined): string {
   if (!info) return "";
+  if (info.reason === "mixedClassSafety") {
+    return "\n// executor-isolated to thread.main because this mixed-affinity member is mutable or not thread-shareable";
+  }
   if (info.declared) return "\n// executor-isolated to thread.main";
   const path = info.fieldPath.length ? ` through ${info.fieldPath.join(".")}` : "";
   return `\n// executor-isolated to thread.main (inherited from ${info.originType}${path})`;
+}
+
+function mixedClassLifecycleHover(info: ExecutorAffinityInfo): string {
+  const path = info.fieldPath.length ? ` through ${info.fieldPath.join(".")}` : "";
+  return `\n// construction and destruction on thread.main${path}; members keep their individual executor contracts`;
 }
 
 function formatTypeParameters(

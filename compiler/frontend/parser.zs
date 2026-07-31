@@ -238,6 +238,7 @@ export struct FunctionDeclaration {
 export struct FieldDeclaration {
   name: String;
   type: TypeReference;
+  executorAffinity: String;
   optionalField: boolean;
   defaultValue: Option<ExpressionSyntax>;
   defaultStatements: StatementArena;
@@ -3408,6 +3409,13 @@ function parseAggregateDeclaration(
     }
     try expectKind(tokens, inout current, TokenKind.colon, "`:` after a field name");
     const declaredType = try parseType(tokens, inout current, inout pendingGreater);
+    let fieldExecutorAffinity = "";
+    if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
+      const executor = try expect(tokens, inout current, TokenKind.identifier, "an executor name after `on`");
+      try expectKind(tokens, inout current, TokenKind.dot, "`.` in an executor name");
+      const member = try expect(tokens, inout current, TokenKind.identifier, "an executor member after `.`");
+      fieldExecutorAffinity = `${executor.text}.${member.text}`;
+    }
     if (optionalField && tokens[current].kind == TokenKind.equal) {
       throw fail(
         tokens[current],
@@ -3457,6 +3465,7 @@ function parseAggregateDeclaration(
     fields.push(FieldDeclaration({
       name: field.text.copyBytes(0, field.text.byteLength),
       type,
+      executorAffinity: fieldExecutorAffinity,
       optionalField,
       defaultValue,
       defaultStatements: StatementArena({
@@ -4271,6 +4280,10 @@ export function aggregateShapeText(in declaration: AggregateDeclaration): String
     output.append(field.name);
     output.append(": ");
     output.append(field.type.name);
+    if (!field.executorAffinity.isEmpty) {
+      output.append(" on ");
+      output.append(field.executorAffinity);
+    }
     output.append(";");
   }
   match (in declaration.constructorDeclaration) {

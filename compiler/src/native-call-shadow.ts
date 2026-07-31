@@ -3,6 +3,7 @@ import { canonicalTypeName } from "./canonical-type-name.ts";
 import type { SourceModuleBatch } from "./modules.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import {
+  executorAffinityName,
   sameModuleFunctionSignature,
   stage0ConstructorSignature,
   stage0FunctionSignature,
@@ -222,6 +223,7 @@ export function createNativeSemanticBridge(
       || !sourceField
       || !nativeField
       || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
+      || nativeField.executorAffinity !== executorAffinityName(sourceField.executorAffinity)
       || nativeField.visibility !== sourceField.visibility
       || nativeField.readonlyField !== sourceField.readonly
       || nativeField.hasDefault !== (Boolean(sourceField.defaultValue) || Boolean(sourceField.optional))
@@ -796,6 +798,9 @@ export function createNativeSemanticBridge(
           }
           return {
             ...field,
+            executorAffinity: nativeField.executorAffinity
+              ? sourceField.executorAffinity
+              : undefined,
             visibility: nativeField.visibility,
             readonly: nativeField.readonlyField,
             type: {
@@ -812,6 +817,9 @@ export function createNativeSemanticBridge(
       authoritativeFields += 1;
       return {
         ...field,
+        executorAffinity: resolved.nativeField.executorAffinity
+          ? resolved.sourceField.executorAffinity
+          : undefined,
         visibility: resolved.nativeField.visibility,
         readonly: resolved.nativeField.readonlyField,
         type: {

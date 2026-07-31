@@ -44,7 +44,7 @@ export function stage0ConstructorSignature(declaration: StructDeclaration): Stag
   };
 }
 
-function executorAffinityName(
+export function executorAffinityName(
   affinity: FunctionDeclaration["executorAffinity"] | StructDeclaration["executorAffinity"],
 ): string | null {
   if (!affinity) return null;
@@ -136,6 +136,7 @@ function stage0ModuleSymbols(
       fields: declaration.fields.map((field) => ({
         name: field.name,
         typeName: canonicalTypeName(field.type.name),
+        executorAffinity: executorAffinityName(field.executorAffinity),
         visibility: field.visibility,
         readonlyField: field.readonly,
         hasDefault: Boolean(field.defaultValue) || Boolean(field.optional),
@@ -368,6 +369,7 @@ function sameModuleTypeSignature(
       return other !== undefined
         && field.name === other.name
         && field.typeName === other.typeName
+        && field.executorAffinity === other.executorAffinity
         && field.visibility === other.visibility
         && field.readonlyField === other.readonlyField
         && field.hasDefault === other.hasDefault

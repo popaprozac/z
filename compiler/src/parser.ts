@@ -1242,6 +1242,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       }
       expect("colon", "`:`");
       const declaredType = parseType();
+      const fieldExecutorAffinity = parseExecutorAffinity();
       const type = optional
         ? { ...declaredType, name: genericTypeName("Option", [declaredType.name]) }
         : declaredType;
@@ -1261,6 +1262,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       fields.push({
         name: field.text,
         type,
+        executorAffinity: fieldExecutorAffinity,
         optional,
         defaultValue,
         visibility,

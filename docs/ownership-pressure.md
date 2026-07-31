@@ -1687,6 +1687,39 @@ The probe still does not prove read/write locks, asynchronous mutexes, atomics,
 condition variables, semaphores, timed acquisition, nonblocking acquisition,
 or arbitrary native resource payloads.
 
+## Mixed-affinity application identity
+
+The next application-framework slice combined a main-thread native handle with
+ordinary metadata and mutex-protected Z state in one ARC class:
+
+```z
+class Application {
+  readonly name: String;
+  readonly state: Mutex<ApplicationState>;
+  window: AppKit.NSWindow on thread.main;
+}
+```
+
+Treating inherited affinity as whole-object isolation made this class safe but
+needlessly inert on workers. Treating it as ordinary shared identity would make
+native handle access and destruction unsound. The resulting split is:
+
+- the isolated field determines construction and destruction placement;
+- the field itself and every mutable or non-shareable sibling remain main-only;
+- readonly transitively safe fields and unrestricted methods remain available
+  on a native worker;
+- unrestricted methods receive no main proof and cannot let bare `this`
+  escape;
+- the explicit `move` thread-closure marker remains, while the captured ARC
+  identity is retained and the parent reference survives.
+
+This validates member-level affinity as an access contract distinct from
+aggregate lifecycle affinity. It also confirms that `Mutex<T>` is the intended
+way to keep mutable Z state behind an any-thread application façade. The probe
+does not yet prove retrieving that identity from `Once<T>` directly on an
+arbitrary worker; synchronized any-thread publication/retrieval and
+executor-routed final release are the next slice.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

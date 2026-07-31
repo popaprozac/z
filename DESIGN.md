@@ -1762,13 +1762,39 @@ function updateWindow(): void on thread.main { /* ... */ }
 The declaration establishes an execution requirement while a placement block
 establishes proof that the requirement is satisfied. Aggregate affinity is
 transitive through stored fields and is reported by editor hover, including
-the field path that introduced inferred isolation. The current tier rejects
-off-main calls, construction, member access, function-value erasure, and
-placement results that would carry isolated state back to a non-main
-continuation. A native worker may carry retained Z ARC identity that is
-isolated to `thread.main`, but only opaquely: every access must remain inside a
-nested main placement and the worker's retain is released back on main. Async
-isolated functions do not auto-hop yet; callers use `await on thread.main`.
+the field path that introduced inferred isolation.
+
+Stored members may narrow that contract without isolating every operation on
+the containing ARC identity:
+
+```z
+class Application {
+  readonly name: String;
+  readonly state: Mutex<ApplicationState>;
+  window: AppKit.NSWindow on thread.main;
+
+  function revision(): i32 { /* may run on any thread through state */ }
+  function showWindow(): void on thread.main { /* may access window */ }
+}
+```
+
+The positive suffix remains `field: Type on thread.main`; there is no
+`nonisolated` escape from a whole-class declaration. The selected field makes
+construction and destruction main-bound. Other fields are usable off-main only
+when they are readonly and transitively thread-safe, including a retained
+`Mutex<T>` handle. An unrestricted method is checked under no executor proof,
+so touching the selected field requires that method to declare the same
+affinity. Bare `this` cannot escape from an unrestricted mixed-affinity method.
+A main-only trait implementation cannot satisfy an any-thread requirement,
+while an any-thread implementation may safely satisfy a main-only requirement.
+
+The current tier rejects off-main use of the affected calls, construction,
+member access, function-value erasure, and placement results. A native worker
+may carry a fully isolated Z ARC identity only opaquely. A mixed-affinity class
+additionally exposes its proven readonly thread-safe members and unrestricted
+methods; selected members still require a nested main placement. In both cases
+the worker's retain is released back on main. Async isolated functions do not
+auto-hop yet; callers use `await on thread.main`.
 
 Foreign declarations carry the same FIIR affinity fact. Explicit Clang
 `swift_attr("@UIActor")` and `swift_attr("@MainActor")` metadata maps

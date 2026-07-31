@@ -1,4 +1,5 @@
 import console from "std/console";
+import { thread } from "std/thread";
 import AppKit from "AppKit/AppKit.h";
 import { Document, Workspace } from "./model.zs";
 
@@ -6,7 +7,7 @@ class WindowController {
   window: AppKit.NSWindow;
   workspace: Workspace;
 
-  function present(): void {
+  function present(): void on thread.main {
     console.log(`documents=${this.workspace.documentCount()}, active=${this.workspace.activeDocumentId()}`);
     this.workspace.eachDocument((in document) => {
       console.log(`document ${document.id}: ${document.title}`);

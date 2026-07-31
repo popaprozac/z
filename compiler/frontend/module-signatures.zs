@@ -164,6 +164,10 @@ export function programTypeSignature(
         fields.push(ModuleFieldSignature({
           name: field.name.copyBytes(0, field.name.byteLength),
           typeName: field.type.name.copyBytes(0, field.type.name.byteLength),
+          executorAffinity: field.executorAffinity.copyBytes(
+            0,
+            field.executorAffinity.byteLength
+          ),
           visibility: visibilityName(field.visibility),
           readonlyField: field.readonlyField,
           hasDefault,

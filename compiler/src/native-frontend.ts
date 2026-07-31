@@ -765,6 +765,7 @@ export function resolveWithNativeFrontendLibrary(
           fields: {
             name: string;
             typeName: string;
+            executorAffinity: string | null;
             visibility: "public" | "private";
             readonlyField: boolean;
           }[];
@@ -878,6 +879,7 @@ export function resolveWithNativeFrontendLibrary(
           fields: new Array<{
             name: string;
             typeName: string;
+            executorAffinity: string | null;
             visibility: "public" | "private";
             readonlyField: boolean;
           }>(fieldCount),
@@ -926,7 +928,7 @@ export function resolveWithNativeFrontendLibrary(
       if (expectedTypeSignatureItemCount !== typeSignatureItemCount) {
         throw new Error("the native frontend type-signature item counts do not match");
       }
-      const typeSignatureItemRecordWidth = 11 * 8;
+      const typeSignatureItemRecordWidth = 13 * 8;
       const typeSignatureItemRecords = Buffer.alloc(
         Math.max(1, typeSignatureItemCount * typeSignatureItemRecordWidth),
       );
@@ -970,7 +972,12 @@ export function resolveWithNativeFrontendLibrary(
           field(9, "third length"),
           "type-signature item",
         );
-        const flag = field(10, "flag");
+        const fourth = nativeString(
+          field(10, "fourth pointer"),
+          field(11, "fourth length"),
+          "type-signature item",
+        );
+        const flag = field(12, "flag");
         const expectation = typeSignatureExpectations.get(`${moduleIndex}:${symbolIndex}`);
         if (!expectation) {
           throw new Error("the native frontend returned an item without a type signature");
@@ -981,6 +988,7 @@ export function resolveWithNativeFrontendLibrary(
             || itemIndex in expectation.signature.typeParameters
             || second.length !== 0
             || third.length !== 0
+            || fourth.length !== 0
             || flag !== 0
           ) {
             throw new Error("the native frontend returned an invalid aggregate type parameter");
@@ -994,6 +1002,7 @@ export function resolveWithNativeFrontendLibrary(
             itemIndex >= expectation.constraintCount
             || itemIndex in expectation.signature.typeParameterConstraints
             || third.length !== 0
+            || fourth.length !== 0
             || flag !== 0
           ) {
             throw new Error("the native frontend returned an invalid aggregate constraint");
@@ -1011,6 +1020,7 @@ export function resolveWithNativeFrontendLibrary(
             || itemIndex in expectation.signature.implementedTraits
             || second.length !== 0
             || third.length !== 0
+            || fourth.length !== 0
             || flag !== 0
           ) {
             throw new Error("the native frontend returned an invalid implemented trait");
@@ -1031,6 +1041,7 @@ export function resolveWithNativeFrontendLibrary(
           expectation.signature.fields[itemIndex] = {
             name: first,
             typeName: second,
+            executorAffinity: fourth.length === 0 ? null : fourth,
             visibility: third,
             readonlyField: flag === 1,
           };
@@ -1042,6 +1053,7 @@ export function resolveWithNativeFrontendLibrary(
             itemIndex >= expectation.variantCount
             || itemIndex in expectation.signature.variants
             || third.length !== 0
+            || fourth.length !== 0
             || flag !== 0
           ) {
             throw new Error("the native frontend returned an invalid enum variant");

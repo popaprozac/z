@@ -405,6 +405,7 @@ export type SemanticInfo = {
   readonly mutexConstructors: ReadonlyMap<number, string>;
   readonly mutexWithLockCalls: ReadonlyMap<number, MutexWithLockCallInfo>;
   readonly aggregateExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
+  readonly fieldExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
   readonly foreignCxxArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "move">;
@@ -459,6 +460,7 @@ export type ExecutorAffinityInfo = {
   readonly declared: boolean;
   readonly originType: string;
   readonly fieldPath: readonly string[];
+  readonly reason?: "mixedClassSafety";
 };
 
 export type TestExpectationPlan = {
@@ -550,6 +552,7 @@ type AnalysisState = {
   readonly mutexWithLockCalls: Map<number, MutexWithLockCallInfo>;
   analyzingModuleConstant: boolean;
   readonly aggregateExecutorAffinities: Map<string, ExecutorAffinityInfo>;
+  readonly fieldExecutorAffinities: Map<string, ExecutorAffinityInfo>;
   readonly shareableClasses: Set<string>;
   readonly threadSharedClassUses: Map<string, SourceLocation>;
   readonly weakClassUses: Map<string, SourceLocation>;
@@ -908,6 +911,7 @@ export function analyze(
     mutexWithLockCalls: new Map(),
     analyzingModuleConstant: false,
     aggregateExecutorAffinities: new Map(),
+    fieldExecutorAffinities: new Map(),
     shareableClasses: new Set(),
     threadSharedClassUses: new Map(),
     weakClassUses: new Map(),
@@ -1501,6 +1505,9 @@ export function analyze(
 
   for (const declaration of program.structs) {
     validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
+    for (const field of declaration.fields) {
+      validateExecutorAffinity(field.executorAffinity, field.location, globals, fileName);
+    }
     for (const method of declaration.methods) {
       validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
     }
@@ -1631,6 +1638,7 @@ export function analyze(
       state.shareableClasses.add(declaration.name);
     }
   }
+  collectMixedAffinityFieldAccesses(program, structs, enums, state);
 
   const main = globals.get("main");
   if ((!main || main.kind !== "function") && requireMain) {
@@ -1792,6 +1800,9 @@ function validateNativeLayouts(
     }
     if (declaration.fields.length === 0) reject(location, "a C-layout struct must declare at least one field");
     for (const field of declaration.fields) {
+      if (field.executorAffinity) {
+        reject(field.location, `C-layout field ${JSON.stringify(field.name)} cannot have executor affinity`);
+      }
       if (!validPublicCIdentifier(field.name)) {
         reject(field.location, `C-layout field name ${JSON.stringify(field.name)} is not a valid public C identifier`);
       }
@@ -1991,8 +2002,17 @@ function collectAggregateExecutorAffinities(
     }
     visiting.add(name);
     for (const field of declaration.fields) {
-      const inherited = typeAffinity(field.type.name, [field.name]);
+      const explicit: ExecutorAffinityInfo | null = field.executorAffinity
+        ? {
+            executor: "main",
+            declared: true,
+            originType: name,
+            fieldPath: [field.name],
+          }
+        : null;
+      const inherited = explicit ?? typeAffinity(field.type.name, [field.name]);
       if (!inherited) continue;
+      state.fieldExecutorAffinities.set(`${name}.${field.name}`, inherited);
       const inferred: ExecutorAffinityInfo = {
         ...inherited,
         declared: false,
@@ -2006,6 +2026,61 @@ function collectAggregateExecutorAffinities(
   };
 
   for (const declaration of program.structs) aggregateAffinity(declaration.name);
+  // The first lifecycle-affine field ends aggregate discovery early. Populate
+  // every member contract in a second pass so editor and access checks retain
+  // the complete field-level surface.
+  for (const declaration of program.structs) {
+    for (const field of declaration.fields) {
+      const explicit: ExecutorAffinityInfo | null = field.executorAffinity
+        ? {
+            executor: "main",
+            declared: true,
+            originType: declaration.name,
+            fieldPath: [field.name],
+          }
+        : null;
+      const inherited = explicit ?? typeAffinity(field.type.name, [field.name]);
+      if (inherited) {
+        state.fieldExecutorAffinities.set(`${declaration.name}.${field.name}`, inherited);
+      }
+    }
+  }
+}
+
+function collectMixedAffinityFieldAccesses(
+  program: Program,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): void {
+  for (const declaration of program.structs) {
+    if (
+      declaration.kind !== "class"
+      || declaration.executorAffinity
+      || !state.aggregateExecutorAffinities.has(declaration.name)
+    ) continue;
+    for (const field of declaration.fields) {
+      const key = `${declaration.name}.${field.name}`;
+      if (state.fieldExecutorAffinities.has(key)) continue;
+      const mutex = parseMutexType(field.type.name);
+      const mutexShareable = Boolean(
+        mutex
+        && initialThreadTransferKind(field.type.name, structs, enums, state) === "share",
+      );
+      const threadReadable = field.readonly && (
+        mutexShareable
+        || shareableTypeIssue(field.type.name, structs, enums, state) === null
+      );
+      if (threadReadable) continue;
+      state.fieldExecutorAffinities.set(key, {
+        executor: "main",
+        declared: false,
+        originType: declaration.name,
+        fieldPath: [field.name],
+        reason: "mixedClassSafety",
+      });
+    }
+  }
 }
 
 function analyzeStructDeclaration(
@@ -2354,7 +2429,10 @@ function validateObjCProtocolMethodSignature(
 
 function sameMethodSignature(actual: FunctionDeclaration, required: FunctionDeclaration, ownerType?: string): boolean {
   return Boolean(actual.async) === Boolean(required.async)
-    && Boolean(actual.executorAffinity) === Boolean(required.executorAffinity)
+    // An implementation may be less isolated than its requirement: callers
+    // that know only the trait still provide the required executor proof. The
+    // reverse would strengthen the contract invisibly and is unsound.
+    && (!actual.executorAffinity || Boolean(required.executorAffinity))
     && actual.receiverMode === required.receiverMode
     && actual.returnType.name === required.returnType.name
     && actual.errorType?.name === required.errorType?.name
@@ -2723,11 +2801,45 @@ function analyzeFunction(
   const previousExecutorContext = state.executorContext;
   state.activeReceiver = receiver?.name ?? null;
   state.activeFunction = declaration;
+  const lifecycleBody = Boolean(
+    receiver
+    && (declaration.name === "constructor" || declaration.name === "deinit")
+    && state.aggregateExecutorAffinities.has(receiver.name),
+  );
   state.executorContext = (
     (!receiver && declaration.name === "main")
     || Boolean(declaration.executorAffinity)
-    || Boolean(receiver && state.aggregateExecutorAffinities.has(receiver.name))
+    || Boolean(receiver?.executorAffinity)
+    || lifecycleBody
   ) ? "main" : null;
+  if (
+    receiver?.kind === "class"
+    && !receiver.executorAffinity
+    && state.aggregateExecutorAffinities.has(receiver.name)
+    && !declaration.static
+    && !declaration.executorAffinity
+    && declaration.name !== "constructor"
+    && declaration.name !== "deinit"
+  ) {
+    const escapingReceiver = executorBoundCaptureUseOutsideMain(
+      declaration.body,
+      "this",
+      false,
+      true,
+    );
+    if (escapingReceiver) {
+      throw new DiagnosticError(
+        fileName,
+        escapingReceiver,
+        `mixed-affinity class ${JSON.stringify(receiver.name)} may use this off thread.main only through an accessible member`,
+        {
+          code: "Z0711",
+          notes: ["the class identity carries main-thread destruction, so an unrestricted method cannot return, pass, copy, or otherwise escape `this`"],
+          helps: ["access a readonly thread-safe field, call another unrestricted method, or mark this method `on thread.main`"],
+        },
+      );
+    }
+  }
   state.placementErrorTypes.length = 0;
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
@@ -8495,21 +8607,23 @@ function inferExpressionInner(
       if (!declaration) {
         throw new DiagnosticError(fileName, expression.location, `type ${JSON.stringify(receiverType)} has no members`);
       }
-      const memberAffinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
-      requireMainExecutorContext(
-        Boolean(memberAffinity),
-        expression.location,
-        `member access on ${declaration.kind} ${JSON.stringify(declaration.name)}`,
-        fileName,
-        state,
-        memberAffinity,
-      );
       const declaredField = declaration.fields.find((candidate) => candidate.name === expression.property);
       if (declaredField) {
         const field = resolveSemanticField(expression.location, declaration, declaredField, state);
         if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
         }
+        const memberAffinity = declaration.executorAffinity
+          ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
+          : state.fieldExecutorAffinities.get(`${declaration.name}.${field.name}`) ?? null;
+        requireMainExecutorContext(
+          Boolean(memberAffinity),
+          expression.location,
+          `field ${JSON.stringify(`${declaration.name}.${field.name}`)}`,
+          fileName,
+          state,
+          memberAffinity,
+        );
         return field.type.name;
       }
       const method = declaration.methods.find((candidate) => candidate.name === expression.property);
@@ -9129,7 +9243,12 @@ function inferExpressionInner(
                   });
                 }
                 if (transfer === "executorBound") {
-                  const invalidUse = executorBoundCaptureUseOutsideMain(operation.body, capture.name);
+                  const invalidUse = executorBoundCaptureUseOutsideMain(
+                    operation.body,
+                    capture.name,
+                    false,
+                    !capturedClass!.executorAffinity,
+                  );
                   if (invalidUse) {
                     throw new DiagnosticError(
                       fileName,
@@ -9296,7 +9415,9 @@ function inferExpressionInner(
             if (callable.visibility === "private" && state.activeReceiver !== aggregate.name) {
               throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(callable.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
             }
-            const staticAffinity = state.aggregateExecutorAffinities.get(aggregate.name) ?? null;
+            const staticAffinity = aggregate.executorAffinity
+              ? state.aggregateExecutorAffinities.get(aggregate.name) ?? null
+              : null;
             requireMainExecutorContext(
               Boolean(callable.executorAffinity) || Boolean(staticAffinity),
               expression.location,
@@ -10403,6 +10524,17 @@ function inferExpressionInner(
           if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
           }
+          const fieldAffinity = declaration.executorAffinity
+            ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
+            : state.fieldExecutorAffinities.get(`${declaration.name}.${field.name}`) ?? null;
+          requireMainExecutorContext(
+            Boolean(fieldAffinity),
+            expression.location,
+            `function field ${JSON.stringify(`${declaration.name}.${field.name}`)}`,
+            fileName,
+            state,
+            fieldAffinity,
+          );
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
           state.expressionTypes.set(expression.callee.location.offset, field.type.name);
           checkArguments(
@@ -10440,7 +10572,9 @@ function inferExpressionInner(
         if (callable.visibility === "private" && state.activeReceiver !== declaration.name) {
           throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(callable.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
         }
-        const methodAffinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
+        const methodAffinity = declaration.executorAffinity
+          ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
+          : null;
         requireMainExecutorContext(
           Boolean(callable.executorAffinity) || Boolean(methodAffinity),
           expression.location,
@@ -12709,11 +12843,12 @@ function executorBoundCaptureUseOutsideMain(
   value: unknown,
   name: string,
   onMain = false,
+  allowMemberRoot = false,
 ): SourceLocation | null {
   if (!value || typeof value !== "object") return null;
   if (Array.isArray(value)) {
     for (const child of value) {
-      const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain);
+      const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain, allowMemberRoot);
       if (invalid) return invalid;
     }
     return null;
@@ -12725,20 +12860,31 @@ function executorBoundCaptureUseOutsideMain(
     readonly body?: unknown;
     readonly executor?: unknown;
     readonly call?: unknown;
+    readonly object?: unknown;
   };
   if (node.kind === "identifier" && node.name === name) {
     return onMain ? null : node.location ?? null;
   }
   if (node.kind === "executorPlacement") {
-    const executorUse = executorBoundCaptureUseOutsideMain(node.executor, name, onMain);
-    const callUse = node.call ? executorBoundCaptureUseOutsideMain(node.call, name, true) : null;
-    return executorUse ?? callUse ?? executorBoundCaptureUseOutsideMain(node.body, name, true);
+    const executorUse = executorBoundCaptureUseOutsideMain(node.executor, name, onMain, allowMemberRoot);
+    const callUse = node.call ? executorBoundCaptureUseOutsideMain(node.call, name, true, allowMemberRoot) : null;
+    return executorUse ?? callUse ?? executorBoundCaptureUseOutsideMain(node.body, name, true, allowMemberRoot);
   }
   if (node.kind === "closure") {
     // A nested closure can outlive the placement that constructs it. Keep this
     // first tier structural: only the worker's direct main-placement regions
     // may borrow executor-bound identity.
-    return executorBoundCaptureUseOutsideMain(node.body, name, false);
+    return executorBoundCaptureUseOutsideMain(node.body, name, false, false);
+  }
+  if (
+    allowMemberRoot
+    && node.kind === "member"
+    && node.object
+    && typeof node.object === "object"
+    && (node.object as { readonly kind?: string }).kind === "identifier"
+    && (node.object as { readonly name?: string }).name === name
+  ) {
+    return null;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     if (
@@ -12749,7 +12895,7 @@ function executorBoundCaptureUseOutsideMain(
       || key === "errorType"
       || key === "executorAffinity"
     ) continue;
-    const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain);
+    const invalid = executorBoundCaptureUseOutsideMain(child, name, onMain, allowMemberRoot);
     if (invalid) return invalid;
   }
   return null;

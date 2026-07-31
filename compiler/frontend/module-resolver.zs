@@ -5611,6 +5611,9 @@ function validateNativeCLayouts(
         if (field.readonlyField) {
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot be readonly`, field.line, field.column);
         }
+        if (field.executorAffinity.byteLength > 0) {
+          throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot have executor affinity`, field.line, field.column);
+        }
         if (field.optionalField) {
           throw resolutionError(ModuleResolveErrorKind.typeMismatch, module.path, `C-layout field "${field.name}" cannot use Z optional-field storage`, field.line, field.column);
         }

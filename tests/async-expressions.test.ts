@@ -373,6 +373,50 @@ test("enforces declaration-header executor affinity and surfaces inherited isola
   assert.match(capabilityDiagnostic.message, /requires the thread\.main executor capability/);
 });
 
+test("treats executor affinity contravariantly in trait method requirements", () => {
+  const broaderImplementation = `
+    import { thread } from "std/thread";
+
+    trait MainReadable {
+      function read(): i32 on thread.main;
+    }
+
+    class Snapshot implements MainReadable {
+      readonly value: i32;
+      function read(): i32 { return this.value; }
+    }
+
+    function main(): i32 {
+      const snapshot = new Snapshot({ value: 42 });
+      return snapshot.read() - 42;
+    }
+  `;
+  check(broaderImplementation, "executor-trait-broader-implementation.zs");
+
+  const strongerImplementation = `
+    import { thread } from "std/thread";
+
+    trait Readable {
+      function read(): i32;
+    }
+
+    class MainSnapshot implements Readable {
+      readonly value: i32;
+      function read(): i32 on thread.main { return this.value; }
+    }
+
+    function main(): i32 { return 0; }
+  `;
+  const diagnostic = diagnostics(
+    strongerImplementation,
+    "executor-trait-stronger-implementation.zs",
+  )[0];
+  assert.match(
+    diagnostic?.message ?? "",
+    /does not match trait requirement Readable\.read/,
+  );
+});
+
 test("preserves executor affinity across Z module boundaries", () => {
   const directory = mkdtempSync("/tmp/z-executor-affinity-modules-");
   try {

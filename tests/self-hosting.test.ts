@@ -6130,6 +6130,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
             fields: [{
               name: "value",
               typeName: "T",
+              executorAffinity: null,
               visibility: "private",
               readonlyField: true,
               hasDefault: false,
@@ -6287,6 +6288,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       fields: [{
         name: "value",
         typeName: "T",
+        executorAffinity: null,
         visibility: "private",
         readonlyField: true,
         hasDefault: false,

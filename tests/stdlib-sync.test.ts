@@ -478,6 +478,109 @@ test("rejects a Mutex payload that cannot be destroyed on a worker", () => {
   );
 });
 
+test("shares mixed-affinity class identity while isolating selected members", () => {
+  const directory = mkdtempSync("/tmp/z-mixed-affinity-mutex-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct State {
+        count: i32;
+      }
+
+      class Application {
+        readonly name: String;
+        readonly state: Mutex<State>;
+        windowId: i32 on thread.main;
+
+        function count(): i32 {
+          return this.state.withLock(
+            (in value): i32 => value.count
+          );
+        }
+
+        function windowValue(): i32 on thread.main {
+          return this.windowId;
+        }
+      }
+
+      async function main(): i32 on thread.main {
+        const app = new Application({
+          name: "Z",
+          state: Mutex(State({ count: 42 })),
+          windowId: 7
+        });
+        const worker = thread.spawn(
+          move (): i32 => app.count()
+        );
+        const observed = await worker;
+        return observed - app.windowValue() - 35;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const generated = compileToC(source, file);
+    assert.match(generated, /Z_Application_count/);
+    assert.match(generated, /z_mutex_State_retain/);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+
+    const windowHover = hover(
+      source,
+      file,
+      source.indexOf("windowId:") + 1,
+    )?.contents.value ?? "";
+    assert.match(windowHover, /windowId: i32 on thread\.main/);
+    const windowUseHover = hover(
+      source,
+      file,
+      source.indexOf("this.windowId") + "this.".length + 1,
+    )?.contents.value ?? "";
+    assert.match(windowUseHover, /executor-isolated to thread\.main/);
+
+    const incompleteAffinity = source.replace(
+      "windowId: i32 on thread.main;",
+      "windowId: i32 on thread.ma;",
+    );
+    const affinityOffset = incompleteAffinity.indexOf("thread.ma")
+      + "thread.ma".length;
+    assert.equal(
+      completions(incompleteAffinity, file, affinityOffset)
+        .find((item) => item.label === "main")?.kind,
+      10,
+    );
+
+    const unsafeMethod = source.replace(
+      "return this.state.withLock(",
+      "return this.windowId + this.state.withLock(",
+    );
+    const unsafeDiagnostic = diagnostics(unsafeMethod, file)[0];
+    assert.equal(unsafeDiagnostic?.code, "Z0711");
+    assert.match(unsafeDiagnostic?.message ?? "", /requires thread\.main executor context/);
+
+    const escapedIdentity = source.replace(
+      "move (): i32 => app.count()",
+      "move (): i32 => { const alias = app; return alias.count(); }",
+    );
+    const escapeDiagnostic = diagnostics(escapedIdentity, file)[0];
+    assert.equal(escapeDiagnostic?.code, "Z0704");
+    assert.match(escapeDiagnostic?.message ?? "", /only opaque/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("retains Mutex identity in an ordinary owned closure environment", () => {
   const directory = mkdtempSync("/tmp/z-mutex-owned-closure-");
   const file = resolve(directory, "main.zs");
