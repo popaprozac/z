@@ -13,6 +13,10 @@ example while selecting a dynamically linked artifact in `z.json`:
 }
 ```
 
+The consumer follows the same generated lifecycle contract:
+`zshared_runtime_initialize(NULL)`, exported calls, then
+`zshared_runtime_shutdown()` before the dynamic library can be unloaded.
+
 Build it from the repository root:
 
 ```sh

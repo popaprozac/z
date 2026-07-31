@@ -2,7 +2,8 @@
 
 Status: scalar functions, checked by-value C-layout structs, and
 fixed-representation C enums implemented in both the Stage-0 and fixed-point
-native compilers.
+native compilers. Project-built libraries also publish a target-scoped runtime
+lifecycle and enter it around every public call.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -190,13 +191,19 @@ static int32_t Z_internal_z_math_add(int32_t left, int32_t right) {
 }
 
 Z_API int32_t z_math_add(int32_t left, int32_t right) {
-    return Z_internal_z_math_add(left, right);
+    Z_ForeignThreadEntry entry = z_embedded_runtime_zmath_enter();
+    int32_t result = Z_internal_z_math_add(left, right);
+    z_embedded_runtime_zmath_leave(entry);
+    return result;
 }
 ```
 
 The wrapper separates the permanent public ABI from compiler-owned internal
 names and calling conventions. Release-code inspection must verify that Clang
-inlines a trivial internal call when its semantics permit it.
+inlines the private implementation call when its semantics permit it. Project
+library artifacts retain the bounded runtime entry shown above; ordinary
+Z-to-Z calls target the private implementation directly and do not pay that
+foreign-boundary accounting.
 
 Z also emits a header:
 
@@ -290,6 +297,66 @@ unit selected by `target.entry` without writing an artifact. Header publication
 remains part of `z build`; a separate header-emission command is not yet
 defined. Executables remain the default target kind.
 
+## Embedding lifecycle
+
+A generated library is a process-owned Z runtime boundary, even when its first
+exports contain only scalar arithmetic. The generated header therefore
+publishes target-scoped lifecycle names derived from `target.name`. For a
+target named `zmath`:
+
+```c
+zmath_runtime_status status = zmath_runtime_initialize(NULL);
+if (status != ZMATH_RUNTIME_OK) return 1;
+
+int32_t answer = z_math_add(20, 22);
+
+if (zmath_runtime_shutdown() != ZMATH_RUNTIME_OK) return 2;
+```
+
+The host must initialize once before calling any exported Z function. A second
+initialize reports `ZMATH_RUNTIME_ALREADY_INITIALIZED`. Shutdown is one-shot;
+subsequent initialization or shutdown reports `ZMATH_RUNTIME_SHUT_DOWN`.
+
+Every public wrapper enters the runtime through a lock-free active-call count,
+then restores the caller thread's previous Z runtime route on exit. Calls from
+multiple host-created threads are therefore ordinary supported entries, not
+unregistered runtime access. The host still owns those threads and must join
+them before unloading the library. If shutdown observes an active exported
+call, escaping native callback retained by Z, or queued executor-bound
+finalizer, it reports `ZMATH_RUNTIME_BUSY` and leaves the runtime running; the
+host can join, release, drain its executor queue, and retry.
+
+The optional configuration carries one deliberately narrow host hook:
+
+```c
+typedef struct zmath_runtime_config {
+  void *context;
+  zmath_runtime_enqueue_release enqueue_release;
+} zmath_runtime_config;
+```
+
+`enqueue_release` must arrange for `finalize(value)` to run exactly once on the
+owning executor. Z wraps the work so shutdown remains busy until that finalizer
+actually completes. The hook is not a general task scheduler. Headers define
+`ZMATH_RUNTIME_REQUIRES_ENQUEUE_RELEASE` as `1` when the compiled library has
+executor-bound class lifecycle; initialization then returns
+`ZMATH_RUNTIME_INVALID_CONFIG` for a missing hook. Value-only libraries define
+it as `0` and accept `NULL`. The hook may be called from any native thread and
+must be thread-safe; its `context` must remain valid until shutdown succeeds.
+
+Runtime entry has an intentional atomic accounting cost. Direct internal Z
+calls still target the private implementation rather than re-entering through
+the public wrapper, so the cost occurs only at the foreign boundary. A future
+proven stateless export mode may omit it, but the default embedding contract
+will not make safe shutdown depend on an undocumented host promise.
+
+This first lifecycle initializes and guards Z's generated runtime machinery; it
+does not yet synthesize arbitrary user module initialization or module-level
+destruction. Runtime-owned guards and explicit module startup/shutdown hooks are
+the next stateful-embedding layer. Until then, application state remains under
+an explicit Z owner such as `Once<T>` or a value whose `deinit` runs from an
+ordinary Z scope.
+
 ## Growth path
 
 Broader exports should land only with an end-to-end C consumer:
@@ -314,8 +381,9 @@ Z source
 
 The current value-ABI checkpoint is complete only when handwritten C programs
 include the generated header, link the generated static and shared libraries,
-pass supported values in both directions, and pass strict compilation and
-execution tests.
+initialize their target-scoped runtime, pass supported values in both
+directions from the host thread and host-created worker threads, shut down, and
+pass strict compilation and execution tests.
 
 The bootstrap compiler now satisfies that executable boundary in both its test
 suite and the readable example: it parses and checks `export c function`, keeps

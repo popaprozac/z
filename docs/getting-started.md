@@ -125,7 +125,9 @@ bun run z run path/to/project/smoke.zs
 An executable build publishes the target's named native binary. The
 `"static-library"` and `"shared-library"` kinds instead require one or more
 checked `export c function` declarations and publish a guarded C/C++ header
-plus the selected native library. See
+plus the selected native library. The header includes target-scoped runtime
+initialization and shutdown; native hosts initialize before their first export
+call and shut down after joining native workers and releasing callbacks. See
 [Calling Z from C](../examples/interop/c/z-export/README.md) for the complete
 static example and
 [Calling a shared Z library from C](../examples/interop/c/z-shared-export/README.md)

@@ -5,6 +5,9 @@
 #include <stdio.h>
 
 int main(void) {
+  if (zmath_runtime_initialize(NULL) != ZMATH_RUNTIME_OK) return 2;
+  if (zmath_runtime_initialize(NULL) != ZMATH_RUNTIME_ALREADY_INITIALIZED) return 3;
+
   const int32_t sum = z_math_add(20, 22);
   const int32_t answer = z_math_answer();
   const bool even = z_math_is_even(answer);
@@ -25,13 +28,14 @@ int main(void) {
     translated.y,
     status_code
   );
-  return sum == 42
+  const bool correct = sum == 42
     && answer == 42
     && even
     && translated.x == 21
     && translated.y == 22
     && status == ZMathStatus_positive
-    && status_code == 1
-    ? 0
-    : 1;
+    && status_code == 1;
+  if (zmath_runtime_shutdown() != ZMATH_RUNTIME_OK) return 4;
+  if (zmath_runtime_shutdown() != ZMATH_RUNTIME_SHUT_DOWN) return 5;
+  return correct ? 0 : 1;
 }

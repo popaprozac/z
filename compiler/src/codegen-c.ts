@@ -154,6 +154,7 @@ export function generateC(
   sourceName: string,
   semanticInfo: SemanticInfo,
   options: {
+    readonly embeddedRuntimeName?: string | null;
     readonly omitRawNativeBodies?: boolean;
     readonly testRunner?: readonly FunctionDeclaration[];
   } = {},
@@ -199,13 +200,15 @@ export function generateC(
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
+  const embeddedRuntimeName = options.embeddedRuntimeName ?? null;
+  const usesEmbeddedRuntime = embeddedRuntimeName !== null;
   const usesMutex = mutexValueTypes.length > 0 || onceValueTypes.length > 0;
   const usesExecutorBoundClasses = program.structs.some((declaration) => (
     declaration.kind === "class"
     && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
   ));
   const usesForeignRuntimeEntry = semanticInfoUsesForeignRuntimeEntry(semanticInfo);
-  const usesExecutorRuntimeSupport = usesExecutorBoundClasses || usesForeignRuntimeEntry;
+  const usesExecutorRuntimeSupport = usesExecutorBoundClasses || usesForeignRuntimeEntry || usesEmbeddedRuntime;
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
@@ -795,7 +798,18 @@ export function generateC(
   }
   const nativeExports = program.functions.filter((declaration) => declaration.nativeExport?.language === "c");
   if (nativeExports.length > 0) {
-    lines.push(generateNativeExportDefinitions(nativeExports, structs, enums), "");
+    lines.push(generateNativeExportDefinitions(
+      nativeExports,
+      structs,
+      enums,
+      embeddedRuntimeName === null
+        ? null
+        : {
+            targetName: embeddedRuntimeName,
+            requiresBoundReleaseEnqueue: usesExecutorBoundClasses,
+            requiresEntry: true,
+          },
+    ), "");
   }
   if (options.testRunner?.length) {
     lines.push(generateTestRunner(
@@ -1158,10 +1172,204 @@ function nativeExportSignature(
   return `Z_API ${nativeExportCType(declaration.returnType.name, structs, enums)} ${declaration.nativeExport!.name}(${parameters.join(", ") || "void"})${terminator}`;
 }
 
+type EmbeddedRuntimeExport = {
+  readonly targetName: string;
+  readonly requiresBoundReleaseEnqueue: boolean;
+  readonly requiresEntry: boolean;
+};
+
+function embeddedRuntimeSymbolPart(targetName: string): string {
+  return targetName.replaceAll("-", "_");
+}
+
+function embeddedRuntimeTypeDeclarations(runtime: EmbeddedRuntimeExport): string {
+  const prefix = embeddedRuntimeSymbolPart(runtime.targetName);
+  const constant = prefix.toUpperCase();
+  return `/* Initialize before any exported call; join native work before shutdown. */
+#define ${constant}_RUNTIME_REQUIRES_ENQUEUE_RELEASE ${runtime.requiresBoundReleaseEnqueue ? "1" : "0"}
+
+typedef enum ${prefix}_runtime_status {
+  ${constant}_RUNTIME_OK = 0,
+  ${constant}_RUNTIME_ALREADY_INITIALIZED = 1,
+  ${constant}_RUNTIME_NOT_INITIALIZED = 2,
+  ${constant}_RUNTIME_BUSY = 3,
+  ${constant}_RUNTIME_INVALID_CONFIG = 4,
+  ${constant}_RUNTIME_SHUT_DOWN = 5
+} ${prefix}_runtime_status;
+
+typedef void (*${prefix}_runtime_enqueue_release)(
+  void *context,
+  void *value,
+  void (*finalize)(void *value)
+);
+
+typedef struct ${prefix}_runtime_config {
+  void *context;
+  ${prefix}_runtime_enqueue_release enqueue_release;
+} ${prefix}_runtime_config;`;
+}
+
+function embeddedRuntimePublicSignatures(runtime: EmbeddedRuntimeExport): string {
+  const prefix = embeddedRuntimeSymbolPart(runtime.targetName);
+  return `Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runtime_config *config);
+Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void);`;
+}
+
+function generateEmbeddedRuntimeDefinitions(runtime: EmbeddedRuntimeExport): string {
+  const prefix = embeddedRuntimeSymbolPart(runtime.targetName);
+  const constant = prefix.toUpperCase();
+  const storage = `z_embedded_runtime_${prefix}`;
+  const retain = `${storage}_retain`;
+  const release = `${storage}_release`;
+  return `${embeddedRuntimeTypeDeclarations(runtime)}
+
+typedef struct ${storage}_storage {
+  void *context;
+  Z_ExecutorBoundReleaseEnqueue enqueue_release;
+  uintptr_t active_entries;
+  uintptr_t active_callbacks;
+  uint8_t state;
+} ${storage}_storage;
+
+static ${storage}_storage ${storage} = {
+  .context = NULL,
+  .enqueue_release = NULL,
+  .active_entries = 0,
+  .active_callbacks = 0,
+  .state = 0,
+};
+
+static void ${retain}(void *context) {
+  (void)context;
+  for (;;) {
+    uint8_t state = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
+    if (state == 3) continue;
+    if (state != 1) abort();
+    __atomic_add_fetch(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+    if (__atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE) == 1) return;
+    __atomic_sub_fetch(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+  }
+}
+
+static void ${release}(void *context) {
+  (void)context;
+  if (__atomic_fetch_sub(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL) == 0) abort();
+}
+
+typedef struct ${storage}_pending_release {
+  void *value;
+  void (*finalize)(void *value);
+} ${storage}_pending_release;
+
+static void ${storage}_complete_release(void *opaque) {
+  ${storage}_pending_release *pending = (${storage}_pending_release *)opaque;
+  pending->finalize(pending->value);
+  free(pending);
+  ${release}(&${storage});
+}
+
+static void ${storage}_enqueue_release(void *context, void *value, void (*finalize)(void *value)) {
+  (void)context;
+  if (${storage}.enqueue_release == NULL) abort();
+  ${storage}_pending_release *pending = (${storage}_pending_release *)malloc(sizeof(${storage}_pending_release));
+  if (pending == NULL) abort();
+  pending->value = value;
+  pending->finalize = finalize;
+  ${retain}(&${storage});
+  ${storage}.enqueue_release(${storage}.context, pending, ${storage}_complete_release);
+}
+
+static Z_UNUSED_FUNCTION Z_ForeignThreadEntry ${storage}_enter(void) {
+  for (;;) {
+    uint8_t state = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
+    if (state == 3) continue;
+    if (state != 1) abort();
+    __atomic_add_fetch(&${storage}.active_entries, 1, __ATOMIC_ACQ_REL);
+    if (__atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE) == 1) break;
+    __atomic_sub_fetch(&${storage}.active_entries, 1, __ATOMIC_ACQ_REL);
+  }
+  return z_foreign_thread_enter(
+    &${storage},
+    ${storage}.enqueue_release == NULL ? NULL : ${storage}_enqueue_release
+  );
+}
+
+static Z_UNUSED_FUNCTION void ${storage}_leave(Z_ForeignThreadEntry entry) {
+  z_foreign_thread_leave(entry);
+  if (__atomic_fetch_sub(&${storage}.active_entries, 1, __ATOMIC_ACQ_REL) == 0) abort();
+}
+
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
+Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runtime_config *config) {
+  uint8_t expected = 0;
+  if (!__atomic_compare_exchange_n(
+    &${storage}.state,
+    &expected,
+    3,
+    false,
+    __ATOMIC_ACQ_REL,
+    __ATOMIC_ACQUIRE
+  )) {
+    if (expected == 1) return ${constant}_RUNTIME_ALREADY_INITIALIZED;
+    if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    return ${constant}_RUNTIME_BUSY;
+  }
+${runtime.requiresBoundReleaseEnqueue ? `  if (config == NULL || config->enqueue_release == NULL) {
+    __atomic_store_n(&${storage}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_INVALID_CONFIG;
+  }
+` : ""}  ${storage}.context = config == NULL ? NULL : config->context;
+  ${storage}.enqueue_release = config == NULL ? NULL : config->enqueue_release;
+  z_foreign_runtime_context = &${storage};
+  z_foreign_runtime_enqueue = ${storage}.enqueue_release == NULL ? NULL : ${storage}_enqueue_release;
+  z_foreign_runtime_retain = ${retain};
+  z_foreign_runtime_release = ${release};
+  __atomic_store_n(&${storage}.state, 1, __ATOMIC_RELEASE);
+  return ${constant}_RUNTIME_OK;
+}
+
+Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
+  uint8_t expected = 1;
+  if (!__atomic_compare_exchange_n(
+    &${storage}.state,
+    &expected,
+    3,
+    false,
+    __ATOMIC_ACQ_REL,
+    __ATOMIC_ACQUIRE
+  )) {
+    if (expected == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
+    if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    return ${constant}_RUNTIME_BUSY;
+  }
+  if (__atomic_load_n(&${storage}.active_entries, __ATOMIC_ACQUIRE) != 0
+      || __atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+    __atomic_store_n(&${storage}.state, 1, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_BUSY;
+  }
+  z_foreign_runtime_release = NULL;
+  z_foreign_runtime_retain = NULL;
+  z_foreign_runtime_enqueue = NULL;
+  z_foreign_runtime_context = NULL;
+  ${storage}.context = NULL;
+  ${storage}.enqueue_release = NULL;
+  __atomic_store_n(&${storage}.state, 2, __ATOMIC_RELEASE);
+  return ${constant}_RUNTIME_OK;
+}
+
+#if defined(__cplusplus)
+}
+#endif`;
+}
+
 function generateNativeExportDefinitions(
   declarations: readonly FunctionDeclaration[],
   structs: ReadonlyMap<string, StructDeclaration>,
   enums: ReadonlyMap<string, EnumDeclaration>,
+  runtime: EmbeddedRuntimeExport | null,
 ): string {
   const definitions = declarations.map((declaration) => {
     const validations = declaration.parameters.flatMap((parameter) => {
@@ -1174,14 +1382,24 @@ function generateNativeExportDefinitions(
     });
     const arguments_ = declaration.parameters.map((parameter) => cBindingName(parameter.name)).join(", ");
     const invocation = `${cFunctionName(declaration.name)}(${arguments_})`;
+    const entry = runtime?.requiresEntry
+      ? `  Z_ForeignThreadEntry _z_runtime_entry = z_embedded_runtime_${embeddedRuntimeSymbolPart(runtime.targetName)}_enter();\n`
+      : "";
+    const leave = runtime?.requiresEntry
+      ? `  z_embedded_runtime_${embeddedRuntimeSymbolPart(runtime.targetName)}_leave(_z_runtime_entry);`
+      : "";
     const body = declaration.returnType.name === "void"
-      ? `  ${invocation};`
-      : `  return ${invocation};`;
+      ? `${entry}  ${invocation};${leave ? `\n${leave}` : ""}`
+      : runtime?.requiresEntry
+        ? `${entry}  ${nativeExportCType(declaration.returnType.name, structs, enums)} _z_result = ${invocation};\n${leave}\n  return _z_result;`
+        : `  return ${invocation};`;
     return `${nativeExportSignature(declaration, "", structs, enums)} {\n${[...validations, body].join("\n")}\n}`;
   });
   return `#ifndef Z_API
 #define Z_API
 #endif
+
+${runtime === null ? "" : `${generateEmbeddedRuntimeDefinitions(runtime)}\n\n`}
 
 #if defined(__cplusplus)
 extern "C" {
@@ -1194,7 +1412,11 @@ ${definitions.join("\n\n")}
 #endif`;
 }
 
-export function generateCHeader(program: Program): string | null {
+export function generateCHeader(
+  program: Program,
+  embeddedRuntimeName: string | null = null,
+  embeddedRuntimeRequiresBoundReleaseEnqueue = false,
+): string | null {
   const declarations = program.functions.filter((declaration) => declaration.nativeExport?.language === "c");
   if (declarations.length === 0) return null;
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
@@ -1234,6 +1456,13 @@ export function generateCHeader(program: Program): string | null {
     return `typedef struct ${name} {\n${fields}\n} ${name};`;
   });
   const typeDeclarations = [...enumDeclarations, ...structDeclarations].join("\n\n");
+  const runtime = embeddedRuntimeName === null
+    ? null
+    : {
+        targetName: embeddedRuntimeName,
+        requiresBoundReleaseEnqueue: embeddedRuntimeRequiresBoundReleaseEnqueue,
+        requiresEntry: false,
+      } satisfies EmbeddedRuntimeExport;
   return `/* Generated by the Z bootstrap compiler. */
 #pragma once
 
@@ -1244,10 +1473,11 @@ export function generateCHeader(program: Program): string | null {
 #define Z_API
 #endif
 
-${typeDeclarations}${typeDeclarations ? "\n\n" : ""}#if defined(__cplusplus)
+${typeDeclarations}${typeDeclarations ? "\n\n" : ""}${runtime === null ? "" : `${embeddedRuntimeTypeDeclarations(runtime)}\n\n`}#if defined(__cplusplus)
 extern "C" {
 #endif
 
+${runtime === null ? "" : `${embeddedRuntimePublicSignatures(runtime)}\n`}
 ${declarations.map((declaration) => nativeExportSignature(declaration, ";", structs, enums)).join("\n")}
 
 #if defined(__cplusplus)

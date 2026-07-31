@@ -1772,6 +1772,26 @@ Both callbacks retrieve a mixed-affinity `Once<Application>`, mutate only its
 `Mutex` surface, and publish through a joined `TaskScope` operation on main.
 Direct access to the main-only field from the Swift callback remains `Z0711`.
 
+## Generated-library runtime entry
+
+The same bounded-entry rule now applies in the opposite interop direction.
+Static- and shared-library projects publish target-scoped C lifecycle
+functions in their generated header. A host initializes the Z runtime, may call
+exports concurrently from its own native threads, joins or releases every
+outstanding operation, and then shuts down. Public wrappers use atomic active
+entry accounting and restore nested thread-local runtime routes; internal Z
+calls continue to use private implementations directly.
+
+Shutdown returns `busy` while an exported call, retained foreign callback, or
+queued executor-bound finalizer is still live rather than racing teardown.
+Executor-bound class lifecycle makes
+the generated configuration's `enqueue_release` hook mandatory, so a foreign
+host cannot silently finalize main-owned identity on an arbitrary worker. The
+hook is intentionally narrower than task scheduling: it queues one compiler-
+supplied finalizer exactly once. The handwritten `z-export` C consumer proves
+the lifecycle against both Stage-0 and fixed-point native emitters;
+`z-runtime-export` adds pthread entry and deterministic busy teardown.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

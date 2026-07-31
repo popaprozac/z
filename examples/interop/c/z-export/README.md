@@ -6,6 +6,10 @@ Exported functions remain callable and importable from Z. The C-layout types
 keep ordinary Z value and exhaustive-match semantics while guaranteeing the
 representation printed in the generated header.
 
+The handwritten C host initializes the generated `zmath` runtime, calls the Z
+exports, and shuts the runtime down. The adjacent `z-runtime-export` example
+adds host-created pthread entry and deterministic busy-shutdown pressure.
+
 From the repository root, build the manifest-selected static-library target:
 
 ```sh

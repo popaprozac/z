@@ -1,0 +1,4 @@
+declare module "runtime-host.h" {
+  export function z_runtime_host_entered(): _;
+  export function z_runtime_host_wait(): _;
+}

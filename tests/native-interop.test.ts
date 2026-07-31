@@ -492,6 +492,38 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   assert.equal(configured.targetKind, "static-library");
   assert.equal(configured.targetName, "zanswer");
   assert.ok(configured.header);
+  assert.match(configured.header, /typedef enum zanswer_runtime_status/);
+  assert.match(configured.header, /Z_API zanswer_runtime_status zanswer_runtime_initialize\(const zanswer_runtime_config \*config\);/);
+  assert.match(configured.header, /Z_API zanswer_runtime_status zanswer_runtime_shutdown\(void\);/);
+  assert.match(configured.source, /z_embedded_runtime_zanswer_enter/);
+  assert.match(configured.source, /__atomic_add_fetch\(&z_embedded_runtime_zanswer\.active_entries/);
+  const executorBound = compileToNative(`
+    import { thread } from "std/thread";
+
+    class MainIdentity on thread.main {
+      value: i32;
+    }
+
+    export c function zanswer_affinity_marker(): i32 { return 42; }
+  `, entry);
+  assert.match(executorBound.header ?? "", /#define ZANSWER_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
+  assert.match(executorBound.source, /return ZANSWER_RUNTIME_INVALID_CONFIG/);
+  assert.match(executorBound.source, /z_embedded_runtime_zanswer_complete_release/);
+  const executorBoundSource = resolve(project, "executor-bound.c");
+  const executorBoundObject = resolve(project, "executor-bound.o");
+  writeFileSync(executorBoundSource, executorBound.source);
+  const compileExecutorBound = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", "-pthread",
+    "-c", executorBoundSource, "-o", executorBoundObject,
+  ], { encoding: "utf8" });
+  assert.equal(compileExecutorBound.status, 0, compileExecutorBound.stderr);
+  assert.throws(
+    () => compileToNative(
+      "export c function zanswer_runtime_shutdown(): i32 { return 0; }",
+      entry,
+    ),
+    /collides with the generated runtime contract for target "zanswer"/,
+  );
   const nativeCheck = spawnSync(process.execPath, [cli, "check", entry, "--native-frontend"], { encoding: "utf8" });
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
   assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
@@ -527,6 +559,46 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22) status=1\n");
+
+  const cppConsumer = resolve(project, "build/consumer-cpp");
+  const compileCppConsumer = spawnSync("clang++", [
+    "-std=c++20", "-Wall", "-Wextra", "-Werror",
+    "-I", resolve(project, "build"),
+    "-x", "c++", resolve(project, "consumer.c"),
+    "-x", "none", resolve(project, "build/libzmath.a"),
+    "-o", cppConsumer,
+  ], { encoding: "utf8" });
+  assert.equal(compileCppConsumer.status, 0, compileCppConsumer.stderr);
+  const cppRun = spawnSync(cppConsumer, [], { encoding: "utf8" });
+  assert.equal(cppRun.status, 0, cppRun.stderr);
+});
+
+test("keeps embedded runtime shutdown safe across host-created threads", () => {
+  const project = resolve(projectRoot, "examples/interop/c/z-runtime-export");
+  const build = spawnSync(process.execPath, [cli, "build", project], { encoding: "utf8" });
+  assert.equal(build.status, 0, build.stderr);
+
+  const generated = readFileSync(resolve(project, ".z-cache/build/zembed.c"), "utf8");
+  assert.match(generated, /__atomic_add_fetch\(&z_embedded_runtime_zembed\.active_entries/);
+  assert.match(generated, /return ZEMBED_RUNTIME_BUSY/);
+
+  const consumer = resolve(project, "build/consumer");
+  const compilation = spawnSync("clang", [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-pthread",
+    "-I", project,
+    "-I", resolve(project, "build"),
+    resolve(project, "consumer.c"),
+    resolve(project, "build/libzembed.a"),
+    "-o", consumer,
+  ], { encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const run = spawnSync(consumer, [], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, "busy=3 result=42 stopped=0\n");
 });
 
 hostToolchainTest("builds the shared Z-to-C example and runs its handwritten C consumer", () => {

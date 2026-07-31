@@ -98,6 +98,52 @@ export type AnalyzedSource = {
   readonly nativeFrontendParityMilliseconds: number | null;
 };
 
+function embeddedRuntimeSymbolPart(targetName: string): string {
+  return targetName.replaceAll("-", "_");
+}
+
+function validateEmbeddedRuntimePublicNames(
+  program: Program,
+  targetName: string | null,
+  fileName: string,
+): void {
+  if (targetName === null) return;
+  const prefix = embeddedRuntimeSymbolPart(targetName);
+  const reserved = new Set([
+    `${prefix}_runtime_initialize`,
+    `${prefix}_runtime_shutdown`,
+    `${prefix}_runtime_status`,
+    `${prefix}_runtime_config`,
+    `${prefix}_runtime_enqueue_release`,
+  ]);
+  for (const declaration of program.functions) {
+    const name = declaration.nativeExport?.name;
+    if (!name || !reserved.has(name)) continue;
+    throw new DiagnosticError(
+      declaration.location.fileName ?? fileName,
+      declaration.nativeExport!.location,
+      `C export name ${JSON.stringify(name)} collides with the generated runtime contract for target ${JSON.stringify(targetName)}`,
+      {
+        code: "Z0610",
+        helps: ["choose a different C export name or rename target.name"],
+      },
+    );
+  }
+  for (const declaration of [...program.structs, ...program.enums]) {
+    const layout = declaration.nativeLayout;
+    if (!layout || !reserved.has(layout.name)) continue;
+    throw new DiagnosticError(
+      layout.location.fileName ?? fileName,
+      layout.location,
+      `public C type name ${JSON.stringify(layout.name)} collides with the generated runtime contract for target ${JSON.stringify(targetName)}`,
+      {
+        code: "Z0610",
+        helps: ["choose a different C layout name or rename target.name"],
+      },
+    );
+  }
+}
+
 export type AnalysisOptions = {
   readonly requireMain?: boolean;
   readonly includeTests?: boolean;
@@ -375,10 +421,23 @@ export function compileToNative(
   ].find((declaration) => declaration.async);
   const generated = asyncDeclaration ? generateAsyncC(program, fileName, semanticInfo) : null;
   const synchronousProgram = generated?.synchronousProgram ?? program;
-  const synchronousSource = generateC(synchronousProgram, fileName, semanticInfo);
+  const embeddedRuntimeName = projectBuild.targetKind === "executable"
+    ? null
+    : projectBuild.targetName;
+  validateEmbeddedRuntimePublicNames(program, embeddedRuntimeName, fileName);
+  const synchronousSource = generateC(synchronousProgram, fileName, semanticInfo, {
+    embeddedRuntimeName,
+  });
   return {
     source: generated ? `${synchronousSource}\n${generated.source}\n` : synchronousSource,
-    header: generateCHeader(program),
+    header: generateCHeader(
+      program,
+      embeddedRuntimeName,
+      program.structs.some((declaration) => (
+        declaration.kind === "class"
+        && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
+      )),
+    ),
     targetKind: projectBuild.targetKind,
     targetName: projectBuild.targetName,
     language: semanticInfo.objectiveC

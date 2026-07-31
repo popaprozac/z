@@ -19,6 +19,8 @@ entry for focused smoke programs while retaining the project configuration.
 [`interop/c/z-export`](interop/c/z-export) and
 [`interop/c/z-shared-export`](interop/c/z-shared-export) demonstrate the same
 checked Z-to-C exports as static and shared native artifacts.
+[`interop/c/z-runtime-export`](interop/c/z-runtime-export) isolates generated
+runtime initialization, host-thread entry, busy teardown, join, and shutdown.
 
 ## Language
 
@@ -141,6 +143,7 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`declared-handle.zs`](interop/c/declared-handle.zs) with its adjacent [`.zd` contract](interop/c/declared-handle.h.zd)
 - [`callbacks.zs`](interop/c/callbacks.zs) with its adjacent [`.zd` contract](interop/c/callbacks.h.zd)
 - [`deployment-target`](interop/c/deployment-target) and [`apple-groundwork.zs`](interop/c/apple-groundwork.zs)
+- [`z-export`](interop/c/z-export), [`z-runtime-export`](interop/c/z-runtime-export), and [`z-shared-export`](interop/c/z-shared-export): checked exports and native embedding lifecycle
 
 ### C++
 

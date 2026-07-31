@@ -2823,6 +2823,7 @@ test("compiles a multi-module Z application through the standalone native driver
     nativeConsumerRun.stdout,
     "sum=42 answer=42 even=true point=(21,22) status=1\n",
   );
+
   const invalidNativeExport = resolve(
     directory,
     "invalid-native-export.zs",
@@ -2845,6 +2846,33 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(
     invalidNativeExportCheck.stderr,
     /C export parameter "value" has unsupported boundary type "String"/,
+  );
+
+  const runtimeCollisionProject = resolve(directory, "runtime-collision");
+  mkdirSync(runtimeCollisionProject);
+  writeFileSync(
+    resolve(runtimeCollisionProject, "library.zs"),
+    "export c function runtime_collision_runtime_shutdown(): i32 { return 0; }\n",
+  );
+  writeFileSync(
+    resolve(runtimeCollisionProject, "z.json"),
+    JSON.stringify({
+      target: {
+        kind: "static-library",
+        name: "runtime-collision",
+        entry: "library.zs",
+      },
+    }),
+  );
+  const runtimeCollisionBuild = spawnSync(
+    driver,
+    ["build", runtimeCollisionProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(runtimeCollisionBuild.status, 1);
+  assert.match(
+    runtimeCollisionBuild.stderr,
+    /collides with the generated runtime contract for target "runtime-collision"/,
   );
 
   const moduleOnlySource = resolve(
@@ -4086,7 +4114,10 @@ test("lowers the complete native frontend graph to C", () => {
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, const Z_String \*value\);/);
-  assert.match(emission.stdout, /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program\);/);
+  assert.match(
+    emission.stdout,
+    /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program, const Z_String \*embeddedRuntimeName\);/,
+  );
   assert.match(
     emission.stdout,
     /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(const Z_String \*entryPath, const Z_String \*batch\);/,

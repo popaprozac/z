@@ -4,8 +4,9 @@ import fs from "std/fs";
 import process from "std/process";
 import { TextBuffer } from "std/text";
 import {
+  emitLibraryModulesC,
+  emitLibraryModulesCHeader,
   emitModulesC,
-  emitModulesCHeader,
   emitTestModulesC,
 } from "../frontend/c-emitter.zs";
 import {
@@ -441,6 +442,64 @@ function requiredProjectTargetName(
   };
 }
 
+function embeddedRuntimeSymbolPart(in targetName: String): String {
+  let output = TextBuffer();
+  let index: usize = 0;
+  while (index < targetName.byteLength) {
+    const byte = targetName.byteAt(index);
+    if (byte == 45) output.appendAscii(95);
+    else output.appendAscii(byte);
+    index = index + 1;
+  }
+  return output.finish();
+}
+
+function validateEmbeddedRuntimeNames(
+  in project: NativeProject,
+  in targetName: String
+): void throws String {
+  const prefix = embeddedRuntimeSymbolPart(targetName);
+  const initialize = `${prefix}_runtime_initialize`;
+  const shutdown = `${prefix}_runtime_shutdown`;
+  const status = `${prefix}_runtime_status`;
+  const config = `${prefix}_runtime_config`;
+  const enqueue = `${prefix}_runtime_enqueue_release`;
+  for (const module of project.modules) {
+    for (const declaration of module.program.functions) {
+      if (
+        declaration.nativeCExport
+        && (declaration.name == initialize || declaration.name == shutdown)
+      ) {
+        throw `C export name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;
+      }
+    }
+    for (const declaration of module.program.aggregates) {
+      if (
+        declaration.nativeCLayout
+        && (
+          declaration.name == status
+          || declaration.name == config
+          || declaration.name == enqueue
+        )
+      ) {
+        throw `public C type name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;
+      }
+    }
+    for (const declaration of module.program.enums) {
+      if (
+        declaration.nativeCLayout
+        && (
+          declaration.name == status
+          || declaration.name == config
+          || declaration.name == enqueue
+        )
+      ) {
+        throw `public C type name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;
+      }
+    }
+  }
+}
+
 function buildStaticLibrary(
   in project: NativeProject,
   release: boolean
@@ -449,8 +508,17 @@ function buildStaticLibrary(
     throw "a static-library project must declare at least one `export c function`";
   }
   const targetName = try requiredProjectTargetName(project);
-  const emitted = try emitModulesC(project.modules, project.graph);
-  const header = try emitModulesCHeader(project.modules, project.graph);
+  try validateEmbeddedRuntimeNames(project, targetName);
+  const emitted = try emitLibraryModulesC(
+    project.modules,
+    project.graph,
+    targetName
+  );
+  const header = try emitLibraryModulesCHeader(
+    project.modules,
+    project.graph,
+    targetName
+  );
   const outputDirectory = normalizedModulePath(
     `${project.config.directory}/build`
   );
@@ -538,8 +606,17 @@ function buildSharedLibrary(
     throw "a shared-library project must declare at least one `export c function`";
   }
   const targetName = try requiredProjectTargetName(project);
-  const emitted = try emitModulesC(project.modules, project.graph);
-  const header = try emitModulesCHeader(project.modules, project.graph);
+  try validateEmbeddedRuntimeNames(project, targetName);
+  const emitted = try emitLibraryModulesC(
+    project.modules,
+    project.graph,
+    targetName
+  );
+  const header = try emitLibraryModulesCHeader(
+    project.modules,
+    project.graph,
+    targetName
+  );
   const outputDirectory = normalizedModulePath(
     `${project.config.directory}/build`
   );

@@ -237,7 +237,10 @@ c enum Status: i32 {
 
 The implemented ABI tier accepts synchronous, non-throwing, non-generic
 signatures containing fixed-width scalars and checked C-layout structs/enums;
-see [C exports](c-exports.md) for the exact mapping and growth path.
+library artifacts also generate target-scoped runtime initialize/shutdown
+functions and bounded entry for host-created threads. See
+[C exports](c-exports.md) for the exact mapping, lifecycle contract, and growth
+path.
 
 The filename contract is `.zs` for Z source and `.zd` for foreign declarations.
 Z intentionally leaves `.z` to its established use as a compressed-archive

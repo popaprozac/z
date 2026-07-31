@@ -1,0 +1,8 @@
+{
+  "target": {
+    "kind": "static-library",
+    "name": "zembed",
+    "entry": "library.zs",
+    "includeDirectories": ["."]
+  }
+}
