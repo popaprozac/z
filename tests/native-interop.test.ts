@@ -577,6 +577,7 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
 
 test("keeps embedded runtime shutdown safe across host-created threads", () => {
   const project = resolve(projectRoot, "examples/interop/c/z-runtime-export");
+  const entry = resolve(project, "library.zs");
   const build = spawnSync(process.execPath, [cli, "build", project], { encoding: "utf8" });
   assert.equal(build.status, 0, build.stderr);
 
@@ -608,7 +609,19 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "wrong=6 busy=3 result=42 stopped=0 released=1\n");
+  assert.equal(
+    run.stdout,
+    "wrong=6 busy=3 completed=1 checksum=43 stopped=0 released=1\n",
+  );
+
+  const source = readFileSync(entry, "utf8");
+  assert.throws(
+    () => compileToNative(
+      `${source}\nexport c function z_embed_invalid_ui_revision(): i32 {\n  const current = application.get();\n  return current.uiRevision;\n}\n`,
+      entry,
+    ),
+    /(?:uiRevision|main).*(?:thread\.main|main executor)|(?:thread\.main|main executor).*uiRevision/i,
+  );
 });
 
 test("requires an explicit cleanup-bearing library runtime root", () => {

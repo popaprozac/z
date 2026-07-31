@@ -1798,6 +1798,18 @@ at successful generated shutdown. This closed the embedding gap without
 introducing mutable module globals or module initialization order: the target
 owns one ordinary Z value, and a Z struct can compose additional roots.
 
+The follow-up made that root operational rather than ceremonial. A pthread
+enters through `z_embed_complete_job`, retrieves the mixed-affinity application
+with `Once.get()`, mutates its `Mutex<EmbeddedState>`, and leaves one completed
+job visible to a later C call. Attempting to read the same application's
+main-only `uiRevision` from that export remains a compile-time affinity error.
+The fixed-point native semantic graph accepts the same Once/Mutex/affinity
+shape, while native C lowering still stops at its existing non-generic
+data-only aggregate boundary. Its generated target-root storage and teardown
+remain executable for data-only owners. This is now a concrete self-hosting
+composition gap: native lowering needs generic `Mutex<T>` fields and aggregate
+methods before it can emit the full application root unchanged.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

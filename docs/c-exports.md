@@ -407,6 +407,12 @@ library to retain Z-owned services, registries, mutexes, callback connections,
 or application identity across separate native calls. A Z struct can compose
 several roots into the single returned owner.
 
+An exported function may retrieve a published identity through `Once.get()`.
+The generated wrapper has already entered the runtime, but ordinary Z access
+rules still apply: an entered host worker can use unrestricted methods and
+`Mutex<T>` state while main-only fields and methods remain compile-time errors.
+Runtime entry establishes ownership context, not executor affinity.
+
 The first tier requires a zero-argument, synchronous, non-throwing,
 non-generic, ordinary Z function whose result needs cleanup. It cannot also be
 `export c`. Main-bound returned storage requires the initializer itself to end

@@ -2829,12 +2829,17 @@ test("compiles a multi-module Z application through the standalone native driver
   writeFileSync(
     resolve(runtimeRootProject, "library.zs"),
     [
+      'import { thread } from "std/thread";',
+      "",
       "class RuntimeRoot {",
       "  readonly label: String;",
+      "  uiRevision: i32 on thread.main;",
       "}",
       "",
-      "function initializeRuntime(): RuntimeRoot {",
-      '  return new RuntimeRoot({ label: "native" });',
+      "function initializeRuntime(): RuntimeRoot on thread.main {",
+      '  return new RuntimeRoot({ label: "native",',
+      "    uiRevision: 1,",
+      "  });",
       "}",
       "",
       "export c function z_native_runtime_answer(): i32 { return 42; }",
@@ -2864,7 +2869,11 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     runtimeRootHeader,
-    /#define NATIVE_RUNTIME_RUNTIME_REQUIRES_MAIN_THREAD 0/,
+    /#define NATIVE_RUNTIME_RUNTIME_REQUIRES_MAIN_THREAD 1/,
+  );
+  assert.match(
+    runtimeRootHeader,
+    /#define NATIVE_RUNTIME_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/,
   );
   const runtimeRootSource = readFileSync(
     resolve(runtimeRootProject, ".z-cache/build/native_runtime.c"),
@@ -2878,9 +2887,29 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   writeFileSync(runtimeRootConsumerSource, [
     '#include "native_runtime.h"',
-    '#include <stddef.h>',
+    "#include <stddef.h>",
+    "",
+    "static bool host_is_main(void *context) {",
+    "  (void)context;",
+    "  return true;",
+    "}",
+    "",
+    "static void host_enqueue_release(",
+    "  void *context,",
+    "  void *value,",
+    "  void (*finalize)(void *value)",
+    ") {",
+    "  (void)context;",
+    "  finalize(value);",
+    "}",
+    "",
     "int main(void) {",
-    "  if (native_runtime_runtime_initialize(NULL) != NATIVE_RUNTIME_RUNTIME_OK) return 1;",
+    "  const native_runtime_runtime_config config = {",
+    "    .context = NULL,",
+    "    .enqueue_release = host_enqueue_release,",
+    "    .is_main_thread = host_is_main,",
+    "  };",
+    "  if (native_runtime_runtime_initialize(&config) != NATIVE_RUNTIME_RUNTIME_OK) return 1;",
     "  if (z_native_runtime_answer() != 42) return 2;",
     "  return native_runtime_runtime_shutdown() == NATIVE_RUNTIME_RUNTIME_OK ? 0 : 3;",
     "}",
@@ -2914,6 +2943,24 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(runtimeRootRun.status, 0, runtimeRootRun.stderr);
+
+  const synchronizedRuntimeProject = resolve(
+    projectRoot,
+    "examples/interop/c/z-runtime-export",
+  );
+  const synchronizedRuntimeCheck = spawnSync(
+    driver,
+    ["check", synchronizedRuntimeProject],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    synchronizedRuntimeCheck.status,
+    0,
+    synchronizedRuntimeCheck.stderr,
+  );
 
   const invalidNativeExport = resolve(
     directory,

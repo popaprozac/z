@@ -56,7 +56,7 @@ static void *initialize_from_worker(void *opaque) {
 
 static void *call_z_from_native_thread(void *context) {
   int32_t *result = (int32_t *)context;
-  *result = z_embed_hold(42);
+  *result = z_embed_complete_job(42);
   return NULL;
 }
 
@@ -93,21 +93,24 @@ int main(void) {
   pthread_mutex_unlock(&gate_mutex);
 
   if (pthread_join(worker, NULL) != 0) return 6;
+  const int32_t checksum = z_embed_completion_checksum();
   const zembed_runtime_status stopped = zembed_runtime_shutdown();
 
   printf(
-    "wrong=%d busy=%d result=%d stopped=%d released=%d\n",
+    "wrong=%d busy=%d completed=%d checksum=%d stopped=%d released=%d\n",
     initialization.status,
     busy,
     result,
+    checksum,
     stopped,
     root_releases
   );
   return initialization.status == ZEMBED_RUNTIME_WRONG_THREAD
     && busy == ZEMBED_RUNTIME_BUSY
-    && result == 42
+    && result == 1
+    && checksum == 43
     && stopped == ZEMBED_RUNTIME_OK
     && root_releases == 1
     ? 0
-    : 7;
+    : 8;
 }

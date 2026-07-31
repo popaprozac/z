@@ -79,7 +79,7 @@ bun run z run examples/language/control-flow/result.zs
 | Boundary | Example | Notes |
 | --- | --- | --- |
 | Z library called from C | [`z-export`](../examples/interop/c/z-export) | Scalar, `c struct`, and fixed-representation `c enum` exports; generated guarded header/static archive; ordinary Z-to-Z calls; and a handwritten strict-C consumer |
-| Z runtime embedded by C | [`z-runtime-export`](../examples/interop/c/z-runtime-export) | A main-bound `Once` root owned by generated initialize/shutdown, host thread proof and release hooks, pthread entry, deterministic `busy` teardown, and exactly-once `deinit` |
+| Z runtime embedded by C | [`z-runtime-export`](../examples/interop/c/z-runtime-export) | A main-bound `Once` root owned by generated initialize/shutdown, pthread retrieval and `Mutex` mutation through exported calls, rejected main-only access, deterministic `busy` teardown, and exactly-once `deinit` |
 | Shared Z library called from C | [`z-shared-export`](../examples/interop/c/z-shared-export) | The same checked C export boundary published as a host-native dynamic library plus generated header |
 | Selective C import | [`selective-import.zs`](../examples/interop/c/selective-import.zs) | Header declarations with local aliases |
 | C records and enums | [`foreign-types.zs`](../examples/interop/c/foreign-types.zs) | Native layouts and constants |
