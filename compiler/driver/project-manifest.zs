@@ -10,6 +10,7 @@ export struct NativeProjectConfig {
   directory: String;
   targetKind: String;
   targetName: Option<String>;
+  runtimeInitializer: Option<String>;
   entry: Option<String>;
   platform: Option<String>;
   minimumVersion: Option<String>;
@@ -31,6 +32,7 @@ function emptyProjectConfig(): NativeProjectConfig {
     directory: "",
     targetKind: "executable",
     targetName: Option<String>.none,
+    runtimeInitializer: Option<String>.none,
     entry: Option<String>.none,
     platform: Option<String>.none,
     minimumVersion: Option<String>.none,
@@ -325,6 +327,51 @@ function parseLink(
   }
 }
 
+function parseRuntime(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for target.runtime");
+  let foundInitialize = false;
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    throw jsonError(cursor, "z.json target.runtime requires initialize");
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "initialize") {
+      if (foundInitialize) {
+        throw jsonError(cursor, "z.json target.runtime repeats initialize");
+      }
+      foundInitialize = true;
+      const initializer = try parseJsonString(inout cursor);
+      config.runtimeInitializer = Option.some(initializer);
+    } else {
+      throw jsonError(
+        cursor,
+        `z.json target.runtime contains unknown field "${key}"`
+      );
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    if (!foundInitialize) {
+      throw jsonError(cursor, "z.json target.runtime requires initialize");
+    }
+    return;
+  }
+}
+
 function parseTarget(
   inout cursor: JsonCursor,
   inout config: NativeProjectConfig
@@ -360,6 +407,8 @@ function parseTarget(
         inout cursor,
         "target.includeDirectories"
       );
+    } else if (key == "runtime") {
+      try parseRuntime(inout cursor, inout config);
     } else if (key == "link") {
       try parseLink(inout cursor, inout config);
     } else if (key == "swift") {
@@ -510,6 +559,32 @@ function validLibraryName(in name: String): boolean {
   );
 }
 
+function validZIdentifier(in name: String): boolean {
+  if (name.byteLength == 0) return false;
+  const first = name.byteAt(0);
+  if (
+    !(
+      (first >= 65 && first <= 90)
+      || (first >= 97 && first <= 122)
+      || first == 95
+    )
+  ) return false;
+  let index: usize = 1;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    if (
+      !(
+        (byte >= 48 && byte <= 57)
+        || (byte >= 65 && byte <= 90)
+        || (byte >= 97 && byte <= 122)
+        || byte == 95
+      )
+    ) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
 function hasZSourceExtension(in path: String): boolean {
   return (
     path.byteLength >= 3
@@ -591,6 +666,17 @@ function validateProjectConfig(
     none => {
       throw `${manifestPath}:1:1: error: z.json ${config.targetKind} target requires target.name`;
     }
+  }
+  match (in config.runtimeInitializer) {
+    some(initializer) => {
+      if (config.targetKind == "executable") {
+        throw `${manifestPath}:1:1: error: z.json target.runtime.initialize is only valid for static-library and shared-library targets`;
+      }
+      if (!validZIdentifier(initializer)) {
+        throw `${manifestPath}:1:1: error: z.json target.runtime.initialize must name a Z function in the target entry module`;
+      }
+    }
+    none => {}
   }
   if (config.hasSwiftTarget) {
     throw `${manifestPath}:1:1: error: Swift target preparation remains in the Stage-0 project driver`;

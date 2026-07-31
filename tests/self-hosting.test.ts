@@ -2824,6 +2824,97 @@ test("compiles a multi-module Z application through the standalone native driver
     "sum=42 answer=42 even=true point=(21,22) status=1\n",
   );
 
+  const runtimeRootProject = resolve(directory, "runtime-root-project");
+  mkdirSync(runtimeRootProject);
+  writeFileSync(
+    resolve(runtimeRootProject, "library.zs"),
+    [
+      "class RuntimeRoot {",
+      "  readonly label: String;",
+      "}",
+      "",
+      "function initializeRuntime(): RuntimeRoot {",
+      '  return new RuntimeRoot({ label: "native" });',
+      "}",
+      "",
+      "export c function z_native_runtime_answer(): i32 { return 42; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(runtimeRootProject, "z.json"),
+    JSON.stringify({
+      target: {
+        kind: "static-library",
+        name: "native_runtime",
+        entry: "library.zs",
+        runtime: { initialize: "initializeRuntime" },
+      },
+    }),
+  );
+  const runtimeRootBuild = spawnSync(
+    driver,
+    ["build", runtimeRootProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(runtimeRootBuild.status, 0, runtimeRootBuild.stderr);
+  const runtimeRootHeader = readFileSync(
+    resolve(runtimeRootProject, "build/native_runtime.h"),
+    "utf8",
+  );
+  assert.match(
+    runtimeRootHeader,
+    /#define NATIVE_RUNTIME_RUNTIME_REQUIRES_MAIN_THREAD 0/,
+  );
+  const runtimeRootSource = readFileSync(
+    resolve(runtimeRootProject, ".z-cache/build/native_runtime.c"),
+    "utf8",
+  );
+  assert.match(runtimeRootSource, /z_embedded_runtime_native_runtime_destroy_root/);
+  assert.match(runtimeRootSource, /initializeRuntime\(\)/);
+  const runtimeRootConsumerSource = resolve(
+    runtimeRootProject,
+    "consumer.c",
+  );
+  writeFileSync(runtimeRootConsumerSource, [
+    '#include "native_runtime.h"',
+    '#include <stddef.h>',
+    "int main(void) {",
+    "  if (native_runtime_runtime_initialize(NULL) != NATIVE_RUNTIME_RUNTIME_OK) return 1;",
+    "  if (z_native_runtime_answer() != 42) return 2;",
+    "  return native_runtime_runtime_shutdown() == NATIVE_RUNTIME_RUNTIME_OK ? 0 : 3;",
+    "}",
+    "",
+  ].join("\n"));
+  const runtimeRootConsumer = resolve(runtimeRootProject, "consumer");
+  const runtimeRootCompilation = spawnSync(
+    "clang",
+    [
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-I",
+      resolve(runtimeRootProject, "build"),
+      runtimeRootConsumerSource,
+      resolve(runtimeRootProject, "build/libnative_runtime.a"),
+      "-o",
+      runtimeRootConsumer,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    runtimeRootCompilation.status,
+    0,
+    runtimeRootCompilation.stderr,
+  );
+  const runtimeRootRun = spawnSync(
+    runtimeRootConsumer,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(runtimeRootRun.status, 0, runtimeRootRun.stderr);
+
   const invalidNativeExport = resolve(
     directory,
     "invalid-native-export.zs",
@@ -4103,7 +4194,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 45_000);
+}, 90_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
@@ -4116,7 +4207,7 @@ test("lowers the complete native frontend graph to C", () => {
   assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, const Z_String \*value\);/);
   assert.match(
     emission.stdout,
-    /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program, const Z_String \*embeddedRuntimeName\);/,
+    /Z___z_Result_String_String emitLoweredC\(const Z_LoweredProgram \*program, const Z_String \*embeddedRuntimeName, const Z_String \*runtimeInitializerName, bool runtimeInitializerRequiresMain\);/,
   );
   assert.match(
     emission.stdout,

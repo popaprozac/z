@@ -500,6 +500,52 @@ function validateEmbeddedRuntimeNames(
   }
 }
 
+function validateRuntimeInitializer(
+  in project: NativeProject,
+  in name: String
+): boolean throws String {
+  const entry = project.graph.entry;
+  for (const declaration of project.modules[entry].program.functions) {
+    if (declaration.name != name) continue;
+    const path = copy project.modules[entry].path;
+    const prefix = `${path}:${declaration.line}:${declaration.column}: error:`;
+    if (declaration.parameters.length != 0) {
+      throw `${prefix} a runtime initializer cannot accept parameters in the first tier`;
+    }
+    if (declaration.asynchronous) {
+      throw `${prefix} a runtime initializer cannot be async in the first tier`;
+    }
+    match (in declaration.errorType) {
+      some(_) => throw `${prefix} a runtime initializer cannot throw in the first tier`;
+      none => {}
+    }
+    if (declaration.typeParameters.length != 0) {
+      throw `${prefix} a runtime initializer cannot be generic`;
+    }
+    if (declaration.nativeCExport) {
+      throw `${prefix} a runtime initializer is selected by z.json and cannot also be a public C export`;
+    }
+    if (declaration.returnType.name == "void") {
+      throw `${prefix} a runtime initializer must return one cleanup-bearing owner`;
+    }
+    return declaration.executorAffinity.byteLength > 0;
+  }
+  throw `${project.modules[entry].path}:1:1: error: runtime initializer "${name}" was not found in the target entry module`;
+}
+
+function configuredRuntimeInitializer(
+  in project: NativeProject,
+  inout name: String
+): boolean throws String {
+  return match (in project.config.runtimeInitializer) {
+    some(configured) => {
+      name = configured.copyBytes(0, configured.byteLength);
+      return try validateRuntimeInitializer(project, configured);
+    }
+    none => false;
+  };
+}
+
 function buildStaticLibrary(
   in project: NativeProject,
   release: boolean
@@ -509,15 +555,23 @@ function buildStaticLibrary(
   }
   const targetName = try requiredProjectTargetName(project);
   try validateEmbeddedRuntimeNames(project, targetName);
+  let runtimeInitializerName = "";
+  const runtimeRequiresMain = try configuredRuntimeInitializer(
+    project,
+    inout runtimeInitializerName
+  );
   const emitted = try emitLibraryModulesC(
     project.modules,
     project.graph,
-    targetName
+    targetName,
+    runtimeInitializerName,
+    runtimeRequiresMain
   );
   const header = try emitLibraryModulesCHeader(
     project.modules,
     project.graph,
-    targetName
+    targetName,
+    runtimeRequiresMain
   );
   const outputDirectory = normalizedModulePath(
     `${project.config.directory}/build`
@@ -607,15 +661,23 @@ function buildSharedLibrary(
   }
   const targetName = try requiredProjectTargetName(project);
   try validateEmbeddedRuntimeNames(project, targetName);
+  let runtimeInitializerName = "";
+  const runtimeRequiresMain = try configuredRuntimeInitializer(
+    project,
+    inout runtimeInitializerName
+  );
   const emitted = try emitLibraryModulesC(
     project.modules,
     project.graph,
-    targetName
+    targetName,
+    runtimeInitializerName,
+    runtimeRequiresMain
   );
   const header = try emitLibraryModulesCHeader(
     project.modules,
     project.graph,
-    targetName
+    targetName,
+    runtimeRequiresMain
   );
   const outputDirectory = normalizedModulePath(
     `${project.config.directory}/build`

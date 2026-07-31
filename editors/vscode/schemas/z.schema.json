@@ -44,6 +44,19 @@
             "minLength": 1
           }
         },
+        "runtime": {
+          "description": "Optional ownership-bearing root retained for the initialized lifetime of a C-ABI library target.",
+          "type": "object",
+          "required": ["initialize"],
+          "properties": {
+            "initialize": {
+              "description": "Zero-argument synchronous Z function in the entry module whose returned owner is destroyed at runtime shutdown.",
+              "type": "string",
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
+          },
+          "additionalProperties": false
+        },
         "link": {
           "type": "object",
           "properties": {
@@ -100,6 +113,16 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": { "const": "executable" }
+            }
+          },
+          "then": {
+            "not": { "required": ["runtime"] }
+          }
+        },
         {
           "if": {
             "required": ["platform"]

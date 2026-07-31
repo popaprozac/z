@@ -133,6 +133,15 @@ static example and
 [Calling a shared Z library from C](../examples/interop/c/z-shared-export/README.md)
 for the dynamic form.
 
+A stateful library can add
+`"runtime": { "initialize": "initializeRuntime" }` to its target. The named
+zero-argument entry-module function returns one cleanup-bearing owner that the
+generated runtime retains until shutdown. This supports roots such as
+`OnceLifetime<Application>` without mutable module state; main-bound roots make
+the generated header require host main-thread proof and release scheduling.
+See [Embedding the Z runtime](../examples/interop/c/z-runtime-export/README.md)
+for the executable contract.
+
 Versioned shared-library identities, installation layout, Windows import
 libraries, and installation-oriented artifact emission remain deliberate next
 layers. `z emit` accepts a source file, project directory, `z.json`, or the

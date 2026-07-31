@@ -2758,13 +2758,20 @@ function embeddedRuntimeConstantPart(in targetName: String): String {
 
 function appendEmbeddedRuntimeTypes(
   inout output: TextBuffer,
-  in targetName: String
+  in targetName: String,
+  requiresReleaseEnqueue: boolean,
+  requiresMainThread: boolean
 ): void {
   const prefix = embeddedRuntimeSymbolPart(targetName);
   const constant = embeddedRuntimeConstantPart(targetName);
   output.append("/* Initialize before any exported call; join native work before shutdown. */\n#define ");
   output.append(constant);
-  output.append("_RUNTIME_REQUIRES_ENQUEUE_RELEASE 0\n\n");
+  if (requiresReleaseEnqueue) output.append("_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1\n");
+  else output.append("_RUNTIME_REQUIRES_ENQUEUE_RELEASE 0\n");
+  output.append("#define ");
+  output.append(constant);
+  if (requiresMainThread) output.append("_RUNTIME_REQUIRES_MAIN_THREAD 1\n\n");
+  else output.append("_RUNTIME_REQUIRES_MAIN_THREAD 0\n\n");
   output.append("typedef enum ");
   output.append(prefix);
   output.append("_runtime_status {\n  ");
@@ -2779,17 +2786,24 @@ function appendEmbeddedRuntimeTypes(
   output.append(constant);
   output.append("_RUNTIME_INVALID_CONFIG = 4,\n  ");
   output.append(constant);
-  output.append("_RUNTIME_SHUT_DOWN = 5\n} ");
+  output.append("_RUNTIME_SHUT_DOWN = 5,\n  ");
+  output.append(constant);
+  output.append("_RUNTIME_WRONG_THREAD = 6\n} ");
   output.append(prefix);
   output.append("_runtime_status;\n\n");
   output.append("typedef void (*");
   output.append(prefix);
   output.append("_runtime_enqueue_release)(\n  void *context,\n  void *value,\n  void (*finalize)(void *value)\n);\n\n");
+  output.append("typedef bool (*");
+  output.append(prefix);
+  output.append("_runtime_is_main_thread)(void *context);\n\n");
   output.append("typedef struct ");
   output.append(prefix);
   output.append("_runtime_config {\n  void *context;\n  ");
   output.append(prefix);
-  output.append("_runtime_enqueue_release enqueue_release;\n} ");
+  output.append("_runtime_enqueue_release enqueue_release;\n  ");
+  output.append(prefix);
+  output.append("_runtime_is_main_thread is_main_thread;\n} ");
   output.append(prefix);
   output.append("_runtime_config;\n\n");
 }
@@ -2815,29 +2829,150 @@ function appendEmbeddedRuntimeSignatures(
 
 function appendEmbeddedRuntimeDefinitions(
   inout output: TextBuffer,
-  in targetName: String
-): void {
+  in program: LoweredProgram,
+  in targetName: String,
+  in initializerName: String,
+  initializerRequiresMain: boolean
+): void throws String {
   const prefix = embeddedRuntimeSymbolPart(targetName);
   const constant = embeddedRuntimeConstantPart(targetName);
-  appendEmbeddedRuntimeTypes(inout output, targetName);
+  let initializerIndex = program.functions.length;
+  if (initializerName.byteLength > 0) {
+    let index: usize = 0;
+    while (index < program.functions.length) {
+      if (program.functions[index].name == initializerName) {
+        initializerIndex = index;
+        break;
+      }
+      index = index + 1;
+    }
+    if (initializerIndex == program.functions.length) {
+      throw `runtime initializer "${initializerName}" was not lowered from the target entry module`;
+    }
+    if (!loweredTypeNeedsDeinit(
+      program,
+      program.functions[initializerIndex].returnType
+    )) {
+      throw `runtime initializer "${initializerName}" must return one cleanup-bearing owner`;
+    }
+  }
+  const hasRoot = initializerIndex < program.functions.length;
+  let rootField = "";
+  let rootInitializer = "";
+  let rootHelpers = "";
+  let initializeRoot = "";
+  let shutdownRoot = "";
+  let initializerValidation = "";
+  if (hasRoot) {
+    const initializer = view program.functions[initializerIndex];
+    const rootType = try cType(initializer.returnType);
+    rootField = `  ${rootType} *root;\n`;
+    rootInitializer = "  .root = NULL,\n";
+    let cleanup = "";
+    if (initializer.returnType.kind == LoweredTypeKind.classType) {
+      cleanup = `Z_${initializer.returnType.name}_release(*z_embedded_runtime_${prefix}.root);`;
+    } else {
+      cleanup = `Z_${initializer.returnType.name}_deinit(z_embedded_runtime_${prefix}.root);`;
+    }
+    let rootThreadProof = "";
+    if (initializerRequiresMain) {
+      rootThreadProof = `  if (z_embedded_runtime_${prefix}.is_main_thread == NULL
+      || !z_embedded_runtime_${prefix}.is_main_thread(z_embedded_runtime_${prefix}.context)) abort();
+`;
+    }
+    rootHelpers = `static void z_embedded_runtime_${prefix}_destroy_root(void) {
+  if (z_embedded_runtime_${prefix}.root == NULL) return;
+  ${cleanup}
+  free(z_embedded_runtime_${prefix}.root);
+  z_embedded_runtime_${prefix}.root = NULL;
+}
+
+static __attribute__((unused)) void z_embedded_runtime_${prefix}_complete_root_release(void *opaque) {
+  (void)opaque;
+${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
+  z_embedded_runtime_${prefix}_release(&z_embedded_runtime_${prefix});
+}
+
+`;
+    initializeRoot = `  z_embedded_runtime_${prefix}.root = (${rootType} *)malloc(sizeof(${rootType}));
+  if (z_embedded_runtime_${prefix}.root == NULL) abort();
+  *z_embedded_runtime_${prefix}.root = ${initializer.name}();
+`;
+    if (initializerRequiresMain) {
+      shutdownRoot = `  if (z_embedded_runtime_${prefix}.root != NULL) {
+    __atomic_add_fetch(&z_embedded_runtime_${prefix}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, 4, __ATOMIC_RELEASE);
+    z_embedded_runtime_${prefix}.enqueue_release(
+      z_embedded_runtime_${prefix}.context,
+      &z_embedded_runtime_${prefix},
+      z_embedded_runtime_${prefix}_complete_root_release
+    );
+    if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+      return ${constant}_RUNTIME_BUSY;
+    }
+    uint8_t draining = 4;
+    if (!__atomic_compare_exchange_n(
+      &z_embedded_runtime_${prefix}.state,
+      &draining,
+      3,
+      false,
+      __ATOMIC_ACQ_REL,
+      __ATOMIC_ACQUIRE
+    )) return ${constant}_RUNTIME_BUSY;
+  }
+`;
+    } else {
+      shutdownRoot = `  z_embedded_runtime_${prefix}_destroy_root();\n`;
+    }
+  }
+  if (initializerRequiresMain) {
+    initializerValidation = `  if (config == NULL || config->enqueue_release == NULL || config->is_main_thread == NULL) {
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_INVALID_CONFIG;
+  }
+  if (!config->is_main_thread(config->context)) {
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_WRONG_THREAD;
+  }
+`;
+  }
+  let drainingState = "1";
+  if (hasRoot) drainingState = "4";
+  appendEmbeddedRuntimeTypes(
+    inout output,
+    targetName,
+    initializerRequiresMain,
+    initializerRequiresMain
+  );
   output.append(`typedef struct z_embedded_runtime_${prefix}_storage {
   void *context;
   ${prefix}_runtime_enqueue_release enqueue_release;
-  uintptr_t active_entries;
+  ${prefix}_runtime_is_main_thread is_main_thread;
+${rootField}  uintptr_t active_entries;
+  uintptr_t active_callbacks;
   uint8_t state;
 } z_embedded_runtime_${prefix}_storage;
 
 static z_embedded_runtime_${prefix}_storage z_embedded_runtime_${prefix} = {
   .context = NULL,
   .enqueue_release = NULL,
-  .active_entries = 0,
+  .is_main_thread = NULL,
+${rootInitializer}  .active_entries = 0,
+  .active_callbacks = 0,
   .state = 0,
 };
+
+static __attribute__((unused)) void z_embedded_runtime_${prefix}_release(void *context) {
+  (void)context;
+  if (__atomic_fetch_sub(&z_embedded_runtime_${prefix}.active_callbacks, 1, __ATOMIC_ACQ_REL) == 0) abort();
+}
+
+${rootHelpers}
 
 static void z_embedded_runtime_${prefix}_enter(void) {
   for (;;) {
     uint8_t state = __atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE);
-    if (state == 3) continue;
+    if (state == 3 || state == 5) continue;
     if (state != 1) abort();
     __atomic_add_fetch(&z_embedded_runtime_${prefix}.active_entries, 1, __ATOMIC_ACQ_REL);
     if (__atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE) == 1) break;
@@ -2858,7 +2993,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
   if (!__atomic_compare_exchange_n(
     &z_embedded_runtime_${prefix}.state,
     &expected,
-    3,
+    5,
     false,
     __ATOMIC_ACQ_REL,
     __ATOMIC_ACQUIRE
@@ -2867,32 +3002,41 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
     if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
     return ${constant}_RUNTIME_BUSY;
   }
-  z_embedded_runtime_${prefix}.context = config == NULL ? NULL : config->context;
+${initializerValidation}  z_embedded_runtime_${prefix}.context = config == NULL ? NULL : config->context;
   z_embedded_runtime_${prefix}.enqueue_release = config == NULL ? NULL : config->enqueue_release;
-  __atomic_store_n(&z_embedded_runtime_${prefix}.state, 1, __ATOMIC_RELEASE);
+  z_embedded_runtime_${prefix}.is_main_thread = config == NULL ? NULL : config->is_main_thread;
+${initializeRoot}  __atomic_store_n(&z_embedded_runtime_${prefix}.state, 1, __ATOMIC_RELEASE);
   return ${constant}_RUNTIME_OK;
 }
 
 Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
-  uint8_t expected = 1;
-  if (!__atomic_compare_exchange_n(
-    &z_embedded_runtime_${prefix}.state,
-    &expected,
-    3,
-    false,
-    __ATOMIC_ACQ_REL,
-    __ATOMIC_ACQUIRE
-  )) {
-    if (expected == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
-    if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
-    return ${constant}_RUNTIME_BUSY;
+  uint8_t previous;
+  for (;;) {
+    previous = __atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE);
+    if (previous == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
+    if (previous == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    if (previous == 3) return ${constant}_RUNTIME_BUSY;
+    uint8_t expected = previous;
+    if (__atomic_compare_exchange_n(
+      &z_embedded_runtime_${prefix}.state,
+      &expected,
+      3,
+      false,
+      __ATOMIC_ACQ_REL,
+      __ATOMIC_ACQUIRE
+    )) break;
   }
   if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_entries, __ATOMIC_ACQUIRE) != 0) {
-    __atomic_store_n(&z_embedded_runtime_${prefix}.state, 1, __ATOMIC_RELEASE);
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, previous, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_BUSY;
+  }
+${shutdownRoot}  if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, ${drainingState}, __ATOMIC_RELEASE);
     return ${constant}_RUNTIME_BUSY;
   }
   z_embedded_runtime_${prefix}.context = NULL;
   z_embedded_runtime_${prefix}.enqueue_release = NULL;
+  z_embedded_runtime_${prefix}.is_main_thread = NULL;
   __atomic_store_n(&z_embedded_runtime_${prefix}.state, 2, __ATOMIC_RELEASE);
   return ${constant}_RUNTIME_OK;
 }
@@ -4320,7 +4464,9 @@ function appendWrappingIntegerRuntime(
 
 function emitLoweredC(
   in program: LoweredProgram,
-  in embeddedRuntimeName: String
+  in embeddedRuntimeName: String,
+  in runtimeInitializerName: String,
+  runtimeInitializerRequiresMain: boolean
 ): String throws String {
   let output = TextBuffer();
   const testCount = programTestCount(program);
@@ -4997,7 +5143,13 @@ function emitLoweredC(
   }
   if (hasNativeCExports) {
     if (embeddedRuntimeName.byteLength > 0) {
-      appendEmbeddedRuntimeDefinitions(inout output, embeddedRuntimeName);
+      try appendEmbeddedRuntimeDefinitions(
+        inout output,
+        program,
+        embeddedRuntimeName,
+        runtimeInitializerName,
+        runtimeInitializerRequiresMain
+      );
     }
     output.append("#if defined(__cplusplus)\nextern \"C\" {\n#endif\n\n");
     for (const declaration of program.functions) {
@@ -5016,14 +5168,20 @@ function emitLoweredC(
 
 function emitLoweredCHeader(
   in program: LoweredProgram,
-  in embeddedRuntimeName: String
+  in embeddedRuntimeName: String,
+  runtimeInitializerRequiresMain: boolean
 ): String throws String {
   let output = TextBuffer();
   output.append("#pragma once\n\n");
   output.append("#include <stdbool.h>\n#include <stdint.h>\n\n");
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n\n");
   if (embeddedRuntimeName.byteLength > 0) {
-    appendEmbeddedRuntimeTypes(inout output, embeddedRuntimeName);
+    appendEmbeddedRuntimeTypes(
+      inout output,
+      embeddedRuntimeName,
+      runtimeInitializerRequiresMain,
+      runtimeInitializerRequiresMain
+    );
   }
   let emittedTypes = Array<String>();
   let visitingTypes = Array<String>();
@@ -5153,7 +5311,7 @@ export function emitC(
   in evidence: ModuleSemanticEvidence
 ): String throws String {
   const lowered = try lowerProgram(program, evidence);
-  return try emitLoweredC(lowered, "");
+  return try emitLoweredC(lowered, "", "", false);
 }
 
 export function emitModulesC(
@@ -5161,16 +5319,23 @@ export function emitModulesC(
   in graph: ModuleGraph
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredC(lowered, "");
+  return try emitLoweredC(lowered, "", "", false);
 }
 
 export function emitLibraryModulesC(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
-  in targetName: String
+  in targetName: String,
+  in runtimeInitializerName: String,
+  runtimeInitializerRequiresMain: boolean
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredC(lowered, targetName);
+  return try emitLoweredC(
+    lowered,
+    targetName,
+    runtimeInitializerName,
+    runtimeInitializerRequiresMain
+  );
 }
 
 export function emitTestModulesC(
@@ -5181,7 +5346,7 @@ export function emitTestModulesC(
   if (programTestCount(lowered) == 0) {
     throw "no tests were found in this module or its imports";
   }
-  return try emitLoweredC(lowered, "");
+  return try emitLoweredC(lowered, "", "", false);
 }
 
 export function emitModulesCHeader(
@@ -5189,14 +5354,19 @@ export function emitModulesCHeader(
   in graph: ModuleGraph
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredCHeader(lowered, "");
+  return try emitLoweredCHeader(lowered, "", false);
 }
 
 export function emitLibraryModulesCHeader(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph,
-  in targetName: String
+  in targetName: String,
+  runtimeInitializerRequiresMain: boolean
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredCHeader(lowered, targetName);
+  return try emitLoweredCHeader(
+    lowered,
+    targetName,
+    runtimeInitializerRequiresMain
+  );
 }

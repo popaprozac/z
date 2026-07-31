@@ -238,7 +238,11 @@ c enum Status: i32 {
 The implemented ABI tier accepts synchronous, non-throwing, non-generic
 signatures containing fixed-width scalars and checked C-layout structs/enums;
 library artifacts also generate target-scoped runtime initialize/shutdown
-functions and bounded entry for host-created threads. See
+functions and bounded entry for host-created threads. A library manifest may
+name one cleanup-bearing `target.runtime.initialize` result that the generated
+runtime owns until shutdown; this is how an embedded library can retain a
+`OnceLifetime<T>` or composed application root across C calls without adding
+implicit module initialization. See
 [C exports](c-exports.md) for the exact mapping, lifecycle contract, and growth
 path.
 

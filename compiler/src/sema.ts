@@ -15476,6 +15476,45 @@ function containsForeignValueStorage(
   return Boolean(result);
 }
 
+export function runtimeRootTypeNeedsCleanup(
+  type: string,
+  program: Program,
+  semanticInfo: SemanticInfo,
+): boolean {
+  return hasCleanupType(
+    type,
+    new Map(program.structs.map((declaration) => [declaration.name, declaration])),
+    new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+    semanticInfo.foreignTypes,
+  );
+}
+
+export function runtimeRootTypeContainsForeignValueStorage(
+  type: string,
+  program: Program,
+  semanticInfo: SemanticInfo,
+): boolean {
+  return containsForeignValueStorage(
+    type,
+    new Map(program.structs.map((declaration) => [declaration.name, declaration])),
+    new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+    semanticInfo.foreignNamedTypes,
+  );
+}
+
+export function runtimeRootTypeRequiresMain(
+  type: string,
+  program: Program,
+  semanticInfo: SemanticInfo,
+): boolean {
+  return typeHasMainLifecycleDeclaration(
+    type,
+    new Map(program.structs.map((declaration) => [declaration.name, declaration])),
+    new Map(program.enums.map((declaration) => [declaration.name, declaration])),
+    semanticInfo.foreignNamedTypes,
+  );
+}
+
 function containsOpaqueCleanupStorage(
   type: ValueType,
   structs: Map<string, StructDeclaration>,

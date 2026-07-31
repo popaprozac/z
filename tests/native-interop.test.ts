@@ -507,7 +507,9 @@ test("checks the first C-export ABI tier and its editor surface", () => {
     export c function zanswer_affinity_marker(): i32 { return 42; }
   `, entry);
   assert.match(executorBound.header ?? "", /#define ZANSWER_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
+  assert.match(executorBound.header ?? "", /#define ZANSWER_RUNTIME_REQUIRES_MAIN_THREAD 1/);
   assert.match(executorBound.source, /return ZANSWER_RUNTIME_INVALID_CONFIG/);
+  assert.match(executorBound.source, /is_main_thread/);
   assert.match(executorBound.source, /z_embedded_runtime_zanswer_complete_release/);
   const executorBoundSource = resolve(project, "executor-bound.c");
   const executorBoundObject = resolve(project, "executor-bound.o");
@@ -581,6 +583,14 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   const generated = readFileSync(resolve(project, ".z-cache/build/zembed.c"), "utf8");
   assert.match(generated, /__atomic_add_fetch\(&z_embedded_runtime_zembed\.active_entries/);
   assert.match(generated, /return ZEMBED_RUNTIME_BUSY/);
+  assert.match(generated, /initializeRuntime\(\)/);
+  assert.match(generated, /z_embedded_runtime_zembed_destroy_root/);
+  assert.match(generated, /!z_embedded_runtime_zembed\.is_main_thread\(z_embedded_runtime_zembed\.context\)\) abort/);
+  const header = readFileSync(resolve(project, "build/zembed.h"), "utf8");
+  assert.match(header, /#define ZEMBED_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
+  assert.match(header, /#define ZEMBED_RUNTIME_REQUIRES_MAIN_THREAD 1/);
+  assert.match(header, /ZEMBED_RUNTIME_WRONG_THREAD = 6/);
+  assert.match(header, /zembed_runtime_is_main_thread is_main_thread/);
 
   const consumer = resolve(project, "build/consumer");
   const compilation = spawnSync("clang", [
@@ -598,7 +608,52 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "busy=3 result=42 stopped=0\n");
+  assert.equal(run.stdout, "wrong=6 busy=3 result=42 stopped=0 released=1\n");
+});
+
+test("requires an explicit cleanup-bearing library runtime root", () => {
+  const project = mkdtempSync("/tmp/z-runtime-root-contract-");
+  const entry = resolve(project, "library.zs");
+  writeFileSync(resolve(project, "z.json"), JSON.stringify({
+    target: {
+      kind: "static-library",
+      name: "runtime_root_contract",
+      entry: "library.zs",
+      runtime: { initialize: "initializeRuntime" },
+    },
+  }));
+
+  const missing = "export c function z_answer(): i32 { return 42; }\n";
+  writeFileSync(entry, missing);
+  assert.throws(
+    () => compileToNative(missing, entry),
+    /runtime initializer "initializeRuntime" was not found in the target entry module/,
+  );
+
+  const scalar = [
+    "function initializeRuntime(): i32 { return 42; }",
+    "export c function z_answer(): i32 { return 42; }",
+    "",
+  ].join("\n");
+  writeFileSync(entry, scalar);
+  assert.throws(
+    () => compileToNative(scalar, entry),
+    /runtime initializer return type "i32" does not own cleanup-bearing state/,
+  );
+
+  const parameter = [
+    "class RuntimeRoot { value: i32; }",
+    "function initializeRuntime(value: i32): RuntimeRoot {",
+    "  return new RuntimeRoot({ value });",
+    "}",
+    "export c function z_answer(): i32 { return 42; }",
+    "",
+  ].join("\n");
+  writeFileSync(entry, parameter);
+  assert.throws(
+    () => compileToNative(parameter, entry),
+    /a runtime initializer cannot accept parameters in the first tier/,
+  );
 });
 
 hostToolchainTest("builds the shared Z-to-C example and runs its handwritten C consumer", () => {

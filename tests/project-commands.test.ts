@@ -37,6 +37,12 @@ test("associates z.json with the implemented project-manifest schema", () => {
               readonly interop?: { readonly enum?: readonly string[] };
             };
           };
+          readonly runtime?: {
+            readonly required?: readonly string[];
+            readonly properties?: {
+              readonly initialize?: { readonly pattern?: string };
+            };
+          };
         };
       };
     };
@@ -56,6 +62,14 @@ test("associates z.json with the implemented project-manifest schema", () => {
   assert.deepEqual(
     schema.properties?.target?.properties?.swift?.properties?.interop?.enum,
     ["objc", "cxx"],
+  );
+  assert.deepEqual(
+    schema.properties?.target?.properties?.runtime?.required,
+    ["initialize"],
+  );
+  assert.equal(
+    schema.properties?.target?.properties?.runtime?.properties?.initialize?.pattern,
+    "^[A-Za-z_][A-Za-z0-9_]*$",
   );
 });
 
@@ -119,6 +133,57 @@ test("requires a named entry for every discovered project target", () => {
   assert.match(
     unknownField.stderr,
     /target contains unknown field "artifact"/,
+  );
+
+  writeManifest(directory, {
+    name: "required-fields",
+    entry: "main.zs",
+    runtime: { initialize: "initializeRuntime" },
+  });
+  const executableRuntime = invoke(["check", directory]);
+  assert.equal(executableRuntime.status, 1);
+  assert.match(
+    executableRuntime.stderr,
+    /target\.runtime\.initialize is only valid for static-library and shared-library targets/,
+  );
+
+  writeManifest(directory, {
+    kind: "static-library",
+    name: "required-fields",
+    entry: "main.zs",
+    runtime: {},
+  });
+  const missingRuntimeInitializer = invoke(["check", directory]);
+  assert.equal(missingRuntimeInitializer.status, 1);
+  assert.match(
+    missingRuntimeInitializer.stderr,
+    /target\.runtime requires initialize/,
+  );
+
+  writeManifest(directory, {
+    kind: "static-library",
+    name: "required-fields",
+    entry: "main.zs",
+    runtime: { initialize: "not-a-function" },
+  });
+  const invalidRuntimeInitializer = invoke(["check", directory]);
+  assert.equal(invalidRuntimeInitializer.status, 1);
+  assert.match(
+    invalidRuntimeInitializer.stderr,
+    /target\.runtime\.initialize must name a Z function/,
+  );
+
+  writeManifest(directory, {
+    kind: "static-library",
+    name: "required-fields",
+    entry: "main.zs",
+    runtime: { initialize: "initializeRuntime", teardown: "stopRuntime" },
+  });
+  const unknownRuntimeField = invoke(["check", directory]);
+  assert.equal(unknownRuntimeField.status, 1);
+  assert.match(
+    unknownRuntimeField.stderr,
+    /target\.runtime contains unknown field "teardown"/,
   );
 });
 
@@ -321,7 +386,13 @@ test("builds a shared library and runs a handwritten C consumer", () => {
   );
   writeFileSync(consumerSource, [
     '#include "shared_math.h"',
-    "int main(void) { return z_shared_answer() == 42 ? 0 : 1; }",
+    "#include <stddef.h>",
+    "int main(void) {",
+    "  if (shared_math_runtime_initialize(NULL) != SHARED_MATH_RUNTIME_OK) return 2;",
+    "  const int answer = z_shared_answer();",
+    "  if (shared_math_runtime_shutdown() != SHARED_MATH_RUNTIME_OK) return 3;",
+    "  return answer == 42 ? 0 : 1;",
+    "}",
     "",
   ].join("\n"));
   const compilerArguments = [

@@ -155,6 +155,7 @@ export function generateC(
   semanticInfo: SemanticInfo,
   options: {
     readonly embeddedRuntimeName?: string | null;
+    readonly embeddedRuntimeInitializer?: EmbeddedRuntimeInitializer | null;
     readonly omitRawNativeBodies?: boolean;
     readonly testRunner?: readonly FunctionDeclaration[];
   } = {},
@@ -201,6 +202,7 @@ export function generateC(
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
   const embeddedRuntimeName = options.embeddedRuntimeName ?? null;
+  const embeddedRuntimeInitializer = options.embeddedRuntimeInitializer ?? null;
   const usesEmbeddedRuntime = embeddedRuntimeName !== null;
   const usesMutex = mutexValueTypes.length > 0 || onceValueTypes.length > 0;
   const usesExecutorBoundClasses = program.structs.some((declaration) => (
@@ -802,12 +804,17 @@ export function generateC(
       nativeExports,
       structs,
       enums,
+      semanticInfo,
       embeddedRuntimeName === null
         ? null
         : {
             targetName: embeddedRuntimeName,
-            requiresBoundReleaseEnqueue: usesExecutorBoundClasses,
+            requiresBoundReleaseEnqueue: usesExecutorBoundClasses
+              || Boolean(embeddedRuntimeInitializer?.requiresMainThread),
+            requiresMainThread: usesExecutorBoundClasses
+              || Boolean(embeddedRuntimeInitializer?.requiresMainThread),
             requiresEntry: true,
+            initializer: embeddedRuntimeInitializer,
           },
     ), "");
   }
@@ -1172,10 +1179,18 @@ function nativeExportSignature(
   return `Z_API ${nativeExportCType(declaration.returnType.name, structs, enums)} ${declaration.nativeExport!.name}(${parameters.join(", ") || "void"})${terminator}`;
 }
 
+export type EmbeddedRuntimeInitializer = {
+  readonly functionName: string;
+  readonly returnType: string;
+  readonly requiresMainThread: boolean;
+};
+
 type EmbeddedRuntimeExport = {
   readonly targetName: string;
   readonly requiresBoundReleaseEnqueue: boolean;
+  readonly requiresMainThread: boolean;
   readonly requiresEntry: boolean;
+  readonly initializer: EmbeddedRuntimeInitializer | null;
 };
 
 function embeddedRuntimeSymbolPart(targetName: string): string {
@@ -1187,6 +1202,7 @@ function embeddedRuntimeTypeDeclarations(runtime: EmbeddedRuntimeExport): string
   const constant = prefix.toUpperCase();
   return `/* Initialize before any exported call; join native work before shutdown. */
 #define ${constant}_RUNTIME_REQUIRES_ENQUEUE_RELEASE ${runtime.requiresBoundReleaseEnqueue ? "1" : "0"}
+#define ${constant}_RUNTIME_REQUIRES_MAIN_THREAD ${runtime.requiresMainThread ? "1" : "0"}
 
 typedef enum ${prefix}_runtime_status {
   ${constant}_RUNTIME_OK = 0,
@@ -1194,7 +1210,8 @@ typedef enum ${prefix}_runtime_status {
   ${constant}_RUNTIME_NOT_INITIALIZED = 2,
   ${constant}_RUNTIME_BUSY = 3,
   ${constant}_RUNTIME_INVALID_CONFIG = 4,
-  ${constant}_RUNTIME_SHUT_DOWN = 5
+  ${constant}_RUNTIME_SHUT_DOWN = 5,
+  ${constant}_RUNTIME_WRONG_THREAD = 6
 } ${prefix}_runtime_status;
 
 typedef void (*${prefix}_runtime_enqueue_release)(
@@ -1203,9 +1220,12 @@ typedef void (*${prefix}_runtime_enqueue_release)(
   void (*finalize)(void *value)
 );
 
+typedef bool (*${prefix}_runtime_is_main_thread)(void *context);
+
 typedef struct ${prefix}_runtime_config {
   void *context;
   ${prefix}_runtime_enqueue_release enqueue_release;
+  ${prefix}_runtime_is_main_thread is_main_thread;
 } ${prefix}_runtime_config;`;
 }
 
@@ -1215,17 +1235,68 @@ function embeddedRuntimePublicSignatures(runtime: EmbeddedRuntimeExport): string
 Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void);`;
 }
 
-function generateEmbeddedRuntimeDefinitions(runtime: EmbeddedRuntimeExport): string {
+function generateEmbeddedRuntimeDefinitions(
+  runtime: EmbeddedRuntimeExport,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
   const prefix = embeddedRuntimeSymbolPart(runtime.targetName);
   const constant = prefix.toUpperCase();
   const storage = `z_embedded_runtime_${prefix}`;
   const retain = `${storage}_retain`;
   const release = `${storage}_release`;
+  const initializer = runtime.initializer;
+  const rootCType = initializer
+    ? mapType(initializer.returnType, structs, enums, semanticInfo.foreignNamedTypes)
+    : null;
+  const rootCleanup = initializer
+    ? generateOwnedEnvironmentCleanup(
+        `*${storage}.root`,
+        initializer.returnType,
+        structs,
+        enums,
+        semanticInfo,
+        { value: 0 },
+      )
+    : "";
+  const rootFields = initializer
+    ? `  ${rootCType} *root;\n`
+    : "";
+  const rootInitializers = initializer
+    ? "  .root = NULL,\n"
+    : "";
+  const rootHelpers = initializer
+    ? `static void ${storage}_destroy_root(void) {
+  if (${storage}.root == NULL) return;
+${indent(rootCleanup, 2)}
+  free(${storage}.root);
+  ${storage}.root = NULL;
+}
+
+static void ${storage}_complete_root_release(void *opaque) {
+  (void)opaque;
+${initializer?.requiresMainThread ? `  if (${storage}.is_main_thread == NULL
+      || !${storage}.is_main_thread(${storage}.context)) abort();
+` : ""}  ${storage}_destroy_root();
+  ${release}(&${storage});
+}
+
+`
+    : "";
+  const initializeRoot = initializer
+    ? `  ${storage}.root = (${rootCType} *)malloc(sizeof(${rootCType}));
+  if (${storage}.root == NULL) abort();
+  *${storage}.root = ${cFunctionName(initializer.functionName)}();
+`
+    : "";
   return `${embeddedRuntimeTypeDeclarations(runtime)}
 
 typedef struct ${storage}_storage {
   void *context;
   Z_ExecutorBoundReleaseEnqueue enqueue_release;
+  ${prefix}_runtime_is_main_thread is_main_thread;
+${rootFields}
   uintptr_t active_entries;
   uintptr_t active_callbacks;
   uint8_t state;
@@ -1234,6 +1305,8 @@ typedef struct ${storage}_storage {
 static ${storage}_storage ${storage} = {
   .context = NULL,
   .enqueue_release = NULL,
+  .is_main_thread = NULL,
+${rootInitializers}
   .active_entries = 0,
   .active_callbacks = 0,
   .state = 0,
@@ -1244,9 +1317,10 @@ static void ${retain}(void *context) {
   for (;;) {
     uint8_t state = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
     if (state == 3) continue;
-    if (state != 1) abort();
+    if (state != 1 && state != 5) abort();
     __atomic_add_fetch(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL);
-    if (__atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE) == 1) return;
+    state = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
+    if (state == 1 || state == 5) return;
     __atomic_sub_fetch(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL);
   }
 }
@@ -1256,14 +1330,16 @@ static void ${release}(void *context) {
   if (__atomic_fetch_sub(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL) == 0) abort();
 }
 
-typedef struct ${storage}_pending_release {
+${rootHelpers}typedef struct ${storage}_pending_release {
   void *value;
   void (*finalize)(void *value);
 } ${storage}_pending_release;
 
 static void ${storage}_complete_release(void *opaque) {
   ${storage}_pending_release *pending = (${storage}_pending_release *)opaque;
-  pending->finalize(pending->value);
+${runtime.requiresMainThread ? `  if (${storage}.is_main_thread == NULL
+      || !${storage}.is_main_thread(${storage}.context)) abort();
+` : ""}  pending->finalize(pending->value);
   free(pending);
   ${release}(&${storage});
 }
@@ -1282,7 +1358,7 @@ static void ${storage}_enqueue_release(void *context, void *value, void (*finali
 static Z_UNUSED_FUNCTION Z_ForeignThreadEntry ${storage}_enter(void) {
   for (;;) {
     uint8_t state = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
-    if (state == 3) continue;
+    if (state == 3 || state == 5) continue;
     if (state != 1) abort();
     __atomic_add_fetch(&${storage}.active_entries, 1, __ATOMIC_ACQ_REL);
     if (__atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE) == 1) break;
@@ -1308,7 +1384,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
   if (!__atomic_compare_exchange_n(
     &${storage}.state,
     &expected,
-    3,
+    5,
     false,
     __ATOMIC_ACQ_REL,
     __ATOMIC_ACQUIRE
@@ -1321,33 +1397,71 @@ ${runtime.requiresBoundReleaseEnqueue ? `  if (config == NULL || config->enqueue
     __atomic_store_n(&${storage}.state, 0, __ATOMIC_RELEASE);
     return ${constant}_RUNTIME_INVALID_CONFIG;
   }
+` : ""}${runtime.requiresMainThread ? `  if (config == NULL || config->is_main_thread == NULL) {
+    __atomic_store_n(&${storage}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_INVALID_CONFIG;
+  }
+  if (!config->is_main_thread(config->context)) {
+    __atomic_store_n(&${storage}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_WRONG_THREAD;
+  }
 ` : ""}  ${storage}.context = config == NULL ? NULL : config->context;
   ${storage}.enqueue_release = config == NULL ? NULL : config->enqueue_release;
+  ${storage}.is_main_thread = config == NULL ? NULL : config->is_main_thread;
   z_foreign_runtime_context = &${storage};
   z_foreign_runtime_enqueue = ${storage}.enqueue_release == NULL ? NULL : ${storage}_enqueue_release;
   z_foreign_runtime_retain = ${retain};
   z_foreign_runtime_release = ${release};
+${initializeRoot}
   __atomic_store_n(&${storage}.state, 1, __ATOMIC_RELEASE);
   return ${constant}_RUNTIME_OK;
 }
 
 Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
-  uint8_t expected = 1;
-  if (!__atomic_compare_exchange_n(
-    &${storage}.state,
-    &expected,
-    3,
-    false,
-    __ATOMIC_ACQ_REL,
-    __ATOMIC_ACQUIRE
-  )) {
-    if (expected == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
-    if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+  uint8_t previous;
+  for (;;) {
+    previous = __atomic_load_n(&${storage}.state, __ATOMIC_ACQUIRE);
+    if (previous == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
+    if (previous == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    if (previous == 3) return ${constant}_RUNTIME_BUSY;
+    uint8_t expected = previous;
+    if (__atomic_compare_exchange_n(
+      &${storage}.state,
+      &expected,
+      3,
+      false,
+      __ATOMIC_ACQ_REL,
+      __ATOMIC_ACQUIRE
+    )) break;
+  }
+  if (__atomic_load_n(&${storage}.active_entries, __ATOMIC_ACQUIRE) != 0) {
+    __atomic_store_n(&${storage}.state, previous, __ATOMIC_RELEASE);
     return ${constant}_RUNTIME_BUSY;
   }
-  if (__atomic_load_n(&${storage}.active_entries, __ATOMIC_ACQUIRE) != 0
-      || __atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
-    __atomic_store_n(&${storage}.state, 1, __ATOMIC_RELEASE);
+${initializer ? (initializer.requiresMainThread ? `  if (${storage}.root != NULL) {
+    __atomic_add_fetch(&${storage}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&${storage}.state, 4, __ATOMIC_RELEASE);
+    ${storage}.enqueue_release(
+      ${storage}.context,
+      &${storage},
+      ${storage}_complete_root_release
+    );
+    if (__atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+      return ${constant}_RUNTIME_BUSY;
+    }
+    uint8_t draining = 4;
+    if (!__atomic_compare_exchange_n(
+      &${storage}.state,
+      &draining,
+      3,
+      false,
+      __ATOMIC_ACQ_REL,
+      __ATOMIC_ACQUIRE
+    )) return ${constant}_RUNTIME_BUSY;
+  }
+` : `  ${storage}_destroy_root();
+`) : ""}  if (__atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+    __atomic_store_n(&${storage}.state, ${initializer ? "4" : "1"}, __ATOMIC_RELEASE);
     return ${constant}_RUNTIME_BUSY;
   }
   z_foreign_runtime_release = NULL;
@@ -1356,6 +1470,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
   z_foreign_runtime_context = NULL;
   ${storage}.context = NULL;
   ${storage}.enqueue_release = NULL;
+  ${storage}.is_main_thread = NULL;
   __atomic_store_n(&${storage}.state, 2, __ATOMIC_RELEASE);
   return ${constant}_RUNTIME_OK;
 }
@@ -1367,8 +1482,9 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
 
 function generateNativeExportDefinitions(
   declarations: readonly FunctionDeclaration[],
-  structs: ReadonlyMap<string, StructDeclaration>,
-  enums: ReadonlyMap<string, EnumDeclaration>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
   runtime: EmbeddedRuntimeExport | null,
 ): string {
   const definitions = declarations.map((declaration) => {
@@ -1399,7 +1515,7 @@ function generateNativeExportDefinitions(
 #define Z_API
 #endif
 
-${runtime === null ? "" : `${generateEmbeddedRuntimeDefinitions(runtime)}\n\n`}
+${runtime === null ? "" : `${generateEmbeddedRuntimeDefinitions(runtime, structs, enums, semanticInfo)}\n\n`}
 
 #if defined(__cplusplus)
 extern "C" {
@@ -1416,6 +1532,7 @@ export function generateCHeader(
   program: Program,
   embeddedRuntimeName: string | null = null,
   embeddedRuntimeRequiresBoundReleaseEnqueue = false,
+  embeddedRuntimeRequiresMainThread = false,
 ): string | null {
   const declarations = program.functions.filter((declaration) => declaration.nativeExport?.language === "c");
   if (declarations.length === 0) return null;
@@ -1461,7 +1578,9 @@ export function generateCHeader(
     : {
         targetName: embeddedRuntimeName,
         requiresBoundReleaseEnqueue: embeddedRuntimeRequiresBoundReleaseEnqueue,
+        requiresMainThread: embeddedRuntimeRequiresMainThread,
         requiresEntry: false,
+        initializer: null,
       } satisfies EmbeddedRuntimeExport;
   return `/* Generated by the Z bootstrap compiler. */
 #pragma once

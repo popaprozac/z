@@ -1395,7 +1395,11 @@ require an explicit type as part of their public contract, while private
 constants may infer one. The executable foundation is restricted to cleanup-free
 literal `boolean`, numeric, and `String` values plus explicitly typed `cstring`
 string literals. Calls, runtime initialization, ownership-bearing storage, and
-target-conditional values remain later design work.
+target-conditional values remain later design work. C-ABI library targets have
+one separate explicit escape from this restriction: `target.runtime.initialize`
+names an entry-module function whose cleanup-bearing result is owned by the
+generated target runtime until shutdown. That is target lifecycle, not module
+initialization; importing the module still executes nothing.
 
 Long-lived application identity uses a distinct standard-library capability,
 not a relaxation of module `const`:
@@ -2023,7 +2027,11 @@ public wrapper plus a C/C++-compatible header; validates enum inputs from C; and
 rejects generics, errors, async, affinity, and Z-owned representations at the
 source declaration. Static-library output and a handwritten strict-C consumer
 prove that boundary before strings/slices, projected errors, owned results,
-callbacks, or async exports.
+callbacks, or async exports. An optional manifest-selected runtime initializer
+may return one cleanup-bearing owner such as `OnceLifetime<T>`; generated
+initialize retains it and generated shutdown destroys it after active foreign
+entries leave. Main-bound roots require explicit host thread proof and release
+scheduling rather than trusting the calling thread.
 The wrapper keeps Z's internal identity private and should optimize away when
 the implementation is trivial. The complete accepted direction is recorded in
 [`docs/c-exports.md`](docs/c-exports.md).

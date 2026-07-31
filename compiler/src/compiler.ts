@@ -1,7 +1,12 @@
 import { generateC, generateCHeader } from "./codegen-c.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
-import { analyze } from "./sema.ts";
+import {
+  analyze,
+  runtimeRootTypeContainsForeignValueStorage,
+  runtimeRootTypeNeedsCleanup,
+  runtimeRootTypeRequiresMain,
+} from "./sema.ts";
 import { materializeResultTypes } from "./results.ts";
 import {
   materializeGenerics,
@@ -142,6 +147,82 @@ function validateEmbeddedRuntimePublicNames(
       },
     );
   }
+}
+
+function embeddedRuntimeInitializer(
+  program: Program,
+  semanticInfo: SemanticInfo,
+  projectBuild: ProjectBuild,
+  fileName: string,
+): {
+  readonly functionName: string;
+  readonly returnType: string;
+  readonly requiresMainThread: boolean;
+} | null {
+  const configured = projectBuild.runtimeInitializer;
+  if (configured === null) return null;
+  const declaration = program.functions.find((candidate) => (
+    candidate.name === configured
+    && (candidate.location.fileName ?? fileName) === (projectBuild.entryPath ?? fileName)
+  ));
+  const reject = (summary: string, help?: string): never => {
+    throw new DiagnosticError(
+      declaration?.location.fileName ?? projectBuild.entryPath ?? fileName,
+      declaration?.location ?? {
+        offset: 0,
+        line: 1,
+        column: 1,
+        fileName: projectBuild.entryPath ?? fileName,
+      },
+      summary,
+      {
+        code: "Z0611",
+        notes: ["the selected return value is owned by the generated library runtime until shutdown"],
+        helps: help ? [help] : undefined,
+      },
+    );
+  };
+  if (!declaration) {
+    reject(
+      `runtime initializer ${JSON.stringify(configured)} was not found in the target entry module`,
+      `declare \`function ${configured}(): OwnedRoot\` in ${JSON.stringify(projectBuild.entryPath ?? fileName)}`,
+    );
+  }
+  if (declaration.parameters.length !== 0) reject("a runtime initializer cannot accept parameters in the first tier");
+  if (declaration.async) reject("a runtime initializer cannot be async in the first tier");
+  if (declaration.errorType) reject("a runtime initializer cannot throw in the first tier");
+  if ((declaration.typeParameters?.length ?? 0) > 0) reject("a runtime initializer cannot be generic");
+  if (declaration.rawBody) reject("a runtime initializer must have an ordinary checked Z body");
+  if (declaration.nativeExport) reject("a runtime initializer is selected by z.json and cannot also be a public C export");
+  const returnType = declaration.returnType.name;
+  if (!runtimeRootTypeNeedsCleanup(returnType, program, semanticInfo)) {
+    reject(
+      `runtime initializer return type ${JSON.stringify(returnType)} does not own cleanup-bearing state`,
+      "return one owned value such as a OnceLifetime<T>, class, Mutex<T>, or Z struct containing the library's roots",
+    );
+  }
+  if (runtimeRootTypeContainsForeignValueStorage(returnType, program, semanticInfo)) {
+    reject(
+      `runtime initializer return type ${JSON.stringify(returnType)} contains a native by-value resource that is not yet supported in generated static runtime storage`,
+      "wrap the native value behind a Z class or keep it behind an owned native handle until placement construction lands",
+    );
+  }
+  const returnRequiresMain = runtimeRootTypeRequiresMain(
+    returnType,
+    program,
+    semanticInfo,
+  );
+  if (returnRequiresMain && !declaration.executorAffinity) {
+    reject(
+      `runtime initializer returning main-bound ${JSON.stringify(returnType)} must declare \`on thread.main\``,
+      `write \`function ${configured}(): ${returnType} on thread.main\``,
+    );
+  }
+  return {
+    functionName: declaration.name,
+    returnType,
+    requiresMainThread: Boolean(declaration.executorAffinity) || returnRequiresMain,
+  };
 }
 
 export type AnalysisOptions = {
@@ -425,18 +506,27 @@ export function compileToNative(
     ? null
     : projectBuild.targetName;
   validateEmbeddedRuntimePublicNames(program, embeddedRuntimeName, fileName);
+  const runtimeInitializer = embeddedRuntimeInitializer(
+    program,
+    semanticInfo,
+    projectBuild,
+    fileName,
+  );
   const synchronousSource = generateC(synchronousProgram, fileName, semanticInfo, {
     embeddedRuntimeName,
+    embeddedRuntimeInitializer: runtimeInitializer,
   });
+  const embeddedRuntimeRequiresMain = program.structs.some((declaration) => (
+    declaration.kind === "class"
+    && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
+  )) || Boolean(runtimeInitializer?.requiresMainThread);
   return {
     source: generated ? `${synchronousSource}\n${generated.source}\n` : synchronousSource,
     header: generateCHeader(
       program,
       embeddedRuntimeName,
-      program.structs.some((declaration) => (
-        declaration.kind === "class"
-        && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
-      )),
+      embeddedRuntimeRequiresMain,
+      embeddedRuntimeRequiresMain,
     ),
     targetKind: projectBuild.targetKind,
     targetName: projectBuild.targetName,

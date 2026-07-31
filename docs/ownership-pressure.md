@@ -1790,7 +1790,13 @@ host cannot silently finalize main-owned identity on an arbitrary worker. The
 hook is intentionally narrower than task scheduling: it queues one compiler-
 supplied finalizer exactly once. The handwritten `z-export` C consumer proves
 the lifecycle against both Stage-0 and fixed-point native emitters;
-`z-runtime-export` adds pthread entry and deterministic busy teardown.
+`z-runtime-export` now adds an explicit `target.runtime.initialize` root. Its
+main-bound initializer installs an `Application` in `Once`, returns the
+`OnceLifetime`, rejects worker-thread startup, survives a pthread export call,
+reports deterministic busy teardown, and releases the application exactly once
+at successful generated shutdown. This closed the embedding gap without
+introducing mutable module globals or module initialization order: the target
+owns one ordinary Z value, and a Z struct can compose additional roots.
 
 ## Not tested yet
 

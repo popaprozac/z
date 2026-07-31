@@ -8,6 +8,7 @@ export type ProjectBuild = {
   readonly manifestPath: string | null;
   readonly targetKind: "executable" | "static-library" | "shared-library";
   readonly targetName: string | null;
+  readonly runtimeInitializer: string | null;
   readonly entryPath: string | null;
   readonly deploymentTarget: DeploymentTarget | null;
   readonly includeDirectories: readonly string[];
@@ -30,6 +31,9 @@ type ProjectManifest = {
     readonly platform?: string;
     readonly minimumVersion?: string;
     readonly includeDirectories?: readonly string[];
+    readonly runtime?: {
+      readonly initialize?: string;
+    };
     readonly link?: {
       readonly directories?: readonly string[];
       readonly libraries?: readonly string[];
@@ -47,6 +51,7 @@ const emptyBuild: ProjectBuild = {
   manifestPath: null,
   targetKind: "executable",
   targetName: null,
+  runtimeInitializer: null,
   entryPath: null,
   deploymentTarget: null,
   includeDirectories: [],
@@ -96,12 +101,22 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
       "platform",
       "minimumVersion",
       "includeDirectories",
+      "runtime",
       "link",
       "swift",
     ],
     "target",
     fileName,
   );
+  if (target.runtime !== undefined) {
+    const runtime = projectObject(target.runtime, "target.runtime", fileName);
+    rejectUnknownProjectFields(
+      runtime,
+      ["initialize"],
+      "target.runtime",
+      fileName,
+    );
+  }
   if (target.link !== undefined) {
     const link = projectObject(target.link, "target.link", fileName);
     rejectUnknownProjectFields(
@@ -155,6 +170,31 @@ export function prepareProject(fileName: string): ProjectBuild {
   if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
     throw projectDiagnostic(fileName, "z.json target.name must be a portable artifact name");
   }
+  const runtimeInitializer = manifest.target?.runtime?.initialize ?? null;
+  if (manifest.target?.runtime !== undefined && runtimeInitializer === null) {
+    throw projectDiagnostic(
+      fileName,
+      "z.json target.runtime requires initialize",
+    );
+  }
+  if (
+    runtimeInitializer !== null
+    && (
+      typeof runtimeInitializer !== "string"
+      || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(runtimeInitializer)
+    )
+  ) {
+    throw projectDiagnostic(
+      fileName,
+      "z.json target.runtime.initialize must name a Z function in the target entry module",
+    );
+  }
+  if (runtimeInitializer !== null && targetKind === "executable") {
+    throw projectDiagnostic(
+      fileName,
+      "z.json target.runtime.initialize is only valid for static-library and shared-library targets",
+    );
+  }
   let entryPath: string | null = null;
   if (manifest.target?.entry !== undefined) {
     if (typeof manifest.target.entry !== "string" || !manifest.target.entry.endsWith(".zs")) {
@@ -184,6 +224,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     manifestPath,
     targetKind,
     targetName,
+    runtimeInitializer,
     entryPath,
     deploymentTarget,
     includeDirectories,

@@ -332,6 +332,7 @@ The optional configuration carries one deliberately narrow host hook:
 typedef struct zmath_runtime_config {
   void *context;
   zmath_runtime_enqueue_release enqueue_release;
+  zmath_runtime_is_main_thread is_main_thread;
 } zmath_runtime_config;
 ```
 
@@ -344,18 +345,80 @@ executor-bound class lifecycle; initialization then returns
 it as `0` and accept `NULL`. The hook may be called from any native thread and
 must be thread-safe; its `context` must remain valid until shutdown succeeds.
 
+`is_main_thread` proves that a host call is executing on the platform's main
+thread. Headers define `ZMATH_RUNTIME_REQUIRES_MAIN_THREAD` as `1` when the
+configured runtime owner or emitted class lifecycle is main-bound. Such a
+library rejects a missing proof hook as invalid configuration and returns
+`ZMATH_RUNTIME_WRONG_THREAD` when initialization is attempted elsewhere. Z also
+checks that queued finalization actually arrives on main. This is a
+thread-identity proof, not a scheduler; `enqueue_release` remains responsible
+for delivering final cleanup.
+
 Runtime entry has an intentional atomic accounting cost. Direct internal Z
 calls still target the private implementation rather than re-entering through
 the public wrapper, so the cost occurs only at the foreign boundary. A future
 proven stateless export mode may omit it, but the default embedding contract
 will not make safe shutdown depend on an undocumented host promise.
 
-This first lifecycle initializes and guards Z's generated runtime machinery; it
-does not yet synthesize arbitrary user module initialization or module-level
-destruction. Runtime-owned guards and explicit module startup/shutdown hooks are
-the next stateful-embedding layer. Until then, application state remains under
-an explicit Z owner such as `Once<T>` or a value whose `deinit` runs from an
-ordinary Z scope.
+### Owned runtime root
+
+A library may opt into one explicit ownership-bearing root in `z.json`:
+
+```json
+{
+  "target": {
+    "kind": "static-library",
+    "name": "zembed",
+    "entry": "library.zs",
+    "runtime": {
+      "initialize": "initializeRuntime"
+    }
+  }
+}
+```
+
+The named entry-module function returns the owner retained by the generated
+runtime:
+
+```z
+import { Once, OnceLifetime } from "std/sync";
+import { thread } from "std/thread";
+
+class Application on thread.main {
+  readonly name: String;
+
+  deinit {
+    // Library/application teardown.
+  }
+}
+
+const application = Once<Application>();
+
+function initializeRuntime(): OnceLifetime<Application> on thread.main {
+  return application.initialize(new Application({ name: "Embedded" }));
+}
+```
+
+`zembed_runtime_initialize()` calls this function and stores the returned
+`OnceLifetime<Application>`. `zembed_runtime_shutdown()` destroys that same
+owner after exported calls have left, so `Once` becomes unavailable and the
+application's `deinit` runs exactly once. This is the intended way for a C-ABI
+library to retain Z-owned services, registries, mutexes, callback connections,
+or application identity across separate native calls. A Z struct can compose
+several roots into the single returned owner.
+
+The first tier requires a zero-argument, synchronous, non-throwing,
+non-generic, ordinary Z function whose result needs cleanup. It cannot also be
+`export c`. Main-bound returned storage requires the initializer itself to end
+in `on thread.main`; the generated header then requires both host hooks above.
+Native by-value resources are temporarily rejected as direct root fields until
+placement construction lands; put them behind a Z class or owned native handle.
+
+This remains explicit target initialization, not implicit import execution.
+Z still has no module initialization order, module-level `let`, or arbitrary
+startup side effects. Value-only libraries can omit `target.runtime` entirely.
+The host must not re-enter a public Z export before initialization returns, and
+must keep the configuration context alive until shutdown succeeds.
 
 ## Growth path
 

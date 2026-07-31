@@ -141,6 +141,11 @@ These publish guarded headers beside their selected host-native artifacts. See
 [the C export design](docs/c-exports.md) for the implemented boundary and its
 ownership-aware growth path.
 
+Stateful libraries may additionally select one cleanup-bearing runtime root in
+`z.json`. The [`z-runtime-export`](examples/interop/c/z-runtime-export) example
+has generated initialization retain a main-bound `OnceLifetime<Application>`
+and generated shutdown destroy it after native callers have joined.
+
 The first native application composition probe is Z Notes:
 
 ```sh

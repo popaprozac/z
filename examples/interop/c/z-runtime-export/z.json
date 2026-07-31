@@ -3,6 +3,9 @@
     "kind": "static-library",
     "name": "zembed",
     "entry": "library.zs",
+    "runtime": {
+      "initialize": "initializeRuntime"
+    },
     "includeDirectories": ["."]
   }
 }
