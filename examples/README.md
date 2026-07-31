@@ -66,6 +66,9 @@ support or producing language-server diagnostics from hypothetical imports.
   `Once<T>`, read across a module boundary, and retrieved safely from a native
   worker whose unrestricted method reads `Mutex`-protected state while its UI
   member remains main-only.
+- [`zapp-skeleton`](applications/zapp-skeleton): a user-authored framework
+  composition probe with global application lookup, mutex-protected state,
+  dedicated worker work, and explicit result delivery to `thread.main`.
 - [`z-notes`](applications/z-notes): a native AppKit and SQLite application
   combining ARC state, Objective-C protocols and target/action, owned native
   handles, async loading on a dedicated worker, typed owned result transfer,

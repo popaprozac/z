@@ -181,6 +181,39 @@ test("places direct async calls without nested tasks and preserves parameter cap
   assert.equal(result.status, 0, result.stderr);
 });
 
+test("lowers direct placed void calls without inventing a frame result", () => {
+  const directory = mkdtempSync("/tmp/z-direct-executor-void-");
+  const fileName = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { thread } from "std/thread";
+
+      function publish(value: i32): void on thread.main {
+        if (value == 0) return;
+      }
+
+      async function main(): i32 on thread.main {
+        const worker = thread.spawn(async (): i32 => {
+          await on thread.main publish(42);
+          return 42;
+        });
+        const value = await worker;
+        return value - 42;
+      }
+    `;
+    writeFileSync(fileName, source);
+    const generated = compileToC(source, fileName);
+    assert.match(generated, /publish\(42\);/);
+    assert.doesNotMatch(generated, /->result\s*=\s*publish\(42\)/);
+    const result = spawnSync(process.execPath, [cli, "run", fileName], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("captures executor-placement blocks through explicit using capabilities", () => {
   const directory = mkdtempSync("/tmp/z-placement-using-");
   const fileName = resolve(directory, "main.zs");

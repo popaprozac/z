@@ -1998,11 +1998,17 @@ function createPlacementTarget(
     ?? "void";
   requireFrameType(successType, expression.returnType?.location ?? expression.location, fileName, "executor placement result", types);
   const body = expression.call
-    ? [{
-        kind: "return" as const,
-        expression: expression.call,
-        location: expression.call.location,
-      }]
+    ? successType === "void"
+      ? [{
+          kind: "expressionStatement" as const,
+          expression: expression.call,
+          location: expression.call.location,
+        }]
+      : [{
+          kind: "return" as const,
+          expression: expression.call,
+          location: expression.call.location,
+        }]
     : selected
       ? [
         ...expression.body.statements.slice(0, -1),
