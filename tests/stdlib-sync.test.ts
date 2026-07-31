@@ -1,0 +1,497 @@
+import {
+  assert,
+  cli,
+  compileToC,
+  completions,
+  diagnostics,
+  hover,
+  mkdtempSync,
+  resolve,
+  rmSync,
+  spawnSync,
+  test,
+  writeFileSync,
+} from "./support/bootstrap.ts";
+
+test("reads and mutates Mutex values through scoped synchronous closures", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-scoped-access-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct Counter {
+        value: i32;
+      }
+
+      function main(): i32 {
+        const counter = Mutex(Counter({ value: 40 }));
+        const before = counter.withLock(
+          (in value): i32 => value.value
+        );
+        counter.withLock((inout value): void => {
+          value.value = value.value + 2;
+        });
+        const after = counter.withLock(
+          (in value): i32 => value.value
+        );
+        return before - 40 + after - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const generated = compileToC(source, file);
+    assert.match(generated, /Mutex/);
+    assert.match(generated, /(?:pthread_mutex_lock|mtx_lock)/);
+    assert.match(generated, /(?:pthread_mutex_unlock|mtx_unlock)/);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+    assert.match(
+      native.stdout,
+      /native frontend hybrid exports [1-9]\d* expression type contracts/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("returns independent owned values from Mutex.withLock", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-owned-result-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct State {
+        title: String;
+      }
+
+      function snapshot(in state: Mutex<State>): String {
+        return state.withLock(
+          (in value): String => copy value.title
+        );
+      }
+
+      function main(): i32 {
+        const state = Mutex(State({ title: "ready" }));
+        const title = snapshot(in state);
+        return i32(title.byteLength) - 5;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("preserves Mutex payload identity across Z module boundaries", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-modules-");
+  const library = resolve(directory, "state.zs");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(library, `
+      import { Mutex } from "std/sync";
+
+      export struct Counter {
+        value: i32;
+      }
+
+      export function read(in state: Mutex<Counter>): i32 {
+        return state.withLock(
+          (in value): i32 => value.value
+        );
+      }
+    `);
+    writeFileSync(file, `
+      import { Mutex } from "std/sync";
+      import { Counter, read } from "./state.zs";
+
+      function main(): i32 {
+        const state = Mutex(Counter({ value: 42 }));
+        return read(in state) - 42;
+      }
+    `);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("stores Mutex state inside an ARC application object", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-class-field-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct State {
+        revision: i32;
+      }
+
+      class Application {
+        state: Mutex<State>;
+      }
+
+      function main(): i32 {
+        const application = new Application({
+          state: Mutex(State({ revision: 40 })),
+        });
+        application.state.withLock((inout value): void => {
+          value.revision = value.revision + 2;
+        });
+        const revision = application.state.withLock(
+          (in value): i32 => value.revision
+        );
+        return revision - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("unlocks Mutex values while propagating typed closure errors", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-throw-unlock-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct UpdateError {
+        code: i32;
+      }
+
+      struct Counter {
+        value: i32;
+      }
+
+      function fail(in counter: Mutex<Counter>): void throws UpdateError {
+        try counter.withLock(
+          (inout value): void throws UpdateError => {
+            value.value = 42;
+            throw UpdateError({ code: 7 });
+          }
+        );
+      }
+
+      function main(): i32 {
+        const counter = Mutex(Counter({ value: 0 }));
+        const outcome = attempt fail(in counter);
+        const errorCode = match (outcome) {
+          success => 0;
+          failure(error) => error.code;
+        };
+        const value = counter.withLock(
+          (in current): i32 => current.value
+        );
+        return errorCode - 7 + value - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("destroys a Mutex payload exactly once with its owner", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-cleanup-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import console from "std/console";
+      import { Mutex } from "std/sync";
+
+      struct Resource {
+        id: i32;
+
+        deinit {
+          console.log(\`released mutex resource \${this.id}\`);
+        }
+      }
+
+      function main(): i32 {
+        {
+          const resource = Mutex(Resource({ id: 42 }));
+          const observed = resource.withLock(
+            (in value): i32 => value.id
+          );
+          if (observed != 42) return 1;
+        }
+        return 0;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "released mutex resource 42\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("moves Mutex ownership and rejects explicit duplication", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-move-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct Counter {
+        value: i32;
+      }
+
+      function main(): i32 {
+        const first = Mutex(Counter({ value: 42 }));
+        const second = move first;
+        const observed = second.withLock(
+          (in value): i32 => value.value
+        );
+        return observed - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const copied = diagnostics(`
+    import { Mutex } from "std/sync";
+
+    struct Counter {
+      value: i32;
+    }
+
+    function main(): i32 {
+      const first = Mutex(Counter({ value: 42 }));
+      const second = copy first;
+      return second.withLock((in value): i32 => value.value);
+    }
+  `, "/tmp/z-mutex-copy.zs")[0];
+  assert.match(
+    copied?.message ?? "",
+    /cannot copy.*Mutex|Mutex.*cannot.*cop|Mutex.*move-only/i,
+  );
+});
+
+test("rejects borrowed Mutex results and async lock closures", () => {
+  const escapingView = `
+    import { Mutex } from "std/sync";
+
+    struct Item {
+      id: i32;
+      deinit {}
+    }
+
+    struct State {
+      item: Item;
+    }
+
+    function main(): i32 {
+      const state = Mutex(State({ item: Item({ id: 42 }) }));
+      const escaped = state.withLock(
+        (in value): view Item => value.item
+      );
+      return escaped.id;
+    }
+  `;
+  const viewDiagnostic = diagnostics(
+    escapingView,
+    "/tmp/z-mutex-view-escape.zs",
+  )[0];
+  assert.match(
+    viewDiagnostic?.message ?? "",
+    /(?:view|borrowed).*cannot (?:escape|leave).*Mutex|Mutex\.withLock.*(?:view|borrowed).*non-escaping/i,
+  );
+
+  const asyncClosure = `
+    import { Mutex } from "std/sync";
+
+    struct State {
+      value: i32;
+    }
+
+    async function main(): i32 {
+      const state = Mutex(State({ value: 42 }));
+      return await state.withLock(
+        async (in value): i32 => value.value
+      );
+    }
+  `;
+  const asyncDiagnostic = diagnostics(
+    asyncClosure,
+    "/tmp/z-mutex-async-closure.zs",
+  )[0];
+  assert.match(
+    asyncDiagnostic?.message ?? "",
+    /Mutex\.withLock.*(?:synchronous|cannot suspend|does not accept an async closure)|async closure.*Mutex/i,
+  );
+
+  const crossThreadCapture = `
+    import { Mutex } from "std/sync";
+    import { thread } from "std/thread";
+
+    struct State {
+      value: i32;
+    }
+
+    async function main(): i32 {
+      const state = Mutex(State({ value: 42 }));
+      const worker = thread.spawn(
+        move (): i32 => state.withLock(
+          (in value): i32 => value.value
+        )
+      );
+      return await worker;
+    }
+  `;
+  const transferDiagnostic = diagnostics(
+    crossThreadCapture,
+    "/tmp/z-mutex-thread-transfer.zs",
+  )[0];
+  assert.match(
+    transferDiagnostic?.message ?? "",
+    /Mutex<State>.*cannot cross a native thread boundary/,
+  );
+});
+
+test("uses a synchronous Mutex critical section inside an async function", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-async-body-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct State {
+        value: i32;
+      }
+
+      async function inspect(in state: Mutex<State>): i32 {
+        return state.withLock(
+          (in value): i32 => value.value
+        );
+      }
+
+      async function main(): i32 {
+        const state = Mutex(State({ value: 42 }));
+        return await inspect(in state) - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("surfaces Mutex imports, inferred closure parameters, methods, and results in the editor", () => {
+  const source = `
+    import { Mutex } from "std/sync";
+
+    struct Counter {
+      value: i32;
+    }
+
+    function main(): i32 {
+      const counter = Mutex(Counter({ value: 40 }));
+      const observed = counter.withLock(
+        (in value): i32 => value.value
+      );
+      counter.withLock((inout value): void => {
+        value.value = value.value + 2;
+      });
+      return observed;
+    }
+  `;
+  const file = "/tmp/z-mutex-editor.zs";
+
+  assert.match(
+    hover(source, file, source.indexOf("Mutex(Counter") + 1)
+      ?.contents.value ?? "",
+    /Mutex<T>.*synchronous.*lock/i,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("counter =") + 1)
+      ?.contents.value ?? "",
+    /counter: Mutex<Counter>/,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("withLock") + 1)
+      ?.contents.value ?? "",
+    /withLock.*(?:in|inout).*Counter/s,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("value): i32") + 1)
+      ?.contents.value ?? "",
+    /value: Counter/,
+  );
+  assert.match(
+    hover(source, file, source.indexOf("observed =") + 1)
+      ?.contents.value ?? "",
+    /observed: i32/,
+  );
+
+  const memberSource = source.replace(
+    "const observed = counter.withLock(",
+    "const observed = counter.withL(",
+  );
+  const memberOffset = memberSource.indexOf("counter.withL")
+    + "counter.withL".length;
+  assert.match(
+    completions(memberSource, file, memberOffset)
+      .find((item) => item.label === "withLock")?.detail ?? "",
+    /withLock/,
+  );
+
+  const importSource = `
+    import { Mut } from "std/sync";
+    function main(): i32 { return 0; }
+  `;
+  const importOffset = importSource.indexOf("Mut }") + 3;
+  assert.equal(
+    completions(importSource, file, importOffset)
+      .find((item) => item.label === "Mutex")?.kind,
+    22,
+  );
+});

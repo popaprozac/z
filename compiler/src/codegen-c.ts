@@ -22,6 +22,7 @@ import type {
   ForeignStatusCallInfo,
   IntegerConversion,
   IntegerOperation,
+  MutexWithLockCallInfo,
   ObjCBindingPlan,
   ObjCProtocolConformance,
   OptionalChainPlan,
@@ -65,6 +66,7 @@ import {
   parseOnceLifetimeType,
   parseOnceType,
 } from "./once-types.ts";
+import { parseMutexType } from "./mutex-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -196,6 +198,8 @@ export function generateC(
   const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
+  const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
+  const usesMutex = mutexValueTypes.length > 0;
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
@@ -351,6 +355,17 @@ export function generateC(
       "#endif",
     );
   }
+  if (usesMutex) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "#include <windows.h>",
+      "#else",
+      "#include <pthread.h>",
+      "#endif",
+    );
+    includedHeaders.add("windows.h");
+    includedHeaders.add("pthread.h");
+  }
 
   const usesString = programUsesString(program, semanticInfo);
   if (
@@ -475,6 +490,23 @@ export function generateC(
       `} ${onceLifetimeName(valueType)};`,
     );
   }
+  if (usesMutex) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "typedef SRWLOCK Z_NativeMutex;",
+      "#else",
+      "typedef pthread_mutex_t Z_NativeMutex;",
+      "#endif",
+    );
+  }
+  for (const valueType of mutexValueTypes) {
+    lines.push(
+      `typedef struct ${mutexStorageName(valueType)} ${mutexStorageName(valueType)};`,
+      `typedef struct ${mutexName(valueType)} {`,
+      `  ${mutexStorageName(valueType)} *storage;`,
+      `} ${mutexName(valueType)};`,
+    );
+  }
   if (
     program.structs.length > 0
     || program.enums.length > 0
@@ -483,6 +515,7 @@ export function generateC(
     || dynamicArrayTypes.length > 0
     || generatorTypes.length > 0
     || onceValueTypes.length > 0
+    || mutexValueTypes.length > 0
   ) lines.push("");
 
   if (program.structs.some((declaration) => declaration.kind === "class")) {
@@ -522,6 +555,15 @@ export function generateC(
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const valueType of mutexValueTypes) {
+    lines.push(
+      `struct ${mutexStorageName(valueType)} {`,
+      "  Z_NativeMutex native;",
+      `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value;`,
+      "};",
+      "",
+    );
+  }
   for (const declaration of program.constants) {
     lines.push(generateModuleConstant(declaration, structs, enums, semanticInfo));
   }
@@ -573,6 +615,15 @@ export function generateC(
       `static void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime);`,
     );
   }
+  for (const valueType of mutexValueTypes) {
+    lines.push(
+      `static ${mutexName(valueType)} ${mutexInitializeName(valueType)}(${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value);`,
+      `static void ${mutexDeinitName(valueType)}(${mutexName(valueType)} *mutex);`,
+    );
+  }
+  for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
+    lines.push(`${generateMutexWithLockSignature(offset, call, structs, enums, semanticInfo)};`);
+  }
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
@@ -595,6 +646,12 @@ export function generateC(
 
   for (const valueType of onceValueTypes) {
     lines.push(generateOnceRuntime(valueType, structs, enums, semanticInfo), "");
+  }
+  for (const valueType of mutexValueTypes) {
+    lines.push(generateMutexRuntime(valueType, structs, enums, semanticInfo), "");
+  }
+  for (const [offset, call] of semanticInfo.mutexWithLockCalls) {
+    lines.push(generateMutexWithLockHelper(offset, call, structs, enums, semanticInfo), "");
   }
 
   for (const adapter of foreignCallbackAdapters) {
@@ -793,6 +850,92 @@ static __attribute__((unused)) void ${onceLifetimeDeinitName(valueType)}(${onceL
   cell->value = NULL;
   cell->state = 2;
   ${releaseName(valueType)}(value);
+}`;
+}
+
+function generateMutexRuntime(
+  valueType: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const valueCType = mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const cleanup = generateOwnedEnvironmentCleanup(
+    "storage->value",
+    valueType,
+    structs,
+    enums,
+    semanticInfo,
+    { value: 0 },
+  );
+  return `static __attribute__((unused)) ${mutexName(valueType)} ${mutexInitializeName(valueType)}(${valueCType} value) {
+  ${mutexStorageName(valueType)} *storage = (${mutexStorageName(valueType)} *)calloc(1, sizeof(${mutexStorageName(valueType)}));
+  if (storage == NULL) abort();
+#if defined(_WIN32)
+  InitializeSRWLock(&storage->native);
+#else
+  if (pthread_mutex_init(&storage->native, NULL) != 0) {
+    free(storage);
+    abort();
+  }
+#endif
+  storage->value = value;
+  return (${mutexName(valueType)}){ .storage = storage };
+}
+
+static __attribute__((unused)) void ${mutexDeinitName(valueType)}(${mutexName(valueType)} *mutex) {
+  if (mutex == NULL || mutex->storage == NULL) return;
+  ${mutexStorageName(valueType)} *storage = mutex->storage;
+  mutex->storage = NULL;
+#if !defined(_WIN32)
+  if (pthread_mutex_destroy(&storage->native) != 0) abort();
+#endif
+${cleanup ? `${indent(cleanup, 2)}\n` : ""}  free(storage);
+}`;
+}
+
+function generateMutexWithLockSignature(
+  offset: number,
+  call: MutexWithLockCallInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const effectiveReturn = call.errorType
+    ? resultTypeName(call.returnType, call.errorType)
+    : call.returnType;
+  return `static ${mapType(effectiveReturn, structs, enums, semanticInfo.foreignNamedTypes)} ${mutexWithLockName(offset)}(${mutexName(call.valueType)} mutex, ${mapType(call.functionType, structs, enums, semanticInfo.foreignNamedTypes)} callback)`;
+}
+
+function generateMutexWithLockHelper(
+  offset: number,
+  call: MutexWithLockCallInfo,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const effectiveReturn = call.errorType
+    ? resultTypeName(call.returnType, call.errorType)
+    : call.returnType;
+  const invoke = `callback.call(callback.context, &(mutex.storage->value))`;
+  const body = effectiveReturn === "void"
+    ? `${invoke};`
+    : `${mapType(effectiveReturn, structs, enums, semanticInfo.foreignNamedTypes)} result = ${invoke};`;
+  const returned = effectiveReturn === "void" ? "return;" : "return result;";
+  return `${generateMutexWithLockSignature(offset, call, structs, enums, semanticInfo)} {
+  if (mutex.storage == NULL || callback.call == NULL) abort();
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&mutex.storage->native);
+#else
+  if (pthread_mutex_lock(&mutex.storage->native) != 0) abort();
+#endif
+  ${body}
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&mutex.storage->native);
+#else
+  if (pthread_mutex_unlock(&mutex.storage->native) != 0) abort();
+#endif
+  ${returned}
 }`;
 }
 
@@ -1334,6 +1477,58 @@ function collectOnceValueTypes(program: Program, semanticInfo: SemanticInfo): st
       if (variant.payload) add(variant.payload.name);
     }
   }
+  for (const type of semanticInfo.expressionTypes.values()) add(type);
+  for (const type of semanticInfo.bindingTypes.values()) add(type);
+  return [...collected];
+}
+
+function collectMutexValueTypes(program: Program, semanticInfo: SemanticInfo): string[] {
+  const collected = new Set<string>([
+    ...semanticInfo.mutexConstructors.values(),
+    ...[...semanticInfo.mutexWithLockCalls.values()].map((call) => call.valueType),
+  ]);
+  const add = (name: string): void => {
+    const mutex = parseMutexType(name);
+    if (mutex) {
+      collected.add(mutex.valueType);
+      add(mutex.valueType);
+      return;
+    }
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) add(parameter.type);
+      add(functionType.returnType);
+      if (functionType.errorType) add(functionType.errorType);
+      return;
+    }
+    const fixed = parseFixedArrayType(name);
+    if (fixed) add(fixed.elementType);
+    const slice = parseSliceType(name);
+    if (slice) add(slice.elementType);
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) add(dynamic.elementType);
+    const option = parseOptionType(name);
+    if (option) add(option.target);
+    const map = parseMapType(name);
+    if (map) {
+      add(map.keyType);
+      add(map.valueType);
+    }
+    const set = parseSetType(name);
+    if (set) add(set.elementType);
+  };
+  const visit = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    for (const child of Object.values(value as Record<string, unknown>)) {
+      if (typeof child === "string") add(child);
+      else visit(child);
+    }
+  };
+  visit(program);
   for (const type of semanticInfo.expressionTypes.values()) add(type);
   for (const type of semanticInfo.bindingTypes.values()) add(type);
   return [...collected];
@@ -2166,6 +2361,8 @@ function generateOwnedEnvironmentCleanup(
   if (type === "Arena") return `z_arena_reset(&(${value}));`;
   if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (type === "TaskControl") return `z_task_control_release(${value});`;
+  const mutex = parseMutexType(type);
+  if (mutex) return `${mutexDeinitName(mutex.valueType)}(&(${value}));`;
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) return `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
   if (type === fsLockTypeName || type === "fs.Lock") {
@@ -6272,6 +6469,11 @@ function generateValueCleanup(
     const release = `z_task_control_release(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  const mutex = parseMutexType(type);
+  if (mutex) {
+    const release = `${mutexDeinitName(mutex.valueType)}(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) {
     const release = `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
@@ -6488,6 +6690,10 @@ function throwingCallResultType(expression: Expression, context: GenerationConte
     return resultTypeName(target.returnType.name, target.errorType!.name);
   }
   if (expression.kind === "call" && expression.callee.kind === "member") {
+    const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
+    if (mutexWithLock?.errorType) {
+      return resultTypeName(mutexWithLock.returnType, mutexWithLock.errorType);
+    }
     const standard = context.semanticInfo.standardFunctionReferences.get(expression.callee.location.offset);
     if (standard) {
       const signature = standardFunctionSignature(standard);
@@ -7655,6 +7861,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
+      }
+      const mutexConstructor = context.semanticInfo.mutexConstructors.get(expression.location.offset);
+      if (mutexConstructor) {
+        return `${mutexInitializeName(mutexConstructor)}(${generateExpression(expression.arguments[0], context)})`;
+      }
+      const mutexWithLock = context.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
+      if (mutexWithLock && expression.callee.kind === "member") {
+        return `${mutexWithLockName(expression.location.offset)}(${generateExpression(expression.callee.object, context)}, ${generateCallArgument(expression.arguments[0], context)})`;
       }
       const onceInitialize = context.semanticInfo.onceInitializeCalls.get(expression.location.offset);
       if (onceInitialize && expression.callee.kind === "member") {
@@ -9184,6 +9398,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     || parseWeakType(analyzedType)
     || parseWeakResultType(analyzedType)
     || parseViewType(analyzedType)
+    || parseMutexType(analyzedType)
     || parseOnceType(analyzedType)
     || parseOnceLifetimeType(analyzedType)
     || context.structs.has(analyzedType)
@@ -9435,6 +9650,8 @@ function mapType(
   if (once) return onceName(once.valueType);
   const onceLifetime = parseOnceLifetimeType(name);
   if (onceLifetime) return onceLifetimeName(onceLifetime.valueType);
+  const mutex = parseMutexType(name);
+  if (mutex) return mutexName(mutex.valueType);
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (parseFixedArrayType(name)) return arrayName(name);
@@ -9560,6 +9777,26 @@ function onceLifetimeDeinitName(valueType: string): string {
   return `z_once_lifetime_${nativeSymbolPart(valueType)}_deinit`;
 }
 
+function mutexName(valueType: string): string {
+  return `Z_Mutex_${nativeSymbolPart(valueType)}`;
+}
+
+function mutexStorageName(valueType: string): string {
+  return `${mutexName(valueType)}_Storage`;
+}
+
+function mutexInitializeName(valueType: string): string {
+  return `z_mutex_${nativeSymbolPart(valueType)}_initialize`;
+}
+
+function mutexDeinitName(valueType: string): string {
+  return `z_mutex_${nativeSymbolPart(valueType)}_deinit`;
+}
+
+function mutexWithLockName(offset: number): string {
+  return `z_mutex_with_lock_${offset}`;
+}
+
 function arrayName(name: string): string {
   return `Z_Array_${nativeSymbolPart(name)}`;
 }
@@ -9675,6 +9912,7 @@ function hasCleanupType(
     || type === "Arena"
     || type === "TaskScope"
     || type === "TaskControl"
+    || Boolean(parseMutexType(type))
     || Boolean(parseOnceLifetimeType(type))
     || type === fsLockTypeName
     || type === "fs.Lock"
@@ -9711,6 +9949,7 @@ function hasSemanticCleanupType(
 ): boolean {
   if (visiting.has(type)) return false;
   if (parseGeneratorType(type)) return true;
+  if (parseMutexType(type)) return true;
   const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
   if (foreignNamed?.kind === "object" || (foreignNamed?.kind === "record" && foreignNamed.resource)) return true;
   if (hasCleanupType(type, structs, enums, semanticInfo.foreignTypes)) return true;

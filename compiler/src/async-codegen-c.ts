@@ -22,6 +22,7 @@ import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseOnceLifetimeType } from "./once-types.ts";
+import { parseMutexType } from "./mutex-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
 import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
 import {
@@ -6598,6 +6599,14 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      const mutexConstructor = plan.types.semanticInfo.mutexConstructors.get(expression.location.offset);
+      if (mutexConstructor) {
+        return `${asyncMutexInitializeName(mutexConstructor)}(${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
+      const mutexWithLock = plan.types.semanticInfo.mutexWithLockCalls.get(expression.location.offset);
+      if (mutexWithLock && expression.callee.kind === "member") {
+        return `${asyncMutexWithLockName(expression.location.offset)}(${emitFrameExpression(expression.callee.object, plan, fileName)}, ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
       const onceInitialize = plan.types.semanticInfo.onceInitializeCalls.get(expression.location.offset);
       if (onceInitialize && expression.callee.kind === "member") {
         return `${asyncOnceInitializeName(onceInitialize)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
@@ -6998,6 +7007,8 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (type === "TaskControl") return "Z_TaskControl *";
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) return asyncOnceLifetimeName(onceLifetime.valueType);
+  const mutex = parseMutexType(type);
+  if (mutex) return asyncMutexName(mutex.valueType);
   if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
   const view = parseViewType(type);
   if (view) return `const ${cFrameType(view.target, types)} *`;
@@ -7038,6 +7049,22 @@ function asyncOnceLifetimeDeinitName(valueType: string): string {
   return `z_once_lifetime_${asyncNativeSymbolPart(valueType)}_deinit`;
 }
 
+function asyncMutexName(valueType: string): string {
+  return `Z_Mutex_${asyncNativeSymbolPart(valueType)}`;
+}
+
+function asyncMutexInitializeName(valueType: string): string {
+  return `z_mutex_${asyncNativeSymbolPart(valueType)}_initialize`;
+}
+
+function asyncMutexDeinitName(valueType: string): string {
+  return `z_mutex_${asyncNativeSymbolPart(valueType)}_deinit`;
+}
+
+function asyncMutexWithLockName(offset: number): string {
+  return `z_mutex_with_lock_${offset}`;
+}
+
 function asyncGeneratorCName(type: string): string {
   return `Z_AsyncGenerator_${asyncNativeSymbolPart(type)}`;
 }
@@ -7065,6 +7092,8 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (type === "TaskScope") return true;
   if (type === "TaskControl") return true;
   if (parseOnceLifetimeType(type)) return true;
+  const mutex = parseMutexType(type);
+  if (mutex) return isSupportedFrameType(mutex.valueType, types, visiting);
   if (parseAsyncGeneratorType(type)) return true;
   if (parseViewType(type)) return true;
   if (scalarTypes.has(type)) return true;
@@ -7108,6 +7137,7 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (parseAsyncGeneratorType(type)) return true;
   if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
   if (parseOnceLifetimeType(type)) return true;
+  if (parseMutexType(type)) return true;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
@@ -7151,6 +7181,10 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   const onceLifetime = parseOnceLifetimeType(type);
   if (onceLifetime) {
     return `${asyncOnceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
+  }
+  const mutex = parseMutexType(type);
+  if (mutex) {
+    return `${asyncMutexDeinitName(mutex.valueType)}(&(${value}));`;
   }
   if (
     types.semanticInfo.foreignObjectTypes.has(type)

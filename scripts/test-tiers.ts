@@ -12,6 +12,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
     files: [
       "tests/language-core.test.ts",
       "tests/module-constants.test.ts",
+      "tests/stdlib-sync.test.ts",
       "tests/stdlib-collections.test.ts",
       "tests/generators-errors.test.ts",
       "tests/testing.test.ts",

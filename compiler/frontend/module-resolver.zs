@@ -273,6 +273,63 @@ function addUniqueString(inout values: Array<String>, in value: String): void {
   }
 }
 
+function importedStandardType(
+  in module: ParsedModule,
+  in localName: String,
+  in header: String,
+  in importedName: String
+): boolean {
+  for (const declaration of module.program.imports) {
+    if (declaration.header != header || !declaration.selective) continue;
+    for (const binding of declaration.bindings) {
+      if (
+        binding.localName == localName
+        && binding.importedName == importedName
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function mutexPayloadSupported(in typeName: String): boolean {
+  if (
+    typeName == "void"
+    || stringStartsWith(typeName, "view ")
+    || stringStartsWith(typeName, "Slice<")
+  ) return false;
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      if (
+        generic.base == "Once"
+        || generic.base == "OnceLifetime"
+        || generic.base == "Mutex"
+        || generic.base == "Task"
+      ) return false;
+      for (const argument of generic.arguments) {
+        if (!mutexPayloadSupported(argument)) return false;
+      }
+    }
+    none => {}
+  }
+  return true;
+}
+
+function mutexResultBorrowsProtectedStorage(in typeName: String): boolean {
+  if (
+    stringStartsWith(typeName, "view ")
+    || stringStartsWith(typeName, "Slice<")
+  ) return true;
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        if (mutexResultBorrowsProtectedStorage(argument)) return true;
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 function inferMatchArmStatementType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -3528,6 +3585,121 @@ function inferExpressionNodeType(
           node.column
         );
       }
+      let mutexBindingName = base.copyBytes(0, base.byteLength);
+      match (genericTypeShape(callee)) {
+        some(generic) => mutexBindingName = generic.base.copyBytes(
+          0,
+          generic.base.byteLength
+        );
+        none => {}
+      }
+      if (importedStandardType(
+        module,
+        mutexBindingName,
+        "std/sync",
+        "Mutex"
+      )) {
+        const arguments = callArgumentNodes(children);
+        if (arguments.length != 1) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "Mutex<T>(value) expects exactly one value",
+            node.line,
+            node.column
+          );
+        }
+        const argument = arguments[0];
+        let valueType = "";
+        match (genericTypeShape(callee)) {
+          some(mutex) => {
+            if (mutex.arguments.length != 1) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `Mutex expects one type argument, received ${mutex.arguments.length}`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
+            valueType = mutex.arguments[0].copyBytes(
+              0,
+              mutex.arguments[0].byteLength
+            );
+          }
+          none => {}
+        }
+        const actual = try inferExpressionNodeTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          argument,
+          valueType,
+          inout bindings,
+          inout evidence
+        );
+        try requireSettledExpressionType(module, tree, argument, actual);
+        if (valueType.byteLength == 0) {
+          valueType = actual.copyBytes(0, actual.byteLength);
+        } else {
+          try requireExpressionType(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            argument,
+            valueType,
+            actual
+          );
+        }
+        if (!mutexPayloadSupported(valueType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `Mutex cannot own ${valueType} in the first synchronization tier`,
+            tree.nodes[calleeIndex].line,
+            tree.nodes[calleeIndex].column
+          );
+        }
+        let visiting = Array<String>();
+        const root = expressionStorageRootName(tree, argument);
+        const explicitMove = tree.nodes[argument].kind
+            == ExpressionKind.unaryExpression
+          && tree.nodes[argument].value == "move";
+        if (
+          root.byteLength > 0
+          && typeHasCleanup(
+            modules,
+            moduleIndex,
+            valueType,
+            visiting
+          )
+          && !explicitMove
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "initializing Mutex from an existing owner requires an explicit move",
+            tree.nodes[argument].line,
+            tree.nodes[argument].column
+          );
+        }
+        try consumeOwnedExpressionNode(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          argument,
+          valueType,
+          false,
+          inout bindings
+        );
+        let typeArguments = Array<String>();
+        typeArguments.push(valueType);
+        return parameterizedTypeName("Mutex", typeArguments);
+      }
       if (base == "Array") {
         match (genericTypeShape(callee)) {
           some(array) => {
@@ -3824,6 +3996,182 @@ function inferExpressionNodeType(
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        match (genericTypeShape(ownerType)) {
+          some(mutex) => {
+            if (mutex.base == "Mutex" && mutex.arguments.length == 1) {
+              if (methodName != "withLock") {
+                throw resolutionError(
+                  ModuleResolveErrorKind.unknownMember,
+                  module.path,
+                  `Mutex has no method "${methodName}"`,
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
+              if (optionalMethodCall) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "optional call cannot invoke Mutex.withLock; unwrap the Mutex first",
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
+              const receiverRoot = expressionStorageRootName(
+                tree,
+                receiverIndex
+              );
+              if (receiverRoot.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Mutex.withLock requires stable named storage",
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              const argumentNodes = callArgumentNodes(children);
+              if (
+                argumentNodes.length != 1
+                || tree.nodes[argumentNodes[0]].kind
+                  != ExpressionKind.closureExpression
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Mutex.withLock expects one inline closure",
+                  node.line,
+                  node.column
+                );
+              }
+              const closureIndex = argumentNodes[0];
+              let parameterNodes = Array<usize>();
+              for (const child of tree.nodes[closureIndex].children) {
+                if (
+                  tree.nodes[child].kind
+                    == ExpressionKind.closureParameterExpression
+                ) parameterNodes.push(child);
+              }
+              if (parameterNodes.length != 1) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `Mutex.withLock expects one closure parameter, found ${parameterNodes.length}`,
+                  tree.nodes[closureIndex].line,
+                  tree.nodes[closureIndex].column
+                );
+              }
+              const parameterIndex = parameterNodes[0];
+              const mode = tree.nodes[parameterIndex].labels[0].copyBytes(
+                0,
+                tree.nodes[parameterIndex].labels[0].byteLength
+              );
+              if (mode != "in" && mode != "inout") {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Mutex.withLock closure parameters require `in` or `inout`",
+                  tree.nodes[parameterIndex].line,
+                  tree.nodes[parameterIndex].column
+                );
+              }
+              let returnType = "";
+              let errorType = "";
+              if (tree.nodes[closureIndex].labels.length > 0) {
+                returnType = tree.nodes[closureIndex].labels[0].copyBytes(
+                  0,
+                  tree.nodes[closureIndex].labels[0].byteLength
+                );
+              }
+              if (tree.nodes[closureIndex].labels.length > 1) {
+                errorType = tree.nodes[closureIndex].labels[1].copyBytes(
+                  0,
+                  tree.nodes[closureIndex].labels[1].byteLength
+                );
+              }
+              if (mutexResultBorrowsProtectedStorage(returnType)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "a borrowed value cannot escape Mutex.withLock",
+                  tree.nodes[closureIndex].line,
+                  tree.nodes[closureIndex].column
+                );
+              }
+              let parameterModes = Array<String>();
+              parameterModes.push(mode);
+              let parameterTypes = Array<String>();
+              parameterTypes.push(mutex.arguments[0].copyBytes(
+                0,
+                mutex.arguments[0].byteLength
+              ));
+              const contextualReturnType = returnType.byteLength == 0
+                ? "__z_native_infer_return"
+                : returnType.copyBytes(0, returnType.byteLength);
+              const contextualType = nativeClosureFunctionType(
+                tree,
+                closureIndex,
+                parameterModes,
+                parameterTypes,
+                contextualReturnType,
+                errorType
+              );
+              const closureType = try inferExpressionNodeTypeExpected(
+                module,
+                modules,
+                moduleIndex,
+                arena,
+                tree,
+                closureIndex,
+                contextualType,
+                inout bindings,
+                inout evidence
+              );
+              const closureSignature = match (
+                nativeFunctionSignature(closureType)
+              ) {
+                some(signature) => signature;
+                none => throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Mutex.withLock could not resolve its closure signature",
+                  tree.nodes[closureIndex].line,
+                  tree.nodes[closureIndex].column
+                );
+              };
+              returnType = closureSignature.returnType.copyBytes(
+                0,
+                closureSignature.returnType.byteLength
+              );
+              errorType = closureSignature.errorType.copyBytes(
+                0,
+                closureSignature.errorType.byteLength
+              );
+              if (mutexResultBorrowsProtectedStorage(returnType)) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "a borrowed value cannot escape Mutex.withLock",
+                  tree.nodes[closureIndex].line,
+                  tree.nodes[closureIndex].column
+                );
+              }
+              recordExpressionResolution(
+                modules,
+                moduleIndex,
+                tree,
+                closureIndex,
+                closureType,
+                inout evidence
+              );
+              if (errorType.byteLength > 0) {
+                return pendingThrowingCallType(returnType, errorType);
+              }
+              return returnType;
+            }
+          }
+          none => {}
+        }
         match (collectionMethodSignature(ownerType, methodName)) {
           some(signature) => {
             let receiverRoot = "";

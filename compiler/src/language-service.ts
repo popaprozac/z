@@ -42,6 +42,7 @@ import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
+import { parseMutexType } from "./mutex-types.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
 import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion, ObjCCallInfo } from "./sema.ts";
@@ -1054,6 +1055,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceLifetime") {
     return markdownHover("OnceLifetime<T>  // move-only guard for one initialized Once<T> interval", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Mutex") {
+    return markdownHover(
+      "Mutex<T>(value: T): Mutex<T>  // move-only synchronized storage with a synchronous scoped lock",
+      source,
+      word.start,
+      word.end,
+    );
+  }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
@@ -1303,6 +1312,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           ? `get(): ${value} on thread.main\n// returns a retained class identity; traps when no initialized interval is active`
           : null;
       if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    if (resolved?.kind === "mutex" && word.text === "withLock") {
+      const value = displayType(resolved.valueType, context.typeDisplayNames);
+      return markdownHover(
+        [
+          `withLock<R>((in value: ${value}) => R): R`,
+          `withLock<R>((inout value: ${value}) => R): R`,
+          "// blocks the current OS thread; the protected borrow cannot escape or suspend",
+        ].join("\n"),
+        source,
+        word.start,
+        word.end,
+      );
     }
     if (resolved?.kind === "fsLock" && word.text === "unlock") {
       return markdownHover(
@@ -1688,6 +1710,11 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
   }
   if (specifier === "std/sync") {
     return [
+      {
+        label: "Mutex",
+        kind: completionKinds.struct,
+        detail: "Mutex<T>(value: T)  // move-only synchronized storage",
+      },
       {
         label: "Once",
         kind: completionKinds.struct,
@@ -2134,6 +2161,23 @@ function declaredBindingType(source: string, name: string, offset: number): stri
   return initializers.at(-1)?.[1]?.trim() ?? null;
 }
 
+function recoveredMutexBindingType(source: string, name: string, offset: number): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const before = source.slice(0, offset);
+  const explicit = [...before.matchAll(new RegExp(
+    `\\b(?:const|let)\\s+${escaped}\\s*=\\s*Mutex\\s*<\\s*([^;{}]+?)\\s*>\\s*\\(`,
+    "g",
+  ))].at(-1)?.[1]?.trim();
+  if (explicit) return explicit;
+  const constructed = [...before.matchAll(new RegExp(
+    `\\b(?:const|let)\\s+${escaped}\\s*=\\s*Mutex\\s*\\(\\s*(?:move\\s+)?(?:new\\s+)?([A-Za-z_][A-Za-z0-9_.]*(?:<[^;=(){}]+>)?)\\s*\\(`,
+    "g",
+  ))].at(-1)?.[1]?.trim();
+  if (constructed) return constructed;
+  const annotated = parseMutexType(declaredBindingType(source, name, offset) ?? "");
+  return annotated?.valueType ?? null;
+}
+
 function symbolCompletions(
   source: string,
   fileName: string,
@@ -2152,7 +2196,7 @@ function symbolCompletions(
     for (const declaration of parsed.imports) {
       if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -2177,6 +2221,8 @@ function symbolCompletions(
                           ? "statically empty main-affine one-time class root"
                         : binding.importedName === "OnceLifetime"
                           ? "move-only initialized-interval guard"
+                        : binding.importedName === "Mutex"
+                          ? "move-only synchronized storage"
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
@@ -2384,6 +2430,8 @@ function symbolCompletions(
                     ? "Once<T>()  // statically empty main-affine one-time class root"
                   : standardType === "OnceLifetime"
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
+                  : standardType === "Mutex"
+                    ? "Mutex<T>(value: T)  // move-only synchronized storage"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -4209,6 +4257,14 @@ function memberCompletions(
       1000,
     );
   }
+  const recoveredMutex = recoveredMutexBindingType(source, receiverText, receiverOffset);
+  if (recoveredMutex) {
+    return filterCompletions(
+      mutexCompletions(recoveredMutex, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
   if (directReceiver?.kind === "arena") {
@@ -4245,6 +4301,13 @@ function memberCompletions(
   }
   if (directReceiver?.kind === "set") {
     return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
+  }
+  if (directReceiver?.kind === "mutex") {
+    return filterCompletions(
+      mutexCompletions(directReceiver.valueType, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
   }
   if (directReceiver?.kind === "generator") {
     return filterCompletions([{
@@ -4625,6 +4688,13 @@ function memberCompletions(
       1000,
     );
   }
+  if (resolved?.kind === "mutex") {
+    return filterCompletions(
+      mutexCompletions(resolved.valueType, context.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   if (resolved?.kind === "fsLock") {
     return filterCompletions([{
       label: "unlock",
@@ -4975,6 +5045,7 @@ type ResolvedReceiver =
   | { readonly kind: "taskScope" }
   | { readonly kind: "taskControl" }
   | { readonly kind: "once"; readonly valueType: string }
+  | { readonly kind: "mutex"; readonly valueType: string }
   | { readonly kind: "fsLock" }
   | { readonly kind: "objcConnection" };
 
@@ -5004,6 +5075,19 @@ function onceCompletions(
   ];
 }
 
+function mutexCompletions(
+  valueType: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): CompletionItem[] {
+  const value = displayType(valueType, typeDisplayNames);
+  return [{
+    label: "withLock",
+    kind: completionKinds.method,
+    detail: `withLock<R>((in value: ${value}) => R | (inout value: ${value}) => R): R`,
+    insertText: "withLock()",
+  }];
+}
+
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
   const nativeNamespace = resolveForeignModuleNamespace(context, text);
   if (nativeNamespace) return { kind: "module", ...nativeNamespace };
@@ -5027,6 +5111,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (receiverType === "TaskControl") return { kind: "taskControl" };
   const once = parseOnceType(receiverType);
   if (once) return { kind: "once", valueType: once.valueType };
+  const mutex = parseMutexType(receiverType);
+  if (mutex) return { kind: "mutex", valueType: mutex.valueType };
   if (receiverType === fsLockTypeName || receiverType === "fs.Lock") {
     return { kind: "fsLock" };
   }

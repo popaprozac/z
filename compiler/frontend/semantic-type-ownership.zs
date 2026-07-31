@@ -138,6 +138,7 @@ export function typeHasCleanup(
         || generic.base == "Set"
         || generic.base == "Task"
         || generic.base == "Weak"
+        || generic.base == "Mutex"
       ) {
         return true;
       }
@@ -262,6 +263,7 @@ export function typeSupportsExplicitCopy(
     || actual == "fs.Lock"
     || actual == "__z_std_fs_Lock"
     || stringStartsWith(actual, "Weak<")
+    || stringStartsWith(actual, "Mutex<")
     || stringStartsWith(actual, "__z_native_function:")
   ) return false;
   match (fixedArrayShape(actual)) {

@@ -125,6 +125,70 @@ cross-thread publication, replacement, and optional storage are not implied by
 this tier. `Application` is an example of a user-defined framework type, not a
 language or standard-library global.
 
+### Scoped shared mutation
+
+`Mutex<T>` from `std/sync` protects one value behind exclusive synchronous
+access:
+
+```z
+import { Mutex } from "std/sync";
+
+struct RuntimeState {
+  activeJobs: i32;
+  completedJobs: i32;
+}
+
+function inspectRuntime(): i32 {
+  const state = Mutex(RuntimeState({
+    activeJobs: 0,
+    completedJobs: 0,
+  }));
+
+  state.withLock((inout value): void => {
+    value.activeJobs = value.activeJobs + 1;
+  });
+
+  return state.withLock(
+    (in value): i32 => value.completedJobs
+  );
+}
+```
+
+`withLock` blocks the current OS thread until it acquires the mutex. It is not
+an `await` point and does not yield the executor thread. The callback is
+synchronous and non-escaping. `in` grants read access to the protected value;
+`inout` grants read/write access. The lock is released when the callback
+returns normally or throws. A typed throw does not poison the mutex; after the
+error is handled, another `withLock` call may acquire it normally.
+
+The protected borrow cannot leave the callback. It cannot be returned as a
+`view`, stored in another owner, or captured by an escaping closure. `await` is
+not permitted while it is active. Returning a copyable value or an
+independently owned result is valid:
+
+```z
+function snapshot(in state: Mutex<RuntimeState>): RuntimeState {
+  return state.withLock(
+    (in value): RuntimeState => copy value
+  );
+}
+```
+
+Declaring the local binding `const` fixes the mutex identity; it does not
+freeze its payload. Mutation remains available only inside an `inout` callback.
+`Mutex<T>` therefore provides controlled interior mutability without changing
+the meaning of ordinary `const`. The runtime uses a real operating-system
+mutex, but the first language tier permits only synchronous same-thread
+reachability. It does not yet make `Mutex<T>` capturable by `thread.spawn` or
+otherwise prove that its payload may cross a native-thread boundary.
+
+The scoped closure is Z's first-tier alternative to a user-visible lock guard.
+It makes unlocking and the lifetime of the protected borrow structural, so
+forgotten unlocks and escaped guards are not expressible. `RwLock<T>`, atomics,
+condition variables, semaphores, asynchronous synchronization, timed
+acquisition, nonblocking acquisition, cross-thread opaque transport, and a
+public guard API remain separate future layers.
+
 `export c function` adds a stable C ABI entry point without removing the
 ordinary Z export:
 
@@ -1693,10 +1757,11 @@ error propagation and early `return`. Calling `lock.unlock()` releases it
 earlier and consumes the owner, so a later use or second unlock is a compile
 error. The lock file may remain on disk; process termination still releases the
 kernel lock, so this is not a stale lock-file protocol. This primitive protects
-cross-process artifacts. In-process shared-memory synchronization belongs to
-later `std/sync` tiers (`Mutex<T>`, `RwLock<T>`, guards, atomics, condition
-variables, and semaphores); the initial `Once<T>` tier publishes main-affine
-application identity but does not provide mutual exclusion.
+cross-process artifacts. The current `std/sync` `Mutex<T>` tier provides
+scoped synchronous in-process mutual exclusion; `RwLock<T>`, public guards,
+atomics, condition variables, and semaphores remain later tiers. `Once<T>`
+publishes main-affine application identity but does not itself provide mutual
+exclusion.
 
 `fs.replace(source, destination)` publishes a completely written artifact with
 one atomic same-filesystem directory-entry replacement. On success the source

@@ -31,6 +31,7 @@ import {
   onceLifetimeTypeName,
   onceTypeName,
 } from "./once-types.ts";
+import { mutexTypeName } from "./mutex-types.ts";
 
 export type GenericAggregateMaterialization = {
   readonly declaration: StructDeclaration;
@@ -75,6 +76,12 @@ export function materializeGenerics(
     program.imports
       .flatMap((declaration) => declaration.header === "std/sync" ? declaration.bindings ?? [] : [])
       .filter((binding) => binding.importedName === "OnceLifetime")
+      .map((binding) => binding.localName),
+  );
+  const mutexBindings = new Set(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/sync" ? declaration.bindings ?? [] : [])
+      .filter((binding) => binding.importedName === "Mutex")
       .map((binding) => binding.localName),
   );
   const hashableImport = program.imports
@@ -270,6 +277,14 @@ export function materializeGenerics(
       typeDisplayNames.set(name, `OnceLifetime<${displayName(args[0])}>`);
       return name;
     }
+    if (generic.base === "Mutex" || mutexBindings.has(generic.base)) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Mutex expects 1 type argument, received ${args.length}`);
+      }
+      const name = mutexTypeName(args[0]);
+      typeDisplayNames.set(name, `Mutex<${displayName(args[0])}>`);
+      return name;
+    }
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
     if (generic.base === "Result") return instantiateResult(args);
@@ -341,6 +356,19 @@ export function materializeGenerics(
             name: onceTypeName(substituteName(generic.arguments[0], substitutions)),
           },
           arguments: [],
+        };
+      }
+      if (generic && (generic.base === "Mutex" || mutexBindings.has(generic.base))) {
+        if (generic.arguments.length !== 1 || value.arguments.length !== 1) {
+          throw new DiagnosticError(fileName, value.location, "Mutex<T>(value) expects one type argument and one value");
+        }
+        return {
+          ...value,
+          callee: {
+            ...value.callee,
+            name: mutexTypeName(substituteName(generic.arguments[0], substitutions)),
+          },
+          arguments: transform(value.arguments, substitutions),
         };
       }
       if (generic && structTemplates.has(generic.base)) {

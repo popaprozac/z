@@ -393,7 +393,11 @@ export function compileToNative(
     nativeLibraries: projectBuild.nativeLibraries,
     nativeLinkerArguments: [...new Set([
       ...(
-        (semanticInfo.threadSpawnCalls.size > 0 || semanticInfo.taskScopeAsyncCalls.size > 0)
+        (
+          semanticInfo.threadSpawnCalls.size > 0
+          || semanticInfo.taskScopeAsyncCalls.size > 0
+          || [...semanticInfo.standardTypeBindings.values()].includes("Mutex")
+        )
         && process.platform !== "win32"
           ? ["-pthread"]
           : []
@@ -468,7 +472,11 @@ export function compileTestsToNative(
     nativeLibraries: projectBuild.nativeLibraries,
     nativeLinkerArguments: [...new Set([
       ...(
-        (semanticInfo.threadSpawnCalls.size > 0 || semanticInfo.taskScopeAsyncCalls.size > 0)
+        (
+          semanticInfo.threadSpawnCalls.size > 0
+          || semanticInfo.taskScopeAsyncCalls.size > 0
+          || [...semanticInfo.standardTypeBindings.values()].includes("Mutex")
+        )
         && process.platform !== "win32"
           ? ["-pthread"]
           : []

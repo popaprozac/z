@@ -74,7 +74,7 @@ export function inferGenericCalls(
         || declaration.header === "std/sync"
       ) && declaration.bindings)
       .flatMap((declaration) => declaration.bindings!
-        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map" || binding.importedName === "Set" || binding.importedName === "Once")
+        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map" || binding.importedName === "Set" || binding.importedName === "Once" || binding.importedName === "Mutex")
         .map((binding) => [binding.localName, binding.importedName] as const)),
   );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
@@ -1395,6 +1395,27 @@ export function inferGenericCalls(
                 ...expression,
                 callee: { ...rewrittenCallee, name: type },
                 arguments: [],
+              },
+              type,
+            };
+          }
+          if (standardType === "Mutex") {
+            if (args.length !== 1) {
+              throw new DiagnosticError(fileName, expression.location, "Mutex<T>(value) expects exactly one value");
+            }
+            const valueType = explicitStandard?.arguments[0] ?? args[0].type;
+            if (
+              (explicitStandard && explicitStandard.arguments.length !== 1)
+              || !valueType
+            ) {
+              throw new DiagnosticError(fileName, expression.location, "cannot infer Mutex payload type from this value");
+            }
+            const type = genericTypeName("Mutex", [valueType]);
+            return {
+              expression: {
+                ...expression,
+                callee: { ...rewrittenCallee, name: type },
+                arguments: args.map((item) => item.expression),
               },
               type,
             };

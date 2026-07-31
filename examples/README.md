@@ -49,6 +49,7 @@ checked Z-to-C exports as static and shared native artifacts.
 
 - [`borrowed-parameters.zs`](language/ownership/borrowed-parameters.zs) and [`consuming-methods.zs`](language/ownership/consuming-methods.zs)
 - [`deinit.zs`](language/ownership/deinit.zs) and [`replacement.zs`](language/ownership/replacement.zs)
+- [`mutex-state.zs`](language/ownership/mutex-state.zs): blocking exclusive access through synchronous non-escaping `in` and `inout` closures
 - [`local-views.zs`](language/ownership/local-views.zs): name a zero-copy field/index projection until its last use
 - [`optional-views.zs`](language/ownership/optional-views.zs): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
 - [`arena.zs`](language/ownership/arena.zs): stable region allocation, synchronous `in` views, reset, and reverse cleanup

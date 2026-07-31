@@ -1455,6 +1455,76 @@ designs. In particular, `Once<T>` is not module-level mutation, a lock, or a
 general singleton keyword; `Application` remains an ordinary user-defined
 framework type.
 
+Shared mutable state uses the separately imported `Mutex<T>` capability:
+
+```z
+import { Mutex } from "std/sync";
+
+struct ApplicationState {
+  openDocuments: i32;
+  revision: i32;
+}
+
+function inspectApplicationState(): i32 {
+  const state = Mutex(ApplicationState({
+    openDocuments: 0,
+    revision: 1,
+  }));
+
+  state.withLock((inout value): void => {
+    value.openDocuments = value.openDocuments + 1;
+    value.revision = value.revision + 1;
+  });
+
+  return state.withLock(
+    (in value): i32 => value.revision
+  );
+}
+```
+
+`withLock` acquires an exclusive native mutex and blocks the executing OS
+thread until it can enter the closure. It does not suspend an async task,
+cooperate with the executor, or move work to another thread. Code that cannot
+afford to block an executor thread must not use this primitive there;
+cross-thread transport and scheduler-aware synchronization are later,
+separately explicit capabilities.
+
+The closure is deliberately synchronous and non-escaping. Its explicit
+capability describes access to the protected value: `in` permits reads and
+`inout` permits mutation. The protected borrow ends when the closure returns or
+throws, and the mutex is unlocked on either path. `await`, returning a `view`
+or other borrow of the protected value, storing that borrow, and capturing it
+in an escaping closure are rejected. An independently owned result may leave
+the closure. An ordinary typed `throw` does not poison the mutex: cleanup runs
+before propagation and a later caller may acquire it again. An invariant trap
+terminates the process rather than unwinding through the critical section.
+
+Z uses a closure rather than exposing a general lock guard in this first tier
+because the callable boundary makes the critical-section lifetime structural.
+It prevents forgotten unlocks, guard escape, suspension while locked, and
+accidental use of protected storage after release without requiring a visible
+lifetime parameter. Rust commonly returns an RAII guard from `lock`; Go and
+Zig commonly expose explicit lock/unlock operations, with Go often pairing
+unlock with `defer`. Z's scoped callable preserves deterministic cleanup while
+letting the compiler prove non-escape directly. A future guard API is not ruled
+out if real programs demonstrate a shape that cannot be expressed cleanly with
+`withLock`.
+
+`const Mutex<T>` local storage means that the mutex identity cannot be rebound.
+Mutation of `T` remains possible only through
+`withLock((inout value) => ...)`; it does not make ordinary `const` values
+mutable. This controlled interior mutability is the reason `Mutex<T>` is
+useful as shared state rather than merely as a standalone lock. The runtime
+nevertheless uses a real OS mutex, even though the first language tier
+exercises it only through synchronous same-thread reachability. Carrying or
+capturing a `Mutex<T>` across `thread.spawn` waits on the next opaque-transport
+and shareability slice; the compiler must not infer cross-thread legality
+merely because storage is internally synchronized.
+
+The first tier is an exclusive mutex. Read/write locks, condition variables,
+semaphores, atomics, asynchronous mutexes, timed acquisition, nonblocking
+acquisition, and direct cross-thread transport remain separate designs.
+
 The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation
 unit. Each dependency receives private compiler identities so unrelated files

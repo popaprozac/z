@@ -41,3 +41,24 @@ reference into its private root, so the caller may keep its own class reference.
 When `main` exits, `lifetime` deinitializes before the earlier `application`
 binding. It removes the global root and releases that strong reference on the
 main executor. No module deinitializer or arbitrary mutable global is involved.
+
+## Next framework pressure-test sequence
+
+This example deliberately proves only publication and main-affine lifetime. The
+next slices remain separate so `Once<T>` does not silently become a
+cross-thread access loophole:
+
+1. **Opaque cross-thread transport.** `currentApplication()` should eventually
+   retain and return the application identity from any thread without granting
+   access to its main-isolated state. Carrying the identity does not hop
+   executors or execute application code. The same slice must establish when
+   `Mutex<T>` storage is shareable across native threads.
+2. **Member-level executor restrictions.** Harmless metadata and explicitly
+   synchronized methods may remain available off-main, while UI fields and
+   methods continue to require `thread.main`. Diagnostics, hover, and completion
+   must surface those member contracts; accessing a main-only member off-main
+   is rejected until the caller uses explicit main placement.
+3. **Zapp composition probe.** A small user-defined framework skeleton will
+   combine the application root, mutex-protected framework state, background
+   work, explicit main-thread UI delivery, and deterministic cleanup. `Zapp`
+   remains an application/framework pressure test, not a built-in Z type.

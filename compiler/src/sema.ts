@@ -91,6 +91,7 @@ import {
   parseOnceLifetimeType,
   parseOnceType,
 } from "./once-types.ts";
+import { mutexTypeName, parseMutexType } from "./mutex-types.ts";
 import type { GenericAggregateMaterialization } from "./generics.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
@@ -160,6 +161,15 @@ export type ClosureInfo = {
   readonly owned: boolean;
   readonly storable: boolean;
   readonly threadSafe: boolean;
+};
+
+export type MutexWithLockCallInfo = {
+  readonly valueType: string;
+  readonly access: "in" | "inout";
+  readonly closureOffset: number;
+  readonly functionType: string;
+  readonly returnType: string;
+  readonly errorType: string | null;
 };
 
 export type SemanticFunctionCallResolution = {
@@ -389,6 +399,8 @@ export type SemanticInfo = {
   readonly onceConstructors: ReadonlyMap<number, string>;
   readonly onceInitializeCalls: ReadonlyMap<number, string>;
   readonly onceGetCalls: ReadonlyMap<number, string>;
+  readonly mutexConstructors: ReadonlyMap<number, string>;
+  readonly mutexWithLockCalls: ReadonlyMap<number, MutexWithLockCallInfo>;
   readonly aggregateExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
@@ -481,7 +493,8 @@ type StandardTypeName =
   | "TaskScope"
   | "TaskControl"
   | "Once"
-  | "OnceLifetime";
+  | "OnceLifetime"
+  | "Mutex";
 
 type AnalysisState = {
   readonly warnings: DiagnosticError[];
@@ -529,6 +542,8 @@ type AnalysisState = {
   readonly onceConstructors: Map<number, string>;
   readonly onceInitializeCalls: Map<number, string>;
   readonly onceGetCalls: Map<number, string>;
+  readonly mutexConstructors: Map<number, string>;
+  readonly mutexWithLockCalls: Map<number, MutexWithLockCallInfo>;
   analyzingModuleConstant: boolean;
   readonly aggregateExecutorAffinities: Map<string, ExecutorAffinityInfo>;
   readonly shareableClasses: Set<string>;
@@ -662,7 +677,7 @@ type SymbolValue =
   | { readonly kind: "testFail" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" | "Once" | "OnceLifetime" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" | "Once" | "OnceLifetime" | "Mutex" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -884,6 +899,8 @@ export function analyze(
     onceConstructors: new Map(),
     onceInitializeCalls: new Map(),
     onceGetCalls: new Map(),
+    mutexConstructors: new Map(),
+    mutexWithLockCalls: new Map(),
     analyzingModuleConstant: false,
     aggregateExecutorAffinities: new Map(),
     shareableClasses: new Set(),
@@ -1169,14 +1186,14 @@ export function analyze(
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/sync requires a selective import", {
             code: "Z0501",
-            helps: ["use `import { Once } from \"std/sync\";`"],
+            helps: ["use `import { Mutex, Once } from \"std/sync\";`"],
           });
         }
         for (const binding of declaration.bindings) {
-          if (binding.importedName !== "Once" && binding.importedName !== "OnceLifetime") {
+          if (binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "Mutex") {
             throw new DiagnosticError(fileName, binding.location, `std/sync has no export ${JSON.stringify(binding.importedName)}`, {
               code: "Z0501",
-              helps: ["the first std/sync tier exports `Once` and `OnceLifetime`"],
+              helps: ["std/sync exports `Mutex`, `Once`, and `OnceLifetime`"],
             });
           }
           validateUserName(binding.localName, binding.location, fileName);
@@ -8612,6 +8629,54 @@ function inferExpressionInner(
             },
           );
         }
+        const mutex = parseMutexType(expression.callee.name);
+        if (mutex) {
+          if (![...state.standardTypeBindings.values()].includes("Mutex")) {
+            throw new DiagnosticError(fileName, expression.callee.location, "Mutex requires an explicit standard-library import", {
+              code: "Z0501",
+              helps: ["add `import { Mutex } from \"std/sync\";`"],
+            });
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 1) {
+            throw new DiagnosticError(fileName, expression.location, "Mutex<T>(value) expects exactly one value");
+          }
+          if (
+            mutex.valueType === "void"
+            || containsViewType(mutex.valueType)
+            || containsSliceType(mutex.valueType)
+            || parseOnceType(mutex.valueType)
+            || parseOnceLifetimeType(mutex.valueType)
+            || parseMutexType(mutex.valueType)
+            || parseTaskType(mutex.valueType)
+            || containsForeignValueStorage(
+              mutex.valueType,
+              structs,
+              enums,
+              state.foreignNamedTypes,
+            )
+          ) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Mutex cannot own ${JSON.stringify(displayArrayType(mutex.valueType))} in the first synchronization tier`, {
+              code: "Z0240",
+              notes: ["a Mutex payload must be independently owned storage with no borrowed lifetime"],
+            });
+          }
+          const argument = expression.arguments[0];
+          const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+          requireAssignable(mutex.valueType, actual, argument, fileName, structs, enums, state);
+          if (
+            hasOwnershipType(actual, structs, enums, state)
+            && isNamedStorageExpression(argument)
+          ) {
+            throw new DiagnosticError(fileName, argument.location, "initializing Mutex from an existing owner requires an explicit move", {
+              code: "Z0218",
+              helps: [`write \`Mutex(move ${storageRoot(argument)?.name ?? "value"})\``],
+            });
+          }
+          consumeOwnedValue(argument, mutex.valueType, locals, structs, enums, fileName, state);
+          state.mutexConstructors.set(expression.location.offset, mutex.valueType);
+          return mutexTypeName(mutex.valueType);
+        }
         const once = parseOnceType(expression.callee.name);
         if (once) {
           if (![...state.standardTypeBindings.values()].includes("Once")) {
@@ -9050,7 +9115,7 @@ function inferExpressionInner(
                   const foreignIssue = foreignThreadTransferIssue(capture.type, state);
                   const issue = shareability ?? foreignIssue;
                   const detail = issue ? `: ${issue.reason}` : " yet";
-                  throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot cross a native thread boundary${detail}`, {
+                  throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${displayAssignableType(capture.type)} cannot cross a native thread boundary${detail}`, {
                     code: "Z0704",
                     notes: [issue?.reason ?? "the current tier copies plain values, shares deeply readonly ARC identity, and moves supported Array, String, TextBuffer, and containing aggregate owners"],
                     helps: [issue?.help ?? "capture a transferable owned value, or keep this work on the inherited executor with `task`"],
@@ -9331,6 +9396,111 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        const mutex = parseMutexType(receiverValueType);
+        if (mutex) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.callee.property !== "withLock") {
+            throw new DiagnosticError(fileName, expression.callee.location, `Mutex has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Mutex.withLock requires stable named storage", {
+              code: "Z0211",
+              notes: ["the blocking operation borrows one address-stable mutex for the complete callback"],
+              helps: ["bind the Mutex before calling withLock"],
+            });
+          }
+          if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "closure") {
+            throw new DiagnosticError(fileName, expression.location, "Mutex.withLock expects one inline closure", {
+              code: "Z0215",
+              helps: ["write `mutex.withLock((in value) => expression)` or `mutex.withLock((inout value): void => { ... })`"],
+            });
+          }
+          const callback = expression.arguments[0];
+          if (callback.async) {
+            throw new DiagnosticError(fileName, callback.location, "Mutex.withLock requires a synchronous closure that cannot suspend", {
+              code: "Z0703",
+              notes: ["withLock blocks the current OS thread and releases the mutex when the callback returns or throws"],
+              helps: ["finish protected access before awaiting, or use a future scheduler-aware AsyncMutex"],
+            });
+          }
+          if (callback.parameters.length !== 1) {
+            throw new DiagnosticError(fileName, callback.location, `Mutex.withLock expects one closure parameter, found ${callback.parameters.length}`);
+          }
+          const parameter = callback.parameters[0];
+          if (parameter.mode !== "in" && parameter.mode !== "inout") {
+            throw new DiagnosticError(fileName, parameter.location, "Mutex.withLock closure parameters require `in` or `inout`", {
+              code: "Z0215",
+              notes: ["`in` exposes read-only protected storage; `inout` permits mutation while the same exclusive mutex is held"],
+              helps: [`write \`(${parameter.name === "" ? "in value" : `in ${parameter.name}`})\` or \`(${parameter.name === "" ? "inout value" : `inout ${parameter.name}`})\``],
+            });
+          }
+          if (callback.returnType && containsViewType(callback.returnType.name)) {
+            throw new DiagnosticError(fileName, callback.returnType.location, "a borrowed view cannot escape Mutex.withLock", {
+              code: "Z0206",
+              notes: ["the protected borrow ends before withLock returns"],
+              helps: ["return an independently owned `copy` or a cleanup-free value"],
+            });
+          }
+          const contextualParameter = parameter.type
+            ? parameter
+            : { ...parameter, type: { name: mutex.valueType, location: parameter.location } };
+          const contextualCallback = {
+            ...callback,
+            parameters: [contextualParameter],
+          };
+          inferClosureExpression(
+            contextualCallback,
+            locals,
+            globals,
+            structs,
+            enums,
+            fileName,
+            state,
+            null,
+            true,
+          );
+          const closure = state.closures.get(callback.location.offset)!;
+          const functionType = closureFunctionType(closure);
+          if (functionType.parameters[0]?.mode !== parameter.mode || functionType.parameters[0]?.type !== mutex.valueType) {
+            throw new DiagnosticError(fileName, parameter.location, `Mutex.withLock expected ${parameter.mode} ${displayArrayType(mutex.valueType)}, found ${displayFunctionType(functionTypeName(functionType.parameters, functionType.returnType, functionType.errorType))}`);
+          }
+          if (containsViewType(functionType.returnType) || containsSliceType(functionType.returnType)) {
+            throw new DiagnosticError(fileName, callback.returnType?.location ?? callback.location, "a borrowed value cannot escape Mutex.withLock", {
+              code: "Z0206",
+              notes: ["the protected borrow ends before withLock returns"],
+              helps: ["return an independently owned `copy` or a cleanup-free value"],
+            });
+          }
+          const callableType = functionTypeName(functionType.parameters, functionType.returnType, functionType.errorType);
+          finalizeClosureFunctionValue(
+            callback,
+            functionType,
+            callableType,
+            locals,
+            structs,
+            enums,
+            fileName,
+            state,
+            true,
+          );
+          if (functionType.errorType && !allowThrowingCall) {
+            throw new DiagnosticError(fileName, expression.location, "throwing Mutex.withLock requires `attempt` or `try`", {
+              code: "Z0301",
+              notes: ["the mutex is unlocked before the typed error propagates"],
+            });
+          }
+          state.mutexWithLockCalls.set(expression.location.offset, {
+            valueType: mutex.valueType,
+            access: parameter.mode,
+            closureOffset: callback.location.offset,
+            functionType: callableType,
+            returnType: functionType.returnType,
+            errorType: functionType.errorType,
+          });
+          return functionType.errorType
+            ? resultTypeName(functionType.returnType, functionType.errorType)
+            : functionType.returnType;
+        }
         const once = parseOnceType(receiverValueType);
         if (once) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -12407,6 +12577,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
+  if (parseMutexType(actual)) return true;
   if (parseOnceLifetimeType(actual)) return true;
   if (actual === fsLockTypeName || actual === "fs.Lock") return true;
   if (actual === nativeConnectionTypeName) return true;
@@ -12455,6 +12626,7 @@ function explicitCopyPlanForType(
     || actual === "Arena"
     || actual === "TaskScope"
     || actual === "TaskControl"
+    || parseMutexType(actual)
     || parseOnceType(actual)
     || parseOnceLifetimeType(actual)
     || actual === fsLockTypeName
@@ -12495,6 +12667,7 @@ function explicitAggregateCopyable(
     type === "TextBuffer"
     || type === "Arena"
     || type === "TaskControl"
+    || parseMutexType(type)
     || type === fsLockTypeName
     || type === "fs.Lock"
     || parseAsyncGeneratorType(type)
@@ -14618,6 +14791,30 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const mutex = parseMutexType(type.name);
+  if (mutex) {
+    validateType({ name: mutex.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    if (
+      mutex.valueType === "void"
+      || containsViewType(mutex.valueType)
+      || containsSliceType(mutex.valueType)
+      || parseOnceType(mutex.valueType)
+      || parseOnceLifetimeType(mutex.valueType)
+      || parseMutexType(mutex.valueType)
+      || parseTaskType(mutex.valueType)
+      || containsForeignValueStorage(
+        mutex.valueType,
+        structs,
+        enums,
+        foreignNamedTypes,
+      )
+    ) {
+      throw new DiagnosticError(fileName, type.location, `Mutex cannot own ${JSON.stringify(displayArrayType(mutex.valueType))} in the first synchronization tier`, {
+        code: "Z0240",
+      });
+    }
+    return;
+  }
   const once = parseOnceType(type.name);
   if (once) {
     validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
@@ -14748,7 +14945,7 @@ function resolveSemanticTypeName(
     const generic = parseGenericType(name);
     if (generic) {
       const standard = state.standardTypeBindings.get(generic.base);
-      if (standard === "Once" || standard === "OnceLifetime") {
+      if (standard === "Once" || standard === "OnceLifetime" || standard === "Mutex") {
         return genericTypeName(standard, generic.arguments.map(resolveName));
       }
     }
@@ -15058,6 +15255,8 @@ function displayAssignableType(type: ValueType): string {
   if (once) return `Once<${displayAssignableType(once.valueType)}>`;
   const onceLifetime = parseOnceLifetimeType(name);
   if (onceLifetime) return `OnceLifetime<${displayAssignableType(onceLifetime.valueType)}>`;
+  const mutex = parseMutexType(name);
+  if (mutex) return `Mutex<${displayAssignableType(mutex.valueType)}>`;
   return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);
 }
 

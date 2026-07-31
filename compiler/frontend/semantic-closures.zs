@@ -133,12 +133,17 @@ export function resolveClosureSignature(
           parameterType.byteLength
         ));
       }
-      if (returnType.byteLength == 0) {
+      if (
+        returnType.byteLength == 0
+        && signature.returnType != "__z_native_infer_return"
+      ) {
         returnType = signature.returnType.copyBytes(
           0,
           signature.returnType.byteLength
         );
       } else if (
+        signature.returnType != "__z_native_infer_return"
+        &&
         !equivalentTypes(
           modules,
           moduleIndex,

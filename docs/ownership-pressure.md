@@ -1641,6 +1641,45 @@ presence, and cross-thread publication remain unproven. The `Application` name
 belongs to the example and a future desktop package; only the generic
 publication-and-lifetime mechanism belongs to Z.
 
+## Scoped shared state without an escaping guard
+
+Source:
+[`examples/language/ownership/mutex-state.zs`](../examples/language/ownership/mutex-state.zs)
+
+The application-framework pressure test also needs shared mutable state, but
+neither module `const` nor `Once<T>` provides mutual exclusion. The first
+`Mutex<T>` tier places one value in address-stable protected storage and admits
+access only through synchronous non-escaping `withLock` closures.
+
+The deployment-coordinator probe distinguishes the two capabilities explicitly:
+`(in state)` takes a read-only loan and `(inout state)` takes a mutable loan.
+The closure can return an ordinary value or independently owned snapshot, while
+a `view` or other alias into the protected payload cannot escape. Normal
+completion and typed failure follow the same generated unlock cleanup path.
+The failure probe then acquires the mutex again, establishing that ordinary
+typed errors do not poison protected state.
+
+This shape exposed three useful design constraints:
+
+- mutex acquisition blocks the executing OS thread; it does not masquerade as
+  task suspension, so executor-sensitive code must choose where blocking work
+  runs;
+- `await` while holding the protected borrow is rejected, preventing a task
+  from suspending while retaining exclusive access;
+- `const Mutex<T>` fixes the synchronization identity while `inout` still
+  permits controlled mutation of the protected value, without weakening
+  ordinary `const`.
+
+The closure boundary is intentionally narrower than a public lock guard. It
+makes unlock and borrow end structural and removes forgotten unlock, escaped
+guard, and use-after-unlock shapes from the first tier. It does not yet prove
+cross-thread `Mutex<T>` transport: the runtime uses a real OS mutex, while the
+language currently exercises it only through synchronous same-thread
+reachability. Opaque transport and payload shareability must land before
+`thread.spawn` may capture one. The probe also does not prove read/write locks,
+asynchronous mutexes, atomics, condition variables, semaphores, timed
+acquisition, nonblocking acquisition, or arbitrary native resource payloads.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -54,6 +54,13 @@ synchronous calls block that executor thread until they return. A foreign API
 becomes suspending only through an explicit async adapter; importing it never
 silently changes its scheduling behavior.
 
+`Mutex<T>.withLock(...)` follows the same rule: acquisition may block the
+executor's OS thread, and the critical-section closure is synchronous.
+`await` is rejected inside that closure so a task cannot suspend while holding
+the mutex. The first tier cannot transport the mutex to a dedicated worker, so
+an executor path that cannot tolerate blocking must not acquire it. Do not
+mistake a native mutex for a scheduler-aware async mutex.
+
 An async call is valid only beneath `await` or `task`. Calling an async
 function never silently starts detached work:
 

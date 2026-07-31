@@ -138,6 +138,7 @@ function intrinsicTypeArity(in name: String): Option<NativeTypeArity> {
     || name == "Weak"
     || name == "Once"
     || name == "OnceLifetime"
+    || name == "Mutex"
   ) return Option.some(NativeTypeArity({ minimum: 1, maximum: 1 }));
   if (name == "Map") {
     return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
@@ -182,6 +183,29 @@ function requireTypeArity(
     line,
     column
   );
+}
+
+function mutexPayloadTypeSupported(in name: String): boolean {
+  if (
+    name == "void"
+    || stringStartsWith(name, "view ")
+    || stringStartsWith(name, "Slice<")
+  ) return false;
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        generic.base == "Once"
+        || generic.base == "OnceLifetime"
+        || generic.base == "Mutex"
+        || generic.base == "Task"
+      ) return false;
+      for (const argument of generic.arguments) {
+        if (!mutexPayloadTypeSupported(argument)) return false;
+      }
+    }
+    none => {}
+  }
+  return true;
 }
 
 function typeParameterSatisfiesTrait(
@@ -388,6 +412,19 @@ function validateTypeNameShape(
           modules,
           moduleIndex,
           name,
+          line,
+          column
+        );
+      }
+      if (
+        genericBase == "Mutex"
+        && genericArgumentCount == 1
+        && !mutexPayloadTypeSupported(generic.arguments[0])
+      ) {
+        throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `Mutex cannot own ${generic.arguments[0]} in the first synchronization tier`,
           line,
           column
         );
