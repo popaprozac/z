@@ -559,6 +559,7 @@ export function generateC(
     lines.push(
       `struct ${mutexStorageName(valueType)} {`,
       "  Z_NativeMutex native;",
+      "  size_t refcount;",
       `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value;`,
       "};",
       "",
@@ -618,6 +619,7 @@ export function generateC(
   for (const valueType of mutexValueTypes) {
     lines.push(
       `static ${mutexName(valueType)} ${mutexInitializeName(valueType)}(${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value);`,
+      `static ${mutexName(valueType)} ${mutexRetainName(valueType)}(${mutexName(valueType)} mutex);`,
       `static void ${mutexDeinitName(valueType)}(${mutexName(valueType)} *mutex);`,
     );
   }
@@ -879,14 +881,22 @@ function generateMutexRuntime(
     abort();
   }
 #endif
+  storage->refcount = 1;
   storage->value = value;
   return (${mutexName(valueType)}){ .storage = storage };
+}
+
+static __attribute__((unused)) ${mutexName(valueType)} ${mutexRetainName(valueType)}(${mutexName(valueType)} mutex) {
+  if (mutex.storage == NULL) abort();
+  __atomic_add_fetch(&mutex.storage->refcount, 1, __ATOMIC_RELAXED);
+  return mutex;
 }
 
 static __attribute__((unused)) void ${mutexDeinitName(valueType)}(${mutexName(valueType)} *mutex) {
   if (mutex == NULL || mutex->storage == NULL) return;
   ${mutexStorageName(valueType)} *storage = mutex->storage;
   mutex->storage = NULL;
+  if (__atomic_sub_fetch(&storage->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;
 #if !defined(_WIN32)
   if (pthread_mutex_destroy(&storage->native) != 0) abort();
 #endif
@@ -5881,9 +5891,13 @@ function generateOwnedClosureCaptureValue(
   const capturedFunction = parseFunctionType(capture.type);
   if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
   else if (capture.type === "TaskControl") value = `z_task_control_retain(${value})`;
-  else if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
-  else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
-  else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
+  else {
+    const mutex = parseMutexType(capture.type);
+    if (mutex) value = `${mutexRetainName(mutex.valueType)}(${value})`;
+    else if (capturedClass?.kind === "class") value = `${retainName(capture.type)}(${value})`;
+    else if (capturedFunction) value = `${functionTypeRetainName(capturedFunction)}(${value})`;
+    else if (parseWeakType(capture.type)) value = `z_weak_retain(${value})`;
+  }
   return value;
 }
 
@@ -7927,6 +7941,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             value = `z_task_scope_retain(${value})`;
           } else if (capture.type === "TaskControl") {
             value = `z_task_control_retain(${value})`;
+          } else if (parseMutexType(capture.type)) {
+            value = `${mutexRetainName(parseMutexType(capture.type)!.valueType)}(${value})`;
           } else if (context.structs.get(capture.type)?.kind === "class") {
             value = `${retainName(capture.type)}(${value})`;
           }
@@ -9787,6 +9803,10 @@ function mutexStorageName(valueType: string): string {
 
 function mutexInitializeName(valueType: string): string {
   return `z_mutex_${nativeSymbolPart(valueType)}_initialize`;
+}
+
+function mutexRetainName(valueType: string): string {
+  return `z_mutex_${nativeSymbolPart(valueType)}_retain`;
 }
 
 function mutexDeinitName(valueType: string): string {

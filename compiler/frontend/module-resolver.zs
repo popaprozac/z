@@ -3201,7 +3201,10 @@ function inferExpressionNodeType(
       }
       const captureType = valueBindingType(bindings, capture);
       if (value == "move") {
-        if (typeMovesOnOwnedUse(modules, moduleIndex, captureType)) {
+        if (
+          !stringStartsWith(captureType, "Mutex<")
+          && typeMovesOnOwnedUse(modules, moduleIndex, captureType)
+        ) {
           if (valueBindingIsBorrowed(bindings, capture)) {
             throw resolutionError(
               ModuleResolveErrorKind.typeMismatch,

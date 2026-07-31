@@ -1057,7 +1057,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Mutex") {
     return markdownHover(
-      "Mutex<T>(value: T): Mutex<T>  // move-only synchronized storage with a synchronous scoped lock",
+      "Mutex<T>(value: T): Mutex<T>  // move-only handle to retained synchronized storage with a synchronous scoped lock; safely shareable when T is thread-transferable",
       source,
       word.start,
       word.end,
@@ -1713,7 +1713,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Mutex",
         kind: completionKinds.struct,
-        detail: "Mutex<T>(value: T)  // move-only synchronized storage",
+        detail: "Mutex<T>(value: T)  // move-only handle to retained synchronized storage",
       },
       {
         label: "Once",
@@ -2431,7 +2431,7 @@ function symbolCompletions(
                   : standardType === "OnceLifetime"
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
                   : standardType === "Mutex"
-                    ? "Mutex<T>(value: T)  // move-only synchronized storage"
+                    ? "Mutex<T>(value: T)  // move-only handle; retained when safely captured by a native worker"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });

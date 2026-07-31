@@ -2427,7 +2427,7 @@ test("runs cleanup-free owned work on an explicit native thread", () => {
   assert.throws(() => check(referenceCapture, "thread-reference.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
-    assert.match(error.message, /type "Session" cannot cross/);
+    assert.match(error.message, /type "?Session"? cannot cross/);
     return true;
   });
 
@@ -2871,7 +2871,7 @@ test("copies plain thread captures and moves uniquely owned Array storage", () =
   assert.throws(() => check(customCleanup, "thread-custom-cleanup.zs"), (error: unknown) => {
     assert.ok(error instanceof DiagnosticError);
     assert.equal(error.code, "Z0704");
-    assert.match(error.message, /type "ThreadAffine" cannot cross/);
+    assert.match(error.message, /type "?ThreadAffine"? cannot cross/);
     return true;
   });
 });
@@ -2978,6 +2978,10 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
   assert.match(generated, /__atomic_add_fetch\(&value->_z_refcount, 1, __ATOMIC_RELAXED\)/);
   assert.match(generated, /__atomic_sub_fetch\(&value->_z_refcount, 1, __ATOMIC_ACQ_REL\)/);
   assert.match(generated, /Z_CalculationInput_retain\(frame->value_input\)/);
+  assert.doesNotMatch(
+    generated,
+    /live_input\s*=\s*false,\s*Z_CalculationInput_retain/,
+  );
 
   const labelOffset = source.indexOf("label: String") + 1;
   assert.match(hover(source, example, labelOffset)?.contents.value ?? "", /readonly label: String/);

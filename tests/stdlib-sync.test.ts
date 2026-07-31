@@ -63,7 +63,7 @@ test("reads and mutates Mutex values through scoped synchronous closures", () =>
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 test("returns independent owned values from Mutex.withLock", () => {
   const directory = mkdtempSync("/tmp/z-mutex-owned-result-");
@@ -364,7 +364,13 @@ test("rejects borrowed Mutex results and async lock closures", () => {
     /Mutex\.withLock.*(?:synchronous|cannot suspend|does not accept an async closure)|async closure.*Mutex/i,
   );
 
-  const crossThreadCapture = `
+});
+
+test("shares one Mutex identity between the parent and native workers", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-thread-share-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
     import { Mutex } from "std/sync";
     import { thread } from "std/thread";
 
@@ -373,7 +379,65 @@ test("rejects borrowed Mutex results and async lock closures", () => {
     }
 
     async function main(): i32 {
-      const state = Mutex(State({ value: 42 }));
+      const state = Mutex(State({ value: 0 }));
+      const first = thread.spawn(move (): void => {
+        state.withLock((inout value): void => {
+          value.value = value.value + 20;
+        });
+      });
+      const second = thread.spawn(move (): void => {
+        state.withLock((inout value): void => {
+          value.value = value.value + 21;
+        });
+      });
+      state.withLock((inout value): void => {
+        value.value = value.value + 1;
+      });
+      await first;
+      await second;
+      return state.withLock(
+        (in value): i32 => value.value
+      ) - 42;
+    }
+    `;
+    writeFileSync(file, source);
+
+    const generated = compileToC(source, file);
+    assert.match(generated, /z_mutex_State_retain\(frame->value_state\)/);
+    assert.match(generated, /__atomic_add_fetch\(&mutex\.storage->refcount, 1, __ATOMIC_RELAXED\)/);
+    assert.match(generated, /__atomic_sub_fetch\(&storage->refcount, 1, __ATOMIC_ACQ_REL\)/);
+    assert.doesNotMatch(
+      generated,
+      /live_state\s*=\s*false,\s*z_mutex_State_retain/,
+    );
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+test("rejects a Mutex payload that cannot be destroyed on a worker", () => {
+  const executorDiagnostic = diagnostics(`
+    import { Mutex } from "std/sync";
+    import { thread } from "std/thread";
+
+    class WindowState on thread.main {
+      value: i32;
+    }
+
+    async function main(): i32 on thread.main {
+      const state = Mutex(new WindowState({ value: 42 }));
       const worker = thread.spawn(
         move (): i32 => state.withLock(
           (in value): i32 => value.value
@@ -381,16 +445,83 @@ test("rejects borrowed Mutex results and async lock closures", () => {
       );
       return await worker;
     }
-  `;
-  const transferDiagnostic = diagnostics(
-    crossThreadCapture,
-    "/tmp/z-mutex-thread-transfer.zs",
-  )[0];
+  `, "/tmp/z-mutex-thread-affine-payload.zs")[0];
+  assert.equal(executorDiagnostic?.code, "Z0704");
   assert.match(
-    transferDiagnostic?.message ?? "",
-    /Mutex<State>.*cannot cross a native thread boundary/,
+    executorDiagnostic?.message ?? "",
+    /Mutex payload WindowState is executor-bound|Mutex<WindowState>.*cannot cross/,
+  );
+
+  const cleanupDiagnostic = diagnostics(`
+    import { Mutex } from "std/sync";
+    import { thread } from "std/thread";
+
+    struct Resource {
+      value: i32;
+      deinit {}
+    }
+
+    async function main(): i32 {
+      const resource = Mutex(Resource({ value: 42 }));
+      const worker = thread.spawn(
+        move (): i32 => resource.withLock(
+          (in value): i32 => value.value
+        )
+      );
+      return await worker;
+    }
+  `, "/tmp/z-mutex-thread-cleanup-payload.zs")[0];
+  assert.equal(cleanupDiagnostic?.code, "Z0704");
+  assert.match(
+    cleanupDiagnostic?.message ?? "",
+    /Mutex payload Resource has a custom deinit/,
   );
 });
+
+test("retains Mutex identity in an ordinary owned closure environment", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-owned-closure-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+
+      struct State {
+        value: i32;
+      }
+
+      type ReadState = () => i32;
+
+      function main(): i32 {
+        const state = Mutex(State({ value: 40 }));
+        const read: ReadState = move (): i32 => state.withLock(
+          (in value): i32 => value.value
+        );
+        state.withLock((inout value): void => {
+          value.value = value.value + 2;
+        });
+        return read() - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const generated = compileToC(source, file);
+    assert.match(generated, /z_mutex_State_retain\(/);
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("uses a synchronous Mutex critical section inside an async function", () => {
   const directory = mkdtempSync("/tmp/z-mutex-async-body-");

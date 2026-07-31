@@ -51,8 +51,10 @@ cross-thread access loophole:
 1. **Opaque cross-thread transport.** `currentApplication()` should eventually
    retain and return the application identity from any thread without granting
    access to its main-isolated state. Carrying the identity does not hop
-   executors or execute application code. The same slice must establish when
-   `Mutex<T>` storage is shareable across native threads.
+   executors or execute application code. `Mutex<T>` now establishes the
+   synchronized half of that slice: a transferable payload may be shared as one
+   retained cell across native workers, while the application root itself
+   remains main-only until opaque retrieval lands.
 2. **Member-level executor restrictions.** Harmless metadata and explicitly
    synchronized methods may remain available off-main, while UI fields and
    methods continue to require `thread.main`. Diagnostics, hover, and completion

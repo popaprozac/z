@@ -177,17 +177,21 @@ function snapshot(in state: Mutex<RuntimeState>): RuntimeState {
 Declaring the local binding `const` fixes the mutex identity; it does not
 freeze its payload. Mutation remains available only inside an `inout` callback.
 `Mutex<T>` therefore provides controlled interior mutability without changing
-the meaning of ordinary `const`. The runtime uses a real operating-system
-mutex, but the first language tier permits only synchronous same-thread
-reachability. It does not yet make `Mutex<T>` capturable by `thread.spawn` or
-otherwise prove that its payload may cross a native-thread boundary.
+the meaning of ordinary `const`.
+
+When `T` is transferable and can be destroyed on any worker, a capturing
+`thread.spawn(move () => ...)` closure receives an atomically retained handle
+to the same mutex storage. The caller remains valid before and after joining
+the worker. Z does not duplicate the payload or native mutex, and `copy state`
+remains invalid. Payloads containing main-isolated identity, borrowed storage,
+or unknown destruction affinity are rejected when the Mutex is captured.
 
 The scoped closure is Z's first-tier alternative to a user-visible lock guard.
 It makes unlocking and the lifetime of the protected borrow structural, so
 forgotten unlocks and escaped guards are not expressible. `RwLock<T>`, atomics,
 condition variables, semaphores, asynchronous synchronization, timed
-acquisition, nonblocking acquisition, cross-thread opaque transport, and a
-public guard API remain separate future layers.
+acquisition, public handle copying, and a public guard API remain separate
+future layers.
 
 `export c function` adds a stable C ABI entry point without removing the
 ordinary Z export:

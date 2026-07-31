@@ -1514,16 +1514,45 @@ out if real programs demonstrate a shape that cannot be expressed cleanly with
 Mutation of `T` remains possible only through
 `withLock((inout value) => ...)`; it does not make ordinary `const` values
 mutable. This controlled interior mutability is the reason `Mutex<T>` is
-useful as shared state rather than merely as a standalone lock. The runtime
-nevertheless uses a real OS mutex, even though the first language tier
-exercises it only through synchronous same-thread reachability. Carrying or
-capturing a `Mutex<T>` across `thread.spawn` waits on the next opaque-transport
-and shareability slice; the compiler must not infer cross-thread legality
-merely because storage is internally synchronized.
+useful as shared state rather than merely as a standalone lock.
+
+When `T` has thread-transferable storage and thread-independent destruction, a
+`move` native-worker closure may capture `Mutex<T>` without consuming the
+caller's handle:
+
+```z
+const state = Mutex(ApplicationState({
+  openDocuments: 0,
+  revision: 1,
+}));
+
+const worker = thread.spawn(move (): void => {
+  state.withLock((inout value): void => {
+    value.revision = value.revision + 20;
+  });
+});
+
+state.withLock((inout value): void => {
+  value.revision = value.revision + 21;
+});
+await worker;
+
+const revision = state.withLock(
+  (in value): i32 => value.revision
+);
+```
+
+The closure owns one atomically retained handle to the same heap cell; it does
+not copy `T` or allocate another native mutex. This is an internal sharing
+operation, not permission to write `copy state`: ordinary explicit duplication
+of `Mutex<T>` remains rejected. The last handle destroys the protected value
+and native mutex exactly once. A main-isolated, borrowed, or otherwise
+non-transferable payload keeps its Mutex on the owning thread and produces a
+diagnostic at the `thread.spawn` boundary.
 
 The first tier is an exclusive mutex. Read/write locks, condition variables,
 semaphores, atomics, asynchronous mutexes, timed acquisition, nonblocking
-acquisition, and direct cross-thread transport remain separate designs.
+acquisition, and direct public handle copying remain separate designs.
 
 The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation

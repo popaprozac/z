@@ -366,6 +366,8 @@ export type ObjCBindingPlan = {
   }[];
 };
 
+export type ThreadTransferKind = "copy" | "move" | "share" | "executorBound";
+
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly deploymentTarget: DeploymentTarget | null;
@@ -393,6 +395,7 @@ export type SemanticInfo = {
   readonly arenaCreateCalls: ReadonlyMap<number, string>;
   readonly arenaResetCalls: ReadonlySet<number>;
   readonly threadSpawnCalls: ReadonlyMap<number, number>;
+  readonly threadSpawnCaptureTransfers: ReadonlyMap<number, readonly ThreadTransferKind[]>;
   readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
   readonly taskScopeAsyncCalls: ReadonlyMap<number, number>;
   readonly taskScopeConstructors: ReadonlySet<number>;
@@ -536,6 +539,7 @@ type AnalysisState = {
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
+  readonly threadSpawnCaptureTransfers: Map<number, readonly ThreadTransferKind[]>;
   readonly taskScopeSpawnCalls: Map<number, number>;
   readonly taskScopeAsyncCalls: Map<number, number>;
   readonly taskScopeConstructors: Set<number>;
@@ -893,6 +897,7 @@ export function analyze(
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
+    threadSpawnCaptureTransfers: new Map(),
     taskScopeSpawnCalls: new Map(),
     taskScopeAsyncCalls: new Map(),
     taskScopeConstructors: new Set(),
@@ -5079,6 +5084,7 @@ function finalizeClosureFunctionValue(
     if (
       capture.type === "TaskScope"
       || capture.type === "TaskControl"
+      || parseMutexType(capture.type)
       || structs.get(capture.type)?.kind === "class"
       || parseFunctionType(capture.type)
       || parseWeakType(capture.type)
@@ -9113,7 +9119,8 @@ function inferExpressionInner(
                     ? shareableTypeIssue(capturedClass.name, structs, enums, state)
                     : null;
                   const foreignIssue = foreignThreadTransferIssue(capture.type, state);
-                  const issue = shareability ?? foreignIssue;
+                  const mutexIssue = mutexThreadShareIssue(capture.type, structs, enums, state);
+                  const issue = shareability ?? foreignIssue ?? mutexIssue;
                   const detail = issue ? `: ${issue.reason}` : " yet";
                   throw new DiagnosticError(fileName, capture.location, `capture ${JSON.stringify(capture.name)} of type ${displayAssignableType(capture.type)} cannot cross a native thread boundary${detail}`, {
                     code: "Z0704",
@@ -9166,14 +9173,13 @@ function inferExpressionInner(
                   });
                 }
                 const errorClass = structs.get(String(underlyingType(errorType)));
-                if (transfer === "copy" && errorClass?.kind === "class") {
+                if (transfer === "share" && errorClass?.kind === "class") {
                   state.threadSharedClassUses.set(errorClass.name, operation.errorType!.location);
                 }
               }
               for (const { capture, kind } of captureTransfers) {
                 const capturedClass = structs.get(String(underlyingType(capture.type)));
-                if (kind === "copy" && capturedClass?.kind === "class") {
-                  state.managedCopies.add(capture.location.offset);
+                if (kind === "share" && capturedClass?.kind === "class") {
                   state.threadSharedClassUses.set(capturedClass.name, capture.location);
                 }
                 if (kind !== "move") continue;
@@ -9188,6 +9194,10 @@ function inferExpressionInner(
                 );
               }
               state.threadSpawnCalls.set(expression.location.offset, operation.location.offset);
+              state.threadSpawnCaptureTransfers.set(
+                expression.location.offset,
+                captureTransfers.map(({ kind }) => kind),
+              );
               const taskType = taskTypeName(returnType, errorType);
               return taskType;
             }
@@ -12695,8 +12705,6 @@ function explicitAggregateCopyable(
   return result;
 }
 
-type ThreadTransferKind = "copy" | "move" | "executorBound";
-
 function executorBoundCaptureUseOutsideMain(
   value: unknown,
   name: string,
@@ -12809,6 +12817,37 @@ function foreignThreadTransferIssue(type: ValueType, state: AnalysisState): Shar
     }
   }
   return null;
+}
+
+function mutexThreadShareIssue(
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  state: AnalysisState,
+): ShareabilityIssue | null {
+  const mutex = parseMutexType(String(underlyingType(type)));
+  if (!mutex) return null;
+  const payload = String(underlyingType(mutex.valueType));
+  const affinity = state.aggregateExecutorAffinities.get(payload);
+  if (affinity || foreignExecutorAffinityForTypeName(payload, state)) {
+    return {
+      reason: `Mutex payload ${displayAssignableType(payload)} is executor-bound and cannot be destroyed by an arbitrary worker`,
+      help: "keep this Mutex on its owning executor, or protect an owned thread-independent snapshot instead",
+    };
+  }
+  const aggregate = structs.get(payload);
+  if (aggregate?.deinitializer) {
+    return {
+      reason: `Mutex payload ${displayAssignableType(payload)} has a custom deinit whose thread affinity is unknown`,
+      help: "use a payload with thread-independent cleanup, or keep this Mutex on one thread",
+    };
+  }
+  const foreignIssue = foreignThreadTransferIssue(payload, state);
+  if (foreignIssue) return foreignIssue;
+  return {
+    reason: `Mutex payload ${displayAssignableType(payload)} is not transferable and safely destructible on an arbitrary worker`,
+    help: "store an owned thread-transferable value in the Mutex, or keep this Mutex on one thread",
+  };
 }
 
 function shareableTypeIssue(
@@ -12929,11 +12968,20 @@ function initialThreadTransferKind(
   const actual = String(underlyingType(type));
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
   if (state.aggregateExecutorAffinities.has(actual)) return null;
-  if (actual === "TaskScope" || actual === "TaskControl") return "copy";
+  if (actual === "TaskScope" || actual === "TaskControl") return "share";
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
+  const mutex = parseMutexType(actual);
+  if (mutex) {
+    return initialThreadTransferKind(mutex.valueType, structs, enums, state, visiting)
+      ? "share"
+      : null;
+  }
   const fixed = parseFixedArrayType(actual);
-  if (fixed) return initialThreadTransferKind(fixed.elementType, structs, enums, state, visiting);
+  if (fixed) {
+    const element = initialThreadTransferKind(fixed.elementType, structs, enums, state, visiting);
+    return element ? (element === "copy" ? "copy" : "move") : null;
+  }
   const dynamic = parseDynamicArrayType(actual);
   if (dynamic) {
     return initialThreadTransferKind(dynamic.elementType, structs, enums, state, visiting) ? "move" : null;
@@ -12960,7 +13008,7 @@ function initialThreadTransferKind(
   if (visiting.has(actual)) return null;
   const aggregate = structs.get(actual);
   if (aggregate) {
-    if (aggregate.kind === "class") return state.shareableClasses.has(actual) ? "copy" : null;
+    if (aggregate.kind === "class") return state.shareableClasses.has(actual) ? "share" : null;
     if (aggregate.deinitializer) return null;
     visiting.add(actual);
     const fields = aggregate.fields.map((field) => (
@@ -12968,7 +13016,7 @@ function initialThreadTransferKind(
     ));
     visiting.delete(actual);
     if (fields.some((field) => field === null)) return null;
-    return fields.some((field) => field === "move") ? "move" : "copy";
+    return fields.some((field) => field === "move" || field === "share") ? "move" : "copy";
   }
   const enumeration = enums.get(actual);
   if (enumeration) {
@@ -12978,7 +13026,7 @@ function initialThreadTransferKind(
     ));
     visiting.delete(actual);
     if (variants.some((variant) => variant === null)) return null;
-    return variants.some((variant) => variant === "move") ? "move" : "copy";
+    return variants.some((variant) => variant === "move" || variant === "share") ? "move" : "copy";
   }
   return null;
 }

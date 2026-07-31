@@ -24,7 +24,7 @@ import { parseViewType } from "./view-types.ts";
 import { parseOnceLifetimeType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
-import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
+import type { IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadTransferKind } from "./sema.ts";
 import {
   closureAdapterName,
   closureEnvironmentName,
@@ -4186,6 +4186,9 @@ function emitAwaitArguments(
   fileName: string,
 ): string[] {
   const arguments_: string[] = [];
+  const threadTransfers = site.nativeThread
+    ? parent.types.semanticInfo.threadSpawnCaptureTransfers.get(site.call.location.offset)
+    : undefined;
   if (site.receiver) {
     let receiver = emitFrameExpression(site.receiver, parent, fileName);
     if (site.target.owner?.kind === "class") {
@@ -4198,11 +4201,11 @@ function emitAwaitArguments(
     const argumentType = argument.kind === "identifier"
       ? parent.locals.get(argument.name)
       : undefined;
+    const threadTransfer: ThreadTransferKind | undefined = threadTransfers?.[index];
     const executorBoundThreadCapture = Boolean(
-      site.nativeThread
+      threadTransfer === "executorBound"
       && argument.kind === "identifier"
       && argumentType
-      && isExecutorBoundClassType(argumentType, parent.types),
     );
     let value = executorBoundThreadCapture && argument.kind === "identifier" && argumentType
       ? parent.borrowedLocals.has(argument.name)
@@ -4211,6 +4214,16 @@ function emitAwaitArguments(
       : emitFrameExpression(argument, parent, fileName);
     if (executorBoundThreadCapture && argumentType) {
       return `Z_${argumentType}_retain(${value})`;
+    }
+    if (threadTransfer === "share" && argumentType) {
+      const mutex = parseMutexType(argumentType);
+      if (mutex) return `${asyncMutexRetainName(mutex.valueType)}(${value})`;
+      if (argumentType === "TaskScope") return `z_task_scope_retain(${value})`;
+      if (argumentType === "TaskControl") return `z_task_control_retain(${value})`;
+      if (parent.types.structs.get(argumentType)?.kind === "class") {
+        return `Z_${argumentType}_retain(${value})`;
+      }
+      unsupported(fileName, argument.location, `thread-shared capture type ${JSON.stringify(argumentType)} has no retain operation`);
     }
     if (site.placement && argument.kind === "identifier" && parameter?.mode === "value") {
       const type = argumentType;
@@ -7055,6 +7068,10 @@ function asyncMutexName(valueType: string): string {
 
 function asyncMutexInitializeName(valueType: string): string {
   return `z_mutex_${asyncNativeSymbolPart(valueType)}_initialize`;
+}
+
+function asyncMutexRetainName(valueType: string): string {
+  return `z_mutex_${asyncNativeSymbolPart(valueType)}_retain`;
 }
 
 function asyncMutexDeinitName(valueType: string): string {

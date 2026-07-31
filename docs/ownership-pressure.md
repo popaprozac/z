@@ -1672,13 +1672,20 @@ This shape exposed three useful design constraints:
 
 The closure boundary is intentionally narrower than a public lock guard. It
 makes unlock and borrow end structural and removes forgotten unlock, escaped
-guard, and use-after-unlock shapes from the first tier. It does not yet prove
-cross-thread `Mutex<T>` transport: the runtime uses a real OS mutex, while the
-language currently exercises it only through synchronous same-thread
-reachability. Opaque transport and payload shareability must land before
-`thread.spawn` may capture one. The probe also does not prove read/write locks,
-asynchronous mutexes, atomics, condition variables, semaphores, timed
-acquisition, nonblocking acquisition, or arbitrary native resource payloads.
+guard, and use-after-unlock shapes from the first tier.
+
+The next pressure slice made the handle itself shareable across
+`thread.spawn` when its payload is transferable and safely destructible on the
+receiving worker. Each task frame owns an atomic retain of the same stable cell;
+the parent can use its handle before and after join, and final release destroys
+the payload and native mutex once. This also forced thread-transfer evidence to
+distinguish trivial copy, unique move, retained share, and executor-bound
+opaque transport instead of overloading cleanup-bearing moves. Main-isolated
+and unknown-cleanup payloads remain rejected at capture time.
+
+The probe still does not prove read/write locks, asynchronous mutexes, atomics,
+condition variables, semaphores, timed acquisition, nonblocking acquisition,
+or arbitrary native resource payloads.
 
 ## Not tested yet
 
