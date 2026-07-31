@@ -749,6 +749,25 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
     ?? context.semanticInfo.expressionTypes.get(word.start);
+  const moduleConstant = context.sourceProgram.constants.find((declaration) => (
+    declaration.name === word.text
+    && (
+      declaration.nameLocation.offset === word.start
+      || context.semanticInfo.moduleConstantReferences.get(word.start)
+        === declaration.name
+    )
+  ));
+  if (moduleConstant) {
+    const type = context.semanticInfo.bindingTypes.get(
+      moduleConstant.nameLocation.offset
+    ) ?? moduleConstant.type?.name ?? "unknown";
+    return markdownHover(
+      `const ${moduleConstant.name}: ${displayServiceType(type, context)}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
 
   if (
     word.text === "using"
@@ -952,7 +971,10 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover(`import ${word.text} from ${JSON.stringify(sourceNamespace.header)}  // Z module`, source, word.start, word.end);
   }
   const sourceBinding = localSourceBinding(context, word.text);
-  if (sourceBinding && !directWordType) {
+  if (
+    sourceBinding
+    && !sourceNameIsShadowed(context, word.text, word.start, fileName)
+  ) {
     const detail = sourceExportDetail(
       sourceBinding.module,
       sourceBinding.importedName,
@@ -2144,6 +2166,18 @@ function symbolCompletions(
     ?? completionRecoveryAnalysis(source, fileName, start, tailOffset, prefix);
   if (!context) return filterCompletions([...builtIns, ...tokenItems], prefix, 500);
   const items: CompletionItem[] = [...builtIns];
+  for (const declaration of context.sourceProgram.constants) {
+    const type = context.semanticInfo.bindingTypes.get(declaration.nameLocation.offset)
+      ?? declaration.type?.name
+      ?? context.semanticInfo.expressionTypes.get(declaration.initializer.location.offset)
+      ?? "unknown";
+    items.push({
+      label: declaration.name,
+      kind: completionKinds.variable,
+      detail: `const ${declaration.name}: ${displayServiceType(type, context)}`,
+      sortText: `0-${declaration.name}`,
+    });
+  }
   for (const binding of collectBindings(context)) {
     if (binding.fileName && resolve(binding.fileName) !== resolve(fileName)) continue;
     if (binding.offset >= start) continue;
@@ -3691,7 +3725,17 @@ function localViewOwnerAt(context: AnalyzedSource, operatorOffset: number): stri
 }
 
 function collectBindings(context: AnalyzedSource): Binding[] {
-  const bindings: Binding[] = [];
+  const bindings: Binding[] = context.sourceProgram.constants.map((declaration) => ({
+    name: declaration.name,
+    type: context.semanticInfo.bindingTypes.get(declaration.nameLocation.offset)
+      ?? declaration.type?.name
+      ?? context.semanticInfo.expressionTypes.get(declaration.initializer.location.offset)
+      ?? "unknown",
+    offset: declaration.nameLocation.offset,
+    readonly: true,
+    parameter: false,
+    fileName: declaration.nameLocation.fileName,
+  }));
   const seenClosures = new Set<number>();
   const seenExpressionBlocks = new Set<number>();
   const visitClosure = (expression: Extract<Expression, { kind: "closure" }>): void => {
@@ -4616,13 +4660,15 @@ function sourceNameIsShadowed(context: AnalyzedSource, name: string, offset: num
 }
 
 function sourceExportDeclaration(module: SourceModuleInfo, name: string):
+  | Program["constants"][number]
   | Program["functions"][number]
   | Program["structs"][number]
   | Program["traits"][number]
   | Program["enums"][number]
   | Program["typeAliases"][number]
   | null {
-  return module.program.functions.find((item) => item.name === name)
+  return module.program.constants.find((item) => item.name === name)
+    ?? module.program.functions.find((item) => item.name === name)
     ?? module.program.structs.find((item) => item.name === name)
     ?? module.program.traits.find((item) => item.name === name)
     ?? module.program.enums.find((item) => item.name === name)
@@ -4638,6 +4684,9 @@ function sourceExportDetail(
 ): string {
   const declaration = sourceExportDeclaration(module, name);
   if (!declaration) return `export ${displayName}`;
+  if (declaration.kind === "constant") {
+    return `const ${displayName}: ${displayType(declaration.type?.name ?? "inferred", typeDisplayNames)}`;
+  }
   if (declaration.kind === "function") {
     return zFunctionDetail(
       displayName,
@@ -4722,6 +4771,7 @@ function sourceImportHover(
 
 function sourceExportTokenType(module: SourceModuleInfo, name: string): (typeof semanticTokenTypes)[number] {
   const declaration = sourceExportDeclaration(module, name);
+  if (declaration?.kind === "constant") return "variable";
   if (declaration?.kind === "function") return "function";
   if (declaration?.kind === "class") return "class";
   if (declaration?.kind === "trait") return "interface";
@@ -4731,6 +4781,7 @@ function sourceExportTokenType(module: SourceModuleInfo, name: string): (typeof 
 
 function sourceExportCompletionKind(module: SourceModuleInfo, name: string): number {
   const declaration = sourceExportDeclaration(module, name);
+  if (declaration?.kind === "constant") return completionKinds.variable;
   if (declaration?.kind === "function") return completionKinds.function;
   if (declaration?.kind === "class") return completionKinds.class;
   if (declaration?.kind === "trait") return completionKinds.interface;
@@ -5798,6 +5849,24 @@ function declarationHover(
   executorAffinities: ReadonlyMap<string, ExecutorAffinityInfo> = new Map(),
 ): Hover | null {
   if (program) {
+    const constant = program.constants.find((item) => item.name === name);
+    if (constant) {
+      const type = constant.type?.name ?? (
+        constant.initializer.kind === "string"
+          ? "String"
+          : constant.initializer.kind === "boolean"
+            ? "boolean"
+            : constant.initializer.kind === "number" || constant.initializer.kind === "unary"
+              ? "i32"
+              : "unknown"
+      );
+      return markdownHover(
+        `const ${constant.name}: ${displayType(type, typeDisplayNames)}`,
+        source,
+        start,
+        end,
+      );
+    }
     const fn = program.functions.find((item) => item.name === name);
     if (fn) {
       return markdownHover(

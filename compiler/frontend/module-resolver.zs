@@ -45,6 +45,7 @@ import {
   recordBindingResolution,
   recordExpressionResolution,
   recordForeignValueResolution,
+  valueSymbolTargetName,
   recordForeignCallFacts,
   recordCallResolution,
 } from "./semantic-evidence.zs";
@@ -1823,6 +1824,7 @@ function inferExpressionNodeType(
     }
     match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
       some(location) => {
+        const targetName = valueSymbolTargetName(modules, location);
         recordForeignValueResolution(
           modules,
           moduleIndex,
@@ -1831,9 +1833,7 @@ function inferExpressionNodeType(
           modules[location.moduleIndex].symbols[
             location.symbolIndex
           ].valueType,
-          modules[location.moduleIndex].symbols[
-            location.symbolIndex
-          ].importedName,
+          targetName,
           inout evidence
         );
         return modules[location.moduleIndex].symbols[
@@ -2386,6 +2386,7 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.memberExpression && children.length == 1) {
     match (foreignValueSymbolLocation(modules, moduleIndex, tree, index)) {
       some(location) => {
+        const targetName = valueSymbolTargetName(modules, location);
         recordForeignValueResolution(
           modules,
           moduleIndex,
@@ -2394,9 +2395,7 @@ function inferExpressionNodeType(
           modules[location.moduleIndex].symbols[
             location.symbolIndex
           ].valueType,
-          modules[location.moduleIndex].symbols[
-            location.symbolIndex
-          ].importedName,
+          targetName,
           inout evidence
         );
         return modules[location.moduleIndex].symbols[

@@ -1361,6 +1361,7 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const imports: ImportDeclaration[] = [];
   const exports: Program["exports"] = [];
+  const constants: Program["constants"] = [];
   const typeAliases: TypeAliasDeclaration[] = [];
   const traits: TraitDeclaration[] = [];
   const structs: StructDeclaration[] = [];
@@ -1377,6 +1378,30 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
       imports.push(parseImport());
+    } else if (at("const")) {
+      if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` cannot modify a module constant");
+      if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` cannot modify a module constant");
+      const start = expect("const", "`const`").location;
+      const name = expect("identifier", "a module constant name");
+      const type = match("colon") ? parseType() : null;
+      if (exportToken && !type) {
+        throw new DiagnosticError(fileName, name.location, `exported module constant ${JSON.stringify(name.text)} requires an explicit type`, {
+          code: "Z0604",
+          helps: [`write \`export const ${name.text}: Type = ...;\``],
+        });
+      }
+      expect("equal", "`=` after a module constant");
+      const initializer = parseExpression();
+      expect("semicolon", "`;` after a module constant");
+      constants.push({
+        kind: "constant",
+        name: name.text,
+        nameLocation: name.location,
+        type,
+        initializer,
+        location: start,
+      });
+      if (exportToken) exports.push({ name: name.text, declarationKind: "const", location: exportToken.location });
     } else if (at("identifier") && peek().text === "type") {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` can only modify a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
@@ -1443,10 +1468,10 @@ export function parse(tokens: Token[], fileName: string): Program {
     } else {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` must be followed by a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
-      throw new DiagnosticError(fileName, peek().location, "expected an import, export, type, trait, struct, class, enum, function, or test declaration");
+      throw new DiagnosticError(fileName, peek().location, "expected an import, export, const, type, trait, struct, class, enum, function, or test declaration");
     }
   }
-  return { kind: "program", imports, exports, typeAliases, traits, structs, enums, functions };
+  return { kind: "program", imports, exports, constants, typeAliases, traits, structs, enums, functions };
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {

@@ -37,6 +37,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f64Type) return "double";
   if (type.kind == LoweredTypeKind.fsLockType) return "Z_FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
+  if (type.kind == LoweredTypeKind.cstringType) return "const char *";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.mapType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.setType) return `Z_${type.name}`;
@@ -189,6 +190,41 @@ function appendCStringLiteral(
     index = index + 1;
   }
   output.append("\"");
+}
+
+function appendModuleConstants(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.constants) {
+    if (declaration.type.kind == LoweredTypeKind.stringType) {
+      output.append("static __attribute__((unused)) const Z_String ");
+      appendCBindingName(inout output, declaration.name);
+      output.append(" = { .data = ");
+      appendCStringLiteral(inout output, declaration.value);
+      output.append(", .length = sizeof(");
+      appendCStringLiteral(inout output, declaration.value);
+      output.append(") - 1, .capacity = 0 };\n");
+      continue;
+    }
+    if (declaration.type.kind == LoweredTypeKind.cstringType) {
+      output.append("static __attribute__((unused)) const char * const ");
+      appendCBindingName(inout output, declaration.name);
+      output.append(" = ");
+      appendCStringLiteral(inout output, declaration.value);
+      output.append(";\n");
+      continue;
+    }
+    output.append("static __attribute__((unused)) const ");
+    const nativeType = try cType(declaration.type);
+    output.append(nativeType);
+    output.append(" ");
+    appendCBindingName(inout output, declaration.name);
+    output.append(" = ");
+    output.append(declaration.value);
+    output.append(";\n");
+  }
+  if (program.constants.length > 0) output.append("\n");
 }
 
 function appendCleanups(
@@ -4136,6 +4172,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
   try appendTypeDefinitions(inout output, program);
+  try appendModuleConstants(inout output, program);
   for (const foreign of program.foreignFunctions) {
     const errorType = try cType(foreign.errorType);
     output.append("static __attribute__((unused)) Z_");

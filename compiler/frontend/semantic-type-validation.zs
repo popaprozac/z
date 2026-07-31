@@ -702,12 +702,105 @@ function validateEnumTypes(
   }
 }
 
+function moduleConstantNumericType(in name: String): boolean {
+  return name == "i8"
+    || name == "i16"
+    || name == "i32"
+    || name == "i64"
+    || name == "u8"
+    || name == "u16"
+    || name == "u32"
+    || name == "u64"
+    || name == "isize"
+    || name == "usize"
+    || name == "f32"
+    || name == "f64";
+}
+
+function validateModuleConstantTypes(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  inout typeParameters: Array<NativeTypeParameterBinding>
+): void throws ModuleResolveError {
+  for (const declaration of module.program.constants) {
+    let expected = "";
+    match (in declaration.typeAnnotation) {
+      some(type) => {
+        try validateTypeReference(
+          module,
+          modules,
+          moduleIndex,
+          typeParameters,
+          type
+        );
+        expected = type.name.copyBytes(0, type.name.byteLength);
+      }
+      none => {}
+    }
+    match (in declaration.initializer.tree) {
+      some(tree) => {
+        const root = view tree.nodes[tree.root];
+        const numberLiteral = root.kind == ExpressionKind.numberExpression
+          || (
+            root.kind == ExpressionKind.unaryExpression
+            && root.children.length == 1
+            && (root.value == "+" || root.value == "-")
+            && tree.nodes[root.children[0]].kind
+              == ExpressionKind.numberExpression
+          );
+        const supported = root.kind == ExpressionKind.stringExpression
+          || root.kind == ExpressionKind.booleanExpression
+          || numberLiteral;
+        if (!supported) throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `module constant ${declaration.name} requires a cleanup-free literal initializer in the first native tier`,
+          declaration.line,
+          declaration.column
+        );
+        if (expected.byteLength == 0) continue;
+        const compatible = (
+          root.kind == ExpressionKind.stringExpression
+          && (expected == "String" || expected == "cstring")
+        ) || (
+          root.kind == ExpressionKind.booleanExpression
+          && expected == "boolean"
+        ) || (
+          numberLiteral
+          && moduleConstantNumericType(expected)
+        );
+        if (!compatible) throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `module constant ${declaration.name} cannot initialize ${expected} from this literal`,
+          declaration.line,
+          declaration.column
+        );
+      }
+      none => throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `module constant ${declaration.name} has no initializer`,
+        declaration.line,
+        declaration.column
+      );
+    }
+  }
+}
+
 export function validateModuleTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
+  try validateModuleConstantTypes(
+    module,
+    modules,
+    moduleIndex,
+    inout empty
+  );
   for (const declaration of module.program.functions) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, declaration);
   }

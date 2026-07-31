@@ -214,7 +214,23 @@ function stage0ModuleSymbols(
       line: declaration.location.line,
       column: declaration.location.column,
     },
-  })).sort((left, right) => left.location.offset - right.location.offset);
+  }));
+  symbols.push(...program.constants.map((declaration): Stage1ModuleSymbol => ({
+    name: declaration.name,
+    kind: "const",
+    exported: exported.has(`const\0${declaration.name}`),
+    nativeCExport: false,
+    targetModule: null,
+    importedName: declaration.name,
+    functionSignature: null,
+    typeSignature: null,
+    location: {
+      offset: declaration.location.offset,
+      line: declaration.location.line,
+      column: declaration.location.column,
+    },
+  })));
+  symbols.sort((left, right) => left.location.offset - right.location.offset);
   for (const declaration of program.imports) {
     const dependencyPath = module.dependencies.get(declaration.location.offset);
     const targetModule = dependencyPath ? indexByPath.get(dependencyPath) ?? null : null;

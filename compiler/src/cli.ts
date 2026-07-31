@@ -492,6 +492,13 @@ function stage0Declarations(program: Program, fileName: string): readonly Stage1
       asynchronous: false,
       location: { ...item.location, fileName },
     })),
+    ...program.constants.map((item): Stage1Declaration => ({
+      kind: "const",
+      name: item.name,
+      exported: exported.has(`const\0${item.name}`),
+      asynchronous: false,
+      location: { ...item.location, fileName },
+    })),
     ...program.functions.map((item): Stage1Declaration => ({
       kind: "function",
       name: item.name,

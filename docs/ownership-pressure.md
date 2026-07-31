@@ -1584,6 +1584,33 @@ than encoding indexes and rest through object-field sentinels. This preserved
 Stage-0/native canonical parity and made `_`, named elements, and `...rest`
 available to native semantic evidence and editor services independently.
 
+## Application configuration without runtime globals
+
+Source:
+[`examples/language/modules/app-config.zs`](../examples/language/modules/app-config.zs)
+
+The desktop-framework pressure test needed application-wide named values before
+it needed shared mutable global state. Implementing those as module-level
+`const` values made the distinction explicit: a literal configuration value has
+no initializer task, ARC root, destruction order, lock, or executor affinity.
+It lowers to immutable static native storage and imports through the same
+namespace or selective-binding path as functions and types.
+
+The first tier intentionally accepts only cleanup-free literals. `String`
+constants use immutable static UTF-8 bytes; copying the small value descriptor
+into ordinary Z storage remains safe, and mutation allocates owned storage
+instead of modifying the module value. Exported constants state their type so
+editing an initializer cannot silently change another module's contract.
+
+Native self-hosting exposed the important implementation constraint: a
+selective import and a namespace member must resolve to the same declaration
+identity, not masquerade as foreign-header constants. Native semantic evidence
+now records one deterministic module symbol, and strict C execution proves
+local, namespace, and aliased reads. Runtime singletons, shared ARC roots,
+module-level mutation, target-conditional values, and initialization/destruction
+ordering remain separate designs rather than consequences hidden inside
+`export const`.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

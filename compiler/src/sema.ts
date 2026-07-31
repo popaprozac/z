@@ -391,6 +391,7 @@ export type SemanticInfo = {
   readonly foreignFunctionDefinitions: ReadonlyMap<number, ForeignDeclarationMetadata>;
   readonly foreignCxxMethodCalls: ReadonlyMap<number, { readonly name: string; readonly receiverAccess: "in" | "inout" | "move" }>;
   readonly foreignConstantNames: ReadonlyMap<number, string>;
+  readonly moduleConstantReferences: ReadonlyMap<number, string>;
   readonly nativeArgumentAccesses: ReadonlyMap<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
@@ -527,6 +528,7 @@ type AnalysisState = {
   readonly foreignFunctionDefinitions: Map<number, ForeignDeclarationMetadata>;
   readonly foreignCxxMethodCalls: Map<number, { readonly name: string; readonly receiverAccess: "in" | "inout" | "move" }>;
   readonly foreignConstantNames: Map<number, string>;
+  readonly moduleConstantReferences: Map<number, string>;
   readonly nativeArgumentAccesses: Map<number, "in" | "inout" | "out">;
   readonly foreignObjectTypes: ReadonlyMap<string, ForeignObjectType>;
   readonly foreignInterfaces: ReadonlyMap<string, ForeignObjCInterface>;
@@ -634,6 +636,7 @@ type ValueLoopAnalysisFrame = {
 };
 
 type SymbolValue =
+  | { readonly kind: "constant"; readonly type: string }
   | { readonly kind: "function"; readonly declaration: FunctionDeclaration }
   | { readonly kind: "foreignFunction"; readonly declaration: ForeignFunction }
   | { readonly kind: "foreignConstant"; readonly declaration: ForeignConstant }
@@ -876,6 +879,7 @@ export function analyze(
     foreignFunctionDefinitions: new Map(),
     foreignCxxMethodCalls: new Map(),
     foreignConstantNames: new Map(),
+    moduleConstantReferences: new Map(),
     nativeArgumentAccesses: new Map(),
     foreignObjectTypes,
     foreignInterfaces,
@@ -1275,6 +1279,78 @@ export function analyze(
   for (const declaration of program.enums) {
     declareGlobal(globals, declaration.name, { kind: "enum", declaration }, declaration.location, fileName);
     enums.set(declaration.name, declaration);
+  }
+
+  for (const declaration of program.constants) {
+    if (!moduleConstantInitializerSupported(declaration.initializer)) {
+      throw new DiagnosticError(
+        declaration.location.fileName ?? fileName,
+        declaration.initializer.location,
+        `module constant ${JSON.stringify(declaration.name)} requires a compile-time literal initializer in the first tier`,
+        {
+          code: "Z0604",
+          notes: ["module constants do not run initialization code and therefore introduce no module initialization order"],
+          helps: ["use a boolean, numeric, String, or explicitly typed cstring literal"],
+        },
+      );
+    }
+    if (declaration.type) {
+      validateType(declaration.type, structs, enums, foreignNamedTypes, fileName, false);
+    }
+    let initializerType = inferExpression(
+      declaration.initializer,
+      new Map(),
+      globals,
+      structs,
+      enums,
+      declaration.location.fileName ?? fileName,
+      state,
+    );
+    const constantType = declaration.type
+      ? resolveSemanticTypeName(declaration.type, structs, enums, state)
+      : String(underlyingType(initializerType));
+    if (!moduleConstantTypeSupported(constantType)) {
+      throw new DiagnosticError(
+        declaration.location.fileName ?? fileName,
+        declaration.type?.location ?? declaration.initializer.location,
+        `module constant ${JSON.stringify(declaration.name)} cannot store ${displayAssignableType(constantType)} in the first tier`,
+        {
+          code: "Z0604",
+          notes: ["runtime-owned values require a separate module initialization and destruction model"],
+          helps: ["use a boolean, numeric, String, or cstring constant"],
+        },
+      );
+    }
+    if (declaration.type) {
+      initializerType = contextualCStringLiteral(constantType, declaration.initializer, state) ?? initializerType;
+      requireAssignable(
+        constantType,
+        initializerType,
+        declaration.initializer,
+        declaration.location.fileName ?? fileName,
+        structs,
+        enums,
+        state,
+      );
+    } else if (
+      declaration.initializer.kind === "number"
+      && isIntegerLiteral(declaration.initializer.value)
+      && !integerLiteralFits(declaration.initializer.value, "i32")
+    ) {
+      throw new DiagnosticError(
+        declaration.location.fileName ?? fileName,
+        declaration.initializer.location,
+        `integer literal ${declaration.initializer.value} does not fit default i32; add an explicit integer type`,
+      );
+    }
+    state.bindingTypes.set(declaration.nameLocation.offset, constantType);
+    declareGlobal(
+      globals,
+      declaration.name,
+      { kind: "constant", type: constantType },
+      declaration.location,
+      declaration.location.fileName ?? fileName,
+    );
   }
 
   const testNames = new Map<string, SourceLocation>();
@@ -7390,6 +7466,10 @@ function inferExpressionInner(
             ? global.declaration.errorType.name
             : null,
         );
+      }
+      if (global?.kind === "constant") {
+        state.moduleConstantReferences.set(expression.location.offset, expression.name);
+        return global.type;
       }
       if (global?.kind === "standardFunction") {
         const signature = standardFunctionSignature(global.name);
@@ -15000,4 +15080,24 @@ function validateUserName(name: string, location: SourceLocation, fileName: stri
   if (name.startsWith("_z_")) {
     throw new DiagnosticError(fileName, location, "names beginning with `_z_` are reserved for compiler-generated storage");
   }
+}
+
+function moduleConstantInitializerSupported(expression: Expression): boolean {
+  if (
+    expression.kind === "number"
+    || expression.kind === "string"
+    || expression.kind === "boolean"
+  ) {
+    return true;
+  }
+  return expression.kind === "unary"
+    && (expression.operator === "+" || expression.operator === "-")
+    && expression.operand.kind === "number";
+}
+
+function moduleConstantTypeSupported(type: string): boolean {
+  return type === "boolean"
+    || type === "String"
+    || type === "cstring"
+    || isNumericType(type);
 }

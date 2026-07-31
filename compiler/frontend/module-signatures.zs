@@ -28,6 +28,7 @@ function parameterModeName(mode: ParameterMode): String {
 }
 
 export function declarationSymbolKind(kind: DeclarationKind): ModuleSymbolKind {
+  if (kind == DeclarationKind.constantDeclaration) return ModuleSymbolKind.constantSymbol;
   if (kind == DeclarationKind.functionDeclaration) return ModuleSymbolKind.functionSymbol;
   if (kind == DeclarationKind.structDeclaration) return ModuleSymbolKind.structSymbol;
   if (kind == DeclarationKind.classDeclaration) return ModuleSymbolKind.classSymbol;

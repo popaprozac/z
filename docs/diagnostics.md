@@ -69,6 +69,7 @@ Currently structured codes include:
 | `Z0601` | circular Z source-module import |
 | `Z0602` | missing Z module or exported declaration |
 | `Z0603` | duplicate source-module export or binding |
+| `Z0604` | invalid module-level constant declaration, type, or initializer |
 | `Z0700` | async program is valid but uses a shape outside the current executable lowering tier |
 | `Z0701` | invalid `await` context or operand |
 | `Z0702` | async call is missing `await` or `task` |

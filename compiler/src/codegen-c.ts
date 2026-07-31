@@ -503,6 +503,10 @@ export function generateC(
   }
 
   lines.push(...generateAggregateDefinitions(program.structs, program.enums, arrayTypes, structs, enums, semanticInfo.foreignNamedTypes));
+  for (const declaration of program.constants) {
+    lines.push(generateModuleConstant(declaration, structs, enums, semanticInfo));
+  }
+  if (program.constants.length > 0) lines.push("");
   for (const [callOffset, closureOffset] of semanticInfo.taskScopeAsyncCalls) {
     const closure = semanticInfo.closures.get(closureOffset)!;
     lines.push(`${taskScopeAsyncScheduleSignature(callOffset, closure, structs, enums, semanticInfo)};`);
@@ -669,6 +673,48 @@ export function generateC(
     ), "");
   }
   return `${lines.join("\n")}\n`;
+}
+
+function generateModuleConstant(
+  declaration: Program["constants"][number],
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const type = declaration.type?.name
+    ?? semanticInfo.expressionTypes.get(declaration.initializer.location.offset);
+  if (!type) throw new Error(`missing inferred type for module constant ${JSON.stringify(declaration.name)}`);
+  const name = cBindingName(declaration.name);
+  let value: string;
+  if (declaration.initializer.kind === "string") {
+    value = type === "cstring"
+      ? JSON.stringify(declaration.initializer.value)
+      : `(Z_String){ .data = ${JSON.stringify(declaration.initializer.value)}, .length = sizeof(${JSON.stringify(declaration.initializer.value)}) - 1, .capacity = 0 }`;
+  } else if (declaration.initializer.kind === "boolean") {
+    value = declaration.initializer.value ? "true" : "false";
+  } else if (declaration.initializer.kind === "number") {
+    value = generateNumericLiteral(
+      declaration.initializer.value,
+      semanticInfo.numericLiteralTypes.get(declaration.initializer.location.offset) ?? type,
+    );
+  } else if (
+    declaration.initializer.kind === "unary"
+    && declaration.initializer.operand.kind === "number"
+    && (declaration.initializer.operator === "+" || declaration.initializer.operator === "-")
+  ) {
+    value = generateContextualSignedLiteral(
+      declaration.initializer.operator,
+      declaration.initializer.operand.value,
+      type,
+    );
+  } else {
+    throw new Error(`unsupported initializer for module constant ${JSON.stringify(declaration.name)}`);
+  }
+  if (type === "cstring") {
+    return `static __attribute__((unused)) const char * const ${name} = ${value};`;
+  }
+  const mapped = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
+  return `static __attribute__((unused)) const ${mapped} ${name} = ${value};`;
 }
 
 function generateTestRunner(
@@ -7111,6 +7157,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return `(${expression.operator}${generateExpression(expression.operand, context)})`;
     }
     case "identifier":
+      if (context.semanticInfo.moduleConstantReferences.has(expression.location.offset)) {
+        return cBindingName(context.semanticInfo.moduleConstantReferences.get(expression.location.offset)!);
+      }
       if (context.semanticInfo.standardFunctionReferences.has(expression.location.offset)) {
         const name = context.semanticInfo.standardFunctionReferences.get(expression.location.offset)!;
         const signature = standardFunctionSignature(name);

@@ -44,6 +44,21 @@ function exportedFunctionLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function exportedValueLocation(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in name: String
+): Option<ModuleSymbolLocation> {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  if (
+    symbolIndex < modules[moduleIndex].symbols.length
+    && modules[moduleIndex].symbols[symbolIndex].exported
+    && modules[moduleIndex].symbols[symbolIndex].kind
+      == ModuleSymbolKind.constantSymbol
+  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+  return Option<ModuleSymbolLocation>.none;
+}
+
 export function callableSymbolLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -167,9 +182,36 @@ export function foreignValueSymbolLocation(
   in tree: ExpressionTree,
   index: usize
 ): Option<ModuleSymbolLocation> {
-  let name = "";
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
-    name = identifierLookupName(tree.nodes[index].value);
+    const name = identifierLookupName(tree.nodes[index].value);
+    const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+    if (symbolIndex >= modules[moduleIndex].symbols.length) {
+      return Option<ModuleSymbolLocation>.none;
+    }
+    const symbol = view modules[moduleIndex].symbols[symbolIndex];
+    if (
+      symbol.kind == ModuleSymbolKind.constantSymbol
+      && symbol.valueType.byteLength > 0
+    ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+    if (symbol.kind != ModuleSymbolKind.importedSymbol) {
+      return Option<ModuleSymbolLocation>.none;
+    }
+    return match (in symbol.targetModule) {
+      some(target) => exportedValueLocation(
+        modules,
+        target,
+        symbol.importedName
+      );
+      none => {
+        if (symbol.valueType.byteLength > 0) {
+          return Option.some(ModuleSymbolLocation({
+            moduleIndex,
+            symbolIndex,
+          }));
+        }
+        return Option<ModuleSymbolLocation>.none;
+      }
+    };
   } else if (
     tree.nodes[index].kind == ExpressionKind.memberExpression
     && tree.nodes[index].children.length == 1
@@ -180,16 +222,49 @@ export function foreignValueSymbolLocation(
     ) return Option<ModuleSymbolLocation>.none;
     const namespace = identifierLookupName(tree.nodes[receiver].value);
     const member = identifierLookupName(tree.nodes[index].value);
-    name = `${namespace}.${member}`;
+    const namespaceIndex = moduleSymbolIndex(
+      modules[moduleIndex],
+      namespace
+    );
+    if (
+      namespaceIndex < modules[moduleIndex].symbols.length
+      && modules[moduleIndex].symbols[namespaceIndex].kind
+        == ModuleSymbolKind.namespaceSymbol
+    ) return match (
+      in modules[moduleIndex].symbols[namespaceIndex].targetModule
+    ) {
+      some(target) => exportedValueLocation(modules, target, member);
+      none => {
+        const qualified = `${namespace}.${member}`;
+        const foreignIndex = moduleSymbolIndex(
+          modules[moduleIndex],
+          qualified
+        );
+        if (
+          foreignIndex < modules[moduleIndex].symbols.length
+          && modules[moduleIndex].symbols[foreignIndex].kind
+            == ModuleSymbolKind.importedSymbol
+          && modules[moduleIndex].symbols[foreignIndex].valueType.byteLength > 0
+        ) return Option.some(ModuleSymbolLocation({
+          moduleIndex,
+          symbolIndex: foreignIndex,
+        }));
+        return Option<ModuleSymbolLocation>.none;
+      }
+    };
   } else return Option<ModuleSymbolLocation>.none;
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
-  if (
-    symbolIndex < modules[moduleIndex].symbols.length
-    && modules[moduleIndex].symbols[symbolIndex].kind
-      == ModuleSymbolKind.importedSymbol
-    && modules[moduleIndex].symbols[symbolIndex].valueType.byteLength > 0
-  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
   return Option<ModuleSymbolLocation>.none;
+}
+
+export function valueSymbolTargetName(
+  in modules: Array<ResolvedModule>,
+  in location: ModuleSymbolLocation
+): String {
+  const symbol = view modules[location.moduleIndex].symbols[location.symbolIndex];
+  if (symbol.kind == ModuleSymbolKind.constantSymbol) {
+    return `__z_module_${location.moduleIndex}_${symbol.name}`;
+  }
+  return symbol.importedName.copyBytes(0, symbol.importedName.byteLength);
 }
 
 export function recordCallResolution(

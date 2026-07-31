@@ -1,6 +1,6 @@
 import type { Token, TokenKind } from "./lexer.ts";
 
-export type Stage1DeclarationKind = "import" | "function" | "struct" | "class" | "trait" | "type" | "enum";
+export type Stage1DeclarationKind = "import" | "const" | "function" | "struct" | "class" | "trait" | "type" | "enum";
 
 export type Stage1Declaration = {
   readonly kind: Stage1DeclarationKind;
@@ -125,7 +125,7 @@ export type Stage1ModuleCallResolution = {
   readonly errorType: string | null;
 };
 
-export type Stage1ModuleSymbolKind = "function" | "struct" | "class" | "trait" | "type" | "enum" | "namespace" | "imported";
+export type Stage1ModuleSymbolKind = "const" | "function" | "struct" | "class" | "trait" | "type" | "enum" | "namespace" | "imported";
 
 export type Stage1ModuleSymbol = {
   readonly name: string;
@@ -881,7 +881,8 @@ function isStage1ParameterMode(value: string): value is "value" | "in" | "inout"
 }
 
 function isStage1ModuleSymbolKind(value: string): value is Stage1ModuleSymbolKind {
-  return value === "function"
+  return value === "const"
+    || value === "function"
     || value === "struct"
     || value === "class"
     || value === "trait"
@@ -1061,6 +1062,7 @@ function isStage1TypeShapeKind(value: string): value is Stage1TypeShapeKind {
 
 function isStage1DeclarationKind(value: string): value is Stage1DeclarationKind {
   return value === "import"
+    || value === "const"
     || value === "function"
     || value === "struct"
     || value === "class"

@@ -249,6 +249,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
   }
 
   const imports: ImportDeclaration[] = [];
+  const constants: Program["constants"] = [];
   const typeAliases: Program["typeAliases"] = [];
   const traits: Program["traits"] = [];
   const structs: Program["structs"] = [];
@@ -259,6 +260,12 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
     imports.push(...node.program.imports
       .filter((declaration) => !isLocalSourceModuleSpecifier(declaration.header))
       .map((declaration) => rewriteNativeImport(declaration, node, scope)));
+    constants.push(...node.program.constants.map((declaration) => ({
+      ...declaration,
+      name: node.ownNames.get(declaration.name)!,
+      type: declaration.type ? renameTypeReference(declaration.type, scope, new Set()) : null,
+      initializer: transformExpression(declaration.initializer, scope, new Set(), new Set()),
+    })));
     typeAliases.push(...node.program.typeAliases.map((declaration) => ({
       ...declaration,
       name: node.ownNames.get(declaration.name)!,
@@ -281,6 +288,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
     kind: "program",
     imports,
     exports: entry.program.exports,
+    constants,
     typeAliases,
     traits,
     structs,
@@ -350,6 +358,7 @@ function rebaseLinkedLocations<T>(value: T, bases: ReadonlyMap<string, number>):
 
 function collectOwnNames(node: ModuleNode, entry: boolean): void {
   const declarations = [
+    ...node.program.constants,
     ...node.program.typeAliases,
     ...node.program.traits,
     ...node.program.structs,
@@ -386,6 +395,7 @@ function buildScope(node: ModuleNode): ModuleScope {
   const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
+    ...node.program.constants,
     ...node.program.typeAliases,
     ...node.program.traits,
     ...node.program.structs,

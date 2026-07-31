@@ -24,6 +24,34 @@ Relative `.zs` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
 
+Modules may publish named compile-time values:
+
+```z
+// app-config.zs
+export const APP_NAME: String = "Notes";
+export const DEFAULT_PORT: u16 = 34115;
+export const ENABLE_METRICS: boolean = true;
+
+const CONFIG_REVISION = 1;
+```
+
+```z
+import config from "./app-config.zs";
+import { APP_NAME as appName } from "./app-config.zs";
+
+function port(): u16 {
+  return config.DEFAULT_PORT;
+}
+```
+
+Module storage is immutable: Z has module-level `const`, not module-level
+`let`. An exported constant requires an explicit type so its public contract
+cannot change when its initializer is edited; a private constant may infer its
+type. The first executable tier accepts cleanup-free literal `boolean`, numeric,
+and `String` values, plus string literals explicitly typed `cstring`. Calls,
+runtime initialization, and ownership-bearing module values remain outside this
+tier, so importing a module does not run an initializer.
+
 `export c function` adds a stable C ABI entry point without removing the
 ordinary Z export:
 

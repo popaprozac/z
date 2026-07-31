@@ -18,7 +18,7 @@ smoke programs.
 | First native program | [`first.zs`](../examples/language/basics/first.zs) | Functions, inference, direct C import |
 | Console and strings | [`console.zs`](../examples/language/basics/console.zs) | Explicit standard import, interpolation, typed formatting |
 | Numeric conversion | [`numeric-conversions.zs`](../examples/language/basics/numeric-conversions.zs) | Explicit target-type construction, check-free widening, and checked narrowing/native-width adaptation |
-| Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Exports, namespace imports, selective aliases |
+| Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Functions, types, and immutable configuration values through namespace imports and selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |
 | Struct defaults | [`struct-defaults.zs`](../examples/language/basics/struct-defaults.zs) | Independent field defaults, `Type()`, explicit empty construction, and partial overrides |
 | Struct spread | [`struct-spread.zs`](../examples/language/basics/struct-spread.zs) | Same-type derivation, explicit copy/move capability, later overrides, default suppression, and whole-source transfer |

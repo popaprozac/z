@@ -104,6 +104,7 @@ export struct ModuleCallResolution {
 }
 
 export enum ModuleSymbolKind {
+  constantSymbol,
   functionSymbol,
   structSymbol,
   classSymbol,

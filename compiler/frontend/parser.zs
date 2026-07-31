@@ -3,6 +3,7 @@ import { TextBuffer } from "std/text";
 
 export enum DeclarationKind {
   importDeclaration,
+  constantDeclaration,
   functionDeclaration,
   structDeclaration,
   classDeclaration,
@@ -332,9 +333,19 @@ export struct ImportDeclaration {
   column: usize;
 }
 
+export struct ModuleConstantDeclaration {
+  name: String;
+  typeAnnotation: Option<TypeReference>;
+  initializer: ExpressionSyntax;
+  offset: usize;
+  line: usize;
+  column: usize;
+}
+
 export struct Program {
   declarations: Array<Declaration>;
   imports: Array<ImportDeclaration>;
+  constants: Array<ModuleConstantDeclaration>;
   typeAliases: Array<TypeAliasDeclaration>;
   functions: Array<FunctionDeclaration>;
   aggregates: Array<AggregateDeclaration>;
@@ -3577,6 +3588,7 @@ function parseEnumDeclaration(
 export function parseProgram(in tokens: Array<Token>): Program throws ParserError {
   let declarations = Array<Declaration>();
   let imports = Array<ImportDeclaration>();
+  let constants = Array<ModuleConstantDeclaration>();
   let typeAliases = Array<TypeAliasDeclaration>();
   let functions = Array<FunctionDeclaration>();
   let aggregates = Array<AggregateDeclaration>();
@@ -3642,6 +3654,45 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       });
       declarations.push(declaration);
       imports.push(importDeclaration);
+    } else if (kind == TokenKind.constKeyword) {
+      if (nativeCModifier) throw fail(tokens[current], "`c` cannot modify a module constant");
+      if (aggregateReadonly) throw fail(tokens[current], "`readonly` cannot modify a module constant");
+      if (asynchronous) throw fail(tokens[current], "a module constant cannot be async");
+      const start = try expect(tokens, inout current, TokenKind.constKeyword, "a module constant");
+      const name = try expect(tokens, inout current, TokenKind.identifier, "a module constant name");
+      let typeAnnotation = Option<TypeReference>.none;
+      if (takeIf(tokens, inout current, TokenKind.colon)) {
+        let pendingGreater: usize = 0;
+        const parsedType = try parseType(tokens, inout current, inout pendingGreater);
+        typeAnnotation = Option.some(parsedType);
+      } else if (exported) {
+        throw fail(name, `exported module constant ${name.text} requires an explicit type`);
+      }
+      try expectKind(tokens, inout current, TokenKind.equal, "`=` after a module constant");
+      let statementNodes = Array<Statement>();
+      const initializer = try scanExpression(
+        tokens,
+        inout current,
+        "a module constant initializer",
+        inout statementNodes
+      );
+      declarations.push(Declaration({
+        kind: DeclarationKind.constantDeclaration,
+        name: name.text.copyBytes(0, name.text.byteLength),
+        exported,
+        asynchronous: false,
+        offset: start.offset,
+        line: start.line,
+        column: start.column,
+      }));
+      constants.push(ModuleConstantDeclaration({
+        name: name.text.copyBytes(0, name.text.byteLength),
+        typeAnnotation,
+        initializer,
+        offset: start.offset,
+        line: start.line,
+        column: start.column,
+      }));
     } else if (kind == TokenKind.identifier && tokens[current].text == "type") {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (asynchronous) throw fail(tokens[current], "a type alias cannot be async");
@@ -3771,10 +3822,10 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       enums.push(enumDeclaration);
     } else {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
-      throw fail(tokens[current], "expected an import, type, function, struct, class, trait, enum, or test declaration");
+      throw fail(tokens[current], "expected an import, const, type, function, struct, class, trait, enum, or test declaration");
     }
   }
-  return Program({ declarations, imports, typeAliases, functions, aggregates, traits, enums });
+  return Program({ declarations, imports, constants, typeAliases, functions, aggregates, traits, enums });
 }
 
 export function expressionKindName(kind: ExpressionKind): String {
@@ -4325,6 +4376,7 @@ export function enumShapeText(in declaration: EnumDeclaration): String {
 export function declarationKindName(kind: DeclarationKind): String {
   return match (kind) {
     importDeclaration => "import";
+    constantDeclaration => "const";
     functionDeclaration => "function";
     structDeclaration => "struct";
     classDeclaration => "class";

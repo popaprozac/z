@@ -231,15 +231,34 @@ export function total(in point: Point): i32 {
 }
 ```
 
-Import a namespace, selected declarations, or an alias:
+Modules can also export immutable named values:
 
 ```z
+// app-config.zs
+export const APP_NAME: String = "Module example";
+export const OFFSET: i32 = 1;
+
+const CONFIG_REVISION = 1;
+```
+
+Public constants require an explicit type. Private constants such as
+`CONFIG_REVISION` may infer one. The current literal-only tier deliberately has
+no module-level `let` or runtime module initialization.
+
+Import namespaces, selected declarations, values, or aliases:
+
+```z
+import config from "./app-config.zs";
+import { APP_NAME as appName } from "./app-config.zs";
 import geometry from "./geometry.zs";
 import { total as sum } from "./geometry.zs";
 
 function main(): i32 {
   const point = geometry.Point({ x: 20, y: 22 });
-  return sum(point) == 42 ? 0 : 1;
+  return appName == "Module example"
+    && sum(point) + config.OFFSET == 43
+    ? 0
+    : 1;
 }
 ```
 

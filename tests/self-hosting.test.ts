@@ -1550,6 +1550,57 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 20_000);
 
+test("emits cleanup-free module constants through the native frontend", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-constants-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-module-constants/main.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) const int32_t __z_module_\d+_BASE = 40;/,
+    );
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) const Z_String __z_module_\d+_LABEL = \{ \.data = "native constants"/,
+    );
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) const char \* const __z_module_\d+_NATIVE_LABEL = "native-constants";/,
+    );
+    assert.match(
+      emission.stdout,
+      /static __attribute__\(\(unused\)\) const double __z_module_\d+_INTERNAL_RATIO = 1\.5;/,
+    );
+
+    const executable = resolve(directory, "module-constants");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 42, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,

@@ -11,6 +11,7 @@ import {
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  ModuleConstantDeclaration,
   ParameterMode,
   Program,
   Statement,
@@ -48,6 +49,7 @@ export enum LoweredTypeKind {
   f64Type,
   fsLockType,
   stringType,
+  cstringType,
   arrayType,
   mapType,
   setType,
@@ -255,9 +257,17 @@ export struct LoweredForeignFunction {
   successValues: Array<String>;
 }
 
+export struct LoweredConstant {
+  name: String;
+  type: LoweredType;
+  initializerKind: LoweredExpressionKind;
+  value: String;
+}
+
 export struct LoweredProgram {
   foreignHeaders: Array<String>;
   foreignFunctions: Array<LoweredForeignFunction>;
+  constants: Array<LoweredConstant>;
   arrays: Array<LoweredArray>;
   maps: Array<LoweredMap>;
   sets: Array<LoweredSet>;
@@ -335,6 +345,7 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "String";
+  if (type.kind == LoweredTypeKind.cstringType) return "cstring";
   return type.name.copyBytes(0, type.name.byteLength);
 }
 
@@ -437,6 +448,12 @@ function lowerTypeName(
     return LoweredType({
       kind: LoweredTypeKind.stringType,
       name: "String",
+    });
+  }
+  if (name == "cstring") {
+    return LoweredType({
+      kind: LoweredTypeKind.cstringType,
+      name: "cstring",
     });
   }
   if (stringStartsWith(name, "__z_Array_")) {
@@ -8383,6 +8400,76 @@ function importedTypesForModule(
   return types;
 }
 
+function moduleConstantNumericType(in value: String): String {
+  let index: usize = 0;
+  while (index < value.byteLength) {
+    const byte = value.byteAt(index);
+    if (byte == 46 || byte == 69 || byte == 101) return "f64";
+    index = index + 1;
+  }
+  return "i32";
+}
+
+function lowerModuleConstant(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: ModuleConstantDeclaration,
+  moduleIndex: usize
+): LoweredConstant throws String {
+  match (in declaration.initializer.tree) {
+    some(tree) => {
+      const root = view tree.nodes[tree.root];
+      let initializerKind = LoweredExpressionKind.integerValue;
+      let value = root.value.copyBytes(0, root.value.byteLength);
+      let inferredType = "i32";
+      if (root.kind == ExpressionKind.stringExpression) {
+        initializerKind = LoweredExpressionKind.stringValue;
+        inferredType = "String";
+      } else if (root.kind == ExpressionKind.booleanExpression) {
+        initializerKind = LoweredExpressionKind.booleanValue;
+        inferredType = "boolean";
+      } else if (root.kind == ExpressionKind.numberExpression) {
+        initializerKind = LoweredExpressionKind.integerValue;
+        inferredType = moduleConstantNumericType(root.value);
+      } else if (
+        root.kind == ExpressionKind.unaryExpression
+        && root.children.length == 1
+        && (
+          root.value == "+"
+          || root.value == "-"
+        )
+        && tree.nodes[root.children[0]].kind == ExpressionKind.numberExpression
+      ) {
+        initializerKind = LoweredExpressionKind.integerValue;
+        const operand = view tree.nodes[root.children[0]].value;
+        value = `${root.value}${operand}`;
+        inferredType = moduleConstantNumericType(operand);
+      } else {
+        throw `module constant ${declaration.name} requires a cleanup-free literal initializer in the first native tier`;
+      }
+      const type = match (in declaration.typeAnnotation) {
+        some(annotation) => try lowerModuleType(
+          program,
+          importedTypes,
+          annotation
+        );
+        none => try lowerModuleTypeName(
+          program,
+          importedTypes,
+          inferredType
+        );
+      };
+      return LoweredConstant({
+        name: `__z_module_${moduleIndex}_${declaration.name}`,
+        type,
+        initializerKind,
+        value,
+      });
+    }
+    none => throw `module constant ${declaration.name} has no initializer`;
+  }
+}
+
 function appendLoweredProgram(
   in program: Program,
   in sourcePath: String,
@@ -8393,6 +8480,7 @@ function appendLoweredProgram(
   moduleIndex: usize,
   entryIndex: usize,
   includeTests: boolean,
+  inout constants: Array<LoweredConstant>,
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
@@ -8405,6 +8493,16 @@ function appendLoweredProgram(
     || program.typeAliases.length > 0
   ) {
     throw "native lowering does not support traits or type aliases yet";
+  }
+
+  for (const declaration of program.constants) {
+    const loweredConstant = try lowerModuleConstant(
+      program,
+      importedTypes,
+      declaration,
+      moduleIndex
+    );
+    constants.push(move loweredConstant);
   }
 
   for (const declaration of program.enums) {
@@ -8710,6 +8808,7 @@ export function lowerProgram(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  let constants = Array<LoweredConstant>();
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
@@ -8728,6 +8827,7 @@ export function lowerProgram(
     0,
     0,
     false,
+    inout constants,
     inout arrays,
     inout maps,
     inout sets,
@@ -8739,6 +8839,7 @@ export function lowerProgram(
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
+    constants,
     arrays,
     maps,
     sets,
@@ -8770,6 +8871,7 @@ function lowerModulesIncludingTests(
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
+  let constants = Array<LoweredConstant>();
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
@@ -8805,6 +8907,7 @@ function lowerModulesIncludingTests(
       moduleIndex,
       entryIndex,
       includeTests,
+      inout constants,
       inout arrays,
       inout maps,
       inout sets,
@@ -8827,6 +8930,7 @@ function lowerModulesIncludingTests(
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
+    constants,
     arrays,
     maps,
     sets,

@@ -2,6 +2,7 @@ import { Map, Set } from "std/collections";
 import {
   Declaration,
   DeclarationKind,
+  ExpressionKind,
   ImportDeclaration,
   Program,
 } from "./parser.zs";
@@ -53,8 +54,19 @@ export function moduleExports(in module: ParsedModule, in name: String): boolean
   return false;
 }
 
+function moduleNumericLiteralType(in value: String): String {
+  let index: usize = 0;
+  while (index < value.byteLength) {
+    const byte = value.byteAt(index);
+    if (byte == 46 || byte == 69 || byte == 101) return "f64";
+    index = index + 1;
+  }
+  return "i32";
+}
+
 function ownSymbol(in module: ParsedModule, in declaration: Declaration): ModuleSymbol {
   let importedName = declaration.name.copyBytes(0, declaration.name.byteLength);
+  let valueType = "";
   let nativeCExport = false;
   if (declaration.kind == DeclarationKind.functionDeclaration) {
     for (const functionDeclaration of module.program.functions) {
@@ -68,6 +80,34 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
       importedName = alias.target.name.copyBytes(0, alias.target.name.byteLength);
     }
   }
+  if (declaration.kind == DeclarationKind.constantDeclaration) {
+    for (const constant of module.program.constants) {
+      if (constant.name != declaration.name) continue;
+      match (in constant.typeAnnotation) {
+        some(type) => valueType = type.name.copyBytes(0, type.name.byteLength);
+        none => {
+          match (in constant.initializer.tree) {
+            some(tree) => {
+              const root = view tree.nodes[tree.root];
+              if (root.kind == ExpressionKind.stringExpression) valueType = "String";
+              else if (root.kind == ExpressionKind.booleanExpression) valueType = "boolean";
+              else if (root.kind == ExpressionKind.numberExpression) {
+                valueType = moduleNumericLiteralType(root.value);
+              } else if (
+                root.kind == ExpressionKind.unaryExpression
+                && root.children.length == 1
+              ) {
+                valueType = moduleNumericLiteralType(
+                  tree.nodes[root.children[0]].value
+                );
+              }
+            }
+            none => {}
+          }
+        }
+      }
+    }
+  }
   return ModuleSymbol({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     kind: declarationSymbolKind(declaration.kind),
@@ -75,7 +115,7 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     nativeCExport,
     targetModule: Option<usize>.none,
     importedName,
-    valueType: "",
+    valueType,
     functionSignature: programFunctionSignature(module.program, declaration),
     typeSignature: programTypeSignature(module.program, declaration),
     foreignHeader: "",
@@ -169,6 +209,7 @@ export function buildModuleSymbols(
 }
 
 export function moduleSymbolKindName(kind: ModuleSymbolKind): String {
+  if (kind == ModuleSymbolKind.constantSymbol) return "const";
   if (kind == ModuleSymbolKind.functionSymbol) return "function";
   if (kind == ModuleSymbolKind.structSymbol) return "struct";
   if (kind == ModuleSymbolKind.classSymbol) return "class";

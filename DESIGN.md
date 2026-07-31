@@ -1377,6 +1377,26 @@ import geometry from "./geometry.zs";
 import { total as sum } from "./geometry.zs";
 ```
 
+Module-level `const` declarations provide immutable named compile-time values:
+
+```z
+// app-config.zs
+export const APP_NAME: String = "Notes";
+export const DEFAULT_PORT: u16 = 34115;
+export const ENABLE_METRICS: boolean = true;
+
+const CONFIG_REVISION = 1;
+```
+
+They use the same namespace and selective import surface as functions and
+types. Z deliberately has no module-level `let`: the initial model introduces
+neither mutable global state nor module initialization order. Exported constants
+require an explicit type as part of their public contract, while private
+constants may infer one. The executable foundation is restricted to cleanup-free
+literal `boolean`, numeric, and `String` values plus explicitly typed `cstring`
+string literals. Calls, runtime initialization, ownership-bearing storage, and
+target-conditional values remain later design work.
+
 The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation
 unit. Each dependency receives private compiler identities so unrelated files
