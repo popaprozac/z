@@ -85,6 +85,7 @@ type ClangNode = {
   readonly explicitlyDeleted?: boolean;
   readonly returnType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly super?: { readonly name?: string };
+  readonly interface?: { readonly id?: string; readonly name?: string };
   readonly protocols?: readonly { readonly name?: string }[];
   readonly fixedUnderlyingType?: { readonly qualType?: string; readonly desugaredQualType?: string };
   readonly ownedTagDecl?: { readonly id?: string; readonly kind?: string; readonly name?: string };
@@ -1385,10 +1386,17 @@ function collectObjCInterfaces(
   constants: Map<string, ForeignConstant>,
 ): Map<string, ForeignObjCInterface> {
   const declarations = new Map<string, ClangNode>();
+  const categories = new Map<string, ClangNode[]>();
   visit(root, (node) => {
-    if (node.kind !== "ObjCInterfaceDecl" || !node.name) return;
-    const existing = declarations.get(node.name);
-    if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) declarations.set(node.name, node);
+    if (node.kind === "ObjCInterfaceDecl" && node.name) {
+      const existing = declarations.get(node.name);
+      if (!existing || (node.inner?.length ?? 0) > (existing.inner?.length ?? 0)) declarations.set(node.name, node);
+      return;
+    }
+    if (node.kind !== "ObjCCategoryDecl" || !node.interface?.name) return;
+    const existing = categories.get(node.interface.name) ?? [];
+    existing.push(node);
+    categories.set(node.interface.name, existing);
   });
 
   const typeNames = new Map([...declarations.keys()].map((name) => [name, `${moduleName}.${name}`]));
@@ -1410,7 +1418,9 @@ function collectObjCInterfaces(
 
   const interfaces = new Map<string, ForeignObjCInterface>();
   for (const [className, declaration] of declarations) {
-    const methods = (declaration.inner ?? [])
+    const members = [declaration, ...(categories.get(className) ?? [])]
+      .flatMap((owner) => owner.inner ?? []);
+    const methods = members
       .filter((child) => child.kind === "ObjCMethodDecl" && child.name && child.returnType?.qualType)
       .map((method): ForeignObjCMethod => ({
         selector: method.name!,
@@ -1429,7 +1439,7 @@ function collectObjCInterfaces(
         asyncResultParameter: null,
         asyncErrorParameter: null,
       }));
-    const properties = (declaration.inner ?? [])
+    const properties = members
       .filter((child) => child.kind === "ObjCPropertyDecl" && child.name && child.type?.qualType)
       .map((property): ForeignObjCProperty => ({
         name: property.name!,

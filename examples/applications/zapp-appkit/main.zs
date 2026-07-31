@@ -1,11 +1,12 @@
 import AppKit from "AppKit/AppKit.h";
 import console from "std/console";
 import { Mutex } from "std/sync";
-import { delay } from "std/time";
+import { sleep } from "std/time";
 import { thread } from "std/thread";
 import {
   Application,
   RuntimeState,
+  closeApplication,
   currentApplication,
   initializeApplication,
   publishApplicationStatus,
@@ -38,7 +39,6 @@ function createApplication(): Application on thread.main {
   label.editable = false;
   label.selectable = false;
   content.addSubview(label);
-  nativeApp.activate();
 
   return new Application({
     name: "Zapp",
@@ -48,6 +48,38 @@ function createApplication(): Application on thread.main {
   });
 }
 
+function runNativeApplication(): void on thread.main {
+  const nativeApp = AppKit.NSApplication.sharedApplication;
+  const current = currentApplication();
+  const center = AppKit.NSNotificationCenter.defaultCenter;
+  const closeObserver = center.addObserverForName(
+    AppKit.NSWindowWillCloseNotification,
+    object: current.window,
+    queue: null,
+    usingBlock: move (notification) => {
+      nativeApp.stop(null);
+      const emptyModifiers = AppKit.NSEventModifierFlagCapsLock
+        ^ AppKit.NSEventModifierFlagCapsLock;
+      const wakeEvent = AppKit.NSEvent.otherEventWithType(
+        AppKit.NSEventTypeApplicationDefined,
+        location: AppKit.NSMakePoint(0.0, 0.0),
+        modifierFlags: emptyModifiers,
+        timestamp: 0.0,
+        windowNumber: 0,
+        context: null,
+        subtype: 0,
+        data1: 0,
+        data2: 0
+      );
+      nativeApp.postEvent(wakeEvent, atStart: true);
+    }
+  );
+
+  nativeApp.activate();
+  nativeApp.run();
+  center.removeObserver(closeObserver);
+}
+
 async function main(): i32 on thread.main {
   const value = createApplication();
   const lifetime = initializeApplication(value);
@@ -55,15 +87,18 @@ async function main(): i32 on thread.main {
 
   const refresh = thread.spawn(async (): i32 => {
     const ticket = refreshProject();
+    console.log(`worker completed AppKit job ${ticket}`);
     await on thread.main publishApplicationStatus(ticket);
+    console.log(`worker resumed after publishing AppKit job ${ticket}`);
+    sleep(2000);
+    await on thread.main closeApplication();
     return ticket;
   });
 
+  runNativeApplication();
   const ticket = await refresh;
-  await delay(250);
 
   const current = currentApplication();
   console.log(`${current.name} completed AppKit job ${ticket}`);
-  current.close();
   return current.completedWork() - ticket;
 }

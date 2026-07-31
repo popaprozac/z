@@ -124,6 +124,44 @@ hostToolchainTest("imports AppKit classes and emits an ARC Objective-C NSWindow 
   assert.doesNotMatch(activateHover, /iOS|watchOS|tvOS/);
 });
 
+hostToolchainTest("merges Objective-C category methods into their interface surface", () => {
+  if (process.platform !== "darwin") return;
+  const fileName = resolve(projectRoot, "objc-category-method.zs");
+  const source = `
+    import AppKit from "AppKit/AppKit.h";
+    import { thread } from "std/thread";
+
+    function postWakeEvent(
+      app: AppKit.NSApplication,
+      event: AppKit.NSEvent
+    ): void on thread.main {
+      app.postEvent(event, atStart: true);
+    }
+
+    function main(): i32 {
+      return 0;
+    }
+  `;
+  const artifact = compileToNative(source, fileName);
+
+  assert.deepEqual(diagnostics(source, fileName), []);
+  assert.match(artifact.source, /\[app postEvent:event atStart:true\]/);
+
+  const methodOffset = source.indexOf("postEvent") + 2;
+  assert.match(
+    hover(source, fileName, methodOffset)?.contents.value ?? "",
+    /postEvent\(event: (?:AppKit\.)?NSEvent, atStart: boolean\): void on thread\.main/,
+  );
+
+  const completionSource = source.replace("app.postEvent", "app.postE");
+  const completionOffset = completionSource.indexOf("app.postE") + "app.postE".length;
+  assert.equal(
+    completions(completionSource, fileName, completionOffset)
+      .some((item) => item.label === "postEvent"),
+    true,
+  );
+});
+
 hostToolchainTest("narrows nullable Objective-C references before member access", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "objc-nullability.zs");

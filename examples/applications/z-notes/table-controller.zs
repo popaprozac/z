@@ -1,7 +1,8 @@
 import AppKit from "AppKit/AppKit.h";
 import { NoteStore } from "./model.zs";
+import { thread } from "std/thread";
 
-export class NotesTableController implements
+export class NotesTableController on thread.main implements
   AppKit.NSTableViewDataSource,
   AppKit.NSTableViewDelegate
 {

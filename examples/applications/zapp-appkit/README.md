@@ -10,7 +10,7 @@ Run it from the repository root:
 bun run z run examples/applications/zapp-appkit
 ```
 
-A native window appears while a dedicated worker performs background work. The
+A native window remains visible while a dedicated worker performs background work. The
 worker retrieves the shared `Application` through `Once<Application>`, updates
 only its mutex-protected state, and then executes:
 
@@ -18,10 +18,18 @@ only its mutex-protected state, and then executes:
 await on thread.main publishApplicationStatus(ticket);
 ```
 
-The window title and label are updated by that placed call. The main task then
-closes the window and exits. Expected terminal output:
+The window title and label are updated by that placed call. After a short
+visible interval, the same worker places `closeApplication()` onto main; that
+call closes the window. An `NSWindowWillCloseNotification` observer stops the
+real `NSApplication.run()` loop from inside AppKit event dispatch and posts an
+application-defined wake event so `run()` returns deterministically. Expected
+terminal output:
 
 ```text
+worker completed AppKit job 1
+published AppKit job 1 on main
+worker resumed after publishing AppKit job 1
+closing AppKit window on main
 Zapp completed AppKit job 1
 ```
 

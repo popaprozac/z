@@ -1,4 +1,5 @@
 import AppKit from "AppKit/AppKit.h";
+import console from "std/console";
 import { Mutex, Once, OnceLifetime } from "std/sync";
 import { thread } from "std/thread";
 
@@ -43,6 +44,7 @@ export class Application {
     const status = `Ready after background job ${ticket}`;
     this.window.title = `${this.name} — ${status}`;
     this.statusLabel.stringValue = status;
+    console.log(`published AppKit job ${ticket} on main`);
   }
 
   function close(): void on thread.main {
@@ -67,4 +69,10 @@ export function publishApplicationStatus(
 ): void on thread.main {
   const current = currentApplication();
   current.publish(ticket);
+}
+
+export function closeApplication(): void on thread.main {
+  const current = currentApplication();
+  console.log("closing AppKit window on main");
+  current.close();
 }
