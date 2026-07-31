@@ -1050,7 +1050,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     return markdownHover("TaskControl  // non-joining per-operation cancellation control; its TaskScope owns completion", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "Once") {
-    return markdownHover("Once<T>()  // statically empty, main-affine one-time class root", source, word.start, word.end);
+    return markdownHover("Once<T>()  // synchronized one-time root for a main-lifecycle class; get() works on any Z-managed thread", source, word.start, word.end);
   }
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceLifetime") {
     return markdownHover("OnceLifetime<T>  // move-only guard for one initialized Once<T> interval", source, word.start, word.end);
@@ -1314,7 +1314,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       const detail = word.text === "initialize"
         ? `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main\n// publishes exactly once; the returned move-only guard owns the initialized interval`
         : word.text === "get"
-          ? `get(): ${value} on thread.main\n// returns a retained class identity; traps when no initialized interval is active`
+          ? `get(): ${value}\n// synchronized retrieval from any Z-managed thread; member executor contracts still govern use`
           : null;
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
@@ -1731,7 +1731,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
       {
         label: "Once",
         kind: completionKinds.struct,
-        detail: "Once<T>()  // statically empty, main-affine one-time class root",
+        detail: "Once<T>()  // synchronized main-lifecycle root; get() is cross-thread",
       },
       {
         label: "OnceLifetime",
@@ -2231,7 +2231,7 @@ function symbolCompletions(
                         : binding.importedName === "TaskControl"
                           ? "non-joining per-operation cancellation control"
                         : binding.importedName === "Once"
-                          ? "statically empty main-affine one-time class root"
+                          ? "synchronized one-time root with Z-managed cross-thread retrieval"
                         : binding.importedName === "OnceLifetime"
                           ? "move-only initialized-interval guard"
                         : binding.importedName === "Mutex"
@@ -2445,7 +2445,7 @@ function symbolCompletions(
                   : standardType === "TaskControl"
                     ? "TaskControl  // returned by TaskScope.schedule; non-joining cancellation control"
                   : standardType === "Once"
-                    ? "Once<T>()  // statically empty main-affine one-time class root"
+                    ? "Once<T>()  // synchronized main-lifecycle root; get() is cross-thread"
                   : standardType === "OnceLifetime"
                     ? "OnceLifetime<T>  // move-only initialized-interval guard"
                   : standardType === "Mutex"
@@ -5103,7 +5103,7 @@ function onceCompletions(
     {
       label: "get",
       kind: completionKinds.method,
-      detail: `get(): ${value} on thread.main`,
+      detail: `get(): ${value}  // synchronized Z-managed cross-thread retrieval`,
       insertText: "get()",
     },
   ];

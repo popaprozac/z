@@ -106,22 +106,30 @@ const lifetime = application.initialize(
 );
 ```
 
-The first tier permits only ARC class payloads declared `on thread.main`.
-`Once<T>` inherits that affinity: construction, initialization, retrieval, and
-guard cleanup require main-executor proof. Code on a native worker retrieves
-through explicit placement:
+The first tier permits only ARC class payloads whose lifecycle belongs to
+`thread.main`, either through a whole-class declaration or a main-bound field.
+Construction, initialization, and guard cleanup require main-executor proof.
+`get()` is synchronized and may run on any Z-managed thread; it retains and
+returns the same identity without granting permission to use main-only members:
 
 ```z
-const work = thread.spawn(async (): i32 => {
-  return await on thread.main {
-    const current = application.get();
-    select current.revision;
-  };
+const work = thread.spawn((): i32 => {
+  const current = application.get();
+  return current.snapshotRevision(); // unrestricted synchronized method
 });
 ```
 
+A worker may carry a whole-class-isolated identity opaquely and use it only
+after explicit main placement. A mixed-affinity class can expose readonly
+thread-safe metadata and synchronized methods directly while its main-only
+fields and methods continue to produce `Z0711`. ARC retain is atomic, the cell
+transition is mutex-protected, and a worker's final release is queued back to
+the owning executor so `deinit` remains on main. Arbitrary foreign-created
+threads will require an executor-registration contract before they receive the
+same cleanup guarantee.
+
 Ordinary mutable or readonly-shareable classes, structs, native resources,
-cross-thread publication, replacement, and optional storage are not implied by
+replacement, optional storage, and concurrent weak upgrade are not implied by
 this tier. `Application` is an example of a user-defined framework type, not a
 language or standard-library global.
 
@@ -1769,8 +1777,9 @@ kernel lock, so this is not a stale lock-file protocol. This primitive protects
 cross-process artifacts. The current `std/sync` `Mutex<T>` tier provides
 scoped synchronous in-process mutual exclusion; `RwLock<T>`, public guards,
 atomics, condition variables, and semaphores remain later tiers. `Once<T>`
-publishes main-affine application identity but does not itself provide mutual
-exclusion.
+serializes publication and retrieval of main-lifecycle application identity;
+it does not protect mutable fields inside that identity, which still belong
+behind `Mutex<T>` or an executor contract.
 
 `fs.replace(source, destination)` publishes a completely written artifact with
 one atomic same-filesystem directory-entry replacement. On success the source

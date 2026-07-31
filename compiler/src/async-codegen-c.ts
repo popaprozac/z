@@ -2638,7 +2638,7 @@ function generateRuntime(
   ));
   const executorBoundClasses = new Set(plans.flatMap((plan) => (
     plan.nativeThread
-      ? [...plan.locals.values()].filter((type) => isExecutorBoundClassType(type, plan.types))
+      ? [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()]
       : []
   )));
   const usesExecutorBoundReleases = executorBoundClasses.size > 0;
@@ -2663,7 +2663,7 @@ function generateRuntime(
     ] : []),
     ...(usesNativeFrameStorage ? ["#include <memory>", "#include <new>", ""] : []),
     ...[...executorBoundClasses].flatMap((type) => [
-      `static void ${executorBoundReleaseAdapter(type)}(void *value) {`,
+      `static __attribute__((unused)) void ${executorBoundReleaseAdapter(type)}(void *value) {`,
       `  Z_${type}_release((Z_${type} *)value);`,
       "}",
       "",
@@ -2800,6 +2800,14 @@ function generateRuntime(
       "  Z_TaskControl *control;",
       "  Z_TaskScopeJob *scope_next;",
       "};",
+      "",
+    ] : []),
+    ...(usesExecutorBoundReleases ? [
+      "static void z_async_enqueue_executor_bound_release(",
+      "  void *context,",
+      "  void *value,",
+      "  void (*finalize)(void *value)",
+      ");",
       "",
     ] : []),
     ...(usesThreads ? [
@@ -2992,6 +3000,10 @@ function generateRuntime(
       "#if defined(_WIN32)",
       "static DWORD WINAPI z_async_native_thread_entry(LPVOID context) {",
       "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
+      ...(usesExecutorBoundReleases ? [
+        "  z_executor_bound_release_context = task->completion_executor;",
+        "  z_executor_bound_release_enqueue = z_async_enqueue_executor_bound_release;",
+      ] : []),
       "  if (task->native_async) {",
       "    Z_AsyncExecutor *executor = task->native_executor;",
       "    z_async_enqueue(executor, task);",
@@ -3014,11 +3026,19 @@ function generateRuntime(
       "  }",
       "  z_async_report_native_completion(task);",
       "  if (task->native_async) z_async_executor_destroy(task->native_executor);",
+      ...(usesExecutorBoundReleases ? [
+        "  z_executor_bound_release_enqueue = NULL;",
+        "  z_executor_bound_release_context = NULL;",
+      ] : []),
       "  return 0;",
       "}",
       "#else",
       "static void *z_async_native_thread_entry(void *context) {",
       "  Z_AsyncTask *task = (Z_AsyncTask *)context;",
+      ...(usesExecutorBoundReleases ? [
+        "  z_executor_bound_release_context = task->completion_executor;",
+        "  z_executor_bound_release_enqueue = z_async_enqueue_executor_bound_release;",
+      ] : []),
       "  if (task->native_async) {",
       "    Z_AsyncExecutor *executor = task->native_executor;",
       "    z_async_enqueue(executor, task);",
@@ -3041,6 +3061,10 @@ function generateRuntime(
       "  }",
       "  z_async_report_native_completion(task);",
       "  if (task->native_async) z_async_executor_destroy(task->native_executor);",
+      ...(usesExecutorBoundReleases ? [
+        "  z_executor_bound_release_enqueue = NULL;",
+        "  z_executor_bound_release_context = NULL;",
+      ] : []),
       "  return NULL;",
       "}",
       "#endif",
@@ -3187,6 +3211,14 @@ function generateRuntime(
         "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
         "#endif",
         "  z_async_thread_unlock(executor);",
+        "}",
+        "",
+        "static void z_async_enqueue_executor_bound_release(",
+        "  void *context,",
+        "  void *value,",
+        "  void (*finalize)(void *value)",
+        ") {",
+        "  z_async_release_from_thread((Z_AsyncExecutor *)context, value, finalize);",
         "}",
         "",
       ] : []),

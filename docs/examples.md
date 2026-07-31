@@ -43,7 +43,7 @@ smoke programs.
 | Shimless libcurl pressure test | [`z-curl`](../examples/applications/z-curl) | Qualified system-header import, flat adjacent `.zd`, anonymous native enums, expression macros, enum-backed typed errors, fixed global flags, deterministic `CURL *` cleanup, checked option-dependent variadics, owner-tied callback/context installation, byte-slice projection, and thrown callback-error narrowing |
 | Raylib application | [`z-raylib`](../examples/applications/z-raylib) | Shimless checked C slice, nominal enum conversion, interactive drawing, canonical alias-aware `Image`/`Texture2D` value resources, reverse deterministic cleanup, and a non-escaping runtime-owned texture borrow |
 | SDL3 application | [`z-sdl3`](../examples/applications/z-sdl3) | Large-header import, owned native handles, scalar `out` projection, nominal enum conversion, interactive rendering, reverse-order cleanup, and a documented temporary event-query path pending nested union payloads |
-| Application lifetime root | [`application-root`](../examples/applications/application-root) | A user-defined main-affine ARC application published through `Once<Application>`, read from another module, observed from a worker through explicit main placement, and removed by deterministic guard cleanup |
+| Application lifetime root | [`application-root`](../examples/applications/application-root) | A user-defined mixed-affinity ARC application published through `Once<Application>`, retrieved synchronously on a native worker, read through `Mutex`-protected state while its UI member stays main-only, and removed by deterministic guard cleanup |
 | Scoped shared state | [`mutex-state.zs`](../examples/language/ownership/mutex-state.zs) | A deployment coordinator whose counters are protected by `Mutex<T>` through non-escaping `in` and `inout` critical-section closures |
 | Application walkthrough | [`document-workspace`](../examples/applications/document-workspace) | A native document model combining modules, errors, arrays, named enums, optional views, mutation, and deterministic cleanup |
 | Collection pressure test | [`project-index`](../examples/applications/project-index) | Borrowed Map lookups, owned snapshots, dirty-path Sets, typed IO errors, and an unchanged dense-to-hashed benchmark |
@@ -153,10 +153,11 @@ bun run z run examples/async/async-delay.zs
 [`application-root`](../examples/applications/application-root) isolates the
 generic module-owned identity mechanism behind the desktop-framework discussion.
 Its `Application` class is user code. A statically empty `Once<Application>`
-publishes one strong main-affine ARC root, another source module reads it through
-an ordinary exported function, and a native worker uses `await on thread.main`
-before access. The move-only lifetime guard removes the root deterministically
-when `main` exits.
+publishes one strong main-lifecycle ARC root, another source module reads it
+through an ordinary exported function, and a native worker retrieves the same
+identity directly. The worker can call its unrestricted mutex-backed method but
+cannot touch the main-only UI member. The move-only lifetime guard removes the
+root deterministically when `main` exits.
 
 [`z-notes`](../examples/applications/z-notes) is the native desktop composition
 probe. It opens an AppKit window, owns notes in an ARC-managed Z model,

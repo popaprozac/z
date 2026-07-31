@@ -18,16 +18,16 @@ Z desktop revision=42
 
 Read the source in this order:
 
-1. [`application.zs`](application.zs) defines the ordinary main-affine class,
-   keeps a statically empty `Once<Application>` private, and exposes narrow
-   initialization and retrieval functions. The public initialization function
-   returns the non-constructible `OnceLifetime<Application>` guard produced by
-   the root.
+1. [`application.zs`](application.zs) defines a mixed-affinity class, keeps a
+   statically empty `Once<Application>` private, and exposes narrow
+   initialization and retrieval functions. Its mutex-backed state is usable
+   anywhere while `windowId` remains main-only. The public initialization
+   function returns the non-constructible `OnceLifetime<Application>` guard.
 2. [`status.zs`](status.zs) demonstrates that another module can retrieve the
-   current identity when it has main-executor proof.
+   current identity and use its unrestricted synchronized method.
 3. [`main.zs`](main.zs) constructs and publishes the application, retains the
-   returned move-only lifetime guard, and asks a native worker to read the
-   revision through `await on thread.main`.
+   returned move-only lifetime guard, and asks a native worker to retrieve the
+   identity and read its revision directly.
 
 `initializeApplication(...)` does not turn construction failure into a delayed
 failure from `currentApplication`. Argument evaluation happens first. If a
@@ -42,25 +42,16 @@ When `main` exits, `lifetime` deinitializes before the earlier `application`
 binding. It removes the global root and releases that strong reference on the
 main executor. No module deinitializer or arbitrary mutable global is involved.
 
-## Next framework pressure-test sequence
+`get()` is synchronized across Z-managed threads, but it does not erase
+executor contracts. A wholly `on thread.main` class is opaque on a worker until
+explicit main placement. This mixed class exposes only its readonly thread-safe
+and mutex-backed surface there; `current.windowId` and
+`current.currentWindowId()` still require main proof. ARC retain is atomic, and
+when the worker releases its handle the final cleanup is queued back to the
+owning executor. Foreign-created threads remain a separate executor-registration
+contract.
 
-This example deliberately proves only publication and main-affine lifetime. The
-next slices remain separate so `Once<T>` does not silently become a
-cross-thread access loophole:
-
-1. **Opaque cross-thread transport.** `currentApplication()` should eventually
-   retain and return the application identity from any thread without granting
-   access to its main-isolated state. Carrying the identity does not hop
-   executors or execute application code. `Mutex<T>` now establishes the
-   synchronized half of that slice: a transferable payload may be shared as one
-   retained cell across native workers, while the application root itself
-   remains main-only until opaque retrieval lands.
-2. **Member-level executor restrictions.** Harmless metadata and explicitly
-   synchronized methods may remain available off-main, while UI fields and
-   methods continue to require `thread.main`. Diagnostics, hover, and completion
-   must surface those member contracts; accessing a main-only member off-main
-   is rejected until the caller uses explicit main placement.
-3. **Zapp composition probe.** A small user-defined framework skeleton will
-   combine the application root, mutex-protected framework state, background
-   work, explicit main-thread UI delivery, and deterministic cleanup. `Zapp`
-   remains an application/framework pressure test, not a built-in Z type.
+The next framework pressure test is a small user-defined Zapp skeleton that
+combines this root, mutex-protected framework state, background work, explicit
+main-thread UI delivery, and deterministic cleanup. `Zapp` remains an
+application/framework customer of Z, not a built-in language type.

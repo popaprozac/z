@@ -797,6 +797,45 @@ function onceInitializerType(
   return "";
 }
 
+function nativeTypeHasMainLifecycle(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  symbolIndex: usize,
+  inout visiting: Array<String>
+): boolean {
+  const symbol = view modules[moduleIndex].symbols[symbolIndex];
+  const key = `${moduleIndex}:${symbolIndex}`;
+  for (const active of visiting) {
+    if (active == key) return false;
+  }
+  visiting.push(key);
+  return match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.executorAffinity == "thread.main") return true;
+      for (const field of signature.fields) {
+        if (field.executorAffinity == "thread.main") return true;
+        match (typeSymbolLocation(
+          modules,
+          moduleIndex,
+          field.typeName
+        )) {
+          some(location) => {
+            if (nativeTypeHasMainLifecycle(
+              modules,
+              location.moduleIndex,
+              location.symbolIndex,
+              inout visiting
+            )) return true;
+          }
+          none => {}
+        }
+      }
+      return false;
+    }
+    none => return false;
+  };
+}
+
 function requireMainAffineOncePayload(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -828,7 +867,7 @@ function requireMainAffineOncePayload(
     none => throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+      `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
       line,
       column
     );
@@ -840,21 +879,22 @@ function requireMainAffineOncePayload(
     throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+      `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
       line,
       column
     );
   }
-  match (in symbol.typeSignature) {
-    some(signature) => {
-      if (signature.executorAffinity == "thread.main") return;
-    }
-    none => {}
-  }
+  let visiting = Array<String>();
+  if (nativeTypeHasMainLifecycle(
+    modules,
+    location.moduleIndex,
+    location.symbolIndex,
+    inout visiting
+  )) return;
   throw validationError(
     ModuleResolveErrorKind.typeMismatch,
     module.path,
-    `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+    `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${payload}`,
     line,
     column
   );

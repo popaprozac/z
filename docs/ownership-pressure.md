@@ -1623,21 +1623,29 @@ without running module code, `initialize` publishes one strong ARC reference,
 and a move-only `OnceLifetime<Application>` makes the publication interval
 lexically visible in `main`.
 
-The narrow main-affine tier exposed four useful constraints:
+The first main-lifecycle tier exposed four useful constraints:
 
-- the root inherits `Application`'s `thread.main` requirement rather than
+- the root inherits `Application`'s lifecycle requirement rather than
   converting ARC lifetime safety into permission to access UI state anywhere;
-- a native worker can ask the main executor to retrieve and inspect the root,
-  but cannot use the identity off-main;
+- retrieval and access are separate capabilities: a native worker can retain
+  the identity directly, but member contracts still decide what it may use;
 - deterministic guard cleanup removes the root before the surrounding local
   application reference is released, avoiding an implicit process-lifetime
   leak or unspecified module destruction order;
 - throwing construction happens before publication, so `Once<T>` stores
   neither partial identity nor an error that `get()` might later replay.
 
+The synchronized retrieval follow-up then added an OS mutex to the static cell,
+atomic ARC to main-lifecycle identities, and executor-routed final release from
+native workers. A mixed-affinity `Application` can now be retrieved from any
+Z-managed thread, call its unrestricted `Mutex`-backed methods there, and still
+receive a compile-time error for a main-only UI field. Whole-class-isolated
+identities remain opaque off-main. Initialization and `OnceLifetime` cleanup
+remain main operations.
+
 This is intentionally not evidence for general global storage. Ordinary
 mutable/shareable classes, value structs, native owners, replacement, optional
-presence, and cross-thread publication remain unproven. The `Application` name
+presence, and concurrent weak upgrade remain unproven. The `Application` name
 belongs to the example and a future desktop package; only the generic
 publication-and-lifetime mechanism belongs to Z.
 
@@ -1715,10 +1723,11 @@ native handle access and destruction unsound. The resulting split is:
 
 This validates member-level affinity as an access contract distinct from
 aggregate lifecycle affinity. It also confirms that `Mutex<T>` is the intended
-way to keep mutable Z state behind an any-thread application façade. The probe
-does not yet prove retrieving that identity from `Once<T>` directly on an
-arbitrary worker; synchronized any-thread publication/retrieval and
-executor-routed final release are the next slice.
+way to keep mutable Z state behind an any-thread application façade.
+`Once<T>.get()` now completes the composition: a native worker synchronizes
+with the publication cell, atomically retains the identity, uses only the
+permitted surface, and queues its final release to `thread.main`. The parent
+continues to use the same root and its main-only member after joining.
 
 ## Not tested yet
 

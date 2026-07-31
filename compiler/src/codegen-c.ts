@@ -199,7 +199,11 @@ export function generateC(
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
   const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const mutexValueTypes = collectMutexValueTypes(program, semanticInfo);
-  const usesMutex = mutexValueTypes.length > 0;
+  const usesMutex = mutexValueTypes.length > 0 || onceValueTypes.length > 0;
+  const usesExecutorBoundClasses = program.structs.some((declaration) => (
+    declaration.kind === "class"
+    && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
+  ));
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
@@ -479,24 +483,27 @@ export function generateC(
   for (const type of generatorTypes) {
     lines.push(`typedef struct ${generatorCName(type)} ${generatorCName(type)};`);
   }
+  if (usesMutex) {
+    lines.push(
+      "#if defined(_WIN32)",
+      "typedef SRWLOCK Z_NativeMutex;",
+      "#define Z_NATIVE_MUTEX_INITIALIZER SRWLOCK_INIT",
+      "#else",
+      "typedef pthread_mutex_t Z_NativeMutex;",
+      "#define Z_NATIVE_MUTEX_INITIALIZER PTHREAD_MUTEX_INITIALIZER",
+      "#endif",
+    );
+  }
   for (const valueType of onceValueTypes) {
     lines.push(
       `typedef struct ${onceName(valueType)} {`,
+      "  Z_NativeMutex native;",
       `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value;`,
       "  uint8_t state;",
       `} ${onceName(valueType)};`,
       `typedef struct ${onceLifetimeName(valueType)} {`,
       `  ${onceName(valueType)} *cell;`,
       `} ${onceLifetimeName(valueType)};`,
-    );
-  }
-  if (usesMutex) {
-    lines.push(
-      "#if defined(_WIN32)",
-      "typedef SRWLOCK Z_NativeMutex;",
-      "#else",
-      "typedef pthread_mutex_t Z_NativeMutex;",
-      "#endif",
     );
   }
   for (const valueType of mutexValueTypes) {
@@ -520,6 +527,19 @@ export function generateC(
 
   if (program.structs.some((declaration) => declaration.kind === "class")) {
     lines.push(generateWeakRuntime(), "");
+  }
+  if (usesExecutorBoundClasses) {
+    lines.push(
+      "#if defined(__cplusplus)",
+      "#define Z_THREAD_LOCAL thread_local",
+      "#else",
+      "#define Z_THREAD_LOCAL _Thread_local",
+      "#endif",
+      "typedef void (*Z_ExecutorBoundReleaseEnqueue)(void *context, void *value, void (*finalize)(void *value));",
+      "static Z_THREAD_LOCAL void *z_executor_bound_release_context = NULL;",
+      "static Z_THREAD_LOCAL Z_ExecutorBoundReleaseEnqueue z_executor_bound_release_enqueue = NULL;",
+      "",
+    );
   }
 
   for (const functionType of functionTypes) {
@@ -776,7 +796,7 @@ function generateModuleConstant(
   const name = cBindingName(declaration.name);
   const once = parseOnceType(type);
   if (once) {
-    return `static __attribute__((unused)) ${onceName(once.valueType)} ${name} = { .value = NULL, .state = 0 };`;
+    return `static __attribute__((unused)) ${onceName(once.valueType)} ${name} = { .native = Z_NATIVE_MUTEX_INITIALIZER, .value = NULL, .state = 0 };`;
   }
   let value: string;
   if (declaration.initializer.kind === "string") {
@@ -826,31 +846,83 @@ function generateOnceRuntime(
     fprintf(stderr, "Once<${label}> cannot initialize an invalid value\\n");
     abort();
   }
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&cell->native);
+#else
+  if (pthread_mutex_lock(&cell->native) != 0) abort();
+#endif
   if (cell->state != 0) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&cell->native);
+#else
+    if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
     fprintf(stderr, "Once<${label}> is already initialized and cannot reinitialize\\n");
     abort();
   }
   cell->value = value;
   cell->state = 1;
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&cell->native);
+#else
+  if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
   return (${onceLifetimeName(valueType)}){ .cell = cell };
 }
 
 static __attribute__((unused)) ${valueCType} ${onceGetName(valueType)}(${onceName(valueType)} *cell) {
-  if (cell == NULL || cell->state != 1 || cell->value == NULL) {
+  if (cell == NULL) {
     fprintf(stderr, "Once<${label}> is not initialized or no longer active\\n");
     abort();
   }
-  return ${retainName(valueType)}(cell->value);
+#if defined(_WIN32)
+  AcquireSRWLockShared(&cell->native);
+#else
+  if (pthread_mutex_lock(&cell->native) != 0) abort();
+#endif
+  if (cell->state != 1 || cell->value == NULL) {
+#if defined(_WIN32)
+    ReleaseSRWLockShared(&cell->native);
+#else
+    if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
+    fprintf(stderr, "Once<${label}> is not initialized or no longer active\\n");
+    abort();
+  }
+  ${valueCType} value = ${retainName(valueType)}(cell->value);
+#if defined(_WIN32)
+  ReleaseSRWLockShared(&cell->native);
+#else
+  if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
+  return value;
 }
 
 static __attribute__((unused)) void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime) {
   if (lifetime == NULL || lifetime->cell == NULL) return;
   ${onceName(valueType)} *cell = lifetime->cell;
   lifetime->cell = NULL;
-  if (cell->state != 1 || cell->value == NULL) abort();
+#if defined(_WIN32)
+  AcquireSRWLockExclusive(&cell->native);
+#else
+  if (pthread_mutex_lock(&cell->native) != 0) abort();
+#endif
+  if (cell->state != 1 || cell->value == NULL) {
+#if defined(_WIN32)
+    ReleaseSRWLockExclusive(&cell->native);
+#else
+    if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
+    abort();
+  }
   ${valueCType} value = cell->value;
   cell->value = NULL;
   cell->state = 2;
+#if defined(_WIN32)
+  ReleaseSRWLockExclusive(&cell->native);
+#else
+  if (pthread_mutex_unlock(&cell->native) != 0) abort();
+#endif
   ${releaseName(valueType)}(value);
 }`;
 }
@@ -3416,7 +3488,9 @@ function generateClassLifecycle(
 ): string {
   const cName = structName(declaration.name);
   const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-  const shareable = semanticInfo.shareableClasses.has(declaration.name);
+  const executorBound = semanticInfo.aggregateExecutorAffinities.has(declaration.name);
+  const atomicArc = semanticInfo.shareableClasses.has(declaration.name)
+    || executorBound;
   const constructor = declaration.constructor
     ? generateUserClassConstructor(declaration, structs, enums, functions, semanticInfo)
     : `${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)} {
@@ -3427,11 +3501,37 @@ function generateClassLifecycle(
 ${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).join("\n")}
   return self;
 }`;
-  const retain = shareable
+  const retain = atomicArc
     ? "if (value != NULL) __atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);"
     : "if (value != NULL) value->_z_refcount += 1;";
-  const release = shareable
+  const finalize = `Z_WeakControl *weak = value->_z_weak;
+  if (weak != NULL) weak->value = NULL;
+  ${deinitName(declaration.name)}(value);
+  if (weak != NULL) {
+    weak->weak_count -= 1;
+    if (weak->weak_count == 0) free(weak);
+  }
+  free(value);`;
+  const release = atomicArc
     ? `if (__atomic_sub_fetch(&value->_z_refcount, 1, __ATOMIC_ACQ_REL) != 0) return;
+  ${executorBound
+    ? `if (z_executor_bound_release_enqueue != NULL) {
+    z_executor_bound_release_enqueue(
+      z_executor_bound_release_context,
+      value,
+      ${executorBoundFinalizeName(declaration.name)}
+    );
+    return;
+  }
+  ${executorBoundFinalizeName(declaration.name)}(value);`
+    : finalize}`
+    : `value->_z_refcount -= 1;
+  if (value->_z_refcount == 0) {
+${indent(finalize, 4)}
+  }`;
+  const executorFinalizer = executorBound
+    ? `static ${unused}void ${executorBoundFinalizeName(declaration.name)}(void *opaque) {
+  ${cName} *value = (${cName} *)opaque;
   Z_WeakControl *weak = value->_z_weak;
   if (weak != NULL) weak->value = NULL;
   ${deinitName(declaration.name)}(value);
@@ -3439,19 +3539,12 @@ ${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).jo
     weak->weak_count -= 1;
     if (weak->weak_count == 0) free(weak);
   }
-  free(value);`
-    : `value->_z_refcount -= 1;
-  if (value->_z_refcount == 0) {
-    Z_WeakControl *weak = value->_z_weak;
-    if (weak != NULL) weak->value = NULL;
-    ${deinitName(declaration.name)}(value);
-    if (weak != NULL) {
-      weak->weak_count -= 1;
-      if (weak->weak_count == 0) free(weak);
-    }
-    free(value);
-  }`;
-  return `static ${unused}${cName} *${retainName(declaration.name)}(const ${cName} *borrowed) {
+  free(value);
+}
+
+`
+    : "";
+  return `${executorFinalizer}static ${unused}${cName} *${retainName(declaration.name)}(const ${cName} *borrowed) {
   ${cName} *value = (${cName} *)borrowed;
   ${retain}
   return value;
@@ -9885,6 +9978,10 @@ function retainName(owner: string): string {
 
 function releaseName(owner: string): string {
   return `${structName(owner)}_release`;
+}
+
+function executorBoundFinalizeName(owner: string): string {
+  return `${structName(owner)}_finalize_on_executor`;
 }
 
 function weakMakeName(owner: string): string {

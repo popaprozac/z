@@ -422,7 +422,7 @@ test("leaves Once empty when evaluating its class value throws", () => {
   }
 });
 
-test("restricts first-tier Once to main-affine classes and enforces its executor", () => {
+test("restricts Once to main-lifecycle classes while allowing synchronized retrieval", () => {
   const structSource = `
     import { Once } from "std/sync";
     struct Application { id: i32; }
@@ -466,12 +466,12 @@ test("restricts first-tier Once to main-affine classes and enforces its executor
     const application = Once<Application>();
     function main(): i32 { return 0; }
   `;
-  assert.match(
+  assert.equal(
     diagnostics(
       inheritedAffinitySource,
       "/tmp/z-once-inherited-affinity.zs",
-    )[0]?.message ?? "",
-    /Once<T>.*explicitly isolated to thread\.main/i,
+    ).length,
+    0,
   );
 
   const offMainSource = `
@@ -498,8 +498,82 @@ test("restricts first-tier Once to main-affine classes and enforces its executor
   assert.equal(diagnostic?.code, "Z0711");
   assert.match(
     diagnostic?.message ?? "",
-    /Once<Application>.*requires thread\.main executor context/i,
+    /field "Application\.id".*requires thread\.main executor context/i,
   );
+});
+
+test("retrieves a mixed-affinity Once identity on a worker and routes final cleanup to main", () => {
+  const directory = mkdtempSync("/tmp/z-once-worker-get-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex, Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct State {
+        value: i32;
+      }
+
+      class Application {
+        readonly state: Mutex<State>;
+        windowId: i32 on thread.main;
+
+        function value(): i32 {
+          return this.state.withLock(
+            (in state): i32 => state.value
+          );
+        }
+
+        function window(): i32 on thread.main {
+          return this.windowId;
+        }
+      }
+
+      const application = Once<Application>();
+
+      function currentApplication(): Application {
+        return application.get();
+      }
+
+      async function main(): i32 on thread.main {
+        const lifetime = application.initialize(
+          new Application({
+            state: Mutex(State({ value: 42 })),
+            windowId: 7
+          })
+        );
+        const worker = thread.spawn((): i32 => {
+          const current = currentApplication();
+          return current.value();
+        });
+        const value = await worker;
+        const current = currentApplication();
+        return value - current.window() - 35;
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const generated = compileToC(source, mainFile);
+    assert.match(generated, /pthread_mutex_lock|AcquireSRWLockShared/);
+    assert.match(generated, /__atomic_add_fetch/);
+    assert.match(generated, /z_async_release_from_thread/);
+    assert.match(generated, /z_executor_bound_release_enqueue/);
+    assert.match(generated, /finalize_on_executor/);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", mainFile, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("keeps Once cell identity confined to its declaring module constant", () => {
@@ -755,6 +829,16 @@ test("surfaces Once imports, aliases, members, and inferred lifetimes in the edi
     const getItem = completions(memberSource, mainFile, memberOffset)
       .find((item) => item.label === "get");
     assert.match(getItem?.detail ?? "", /get\(\): Application/);
+    assert.doesNotMatch(getItem?.detail ?? "", /on thread\.main/);
+
+    assert.match(
+      hover(
+        source,
+        mainFile,
+        source.indexOf("root.get") + "root.".length + 1,
+      )?.contents.value ?? "",
+      /get\(\): Application.*synchronized retrieval from any Z-managed thread/s,
+    );
 
     const namespaceSource = source.replace(
       "state.application.get()",

@@ -1345,6 +1345,12 @@ export function analyze(
     enums.set(declaration.name, declaration);
   }
 
+  // Module-level Once<T> declarations need to recognize both explicitly
+  // isolated classes and classes whose lifecycle becomes main-bound through an
+  // executor-affine field. Collect that evidence before validating constants;
+  // declaration-specific affinity diagnostics still run in the normal pass.
+  collectAggregateExecutorAffinities(program, structs, enums, state);
+
   for (const declaration of program.constants) {
     if (!moduleConstantInitializerSupported(declaration.initializer)) {
       throw new DiagnosticError(
@@ -1390,15 +1396,15 @@ export function analyze(
     const once = parseOnceType(constantType);
     if (once) {
       const stored = structs.get(once.valueType);
-      if (stored?.kind !== "class" || !stored.executorAffinity) {
+      if (stored?.kind !== "class" || !state.aggregateExecutorAffinities.has(once.valueType)) {
         throw new DiagnosticError(
           declaration.location.fileName ?? fileName,
           declaration.type?.location ?? declaration.initializer.location,
-          `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`,
+          `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`,
           {
             code: "Z0604",
             notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
-            helps: ["declare the stored class with `on thread.main`, or keep the owner local and pass it explicitly"],
+            helps: ["declare the stored class with `on thread.main`, give it a main-bound field, or keep the owner local and pass it explicitly"],
           },
         );
       }
@@ -1627,8 +1633,6 @@ export function analyze(
   }
 
   validateValueLayouts(program.structs, program.enums, structs, enums, fileName);
-  collectAggregateExecutorAffinities(program, structs, enums, state);
-
   for (const declaration of program.structs) {
     if (
       declaration.kind === "class"
@@ -7963,6 +7967,15 @@ function inferExpressionInner(
           code: "Z0220",
         });
       }
+      const affinity = state.aggregateExecutorAffinities.get(declaration.name) ?? null;
+      requireMainExecutorContext(
+        Boolean(affinity),
+        expression.location,
+        `weak reference construction for ${JSON.stringify(declaration.name)}`,
+        fileName,
+        state,
+        affinity,
+      );
       state.weakClassUses.set(declaration.name, expression.location);
       return weakTypeName(declaration.name);
     }
@@ -8817,11 +8830,11 @@ function inferExpressionInner(
             });
           }
           const stored = structs.get(once.valueType);
-          if (stored?.kind !== "class" || !stored.executorAffinity) {
-            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+          if (stored?.kind !== "class" || !state.aggregateExecutorAffinities.has(once.valueType)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
               code: "Z0604",
               notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
-              helps: ["declare the stored class with `on thread.main`"],
+              helps: ["declare the stored class with `on thread.main` or give it a main-bound field"],
             });
           }
           state.onceConstructors.set(expression.location.offset, once.valueType);
@@ -9638,19 +9651,6 @@ function inferExpressionInner(
           if (!isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "Once methods require a named module cell");
           }
-          requireMainExecutorContext(
-            true,
-            expression.location,
-            `Once<${displayArrayType(once.valueType)}> access`,
-            fileName,
-            state,
-            {
-              executor: "main",
-              declared: false,
-              originType: once.valueType,
-              fieldPath: [],
-            },
-          );
           if (expression.callee.property === "get") {
             if (expression.arguments.length !== 0) {
               throw new DiagnosticError(fileName, expression.location, `Once.get expects 0 arguments, received ${expression.arguments.length}`);
@@ -9659,6 +9659,19 @@ function inferExpressionInner(
             return once.valueType;
           }
           if (expression.callee.property === "initialize") {
+            requireMainExecutorContext(
+              true,
+              expression.location,
+              `Once<${displayArrayType(once.valueType)}> initialization`,
+              fileName,
+              state,
+              {
+                executor: "main",
+                declared: false,
+                originType: once.valueType,
+                fieldPath: [],
+              },
+            );
             if (expression.arguments.length !== 1) {
               throw new DiagnosticError(fileName, expression.location, `Once.initialize expects 1 argument, received ${expression.arguments.length}`);
             }
@@ -14977,6 +14990,50 @@ function validateCollectionKeyType(
   });
 }
 
+function typeHasMainLifecycleDeclaration(
+  type: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
+  visiting = new Set<string>(),
+): boolean {
+  const foreign = foreignNamedTypes.get(type);
+  if (foreign?.metadata.executorAffinity === "main") return true;
+  if (visiting.has(type)) return false;
+  visiting.add(type);
+  const generic = parseGenericType(type);
+  const dynamic = parseDynamicArrayType(type);
+  const fixed = parseFixedArrayType(type);
+  const option = parseOptionType(type);
+  const map = parseMapType(type);
+  const set = parseSetType(type);
+  const weak = parseWeakType(type);
+  const children = [
+    ...(generic?.arguments ?? []),
+    dynamic?.elementType,
+    fixed?.elementType,
+    option?.target,
+    map?.keyType,
+    map?.valueType,
+    set?.elementType,
+    weak?.target,
+  ].filter((child): child is string => Boolean(child));
+  const aggregate = structs.get(type);
+  if (aggregate?.executorAffinity || aggregate?.fields.some((field) => field.executorAffinity)) {
+    visiting.delete(type);
+    return true;
+  }
+  children.push(...(aggregate?.fields.map((field) => field.type.name) ?? []));
+  children.push(...(enums.get(type)?.variants.flatMap((variant) => (
+    variant.payload ? [variant.payload.name] : []
+  )) ?? []));
+  const result = children.some((child) => (
+    typeHasMainLifecycleDeclaration(child, structs, enums, foreignNamedTypes, visiting)
+  ));
+  visiting.delete(type);
+  return result;
+}
+
 function validateType(
   type: TypeReference,
   structs: Map<string, StructDeclaration>,
@@ -15013,8 +15070,11 @@ function validateType(
   if (once) {
     validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
     const stored = structs.get(once.valueType);
-    if (stored?.kind !== "class" || !stored.executorAffinity) {
-      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+    if (
+      stored?.kind !== "class"
+      || !typeHasMainLifecycleDeclaration(once.valueType, structs, enums, foreignNamedTypes)
+    ) {
+      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
         code: "Z0604",
       });
     }
@@ -15024,8 +15084,11 @@ function validateType(
   if (onceLifetime) {
     validateType({ name: onceLifetime.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
     const stored = structs.get(onceLifetime.valueType);
-    if (stored?.kind !== "class" || !stored.executorAffinity) {
-      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(onceLifetime.valueType))}`, {
+    if (
+      stored?.kind !== "class"
+      || !typeHasMainLifecycleDeclaration(onceLifetime.valueType, structs, enums, foreignNamedTypes)
+    ) {
+      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayArrayType(onceLifetime.valueType))}`, {
         code: "Z0604",
       });
     }

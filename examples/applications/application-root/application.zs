@@ -1,9 +1,24 @@
-import { Once, OnceLifetime } from "std/sync";
+import { Mutex, Once, OnceLifetime } from "std/sync";
 import { thread } from "std/thread";
 
-export class Application on thread.main {
+export struct ApplicationState {
+  revision: i32;
+}
+
+export class Application {
   readonly name: String;
-  readonly revision: i32;
+  readonly state: Mutex<ApplicationState>;
+  windowId: i32 on thread.main;
+
+  function revision(): i32 {
+    return this.state.withLock(
+      (in value): i32 => value.revision
+    );
+  }
+
+  function currentWindowId(): i32 on thread.main {
+    return this.windowId;
+  }
 }
 
 const application = Once<Application>();
@@ -14,6 +29,6 @@ export function initializeApplication(
   return application.initialize(move value);
 }
 
-export function currentApplication(): Application on thread.main {
+export function currentApplication(): Application {
   return application.get();
 }
