@@ -8,6 +8,7 @@ import type {
 } from "./ast.ts";
 import { resultTypeName } from "./results.ts";
 import {
+  displayArrayType,
   dynamicArrayTypeName,
   parseDynamicArrayType,
   parseFixedArrayType,
@@ -60,6 +61,10 @@ import { mapEntryTypeName, parseMapEntryType, parseMapType } from "./map-types.t
 import { parseSetType } from "./set-types.ts";
 import { generatorStepTypeName, isGeneratorFunction, parseGeneratorType } from "./generator-types.ts";
 import { parseUnsafeNativeType } from "./unsafe-types.ts";
+import {
+  parseOnceLifetimeType,
+  parseOnceType,
+} from "./once-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -190,6 +195,7 @@ export function generateC(
   ])];
   const explicitCopyTypes = collectExplicitCopyTypes(semanticInfo, structs, enums);
   const arenaCreateTypes = [...new Set(semanticInfo.arenaCreateCalls.values())];
+  const onceValueTypes = collectOnceValueTypes(program, semanticInfo);
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
@@ -351,6 +357,7 @@ export function generateC(
     semanticInfo.consoleCalls.size > 0
     || usesString
     || usesFileSystem
+    || onceValueTypes.length > 0
     || (options.testRunner?.length ?? 0) > 0
   ) {
     lines.push("#include <stdio.h>");
@@ -457,6 +464,17 @@ export function generateC(
   for (const type of generatorTypes) {
     lines.push(`typedef struct ${generatorCName(type)} ${generatorCName(type)};`);
   }
+  for (const valueType of onceValueTypes) {
+    lines.push(
+      `typedef struct ${onceName(valueType)} {`,
+      `  ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value;`,
+      "  uint8_t state;",
+      `} ${onceName(valueType)};`,
+      `typedef struct ${onceLifetimeName(valueType)} {`,
+      `  ${onceName(valueType)} *cell;`,
+      `} ${onceLifetimeName(valueType)};`,
+    );
+  }
   if (
     program.structs.length > 0
     || program.enums.length > 0
@@ -464,6 +482,7 @@ export function generateC(
     || sliceTypes.length > 0
     || dynamicArrayTypes.length > 0
     || generatorTypes.length > 0
+    || onceValueTypes.length > 0
   ) lines.push("");
 
   if (program.structs.some((declaration) => declaration.kind === "class")) {
@@ -547,6 +566,13 @@ export function generateC(
       lines.push(`${generateFunctionSignature(method, structs, enums, declaration, semanticInfo.foreignNamedTypes)};`);
     }
   }
+  for (const valueType of onceValueTypes) {
+    lines.push(
+      `static ${onceLifetimeName(valueType)} ${onceInitializeName(valueType)}(${onceName(valueType)} *cell, ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} value);`,
+      `static ${mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes)} ${onceGetName(valueType)}(${onceName(valueType)} *cell);`,
+      `static void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime);`,
+    );
+  }
   for (const declaration of program.functions) {
     lines.push(`${generateFunctionSignature(declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
   }
@@ -565,6 +591,10 @@ export function generateC(
   }
   if (program.structs.some((declaration) => declaration.methods.length > 0) || program.functions.length > 0) {
     lines.push("");
+  }
+
+  for (const valueType of onceValueTypes) {
+    lines.push(generateOnceRuntime(valueType, structs, enums, semanticInfo), "");
   }
 
   for (const adapter of foreignCallbackAdapters) {
@@ -685,6 +715,10 @@ function generateModuleConstant(
     ?? semanticInfo.expressionTypes.get(declaration.initializer.location.offset);
   if (!type) throw new Error(`missing inferred type for module constant ${JSON.stringify(declaration.name)}`);
   const name = cBindingName(declaration.name);
+  const once = parseOnceType(type);
+  if (once) {
+    return `static __attribute__((unused)) ${onceName(once.valueType)} ${name} = { .value = NULL, .state = 0 };`;
+  }
   let value: string;
   if (declaration.initializer.kind === "string") {
     value = type === "cstring"
@@ -715,6 +749,51 @@ function generateModuleConstant(
   }
   const mapped = mapType(type, structs, enums, semanticInfo.foreignNamedTypes);
   return `static __attribute__((unused)) const ${mapped} ${name} = ${value};`;
+}
+
+function generateOnceRuntime(
+  valueType: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const valueCType = mapType(valueType, structs, enums, semanticInfo.foreignNamedTypes);
+  const label = displayArrayType(valueType)
+    .replace(/^__z_module_\d+_/, "")
+    .replaceAll("\\", "\\\\")
+    .replaceAll("\"", "\\\"");
+  return `static __attribute__((unused)) ${onceLifetimeName(valueType)} ${onceInitializeName(valueType)}(${onceName(valueType)} *cell, ${valueCType} value) {
+  if (cell == NULL || value == NULL) {
+    fprintf(stderr, "Once<${label}> cannot initialize an invalid value\\n");
+    abort();
+  }
+  if (cell->state != 0) {
+    fprintf(stderr, "Once<${label}> is already initialized and cannot reinitialize\\n");
+    abort();
+  }
+  cell->value = value;
+  cell->state = 1;
+  return (${onceLifetimeName(valueType)}){ .cell = cell };
+}
+
+static __attribute__((unused)) ${valueCType} ${onceGetName(valueType)}(${onceName(valueType)} *cell) {
+  if (cell == NULL || cell->state != 1 || cell->value == NULL) {
+    fprintf(stderr, "Once<${label}> is not initialized or no longer active\\n");
+    abort();
+  }
+  return ${retainName(valueType)}(cell->value);
+}
+
+static __attribute__((unused)) void ${onceLifetimeDeinitName(valueType)}(${onceLifetimeName(valueType)} *lifetime) {
+  if (lifetime == NULL || lifetime->cell == NULL) return;
+  ${onceName(valueType)} *cell = lifetime->cell;
+  lifetime->cell = NULL;
+  if (cell->state != 1 || cell->value == NULL) abort();
+  ${valueCType} value = cell->value;
+  cell->value = NULL;
+  cell->state = 2;
+  ${releaseName(valueType)}(value);
+}`;
 }
 
 function generateTestRunner(
@@ -1197,6 +1276,67 @@ function generateObjCBlockRuntime(): string {
   if (_z_release != NULL) _z_release(_z_context);
 }
 @end`;
+}
+
+function collectOnceValueTypes(program: Program, semanticInfo: SemanticInfo): string[] {
+  const collected = new Set<string>([
+    ...semanticInfo.onceConstructors.values(),
+    ...semanticInfo.onceInitializeCalls.values(),
+    ...semanticInfo.onceGetCalls.values(),
+  ]);
+  const add = (name: string): void => {
+    const once = parseOnceType(name) ?? parseOnceLifetimeType(name);
+    if (once) {
+      collected.add(once.valueType);
+      return;
+    }
+    const functionType = parseFunctionType(name);
+    if (functionType) {
+      for (const parameter of functionType.parameters) add(parameter.type);
+      add(functionType.returnType);
+      if (functionType.errorType) add(functionType.errorType);
+      return;
+    }
+    const fixed = parseFixedArrayType(name);
+    if (fixed) add(fixed.elementType);
+    const slice = parseSliceType(name);
+    if (slice) add(slice.elementType);
+    const dynamic = parseDynamicArrayType(name);
+    if (dynamic) add(dynamic.elementType);
+    const option = parseOptionType(name);
+    if (option) add(option.target);
+    const map = parseMapType(name);
+    if (map) {
+      add(map.keyType);
+      add(map.valueType);
+    }
+    const set = parseSetType(name);
+    if (set) add(set.elementType);
+  };
+  for (const declaration of program.constants) {
+    if (declaration.type) add(declaration.type.name);
+  }
+  for (const declaration of program.functions) {
+    add(declaration.returnType.name);
+    if (declaration.errorType) add(declaration.errorType.name);
+    for (const parameter of declaration.parameters) add(parameter.type.name);
+  }
+  for (const declaration of program.structs) {
+    for (const field of declaration.fields) add(field.type.name);
+    for (const method of declaration.methods) {
+      add(method.returnType.name);
+      if (method.errorType) add(method.errorType.name);
+      for (const parameter of method.parameters) add(parameter.type.name);
+    }
+  }
+  for (const declaration of program.enums) {
+    for (const variant of declaration.variants) {
+      if (variant.payload) add(variant.payload.name);
+    }
+  }
+  for (const type of semanticInfo.expressionTypes.values()) add(type);
+  for (const type of semanticInfo.bindingTypes.values()) add(type);
+  return [...collected];
 }
 
 function collectFixedArrayTypes(program: Program, semanticInfo: SemanticInfo): string[] {
@@ -2026,6 +2166,8 @@ function generateOwnedEnvironmentCleanup(
   if (type === "Arena") return `z_arena_reset(&(${value}));`;
   if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (type === "TaskControl") return `z_task_control_release(${value});`;
+  const onceLifetime = parseOnceLifetimeType(type);
+  if (onceLifetime) return `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
   if (type === fsLockTypeName || type === "fs.Lock") {
     return `Z_FsLock_deinit(&(${value}));`;
   }
@@ -6130,6 +6272,11 @@ function generateValueCleanup(
     const release = `z_task_control_release(${value});`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
   }
+  const onceLifetime = parseOnceLifetimeType(type);
+  if (onceLifetime) {
+    const release = `${onceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
+    return liveFlag ? `if (${liveFlag}) ${release}` : release;
+  }
   if (type === fsLockTypeName || type === "fs.Lock") {
     const release = `Z_FsLock_deinit(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
@@ -7508,6 +7655,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       if (context.semanticInfo.optionFromNullable.has(expression.location.offset)) {
         return generateExpression(expression.arguments[0], context);
+      }
+      const onceInitialize = context.semanticInfo.onceInitializeCalls.get(expression.location.offset);
+      if (onceInitialize && expression.callee.kind === "member") {
+        return `${onceInitializeName(onceInitialize)}(&(${generateExpression(expression.callee.object, context)}), ${generateExpression(expression.arguments[0], context)})`;
+      }
+      const onceGet = context.semanticInfo.onceGetCalls.get(expression.location.offset);
+      if (onceGet && expression.callee.kind === "member") {
+        return `${onceGetName(onceGet)}(&(${generateExpression(expression.callee.object, context)}))`;
       }
       const nativeConnection = context.semanticInfo.foreignConnectionCalls.get(expression.location.offset);
       if (nativeConnection) {
@@ -9029,6 +9184,8 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
     || parseWeakType(analyzedType)
     || parseWeakResultType(analyzedType)
     || parseViewType(analyzedType)
+    || parseOnceType(analyzedType)
+    || parseOnceLifetimeType(analyzedType)
     || context.structs.has(analyzedType)
     || context.enums.has(analyzedType)
     || context.semanticInfo.foreignNamedTypes.has(analyzedType)
@@ -9274,6 +9431,10 @@ function mapType(
   if (functionType) return functionTypeCName(functionType);
   if (parseWeakType(name)) return "Z_Weak";
   if (parseGeneratorType(name)) return generatorCName(name);
+  const once = parseOnceType(name);
+  if (once) return onceName(once.valueType);
+  const onceLifetime = parseOnceLifetimeType(name);
+  if (onceLifetime) return onceLifetimeName(onceLifetime.valueType);
   const primitive = primitiveTypeNames[name];
   if (primitive) return primitive;
   if (parseFixedArrayType(name)) return arrayName(name);
@@ -9377,6 +9538,26 @@ function variantTag(owner: string, variant: string): string {
 
 function structName(name: string): string {
   return `Z_${nativeSymbolPart(name)}`;
+}
+
+function onceName(valueType: string): string {
+  return `Z_Once_${nativeSymbolPart(valueType)}`;
+}
+
+function onceLifetimeName(valueType: string): string {
+  return `Z_OnceLifetime_${nativeSymbolPart(valueType)}`;
+}
+
+function onceInitializeName(valueType: string): string {
+  return `z_once_${nativeSymbolPart(valueType)}_initialize`;
+}
+
+function onceGetName(valueType: string): string {
+  return `z_once_${nativeSymbolPart(valueType)}_get`;
+}
+
+function onceLifetimeDeinitName(valueType: string): string {
+  return `z_once_lifetime_${nativeSymbolPart(valueType)}_deinit`;
 }
 
 function arrayName(name: string): string {
@@ -9494,6 +9675,7 @@ function hasCleanupType(
     || type === "Arena"
     || type === "TaskScope"
     || type === "TaskControl"
+    || Boolean(parseOnceLifetimeType(type))
     || type === fsLockTypeName
     || type === "fs.Lock"
   ) return true;

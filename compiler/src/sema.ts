@@ -85,7 +85,12 @@ import {
 import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
-import { parseGenericType } from "./generic-types.ts";
+import { genericTypeName, parseGenericType } from "./generic-types.ts";
+import {
+  onceLifetimeTypeName,
+  parseOnceLifetimeType,
+  parseOnceType,
+} from "./once-types.ts";
 import type { GenericAggregateMaterialization } from "./generics.ts";
 import { parseOptionalViewType, parseReceiverViewReturnType, parseViewType, viewTypeName } from "./view-types.ts";
 import { hashableSelfTypeName, hashableTraitDeclaration } from "./hash-types.ts";
@@ -381,6 +386,9 @@ export type SemanticInfo = {
   readonly taskScopeSpawnCalls: ReadonlyMap<number, number>;
   readonly taskScopeAsyncCalls: ReadonlyMap<number, number>;
   readonly taskScopeConstructors: ReadonlySet<number>;
+  readonly onceConstructors: ReadonlyMap<number, string>;
+  readonly onceInitializeCalls: ReadonlyMap<number, string>;
+  readonly onceGetCalls: ReadonlyMap<number, string>;
   readonly aggregateExecutorAffinities: ReadonlyMap<string, ExecutorAffinityInfo>;
   readonly shareableClasses: ReadonlySet<string>;
   readonly foreignArgumentAccesses: ReadonlyMap<number, "in" | "out" | "inout">;
@@ -471,7 +479,9 @@ type StandardTypeName =
   | "Generator"
   | "AsyncGenerator"
   | "TaskScope"
-  | "TaskControl";
+  | "TaskControl"
+  | "Once"
+  | "OnceLifetime";
 
 type AnalysisState = {
   readonly warnings: DiagnosticError[];
@@ -516,6 +526,10 @@ type AnalysisState = {
   readonly taskScopeSpawnCalls: Map<number, number>;
   readonly taskScopeAsyncCalls: Map<number, number>;
   readonly taskScopeConstructors: Set<number>;
+  readonly onceConstructors: Map<number, string>;
+  readonly onceInitializeCalls: Map<number, string>;
+  readonly onceGetCalls: Map<number, string>;
+  analyzingModuleConstant: boolean;
   readonly aggregateExecutorAffinities: Map<string, ExecutorAffinityInfo>;
   readonly shareableClasses: Set<string>;
   readonly threadSharedClassUses: Map<string, SourceLocation>;
@@ -648,7 +662,7 @@ type SymbolValue =
   | { readonly kind: "testFail" }
   | { readonly kind: "standardModule"; readonly module: StandardModuleName }
   | { readonly kind: "standardFunction"; readonly name: StandardFunctionName; readonly declaration: FunctionDeclaration }
-  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" }
+  | { readonly kind: "standardType"; readonly type: "TextBuffer" | "Arena" | "Map" | "Set" | "Hasher" | "TaskScope" | "TaskControl" | "Once" | "OnceLifetime" }
   | { readonly kind: "struct"; readonly declaration: StructDeclaration }
   | { readonly kind: "trait"; readonly declaration: TraitDeclaration }
   | { readonly kind: "enum"; readonly declaration: EnumDeclaration };
@@ -867,6 +881,10 @@ export function analyze(
     taskScopeSpawnCalls: new Map(),
     taskScopeAsyncCalls: new Map(),
     taskScopeConstructors: new Set(),
+    onceConstructors: new Map(),
+    onceInitializeCalls: new Map(),
+    onceGetCalls: new Map(),
+    analyzingModuleConstant: false,
     aggregateExecutorAffinities: new Map(),
     shareableClasses: new Set(),
     threadSharedClassUses: new Map(),
@@ -1147,6 +1165,26 @@ export function analyze(
         }
         continue;
       }
+      if (declaration.header === "std/sync") {
+        if (!declaration.bindings) {
+          throw new DiagnosticError(fileName, declaration.location, "std/sync requires a selective import", {
+            code: "Z0501",
+            helps: ["use `import { Once } from \"std/sync\";`"],
+          });
+        }
+        for (const binding of declaration.bindings) {
+          if (binding.importedName !== "Once" && binding.importedName !== "OnceLifetime") {
+            throw new DiagnosticError(fileName, binding.location, `std/sync has no export ${JSON.stringify(binding.importedName)}`, {
+              code: "Z0501",
+              helps: ["the first std/sync tier exports `Once` and `OnceLifetime`"],
+            });
+          }
+          validateUserName(binding.localName, binding.location, fileName);
+          declareGlobal(globals, binding.localName, { kind: "standardType", type: binding.importedName }, binding.location, fileName);
+          state.standardTypeBindings.set(binding.localName, binding.importedName);
+        }
+        continue;
+      }
       if (declaration.header === "std/thread") {
         if (!declaration.bindings) {
           throw new DiagnosticError(fileName, declaration.location, "std/thread requires a selective import", {
@@ -1211,7 +1249,7 @@ export function analyze(
       }
       throw new DiagnosticError(fileName, declaration.location, `unknown standard module ${JSON.stringify(declaration.header)}`, {
         code: "Z0501",
-        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
+        helps: ["the bootstrap standard library currently provides `std`, `std/console`, `std/time`, `std/test`, `std/text`, `std/memory`, `std/collections`, `std/hash`, `std/iteration`, `std/sync`, `std/thread`, `std/async`, `std/fs`, `std/process`, and `std/objc`"],
       });
     }
     const module = foreignModules.get(declaration.moduleName);
@@ -1297,6 +1335,7 @@ export function analyze(
     if (declaration.type) {
       validateType(declaration.type, structs, enums, foreignNamedTypes, fileName, false);
     }
+    state.analyzingModuleConstant = true;
     let initializerType = inferExpression(
       declaration.initializer,
       new Map(),
@@ -1306,6 +1345,7 @@ export function analyze(
       declaration.location.fileName ?? fileName,
       state,
     );
+    state.analyzingModuleConstant = false;
     const constantType = declaration.type
       ? resolveSemanticTypeName(declaration.type, structs, enums, state)
       : String(underlyingType(initializerType));
@@ -1320,6 +1360,22 @@ export function analyze(
           helps: ["use a boolean, numeric, String, or cstring constant"],
         },
       );
+    }
+    const once = parseOnceType(constantType);
+    if (once) {
+      const stored = structs.get(once.valueType);
+      if (stored?.kind !== "class" || !stored.executorAffinity) {
+        throw new DiagnosticError(
+          declaration.location.fileName ?? fileName,
+          declaration.type?.location ?? declaration.initializer.location,
+          `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`,
+          {
+            code: "Z0604",
+            notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
+            helps: ["declare the stored class with `on thread.main`, or keep the owner local and pass it explicitly"],
+          },
+        );
+      }
     }
     if (declaration.type) {
       initializerType = contextualCStringLiteral(constantType, declaration.initializer, state) ?? initializerType;
@@ -1963,6 +2019,13 @@ function analyzeStructDeclaration(
     }
     members.add(field.name);
     validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (parseOnceType(field.type.name)) {
+      throw new DiagnosticError(fileName, field.type.location, `${displayAssignableType(field.type.name)} cannot be stored in a field`, {
+        code: "Z0604",
+        notes: ["a Once<T> is an address-stable module cell"],
+        helps: ["keep the Once<T> cell as a private module const and expose narrow initialize/get wrapper functions"],
+      });
+    }
     if (declaration.kind === "class" && field.type.name === "Arena") {
       throw new DiagnosticError(fileName, field.type.location, "ARC class fields cannot own an Arena in the first region tier", {
         code: "Z0206",
@@ -2298,6 +2361,12 @@ function analyzeEnumDeclaration(
     names.add(variant.name);
     if (variant.payload) {
       validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
+      if (parseOnceType(variant.payload.name)) {
+        throw new DiagnosticError(fileName, variant.payload.location, `${displayAssignableType(variant.payload.name)} cannot be stored in an enum payload`, {
+          code: "Z0604",
+          notes: ["a Once<T> is an address-stable module cell"],
+        });
+      }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
       if (containsViewType(variant.payload.name) && !optionalViewPayload) {
         throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
@@ -2324,6 +2393,13 @@ function validateFunctionSignature(
   fileName: string,
 ): void {
   validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  if (parseOnceType(declaration.returnType.name)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, `${displayAssignableType(declaration.returnType.name)} cannot be returned by value`, {
+      code: "Z0604",
+      notes: ["a Once<T> has one canonical address-stable module identity"],
+      helps: ["return the stored class through a narrow getter instead"],
+    });
+  }
   if (declaration.rawBody) {
     if (declaration.async || declaration.errorType) {
       throw new DiagnosticError(fileName, declaration.rawBody.location, "a raw native function body must be synchronous and non-throwing in the first tier", {
@@ -2465,6 +2541,13 @@ function validateFunctionSignature(
     }
     validateUserName(parameter.name, parameter.location, fileName);
     validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    if (parseOnceType(parameter.type.name)) {
+      throw new DiagnosticError(fileName, parameter.type.location, `${displayAssignableType(parameter.type.name)} cannot be passed as a function parameter`, {
+        code: "Z0604",
+        notes: ["methods operate directly on the canonical module cell"],
+        helps: ["keep the cell private and expose a narrow wrapper function"],
+      });
+    }
     if (declaration.async && parseGeneratorType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.location, "async task frames cannot store Generator<T> parameters yet", { code: "Z0704" });
     }
@@ -3317,6 +3400,13 @@ function analyzeStatement(
         const declaredType = statement.type;
         validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
         const declaredTypeName = resolveSemanticTypeName(declaredType, structs, enums, state);
+        if (parseOnceType(declaredTypeName)) {
+          throw new DiagnosticError(fileName, declaredType.location, `${displayAssignableType(declaredTypeName)} cannot be declared as local storage`, {
+            code: "Z0604",
+            notes: ["a Once<T> is one address-stable, statically empty module cell"],
+            helps: ["declare the cell with module-level const"],
+          });
+        }
         if (hasMoveOnlyForeignType(declaredTypeName, structs, enums, state.foreignNamedTypes)) {
           throw new DiagnosticError(fileName, declaredType.location, "move-only native values must be initialized when their storage is declared", {
             code: "Z0240",
@@ -3464,6 +3554,13 @@ function analyzeStatement(
           statement.initializer.location,
           `integer literal ${statement.initializer.value} does not fit default i32; add an explicit integer type`,
         );
+      }
+      if (parseOnceType(String(underlyingType(variableType)))) {
+        throw new DiagnosticError(fileName, statement.location, `${displayAssignableType(variableType)} cannot be copied into local storage`, {
+          code: "Z0604",
+          notes: ["a Once<T> is one address-stable module cell; copying it would split its initialization state"],
+          helps: ["call initialize/get directly on the module cell or a source import alias"],
+        });
       }
       const view = parseViewType(String(variableType));
       const optionalView = parseOptionalViewType(String(variableType));
@@ -4301,6 +4398,17 @@ function analyzeStatement(
             notes: ["the connection keeps the callback registered and its closure environment alive until the binding leaves scope"],
             helps: ["bind the result with const so Z can unregister the callback before cleaning up its native owner"],
           });
+        }
+        if (parseOnceLifetimeType(String(underlyingType(type)))) {
+          throw new DiagnosticError(
+            fileName,
+            statement.expression.location,
+            `${displayAssignableType(type)} must be owned by a binding; discarding it would immediately end the published lifetime`,
+            {
+              code: "Z0604",
+              helps: ["bind the result with const for the intended publication scope"],
+            },
+          );
         }
         if (hasOwnershipType(type, structs, enums, state)) {
           throw new DiagnosticError(fileName, statement.expression.location, "an ownership-bearing value must be bound or transferred; it cannot be discarded");
@@ -7331,7 +7439,14 @@ function inferExpressionInner(
         const target = view?.target ?? String(underlyingType(sourceType));
         const plan = explicitCopyPlanForType(target, structs, enums, state);
         if (!plan) {
-          throw new DiagnosticError(fileName, expression.location, `type ${displayAssignableType(target)} cannot be explicitly copied`, {
+          const onceLifetime = parseOnceLifetimeType(target);
+          throw new DiagnosticError(
+            fileName,
+            expression.location,
+            onceLifetime
+              ? `cannot copy move-only ${displayAssignableType(target)}`
+              : `type ${displayAssignableType(target)} cannot be explicitly copied`,
+            {
             code: "Z0217",
             length: 4,
             notes: [
@@ -7341,7 +7456,8 @@ function inferExpressionInner(
             helps: [
               "use a domain-specific clone or snapshot method for this type, or transfer its existing owner with `move value`",
             ],
-          });
+            },
+          );
         }
         state.explicitCopies.set(expression.location.offset, { ...plan, type: target, sourceIsView: Boolean(view) });
         return target;
@@ -8496,6 +8612,36 @@ function inferExpressionInner(
             },
           );
         }
+        const once = parseOnceType(expression.callee.name);
+        if (once) {
+          if (![...state.standardTypeBindings.values()].includes("Once")) {
+            throw new DiagnosticError(fileName, expression.callee.location, "Once requires an explicit standard-library import", {
+              code: "Z0501",
+              helps: ["add `import { Once } from \"std/sync\";`"],
+            });
+          }
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (expression.arguments.length !== 0) {
+            throw new DiagnosticError(fileName, expression.location, "Once<T>() expects no values");
+          }
+          if (!state.analyzingModuleConstant) {
+            throw new DiagnosticError(fileName, expression.location, "Once<T>() is a static-empty module initializer", {
+              code: "Z0604",
+              notes: ["the cell has one canonical module identity and cannot be copied into local storage"],
+              helps: ["declare `const cell = Once<T>();` at module scope"],
+            });
+          }
+          const stored = structs.get(once.valueType);
+          if (stored?.kind !== "class" || !stored.executorAffinity) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+              code: "Z0604",
+              notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
+              helps: ["declare the stored class with `on thread.main`"],
+            });
+          }
+          state.onceConstructors.set(expression.location.offset, once.valueType);
+          return expression.callee.name;
+        }
         const map = parseMapType(expression.callee.name);
         if (map) {
           if (![...state.standardTypeBindings.values()].includes("Map")) {
@@ -9185,6 +9331,61 @@ function inferExpressionInner(
         const receiverType = inferExpression(expression.callee.object, locals, globals, structs, enums, fileName, state);
         const receiverView = parseViewType(String(receiverType));
         const receiverValueType = receiverView?.target ?? String(receiverType);
+        const once = parseOnceType(receiverValueType);
+        if (once) {
+          rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+          if (!isNamedStorageExpression(expression.callee.object)) {
+            throw new DiagnosticError(fileName, expression.callee.object.location, "Once methods require a named module cell");
+          }
+          requireMainExecutorContext(
+            true,
+            expression.location,
+            `Once<${displayArrayType(once.valueType)}> access`,
+            fileName,
+            state,
+            {
+              executor: "main",
+              declared: false,
+              originType: once.valueType,
+              fieldPath: [],
+            },
+          );
+          if (expression.callee.property === "get") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `Once.get expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            state.onceGetCalls.set(expression.location.offset, once.valueType);
+            return once.valueType;
+          }
+          if (expression.callee.property === "initialize") {
+            if (expression.arguments.length !== 1) {
+              throw new DiagnosticError(fileName, expression.location, `Once.initialize expects 1 argument, received ${expression.arguments.length}`);
+            }
+            const argument = expression.arguments[0];
+            const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+            requireAssignable(
+              once.valueType,
+              actual,
+              argument,
+              fileName,
+              structs,
+              enums,
+              state,
+            );
+            if (isNamedStorageExpression(argument)) {
+              throw new DiagnosticError(fileName, argument.location, "initializing Once from an existing owner requires an explicit move", {
+                code: "Z0218",
+                helps: [`write \`initialize(move ${storageRoot(argument)?.name ?? "value"})\``],
+              });
+            }
+            if (argument.kind !== "unary" || argument.operator !== "move") {
+              consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state);
+            }
+            state.onceInitializeCalls.set(expression.location.offset, once.valueType);
+            return onceLifetimeTypeName(once.valueType);
+          }
+          throw new DiagnosticError(fileName, expression.callee.location, `Once has no method ${JSON.stringify(expression.callee.property)}`);
+        }
         const task = parseTaskType(receiverValueType);
         if (task) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -12206,6 +12407,7 @@ function hasCleanupType(
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
+  if (parseOnceLifetimeType(actual)) return true;
   if (actual === fsLockTypeName || actual === "fs.Lock") return true;
   if (actual === nativeConnectionTypeName) return true;
   if (parseGeneratorType(actual) || parseAsyncGeneratorType(actual)) return true;
@@ -12253,6 +12455,8 @@ function explicitCopyPlanForType(
     || actual === "Arena"
     || actual === "TaskScope"
     || actual === "TaskControl"
+    || parseOnceType(actual)
+    || parseOnceLifetimeType(actual)
     || actual === fsLockTypeName
     || actual === "fs.Lock"
     || parseAsyncGeneratorType(actual)
@@ -14414,6 +14618,28 @@ function validateType(
   fileName: string,
   allowVoid: boolean,
 ): void {
+  const once = parseOnceType(type.name);
+  if (once) {
+    validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    const stored = structs.get(once.valueType);
+    if (stored?.kind !== "class" || !stored.executorAffinity) {
+      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+        code: "Z0604",
+      });
+    }
+    return;
+  }
+  const onceLifetime = parseOnceLifetimeType(type.name);
+  if (onceLifetime) {
+    validateType({ name: onceLifetime.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    const stored = structs.get(onceLifetime.valueType);
+    if (stored?.kind !== "class" || !stored.executorAffinity) {
+      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class explicitly isolated to thread.main in the first tier, found ${JSON.stringify(displayArrayType(onceLifetime.valueType))}`, {
+        code: "Z0604",
+      });
+    }
+    return;
+  }
   const generator = parseGeneratorType(type.name);
   if (generator) {
     validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
@@ -14519,6 +14745,13 @@ function resolveSemanticTypeName(
   state: AnalysisState,
 ): string {
   const resolveName = (name: string): string => {
+    const generic = parseGenericType(name);
+    if (generic) {
+      const standard = state.standardTypeBindings.get(generic.base);
+      if (standard === "Once" || standard === "OnceLifetime") {
+        return genericTypeName(standard, generic.arguments.map(resolveName));
+      }
+    }
     const view = parseViewType(name);
     if (view) {
       return viewTypeName(resolveName(view.target));
@@ -14821,6 +15054,10 @@ function displayAssignableType(type: ValueType): string {
   if (unsafeNative) return unsafeNative;
   const view = parseViewType(name);
   if (view) return `view ${displayAssignableType(view.target)}`;
+  const once = parseOnceType(name);
+  if (once) return `Once<${displayAssignableType(once.valueType)}>`;
+  const onceLifetime = parseOnceLifetimeType(name);
+  if (onceLifetime) return `OnceLifetime<${displayAssignableType(onceLifetime.valueType)}>`;
   return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);
 }
 
@@ -15090,6 +15327,14 @@ function moduleConstantInitializerSupported(expression: Expression): boolean {
   ) {
     return true;
   }
+  if (
+    expression.kind === "call"
+    && expression.callee.kind === "identifier"
+    && parseOnceType(expression.callee.name)
+    && expression.arguments.length === 0
+  ) {
+    return true;
+  }
   return expression.kind === "unary"
     && (expression.operator === "+" || expression.operator === "-")
     && expression.operand.kind === "number";
@@ -15099,5 +15344,6 @@ function moduleConstantTypeSupported(type: string): boolean {
   return type === "boolean"
     || type === "String"
     || type === "cstring"
-    || isNumericType(type);
+    || isNumericType(type)
+    || Boolean(parseOnceType(type));
 }

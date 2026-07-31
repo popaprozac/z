@@ -41,6 +41,7 @@ import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
+import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { publicObjCTypeName } from "./objc-types.ts";
 import { displayUnsafeNativeType } from "./unsafe-types.ts";
 import type { ExecutorAffinityInfo, ExplicitCopyPlan, IntegerConversion, ObjCCallInfo } from "./sema.ts";
@@ -761,8 +762,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const type = context.semanticInfo.bindingTypes.get(
       moduleConstant.nameLocation.offset
     ) ?? moduleConstant.type?.name ?? "unknown";
+    const affinity = onceExecutorAffinity(type, context);
     return markdownHover(
-      `const ${moduleConstant.name}: ${displayServiceType(type, context)}`,
+      `const ${moduleConstant.name}: ${displayServiceType(type, context)}${executorAffinityHover(affinity)}`,
       source,
       word.start,
       word.end,
@@ -1046,6 +1048,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (context.semanticInfo.standardTypeBindings.get(word.text) === "TaskControl") {
     return markdownHover("TaskControl  // non-joining per-operation cancellation control; its TaskScope owns completion", source, word.start, word.end);
   }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "Once") {
+    return markdownHover("Once<T>()  // statically empty, main-affine one-time class root", source, word.start, word.end);
+  }
+  if (context.semanticInfo.standardTypeBindings.get(word.text) === "OnceLifetime") {
+    return markdownHover("OnceLifetime<T>  // move-only guard for one initialized Once<T> interval", source, word.start, word.end);
+  }
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
@@ -1287,6 +1295,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
             : null;
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
+    if (resolved?.kind === "once") {
+      const value = displayType(resolved.valueType, context.typeDisplayNames);
+      const detail = word.text === "initialize"
+        ? `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main\n// publishes exactly once; the returned move-only guard owns the initialized interval`
+        : word.text === "get"
+          ? `get(): ${value} on thread.main\n// returns a retained class identity; traps when no initialized interval is active`
+          : null;
+      if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
     if (resolved?.kind === "fsLock" && word.text === "unlock") {
       return markdownHover(
         "unlock(): void  // consumes fs.Lock and releases it immediately",
@@ -1377,7 +1394,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       : borrowedResource ? "  // borrowed native resource; non-escaping" : "";
     const sourceType = binding ? sourceBindingTypeName(context.sourceProgram, binding.offset) : null;
     const aliasType = sourceType ? sourceAliasDisplayType(context, sourceType) : null;
-    const affinity = context.semanticInfo.aggregateExecutorAffinities.get(String(type))
+    const affinity = onceExecutorAffinity(String(type), context)
+      ?? context.semanticInfo.aggregateExecutorAffinities.get(String(type))
       ?? (sourceType ? context.semanticInfo.aggregateExecutorAffinities.get(sourceType) : undefined)
       ?? foreignTypeExecutorAffinity(type, context);
     return markdownHover(
@@ -1665,6 +1683,20 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
         label: "Set",
         kind: completionKinds.struct,
         detail: "Set<T>()  // owned unique-value storage",
+      },
+    ];
+  }
+  if (specifier === "std/sync") {
+    return [
+      {
+        label: "Once",
+        kind: completionKinds.struct,
+        detail: "Once<T>()  // statically empty, main-affine one-time class root",
+      },
+      {
+        label: "OnceLifetime",
+        kind: completionKinds.struct,
+        detail: "OnceLifetime<T>  // inferred move-only initialized-interval guard",
       },
     ];
   }
@@ -2118,9 +2150,9 @@ function symbolCompletions(
   try {
     const parsed = parse(lex(source, fileName), fileName);
     for (const declaration of parsed.imports) {
-      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/async") continue;
+      if (declaration.header !== "std/text" && declaration.header !== "std/memory" && declaration.header !== "std/collections" && declaration.header !== "std/hash" && declaration.header !== "std/iteration" && declaration.header !== "std/sync" && declaration.header !== "std/async") continue;
       for (const binding of declaration.bindings ?? []) {
-        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
+        if (binding.importedName !== "TextBuffer" && binding.importedName !== "Arena" && binding.importedName !== "Map" && binding.importedName !== "Set" && binding.importedName !== "Hashable" && binding.importedName !== "Hasher" && binding.importedName !== "Iterator" && binding.importedName !== "Generator" && binding.importedName !== "AsyncGenerator" && binding.importedName !== "Once" && binding.importedName !== "OnceLifetime" && binding.importedName !== "TaskScope" && binding.importedName !== "TaskControl") continue;
         const detail = binding.importedName === "TextBuffer"
           ? "move-only UTF-8 construction storage"
           : binding.importedName === "Arena"
@@ -2141,6 +2173,10 @@ function symbolCompletions(
                         ? "thread-safe structured child-work owner"
                         : binding.importedName === "TaskControl"
                           ? "non-joining per-operation cancellation control"
+                        : binding.importedName === "Once"
+                          ? "statically empty main-affine one-time class root"
+                        : binding.importedName === "OnceLifetime"
+                          ? "move-only initialized-interval guard"
                     : "mutable hash-composition state";
         builtIns.push({
           label: binding.localName,
@@ -2148,7 +2184,7 @@ function symbolCompletions(
             ? completionKinds.interface
             : binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? completionKinds.class : completionKinds.struct,
           detail: binding.localName === binding.importedName
-            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
+            ? `${binding.importedName}${binding.importedName === "Hashable" || binding.importedName === "Iterator" || binding.importedName === "Generator" || binding.importedName === "AsyncGenerator" || binding.importedName === "OnceLifetime" || binding.importedName === "TaskScope" || binding.importedName === "TaskControl" ? "" : "()"}  // ${detail}`
             : `${binding.importedName}  // imported as ${binding.localName}`,
           sortText: `0-${binding.localName}`,
         });
@@ -2344,6 +2380,10 @@ function symbolCompletions(
                     ? "new TaskScope()  // thread-safe structured child-work owner"
                   : standardType === "TaskControl"
                     ? "TaskControl  // returned by TaskScope.schedule; non-joining cancellation control"
+                  : standardType === "Once"
+                    ? "Once<T>()  // statically empty main-affine one-time class root"
+                  : standardType === "OnceLifetime"
+                    ? "OnceLifetime<T>  // move-only initialized-interval guard"
                   : "Hasher  // mutable hash-composition state",
       sortText: `0-${name}`,
     });
@@ -4151,6 +4191,24 @@ function memberCompletions(
   }
 
   const receiverOffset = offset - receiverText.length - prefix.length - 1;
+  const sourceBinding = localSourceBinding(importContext, receiverText);
+  const sourceConstant = sourceBinding
+    ? sourceExportDeclaration(sourceBinding.module, sourceBinding.importedName)
+    : null;
+  const sourceOnce = sourceConstant?.kind === "constant" && sourceConstant.type
+    ? parseOnceType(sourceConstant.type.name)
+    : null;
+  const declaredOnce = parseOnceType(
+    declaredBindingType(source, receiverText, receiverOffset) ?? "",
+  );
+  const recoveredOnce = sourceOnce ?? declaredOnce;
+  if (recoveredOnce) {
+    return filterCompletions(
+      onceCompletions(recoveredOnce.valueType, importContext.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   const fullContext = safeAnalysis(source, fileName);
   const directReceiver = fullContext ? resolveReceiver(fullContext, receiverText, receiverOffset) : null;
   if (directReceiver?.kind === "arena") {
@@ -4560,6 +4618,13 @@ function memberCompletions(
       },
     ], prefix, 1000);
   }
+  if (resolved?.kind === "once") {
+    return filterCompletions(
+      onceCompletions(resolved.valueType, context.typeDisplayNames),
+      prefix,
+      1000,
+    );
+  }
   if (resolved?.kind === "fsLock") {
     return filterCompletions([{
       label: "unlock",
@@ -4685,7 +4750,12 @@ function sourceExportDetail(
   const declaration = sourceExportDeclaration(module, name);
   if (!declaration) return `export ${displayName}`;
   if (declaration.kind === "constant") {
-    return `const ${displayName}: ${displayType(declaration.type?.name ?? "inferred", typeDisplayNames)}`;
+    const type = declaration.type?.name ?? "inferred";
+    const once = parseOnceType(type);
+    const affinity = once
+      ? sourceProgramExecutorAffinity(module.program, once.valueType)
+      : undefined;
+    return `const ${displayName}: ${displayType(type, typeDisplayNames)}${executorAffinityHover(affinity)}`;
   }
   if (declaration.kind === "function") {
     return zFunctionDetail(
@@ -4750,6 +4820,21 @@ function sourceProgramExecutorAffinity(
   }
   visiting.delete(name);
   return undefined;
+}
+
+function onceExecutorAffinity(
+  type: string,
+  context: AnalyzedSource,
+): ExecutorAffinityInfo | undefined {
+  const once = parseOnceType(type) ?? parseOnceLifetimeType(type);
+  if (!once) return undefined;
+  return context.semanticInfo.aggregateExecutorAffinities.get(once.valueType)
+    ?? {
+      executor: "main",
+      declared: false,
+      originType: once.valueType,
+      fieldPath: [],
+    };
 }
 
 function sourceImportHover(
@@ -4889,12 +4974,34 @@ type ResolvedReceiver =
   | { readonly kind: "task"; readonly successType: string; readonly errorType: string | null }
   | { readonly kind: "taskScope" }
   | { readonly kind: "taskControl" }
+  | { readonly kind: "once"; readonly valueType: string }
   | { readonly kind: "fsLock" }
   | { readonly kind: "objcConnection" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
   return context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
     || context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
+}
+
+function onceCompletions(
+  valueType: string,
+  typeDisplayNames: ReadonlyMap<string, string>,
+): CompletionItem[] {
+  const value = displayType(valueType, typeDisplayNames);
+  return [
+    {
+      label: "initialize",
+      kind: completionKinds.method,
+      detail: `initialize(move value: ${value}): OnceLifetime<${value}> on thread.main`,
+      insertText: "initialize()",
+    },
+    {
+      label: "get",
+      kind: completionKinds.method,
+      detail: `get(): ${value} on thread.main`,
+      insertText: "get()",
+    },
+  ];
 }
 
 function resolveReceiver(context: AnalyzedSource, text: string, offset: number): ResolvedReceiver | null {
@@ -4918,6 +5025,8 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (receiverType === "Hasher") return { kind: "hasher" };
   if (receiverType === "TaskScope") return { kind: "taskScope" };
   if (receiverType === "TaskControl") return { kind: "taskControl" };
+  const once = parseOnceType(receiverType);
+  if (once) return { kind: "once", valueType: once.valueType };
   if (receiverType === fsLockTypeName || receiverType === "fs.Lock") {
     return { kind: "fsLock" };
   }

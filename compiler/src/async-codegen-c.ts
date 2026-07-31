@@ -21,6 +21,7 @@ import { resultTypeName } from "./results.ts";
 import { parseSetType } from "./set-types.ts";
 import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
+import { parseOnceLifetimeType } from "./once-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
 import type { IntegerOperation, ObjCCallInfo, SemanticInfo } from "./sema.ts";
 import {
@@ -6389,6 +6390,9 @@ function emitFrameExpressionInner(
         : JSON.stringify(expression.value);
     }
     case "identifier":
+      if (plan.types.semanticInfo.moduleConstantReferences.has(expression.location.offset)) {
+        return plan.types.semanticInfo.moduleConstantReferences.get(expression.location.offset)!;
+      }
       if (plan.bindings?.has(expression.name)) {
         const value = plan.bindings.get(expression.name)!;
         const type = plan.locals.get(expression.name);
@@ -6594,6 +6598,14 @@ function emitFrameExpressionInner(
         plan.types,
       );
     case "call": {
+      const onceInitialize = plan.types.semanticInfo.onceInitializeCalls.get(expression.location.offset);
+      if (onceInitialize && expression.callee.kind === "member") {
+        return `${asyncOnceInitializeName(onceInitialize)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+      }
+      const onceGet = plan.types.semanticInfo.onceGetCalls.get(expression.location.offset);
+      if (onceGet && expression.callee.kind === "member") {
+        return `${asyncOnceGetName(onceGet)}(&(${emitFrameExpression(expression.callee.object, plan, fileName)}))`;
+      }
       if (
         expression.callee.kind === "member"
         && (parseViewType(
@@ -6984,6 +6996,8 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (type === "TaskScope") return "Z_TaskScope *";
   if (type === "TaskControl") return "Z_TaskControl *";
+  const onceLifetime = parseOnceLifetimeType(type);
+  if (onceLifetime) return asyncOnceLifetimeName(onceLifetime.valueType);
   if (parseAsyncGeneratorType(type)) return asyncGeneratorCName(type);
   const view = parseViewType(type);
   if (view) return `const ${cFrameType(view.target, types)} *`;
@@ -7006,6 +7020,22 @@ function asyncNativeSymbolPart(name: string): string {
   return [...name].map((character) => (
     /[A-Za-z0-9_]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}_`
   )).join("");
+}
+
+function asyncOnceLifetimeName(valueType: string): string {
+  return `Z_OnceLifetime_${asyncNativeSymbolPart(valueType)}`;
+}
+
+function asyncOnceInitializeName(valueType: string): string {
+  return `z_once_${asyncNativeSymbolPart(valueType)}_initialize`;
+}
+
+function asyncOnceGetName(valueType: string): string {
+  return `z_once_${asyncNativeSymbolPart(valueType)}_get`;
+}
+
+function asyncOnceLifetimeDeinitName(valueType: string): string {
+  return `z_once_lifetime_${asyncNativeSymbolPart(valueType)}_deinit`;
 }
 
 function asyncGeneratorCName(type: string): string {
@@ -7034,6 +7064,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   if (parseTaskType(type)) return true;
   if (type === "TaskScope") return true;
   if (type === "TaskControl") return true;
+  if (parseOnceLifetimeType(type)) return true;
   if (parseAsyncGeneratorType(type)) return true;
   if (parseViewType(type)) return true;
   if (scalarTypes.has(type)) return true;
@@ -7076,6 +7107,7 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
   if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
+  if (parseOnceLifetimeType(type)) return true;
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"
@@ -7116,6 +7148,10 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   }
   if (type === "TaskScope") return `z_task_scope_release(${value});`;
   if (type === "TaskControl") return `z_task_control_release(${value});`;
+  const onceLifetime = parseOnceLifetimeType(type);
+  if (onceLifetime) {
+    return `${asyncOnceLifetimeDeinitName(onceLifetime.valueType)}(&(${value}));`;
+  }
   if (
     types.semanticInfo.foreignObjectTypes.has(type)
     || types.semanticInfo.foreignNamedTypes.get(type)?.kind === "object"

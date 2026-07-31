@@ -25,6 +25,7 @@ import {
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
+import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 export struct ParsedModule {
   path: String;
@@ -100,6 +101,26 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
                 valueType = moduleNumericLiteralType(
                   tree.nodes[root.children[0]].value
                 );
+              } else if (
+                root.kind == ExpressionKind.callExpression
+                && root.children.length == 1
+                && tree.nodes[root.children[0]].kind
+                  == ExpressionKind.identifierExpression
+              ) {
+                match (genericTypeShape(
+                  tree.nodes[root.children[0]].value
+                )) {
+                  some(generic) => {
+                    if (
+                      generic.base == "Once"
+                      && generic.arguments.length == 1
+                    ) valueType = tree.nodes[root.children[0]].value.copyBytes(
+                      0,
+                      tree.nodes[root.children[0]].value.byteLength
+                    );
+                  }
+                  none => {}
+                }
               }
             }
             none => {}

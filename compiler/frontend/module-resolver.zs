@@ -3586,6 +3586,24 @@ function inferExpressionNodeType(
         );
         return copiedString(callee);
       }
+      if (base == "Once") {
+        match (genericTypeShape(callee)) {
+          some(once) => {
+            if (
+              once.arguments.length == 1
+              && children.length == 1
+            ) return copiedString(callee);
+          }
+          none => {}
+        }
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "Once<T>() expects one type argument and no values",
+          node.line,
+          node.column
+        );
+      }
       if (
         base == "Map"
         || base == "Set"

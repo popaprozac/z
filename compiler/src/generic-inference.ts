@@ -71,9 +71,10 @@ export function inferGenericCalls(
         declaration.header === "std/text"
         || declaration.header === "std/memory"
         || declaration.header === "std/collections"
+        || declaration.header === "std/sync"
       ) && declaration.bindings)
       .flatMap((declaration) => declaration.bindings!
-        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map" || binding.importedName === "Set")
+        .filter((binding) => binding.importedName === "TextBuffer" || binding.importedName === "Arena" || binding.importedName === "Map" || binding.importedName === "Set" || binding.importedName === "Once")
         .map((binding) => [binding.localName, binding.importedName] as const)),
   );
   const selectiveNamespaces = new Map<string, { readonly module: ForeignModule; readonly namespacePath: readonly string[] }>();
@@ -1375,6 +1376,20 @@ export function inferGenericCalls(
               throw new DiagnosticError(fileName, expression.location, "Set<T>() expects one type argument and no values");
             }
             const type = genericTypeName("Set", explicitStandard.arguments);
+            return {
+              expression: {
+                ...expression,
+                callee: { ...rewrittenCallee, name: type },
+                arguments: [],
+              },
+              type,
+            };
+          }
+          if (standardType === "Once") {
+            if (!explicitStandard || explicitStandard.arguments.length !== 1 || args.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, "Once<T>() expects one type argument and no values");
+            }
+            const type = genericTypeName("Once", explicitStandard.arguments);
             return {
               expression: {
                 ...expression,

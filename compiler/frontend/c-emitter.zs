@@ -44,6 +44,11 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
+  if (
+    type.kind == LoweredTypeKind.onceType
+    || type.kind == LoweredTypeKind.onceLifetimeType
+  ) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.foreignEnumType) {
     return type.name.copyBytes(0, type.name.byteLength);
@@ -159,6 +164,55 @@ function appendCBindingName(
   output.append(name);
 }
 
+function appendOnceTypeName(
+  inout names: Array<String>,
+  in type: LoweredType
+): void {
+  let name = "";
+  if (type.kind == LoweredTypeKind.onceType) {
+    name = type.name.copyBytes(0, type.name.byteLength);
+  } else if (type.kind == LoweredTypeKind.onceLifetimeType) {
+    const prefix = "OnceLifetime_";
+    const valueName = type.name.copyBytes(
+      prefix.byteLength,
+      type.name.byteLength
+    );
+    name = `Once_${valueName}`;
+  }
+  if (name.byteLength == 0) return;
+  for (const existing of names) {
+    if (existing == name) return;
+  }
+  names.push(move name);
+}
+
+function programOnceTypeNames(
+  in program: LoweredProgram
+): Array<String> {
+  let names = Array<String>();
+  for (const constant of program.constants) {
+    appendOnceTypeName(inout names, constant.type);
+  }
+  for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      appendOnceTypeName(inout names, field.type);
+    }
+  }
+  for (const declaration of program.functions) {
+    appendOnceTypeName(inout names, declaration.returnType);
+    for (const parameter of declaration.parameters) {
+      appendOnceTypeName(inout names, parameter.type);
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => appendOnceTypeName(inout names, type);
+        none => {}
+      }
+    }
+  }
+  return names;
+}
+
 function appendIndent(inout output: TextBuffer, depth: usize): void {
   let current: usize = 0;
   while (current < depth) {
@@ -215,6 +269,14 @@ function appendModuleConstants(
       output.append(";\n");
       continue;
     }
+    if (declaration.type.kind == LoweredTypeKind.onceType) {
+      output.append("static __attribute__((unused)) Z_");
+      output.append(declaration.type.name);
+      output.append(" ");
+      appendCBindingName(inout output, declaration.name);
+      output.append(" = { .value = NULL, .state = 0 };\n");
+      continue;
+    }
     output.append("static __attribute__((unused)) const ");
     const nativeType = try cType(declaration.type);
     output.append(nativeType);
@@ -225,6 +287,142 @@ function appendModuleConstants(
     output.append(";\n");
   }
   if (program.constants.length > 0) output.append("\n");
+}
+
+function appendClassAndOnceRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const aggregate of program.structs) {
+    if (!aggregate.referenceType) continue;
+    output.append("static __attribute__((unused)) Z_");
+    output.append(aggregate.name);
+    output.append(" *Z_");
+    output.append(aggregate.name);
+    output.append("_new(");
+    let field: usize = 0;
+    while (field < aggregate.fields.length) {
+      if (field > 0) output.append(", ");
+      const fieldType = try cType(aggregate.fields[field].type);
+      output.append(fieldType);
+      output.append(" ");
+      appendCBindingName(inout output, aggregate.fields[field].name);
+      field = field + 1;
+    }
+    if (aggregate.fields.length == 0) output.append("void");
+    output.append(") {\n  Z_");
+    output.append(aggregate.name);
+    output.append(" *value = (Z_");
+    output.append(aggregate.name);
+    output.append(" *)malloc(sizeof(Z_");
+    output.append(aggregate.name);
+    output.append("));\n  if (value == NULL) abort();\n");
+    output.append("  value->_z_refcount = 1;\n");
+    for (const item of aggregate.fields) {
+      output.append("  value->");
+      output.append(item.name);
+      output.append(" = ");
+      appendCBindingName(inout output, item.name);
+      output.append(";\n");
+    }
+    output.append("  return value;\n}\n\n");
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(aggregate.name);
+    output.append("_retain(Z_");
+    output.append(aggregate.name);
+    output.append(" *value) {\n  if (value != NULL) value->_z_refcount += 1;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(aggregate.name);
+    output.append("_release(Z_");
+    output.append(aggregate.name);
+    output.append(" *self) {\n  if (self == NULL) return;\n");
+    output.append("  if (self->_z_refcount == 0) abort();\n");
+    output.append("  self->_z_refcount -= 1;\n");
+    output.append("  if (self->_z_refcount != 0) return;\n");
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => {
+        for (const root of deinitializer.roots) {
+          try appendStatement(inout output, deinitializer, root, 1);
+        }
+        appendCleanups(
+          inout output,
+          deinitializer.fallthroughCleanups,
+          1
+        );
+      }
+      none => {}
+    }
+    let cleanup = aggregate.fields.length;
+    while (cleanup > 0) {
+      cleanup = cleanup - 1;
+      if (loweredTypeNeedsDeinit(program, aggregate.fields[cleanup].type)) {
+        output.append("  Z_");
+        output.append(aggregate.fields[cleanup].type.name);
+        if (
+          aggregate.fields[cleanup].type.kind == LoweredTypeKind.classType
+        ) {
+          output.append("_release(self->");
+          output.append(aggregate.fields[cleanup].name);
+          output.append(");\n");
+        } else {
+          output.append("_deinit(&self->");
+          output.append(aggregate.fields[cleanup].name);
+          output.append(");\n");
+        }
+      }
+    }
+    output.append("  free(self);\n}\n\n");
+  }
+  const onceNames = programOnceTypeNames(program);
+  for (const onceName of onceNames) {
+    const prefix = "Once_";
+    const valueName = onceName.copyBytes(
+      prefix.byteLength,
+      onceName.byteLength
+    );
+    output.append("static __attribute__((unused)) Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(" Z_");
+    output.append(onceName);
+    output.append("_initialize(Z_");
+    output.append(onceName);
+    output.append(" *cell, Z_");
+    output.append(valueName);
+    output.append(" *value) {\n");
+    output.append("  if (cell == NULL || value == NULL || cell->state != 0) abort();\n");
+    output.append("  cell->value = value;\n  cell->state = 1;\n");
+    output.append("  return (Z_OnceLifetime_");
+    output.append(valueName);
+    output.append("){ .cell = cell };\n}\n\n");
+    output.append("static __attribute__((unused)) Z_");
+    output.append(valueName);
+    output.append(" *Z_");
+    output.append(onceName);
+    output.append("_get(Z_");
+    output.append(onceName);
+    output.append(" *cell) {\n");
+    output.append("  if (cell == NULL || cell->state != 1 || cell->value == NULL) abort();\n");
+    output.append("  Z_");
+    output.append(valueName);
+    output.append("_retain(cell->value);\n  return cell->value;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_OnceLifetime_");
+    output.append(valueName);
+    output.append("_deinit(Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(" *lifetime) {\n");
+    output.append("  if (lifetime == NULL || lifetime->cell == NULL) return;\n");
+    output.append("  Z_");
+    output.append(onceName);
+    output.append(" *cell = lifetime->cell;\n  lifetime->cell = NULL;\n");
+    output.append("  if (cell->state != 1 || cell->value == NULL) abort();\n");
+    output.append("  Z_");
+    output.append(valueName);
+    output.append(" *value = cell->value;\n");
+    output.append("  cell->value = NULL;\n  cell->state = 2;\n");
+    output.append("  Z_");
+    output.append(valueName);
+    output.append("_release(value);\n}\n\n");
+  }
 }
 
 function appendCleanups(
@@ -240,6 +438,14 @@ function appendCleanups(
       output.append("if (");
       output.append(cleanups[remaining].guard);
       output.append(") ");
+    }
+    if (cleanups[remaining].type.kind == LoweredTypeKind.classType) {
+      output.append("Z_");
+      output.append(cleanups[remaining].type.name);
+      output.append("_release(");
+      appendCBindingName(inout output, cleanups[remaining].name);
+      output.append(");\n");
+      continue;
     }
     output.append("Z_");
     output.append(cleanups[remaining].type.name);
@@ -1116,6 +1322,66 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.classValue) {
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_new(");
+    let field: usize = 0;
+    while (field < declaration.expressions[index].children.length) {
+      if (field > 0) output.append(", ");
+      const value = declaration.expressions[index].children[field];
+      try appendExpression(
+        inout output,
+        declaration,
+        value
+      );
+      field = field + 1;
+    }
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.onceInitialize
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed Once.initialize";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_initialize(&(");
+    const receiver = declaration.expressions[index].children[0];
+    const value = declaration.expressions[index].children[1];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append("), ");
+    try appendExpression(
+      inout output,
+      declaration,
+      value
+    );
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.onceGet) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed Once.get";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_get(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append("))");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.fieldValue) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed field read";
@@ -1130,7 +1396,10 @@ function appendExpression(
     }
     if (
       declaration.expressions[index].labels.length > 0
-      && declaration.expressions[index].labels[0] == "view"
+      && (
+        declaration.expressions[index].labels[0] == "view"
+        || declaration.expressions[index].labels[0] == "class"
+      )
     ) {
       try appendExpression(inout output, declaration, receiver);
       output.append("->");
@@ -1680,7 +1949,9 @@ function appendStatement(
           && storageType.kind != LoweredTypeKind.arrayType
           && storageType.kind != LoweredTypeKind.mapType
           && storageType.kind != LoweredTypeKind.setType
-          && storageType.kind != LoweredTypeKind.stringType;
+          && storageType.kind != LoweredTypeKind.stringType
+          && storageType.kind != LoweredTypeKind.classType
+          && storageType.kind != LoweredTypeKind.onceLifetimeType;
       }
       none => false;
     };
@@ -1691,6 +1962,10 @@ function appendStatement(
     const viewStorage = match (in declaration.statements[index].expression) {
       some(initializer) => declaration.expressions[initializer].kind
         == LoweredExpressionKind.viewProjection;
+      none => false;
+    };
+    const classStorage = match (in declaration.statements[index].type) {
+      some(storageType) => storageType.kind == LoweredTypeKind.classType;
       none => false;
     };
     match (in declaration.statements[index].expression) {
@@ -1707,6 +1982,13 @@ function appendStatement(
       output.append("const ");
       output.append(type);
       output.append(" * const ");
+    } else if (
+      !declaration.statements[index].mutableBinding
+      && hasInitializer
+      && classStorage
+    ) {
+      output.append(type);
+      output.append(" const ");
     } else if (
       !declaration.statements[index].mutableBinding
       && constStorage
@@ -2526,6 +2808,8 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
+    || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.onceLifetimeType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -2728,6 +3012,9 @@ function appendStructDefinition(
     output.append(program.structs[index].name);
   }
   output.append(" {\n");
+  if (program.structs[index].referenceType) {
+    output.append("  size_t _z_refcount;\n");
+  }
   for (const field of program.structs[index].fields) {
     const fieldType = try cType(field.type);
     output.append("  ");
@@ -2861,6 +3148,28 @@ function appendTypeDefinitions(
       inout enumStates
     );
     structIndex = structIndex + 1;
+  }
+  const onceNames = programOnceTypeNames(program);
+  for (const onceName of onceNames) {
+    const prefix = "Once_";
+    const valueName = onceName.copyBytes(
+      prefix.byteLength,
+      onceName.byteLength
+    );
+    output.append("typedef struct Z_");
+    output.append(onceName);
+    output.append(" {\n  Z_");
+    output.append(valueName);
+    output.append(" *value;\n  uint8_t state;\n} Z_");
+    output.append(onceName);
+    output.append(";\n\n");
+    output.append("typedef struct Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(" {\n  Z_");
+    output.append(onceName);
+    output.append(" *cell;\n} Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(";\n\n");
   }
 }
 
@@ -3151,6 +3460,19 @@ function programUsesStandardCall(
         expression.kind == LoweredExpressionKind.localValue
         && expression.value == name
       ) return true;
+    }
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => {
+        for (const expression of deinitializer.expressions) {
+          if (
+            expression.kind == LoweredExpressionKind.localValue
+            && expression.value == name
+          ) return true;
+        }
+      }
+      none => {}
     }
   }
   return false;
@@ -4223,6 +4545,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append("Tag_failure, .payload.failure = status };\n}\n\n");
   }
   appendSystemStandardRuntime(inout output, program);
+  try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
     output.append("static inline __attribute__((unused)) const ");
@@ -4302,7 +4625,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     output.append(" *self);\n");
   }
   for (const aggregate of program.structs) {
-    if (aggregate.needsDeinit) {
+    if (aggregate.needsDeinit && !aggregate.referenceType) {
       output.append("static __attribute__((unused)) void Z_");
       output.append(aggregate.name);
       output.append("_deinit(Z_");
@@ -4422,7 +4745,7 @@ function emitLoweredC(in program: LoweredProgram): String throws String {
     }
   }
   for (const aggregate of program.structs) {
-    if (aggregate.needsDeinit) {
+    if (aggregate.needsDeinit && !aggregate.referenceType) {
       output.append("static __attribute__((unused)) void Z_");
       output.append(aggregate.name);
       output.append("_deinit(Z_");

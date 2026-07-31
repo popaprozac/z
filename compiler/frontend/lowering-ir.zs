@@ -54,6 +54,9 @@ export enum LoweredTypeKind {
   mapType,
   setType,
   structType,
+  classType,
+  onceType,
+  onceLifetimeType,
   enumType,
   foreignEnumType,
 }
@@ -73,6 +76,7 @@ export struct LoweredStruct {
   name: String;
   nativeCName: String;
   fields: Array<LoweredField>;
+  referenceType: boolean;
   needsDeinit: boolean;
   deinitializer: Option<LoweredFunction>;
 }
@@ -153,6 +157,10 @@ export enum LoweredExpressionKind {
   directCall,
   fieldValue,
   structValue,
+  classValue,
+  onceEmpty,
+  onceInitialize,
+  onceGet,
   enumValue,
   enumPayloadValue,
   stringEqual,
@@ -299,6 +307,18 @@ function structIndex(in program: Program, in name: String): Option<usize> {
   return Option<usize>.none;
 }
 
+function classIndex(in program: Program, in name: String): Option<usize> {
+  let index: usize = 0;
+  while (index < program.aggregates.length) {
+    if (
+      program.aggregates[index].kind == DeclarationKind.classDeclaration
+      && program.aggregates[index].name == name
+    ) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function enumIndex(in program: Program, in name: String): Option<usize> {
   let index: usize = 0;
   while (index < program.enums.length) {
@@ -371,6 +391,16 @@ function intrinsicMapName(
 function intrinsicSetName(in elementType: LoweredType): String {
   const identity = loweredTypeIdentity(elementType);
   return `__z_Set_${identity}`;
+}
+
+function intrinsicOnceName(in valueType: LoweredType): String {
+  const identity = loweredTypeIdentity(valueType);
+  return `Once_${identity}`;
+}
+
+function intrinsicOnceLifetimeName(in valueType: LoweredType): String {
+  const identity = loweredTypeIdentity(valueType);
+  return `OnceLifetime_${identity}`;
 }
 
 function intrinsicResultName(
@@ -516,6 +546,23 @@ function lowerTypeName(
           name: intrinsicSetName(elementType),
         });
       }
+      if (generic.base == "Once" && generic.arguments.length == 1) {
+        const valueType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.onceType,
+          name: intrinsicOnceName(valueType),
+        });
+      }
+      if (
+        generic.base == "OnceLifetime"
+        && generic.arguments.length == 1
+      ) {
+        const valueType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.onceLifetimeType,
+          name: intrinsicOnceLifetimeName(valueType),
+        });
+      }
       if (generic.base == "Result" && generic.arguments.length == 2) {
         const successType = try lowerTypeName(program, generic.arguments[0]);
         const errorType = try lowerTypeName(program, generic.arguments[1]);
@@ -530,6 +577,13 @@ function lowerTypeName(
   match (structIndex(program, name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.structType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+    none => {}
+  }
+  match (classIndex(program, name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.classType,
       name: name.copyBytes(0, name.byteLength),
     });
     none => {}
@@ -610,6 +664,31 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.setType,
           name: intrinsicSetName(elementType),
+        });
+      }
+      if (generic.base == "Once" && generic.arguments.length == 1) {
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.onceType,
+          name: intrinsicOnceName(valueType),
+        });
+      }
+      if (
+        generic.base == "OnceLifetime"
+        && generic.arguments.length == 1
+      ) {
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.onceLifetimeType,
+          name: intrinsicOnceLifetimeName(valueType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -761,6 +840,9 @@ function aggregateNeedsCleanup(
   index: usize,
   depth: usize
 ): boolean {
+  if (
+    program.aggregates[index].kind == DeclarationKind.classDeclaration
+  ) return true;
   if (depth > program.aggregates.length + program.enums.length) return false;
   match (in program.aggregates[index].deinitializer) {
     some(_) => return true;
@@ -801,6 +883,8 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
+    || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.onceLifetimeType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -911,6 +995,9 @@ function moduleAggregateNeedsCleanup(
   index: usize,
   depth: usize
 ): boolean {
+  if (
+    program.aggregates[index].kind == DeclarationKind.classDeclaration
+  ) return true;
   if (depth > program.aggregates.length + program.enums.length) return false;
   match (in program.aggregates[index].deinitializer) {
     some(_) => return true;
@@ -969,6 +1056,8 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.setType
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
+    || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.onceLifetimeType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -2492,7 +2581,10 @@ function importedStructTarget(
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
     if (
-      importedTypes[importedIndex].kind == LoweredTypeKind.structType
+      (
+        importedTypes[importedIndex].kind == LoweredTypeKind.structType
+        || importedTypes[importedIndex].kind == LoweredTypeKind.classType
+      )
       && (
         importedTypes[importedIndex].localName == name
         || importedTypes[importedIndex].targetName == name
@@ -3066,6 +3158,81 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.newExpression) {
+    let className = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    match (importedStructTarget(importedTypes, tree.nodes[index].value)) {
+      some(target) => {
+        className = move target;
+      }
+      none => {}
+    }
+    const classType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      tree.nodes[index].value
+    );
+    if (classType.kind != LoweredTypeKind.classType) {
+      throw `native new lowering requires a class, found ${tree.nodes[index].value}`;
+    }
+    if (tree.nodes[index].children.length != 1) {
+      throw "native class construction requires one object initializer";
+    }
+    const objectInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[objectInput].kind != ExpressionKind.objectExpression
+      || tree.nodes[objectInput].children.length
+        != tree.nodes[objectInput].labels.length
+    ) {
+      throw "native class construction requires an object initializer";
+    }
+    let children = Array<usize>();
+    let labels = Array<String>();
+    let field: usize = 0;
+    while (field < tree.nodes[objectInput].children.length) {
+      const fieldName = tree.nodes[objectInput].labels[field].copyBytes(
+        0,
+        tree.nodes[objectInput].labels[field].byteLength
+      );
+      const fieldType = match (fieldTypeNameForOwner(
+        program,
+        importedTypes,
+        tree.nodes[index].value,
+        fieldName
+      )) {
+        some(name) => name;
+        none => throw `native class lowering could not resolve ${className}.${fieldName}`;
+      };
+      const valueInput = tree.nodes[objectInput].children[field];
+      let value = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        valueInput,
+        fieldType,
+        inout output
+      );
+      value = wrapImplicitOwnedTransfer(
+        tree,
+        valueInput,
+        value,
+        inout output
+      );
+      children.push(value);
+      labels.push(fieldName);
+      field = field + 1;
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.classValue,
+      className,
+      children,
+      labels
+    );
+  }
   if (
     tree.nodes[index].kind == ExpressionKind.attemptExpression
     && tree.nodes[index].children.length == 1
@@ -3323,6 +3490,92 @@ function lowerExpression(
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      match (genericTypeShape(receiverTypeName)) {
+        some(generic) => {
+          if (
+            generic.base == "Once"
+            && generic.arguments.length == 1
+            && (
+              tree.nodes[calleeInput].value == "initialize"
+              || tree.nodes[calleeInput].value == "get"
+            )
+          ) {
+            const valueType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              generic.arguments[0]
+            );
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            if (tree.nodes[calleeInput].value == "initialize") {
+              if (tree.nodes[index].children.length != 2) {
+                throw "Once.initialize requires one class value";
+              }
+              const valueInput = tree.nodes[index].children[1];
+              let value = try lowerExpressionExpected(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                valueInput,
+                generic.arguments[0],
+                inout output
+              );
+              value = wrapImplicitOwnedTransfer(
+                tree,
+                valueInput,
+                value,
+                inout output
+              );
+              children.push(value);
+              const onceName = intrinsicOnceName(valueType);
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.onceInitialize,
+                onceName,
+                children,
+                Array<String>()
+              );
+            }
+            if (tree.nodes[index].children.length != 1) {
+              throw "Once.get takes no arguments";
+            }
+            const onceName = intrinsicOnceName(valueType);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.onceGet,
+              onceName,
+              children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].optionalAccess
@@ -5034,6 +5287,21 @@ function lowerExpression(
     match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
       some(receiverType) => {
         if (stringStartsWith(receiverType, "view ")) labels.push("view");
+        else {
+          const loweredReceiver = attempt lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverType
+          );
+          match (loweredReceiver) {
+            success(type) => {
+              if (type.kind == LoweredTypeKind.classType) {
+                labels.push("class");
+              }
+            }
+            failure(_) => {}
+          }
+        }
       }
       none => {}
     }
@@ -7695,6 +7963,7 @@ function typeIsExported(
     if (
       (
         declaration.kind == DeclarationKind.structDeclaration
+        || declaration.kind == DeclarationKind.classDeclaration
         || declaration.kind == DeclarationKind.enumDeclaration
       )
       && declaration.name == name
@@ -7722,6 +7991,7 @@ function collisionSafePrivateTypeNames(
     for (const declaration of module.program.declarations) {
       if (
         declaration.kind != DeclarationKind.structDeclaration
+        && declaration.kind != DeclarationKind.classDeclaration
         && declaration.kind != DeclarationKind.enumDeclaration
       ) continue;
       if (containsName(names, declaration.name)) continue;
@@ -8191,6 +8461,16 @@ function loweredStructFields(
   return fields;
 }
 
+function loweredStructIsReference(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): boolean {
+  for (const declaration of structs) {
+    if (declaration.name == name) return declaration.referenceType;
+  }
+  return false;
+}
+
 function copyLoweredVariant(in variant: LoweredVariant): LoweredVariant {
   let payload = Option<LoweredType>.none;
   match (in variant.payload) {
@@ -8289,6 +8569,8 @@ function importedTypesForModule(
     if (
       graph.modules[targetModule].symbols[targetSymbol].kind
         == ModuleSymbolKind.structSymbol
+      || graph.modules[targetModule].symbols[targetSymbol].kind
+        == ModuleSymbolKind.classSymbol
     ) {
       const targetName = graph.modules[targetModule].symbols[
         targetSymbol
@@ -8299,10 +8581,16 @@ function importedTypesForModule(
       match (loweredStructCleanup(structs, targetName)) {
         some(needsDeinit) => {
           const fields = loweredStructFields(structs, targetName);
+          const referenceType = loweredStructIsReference(
+            structs,
+            targetName
+          );
           types.push(LoweredImportedType({
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName,
-            kind: LoweredTypeKind.structType,
+            kind: referenceType
+              ? LoweredTypeKind.classType
+              : LoweredTypeKind.structType,
             needsDeinit,
             fields,
             variants: Array<LoweredVariant>(),
@@ -8357,14 +8645,19 @@ function importedTypesForModule(
         ) present = true;
       }
       if (present) continue;
-      if (symbol.kind == ModuleSymbolKind.structSymbol) {
+      if (
+        symbol.kind == ModuleSymbolKind.structSymbol
+        || symbol.kind == ModuleSymbolKind.classSymbol
+      ) {
         match (loweredStructCleanup(structs, symbol.name)) {
           some(needsDeinit) => {
             const fields = loweredStructFields(structs, symbol.name);
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
-              kind: LoweredTypeKind.structType,
+              kind: loweredStructIsReference(structs, symbol.name)
+                ? LoweredTypeKind.classType
+                : LoweredTypeKind.structType,
               needsDeinit,
               fields,
               variants: Array<LoweredVariant>(),
@@ -8419,6 +8712,35 @@ function lowerModuleConstant(
   match (in declaration.initializer.tree) {
     some(tree) => {
       const root = view tree.nodes[tree.root];
+      if (
+        root.kind == ExpressionKind.callExpression
+        && root.children.length == 1
+        && tree.nodes[root.children[0]].kind
+          == ExpressionKind.identifierExpression
+      ) {
+        const callee = view tree.nodes[root.children[0]].value;
+        match (genericTypeShape(callee)) {
+          some(generic) => {
+            if (
+              generic.base == "Once"
+              && generic.arguments.length == 1
+            ) {
+              const type = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                callee
+              );
+              return LoweredConstant({
+                name: `__z_module_${moduleIndex}_${declaration.name}`,
+                type,
+                initializerKind: LoweredExpressionKind.onceEmpty,
+                value: "",
+              });
+            }
+          }
+          none => {}
+        }
+      }
       let initializerKind = LoweredExpressionKind.integerValue;
       let value = root.value.copyBytes(0, root.value.byteLength);
       let inferredType = "i32";
@@ -8531,7 +8853,10 @@ function appendLoweredProgram(
   }
   for (const aggregate of program.aggregates) {
     if (
-      aggregate.kind != DeclarationKind.structDeclaration
+      (
+        aggregate.kind != DeclarationKind.structDeclaration
+        && aggregate.kind != DeclarationKind.classDeclaration
+      )
       || !privateTypeNeedsMangle(
         program,
         privateTypeCollisionNames,
@@ -8542,7 +8867,9 @@ function appendLoweredProgram(
     importedTypes.push(LoweredImportedType({
       localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       targetName,
-      kind: LoweredTypeKind.structType,
+      kind: aggregate.kind == DeclarationKind.classDeclaration
+        ? LoweredTypeKind.classType
+        : LoweredTypeKind.structType,
       needsDeinit: false,
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
@@ -8655,11 +8982,14 @@ function appendLoweredProgram(
       throw `native module emission requires collision-safe type identity for ${aggregate.name}`;
     }
     if (
-      aggregate.kind != DeclarationKind.structDeclaration
+      (
+        aggregate.kind != DeclarationKind.structDeclaration
+        && aggregate.kind != DeclarationKind.classDeclaration
+      )
       || aggregate.typeParameters.length > 0
       || aggregate.methods.length > 0
     ) {
-      throw "native lowering only supports non-generic data-only structs yet";
+      throw "native lowering only supports non-generic data-only structs and classes yet";
     }
     match (in aggregate.constructorDeclaration) {
       some(_) => throw `native lowering does not support constructor on ${aggregate.name} yet`;
@@ -8693,10 +9023,17 @@ function appendLoweredProgram(
       }
       none => {}
     }
-    const aggregateIndex = match (structIndex(program, aggregate.name)) {
-      some(index) => index;
-      none => throw `native lowering lost aggregate ${aggregate.name}`;
-    };
+    let aggregateIndex: usize = program.aggregates.length;
+    match (structIndex(program, aggregate.name)) {
+      some(index) => aggregateIndex = index;
+      none => match (classIndex(program, aggregate.name)) {
+        some(index) => aggregateIndex = index;
+        none => {}
+      }
+    }
+    if (aggregateIndex >= program.aggregates.length) {
+      throw `native lowering lost aggregate ${aggregate.name}`;
+    }
     const needsDeinit = moduleAggregateNeedsCleanup(
       program,
       importedTypes,
@@ -8709,6 +9046,7 @@ function appendLoweredProgram(
         ? aggregate.name.copyBytes(0, aggregate.name.byteLength)
         : "",
       fields,
+      referenceType: aggregate.kind == DeclarationKind.classDeclaration,
       needsDeinit,
       deinitializer,
     }));
@@ -8728,7 +9066,9 @@ function appendLoweredProgram(
         importedTypes.push(LoweredImportedType({
           localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
           targetName: emittedName,
-          kind: LoweredTypeKind.structType,
+          kind: aggregate.kind == DeclarationKind.classDeclaration
+            ? LoweredTypeKind.classType
+            : LoweredTypeKind.structType,
           needsDeinit,
           fields,
           variants: Array<LoweredVariant>(),

@@ -224,7 +224,31 @@ export function collectionMethodSignature(
   let parameterTypes = Array<String>();
   let returnType = "";
   let errorType = "";
-  if (generic.base == "Array" && generic.arguments.length == 1) {
+  if (generic.base == "Once" && generic.arguments.length == 1) {
+    const valueType = generic.arguments[0].copyBytes(
+      0,
+      generic.arguments[0].byteLength
+    );
+    if (methodName == "initialize") {
+      parameterModes.push("move");
+      parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
+      returnType = `OnceLifetime<${valueType}>`;
+    } else if (methodName == "get") {
+      returnType = valueType;
+    }
+    if (returnType.byteLength > 0) {
+      return Option.some(ModuleFunctionSignature({
+        asynchronous: false,
+        executorAffinity: "thread.main",
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes,
+        parameterTypes,
+        returnType,
+        errorType: "",
+      }));
+    }
+  } else if (generic.base == "Array" && generic.arguments.length == 1) {
     const elementType = generic.arguments[0].copyBytes(
       0,
       generic.arguments[0].byteLength

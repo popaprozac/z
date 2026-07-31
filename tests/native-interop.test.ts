@@ -1016,10 +1016,10 @@ test("loads explicit Z exports through selective and namespace module imports", 
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "module point=Point { x: 21, y: 21 }, total=42\n");
+  assert.equal(result.stdout, "Z module workspace revision=1, audit=enabled, point=Point { x: 21, y: 21 }, total=42\n");
 
   const analysis = analyzeSource(source, example);
-  assert.equal(analysis.sourceModules.size, 3);
+  assert.equal(analysis.sourceModules.size, 4);
   assert.equal(analysis.nativeFrontendGraph, null);
   assert.equal(analysis.nativeSemanticIndex, null);
   assert.equal(analysis.nativeSemanticQueryCount, 0);
@@ -1048,11 +1048,11 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.equal(analysis.sourceModuleBatch.entryFileName, example);
   assert.deepEqual(
     analysis.sourceModuleBatch.modules.map((module) => basename(module.fileName)),
-    ["main.zs", "geometry.zs", "math.zs"],
+    ["main.zs", "app-config.zs", "geometry.zs", "math.zs"],
   );
   assert.deepEqual(
     analysis.sourceModuleBatch.modules.map((module) => module.dependencies.size),
-    [2, 1, 0],
+    [4, 0, 1, 0],
   );
   assert.ok(analysis.program.functions.find((item) => item.name.endsWith("_add"))!.location.offset > source.length);
   const generated = compileToC(source, example);
@@ -1073,11 +1073,11 @@ test("attaches native frontend evidence after authoritative stage-0 analysis", (
     },
   });
 
-  assert.equal(receivedModuleCount, 3);
-  assert.equal(analysis.nativeFrontendGraph?.modules.length, 3);
+  assert.equal(receivedModuleCount, 4);
+  assert.equal(analysis.nativeFrontendGraph?.modules.length, 4);
   assert.equal(analysis.nativeFrontendGraph?.modules[analysis.nativeFrontendGraph.entry]?.path, example);
   const moved = analysis.nativeSemanticIndex?.resolveSymbol(example, "move");
-  assert.equal(moved?.modulePath, analysis.sourceModuleBatch.modules[1].fileName);
+  assert.equal(moved?.modulePath, analysis.sourceModuleBatch.modules[2].fileName);
   assert.equal(moved?.binding.importedName, "translate");
   assert.equal(moved?.declaration.functionSignature?.returnType, "Point");
   const total = analysis.nativeSemanticIndex?.resolveNamespaceMember(example, "geometry", "total");

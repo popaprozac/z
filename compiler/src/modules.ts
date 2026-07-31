@@ -64,7 +64,7 @@ type ModuleNode = {
 type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
-  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">;
+  readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime">;
 };
 
 export function isLocalSourceModuleSpecifier(specifier: string): boolean {
@@ -392,7 +392,7 @@ function buildScope(node: ModuleNode): ModuleScope {
     [...node.ownNames].filter(([name]) => !hiddenTestNames.has(name)),
   );
   const namespaces = new Map<string, ModuleNode>();
-  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher">();
+  const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
     ...node.program.constants,
@@ -450,6 +450,10 @@ function buildScope(node: ModuleNode): ModuleScope {
           standardTypes.set(binding.localName, "Hashable");
         } else if (declaration.header === "std/hash" && binding.importedName === "Hasher") {
           standardTypes.set(binding.localName, "Hasher");
+        } else if (declaration.header === "std/sync" && binding.importedName === "Once") {
+          standardTypes.set(binding.localName, "Once");
+        } else if (declaration.header === "std/sync" && binding.importedName === "OnceLifetime") {
+          standardTypes.set(binding.localName, "OnceLifetime");
         }
         bind(binding.localName, linkedImportName(node, binding.localName), binding.location);
       }

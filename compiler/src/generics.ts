@@ -27,6 +27,10 @@ import {
   parseAsyncGeneratorType,
   parseGeneratorType,
 } from "./generator-types.ts";
+import {
+  onceLifetimeTypeName,
+  onceTypeName,
+} from "./once-types.ts";
 
 export type GenericAggregateMaterialization = {
   readonly declaration: StructDeclaration;
@@ -46,6 +50,9 @@ export function materializeGenerics(
     program.traits.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
   );
   const traits = new Map(program.traits.map((item) => [item.name, item]));
+  const typeAliasTargets = new Map(
+    program.typeAliases.map((declaration) => [declaration.name, declaration.target.name]),
+  );
   const generatorBindings = new Set(
     program.imports
       .flatMap((declaration) => declaration.header === "std/iteration" ? declaration.bindings ?? [] : [])
@@ -56,6 +63,18 @@ export function materializeGenerics(
     program.imports
       .flatMap((declaration) => declaration.header === "std/iteration" ? declaration.bindings ?? [] : [])
       .filter((binding) => binding.importedName === "AsyncGenerator")
+      .map((binding) => binding.localName),
+  );
+  const onceBindings = new Set(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/sync" ? declaration.bindings ?? [] : [])
+      .filter((binding) => binding.importedName === "Once")
+      .map((binding) => binding.localName),
+  );
+  const onceLifetimeBindings = new Set(
+    program.imports
+      .flatMap((declaration) => declaration.header === "std/sync" ? declaration.bindings ?? [] : [])
+      .filter((binding) => binding.importedName === "OnceLifetime")
       .map((binding) => binding.localName),
   );
   const hashableImport = program.imports
@@ -153,6 +172,8 @@ export function materializeGenerics(
 
   const substituteName = (name: string, substitutions: Map<string, string>): string => {
     if (substitutions.has(name)) return substitutions.get(name)!;
+    const aliasTarget = typeAliasTargets.get(name);
+    if (aliasTarget) return substituteName(aliasTarget, substitutions);
     const view = parseViewType(name);
     if (view) return viewTypeName(substituteName(view.target, substitutions));
     const functionType = parseFunctionType(name);
@@ -233,6 +254,22 @@ export function materializeGenerics(
       typeDisplayNames.set(name, `AsyncGenerator<${args.map(displayName).join(", ")}>`);
       return name;
     }
+    if (generic.base === "Once" || onceBindings.has(generic.base)) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `Once expects 1 type argument, received ${args.length}`);
+      }
+      const name = onceTypeName(args[0]);
+      typeDisplayNames.set(name, `Once<${displayName(args[0])}>`);
+      return name;
+    }
+    if (generic.base === "OnceLifetime" || onceLifetimeBindings.has(generic.base)) {
+      if (args.length !== 1) {
+        throw new DiagnosticError(fileName, { offset: 0, line: 1, column: 1 }, `OnceLifetime expects 1 type argument, received ${args.length}`);
+      }
+      const name = onceLifetimeTypeName(args[0]);
+      typeDisplayNames.set(name, `OnceLifetime<${displayName(args[0])}>`);
+      return name;
+    }
     if (generic.base === "Map") return instantiateMap(args);
     if (generic.base === "Set") return instantiateSet(args);
     if (generic.base === "Result") return instantiateResult(args);
@@ -290,6 +327,19 @@ export function materializeGenerics(
         return {
           ...value,
           callee: { ...value.callee, name },
+          arguments: [],
+        };
+      }
+      if (generic && (generic.base === "Once" || onceBindings.has(generic.base))) {
+        if (generic.arguments.length !== 1 || value.arguments.length !== 0) {
+          throw new DiagnosticError(fileName, value.location, "Once<T>() expects one type argument and no values");
+        }
+        return {
+          ...value,
+          callee: {
+            ...value.callee,
+            name: onceTypeName(substituteName(generic.arguments[0], substitutions)),
+          },
           arguments: [],
         };
       }
@@ -694,6 +744,7 @@ export function materializeGenerics(
     functions.push(attachGeneratorError(transform(declaration, new Map())));
   }
   const enums = transform(program.enums, new Map()) as EnumDeclaration[];
+  const constants = transform(program.constants, new Map()) as Program["constants"];
   const typeAliases = transform(program.typeAliases, new Map()) as Program["typeAliases"];
   const traits_ = transform(
     program.traits.filter((item) => !item.typeParameters?.length),
@@ -701,6 +752,7 @@ export function materializeGenerics(
   ) as TraitDeclaration[];
   return {
     ...program,
+    constants,
     typeAliases,
     structs,
     functions,

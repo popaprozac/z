@@ -60,6 +60,10 @@ support or producing language-server diagnostics from hypothetical imports.
 
 ## Applications
 
+- [`application-root`](applications/application-root): a concise user-defined
+  main-affine `Application` published through `std/sync` `Once<T>`, read across
+  a module boundary, and observed safely from a native worker through explicit
+  main-executor placement.
 - [`z-notes`](applications/z-notes): a native AppKit and SQLite application
   combining ARC state, Objective-C protocols and target/action, owned native
   handles, async loading on a dedicated worker, typed owned result transfer,

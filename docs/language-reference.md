@@ -52,6 +52,79 @@ and `String` values, plus string literals explicitly typed `cstring`. Calls,
 runtime initialization, and ownership-bearing module values remain outside this
 tier, so importing a module does not run an initializer.
 
+### Explicit application-lifetime roots
+
+`Once<T>` from `std/sync` provides a statically empty module root without
+introducing module initialization order:
+
+```z
+import { Once } from "std/sync";
+import { thread } from "std/thread";
+
+class Application on thread.main {
+  readonly name: String;
+}
+
+const application = Once<Application>();
+
+async function main(): i32 on thread.main {
+  const value = new Application({ name: "Notes" });
+  const lifetime = application.initialize(move value);
+
+  const same = application.get(); // Application
+  return same.name == "Notes" ? 0 : 1;
+} // lifetime removes the root and releases its strong ARC reference
+```
+
+`initialize(move value)` publishes exactly one strong ARC reference and returns a
+move-only `OnceLifetime<T>`. That guard—not the module—owns the initialized
+interval. Its deterministic cleanup empties the cell on the payload's executor.
+`get()` returns `T`, retaining the class identity for the caller. It does not
+return `Option<T>` or carry a hidden initialization error. Calling `get()` before
+initialization or after guard cleanup, initializing twice, and cleaning up on
+the wrong executor are rejected or trap as appropriate.
+`OnceLifetime<T>` is exported from `std/sync` so a public startup wrapper may
+name its return, but it has no user-callable constructor.
+
+The value expression is evaluated before `initialize`:
+
+```z
+const value = try new Application(configuration);
+const lifetime = application.initialize(move value);
+```
+
+If construction throws, ordinary `try`/`attempt` handles that error and the cell
+remains empty. No failed value or error is published, so a later `get()` cannot
+throw or replay the construction failure.
+
+A nonthrowing temporary construction transfers directly without a redundant
+`move`:
+
+```z
+const lifetime = application.initialize(
+  new Application(configuration)
+);
+```
+
+The first tier permits only ARC class payloads declared `on thread.main`.
+`Once<T>` inherits that affinity: construction, initialization, retrieval, and
+guard cleanup require main-executor proof. Code on a native worker retrieves
+through explicit placement:
+
+```z
+const work = thread.spawn(async (): i32 => {
+  return await on thread.main {
+    const current = application.get();
+    select current.revision;
+  };
+});
+```
+
+Ordinary mutable or readonly-shareable classes, structs, native resources,
+cross-thread publication, replacement, and optional storage are not implied by
+this tier. `Application` is an example of a user-defined framework type, not a
+language or standard-library global.
+
 `export c function` adds a stable C ABI entry point without removing the
 ordinary Z export:
 
@@ -1621,8 +1694,9 @@ earlier and consumes the owner, so a later use or second unlock is a compile
 error. The lock file may remain on disk; process termination still releases the
 kernel lock, so this is not a stale lock-file protocol. This primitive protects
 cross-process artifacts. In-process shared-memory synchronization belongs to
-the future `std/sync` family (`Mutex<T>`, `RwLock<T>`, guards, atomics,
-condition variables, and semaphores).
+later `std/sync` tiers (`Mutex<T>`, `RwLock<T>`, guards, atomics, condition
+variables, and semaphores); the initial `Once<T>` tier publishes main-affine
+application identity but does not provide mutual exclusion.
 
 `fs.replace(source, destination)` publishes a completely written artifact with
 one atomic same-filesystem directory-entry replacement. On success the source

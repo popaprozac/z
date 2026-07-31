@@ -1611,6 +1611,36 @@ module-level mutation, target-conditional values, and initialization/destruction
 ordering remain separate designs rather than consequences hidden inside
 `export const`.
 
+## Application lifetime root without mutable globals
+
+Source:
+[`examples/applications/application-root`](../examples/applications/application-root)
+
+The next desktop-framework pressure test needed a long-lived user-defined
+`Application` identity without turning module storage into arbitrary mutation.
+`Once<Application>` separates those concerns. Its native storage begins empty
+without running module code, `initialize` publishes one strong ARC reference,
+and a move-only `OnceLifetime<Application>` makes the publication interval
+lexically visible in `main`.
+
+The narrow main-affine tier exposed four useful constraints:
+
+- the root inherits `Application`'s `thread.main` requirement rather than
+  converting ARC lifetime safety into permission to access UI state anywhere;
+- a native worker can ask the main executor to retrieve and inspect the root,
+  but cannot use the identity off-main;
+- deterministic guard cleanup removes the root before the surrounding local
+  application reference is released, avoiding an implicit process-lifetime
+  leak or unspecified module destruction order;
+- throwing construction happens before publication, so `Once<T>` stores
+  neither partial identity nor an error that `get()` might later replay.
+
+This is intentionally not evidence for general global storage. Ordinary
+mutable/shareable classes, value structs, native owners, replacement, optional
+presence, and cross-thread publication remain unproven. The `Application` name
+belongs to the example and a future desktop package; only the generic
+publication-and-lifetime mechanism belongs to Z.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

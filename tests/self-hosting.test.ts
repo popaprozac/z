@@ -1601,6 +1601,61 @@ test("emits cleanup-free module constants through the native frontend", () => {
   }
 }, 30_000);
 
+test("emits module-owned Once class lifetimes through the native frontend", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-once-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-once/main.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Once/);
+    assert.match(emission.stdout, /OnceLifetime/);
+    assert.match(
+      emission.stdout,
+      /cell->state = 2;/,
+      "dropping the lifetime must permanently close the Once cell",
+    );
+    assert.match(emission.stdout, /Z_Application_release/);
+    assert.match(emission.stdout, /free\(self\);/);
+
+    const executable = resolve(directory, "once");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "released 42\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,
@@ -1861,7 +1916,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     { encoding: "utf8" },
   );
   assert.equal(checking.status, 0, checking.stderr);
-  assert.match(checking.stdout, /checked 3 Z modules/);
+    assert.match(checking.stdout, /checked 4 Z modules/);
 
   const nativeTests = spawnSync(
     executable,
@@ -4072,7 +4127,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     { encoding: "utf8" },
   );
   assert.equal(integrated.status, 0, integrated.stderr);
-  assert.match(integrated.stdout, /stage-1 resolver matches 3 modules, 3 local edges, and 10 symbols \(math\.zs -> geometry\.zs -> main\.zs\)/);
+  assert.match(integrated.stdout, /stage-1 resolver matches 4 modules, 5 local edges, and 19 symbols \(app-config\.zs -> math\.zs -> geometry\.zs -> main\.zs\)/);
   assert.match(integrated.stdout, /stage-1 resolver compiler index matches \d+ binding\/signature queries/);
   assert.match(integrated.stdout, /host discovery \(file I\/O \+ stage-0 import parse\): \d+\.\d{2} ms/);
   assert.match(integrated.stdout, /native phase \(FFI \+ lex \+ parse \+ resolve \+ graph stream decode\): \d+\.\d{2} ms/);
@@ -4087,22 +4142,22 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
   assert.equal(ordinaryCheck.status, 0, ordinaryCheck.stderr);
   assert.match(
     ordinaryCheck.stdout,
-    /main\.zs: native frontend hybrid matches 3 modules, 3 local edges, and 10 symbols/,
+    /main\.zs: native frontend hybrid matches 4 modules, 5 local edges, and 19 symbols/,
   );
   assert.match(ordinaryCheck.stdout, /native frontend hybrid compiler index matches \d+ binding\/signature queries/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 2 inferred local binding contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 23 expression type contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 3 inferred local binding contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid exports 29 expression type contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ function, \d+ method, and \d+ constructor stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ aggregate, \d+ field, and \d+ enum-variant stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ explicit type-use stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid observes \d+ inferred local binding stage-0 Z resolutions/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 23 expression stage-0 Z resolutions/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid observes 29 expression stage-0 Z resolutions/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ function, \d+ method, and \d+ constructor native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ aggregate, \d+ field, and \d+ enum-variant native-authoritative contracts/);
   assert.match(ordinaryCheck.stdout, /native frontend hybrid uses \d+ explicit type-use native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 2 inferred local binding native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 23 expression native-authoritative contracts/);
-  assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(3 modules, cache hit\)/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 3 inferred local binding native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid uses 29 expression native-authoritative contracts/);
+  assert.match(ordinaryCheck.stdout, /native frontend hybrid timing \(4 modules, cache hit\)/);
   assert.match(ordinaryCheck.stdout, /main\.zs: ok/);
 
   const timingsWithoutShadow = spawnSync(

@@ -1263,9 +1263,9 @@ optional consuming `unlock()` method releases earlier and makes later use a
 compile error. The path names the shared lock identity; the file itself may
 remain after release. This is an interprocess artifact primitive, not a
 shared-memory synchronization abstraction. Mutexes, read/write locks, atomic
-values, condition variables, and semaphores belong to a future explicit
-`std/sync` module whose guard values should use the same move-only cleanup
-model.
+values, condition variables, and semaphores belong to later `std/sync` tiers
+whose guard values should use the same move-only cleanup model as the initial
+`OnceLifetime<T>`.
 
 Artifact publication uses a separate typed operation:
 
@@ -1396,6 +1396,64 @@ constants may infer one. The executable foundation is restricted to cleanup-free
 literal `boolean`, numeric, and `String` values plus explicitly typed `cstring`
 string literals. Calls, runtime initialization, ownership-bearing storage, and
 target-conditional values remain later design work.
+
+Long-lived application identity uses a distinct standard-library capability,
+not a relaxation of module `const`:
+
+```z
+import { Once } from "std/sync";
+import { thread } from "std/thread";
+
+class Application on thread.main {
+  readonly name: String;
+}
+
+const application = Once<Application>();
+
+async function main(): i32 on thread.main {
+  const value = new Application({ name: "Notes" });
+  const lifetime = application.initialize(move value);
+
+  // Other modules may now call application.get() under main-executor proof.
+  return 0;
+} // lifetime deinitializes, removes the root, and releases its ARC reference
+```
+
+`Once<T>()` is a statically empty cell rather than a runtime module initializer.
+`initialize(move value)` performs its one publication transition and returns a
+move-only `OnceLifetime<T>` guard. The guard owns the published interval:
+deinitializing it removes the value from the cell and releases the cell's strong
+ARC reference on the required executor. `get(): T` returns a retained class
+identity while that interval is active. Access before initialization, duplicate
+initialization, and access after guard cleanup are invariant violations and
+trap; absence is not part of the result type.
+`OnceLifetime<T>` is exported from `std/sync` so a wrapper may state its public
+return type, but user code cannot construct one independently of
+`Once<T>.initialize`.
+
+Argument evaluation happens before `initialize`. A fallible construction is
+first bound through ordinary propagation, then that named value moves into the
+cell:
+
+```z
+const ready = try new Application(configuration);
+const lifetime = application.initialize(move ready);
+```
+
+If construction fails, control never reaches `initialize` and the cell remains
+empty. The failure is not stored and a later `get()` cannot replay it. This
+keeps `Once<T>` responsible only for publication and lifetime, while ordinary
+`try`/`attempt` remain responsible for creating the value.
+
+The first tier accepts only ARC class payloads declared `on thread.main`.
+The cell inherits that affinity, so construction, initialization, retrieval,
+and guard cleanup require main-executor proof. A worker may retrieve through
+`await on thread.main`, but it cannot dereference the class off-main. Ordinary
+mutable or readonly-shareable classes, structs, native owners, arbitrary
+cross-thread publication, replacement, and optional storage remain future
+designs. In particular, `Once<T>` is not module-level mutation, a lock, or a
+general singleton keyword; `Application` remains an ordinary user-defined
+framework type.
 
 The bootstrap recognizes explicit relative paths ending in `.zs`, recursively
 loads an acyclic dependency graph, and links it into one native translation

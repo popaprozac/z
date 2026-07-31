@@ -132,3 +132,658 @@ test("surfaces module constants through hover and completion", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("owns a main-affine class in Once until the inferred lifetime leaves scope", () => {
+  const directory = mkdtempSync("/tmp/z-once-lifetime-");
+  const stateFile = resolve(directory, "state.zs");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    writeFileSync(stateFile, `
+      import console from "std/console";
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      export class Application on thread.main {
+        readonly id: i32;
+
+        deinit {
+          console.log(\`released application \${this.id}\`);
+        }
+      }
+
+      export const application: Once<Application> = Once<Application>();
+    `);
+    const source = `
+      import { Application, application } from "./state.zs";
+      import console from "std/console";
+
+      function main(): i32 {
+        {
+          const lifetime = application.initialize(
+            new Application({ id: 42 })
+          );
+          const current = application.get();
+          if (current.id != 42) return 1;
+        }
+        return 0;
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const generated = compileToC(source, mainFile);
+    assert.match(generated, /Once/);
+    assert.match(generated, /OnceLifetime/);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "released application 42\n");
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", mainFile, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("traps when Once is read before initialization, after lifetime cleanup, or initialized twice", () => {
+  const directory = mkdtempSync("/tmp/z-once-invariants-");
+  const stateFile = resolve(directory, "state.zs");
+  try {
+    writeFileSync(stateFile, `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      export class Application on thread.main {
+        readonly id: i32;
+      }
+
+      export const application: Once<Application> = Once<Application>();
+    `);
+
+    const cases = new Map<string, string>([
+      ["before", `
+        import { application } from "./state.zs";
+        function main(): i32 {
+          const current = application.get();
+          return current.id;
+        }
+      `],
+      ["after", `
+        import { Application, application } from "./state.zs";
+        function main(): i32 {
+          {
+            const lifetime = application.initialize(
+              new Application({ id: 1 })
+            );
+          }
+          const current = application.get();
+          return current.id;
+        }
+      `],
+      ["duplicate", `
+        import { Application, application } from "./state.zs";
+        function main(): i32 {
+          const lifetime = application.initialize(
+            new Application({ id: 1 })
+          );
+          const duplicate = application.initialize(
+            new Application({ id: 2 })
+          );
+          return 0;
+        }
+      `],
+      ["reinitialize", `
+        import { Application, application } from "./state.zs";
+        function main(): i32 {
+          {
+            const lifetime = application.initialize(
+              new Application({ id: 1 })
+            );
+          }
+          const second = application.initialize(
+            new Application({ id: 2 })
+          );
+          return 0;
+        }
+      `],
+    ]);
+
+    for (const [name, source] of cases) {
+      const file = resolve(directory, `${name}.zs`);
+      writeFileSync(file, source);
+      const result = spawnSync(process.execPath, [cli, "run", file], {
+        encoding: "utf8",
+      });
+      assert.notEqual(result.status, 0, `${name} unexpectedly succeeded`);
+      assert.match(
+        result.stderr,
+        name === "duplicate" || name === "reinitialize"
+          ? /Once<.*Application>.*(already initialized|already contains|already active|more than once|cannot reinitialize)/i
+          : /Once<.*Application>.*(not initialized|empty|no active value|before initialize|inactive)/i,
+      );
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps a class retained by get alive after its Once lifetime closes", () => {
+  const directory = mkdtempSync("/tmp/z-once-retained-get-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      class Application on thread.main {
+        readonly id: i32;
+      }
+
+      const application = Once<Application>();
+
+      function retainApplication(): Application on thread.main {
+        const lifetime = application.initialize(
+          new Application({ id: 42 })
+        );
+        const current = application.get();
+        return current;
+      }
+
+      function main(): i32 {
+        const retained = retainApplication();
+        return retained.id - 42;
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("cleans a Once lifetime when an async frame throws", () => {
+  const directory = mkdtempSync("/tmp/z-once-async-cleanup-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import console from "std/console";
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct StartupError {
+        code: i32;
+      }
+
+      class Application on thread.main {
+        readonly id: i32;
+
+        deinit {
+          console.log(\`released async application \${this.id}\`);
+        }
+      }
+
+      const application = Once<Application>();
+
+      async function failAfterPublish(): i32 throws StartupError on thread.main {
+        const lifetime = application.initialize(
+          new Application({ id: 42 })
+        );
+        throw StartupError({ code: 7 });
+      }
+
+      async function main(): i32 on thread.main {
+        const outcome = attempt await failAfterPublish();
+        return match (outcome) {
+          success(value) => value + 1;
+          failure(error) => error.code - 7;
+        };
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "released async application 42\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("leaves Once empty when evaluating its class value throws", () => {
+  const directory = mkdtempSync("/tmp/z-once-construction-failure-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct StartupError {
+        code: i32;
+      }
+
+      class Application on thread.main {
+        readonly id: i32;
+
+        constructor(id: i32, shouldFail: boolean) throws StartupError {
+          if (shouldFail) throw StartupError({ code: id });
+          this.id = id;
+        }
+      }
+
+      const application = Once<Application>();
+
+      function initializeFailure(): void throws StartupError on thread.main {
+        const value = try new Application(7, true);
+        const lifetime = application.initialize(move value);
+      }
+
+      function initializeSuccessfully(): i32 throws StartupError on thread.main {
+        const ready = try new Application(42, false);
+        const lifetime = application.initialize(move ready);
+        const current = application.get();
+        return current.id - 42;
+      }
+
+      function main(): i32 {
+        const attempted = attempt initializeFailure();
+        const failedBeforeInitialization = match (attempted) {
+          success => false;
+          failure(error) => error.code == 7;
+        };
+        if (!failedBeforeInitialization) return 1;
+
+        const initialized = attempt initializeSuccessfully();
+        return match (initialized) {
+          success(value) => value;
+          failure(error) => error.code;
+        };
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("restricts first-tier Once to main-affine classes and enforces its executor", () => {
+  const structSource = `
+    import { Once } from "std/sync";
+    struct Application { id: i32; }
+    const application = Once<Application>();
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(structSource, "/tmp/z-once-struct.zs")[0]?.message ?? "",
+    /Once<T>.*class.*thread\.main/i,
+  );
+
+  const ordinaryClassSource = `
+    import { Once } from "std/sync";
+    class Application { readonly id: i32; }
+    const application = Once<Application>();
+    function main(): i32 {
+      const application = new Application({ id: 42 });
+      return application.id - 42;
+    }
+  `;
+  assert.match(
+    diagnostics(
+      ordinaryClassSource,
+      "/tmp/z-once-ordinary-class.zs",
+    )[0]?.message ?? "",
+    /Once<T>.*class.*thread\.main/i,
+  );
+
+  const inheritedAffinitySource = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Controller on thread.main {
+      readonly id: i32;
+    }
+
+    class Application {
+      readonly controller: Controller;
+    }
+
+    const application = Once<Application>();
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(
+      inheritedAffinitySource,
+      "/tmp/z-once-inherited-affinity.zs",
+    )[0]?.message ?? "",
+    /Once<T>.*explicitly isolated to thread\.main/i,
+  );
+
+  const offMainSource = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application on thread.main {
+      readonly id: i32;
+    }
+
+    const application = Once<Application>();
+
+    function inspect(): i32 {
+      const current = application.get();
+      return current.id;
+    }
+
+    function main(): i32 { return 0; }
+  `;
+  const diagnostic = diagnostics(
+    offMainSource,
+    "/tmp/z-once-off-main.zs",
+  )[0];
+  assert.equal(diagnostic?.code, "Z0711");
+  assert.match(
+    diagnostic?.message ?? "",
+    /Once<Application>.*requires thread\.main executor context/i,
+  );
+});
+
+test("keeps Once cell identity confined to its declaring module constant", () => {
+  const prelude = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application on thread.main {
+      readonly id: i32;
+    }
+
+    const application = Once<Application>();
+  `;
+  const cases = new Map<string, string>([
+    ["parameter", `
+      function inspect(root: Once<Application>): i32 { return 0; }
+      function main(): i32 { return 0; }
+    `],
+    ["return", `
+      function expose(): Once<Application> { return application; }
+      function main(): i32 { return 0; }
+    `],
+    ["field", `
+      struct Holder {
+        root: Once<Application>;
+      }
+      function main(): i32 { return 0; }
+    `],
+    ["local", `
+      function main(): i32 {
+        const alias: Once<Application> = application;
+        return 0;
+      }
+    `],
+  ]);
+
+  for (const [name, body] of cases) {
+    const diagnostic = diagnostics(
+      `${prelude}\n${body}`,
+      `/tmp/z-once-${name}-storage.zs`,
+    )[0];
+    assert.match(
+      diagnostic?.message ?? "",
+      /Once(?:<T>|<Application>).*?(?:only.*module.*const|cannot.*(?:parameter|return|field|local|storage))/i,
+    );
+  }
+});
+
+test("keeps OnceLifetime payloads main-affine and emits their standalone ABI shape", () => {
+  const invalid = `
+    import { OnceLifetime } from "std/sync";
+    function pass(value: OnceLifetime<i32>): OnceLifetime<i32> {
+      return move value;
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.match(
+    diagnostics(invalid, "/tmp/z-once-lifetime-invalid.zs")[0]?.message ?? "",
+    /OnceLifetime<T>.*class.*thread\.main/i,
+  );
+
+  const valid = `
+    import { OnceLifetime } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application on thread.main {
+      readonly id: i32;
+    }
+
+    function pass(
+      value: OnceLifetime<Application>
+    ): OnceLifetime<Application> on thread.main {
+      return move value;
+    }
+
+    function main(): i32 {
+      const application = new Application({ id: 42 });
+      return application.id - 42;
+    }
+  `;
+  const directory = mkdtempSync("/tmp/z-once-lifetime-standalone-");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(file, valid);
+    const generated = compileToC(valid, file);
+    assert.match(generated, /typedef struct Z_OnceLifetime_Application/);
+    assert.match(generated, /z_once_lifetime_Application_deinit/);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("canonicalizes generic and aliased main-affine class payloads", () => {
+  const directory = mkdtempSync("/tmp/z-once-generic-alias-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      class Root<T> on thread.main {
+        readonly value: T;
+      }
+
+      type ApplicationRoot = Root<i32>;
+      const root = Once<ApplicationRoot>();
+
+      function main(): i32 {
+        const lifetime = root.initialize(
+          new Root<i32>({ value: 42 })
+        );
+        const current = root.get();
+        return current.value - 42;
+      }
+    `;
+    writeFileSync(file, source);
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("requires named Once values to move into initialize and makes its lifetime move-only", () => {
+  const missingMove = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application on thread.main {
+      readonly id: i32;
+    }
+
+    const application = Once<Application>();
+
+    function main(): i32 {
+      const value = new Application({ id: 42 });
+      const lifetime = application.initialize(value);
+      return 0;
+    }
+  `;
+  assert.match(
+    diagnostics(missingMove, "/tmp/z-once-missing-move.zs")[0]?.message ?? "",
+    /initialize.*move value|pass.*move value/i,
+  );
+
+  const copiedLifetime = missingMove
+    .replace(
+      "application.initialize(value)",
+      "application.initialize(move value)",
+    )
+    .replace(
+      "return 0;",
+      "const copied = copy lifetime;\n      return 0;",
+    );
+  assert.match(
+    diagnostics(
+      copiedLifetime,
+      "/tmp/z-once-copy-lifetime.zs",
+    )[0]?.message ?? "",
+    /OnceLifetime<Application>.*move-only|cannot copy.*OnceLifetime/i,
+  );
+
+  const discardedLifetime = missingMove
+    .replace(
+      "const lifetime = application.initialize(value);",
+      "application.initialize(move value);",
+    );
+  assert.match(
+    diagnostics(
+      discardedLifetime,
+      "/tmp/z-once-discarded-lifetime.zs",
+    )[0]?.message ?? "",
+    /ownership-bearing value must be bound or transferred|cleanup-bearing return value|OnceLifetime<Application>.*must be owned/i,
+  );
+});
+
+test("surfaces Once imports, aliases, members, and inferred lifetimes in the editor", () => {
+  const directory = mkdtempSync("/tmp/z-once-editor-");
+  const stateFile = resolve(directory, "state.zs");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    writeFileSync(stateFile, `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      export class Application on thread.main {
+        readonly id: i32;
+      }
+
+      export const application: Once<Application> = Once<Application>();
+    `);
+    const source = `
+      import state from "./state.zs";
+      import { application as root, Application } from "./state.zs";
+
+      function main(): i32 {
+        const lifetime = root.initialize(
+          new Application({ id: 42 })
+        );
+        const current = root.get();
+        const namespaced = state.application.get();
+        return current.id - namespaced.id;
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const result = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    assert.match(
+      hover(
+        source,
+        mainFile,
+        source.indexOf("root.initialize") + 1,
+      )?.contents.value ?? "",
+      /const root: Once<Application>.*Alias of `application`/s,
+    );
+    assert.match(
+      hover(
+        source,
+        mainFile,
+        source.indexOf("initialize") + 1,
+      )?.contents.value ?? "",
+      /initialize\(move value: Application\): OnceLifetime<Application>.*thread\.main/s,
+    );
+    assert.match(
+      hover(
+        source,
+        mainFile,
+        source.indexOf("lifetime =") + 1,
+      )?.contents.value ?? "",
+      /lifetime: OnceLifetime<Application>/,
+    );
+    assert.match(
+      hover(
+        source,
+        mainFile,
+        source.indexOf("current =") + 1,
+      )?.contents.value ?? "",
+      /current: Application/,
+    );
+
+    const memberSource = source.replace("const current = root.get()", "const current = root.ge");
+    const memberOffset = memberSource.indexOf("root.ge") + "root.ge".length;
+    const getItem = completions(memberSource, mainFile, memberOffset)
+      .find((item) => item.label === "get");
+    assert.match(getItem?.detail ?? "", /get\(\): Application/);
+
+    const namespaceSource = source.replace(
+      "state.application.get()",
+      "state.appl",
+    );
+    const namespaceOffset = namespaceSource.indexOf("state.appl")
+      + "state.appl".length;
+    const applicationItem = completions(
+      namespaceSource,
+      mainFile,
+      namespaceOffset,
+    ).find((item) => item.label === "application");
+    assert.match(
+      applicationItem?.detail ?? "",
+      /const application: Once<Application>/,
+    );
+    assert.match(applicationItem?.detail ?? "", /thread\.main/);
+
+    const importSource = `
+      import { On } from "std/sync";
+      function main(): i32 { return 0; }
+    `;
+    const importOffset = importSource.indexOf("On }") + 2;
+    assert.equal(
+      completions(importSource, mainFile, importOffset)
+        .find((item) => item.label === "Once")?.kind,
+      22,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

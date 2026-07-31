@@ -4,6 +4,7 @@ import {
   EnumDeclaration,
   ExpressionKind,
   ExpressionSyntax,
+  ExpressionTree,
   FunctionDeclaration,
   StatementArena,
   TraitDeclaration,
@@ -135,6 +136,8 @@ function intrinsicTypeArity(in name: String): Option<NativeTypeArity> {
     || name == "Option"
     || name == "Set"
     || name == "Weak"
+    || name == "Once"
+    || name == "OnceLifetime"
   ) return Option.some(NativeTypeArity({ minimum: 1, maximum: 1 }));
   if (name == "Map") {
     return Option.some(NativeTypeArity({ minimum: 2, maximum: 2 }));
@@ -375,6 +378,19 @@ function validateTypeNameShape(
           column
         );
         none => {}
+      }
+      if (
+        genericBase == "Once"
+        || genericBase == "OnceLifetime"
+      ) {
+        try requireMainAffineOncePayload(
+          module,
+          modules,
+          moduleIndex,
+          name,
+          line,
+          column
+        );
       }
       match (typeSymbolLocation(modules, moduleIndex, genericBase)) {
         some(location) => {
@@ -717,6 +733,96 @@ function moduleConstantNumericType(in name: String): boolean {
     || name == "f64";
 }
 
+function onceInitializerType(
+  in tree: ExpressionTree
+): String {
+  const root = view tree.nodes[tree.root];
+  if (
+    root.kind != ExpressionKind.callExpression
+    || root.children.length != 1
+  ) return "";
+  const callee = root.children[0];
+  if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) {
+    return "";
+  }
+  match (genericTypeShape(tree.nodes[callee].value)) {
+    some(generic) => {
+      if (
+        generic.base == "Once"
+        && generic.arguments.length == 1
+      ) return tree.nodes[callee].value.copyBytes(
+        0,
+        tree.nodes[callee].value.byteLength
+      );
+    }
+    none => {}
+  }
+  return "";
+}
+
+function requireMainAffineOncePayload(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in onceType: String,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  const generic = match (genericTypeShape(onceType)) {
+    some(generic) => generic;
+    none => throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "Once<T> requires one class payload",
+      line,
+      column
+    );
+  };
+  const payload = generic.arguments[0].copyBytes(
+    0,
+    generic.arguments[0].byteLength
+  );
+  const location = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    payload
+  )) {
+    some(location) => location;
+    none => throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+      line,
+      column
+    );
+  };
+  const symbol = view modules[location.moduleIndex].symbols[
+    location.symbolIndex
+  ];
+  if (symbol.kind != ModuleSymbolKind.classSymbol) {
+    throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+      line,
+      column
+    );
+  }
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      if (signature.executorAffinity == "thread.main") return;
+    }
+    none => {}
+  }
+  throw validationError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `Once<T> requires a class explicitly isolated to thread.main in the first tier, found ${payload}`,
+    line,
+    column
+  );
+}
+
 function validateModuleConstantTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -741,6 +847,7 @@ function validateModuleConstantTypes(
     match (in declaration.initializer.tree) {
       some(tree) => {
         const root = view tree.nodes[tree.root];
+        const onceType = onceInitializerType(tree);
         const numberLiteral = root.kind == ExpressionKind.numberExpression
           || (
             root.kind == ExpressionKind.unaryExpression
@@ -751,7 +858,8 @@ function validateModuleConstantTypes(
           );
         const supported = root.kind == ExpressionKind.stringExpression
           || root.kind == ExpressionKind.booleanExpression
-          || numberLiteral;
+          || numberLiteral
+          || onceType.byteLength > 0;
         if (!supported) throw validationError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -759,6 +867,37 @@ function validateModuleConstantTypes(
           declaration.line,
           declaration.column
         );
+        if (onceType.byteLength > 0) {
+          try validateTypeNameShape(
+            module,
+            modules,
+            moduleIndex,
+            typeParameters,
+            onceType,
+            declaration.line,
+            declaration.column,
+            false
+          );
+          try requireMainAffineOncePayload(
+            module,
+            modules,
+            moduleIndex,
+            onceType,
+            declaration.line,
+            declaration.column
+          );
+          if (
+            expected.byteLength > 0
+            && expected != onceType
+          ) throw validationError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `module constant ${declaration.name} cannot initialize ${expected} from ${onceType}`,
+            declaration.line,
+            declaration.column
+          );
+          continue;
+        }
         if (expected.byteLength == 0) continue;
         const compatible = (
           root.kind == ExpressionKind.stringExpression
