@@ -69,6 +69,9 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`zapp-skeleton`](applications/zapp-skeleton): a user-authored framework
   composition probe with global application lookup, mutex-protected state,
   dedicated worker work, and explicit result delivery to `thread.main`.
+- [`zapp-appkit`](applications/zapp-appkit): the same user-owned architecture
+  holding real `NSWindow` and `NSTextField` identities, with worker-safe model
+  access and a native UI update explicitly placed onto `thread.main`.
 - [`z-notes`](applications/z-notes): a native AppKit and SQLite application
   combining ARC state, Objective-C protocols and target/action, owned native
   handles, async loading on a dedicated worker, typed owned result transfer,

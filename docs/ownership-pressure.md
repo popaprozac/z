@@ -1729,6 +1729,32 @@ with the publication cell, atomically retains the identity, uses only the
 permitted surface, and queues its final release to `thread.main`. The parent
 continues to use the same root and its main-only member after joining.
 
+## Real AppKit identity in the synchronized root
+
+Source:
+[`examples/applications/zapp-appkit`](../examples/applications/zapp-appkit)
+
+The framework skeleton now stores actual `NSWindow` and `NSTextField`
+identities in the mixed-affinity `Application`. A dedicated worker retrieves
+that same root through `Once<Application>`, increments and completes a job
+through `Mutex<RuntimeState>`, and then executes a direct
+`await on thread.main publishApplicationStatus(ticket)` call. The placed call
+updates both native UI objects; the parent subsequently closes the window on
+main and releases the root deterministically.
+
+This confirms that member-level affinity survives imported Objective-C
+identity rather than working only for synthetic integer fields. It also found
+one current lowering boundary: direct imported Objective-C expressions are not
+yet executable in an async frame. Main-bound synchronous
+`createApplication()` performs native setup while preserving exactly the same
+executor proof, and the async task composes the resulting Z identity normally.
+
+The successful worker hop does not yet prove entry from an arbitrary
+foreign-created thread. Z-managed workers install executor-release context as
+part of their generated entry trampoline. A foreign callback or exported C
+entry needs the equivalent bounded runtime entry/exit bridge before retrieving
+and releasing a main-lifecycle root can be claimed safe.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

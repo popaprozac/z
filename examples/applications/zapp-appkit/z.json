@@ -1,0 +1,8 @@
+{
+  "target": {
+    "name": "zapp-appkit",
+    "entry": "main.zs",
+    "platform": "macos",
+    "minimumVersion": "14.0"
+  }
+}
