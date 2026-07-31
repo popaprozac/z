@@ -35,6 +35,7 @@ import {
   functionValueLiteral,
   generateObjCBlockArgument,
   generateObjCMessage,
+  semanticInfoUsesForeignRuntimeEntry,
   taskScopeAsyncScheduleName,
 } from "./codegen-c.ts";
 
@@ -2623,7 +2624,11 @@ function generateRuntime(
     || plan.types.semanticInfo.taskScopeSpawnCalls.size > 0
     || plan.types.semanticInfo.taskScopeAsyncCalls.size > 0
   ));
+  const usesForeignRuntimeEntry = plans.some((plan) => (
+    semanticInfoUsesForeignRuntimeEntry(plan.types.semanticInfo)
+  ));
   const usesThreads = usesTaskScopes
+    || usesForeignRuntimeEntry
     || plans.some((plan) => plan.foreign !== null)
     || plans.some((plan) => [...plan.spawns.values()].some((site) => site.nativeThread));
   const usesMainPlacement = plans.some((plan) => (
@@ -2643,11 +2648,7 @@ function generateRuntime(
     || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
   const needsExecutorBoundRuntime = plans.some((plan) => plan.nativeThread)
-    || plans.some((plan) => (
-      [...plan.types.semanticInfo.foreignCallArgumentPlans.values()].some((arguments_) => (
-        arguments_.some((argument) => argument.kind === "callback" && argument.callback.thread === "any")
-      ))
-    ));
+    || usesForeignRuntimeEntry;
   const executorBoundClasses = new Set(needsExecutorBoundRuntime
     ? plans.flatMap((plan) => [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()])
     : []);
@@ -3223,6 +3224,16 @@ function generateRuntime(
         "  z_async_thread_unlock(executor);",
         "}",
         "",
+        "static void z_async_enqueue_executor_bound_release(",
+        "  void *context,",
+        "  void *value,",
+        "  void (*finalize)(void *value)",
+        ") {",
+        "  z_async_release_from_thread((Z_AsyncExecutor *)context, value, finalize);",
+        "}",
+        "",
+      ] : []),
+      ...(usesForeignRuntimeEntry ? [
         "static void z_async_retain_foreign_runtime(void *context) {",
         "  Z_AsyncExecutor *executor = (Z_AsyncExecutor *)context;",
         "  if (executor == NULL) return;",
@@ -3251,14 +3262,6 @@ function generateRuntime(
         "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
         "#endif",
         "  z_async_thread_unlock(executor);",
-        "}",
-        "",
-        "static void z_async_enqueue_executor_bound_release(",
-        "  void *context,",
-        "  void *value,",
-        "  void (*finalize)(void *value)",
-        ") {",
-        "  z_async_release_from_thread((Z_AsyncExecutor *)context, value, finalize);",
         "}",
         "",
       ] : []),
@@ -3844,9 +3847,9 @@ function generateRuntime(
       ...(usesThreads
         ? ["  Z_AsyncExecutor executor;", "  z_async_executor_init(&executor, true);"]
         : ["  Z_AsyncExecutor executor = { .main_executor = true, .head = NULL, .tail = NULL, .timers = NULL };"]),
-      ...(usesExecutorBoundReleases ? [
+      ...(usesForeignRuntimeEntry ? [
         "  z_foreign_runtime_context = &executor;",
-        "  z_foreign_runtime_enqueue = z_async_enqueue_executor_bound_release;",
+        `  z_foreign_runtime_enqueue = ${usesExecutorBoundReleases ? "z_async_enqueue_executor_bound_release" : "NULL"};`,
         "  z_foreign_runtime_retain = z_async_retain_foreign_runtime;",
         "  z_foreign_runtime_release = z_async_release_foreign_runtime;",
       ] : []),
@@ -3857,7 +3860,7 @@ function generateRuntime(
             "  if (root->failed) {",
             `    ${main.destroyName}(root);`,
             "    free(root);",
-            ...(usesExecutorBoundReleases ? [
+            ...(usesForeignRuntimeEntry ? [
               "    z_foreign_runtime_release = NULL;",
               "    z_foreign_runtime_retain = NULL;",
               "    z_foreign_runtime_enqueue = NULL;",
@@ -3871,7 +3874,7 @@ function generateRuntime(
       "  int32_t result = root->result;",
       `  ${main.destroyName}(root);`,
       "  free(root);",
-      ...(usesExecutorBoundReleases ? [
+      ...(usesForeignRuntimeEntry ? [
         "  z_foreign_runtime_release = NULL;",
         "  z_foreign_runtime_retain = NULL;",
         "  z_foreign_runtime_enqueue = NULL;",
@@ -6306,7 +6309,13 @@ function emitAsyncObjCCall(
     }
     const box = `_z_async_objc_box_${argument.location.offset}`;
     const nativeBlock = `_z_async_objc_block_${argument.location.offset}`;
-    lines.push(...generateObjCBlockArgument(block, functionValue, box, nativeBlock));
+    lines.push(...generateObjCBlockArgument(
+      block,
+      functionValue,
+      box,
+      nativeBlock,
+      semanticInfoUsesForeignRuntimeEntry(plan.types.semanticInfo),
+    ));
     return nativeBlock;
   });
   const receiver = call.instance

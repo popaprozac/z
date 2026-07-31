@@ -204,6 +204,8 @@ export function generateC(
     declaration.kind === "class"
     && semanticInfo.aggregateExecutorAffinities.has(declaration.name)
   ));
+  const usesForeignRuntimeEntry = semanticInfoUsesForeignRuntimeEntry(semanticInfo);
+  const usesExecutorRuntimeSupport = usesExecutorBoundClasses || usesForeignRuntimeEntry;
   const usesArena = [...semanticInfo.standardTypeBindings.values()].includes("Arena");
   const usesTaskScope = semanticInfo.taskScopeConstructors.size > 0
     || semanticInfo.taskScopeSpawnCalls.size > 0
@@ -398,9 +400,6 @@ export function generateC(
     lines.push(`#include <${declaration.header}>`);
     includedHeaders.add(declaration.header);
   }
-  if (semanticInfo.objcBlockArguments.size > 0) {
-    lines.push("", generateObjCBlockRuntime());
-  }
   const integerRuntime = generateIntegerRuntime(
     semanticInfo.integerOperations,
     semanticInfo.integerConversions,
@@ -528,7 +527,7 @@ export function generateC(
   if (program.structs.some((declaration) => declaration.kind === "class")) {
     lines.push(generateWeakRuntime(), "");
   }
-  if (usesExecutorBoundClasses) {
+  if (usesExecutorRuntimeSupport) {
     lines.push(
       "#if defined(__cplusplus)",
       "#define Z_THREAD_LOCAL thread_local",
@@ -565,6 +564,9 @@ export function generateC(
       "",
     );
   }
+  if (semanticInfo.objcBlockArguments.size > 0) {
+    lines.push(generateObjCBlockRuntime(usesForeignRuntimeEntry), "");
+  }
 
   for (const functionType of functionTypes) {
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
@@ -577,7 +579,7 @@ export function generateC(
     lines.push(generateObjCBindingRuntime(), "");
   }
   for (const helper of foreignEscapeHelpers) {
-    lines.push(generateForeignEscapeHelpers(helper, usesExecutorBoundClasses), "");
+    lines.push(generateForeignEscapeHelpers(helper, usesForeignRuntimeEntry), "");
   }
   if (foreignConnectionCalls.length > 0) lines.push(generateNativeConnectionRuntime(), "");
 
@@ -1497,33 +1499,50 @@ static inline __attribute__((unused)) void z_weak_release(Z_Weak value) {
 }`;
 }
 
-function generateObjCBlockRuntime(): string {
+function generateObjCBlockRuntime(usesForeignRuntime: boolean): string {
   return `@interface Z_ObjCClosureBox : NSObject {
 @public
   void *_z_context;
   void (*_z_release)(void *context);
-}
+${usesForeignRuntime ? `  void *_z_runtime_context;
+  Z_ExecutorBoundReleaseEnqueue _z_runtime_enqueue;
+  Z_ForeignRuntimeLifetime _z_runtime_retain;
+  Z_ForeignRuntimeLifetime _z_runtime_release;
+` : ""}}
 - (instancetype)initWithContext:(void *)context
                   retainFunction:(void (*)(void *context))retainFunction
-                 releaseFunction:(void (*)(void *context))releaseFunction;
+                 releaseFunction:(void (*)(void *context))releaseFunction${usesForeignRuntime ? `
+                  captureRuntime:(BOOL)captureRuntime` : ""};
 @end
 
 @implementation Z_ObjCClosureBox
 - (instancetype)initWithContext:(void *)context
                   retainFunction:(void (*)(void *context))retainFunction
-                 releaseFunction:(void (*)(void *context))releaseFunction {
+                 releaseFunction:(void (*)(void *context))releaseFunction${usesForeignRuntime ? `
+                  captureRuntime:(BOOL)captureRuntime` : ""} {
   self = [super init];
   if (self != nil) {
     _z_context = context;
     _z_release = releaseFunction;
-    if (retainFunction != NULL) retainFunction(context);
+${usesForeignRuntime ? `    _z_runtime_context = captureRuntime ? z_foreign_runtime_context : NULL;
+    _z_runtime_enqueue = captureRuntime ? z_foreign_runtime_enqueue : NULL;
+    _z_runtime_retain = captureRuntime ? z_foreign_runtime_retain : NULL;
+    _z_runtime_release = captureRuntime ? z_foreign_runtime_release : NULL;
+    if (_z_runtime_retain != NULL) _z_runtime_retain(_z_runtime_context);
+` : ""}    if (retainFunction != NULL) retainFunction(context);
   }
   return self;
 }
 
 - (void)dealloc {
-  if (_z_release != NULL) _z_release(_z_context);
-}
+${usesForeignRuntime ? `  Z_ForeignThreadEntry _z_runtime_entry = z_foreign_thread_enter(
+    _z_runtime_context,
+    _z_runtime_enqueue
+  );
+` : ""}  if (_z_release != NULL) _z_release(_z_context);
+${usesForeignRuntime ? `  z_foreign_thread_leave(_z_runtime_entry);
+  if (_z_runtime_release != NULL) _z_runtime_release(_z_runtime_context);
+` : ""}}
 @end`;
 }
 
@@ -1776,6 +1795,12 @@ function collectFunctionTypes(program: Program, semanticInfo: SemanticInfo): Fun
   return [...collected.values()].sort((left, right) => functionTypeCName(left).localeCompare(functionTypeCName(right)));
 }
 
+export function semanticInfoUsesForeignRuntimeEntry(semanticInfo: SemanticInfo): boolean {
+  return [...semanticInfo.foreignCallArgumentPlans.values()].some((arguments_) => (
+    arguments_.some((argument) => argument.kind === "callback" && argument.callback.thread === "any")
+  )) || [...semanticInfo.objcBlockArguments.values()].some((block) => block.thread === "any");
+}
+
 function collectForeignCallbackAdapters(semanticInfo: SemanticInfo): Extract<ForeignCallArgumentPlan, { kind: "callback" }>[] {
   const collected = new Map<string, Extract<ForeignCallArgumentPlan, { kind: "callback" }>>();
   for (const plan of semanticInfo.foreignCallArgumentPlans.values()) {
@@ -1816,11 +1841,11 @@ function foreignCallbackBoxStorageName(plan: Extract<ForeignCallArgumentPlan, { 
 
 function generateForeignEscapeHelpers(
   plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>,
-  usesExecutorBoundClasses: boolean,
+  usesForeignRuntimeEntry: boolean,
 ): string {
   const functionType = parseFunctionType(plan.functionType)!;
   const type = functionTypeCName(functionType);
-  const foreignThreadEntry = plan.callback.thread === "any" && usesExecutorBoundClasses;
+  const foreignThreadEntry = plan.callback.thread === "any" && usesForeignRuntimeEntry;
   const storage = foreignCallbackBoxStorageName(plan);
   return `${foreignThreadEntry ? `typedef struct ${storage} {
   ${type} value;
@@ -1871,7 +1896,7 @@ function generateForeignCallbackAdapter(
   const functionType = parseFunctionType(plan.functionType)!;
   const callback = plan.callback;
   const foreignThreadEntry = callback.thread === "any"
-    && semanticInfo.aggregateExecutorAffinities.size > 0;
+    && semanticInfoUsesForeignRuntimeEntry(semanticInfo);
   const storage = foreignCallbackBoxStorageName(plan);
   const functionValue = foreignThreadEntry
     ? `(&(((${storage} *)callback_context)->value))`
@@ -6093,6 +6118,7 @@ export function generateObjCBlockArgument(
   functionValue: string,
   box: string,
   nativeBlock: string,
+  usesForeignRuntime: boolean,
 ): string[] {
   const parameters = block.parameters.map((parameter, index) => ({
     type: parameter.cName,
@@ -6102,11 +6128,19 @@ export function generateObjCBlockArgument(
   const parameterDeclarations = parameters.map((parameter) => `${parameter.type} ${parameter.name}`).join(", ") || "void";
   const arguments_ = parameters.map((parameter) => parameter.name);
   const invoke = `(${functionValue}).call(${box}->_z_context${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+  const entersForeignRuntime = usesForeignRuntime && block.thread === "any";
+  const enter = entersForeignRuntime
+    ? `Z_ForeignThreadEntry _z_runtime_entry = z_foreign_thread_enter(${box}->_z_runtime_context, ${box}->_z_runtime_enqueue); `
+    : "";
+  const leave = entersForeignRuntime ? "z_foreign_thread_leave(_z_runtime_entry); " : "";
   const body = block.returnType.kind === "z" && block.returnType.name === "void"
-    ? `${invoke};`
-    : `return ${invoke};`;
+    ? `${enter}${invoke}; ${leave}`
+    : `${enter}${block.returnType.cName} _z_result = ${invoke}; ${leave}return _z_result;`;
+  const runtimeArgument = usesForeignRuntime
+    ? ` captureRuntime:${entersForeignRuntime ? "true" : "false"}`
+    : "";
   return [
-    `Z_ObjCClosureBox * const ${box} = [[Z_ObjCClosureBox alloc] initWithContext:(${functionValue}).context retainFunction:(${functionValue}).retain releaseFunction:(${functionValue}).release];`,
+    `Z_ObjCClosureBox * const ${box} = [[Z_ObjCClosureBox alloc] initWithContext:(${functionValue}).context retainFunction:(${functionValue}).retain releaseFunction:(${functionValue}).release${runtimeArgument}];`,
     `${block.returnType.cName} (^const ${nativeBlock})(${parameterTypes}) = ^${block.returnType.cName}(${parameterDeclarations}) { ${body} };`,
   ];
 }
@@ -6151,7 +6185,13 @@ function generateLoweredCall(
     if (objcBlock) {
       const box = `_z_objc_block_box_${context.valueCounter.value++}`;
       const nativeBlock = `_z_objc_block_${context.valueCounter.value++}`;
-      lines.push(...generateObjCBlockArgument(objcBlock, temporary, box, nativeBlock));
+      lines.push(...generateObjCBlockArgument(
+        objcBlock,
+        temporary,
+        box,
+        nativeBlock,
+        semanticInfoUsesForeignRuntimeEntry(context.semanticInfo),
+      ));
       overrides.set(argument.location.offset, nativeBlock);
     } else {
       overrides.set(argument.location.offset, temporary);

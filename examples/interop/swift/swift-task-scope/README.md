@@ -1,6 +1,6 @@
 # Swift callback-to-async projection
 
-This example composes six native boundaries:
+This example composes seven native boundaries:
 
 1. Swift starts work on a global Dispatch queue.
 2. Its generated Objective-C compatibility header exposes an escaping block.
@@ -16,6 +16,10 @@ This example composes six native boundaries:
    awaitable overload. A dedicated Z worker explicitly enters main placement,
    suspends there while the Swift callback completes, then resumes on its
    original worker.
+7. The raw callback overload retrieves a synchronized `Once<Application>` from
+   Swift's global Dispatch queue, updates `Mutex` state, and submits structured
+   publication to `thread.main`. Generated block invocation and ARC release
+   adapters enter the runtime captured when Z registered the block.
 
 Run it on macOS:
 
@@ -28,6 +32,7 @@ The expected output is:
 ```text
 7
 42
+swift callback published 42 on main
 ```
 
 The generated task frame remains alive until Swift invokes its exactly-once
@@ -43,4 +48,7 @@ Swift operation without losing main-executor proof.
 The delayed second operation is cancelled after native work starts; Z waits for
 Swift's callback before destroying the frame. The first line is the owned
 `NSError.code` observed through `failure(error)`; the second is the successful
-value delivered through the worker → main → worker round trip.
+value delivered through the worker → main → worker round trip. The final line
+comes from a user-authored block that entered Z from Swift's global queue,
+retrieved the shared application root safely, and published through its joined
+`TaskScope` operation on main.

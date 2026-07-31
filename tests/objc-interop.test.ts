@@ -1251,6 +1251,25 @@ hostToolchainTest("retains owned Z closure environments across Objective-C block
   );
 }, 10_000);
 
+hostToolchainTest("enters the captured Z runtime for arbitrary-thread Objective-C blocks", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-block-runtime-entry.zs");
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /\[ZObjCBlockFixture invokeOnWorker:_z_objc_block_/);
+  assert.match(artifact.source, /captureRuntime:true/);
+  assert.match(artifact.source, /Z_ForeignThreadEntry _z_runtime_entry = z_foreign_thread_enter/);
+  assert.match(artifact.source, /z_foreign_thread_leave\(_z_runtime_entry\)/);
+  assert.match(artifact.source, /_z_runtime_retain\(_z_runtime_context\)/);
+  assert.match(artifact.source, /_z_runtime_release\(_z_runtime_context\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+}, 15_000);
+
 test("bridges owned Z closures to Objective-C target/action through an explicit connection", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/target-action.zs");

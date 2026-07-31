@@ -1762,6 +1762,16 @@ remains rejected and must cross `TaskScope.schedule(thread.main, ...)`. The
 same bounded entry primitive will be needed for future `export c` entry points,
 together with an embedding-level runtime initialization and shutdown contract.
 
+The Objective-C and Swift probes now use that same primitive without a C-style
+context/release ABI. An ARC `Z_ObjCClosureBox` captures the active runtime beside
+the owned Z closure, retains the executor until native ARC deallocates the box,
+and enters the runtime around both invocation and closure release. A direct
+Objective-C fixture dispatches its block on a global queue; the Swift task-scope
+example does the same through a generated Objective-C compatibility header.
+Both callbacks retrieve a mixed-affinity `Once<Application>`, mutate only its
+`Mutex` surface, and publish through a joined `TaskScope` operation on main.
+Direct access to the main-only field from the Swift callback remains `Z0711`.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

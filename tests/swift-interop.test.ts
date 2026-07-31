@@ -200,7 +200,12 @@ hostToolchainTest("projects Swift callbacks into tasks and preserves MainActor i
   );
   assert.match(artifact.source, /z_async_report_external_completion\(&frame->task\)/);
   assert.match(artifact.source, /active_external_callbacks/);
-  assert.doesNotMatch(artifact.source, /\[ZSwiftBackgroundWorker waitForCompletion\]/);
+  assert.match(artifact.source, /captureRuntime:true/);
+  assert.match(artifact.source, /Z_ForeignThreadEntry _z_runtime_entry = z_foreign_thread_enter/);
+  assert.match(artifact.source, /z_foreign_thread_leave\(_z_runtime_entry\)/);
+  assert.match(artifact.source, /_z_runtime_retain\(_z_runtime_context\)/);
+  assert.match(artifact.source, /_z_runtime_release\(_z_runtime_context\)/);
+  assert.equal(artifact.source.match(/\[ZSwiftBackgroundWorker waitForCompletion\]/g)?.length, 1);
 
   const context = analyzeSource(source, example);
   assert.equal(
@@ -272,6 +277,14 @@ hostToolchainTest("projects Swift callbacks into tasks and preserves MainActor i
     }
   `;
   assert.deepEqual(diagnostics(propagatedThrow, example), []);
+
+  const directMainAccess = source.replace(
+    "current.record(value);",
+    "const forbidden = current.published;",
+  );
+  const directMainDiagnostic = diagnostics(directMainAccess, example)[0];
+  assert.equal(directMainDiagnostic.code, "Z0711");
+  assert.match(directMainDiagnostic.message, /published.*requires thread\.main executor context/);
 
   const rawSource = `
     import Swift from "ZSwiftTaskScope-Swift.h";
@@ -502,7 +515,7 @@ hostToolchainTest("projects Swift callbacks into tasks and preserves MainActor i
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "7\n42\n");
+  assert.equal(result.stdout, "7\n42\nswift callback published 42 on main\n");
 }, 60_000);
 
 hostToolchainTest("imports and owns a Swift value through its generated C++ compatibility header", () => {

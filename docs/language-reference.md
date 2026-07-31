@@ -1878,12 +1878,14 @@ there is intentionally no unobserved error channel back to the synchronous
 submitter. The scheduled closure receives proof for the executor passed to
 `schedule`; in the current tier that executor must be `thread.main`.
 
-An escaping `.zd` callback declared `thread any` automatically enters the Z
-runtime captured at registration for the duration of callback invocation and
-native release. This enables synchronized application-root lookup and ARC
-cleanup without a manual attach call. The callback is still synchronous and
-off-main: it uses `TaskScope.schedule(thread.main, ...)` for structured UI work
-rather than calling main-isolated members directly or awaiting in place.
+An escaping `.zd` callback or Objective-C block declared `thread any`
+automatically enters the Z runtime captured at registration for the duration of
+callback invocation and native release. This includes block APIs surfaced by a
+generated Swift Objective-C header and enables synchronized application-root
+lookup and ARC cleanup without a manual attach call. The callback is still
+synchronous and off-main: it uses `TaskScope.schedule(thread.main, ...)` for
+structured UI work rather than calling main-isolated members directly or
+awaiting in place.
 
 ### Task, TaskScope, and TaskControl
 
@@ -2250,7 +2252,10 @@ and remain one pointer with no wrapper allocation; general options use the
 ordinary tagged enum layout. An
 imported Objective-C block parameter accepts a contextual Z closure. Escaping
 blocks require `move`; the generated ARC adapter keeps the owned closure
-environment alive for exactly as long as the native block. APIs such as
+environment alive for exactly as long as the native block. When `.zd` marks the
+block `thread any`, the adapter also retains and enters the active Z runtime
+around invocation and final release; this grants synchronized runtime access,
+not main-executor proof. APIs such as
 `NSNotificationCenter` return their ordinary native observer token; Z code
 keeps that token and explicitly unregisters it according to the API contract.
 Weak capture can keep the persistent block from strongly cycling back to its Z

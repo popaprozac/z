@@ -488,14 +488,17 @@ Callbacks that an Objective-C API guarantees to invoke on main should establish
 main-executor proof inside their bodies. Cross-thread callbacks instead need a
 safe runtime handoff into a Z-owned executor/task scope.
 
-The first C callback tier describes arbitrary native invocation with `thread
-any`, but deliberately does not make `task on thread.main` detached. The
-generated callback and release trampolines automatically enter the runtime
-captured when the callback was registered. This bounded entry permits atomic
-ARC, synchronized `Once<T>.get()`, mutex access, and executor-routed final
-release; it does not turn the foreign thread into a Z executor or grant main
-proof. Nested entry restores the previous thread context on every return path,
-and the callback box keeps the owning executor alive until native release.
+The first checked callback tier describes arbitrary native invocation with
+`thread any`, but deliberately does not make `task on thread.main` detached.
+Generated C callback trampolines and ARC-owned Objective-C block adapters both
+enter the runtime captured when the callback was registered, including while
+native release destroys the closure environment. This covers blocks surfaced
+by generated Swift Objective-C headers as well as direct Objective-C APIs. The
+bounded entry permits atomic ARC, synchronized `Once<T>.get()`, mutex access,
+and executor-routed final release; it does not turn the foreign thread into a Z
+executor or grant main proof. Nested entry restores the previous thread context
+on every return path, and the callback box keeps the owning executor alive
+until native release.
 
 The imported thread-safe `TaskScope` then owns operations submitted by foreign
 callbacks, rejects new operations during close, and joins accepted work.

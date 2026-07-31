@@ -103,7 +103,7 @@ bun run z run examples/language/control-flow/result.zs
 | Persistent AppKit events | [`appkit-events.zs`](../examples/interop/objc/appkit-events.zs) | Native blocks, weak capture, observer tokens |
 | AppKit target/action | [`target-action.zs`](../examples/interop/objc/target-action.zs) | `std/objc` connection owns the control and Z closure for an explicit safe lifetime |
 | Swift class | [`swift-interop`](../examples/interop/swift/swift-interop) | Generated Objective-C compatibility header |
-| Swift callback-to-async | [`swift-task-scope`](../examples/interop/swift/swift-task-scope) | Generated Objective-C block, qualified `.zd` `thread any`, infallible and value/error `async completion` contracts, synthesized `Task<T, E>`, safe cancellation wait, and a native worker awaiting a real Swift `@MainActor` operation through `thread.main` |
+| Swift callback-to-async | [`swift-task-scope`](../examples/interop/swift/swift-task-scope) | Generated Objective-C block, qualified `.zd` `thread any`, infallible and value/error `async completion` contracts, synthesized `Task<T, E>`, safe cancellation wait, a native worker awaiting a real Swift `@MainActor` operation, and a raw global-queue callback retrieving `Once<Application>` before structured publication through `thread.main` |
 | Swift value | [`swift-value-interop`](../examples/interop/swift/swift-value-interop) | Generated C++ methods, owned aggregate storage, and exact explicit `String` return copies |
 | Swift enum | [`swift-enum-interop`](../examples/interop/swift/swift-enum-interop) | Direct generated associated-value case factories, owned copies, methods, and cleanup |
 

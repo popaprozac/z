@@ -698,9 +698,15 @@ declare module "ZSwiftTaskScope-Swift.h" {
 The class, static selector, parameter names, and block ABI remain Clang-derived.
 The callback contract makes a raw closure environment atomic and checks its
 captures; the copied native block retains and releases that environment through
-Objective-C ARC. `invoked once` separately promises exactly-one terminal
-delivery, while `async completion;` requests the Task projection. Z preserves
-the raw callback overload and synthesizes
+Objective-C ARC. For `thread any`, its generated invocation and deallocation
+paths enter the active Z runtime captured at registration. A raw user callback
+may therefore retrieve a synchronized `Once<T>` root, use `Mutex<T>`, and
+submit joined work through `TaskScope`; direct main-isolated access remains a
+compile-time error. `invoked once` separately promises exactly-one terminal
+delivery, while `async completion;` requests the Task projection. The
+synthesized completion block writes only its owned task frame and wakes that
+task's executor; the raw callback overload remains available for user-authored
+callback behavior. Z synthesizes
 `async calculate(value: i32): i32`, usable with either `await` or `task`.
 
 The projected task owns its callback frame until completion. Cancellation

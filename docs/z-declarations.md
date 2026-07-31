@@ -224,7 +224,7 @@ still use the Stage-0 compiler.
 | `failure N;` in a callback body | Return numeric native value `N` if the Z callback throws | Checked against the nested callback's native return type, not the enclosing foreign function return |
 | `failure CONSTANT;` in a callback body | Return a header-defined native failure value if the Z callback throws | The constant must exist and be compatible with the callback return type; the thrown Z payload is destroyed at the boundary |
 | `thread caller;` | Callback invocation and release remain on the registering thread | Escaping closure environment uses ordinary thread-local ownership |
-| `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership and every capture must satisfy Z's conservative concurrent-shareability rules |
+| `thread any;` | Callback invocation and release may occur on arbitrary threads, including overlapping invocations | Escaping closure environment uses atomic ownership, every capture must satisfy Z's conservative concurrent-shareability rules, and C/Objective-C adapters enter the active Z runtime for bounded invocation and release |
 | `copy;` | Native value has usable copy construction | Enables `copy value` and copying aggregate storage that contains it |
 | `move;` | Native value has usable move construction | Enables ownership transfer and `std::move` lowering |
 | `thread { transfer; }` | One unique owner may cross to another native thread | Separate trusted fact from ordinary move construction |
@@ -376,7 +376,7 @@ These are semantic mappings, not textual rewrites:
 | C variadic `long` | Declaration-only `clong` | Target-width integer checking at the Z surface plus exact `long` ABI lowering |
 | C sentinel/policy argument | Parameter `{ fixed CONSTANT; }` | Argument omitted from the Z call |
 | C call-only callback | `in operation: _` plus callback/context pairing when needed | Nonescaping borrowed closure |
-| C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership and capture checking |
+| C escaping callback | `move operation: _` plus context, release, and an explicit `thread caller` or `thread any` fact | ARC-owned escaping Z closure; `thread any` adds atomic environment ownership, capture checking, and bounded active-runtime entry |
 | C callback/context installed by separate options | `connection throws _` plus callback `type`, `context option`, `owner`, byte projection, and `thread caller` | `try` returns a move-only `native.Connection`; cleanup unregisters the callback before releasing its owner-tied closure |
 | C++ `const T &` | `in value: _` | Borrowed value |
 | C++ `T &` | `inout value: _` | Mutable borrowed value |
