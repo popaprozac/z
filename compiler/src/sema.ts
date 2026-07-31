@@ -9848,20 +9848,26 @@ function inferExpressionInner(
                 helps: ["handle fallible work locally with `attempt await`"],
               });
             }
-            inferClosureExpression(
-              operation,
-              locals,
-              globals,
-              structs,
-              enums,
-              fileName,
-              state,
-              expectedFunction,
-              false,
-              operation.async,
-              false,
-              operation.async,
-            );
+            const previousExecutorContext = state.executorContext;
+            state.executorContext = "main";
+            try {
+              inferClosureExpression(
+                operation,
+                locals,
+                globals,
+                structs,
+                enums,
+                fileName,
+                state,
+                expectedFunction,
+                false,
+                operation.async,
+                false,
+                operation.async,
+              );
+            } finally {
+              state.executorContext = previousExecutorContext;
+            }
             const closure = operation.async
               ? state.closures.get(operation.location.offset)!
               : finalizeClosureFunctionValue(

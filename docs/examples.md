@@ -124,6 +124,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Scope-local ownership and child borrows | [`async-scope-locals.zs`](../examples/async/async-scope-locals.zs) |
 | Lazy branch suspension | [`async-branch-expressions.zs`](../examples/async/async-branch-expressions.zs) — selected-only `&&`, `||`, ternary, value-`if`, and loop-condition awaits |
 | Native callback task scopes | [`task-scope-native-callback.zs`](../examples/async/task-scope-native-callback.zs) — `thread any` C callback submission through named `TaskScope` ownership onto the main executor, including an async submitted root that owns and awaits a dedicated worker |
+| Foreign-thread application root | [`foreign-thread-application-root.zs`](../examples/async/foreign-thread-application-root.zs) — automatic bounded runtime entry for a pthread callback, synchronized retrieval of a mixed-affinity `Once<Application>`, and structured main-executor publication |
 | Cancellation | [`async-cancellation.zs`](../examples/async/async-cancellation.zs) |
 | Caller-driven cancellation | [`async-caller-cancellation.zs`](../examples/async/async-caller-cancellation.zs) — consuming request-and-join, descendant cleanup, and deterministic native resource release |
 | Scheduler-aware timers | [`async-delay.zs`](../examples/async/async-delay.zs) |

@@ -1749,11 +1749,18 @@ yet executable in an async frame. Main-bound synchronous
 `createApplication()` performs native setup while preserving exactly the same
 executor proof, and the async task composes the resulting Z identity normally.
 
-The successful worker hop does not yet prove entry from an arbitrary
-foreign-created thread. Z-managed workers install executor-release context as
-part of their generated entry trampoline. A foreign callback or exported C
-entry needs the equivalent bounded runtime entry/exit bridge before retrieving
-and releasing a main-lifecycle root can be claimed safe.
+The subsequent pthread callback probe closes the corresponding checked-import
+gap. A `.zd` callback declared `thread any` now captures the active Z runtime in
+its escaping callback box. Generated invoke and release adapters enter that
+runtime, restore any previous nested thread-local route on exit, and retain the
+executor until native code releases the callback. The foreign thread can
+therefore retrieve the same `Once<Application>` root, use its `Mutex`-guarded
+surface, and schedule main-bound work without manually attaching the thread.
+
+This does not grant the callback main-executor proof: direct main-only access
+remains rejected and must cross `TaskScope.schedule(thread.main, ...)`. The
+same bounded entry primitive will be needed for future `export c` entry points,
+together with an embedding-level runtime initialization and shutdown contract.
 
 ## Not tested yet
 

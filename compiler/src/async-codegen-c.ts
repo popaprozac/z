@@ -2642,11 +2642,15 @@ function generateRuntime(
     ))
     || [...plan.suspensions.values()].some((site) => requiresNativeFramePlacement(site.type, plan.types))
   ));
-  const executorBoundClasses = new Set(plans.flatMap((plan) => (
-    plan.nativeThread
-      ? [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()]
-      : []
-  )));
+  const needsExecutorBoundRuntime = plans.some((plan) => plan.nativeThread)
+    || plans.some((plan) => (
+      [...plan.types.semanticInfo.foreignCallArgumentPlans.values()].some((arguments_) => (
+        arguments_.some((argument) => argument.kind === "callback" && argument.callback.thread === "any")
+      ))
+    ));
+  const executorBoundClasses = new Set(needsExecutorBoundRuntime
+    ? plans.flatMap((plan) => [...plan.types.semanticInfo.aggregateExecutorAffinities.keys()])
+    : []);
   const usesExecutorBoundReleases = executorBoundClasses.size > 0;
   const lines = [
     ...(usesThreads ? [
@@ -3203,6 +3207,36 @@ function generateRuntime(
         "    executor->thread_releases_head = pending;",
         "  }",
         "  executor->thread_releases_tail = pending;",
+        ...(usesDarwinMainLoop ? [
+          "#if defined(__APPLE__)",
+          "  if (executor->main_executor) {",
+          "    CFRunLoopSourceSignal(executor->main_source);",
+          "    CFRunLoopWakeUp(executor->main_run_loop);",
+          "  }",
+          "#endif",
+        ] : []),
+        "#if defined(_WIN32)",
+        "  WakeConditionVariable(&executor->thread_condition);",
+        "#else",
+        "  if (pthread_cond_signal(&executor->thread_condition) != 0) abort();",
+        "#endif",
+        "  z_async_thread_unlock(executor);",
+        "}",
+        "",
+        "static void z_async_retain_foreign_runtime(void *context) {",
+        "  Z_AsyncExecutor *executor = (Z_AsyncExecutor *)context;",
+        "  if (executor == NULL) return;",
+        "  z_async_thread_lock(executor);",
+        "  executor->active_external_callbacks += 1;",
+        "  z_async_thread_unlock(executor);",
+        "}",
+        "",
+        "static void z_async_release_foreign_runtime(void *context) {",
+        "  Z_AsyncExecutor *executor = (Z_AsyncExecutor *)context;",
+        "  if (executor == NULL) return;",
+        "  z_async_thread_lock(executor);",
+        "  if (executor->active_external_callbacks == 0) abort();",
+        "  executor->active_external_callbacks -= 1;",
         ...(usesDarwinMainLoop ? [
           "#if defined(__APPLE__)",
           "  if (executor->main_executor) {",
@@ -3810,6 +3844,12 @@ function generateRuntime(
       ...(usesThreads
         ? ["  Z_AsyncExecutor executor;", "  z_async_executor_init(&executor, true);"]
         : ["  Z_AsyncExecutor executor = { .main_executor = true, .head = NULL, .tail = NULL, .timers = NULL };"]),
+      ...(usesExecutorBoundReleases ? [
+        "  z_foreign_runtime_context = &executor;",
+        "  z_foreign_runtime_enqueue = z_async_enqueue_executor_bound_release;",
+        "  z_foreign_runtime_retain = z_async_retain_foreign_runtime;",
+        "  z_foreign_runtime_release = z_async_release_foreign_runtime;",
+      ] : []),
       `  ${main.frameName} *root = ${main.startName}(&executor);`,
       "  z_async_run(&root->task);",
       ...(main.declaration.errorType
@@ -3817,6 +3857,12 @@ function generateRuntime(
             "  if (root->failed) {",
             `    ${main.destroyName}(root);`,
             "    free(root);",
+            ...(usesExecutorBoundReleases ? [
+              "    z_foreign_runtime_release = NULL;",
+              "    z_foreign_runtime_retain = NULL;",
+              "    z_foreign_runtime_enqueue = NULL;",
+              "    z_foreign_runtime_context = NULL;",
+            ] : []),
             ...(usesThreads ? ["    z_async_executor_destroy(&executor);"] : []),
             "    return 1;",
             "  }",
@@ -3825,6 +3871,12 @@ function generateRuntime(
       "  int32_t result = root->result;",
       `  ${main.destroyName}(root);`,
       "  free(root);",
+      ...(usesExecutorBoundReleases ? [
+        "  z_foreign_runtime_release = NULL;",
+        "  z_foreign_runtime_retain = NULL;",
+        "  z_foreign_runtime_enqueue = NULL;",
+        "  z_foreign_runtime_context = NULL;",
+      ] : []),
       ...(usesThreads ? ["  z_async_executor_destroy(&executor);"] : []),
       "  return result;",
       "}",

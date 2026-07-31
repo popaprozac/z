@@ -1955,6 +1955,25 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   );
 });
 
+test("enters the captured Z runtime for arbitrary-thread application callbacks", () => {
+  const example = resolve(projectRoot, "examples/async/foreign-thread-application-root.zs");
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+
+  assert.match(generated, /typedef struct Z_ForeignThreadEntry/);
+  assert.match(generated, /z_foreign_thread_enter\(/);
+  assert.match(generated, /z_foreign_thread_leave\(_z_foreign_entry\)/);
+  assert.match(generated, /z_async_retain_foreign_runtime/);
+  assert.match(generated, /z_async_release_foreign_runtime/);
+  assert.match(generated, /z_foreign_runtime_context = &executor/);
+  assert.match(generated, /active_external_callbacks \+= 1/);
+  assert.match(generated, /active_external_callbacks -= 1/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "foreign callback published 42 on main\n");
+});
+
 test("cancels live siblings and descendants when an async failure propagates", () => {
   const example = resolve(projectRoot, "examples/async/async-cancellation.zs");
   const source = readFileSync(example, "utf8");

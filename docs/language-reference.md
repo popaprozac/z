@@ -1875,7 +1875,15 @@ it on throw. `TaskScope` owns lifetime; `thread.main` selects placement.
 `async (): void` operations. An async operation can suspend and start
 structured children. It handles fallible work locally with `attempt await`;
 there is intentionally no unobserved error channel back to the synchronous
-submitter.
+submitter. The scheduled closure receives proof for the executor passed to
+`schedule`; in the current tier that executor must be `thread.main`.
+
+An escaping `.zd` callback declared `thread any` automatically enters the Z
+runtime captured at registration for the duration of callback invocation and
+native release. This enables synchronized application-root lookup and ARC
+cleanup without a manual attach call. The callback is still synchronous and
+off-main: it uses `TaskScope.schedule(thread.main, ...)` for structured UI work
+rather than calling main-isolated members directly or awaiting in place.
 
 ### Task, TaskScope, and TaskControl
 

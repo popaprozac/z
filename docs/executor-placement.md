@@ -416,8 +416,10 @@ const worker = thread.spawn(async move (): i32 => {
 The worker has no permission to dereference, alias, return, retain, or release
 `presenter`. The placement child borrows the pointer. Once the worker is done,
 its transferred retain is queued to the main executor for release. This is
-transport of an executor-bound capability, not general thread sharing or
-atomic ARC. Raw Objective-C references remain rejected as worker captures.
+transport of an executor-bound capability, not general thread sharing. Its ARC
+counter is atomic for transport, while member access and final destruction
+remain executor-checked. Raw Objective-C references remain rejected as worker
+captures.
 
 A class with member-level isolation is less restrictive:
 
@@ -488,9 +490,16 @@ safe runtime handoff into a Z-owned executor/task scope.
 
 The first C callback tier describes arbitrary native invocation with `thread
 any`, but deliberately does not make `task on thread.main` detached. The
-implemented bridge is the imported thread-safe `TaskScope`: it owns operations
-submitted by foreign callbacks, rejects new operations during close, and joins
-accepted work. `async scope updates {}` exposes that same handle as `updates`
+generated callback and release trampolines automatically enter the runtime
+captured when the callback was registered. This bounded entry permits atomic
+ARC, synchronized `Once<T>.get()`, mutex access, and executor-routed final
+release; it does not turn the foreign thread into a Z executor or grant main
+proof. Nested entry restores the previous thread context on every return path,
+and the callback box keeps the owning executor alive until native release.
+
+The imported thread-safe `TaskScope` then owns operations submitted by foreign
+callbacks, rejects new operations during close, and joins accepted work.
+`async scope updates {}` exposes that same handle as `updates`
 without creating a second concurrency model. The current executable tier
 accepts synchronous nonthrowing `(): void` operations or explicitly async,
 nonthrowing `async (): void` roots placed on `thread.main`. The async form may

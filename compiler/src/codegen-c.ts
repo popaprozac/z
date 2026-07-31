@@ -536,8 +536,32 @@ export function generateC(
       "#define Z_THREAD_LOCAL _Thread_local",
       "#endif",
       "typedef void (*Z_ExecutorBoundReleaseEnqueue)(void *context, void *value, void (*finalize)(void *value));",
+      "typedef void (*Z_ForeignRuntimeLifetime)(void *context);",
+      "typedef struct Z_ForeignThreadEntry {",
+      "  void *previous_context;",
+      "  Z_ExecutorBoundReleaseEnqueue previous_enqueue;",
+      "} Z_ForeignThreadEntry;",
       "static Z_THREAD_LOCAL void *z_executor_bound_release_context = NULL;",
       "static Z_THREAD_LOCAL Z_ExecutorBoundReleaseEnqueue z_executor_bound_release_enqueue = NULL;",
+      "static Z_UNUSED_FUNCTION void *z_foreign_runtime_context = NULL;",
+      "static Z_UNUSED_FUNCTION Z_ExecutorBoundReleaseEnqueue z_foreign_runtime_enqueue = NULL;",
+      "static Z_UNUSED_FUNCTION Z_ForeignRuntimeLifetime z_foreign_runtime_retain = NULL;",
+      "static Z_UNUSED_FUNCTION Z_ForeignRuntimeLifetime z_foreign_runtime_release = NULL;",
+      "static Z_UNUSED_FUNCTION Z_ForeignThreadEntry z_foreign_thread_enter(void *context, Z_ExecutorBoundReleaseEnqueue enqueue) {",
+      "  Z_ForeignThreadEntry entry = {",
+      "    .previous_context = z_executor_bound_release_context,",
+      "    .previous_enqueue = z_executor_bound_release_enqueue,",
+      "  };",
+      "  if (enqueue != NULL) {",
+      "    z_executor_bound_release_context = context;",
+      "    z_executor_bound_release_enqueue = enqueue;",
+      "  }",
+      "  return entry;",
+      "}",
+      "static Z_UNUSED_FUNCTION void z_foreign_thread_leave(Z_ForeignThreadEntry entry) {",
+      "  z_executor_bound_release_context = entry.previous_context;",
+      "  z_executor_bound_release_enqueue = entry.previous_enqueue;",
+      "}",
       "",
     );
   }
@@ -553,7 +577,7 @@ export function generateC(
     lines.push(generateObjCBindingRuntime(), "");
   }
   for (const helper of foreignEscapeHelpers) {
-    lines.push(generateForeignEscapeHelpers(helper), "");
+    lines.push(generateForeignEscapeHelpers(helper, usesExecutorBoundClasses), "");
   }
   if (foreignConnectionCalls.length > 0) lines.push(generateNativeConnectionRuntime(), "");
 
@@ -1786,20 +1810,49 @@ function foreignCallbackBoxReleaseName(plan: Extract<ForeignCallArgumentPlan, { 
   return `${foreignCallbackBoxName(plan)}_release`;
 }
 
-function generateForeignEscapeHelpers(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>): string {
+function foreignCallbackBoxStorageName(plan: Extract<ForeignCallArgumentPlan, { kind: "callback" | "context" | "release" }>): string {
+  return `${foreignCallbackBoxName(plan)}_storage`;
+}
+
+function generateForeignEscapeHelpers(
+  plan: Extract<ForeignCallArgumentPlan, { kind: "callback" }>,
+  usesExecutorBoundClasses: boolean,
+): string {
   const functionType = parseFunctionType(plan.functionType)!;
   const type = functionTypeCName(functionType);
-  return `static __attribute__((unused)) void *${foreignCallbackBoxName(plan)}(${type} value) {
-  ${type} *boxed = (${type} *)malloc(sizeof(${type}));
+  const foreignThreadEntry = plan.callback.thread === "any" && usesExecutorBoundClasses;
+  const storage = foreignCallbackBoxStorageName(plan);
+  return `${foreignThreadEntry ? `typedef struct ${storage} {
+  ${type} value;
+  void *runtime_context;
+  Z_ExecutorBoundReleaseEnqueue runtime_enqueue;
+  Z_ForeignRuntimeLifetime runtime_retain;
+  Z_ForeignRuntimeLifetime runtime_release;
+} ${storage};
+
+` : ""}static __attribute__((unused)) void *${foreignCallbackBoxName(plan)}(${type} value) {
+  ${foreignThreadEntry ? `${storage}` : type} *boxed = (${foreignThreadEntry ? `${storage}` : type} *)malloc(sizeof(${foreignThreadEntry ? `${storage}` : type}));
   if (boxed == NULL) abort();
-  *boxed = ${functionTypeRetainName(functionType)}(value);
+  ${foreignThreadEntry
+    ? `boxed->value = ${functionTypeRetainName(functionType)}(value);
+  boxed->runtime_context = z_foreign_runtime_context;
+  boxed->runtime_enqueue = z_foreign_runtime_enqueue;
+  boxed->runtime_retain = z_foreign_runtime_retain;
+  boxed->runtime_release = z_foreign_runtime_release;
+  if (boxed->runtime_retain != NULL) boxed->runtime_retain(boxed->runtime_context);`
+    : `*boxed = ${functionTypeRetainName(functionType)}(value);`}
   return boxed;
 }
 
 static __attribute__((unused)) void ${foreignCallbackBoxReleaseName(plan)}(void *context) {
-  ${type} *boxed = (${type} *)context;
+  ${foreignThreadEntry ? `${storage}` : type} *boxed = (${foreignThreadEntry ? `${storage}` : type} *)context;
   if (boxed == NULL) return;
-  ${functionTypeReleaseName(functionType)}(*boxed);
+  ${foreignThreadEntry
+    ? `Z_ForeignThreadEntry entry = z_foreign_thread_enter(boxed->runtime_context, boxed->runtime_enqueue);
+  ${functionTypeReleaseName(functionType)}(boxed->value);
+  z_foreign_thread_leave(entry);
+  if (boxed->runtime_release != NULL) boxed->runtime_release(boxed->runtime_context);`
+    : `${functionTypeReleaseName(functionType)}(*boxed);`}
   free(boxed);
 }`;
 }
@@ -1817,6 +1870,20 @@ function generateForeignCallbackAdapter(
 ): string {
   const functionType = parseFunctionType(plan.functionType)!;
   const callback = plan.callback;
+  const foreignThreadEntry = callback.thread === "any"
+    && semanticInfo.aggregateExecutorAffinities.size > 0;
+  const storage = foreignCallbackBoxStorageName(plan);
+  const functionValue = foreignThreadEntry
+    ? `(&(((${storage} *)callback_context)->value))`
+    : `((${functionTypeCName(functionType)} *)callback_context)`;
+  const enter = foreignThreadEntry
+    ? `  ${storage} *_z_foreign_box = (${storage} *)callback_context;
+  Z_ForeignThreadEntry _z_foreign_entry = z_foreign_thread_enter(
+    _z_foreign_box->runtime_context,
+    _z_foreign_box->runtime_enqueue
+  );\n`
+    : "";
+  const leave = foreignThreadEntry ? "z_foreign_thread_leave(_z_foreign_entry);" : null;
   if (callback.bytesProjection && callback.nativeParameters) {
     const contextIndex = callback.context!.callbackParameter;
     const nativeNames = callback.nativeParameters.map((_, index) => (
@@ -1829,7 +1896,6 @@ function generateForeignCallbackAdapter(
     const length = bytes.lengthParameters
       .map((index) => `(uintptr_t)(${nativeNames[index]})`)
       .join(" * ");
-    const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
     const sliceType = sliceTypeName("u8");
     const slice = "_z_callback_bytes";
     const projectedArgument = bytes.access === "inout" ? `&${slice}` : slice;
@@ -1841,8 +1907,10 @@ function generateForeignCallbackAdapter(
       structs,
       enums,
       semanticInfo,
+      leave,
     );
     return `static __attribute__((unused)) size_t ${foreignCallbackAdapterName(plan)}(${nativeParameters.join(", ")}) {
+${enter}
   ${sliceName(sliceType)} ${slice} = {
     .data = (uint8_t *)${nativeNames[bytes.bufferParameter]},
     .length = ${length},
@@ -1865,7 +1933,6 @@ function generateForeignCallbackAdapter(
     visibleIndex += 1;
   }
   const functionName = foreignCallbackAdapterName(plan);
-  const functionValue = `((${functionTypeCName(functionType)} *)callback_context)`;
   const invoke = `${functionValue}->call(${functionValue}->context${argumentNames.length ? `, ${argumentNames.join(", ")}` : ""})`;
   const body = generateForeignCallbackInvocation(
     invoke,
@@ -1874,9 +1941,10 @@ function generateForeignCallbackAdapter(
     structs,
     enums,
     semanticInfo,
+    leave,
   );
   return `static __attribute__((unused)) ${callback.returnType.cName} ${functionName}(${nativeParameters.join(", ") || "void"}) {
-  ${body}
+${enter}  ${body}
 }`;
 }
 
@@ -1887,9 +1955,12 @@ function generateForeignCallbackInvocation(
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   semanticInfo: SemanticInfo,
+  beforeReturn: string | null = null,
 ): string {
+  const leave = beforeReturn ? `${beforeReturn}\n  ` : "";
   if (!functionType.errorType) {
-    return functionType.returnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
+    if (functionType.returnType === "void") return `${invoke};\n  ${leave}return;`;
+    return `${mapType(functionType.returnType, structs, enums, semanticInfo.foreignNamedTypes)} _z_callback_value = ${invoke};\n  ${leave}return _z_callback_value;`;
   }
   if (callback.failure === null) {
     throw new Error("throwing foreign callback has no native failure projection");
@@ -1906,13 +1977,14 @@ function generateForeignCallbackInvocation(
   );
   const failed = [
     ...(cleanup ? [cleanup] : []),
+    ...(beforeReturn ? [beforeReturn] : []),
     `return ${callback.failure};`,
   ].map((line) => indent(line, 4)).join("\n");
   return `${enumName(resultType)} ${result} = ${invoke};
   if (${result}.tag == ${variantTag(resultType, "failure")}) {
 ${failed}
   }
-  return ${result}.data.success;`;
+  ${leave}return ${result}.data.success;`;
 }
 
 function generateNativeConnectionRuntime(): string {
