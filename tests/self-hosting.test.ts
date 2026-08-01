@@ -521,9 +521,15 @@ test("owns Mutex fields through native aggregate lowering", () => {
     emission.stdout,
     /static __attribute__\(\(unused\)\) int32_t Z_Application_answer\(const Z_Application \*self\)/,
   );
+  assert.match(
+    emission.stdout,
+    /static __attribute__\(\(unused\)\) void Z_Application_publish\(Z_Application \*self, int32_t status\)/,
+  );
+  assert.match(emission.stdout, /Z_Application_publish\(installed, 7\)/);
   assert.match(emission.stdout, /pthread_mutex_lock/);
   assert.match(emission.stdout, /pthread_mutex_unlock/);
   assert.match(emission.stdout, /mutex_with_lock_Z_Application_increment_[0-9]+_body/);
+  assert.match(emission.stdout, /const int32_t \*completed/);
   assert.match(emission.stdout, /PTHREAD_MUTEX_INITIALIZER/);
   assert.match(
     emission.stdout,

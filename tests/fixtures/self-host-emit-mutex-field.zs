@@ -7,6 +7,7 @@ struct RuntimeState {
 
 class Application on thread.main {
   readonly state: Mutex<RuntimeState>;
+  status: i32;
 
   function answer(): i32 {
     return this.state.withLock(
@@ -19,6 +20,22 @@ class Application on thread.main {
       value.completed = value.completed + 1;
       return value.completed;
     });
+  }
+
+  function setCompleted(completed: i32): void {
+    this.state.withLock((inout value): void => {
+      value.completed = completed;
+    });
+  }
+
+  function answerPlus(offset: i32): i32 {
+    return this.state.withLock(
+      (in value): i32 => value.completed + offset
+    );
+  }
+
+  function publish(inout this, status: i32): void {
+    this.status = status;
   }
 
 }
@@ -36,7 +53,10 @@ function current(): Application {
 function main(): i32 on thread.main {
   const lifetime = install(new Application({
     state: Mutex(RuntimeState({ completed: 42 })),
+    status: 0,
   }));
-  const installed = current();
-  return installed.increment() - 43;
+  let installed = current();
+  installed.setCompleted(44);
+  installed.publish(7);
+  return installed.answerPlus(1) - 45 + installed.status - 7;
 }

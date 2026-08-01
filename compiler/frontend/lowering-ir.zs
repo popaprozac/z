@@ -246,6 +246,11 @@ export struct LoweredLiveFlag {
   parameter: boolean;
 }
 
+struct LoweredClosureCapture {
+  name: String;
+  type: LoweredType;
+}
+
 export struct LoweredFunction {
   name: String;
   testName: String;
@@ -2474,23 +2479,66 @@ function rewriteClosureParameterValues(
   }
 }
 
-function mutexClosureBodyOnlyUsesParameter(
+function collectMutexClosureCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
   in expressions: Array<LoweredExpression>,
   start: usize,
-  in parameterName: String
-): boolean {
+  in parameterName: String,
+  useOffset: usize
+): Array<LoweredClosureCapture> throws String {
+  let captures = Array<LoweredClosureCapture>();
   let index = start;
   while (index < expressions.length) {
     if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
-      return false;
+      throw "native Mutex.withLock closures cannot capture `this` yet";
     }
     if (
-      expressions[index].kind == LoweredExpressionKind.localValue
-      && expressions[index].value != parameterName
-    ) return false;
+      expressions[index].kind != LoweredExpressionKind.localValue
+      || expressions[index].value == parameterName
+    ) {
+      index = index + 1;
+      continue;
+    }
+    const captureName = expressions[index].value.copyBytes(
+      0,
+      expressions[index].value.byteLength
+    );
+    let exists = false;
+    for (const capture of captures) {
+      if (capture.name == captureName) exists = true;
+    }
+    if (exists) {
+      index = index + 1;
+      continue;
+    }
+    const typeName = match (namedValueTypeName(
+      program,
+      evidence,
+      ownerName,
+      captureName,
+      useOffset
+    )) {
+      some(name) => name;
+      none => throw `native Mutex.withLock cannot resolve capture ${captureName}`;
+    };
+    const type = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      typeName
+    );
+    if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+      throw `native Mutex.withLock does not support ownership-bearing capture ${captureName} yet`;
+    }
+    captures.push(LoweredClosureCapture({
+      name: move captureName,
+      type,
+    }));
     index = index + 1;
   }
-  return true;
+  return captures;
 }
 
 function resolvedExpressionTypeName(
@@ -2773,6 +2821,24 @@ function namedValueTypeName(
       }
     }
   }
+  let methodType = "";
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (ownerName.byteLength > 0 && method.name != ownerName) continue;
+      for (const parameter of method.parameters) {
+        if (parameter.name != name) continue;
+        if (methodType.byteLength == 0) {
+          methodType = parameter.type.name.copyBytes(
+            0,
+            parameter.type.name.byteLength
+          );
+        } else if (methodType != parameter.type.name) {
+          return Option<String>.none;
+        }
+      }
+    }
+  }
+  if (methodType.byteLength > 0) return Option.some(move methodType);
   return Option<String>.none;
 }
 
@@ -3849,6 +3915,7 @@ function lowerExpression(
             );
             let children = Array<usize>();
             children.push(receiver);
+            let captures = Array<LoweredClosureCapture>();
             if (bodyKind == "expression") {
               const bodyStart = output.length;
               const body = try lowerExpression(
@@ -3859,18 +3926,28 @@ function lowerExpression(
                 bodyInput,
                 inout output
               );
-              if (!mutexClosureBodyOnlyUsesParameter(
+              captures = try collectMutexClosureCaptures(
+                program,
+                importedTypes,
+                evidence,
+                "",
                 output,
                 bodyStart,
-                parameterName
-              )) {
-                throw "native Mutex.withLock expression closures cannot capture outer values yet";
-              }
+                parameterName,
+                tree.nodes[closureInput].offset
+              );
               rewriteClosureParameterValues(
                 inout output,
                 bodyStart,
                 parameterName
               );
+              for (const capture of captures) {
+                rewriteClosureParameterValues(
+                  inout output,
+                  bodyStart,
+                  capture.name
+                );
+              }
               children.push(body);
             }
             let labels = Array<String>();
@@ -3884,6 +3961,21 @@ function lowerExpression(
             ));
             labels.push(loweredTypeIdentity(resultType));
             labels.push(bodyKind.copyBytes(0, bodyKind.byteLength));
+            for (const capture of captures) {
+              labels.push(capture.name.copyBytes(
+                0,
+                capture.name.byteLength
+              ));
+              labels.push(loweredTypeIdentity(capture.type));
+              const captureValue = pushExpression(
+                inout output,
+                LoweredExpressionKind.localValue,
+                capture.name,
+                Array<usize>(),
+                Array<String>()
+              );
+              children.push(captureValue);
+            }
             const mutexName = intrinsicMutexName(valueType);
             const lowered = pushExpression(
               inout output,
@@ -5124,7 +5216,9 @@ function lowerExpression(
       labels.push(receiverType.kind == LoweredTypeKind.classType
         ? "class"
         : "struct");
-      labels.push(receiverMode.byteLength > 0 ? receiverMode : "in");
+      if (receiverMode.byteLength > 0) {
+        labels.push(receiverMode.copyBytes(0, receiverMode.byteLength));
+      } else labels.push("in");
       let argument: usize = 1;
       while (argument < tree.nodes[index].children.length) {
         const argumentInput = tree.nodes[index].children[argument];
@@ -7074,18 +7168,47 @@ function completeMutexClosureBlocks(
       0,
       expressions[expressionIndex].labels[0].byteLength
     );
-    if (!mutexClosureBodyOnlyUsesParameter(
+    let useOffset: usize = 0;
+    if (sourceStatements.length > 0) {
+      useOffset = arena.nodes[sourceStatements[0]].offset;
+    }
+    const captures = try collectMutexClosureCaptures(
+      program,
+      importedTypes,
+      evidence,
+      ownerName,
       expressions,
       bodyExpressionStart,
-      parameterName
-    )) {
-      throw "native Mutex.withLock block closures cannot capture outer values yet";
-    }
+      parameterName,
+      useOffset
+    );
     rewriteClosureParameterValues(
       inout expressions,
       bodyExpressionStart,
       parameterName
     );
+    for (const capture of captures) {
+      rewriteClosureParameterValues(
+        inout expressions,
+        bodyExpressionStart,
+        capture.name
+      );
+      expressions[expressionIndex].labels.push(capture.name.copyBytes(
+        0,
+        capture.name.byteLength
+      ));
+      expressions[expressionIndex].labels.push(
+        loweredTypeIdentity(capture.type)
+      );
+      const captureValue = pushExpression(
+        inout expressions,
+        LoweredExpressionKind.localValue,
+        capture.name,
+        Array<usize>(),
+        Array<String>()
+      );
+      expressions[expressionIndex].children.push(captureValue);
+    }
     let statementIndex = bodyStatementStart;
     while (statementIndex < statements.length) {
       match (in statements[statementIndex].type) {
@@ -9698,9 +9821,6 @@ function appendLoweredProgram(
       }
       if (method.receiverMode == ReceiverMode.move) {
         throw `native lowering does not support consuming method ${aggregate.name}.${method.name} yet`;
-      }
-      if (method.receiverMode == ReceiverMode.inputOutput) {
-        throw `native lowering does not support inout receiver method ${aggregate.name}.${method.name} yet`;
       }
       match (in method.errorType) {
         some(_) => throw `native lowering does not support throwing method ${aggregate.name}.${method.name} yet`;

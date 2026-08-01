@@ -267,6 +267,7 @@ function loweredTypeForIdentity(
   in program: LoweredProgram,
   in identity: String
 ): LoweredType throws String {
+  if (identity == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (identity == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (identity == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
   if (identity == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });
@@ -1636,6 +1637,19 @@ function appendExpression(
       declaration,
       receiver
     );
+    const blockBody = declaration.expressions[index].labels.length >= 4
+      && declaration.expressions[index].labels[3] == "lowered-block";
+    let captureChild: usize = 2;
+    if (blockBody) captureChild = 1;
+    while (
+      captureChild < declaration.expressions[index].children.length
+    ) {
+      output.append(", &(");
+      const capture = declaration.expressions[index].children[captureChild];
+      try appendExpression(inout output, declaration, capture);
+      output.append(")");
+      captureChild = captureChild + 1;
+    }
     output.append(")");
     return;
   }
@@ -2990,6 +3004,7 @@ function appendMutexWithLockHelpers(
       if (
         expression.children.length == 0
         || expression.labels.length < 4
+        || (expression.labels.length - 4) % 2 != 0
       ) throw "native C emission received malformed Mutex.withLock evidence";
       const resultType = try loweredTypeForIdentity(
         program,
@@ -3013,6 +3028,22 @@ function appendMutexWithLockHelpers(
         output.append(nativeValueType);
         output.append(" *");
         appendCBindingName(inout output, expression.labels[0]);
+        let captureLabel: usize = 4;
+        while (captureLabel + 1 < expression.labels.length) {
+          const captureType = try loweredTypeForIdentity(
+            program,
+            expression.labels[captureLabel + 1]
+          );
+          const nativeCaptureType = try cType(captureType);
+          output.append(", const ");
+          output.append(nativeCaptureType);
+          output.append(" *");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabel]
+          );
+          captureLabel = captureLabel + 2;
+        }
         output.append(") {\n");
         for (const root of expression.statements) {
           try appendStatement(inout output, declaration, root, 1);
@@ -3032,7 +3063,24 @@ function appendMutexWithLockHelpers(
       );
       output.append("(Z_");
       output.append(expression.value);
-      output.append(" mutex) {\n");
+      output.append(" mutex");
+      let captureLabel: usize = 4;
+      while (captureLabel + 1 < expression.labels.length) {
+        const captureType = try loweredTypeForIdentity(
+          program,
+          expression.labels[captureLabel + 1]
+        );
+        const nativeCaptureType = try cType(captureType);
+        output.append(", const ");
+        output.append(nativeCaptureType);
+        output.append(" *");
+        appendCBindingName(
+          inout output,
+          expression.labels[captureLabel]
+        );
+        captureLabel = captureLabel + 2;
+      }
+      output.append(") {\n");
       output.append("  if (mutex.storage == NULL) abort();\n");
       output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&mutex.storage->native);\n#else\n");
       output.append("  if (pthread_mutex_lock(&mutex.storage->native) != 0) abort();\n#endif\n");
@@ -3055,7 +3103,17 @@ function appendMutexWithLockHelpers(
           declaration,
           expressionIndex
         );
-        output.append("_body(&mutex.storage->value)");
+        output.append("_body(&mutex.storage->value");
+        captureLabel = 4;
+        while (captureLabel + 1 < expression.labels.length) {
+          output.append(", ");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabel]
+          );
+          captureLabel = captureLabel + 2;
+        }
+        output.append(")");
       } else {
         try appendExpression(
           inout output,

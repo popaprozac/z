@@ -1830,11 +1830,15 @@ receiver evidence into C, and capture-free expression- or block-bodied
 The native `Once<T>` cell now uses the same synchronized publication protocol,
 and native class retain/release is atomic, so the synchronous
 `application-root/application.zs` core strict-compiles directly from the
-self-emitted frontend.
+self-emitted frontend. Mutable `inout this` calls now preserve the class
+identity rather than transferring compiler-owned type evidence, and the
+application-root fixture exercises that mutation beside synchronized reads.
 
-Capture-bearing lock closures and the application's async `thread.spawn` entry
-remain later lowering slices. Capture-free block bodies already preserve their
-structured returns and mutations through a separate native helper. That is a narrower and more
+Cleanup-free scalar captures now cross lock helpers by immutable pointer, so a
+method argument can participate without being copied or escaping. Capturing
+`this`, ownership-bearing captures, and the application's async `thread.spawn`
+entry remain later lowering slices. Block bodies preserve their structured
+returns and mutations through a separate native helper. That is a narrower and more
 honest composition boundary than the former generic-field/method wall: the
 native compiler can represent the application root and its synchronized read
 surface today, but cannot yet emit the worker orchestration unchanged. Every
