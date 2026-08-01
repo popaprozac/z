@@ -6,11 +6,15 @@ struct RuntimeState {
 
 class Application {
   readonly state: Mutex<RuntimeState>;
+
+  function answer(): i32 {
+    return 42;
+  }
 }
 
 function main(): i32 {
   const application = new Application({
     state: Mutex(RuntimeState({ completed: 42 })),
   });
-  return 0;
+  return application.answer() - 42;
 }

@@ -14,6 +14,7 @@ import {
   ModuleConstantDeclaration,
   ParameterMode,
   Program,
+  ReceiverMode,
   Statement,
   StatementArena,
   StatementKind,
@@ -156,6 +157,7 @@ export enum LoweredExpressionKind {
   optionalFieldValue,
   optionalCallValue,
   directCall,
+  methodCall,
   fieldValue,
   structValue,
   classValue,
@@ -247,6 +249,8 @@ export struct LoweredFunction {
   testName: String;
   sourcePath: String;
   nativeCExportName: String;
+  receiverType: Option<LoweredType>;
+  receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
   fallthroughExpression: Option<usize>;
@@ -2237,6 +2241,39 @@ function resolvedCallTarget(
   return Option<String>.none;
 }
 
+function resolvedCallKind(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.kind.copyBytes(0, resolution.kind.byteLength);
+  }
+  return "";
+}
+
+function resolvedCallReceiverMode(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.receiverMode.copyBytes(
+      0,
+      resolution.receiverMode.byteLength
+    );
+  }
+  return "";
+}
+
 function resolvedForeignCallTarget(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -2369,6 +2406,13 @@ function lowerParameterMode(mode: ParameterMode): LoweredParameterMode {
     return LoweredParameterMode.inputOutput;
   }
   return LoweredParameterMode.value;
+}
+
+function lowerReceiverMode(mode: ReceiverMode): LoweredParameterMode {
+  if (mode == ReceiverMode.inputOutput) {
+    return LoweredParameterMode.inputOutput;
+  }
+  return LoweredParameterMode.input;
 }
 
 function parameterModeName(mode: ParameterMode): String {
@@ -4849,6 +4893,106 @@ function lowerExpression(
           labels
         );
       }
+    }
+    if (
+      resolvedCallKind(evidence, tree, index) == "method"
+      && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => throw "native method-call lowering could not resolve its receiver type";
+      };
+      const receiverType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        receiverTypeName
+      );
+      if (
+        receiverType.kind != LoweredTypeKind.structType
+        && receiverType.kind != LoweredTypeKind.classType
+      ) {
+        throw `native method-call lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
+      }
+      const receiverMode = resolvedCallReceiverMode(
+        evidence,
+        tree,
+        index
+      );
+      if (receiverMode == "move") {
+        throw "native method-call lowering does not support consuming receivers yet";
+      }
+      const receiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(receiver);
+      const parameterModes = resolvedCallParameterModes(
+        program,
+        evidence,
+        tree,
+        index
+      );
+      let labels = Array<String>();
+      labels.push(receiverType.kind == LoweredTypeKind.classType
+        ? "class"
+        : "struct");
+      labels.push(receiverMode.byteLength > 0 ? receiverMode : "in");
+      let argument: usize = 1;
+      while (argument < tree.nodes[index].children.length) {
+        const argumentInput = tree.nodes[index].children[argument];
+        let value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          inout output
+        );
+        if (
+          parameterModes.length >= argument
+          && parameterModes[argument - 1] == "value"
+        ) value = wrapImplicitOwnedTransfer(
+          tree,
+          argumentInput,
+          value,
+          inout output
+        );
+        if (
+          parameterModes.length >= argument
+          && (
+            parameterModes[argument - 1] == "inout"
+            || parameterModes[argument - 1] == "out"
+          )
+        ) markMutableStorage(inout output, value);
+        children.push(value);
+        labels.push(parameterModes.length >= argument
+          ? parameterModes[argument - 1].copyBytes(
+            0,
+            parameterModes[argument - 1].byteLength
+          )
+          : "value");
+        argument = argument + 1;
+      }
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.methodCall,
+        `Z_${receiverType.name}_${tree.nodes[calleeInput].value}`,
+        children,
+        labels
+      );
     }
     let callee: usize = 0;
     let standardTarget = "";
@@ -7929,6 +8073,8 @@ function lowerFunction(
     nativeCExportName: declaration.nativeCExport
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
+    receiverType: Option<LoweredType>.none,
+    receiverMode: LoweredParameterMode.value,
     parameters,
     returnType: move returnType,
     fallthroughExpression,
@@ -7990,6 +8136,8 @@ function lowerDeinitializer(
     testName: "",
     sourcePath: "",
     nativeCExportName: "",
+    receiverType: Option<LoweredType>.none,
+    receiverMode: LoweredParameterMode.value,
     parameters: Array<LoweredParameter>(),
     returnType: LoweredType({ kind: LoweredTypeKind.voidType, name: "" }),
     fallthroughExpression: Option<usize>.none,
@@ -9172,9 +9320,8 @@ function appendLoweredProgram(
         && aggregate.kind != DeclarationKind.classDeclaration
       )
       || aggregate.typeParameters.length > 0
-      || aggregate.methods.length > 0
     ) {
-      throw "native lowering only supports non-generic data-only structs and classes yet";
+      throw "native lowering only supports non-generic structs and classes yet";
     }
     match (in aggregate.constructorDeclaration) {
       some(_) => throw `native lowering does not support constructor on ${aggregate.name} yet`;
@@ -9262,6 +9409,60 @@ function appendLoweredProgram(
         }));
       }
       none => {}
+    }
+  }
+
+  for (const aggregate of program.aggregates) {
+    const emittedName = privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      aggregate.name
+    )
+      ? emittedPrivateTypeName(moduleIndex, aggregate.name)
+      : aggregate.name.copyBytes(0, aggregate.name.byteLength);
+    const receiverKind = aggregate.kind == DeclarationKind.classDeclaration
+      ? LoweredTypeKind.classType
+      : LoweredTypeKind.structType;
+    for (const method of aggregate.methods) {
+      if (method.staticMethod) {
+        throw `native lowering does not support static method ${aggregate.name}.${method.name} yet`;
+      }
+      if (method.typeParameters.length > 0) {
+        throw `native lowering does not support generic method ${aggregate.name}.${method.name} yet`;
+      }
+      if (method.receiverMode == ReceiverMode.move) {
+        throw `native lowering does not support consuming method ${aggregate.name}.${method.name} yet`;
+      }
+      match (in method.errorType) {
+        some(_) => throw `native lowering does not support throwing method ${aggregate.name}.${method.name} yet`;
+        none => {}
+      }
+      const loweredMethodOutcome = attempt lowerFunction(
+        program,
+        importedTypes,
+        evidence,
+        method,
+        sourcePath
+      );
+      let loweredMethod = match (loweredMethodOutcome) {
+        success(lowered) => lowered;
+        failure(message) => throw `method ${aggregate.name}.${method.name}: ${message}`;
+      };
+      loweredMethod.name = `Z_${emittedName}_${method.name}`;
+      loweredMethod.nativeCExportName = "";
+      loweredMethod.receiverType = Option.some(LoweredType({
+        kind: receiverKind,
+        name: emittedName.copyBytes(0, emittedName.byteLength),
+      }));
+      loweredMethod.receiverMode = lowerReceiverMode(method.receiverMode);
+      rewritePrivateCallTargets(
+        program,
+        privateFunctionCollisionNames,
+        moduleIndex,
+        entryIndex,
+        inout loweredMethod
+      );
+      functions.push(move loweredMethod);
     }
   }
 

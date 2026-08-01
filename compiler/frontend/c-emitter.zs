@@ -665,7 +665,13 @@ function appendExpression(
   index: usize
 ): void throws String {
   if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
-    output.append("(*self)");
+    let classReceiver = false;
+    match (in declaration.receiverType) {
+      some(type) => classReceiver = type.kind == LoweredTypeKind.classType;
+      none => {}
+    }
+    if (classReceiver) output.append("self");
+    else output.append("(*self)");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.localValue) {
@@ -1408,6 +1414,37 @@ function appendExpression(
       const value = declaration.expressions[index].children[child];
       try appendExpression(inout output, declaration, value);
       child = child + 1;
+    }
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.methodCall) {
+    if (declaration.expressions[index].children.length == 0) {
+      throw "native C emission received a malformed method call";
+    }
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    const receiver = declaration.expressions[index].children[0];
+    const classReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "class";
+    if (!classReceiver) output.append("&(");
+    try appendExpression(inout output, declaration, receiver);
+    if (!classReceiver) output.append(")");
+    let argument: usize = 1;
+    while (argument < declaration.expressions[index].children.length) {
+      output.append(", ");
+      const value = declaration.expressions[index].children[argument];
+      const labelIndex = argument + 1;
+      const borrowed = declaration.expressions[index].labels.length > labelIndex
+        && (
+          declaration.expressions[index].labels[labelIndex] == "in"
+          || declaration.expressions[index].labels[labelIndex] == "inout"
+          || declaration.expressions[index].labels[labelIndex] == "out"
+        );
+      if (borrowed) output.append("&(");
+      try appendExpression(inout output, declaration, value);
+      if (borrowed) output.append(")");
+      argument = argument + 1;
     }
     output.append(")");
     return;
@@ -2799,7 +2836,13 @@ function appendFunctionSignature(
   processArguments: boolean
 ): void throws String {
   const returnType = try cType(declaration.returnType);
-  if (declaration.nativeCExportName.byteLength > 0) output.append("static ");
+  let method = false;
+  match (in declaration.receiverType) {
+    some(_) => method = true;
+    none => {}
+  }
+  if (method) output.append("static __attribute__((unused)) ");
+  else if (declaration.nativeCExportName.byteLength > 0) output.append("static ");
   output.append(returnType);
   output.append(" ");
   appendCBindingName(inout output, declaration.name);
@@ -2814,6 +2857,18 @@ function appendFunctionSignature(
     return;
   }
   let first = true;
+  match (in declaration.receiverType) {
+    some(receiver) => {
+      if (declaration.receiverMode == LoweredParameterMode.input) {
+        output.append("const ");
+      }
+      output.append("Z_");
+      output.append(receiver.name);
+      output.append(" *self");
+      first = false;
+    }
+    none => {}
+  }
   for (const parameter of declaration.parameters) {
     if (!first) output.append(", ");
     first = false;
@@ -2839,6 +2894,10 @@ function appendFunction(
     processArguments
   );
   output.append(" {\n");
+  match (in declaration.receiverType) {
+    some(_) => output.append("  (void)self;\n");
+    none => {}
+  }
   if (
     declaration.name == "main"
     && declaration.parameters.length == 0
