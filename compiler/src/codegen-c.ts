@@ -1211,7 +1211,8 @@ typedef enum ${prefix}_runtime_status {
   ${constant}_RUNTIME_BUSY = 3,
   ${constant}_RUNTIME_INVALID_CONFIG = 4,
   ${constant}_RUNTIME_SHUT_DOWN = 5,
-  ${constant}_RUNTIME_WRONG_THREAD = 6
+  ${constant}_RUNTIME_WRONG_THREAD = 6,
+  ${constant}_RUNTIME_DRAINING = 7
 } ${prefix}_runtime_status;
 
 typedef void (*${prefix}_runtime_enqueue_release)(
@@ -1391,6 +1392,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
   )) {
     if (expected == 1) return ${constant}_RUNTIME_ALREADY_INITIALIZED;
     if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    if (expected == 4) return ${constant}_RUNTIME_DRAINING;
     return ${constant}_RUNTIME_BUSY;
   }
 ${runtime.requiresBoundReleaseEnqueue ? `  if (config == NULL || config->enqueue_release == NULL) {
@@ -1424,6 +1426,10 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
     if (previous == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
     if (previous == 2) return ${constant}_RUNTIME_SHUT_DOWN;
     if (previous == 3) return ${constant}_RUNTIME_BUSY;
+    if (previous == 4
+        && __atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+      return ${constant}_RUNTIME_DRAINING;
+    }
     uint8_t expected = previous;
     if (__atomic_compare_exchange_n(
       &${storage}.state,
@@ -1447,7 +1453,7 @@ ${initializer ? (initializer.requiresMainThread ? `  if (${storage}.root != NULL
       ${storage}_complete_root_release
     );
     if (__atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
-      return ${constant}_RUNTIME_BUSY;
+      return ${constant}_RUNTIME_DRAINING;
     }
     uint8_t draining = 4;
     if (!__atomic_compare_exchange_n(
@@ -1457,12 +1463,12 @@ ${initializer ? (initializer.requiresMainThread ? `  if (${storage}.root != NULL
       false,
       __ATOMIC_ACQ_REL,
       __ATOMIC_ACQUIRE
-    )) return ${constant}_RUNTIME_BUSY;
+    )) return ${constant}_RUNTIME_DRAINING;
   }
 ` : `  ${storage}_destroy_root();
 `) : ""}  if (__atomic_load_n(&${storage}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
     __atomic_store_n(&${storage}.state, ${initializer ? "4" : "1"}, __ATOMIC_RELEASE);
-    return ${constant}_RUNTIME_BUSY;
+    return ${initializer ? `${constant}_RUNTIME_DRAINING` : `${constant}_RUNTIME_BUSY`};
   }
   z_foreign_runtime_release = NULL;
   z_foreign_runtime_retain = NULL;

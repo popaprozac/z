@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static pthread_mutex_t gate_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t gate_condition = PTHREAD_COND_INITIALIZER;
@@ -11,6 +12,8 @@ static bool entered = false;
 static bool released = false;
 static int root_releases = 0;
 static pthread_t main_thread;
+static void *pending_release_value = NULL;
+static void (*pending_release_finalize)(void *value) = NULL;
 
 void z_runtime_host_entered(void) {
   pthread_mutex_lock(&gate_mutex);
@@ -40,6 +43,17 @@ static void enqueue_main_release(
   void (*finalize)(void *value)
 ) {
   (void)context;
+  if (pending_release_finalize != NULL) abort();
+  pending_release_value = value;
+  pending_release_finalize = finalize;
+}
+
+static void drain_main_release(void) {
+  if (pending_release_finalize == NULL) return;
+  void *value = pending_release_value;
+  void (*finalize)(void *value) = pending_release_finalize;
+  pending_release_value = NULL;
+  pending_release_finalize = NULL;
   finalize(value);
 }
 
@@ -94,14 +108,17 @@ int main(void) {
 
   if (pthread_join(worker, NULL) != 0) return 6;
   const int32_t checksum = z_embed_completion_checksum();
+  const zembed_runtime_status draining = zembed_runtime_shutdown();
+  drain_main_release();
   const zembed_runtime_status stopped = zembed_runtime_shutdown();
 
   printf(
-    "wrong=%d busy=%d completed=%d checksum=%d stopped=%d released=%d\n",
+    "wrong=%d busy=%d completed=%d checksum=%d draining=%d stopped=%d released=%d\n",
     initialization.status,
     busy,
     result,
     checksum,
+    draining,
     stopped,
     root_releases
   );
@@ -109,6 +126,7 @@ int main(void) {
     && busy == ZEMBED_RUNTIME_BUSY
     && result == 1
     && checksum == 43
+    && draining == ZEMBED_RUNTIME_DRAINING
     && stopped == ZEMBED_RUNTIME_OK
     && root_releases == 1
     ? 0

@@ -20,7 +20,8 @@ entry for focused smoke programs while retaining the project configuration.
 [`interop/c/z-shared-export`](interop/c/z-shared-export) demonstrate the same
 checked Z-to-C exports as static and shared native artifacts.
 [`interop/c/z-runtime-export`](interop/c/z-runtime-export) isolates generated
-runtime initialization, host-thread entry, busy teardown, join, and shutdown.
+runtime initialization, host-thread entry, busy versus draining teardown,
+join, and shutdown.
 
 ## Language
 

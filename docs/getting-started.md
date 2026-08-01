@@ -139,6 +139,8 @@ zero-argument entry-module function returns one cleanup-bearing owner that the
 generated runtime retains until shutdown. This supports roots such as
 `OnceLifetime<Application>` without mutable module state; main-bound roots make
 the generated header require host main-thread proof and release scheduling.
+Shutdown distinguishes callable `RUNTIME_BUSY` from admission-closed
+`RUNTIME_DRAINING`, when the host must drain its executor queue before retrying.
 See [Embedding the Z runtime](../examples/interop/c/z-runtime-export/README.md)
 for the executable contract.
 

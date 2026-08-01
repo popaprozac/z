@@ -2881,6 +2881,10 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(runtimeRootSource, /z_embedded_runtime_native_runtime_destroy_root/);
   assert.match(runtimeRootSource, /initializeRuntime\(\)/);
+  assert.match(runtimeRootSource, /Z_ForeignThreadEntry z_embedded_runtime_native_runtime_enter/);
+  assert.match(runtimeRootSource, /return z_foreign_thread_enter/);
+  assert.match(runtimeRootSource, /z_foreign_thread_leave\(entry\)/);
+  assert.match(runtimeRootHeader, /NATIVE_RUNTIME_RUNTIME_DRAINING = 7/);
   const runtimeRootConsumerSource = resolve(
     runtimeRootProject,
     "consumer.c",

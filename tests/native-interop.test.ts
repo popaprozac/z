@@ -584,6 +584,7 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   const generated = readFileSync(resolve(project, ".z-cache/build/zembed.c"), "utf8");
   assert.match(generated, /__atomic_add_fetch\(&z_embedded_runtime_zembed\.active_entries/);
   assert.match(generated, /return ZEMBED_RUNTIME_BUSY/);
+  assert.match(generated, /return ZEMBED_RUNTIME_DRAINING/);
   assert.match(generated, /initializeRuntime\(\)/);
   assert.match(generated, /z_embedded_runtime_zembed_destroy_root/);
   assert.match(generated, /!z_embedded_runtime_zembed\.is_main_thread\(z_embedded_runtime_zembed\.context\)\) abort/);
@@ -591,6 +592,7 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   assert.match(header, /#define ZEMBED_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/);
   assert.match(header, /#define ZEMBED_RUNTIME_REQUIRES_MAIN_THREAD 1/);
   assert.match(header, /ZEMBED_RUNTIME_WRONG_THREAD = 6/);
+  assert.match(header, /ZEMBED_RUNTIME_DRAINING = 7/);
   assert.match(header, /zembed_runtime_is_main_thread is_main_thread/);
 
   const consumer = resolve(project, "build/consumer");
@@ -611,7 +613,7 @@ test("keeps embedded runtime shutdown safe across host-created threads", () => {
   assert.equal(run.status, 0, run.stderr);
   assert.equal(
     run.stdout,
-    "wrong=6 busy=3 completed=1 checksum=43 stopped=0 released=1\n",
+    "wrong=6 busy=3 completed=1 checksum=43 draining=7 stopped=0 released=1\n",
   );
 
   const source = readFileSync(entry, "utf8");

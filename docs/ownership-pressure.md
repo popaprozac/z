@@ -1795,8 +1795,14 @@ outstanding operation, and then shuts down. Public wrappers use atomic active
 entry accounting and restore nested thread-local runtime routes; internal Z
 calls continue to use private implementations directly.
 
-Shutdown returns `busy` while an exported call, retained foreign callback, or
-queued executor-bound finalizer is still live rather than racing teardown.
+Shutdown returns `busy` while an exported call or retained foreign callback
+prevents teardown from starting. Once an executor-bound runtime-root finalizer
+has been queued, it returns the distinct `draining` status and closes export
+admission until the host drains that queue and retries. This distinction was
+added after an asynchronous host hook exposed that the original state-4 entry
+gate trapped while the documentation still described every `busy` runtime as
+callable. A second shutdown during the drain no longer queues the root release
+twice.
 Executor-bound class lifecycle makes
 the generated configuration's `enqueue_release` hook mandatory, so a foreign
 host cannot silently finalize main-owned identity on an arbitrary worker. The
@@ -1806,8 +1812,8 @@ the lifecycle against both Stage-0 and fixed-point native emitters;
 `z-runtime-export` now adds an explicit `target.runtime.initialize` root. Its
 main-bound initializer installs an `Application` in `Once`, returns the
 `OnceLifetime`, rejects worker-thread startup, survives a pthread export call,
-reports deterministic busy teardown, and releases the application exactly once
-at successful generated shutdown. This closed the embedding gap without
+reports deterministic busy and draining teardown, and releases the application
+exactly once at successful generated shutdown. This closed the embedding gap without
 introducing mutable module globals or module initialization order: the target
 owns one ordinary Z value, and a Z struct can compose additional roots.
 
@@ -1819,7 +1825,9 @@ main-only `uiRevision` from that export remains a compile-time affinity error.
 The fixed-point native semantic graph accepts the same Once/Mutex/affinity
 shape, while native C lowering still stops at its existing non-generic
 data-only aggregate boundary. Its generated target-root storage and teardown
-remain executable for data-only owners. This is now a concrete self-hosting
+remain executable for data-only owners, and every generated public wrapper now
+installs and restores the same foreign-thread executor-release route as Stage 0.
+This is now a concrete self-hosting
 composition gap: native lowering needs generic `Mutex<T>` fields and aggregate
 methods before it can emit the full application root unchanged.
 

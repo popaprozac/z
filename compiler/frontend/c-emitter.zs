@@ -2756,6 +2756,49 @@ function embeddedRuntimeConstantPart(in targetName: String): String {
   return output.finish();
 }
 
+function appendForeignRuntimeEntrySupport(inout output: TextBuffer): void {
+  output.append(`#if defined(__cplusplus)
+#define Z_THREAD_LOCAL thread_local
+#else
+#define Z_THREAD_LOCAL _Thread_local
+#endif
+typedef void (*Z_ExecutorBoundReleaseEnqueue)(
+  void *context,
+  void *value,
+  void (*finalize)(void *value)
+);
+typedef struct Z_ForeignThreadEntry {
+  void *previous_context;
+  Z_ExecutorBoundReleaseEnqueue previous_enqueue;
+} Z_ForeignThreadEntry;
+static Z_THREAD_LOCAL void *z_executor_bound_release_context = NULL;
+static Z_THREAD_LOCAL Z_ExecutorBoundReleaseEnqueue z_executor_bound_release_enqueue = NULL;
+
+static __attribute__((unused)) Z_ForeignThreadEntry z_foreign_thread_enter(
+  void *context,
+  Z_ExecutorBoundReleaseEnqueue enqueue
+) {
+  Z_ForeignThreadEntry entry = {
+    .previous_context = z_executor_bound_release_context,
+    .previous_enqueue = z_executor_bound_release_enqueue,
+  };
+  if (enqueue != NULL) {
+    z_executor_bound_release_context = context;
+    z_executor_bound_release_enqueue = enqueue;
+  }
+  return entry;
+}
+
+static __attribute__((unused)) void z_foreign_thread_leave(
+  Z_ForeignThreadEntry entry
+) {
+  z_executor_bound_release_context = entry.previous_context;
+  z_executor_bound_release_enqueue = entry.previous_enqueue;
+}
+
+`);
+}
+
 function appendEmbeddedRuntimeTypes(
   inout output: TextBuffer,
   in targetName: String,
@@ -2788,7 +2831,9 @@ function appendEmbeddedRuntimeTypes(
   output.append(constant);
   output.append("_RUNTIME_SHUT_DOWN = 5,\n  ");
   output.append(constant);
-  output.append("_RUNTIME_WRONG_THREAD = 6\n} ");
+  output.append("_RUNTIME_WRONG_THREAD = 6,\n  ");
+  output.append(constant);
+  output.append("_RUNTIME_DRAINING = 7\n} ");
   output.append(prefix);
   output.append("_runtime_status;\n\n");
   output.append("typedef void (*");
@@ -2908,7 +2953,7 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
       z_embedded_runtime_${prefix}_complete_root_release
     );
     if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
-      return ${constant}_RUNTIME_BUSY;
+      return ${constant}_RUNTIME_DRAINING;
     }
     uint8_t draining = 4;
     if (!__atomic_compare_exchange_n(
@@ -2918,7 +2963,7 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
       false,
       __ATOMIC_ACQ_REL,
       __ATOMIC_ACQUIRE
-    )) return ${constant}_RUNTIME_BUSY;
+    )) return ${constant}_RUNTIME_DRAINING;
   }
 `;
     } else {
@@ -2938,6 +2983,8 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
   }
   let drainingState = "1";
   if (hasRoot) drainingState = "4";
+  let activeCallbackStatus = `${constant}_RUNTIME_BUSY`;
+  if (hasRoot) activeCallbackStatus = `${constant}_RUNTIME_DRAINING`;
   appendEmbeddedRuntimeTypes(
     inout output,
     targetName,
@@ -2969,7 +3016,7 @@ static __attribute__((unused)) void z_embedded_runtime_${prefix}_release(void *c
 
 ${rootHelpers}
 
-static void z_embedded_runtime_${prefix}_enter(void) {
+static Z_ForeignThreadEntry z_embedded_runtime_${prefix}_enter(void) {
   for (;;) {
     uint8_t state = __atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE);
     if (state == 3 || state == 5) continue;
@@ -2978,9 +3025,14 @@ static void z_embedded_runtime_${prefix}_enter(void) {
     if (__atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE) == 1) break;
     __atomic_sub_fetch(&z_embedded_runtime_${prefix}.active_entries, 1, __ATOMIC_ACQ_REL);
   }
+  return z_foreign_thread_enter(
+    &z_embedded_runtime_${prefix},
+    z_embedded_runtime_${prefix}.enqueue_release
+  );
 }
 
-static void z_embedded_runtime_${prefix}_leave(void) {
+static void z_embedded_runtime_${prefix}_leave(Z_ForeignThreadEntry entry) {
+  z_foreign_thread_leave(entry);
   if (__atomic_fetch_sub(&z_embedded_runtime_${prefix}.active_entries, 1, __ATOMIC_ACQ_REL) == 0) abort();
 }
 
@@ -3000,6 +3052,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_initialize(const ${prefix}_runt
   )) {
     if (expected == 1) return ${constant}_RUNTIME_ALREADY_INITIALIZED;
     if (expected == 2) return ${constant}_RUNTIME_SHUT_DOWN;
+    if (expected == 4) return ${constant}_RUNTIME_DRAINING;
     return ${constant}_RUNTIME_BUSY;
   }
 ${initializerValidation}  z_embedded_runtime_${prefix}.context = config == NULL ? NULL : config->context;
@@ -3016,6 +3069,10 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
     if (previous == 0) return ${constant}_RUNTIME_NOT_INITIALIZED;
     if (previous == 2) return ${constant}_RUNTIME_SHUT_DOWN;
     if (previous == 3) return ${constant}_RUNTIME_BUSY;
+    if (previous == 4
+        && __atomic_load_n(&z_embedded_runtime_${prefix}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
+      return ${constant}_RUNTIME_DRAINING;
+    }
     uint8_t expected = previous;
     if (__atomic_compare_exchange_n(
       &z_embedded_runtime_${prefix}.state,
@@ -3032,7 +3089,7 @@ Z_API ${prefix}_runtime_status ${prefix}_runtime_shutdown(void) {
   }
 ${shutdownRoot}  if (__atomic_load_n(&z_embedded_runtime_${prefix}.active_callbacks, __ATOMIC_ACQUIRE) != 0) {
     __atomic_store_n(&z_embedded_runtime_${prefix}.state, ${drainingState}, __ATOMIC_RELEASE);
-    return ${constant}_RUNTIME_BUSY;
+    return ${activeCallbackStatus};
   }
   z_embedded_runtime_${prefix}.context = NULL;
   z_embedded_runtime_${prefix}.enqueue_release = NULL;
@@ -3083,7 +3140,7 @@ function appendNativeCExportDefinition(
   }
   if (runtimeName.byteLength > 0) {
     const prefix = embeddedRuntimeSymbolPart(runtimeName);
-    output.append("  z_embedded_runtime_");
+    output.append("  Z_ForeignThreadEntry _z_runtime_entry = z_embedded_runtime_");
     output.append(prefix);
     output.append("_enter();\n");
   }
@@ -3110,7 +3167,7 @@ function appendNativeCExportDefinition(
     const prefix = embeddedRuntimeSymbolPart(runtimeName);
     output.append("  z_embedded_runtime_");
     output.append(prefix);
-    output.append("_leave();\n");
+    output.append("_leave(_z_runtime_entry);\n");
     if (declaration.returnType.kind != LoweredTypeKind.voidType) {
       output.append("  return _z_result;\n");
     }
@@ -4555,6 +4612,9 @@ function emitLoweredC(
     output.append("#if defined(_WIN32)\n#include <direct.h>\n#endif\n");
   }
   output.append("\n");
+  if (embeddedRuntimeName.byteLength > 0) {
+    appendForeignRuntimeEntrySupport(inout output);
+  }
   if (usesProcessArguments) {
     output.append("static int z_stage1_process_argc = 0;\n");
     output.append("static char **z_stage1_process_argv = NULL;\n\n");

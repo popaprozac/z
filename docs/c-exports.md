@@ -322,9 +322,14 @@ then restores the caller thread's previous Z runtime route on exit. Calls from
 multiple host-created threads are therefore ordinary supported entries, not
 unregistered runtime access. The host still owns those threads and must join
 them before unloading the library. If shutdown observes an active exported
-call, escaping native callback retained by Z, or queued executor-bound
-finalizer, it reports `ZMATH_RUNTIME_BUSY` and leaves the runtime running; the
-host can join, release, drain its executor queue, and retry.
+call or escaping native callback before teardown begins, it reports
+`ZMATH_RUNTIME_BUSY` and leaves the runtime callable. The host can join or
+release that work and retry. Once shutdown queues an executor-bound runtime-root
+finalizer, it instead reports `ZMATH_RUNTIME_DRAINING`. Admission is closed in
+that state: the host must not call ordinary exports, must drain its executor
+queue, and then retries shutdown to complete teardown. Separating these states
+prevents `BUSY` from implying that root-owned state remains available after its
+destruction has begun.
 
 The optional configuration carries one deliberately narrow host hook:
 
@@ -337,7 +342,7 @@ typedef struct zmath_runtime_config {
 ```
 
 `enqueue_release` must arrange for `finalize(value)` to run exactly once on the
-owning executor. Z wraps the work so shutdown remains busy until that finalizer
+owning executor. Z wraps the work so shutdown remains draining until that finalizer
 actually completes. The hook is not a general task scheduler. Headers define
 `ZMATH_RUNTIME_REQUIRES_ENQUEUE_RELEASE` as `1` when the compiled library has
 executor-bound class lifecycle; initialization then returns

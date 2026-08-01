@@ -14,7 +14,9 @@ The handwritten C host:
 4. proves shutdown reports `ZEMBED_RUNTIME_BUSY` while that call is live;
 5. releases and joins the worker, then reads the persistent synchronized state
    through a second exported call; and
-6. shuts Z down and observes the root's `deinit` exactly once.
+6. begins shutdown, receives `ZEMBED_RUNTIME_DRAINING` while the queued
+   main-thread root release is pending, drains that host queue, and then
+   completes shutdown with the root's `deinit` observed exactly once.
 
 The two functions in `runtime-host.h` are a test gate implemented by the C
 host, not runtime shims. They keep one exported call live long enough to make
@@ -38,7 +40,7 @@ examples/interop/c/z-runtime-export/build/consumer
 Expected output:
 
 ```text
-wrong=6 busy=3 completed=1 checksum=43 stopped=0 released=1
+wrong=6 busy=3 completed=1 checksum=43 draining=7 stopped=0 released=1
 ```
 
 The compiler test also attempts to read `uiRevision` from the ordinary worker

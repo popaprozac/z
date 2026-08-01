@@ -242,7 +242,9 @@ functions and bounded entry for host-created threads. A library manifest may
 name one cleanup-bearing `target.runtime.initialize` result that the generated
 runtime owns until shutdown; this is how an embedded library can retain a
 `OnceLifetime<T>` or composed application root across C calls without adding
-implicit module initialization. See
+implicit module initialization. `RUNTIME_BUSY` leaves admission open because
+teardown has not begun; `RUNTIME_DRAINING` closes admission while the host runs
+a queued executor-bound root finalizer. See
 [C exports](c-exports.md) for the exact mapping, lifecycle contract, and growth
 path.
 
