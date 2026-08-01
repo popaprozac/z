@@ -49,6 +49,7 @@ function cType(in type: LoweredType): String throws String {
     type.kind == LoweredTypeKind.onceType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.taskType
   ) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.foreignEnumType) {
@@ -176,6 +177,17 @@ function appendMutexWithLockHelperName(
   output.append(`${expressionIndex}`);
 }
 
+function appendThreadSpawnHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_thread_spawn_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
 function appendOnceTypeName(
   inout names: Array<String>,
   in type: LoweredType
@@ -263,6 +275,44 @@ function programMutexTypeNames(
   return names;
 }
 
+function appendTaskTypeName(
+  inout names: Array<String>,
+  in type: LoweredType
+): void {
+  if (type.kind != LoweredTypeKind.taskType) return;
+  for (const existing of names) {
+    if (existing == type.name) return;
+  }
+  names.push(type.name.copyBytes(0, type.name.byteLength));
+}
+
+function programTaskTypeNames(
+  in program: LoweredProgram
+): Array<String> {
+  let names = Array<String>();
+  for (const constant of program.constants) {
+    appendTaskTypeName(inout names, constant.type);
+  }
+  for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      appendTaskTypeName(inout names, field.type);
+    }
+  }
+  for (const declaration of program.functions) {
+    appendTaskTypeName(inout names, declaration.returnType);
+    for (const parameter of declaration.parameters) {
+      appendTaskTypeName(inout names, parameter.type);
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => appendTaskTypeName(inout names, type);
+        none => {}
+      }
+    }
+  }
+  return names;
+}
+
 function loweredTypeForIdentity(
   in program: LoweredProgram,
   in identity: String
@@ -328,6 +378,57 @@ function mutexValueType(
   }
   const identity = mutexName.copyBytes(prefix.byteLength, mutexName.byteLength);
   return try loweredTypeForIdentity(program, identity);
+}
+
+function taskResultType(
+  in program: LoweredProgram,
+  in taskName: String
+): LoweredType throws String {
+  const prefix = "Task_";
+  if (!stringStartsWith(taskName, prefix)) {
+    throw `native C emission received malformed Task identity ${taskName}`;
+  }
+  const identity = taskName.copyBytes(
+    prefix.byteLength,
+    taskName.byteLength
+  );
+  return try loweredTypeForIdentity(program, identity);
+}
+
+function awaitedTaskName(
+  in declaration: LoweredFunction,
+  index: usize
+): String throws String {
+  if (declaration.expressions[index].value.byteLength > 0) {
+    return declaration.expressions[index].value.copyBytes(
+      0,
+      declaration.expressions[index].value.byteLength
+    );
+  }
+  if (declaration.expressions[index].children.length != 1) {
+    throw "native C emission received malformed thread await";
+  }
+  const taskExpression = declaration.expressions[index].children[0];
+  if (
+    declaration.expressions[taskExpression].kind
+      != LoweredExpressionKind.localValue
+  ) throw "native thread await currently requires a named Task<T> binding";
+  const bindingName = view declaration.expressions[taskExpression].value;
+  for (const statement of declaration.statements) {
+    if (
+      statement.kind != LoweredStatementKind.localStatement
+      || statement.name != bindingName
+    ) continue;
+    match (in statement.type) {
+      some(type) => {
+        if (type.kind == LoweredTypeKind.taskType) {
+          return type.name.copyBytes(0, type.name.byteLength);
+        }
+      }
+      none => {}
+    }
+  }
+  throw `native thread await could not resolve Task<T> binding ${bindingName}`;
 }
 
 function appendIndent(inout output: TextBuffer, depth: usize): void {
@@ -1655,6 +1756,30 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.threadSpawn
+  ) {
+    appendThreadSpawnHelperName(inout output, declaration, index);
+    output.append("()");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.threadAwait
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed thread await";
+    }
+    const taskName = try awaitedTaskName(declaration, index);
+    output.append("Z_");
+    output.append(taskName);
+    output.append("_await(&(");
+    const task = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, task);
+    output.append("))");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.onceInitialize
   ) {
     if (declaration.expressions[index].children.length != 2) {
@@ -2265,7 +2390,8 @@ function appendStatement(
           && storageType.kind != LoweredTypeKind.stringType
           && storageType.kind != LoweredTypeKind.classType
           && storageType.kind != LoweredTypeKind.onceLifetimeType
-          && storageType.kind != LoweredTypeKind.mutexType;
+          && storageType.kind != LoweredTypeKind.mutexType
+          && storageType.kind != LoweredTypeKind.taskType;
       }
       none => false;
     };
@@ -2989,6 +3115,125 @@ function appendFunction(
   output.append("}\n\n");
 }
 
+function appendThreadTaskRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  const taskNames = programTaskTypeNames(program);
+  for (const taskName of taskNames) {
+    const resultType = try taskResultType(program, taskName);
+    const nativeResultType = try cType(resultType);
+    output.append("static __attribute__((unused)) ");
+    output.append(nativeResultType);
+    output.append(" Z_");
+    output.append(taskName);
+    output.append("_await(Z_");
+    output.append(taskName);
+    output.append(" *task) {\n  if (task == NULL || task->storage == NULL) abort();\n  Z_");
+    output.append(taskName);
+    output.append("Storage *storage = task->storage;\n  if (!storage->joined) {\n#if defined(_WIN32)\n    if (WaitForSingleObject(storage->thread, INFINITE) != WAIT_OBJECT_0) abort();\n    if (!CloseHandle(storage->thread)) abort();\n#else\n    if (pthread_join(storage->thread, NULL) != 0) abort();\n#endif\n    storage->joined = true;\n  }\n  return storage->result;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(taskName);
+    output.append("_deinit(Z_");
+    output.append(taskName);
+    output.append(" *task) {\n  if (task == NULL || task->storage == NULL) return;\n  (void)Z_");
+    output.append(taskName);
+    output.append("_await(task);\n  free(task->storage);\n  task->storage = NULL;\n}\n\n");
+  }
+}
+
+function appendThreadSpawnHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < declaration.expressions.length) {
+      const expression = view declaration.expressions[expressionIndex];
+      if (expression.kind != LoweredExpressionKind.threadSpawn) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (
+        expression.labels.length < 2
+        || expression.labels[0] != "expression"
+        || expression.children.length != 1
+      ) throw "native C emission currently requires an expression-bodied thread.spawn closure";
+      const taskName = expression.value.copyBytes(
+        0,
+        expression.value.byteLength
+      );
+      const resultType = try taskResultType(program, taskName);
+      const nativeResultType = try cType(resultType);
+      output.append("static ");
+      output.append(nativeResultType);
+      output.append(" ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_body(void) {\n  return ");
+      const body = expression.children[0];
+      try appendExpression(inout output, declaration, body);
+      output.append(";\n}\n\n");
+      output.append("#if defined(_WIN32)\nstatic DWORD WINAPI ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_worker(LPVOID context) {\n#else\nstatic void *");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_worker(void *context) {\n#endif\n  Z_");
+      output.append(taskName);
+      output.append("Storage *storage = (Z_");
+      output.append(taskName);
+      output.append("Storage *)context;\n  storage->result = ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_body();\n#if defined(_WIN32)\n  return 0;\n#else\n  return NULL;\n#endif\n}\n\n");
+      output.append("static Z_");
+      output.append(taskName);
+      output.append(" ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("(void) {\n  Z_");
+      output.append(taskName);
+      output.append("Storage *storage = (Z_");
+      output.append(taskName);
+      output.append("Storage *)calloc(1, sizeof(Z_");
+      output.append(taskName);
+      output.append("Storage));\n  if (storage == NULL) abort();\n#if defined(_WIN32)\n  storage->thread = CreateThread(NULL, 0, ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_worker, storage, 0, NULL);\n  if (storage->thread == NULL) { free(storage); abort(); }\n#else\n  if (pthread_create(&storage->thread, NULL, ");
+      appendThreadSpawnHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_worker, storage) != 0) { free(storage); abort(); }\n#endif\n  return (Z_");
+      output.append(taskName);
+      output.append("){ .storage = storage };\n}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendMutexWithLockHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -3690,6 +3935,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.taskType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -3923,6 +4169,25 @@ function appendTypeDefinitions(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
+  const taskNames = programTaskTypeNames(program);
+  for (const taskName of taskNames) {
+    const resultType = try taskResultType(program, taskName);
+    const nativeResultType = try cType(resultType);
+    output.append("typedef struct Z_");
+    output.append(taskName);
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n#else\n  pthread_t thread;\n#endif\n  bool joined;\n  ");
+    output.append(nativeResultType);
+    output.append(" result;\n} Z_");
+    output.append(taskName);
+    output.append("Storage;\n");
+    output.append("typedef struct Z_");
+    output.append(taskName);
+    output.append(" {\n  Z_");
+    output.append(taskName);
+    output.append("Storage *storage;\n} Z_");
+    output.append(taskName);
+    output.append(";\n\n");
+  }
   const mutexNames = programMutexTypeNames(program);
   for (const mutexName of mutexNames) {
     output.append("typedef struct Z_");
@@ -5064,6 +5329,8 @@ function emitLoweredC(
   const usesMutex = mutexTypeNames.length > 0;
   const onceTypeNames = programOnceTypeNames(program);
   const usesOnce = onceTypeNames.length > 0;
+  const taskTypeNames = programTaskTypeNames(program);
+  const usesThreads = taskTypeNames.length > 0;
   if (usesRealPath || usesCreateDirectories || usesProcessExecutablePath) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
@@ -5111,7 +5378,7 @@ function emitLoweredC(
   if (usesLock) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <fcntl.h>\n#include <sys/file.h>\n#include <unistd.h>\n#endif\n");
   }
-  if (usesMutex || usesOnce) {
+  if (usesMutex || usesOnce || usesThreads) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
   if (usesReplace) {
@@ -5414,6 +5681,7 @@ function emitLoweredC(
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
   try appendTypeDefinitions(inout output, program);
+  try appendThreadTaskRuntime(inout output, program);
   try appendModuleConstants(inout output, program);
   for (const foreign of program.foreignFunctions) {
     const errorType = try cType(foreign.errorType);
@@ -5571,6 +5839,7 @@ function emitLoweredC(
     output.append(";\n");
   }
   output.append("\n");
+  try appendThreadSpawnHelpers(inout output, program);
   try appendMutexWithLockHelpers(inout output, program);
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");

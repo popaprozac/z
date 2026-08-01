@@ -1836,14 +1836,26 @@ application-root fixture exercises that mutation beside synchronized reads.
 
 Cleanup-free scalar captures now cross lock helpers by immutable pointer, so a
 method argument can participate without being copied or escaping. Capturing
-`this`, ownership-bearing captures, and the application's async `thread.spawn`
-entry remain later lowering slices. Block bodies preserve their structured
-returns and mutations through a separate native helper. That is a narrower and more
-honest composition boundary than the former generic-field/method wall: the
-native compiler can represent the application root and its synchronized read
-surface today, but cannot yet emit the worker orchestration unchanged. Every
-generated public wrapper still installs and restores the same foreign-thread
-executor-release route as Stage 0.
+`this` and ownership-bearing captures remain later lowering slices. Block
+bodies preserve their structured returns and mutations through a separate
+native helper.
+
+The next slice crossed the first real native-worker boundary. The self-emitted
+compiler now lowers a capture-free, expression-bodied `thread.spawn` closure to
+one pthread/Windows worker, represents its cleanup-free scalar result as an
+owned `Task<T>`, joins it on `await`, and also joins during deterministic task
+cleanup when no explicit await consumed the join. A `const Task<T>` keeps a
+fixed Z binding while its hidden native join state remains mutable, matching
+the existing class and mutex storage distinction. The strict-C fixture executes
+the generated worker and checks that the awaited value reaches `main`.
+
+This is intentionally not yet the application's complete orchestration. The
+native async `main` is a synchronous host frame around the first worker/join
+operation; block-bodied workers, captures, typed worker failures, suspension,
+and executor placement remain explicit lowering errors. Those are now the
+concrete remaining steps before the Zapp worker entry can emit unchanged.
+Every generated public wrapper still installs and restores the same
+foreign-thread executor-release route as Stage 0.
 
 ## Diagnostic identity and mutex hardening
 

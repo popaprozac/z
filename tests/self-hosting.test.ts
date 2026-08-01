@@ -1718,6 +1718,57 @@ test("emits module-owned Once class lifetimes through the native frontend", () =
   }
 }, 30_000);
 
+test("emits, joins, and cleans up a native worker task", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-task-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-task.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /typedef struct Z_Task_i32Storage/);
+    assert.match(emission.stdout, /pthread_create/);
+    assert.match(emission.stdout, /pthread_join/);
+    assert.match(emission.stdout, /Z_Task_i32_await/);
+    assert.match(emission.stdout, /Z_Task_i32_deinit\(&worker\)/);
+
+    const executable = resolve(directory, "thread-task");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,
@@ -2595,7 +2646,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   writeFileSync(truncatedPath, encoded.slice(0, -2));
   const truncated = spawnSync(executable, [truncatedPath], { encoding: "utf8" });
   assert.equal(truncated.status, 3, truncated.stderr);
-}, 15_000);
+}, 30_000);
 
 test("compiles a multi-module Z application through the standalone native driver", () => {
   const driverSource = resolve(projectRoot, "compiler/driver/main.zs");

@@ -59,6 +59,7 @@ export enum LoweredTypeKind {
   onceType,
   onceLifetimeType,
   mutexType,
+  taskType,
   enumType,
   foreignEnumType,
 }
@@ -166,6 +167,8 @@ export enum LoweredExpressionKind {
   onceEmpty,
   onceInitialize,
   onceGet,
+  threadSpawn,
+  threadAwait,
   enumValue,
   enumPayloadValue,
   stringEqual,
@@ -256,6 +259,7 @@ export struct LoweredFunction {
   testName: String;
   sourcePath: String;
   nativeCExportName: String;
+  asynchronous: boolean;
   receiverType: Option<LoweredType>;
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
@@ -422,6 +426,11 @@ function intrinsicOnceLifetimeName(in valueType: LoweredType): String {
 function intrinsicMutexName(in valueType: LoweredType): String {
   const identity = loweredTypeIdentity(valueType);
   return `Mutex_${identity}`;
+}
+
+function intrinsicTaskName(in resultType: LoweredType): String {
+  const identity = loweredTypeIdentity(resultType);
+  return `Task_${identity}`;
 }
 
 function intrinsicResultName(
@@ -591,6 +600,13 @@ function lowerTypeName(
           name: intrinsicMutexName(valueType),
         });
       }
+      if (generic.base == "Task" && generic.arguments.length == 1) {
+        const resultType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.taskType,
+          name: intrinsicTaskName(resultType),
+        });
+      }
       if (generic.base == "Result" && generic.arguments.length == 2) {
         const successType = try lowerTypeName(program, generic.arguments[0]);
         const errorType = try lowerTypeName(program, generic.arguments[1]);
@@ -728,6 +744,17 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.mutexType,
           name: intrinsicMutexName(valueType),
+        });
+      }
+      if (generic.base == "Task" && generic.arguments.length == 1) {
+        const resultType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.taskType,
+          name: intrinsicTaskName(resultType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -925,6 +952,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.taskType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1099,6 +1127,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.taskType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -2916,6 +2945,60 @@ function staticallyResolvedExpressionTypeName(
     none => {}
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length == 2
+  ) {
+    const callee = tree.nodes[index].children[0];
+    const closure = tree.nodes[index].children[1];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "spawn"
+      && tree.nodes[callee].children.length == 1
+      && tree.nodes[closure].kind == ExpressionKind.closureExpression
+      && tree.nodes[closure].labels.length >= 1
+      && tree.nodes[closure].labels[0].byteLength > 0
+    ) {
+      const namespace = tree.nodes[callee].children[0];
+      if (
+        tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+        && isImportedStandardBinding(
+          program,
+          "std/thread",
+          "thread",
+          tree.nodes[namespace].value
+        )
+      ) return Option.some(`Task<${tree.nodes[closure].labels[0]}>`);
+    }
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const task = tree.nodes[index].children[0];
+    match (staticallyResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      tree,
+      task
+    )) {
+      some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
+        some(generic) => {
+          if (generic.base == "Task" && generic.arguments.length == 1) {
+            return Option.some(generic.arguments[0].copyBytes(
+              0,
+              generic.arguments[0].byteLength
+            ));
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.identifierExpression
     || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
   ) {
@@ -2937,6 +3020,7 @@ function staticallyResolvedExpressionTypeName(
     }
     let declaredType = "";
     let declaredOffset: usize = 0;
+    let inferredDeclaration: usize = arena.nodes.length;
     let declarationIndex: usize = 0;
     while (declarationIndex < arena.nodes.length) {
       if (
@@ -2955,13 +3039,41 @@ function staticallyResolvedExpressionTypeName(
               annotation.name.byteLength
             );
             declaredOffset = arena.nodes[declarationIndex].nameOffset;
+            inferredDeclaration = arena.nodes.length;
           }
-          none => {}
+          none => {
+            declaredType = "";
+            inferredDeclaration = declarationIndex;
+            declaredOffset = arena.nodes[declarationIndex].nameOffset;
+          }
         }
       }
       declarationIndex = declarationIndex + 1;
     }
     if (declaredType.byteLength > 0) return Option.some(move declaredType);
+    if (inferredDeclaration < arena.nodes.length) {
+      match (in arena.nodes[inferredDeclaration].expression) {
+        some(initializer) => match (in initializer.tree) {
+          some(initializerTree) => {
+            const initializerRoot = initializerTree.root;
+            match (staticallyResolvedExpressionTypeName(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              ownerName,
+              initializerTree,
+              initializerRoot
+            )) {
+              some(typeName) => return Option.some(move typeName);
+              none => {}
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
     let loopIndex: usize = 0;
     let loopOffset: usize = 0;
     while (loopIndex < arena.nodes.length) {
@@ -3662,11 +3774,155 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.awaitExpression) {
+    if (tree.nodes[index].children.length != 1) {
+      throw "native lowering received a malformed await expression";
+    }
+    const taskInput = tree.nodes[index].children[0];
+    let taskName = "";
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      taskInput
+    )) {
+      some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
+        some(generic) => {
+          if (generic.base != "Task" || generic.arguments.length != 1) {
+            throw `native await lowering currently supports infallible Task<T>, found ${taskTypeName}`;
+          }
+          const resultType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            generic.arguments[0]
+          );
+          if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
+            throw "native await lowering currently requires a cleanup-free task result";
+          }
+          taskName = intrinsicTaskName(resultType);
+        }
+        none => throw `native await lowering currently supports Task<T>, found ${taskTypeName}`;
+      }
+      none => {}
+    }
+    const task = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      taskInput,
+      inout output
+    );
+    let children = Array<usize>();
+    children.push(task);
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.threadAwait,
+      taskName,
+      children,
+      Array<String>()
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
     if (tree.nodes[index].children.length == 0) {
       throw "native lowering received a malformed call expression";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "spawn"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 2
+    ) {
+      const namespaceInput = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[namespaceInput].kind == ExpressionKind.identifierExpression
+        && isImportedStandardBinding(
+          program,
+          "std/thread",
+          "thread",
+          tree.nodes[namespaceInput].value
+        )
+      ) {
+        const closureInput = tree.nodes[index].children[1];
+        if (
+          tree.nodes[closureInput].kind != ExpressionKind.closureExpression
+          || tree.nodes[closureInput].labels.length < 4
+        ) throw "native thread.spawn lowering requires one inline closure";
+        if (tree.nodes[closureInput].labels[1].byteLength > 0) {
+          throw "native thread.spawn lowering does not support throwing worker closures yet";
+        }
+        if (tree.nodes[closureInput].labels[3] == "async") {
+          throw "native thread.spawn lowering does not support suspending worker closures yet";
+        }
+        for (const child of tree.nodes[closureInput].children) {
+          if (
+            tree.nodes[child].kind
+              == ExpressionKind.closureParameterExpression
+          ) throw "native thread.spawn lowering currently requires a zero-parameter closure";
+        }
+        const resultTypeName = tree.nodes[closureInput].labels[0].copyBytes(
+          0,
+          tree.nodes[closureInput].labels[0].byteLength
+        );
+        if (resultTypeName.byteLength == 0) {
+          throw "native thread.spawn lowering currently requires an explicit worker result type";
+        }
+        const resultType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          resultTypeName
+        );
+        if (
+          resultType.kind == LoweredTypeKind.voidType
+          || moduleTypeNeedsCleanup(program, importedTypes, resultType)
+        ) {
+          throw "native thread.spawn lowering currently requires a cleanup-free non-void result";
+        }
+        const bodyKind = tree.nodes[closureInput].labels[2].copyBytes(
+          0,
+          tree.nodes[closureInput].labels[2].byteLength
+        );
+        let children = Array<usize>();
+        if (bodyKind == "expression") {
+          let bodyInput: usize = tree.nodes.length;
+          for (const child of tree.nodes[closureInput].children) {
+            if (
+              tree.nodes[child].kind
+                != ExpressionKind.closureParameterExpression
+            ) bodyInput = child;
+          }
+          if (bodyInput >= tree.nodes.length) {
+            throw "native thread.spawn lowering lost its worker expression";
+          }
+          const body = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            bodyInput,
+            resultTypeName,
+            inout output
+          );
+          children.push(body);
+        } else if (bodyKind == "block") {
+          throw "native thread.spawn lowering does not support block-bodied worker closures yet";
+        } else throw "native thread.spawn lowering received an unknown closure body shape";
+        let labels = Array<String>();
+        labels.push(copy bodyKind);
+        labels.push(loweredTypeIdentity(resultType));
+        const taskName = intrinsicTaskName(resultType);
+        const lowered = pushExpression(
+          inout output,
+          LoweredExpressionKind.threadSpawn,
+          taskName,
+          children,
+          labels
+        );
+        return lowered;
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
@@ -8330,7 +8586,7 @@ function lowerFunction(
   in declaration: FunctionDeclaration,
   in sourcePath: String
 ): LoweredFunction throws String {
-  if (declaration.asynchronous) {
+  if (declaration.asynchronous && declaration.name != "main") {
     throw `native lowering does not support async function ${declaration.name} yet`;
   }
   let parameters = Array<LoweredParameter>();
@@ -8460,6 +8716,7 @@ function lowerFunction(
     nativeCExportName: declaration.nativeCExport
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
+    asynchronous: declaration.asynchronous,
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters,
@@ -8523,6 +8780,7 @@ function lowerDeinitializer(
     testName: "",
     sourcePath: "",
     nativeCExportName: "",
+    asynchronous: false,
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters: Array<LoweredParameter>(),
