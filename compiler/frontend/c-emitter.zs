@@ -1625,7 +1625,7 @@ function appendExpression(
     declaration.expressions[index].kind
       == LoweredExpressionKind.mutexWithLock
   ) {
-    if (declaration.expressions[index].children.length != 2) {
+    if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received malformed Mutex.withLock";
     }
     appendMutexWithLockHelperName(inout output, declaration, index);
@@ -2988,8 +2988,8 @@ function appendMutexWithLockHelpers(
         continue;
       }
       if (
-        expression.children.length != 2
-        || expression.labels.length != 3
+        expression.children.length == 0
+        || expression.labels.length < 4
       ) throw "native C emission received malformed Mutex.withLock evidence";
       const resultType = try loweredTypeForIdentity(
         program,
@@ -2998,6 +2998,30 @@ function appendMutexWithLockHelpers(
       const nativeResultType = try cType(resultType);
       const valueType = try mutexValueType(program, expression.value);
       const nativeValueType = try cType(valueType);
+      const blockBody = expression.labels[3] == "lowered-block";
+      if (blockBody) {
+        output.append("static __attribute__((unused)) ");
+        output.append(nativeResultType);
+        output.append(" ");
+        appendMutexWithLockHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_body(");
+        if (expression.labels[1] == "in") output.append("const ");
+        output.append(nativeValueType);
+        output.append(" *");
+        appendCBindingName(inout output, expression.labels[0]);
+        output.append(") {\n");
+        for (const root of expression.statements) {
+          try appendStatement(inout output, declaration, root, 1);
+        }
+        if (resultType.kind != LoweredTypeKind.voidType) {
+          output.append("  abort();\n");
+        }
+        output.append("}\n\n");
+      }
       output.append("static __attribute__((unused)) ");
       output.append(nativeResultType);
       output.append(" ");
@@ -3012,22 +3036,33 @@ function appendMutexWithLockHelpers(
       output.append("  if (mutex.storage == NULL) abort();\n");
       output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&mutex.storage->native);\n#else\n");
       output.append("  if (pthread_mutex_lock(&mutex.storage->native) != 0) abort();\n#endif\n");
-      output.append("  ");
-      if (expression.labels[1] == "in") output.append("const ");
-      output.append(nativeValueType);
-      output.append(" *");
-      appendCBindingName(inout output, expression.labels[0]);
-      output.append(" = &mutex.storage->value;\n");
+      if (!blockBody) {
+        output.append("  ");
+        if (expression.labels[1] == "in") output.append("const ");
+        output.append(nativeValueType);
+        output.append(" *");
+        appendCBindingName(inout output, expression.labels[0]);
+        output.append(" = &mutex.storage->value;\n");
+      }
       if (resultType.kind != LoweredTypeKind.voidType) {
         output.append("  ");
         output.append(nativeResultType);
         output.append(" result = ");
       } else output.append("  ");
-      try appendExpression(
-        inout output,
-        declaration,
-        expression.children[1]
-      );
+      if (blockBody) {
+        appendMutexWithLockHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_body(&mutex.storage->value)");
+      } else {
+        try appendExpression(
+          inout output,
+          declaration,
+          expression.children[1]
+        );
+      }
       output.append(";\n");
       output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&mutex.storage->native);\n#else\n");
       output.append("  if (pthread_mutex_unlock(&mutex.storage->native) != 0) abort();\n#endif\n");

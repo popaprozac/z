@@ -14,6 +14,13 @@ class Application on thread.main {
     );
   }
 
+  function increment(): i32 {
+    return this.state.withLock((inout value): i32 => {
+      value.completed = value.completed + 1;
+      return value.completed;
+    });
+  }
+
 }
 
 const application = Once<Application>();
@@ -31,5 +38,5 @@ function main(): i32 on thread.main {
     state: Mutex(RuntimeState({ completed: 42 })),
   }));
   const installed = current();
-  return installed.answer() - 42;
+  return installed.increment() - 43;
 }

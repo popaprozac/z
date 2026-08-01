@@ -198,6 +198,7 @@ export struct LoweredExpression {
   kind: LoweredExpressionKind;
   value: String;
   children: Array<usize>;
+  statements: Array<usize>;
   labels: Array<String>;
 }
 
@@ -2190,6 +2191,7 @@ function pushExpression(
     kind,
     value: value.copyBytes(0, value.byteLength),
     children,
+    statements: Array<usize>(),
     labels,
   }));
   return index;
@@ -3772,12 +3774,13 @@ function lowerExpression(
               tree.nodes[closureInput].kind
                 != ExpressionKind.closureExpression
             ) throw "Mutex.withLock expects one inline closure";
-            if (
-              tree.nodes[closureInput].labels.length < 3
-              || tree.nodes[closureInput].labels[2] != "expression"
-            ) {
-              throw "native Mutex.withLock lowering currently supports expression-bodied closures; block bodies remain Stage 0 authoritative";
+            if (tree.nodes[closureInput].labels.length < 3) {
+              throw "native Mutex.withLock lowering could not resolve the closure body shape";
             }
+            const bodyKind = tree.nodes[closureInput].labels[2].copyBytes(
+              0,
+              tree.nodes[closureInput].labels[2].byteLength
+            );
             let parameterInput: usize = tree.nodes.length;
             let bodyInput: usize = tree.nodes.length;
             for (const child of tree.nodes[closureInput].children) {
@@ -3787,10 +3790,13 @@ function lowerExpression(
               ) parameterInput = child;
               else bodyInput = child;
             }
+            if (parameterInput >= tree.nodes.length) {
+              throw "native Mutex.withLock lowering requires one closure parameter";
+            }
             if (
-              parameterInput >= tree.nodes.length
-              || bodyInput >= tree.nodes.length
-            ) throw "native Mutex.withLock lowering requires one closure parameter and one expression body";
+              bodyKind == "expression"
+              && bodyInput >= tree.nodes.length
+            ) throw "native Mutex.withLock lowering requires an expression body";
             const parameterMode = tree.nodes[parameterInput].labels[0].copyBytes(
               0,
               tree.nodes[parameterInput].labels[0].byteLength
@@ -3832,30 +3838,9 @@ function lowerExpression(
               receiverInput,
               inout output
             );
-            const bodyStart = output.length;
-            const body = try lowerExpression(
-              program,
-              importedTypes,
-              evidence,
-              tree,
-              bodyInput,
-              inout output
-            );
             const parameterName = tree.nodes[parameterInput].value.copyBytes(
               0,
               tree.nodes[parameterInput].value.byteLength
-            );
-            if (!mutexClosureBodyOnlyUsesParameter(
-              output,
-              bodyStart,
-              parameterName
-            )) {
-              throw "native Mutex.withLock expression closures cannot capture outer values yet";
-            }
-            rewriteClosureParameterValues(
-              inout output,
-              bodyStart,
-              parameterName
             );
             const valueType = try lowerModuleTypeName(
               program,
@@ -3864,7 +3849,30 @@ function lowerExpression(
             );
             let children = Array<usize>();
             children.push(receiver);
-            children.push(body);
+            if (bodyKind == "expression") {
+              const bodyStart = output.length;
+              const body = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                bodyInput,
+                inout output
+              );
+              if (!mutexClosureBodyOnlyUsesParameter(
+                output,
+                bodyStart,
+                parameterName
+              )) {
+                throw "native Mutex.withLock expression closures cannot capture outer values yet";
+              }
+              rewriteClosureParameterValues(
+                inout output,
+                bodyStart,
+                parameterName
+              );
+              children.push(body);
+            }
             let labels = Array<String>();
             labels.push(parameterName.copyBytes(
               0,
@@ -3875,14 +3883,21 @@ function lowerExpression(
               parameterMode.byteLength
             ));
             labels.push(loweredTypeIdentity(resultType));
+            labels.push(bodyKind.copyBytes(0, bodyKind.byteLength));
             const mutexName = intrinsicMutexName(valueType);
-            return pushExpression(
+            const lowered = pushExpression(
               inout output,
               LoweredExpressionKind.mutexWithLock,
               mutexName,
               children,
               labels
             );
+            if (bodyKind == "block") {
+              for (const sourceStatement of tree.nodes[closureInput].statements) {
+                output[lowered].statements.push(sourceStatement);
+              }
+            }
+            return lowered;
           }
         }
         none => {}
@@ -7014,6 +7029,81 @@ function testExpressionTypeName(
   return Option<String>.none;
 }
 
+function completeMutexClosureBlocks(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  start: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): void throws String {
+  let expressionIndex = start;
+  while (expressionIndex < expressions.length) {
+    if (
+      expressions[expressionIndex].kind
+        != LoweredExpressionKind.mutexWithLock
+      || expressions[expressionIndex].labels.length < 4
+      || expressions[expressionIndex].labels[3] != "block"
+    ) {
+      expressionIndex = expressionIndex + 1;
+      continue;
+    }
+    let sourceStatements = Array<usize>();
+    for (const source of expressions[expressionIndex].statements) {
+      sourceStatements.push(source);
+    }
+    let loweredStatements = Array<usize>();
+    const bodyExpressionStart = expressions.length;
+    const bodyStatementStart = statements.length;
+    for (const source of sourceStatements) {
+      const lowered = try lowerStatement(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        source,
+        inout expressions,
+        inout statements
+      );
+      loweredStatements.push(lowered);
+    }
+    const parameterName = expressions[expressionIndex].labels[0].copyBytes(
+      0,
+      expressions[expressionIndex].labels[0].byteLength
+    );
+    if (!mutexClosureBodyOnlyUsesParameter(
+      expressions,
+      bodyExpressionStart,
+      parameterName
+    )) {
+      throw "native Mutex.withLock block closures cannot capture outer values yet";
+    }
+    rewriteClosureParameterValues(
+      inout expressions,
+      bodyExpressionStart,
+      parameterName
+    );
+    let statementIndex = bodyStatementStart;
+    while (statementIndex < statements.length) {
+      match (in statements[statementIndex].type) {
+        some(type) => {
+          if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+            throw "native Mutex.withLock block closures do not support cleanup-bearing local values yet";
+          }
+        }
+        none => {}
+      }
+      statementIndex = statementIndex + 1;
+    }
+    expressions[expressionIndex].statements = move loweredStatements;
+    expressions[expressionIndex].labels[3] = "lowered-block";
+    expressionIndex = expressionIndex + 1;
+  }
+}
+
 function lowerStatement(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7727,6 +7817,7 @@ function lowerStatement(
   let expression = Option<usize>.none;
   match (in arena.nodes[index].expression) {
     some(source) => {
+      const expressionStart = expressions.length;
       let directTryReturn = false;
       let loweredValue: usize = 0;
       if (arena.nodes[index].kind == StatementKind.returnStatement) {
@@ -7814,6 +7905,19 @@ function lowerStatement(
             none => {}
           }
         }
+      }
+      match (in source.tree) {
+        some(tree) => try completeMutexClosureBlocks(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          expressionStart,
+          inout expressions,
+          inout statements
+        );
+        none => {}
       }
       if (
         arena.nodes[index].kind == StatementKind.returnStatement
@@ -8562,6 +8666,7 @@ function rewritePrivateCallTargets(
                 declaration.name
               ),
               children: Array<usize>(),
+              statements: Array<usize>(),
               labels: Array<String>(),
             });
           }
@@ -8614,6 +8719,7 @@ function rewriteNativeCExportCallTargets(
                 implementationName.byteLength
               ),
               children: Array<usize>(),
+              statements: Array<usize>(),
               labels: Array<String>(),
             });
           }

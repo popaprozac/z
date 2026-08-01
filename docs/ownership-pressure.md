@@ -1825,15 +1825,16 @@ main-only `uiRevision` from that export remains a compile-time affinity error.
 The fixed-point native semantic graph accepts the same Once/Mutex/affinity
 shape, and the first native lowering gap is now closed. Non-generic structs and
 classes may own `Mutex<T>` fields, ordinary borrowing methods carry explicit
-receiver evidence into C, and a capture-free expression-bodied
-`Mutex.withLock` closure lowers to real pthread/SRW acquisition and release.
+receiver evidence into C, and capture-free expression- or block-bodied
+`Mutex.withLock` closures lower to real pthread/SRW acquisition and release.
 The native `Once<T>` cell now uses the same synchronized publication protocol,
 and native class retain/release is atomic, so the synchronous
 `application-root/application.zs` core strict-compiles directly from the
 self-emitted frontend.
 
-Block-bodied or capturing lock closures and the application's async
-`thread.spawn` entry remain later lowering slices. That is a narrower and more
+Capture-bearing lock closures and the application's async `thread.spawn` entry
+remain later lowering slices. Capture-free block bodies already preserve their
+structured returns and mutations through a separate native helper. That is a narrower and more
 honest composition boundary than the former generic-field/method wall: the
 native compiler can represent the application root and its synchronized read
 surface today, but cannot yet emit the worker orchestration unchanged. Every

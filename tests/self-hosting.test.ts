@@ -523,6 +523,7 @@ test("owns Mutex fields through native aggregate lowering", () => {
   );
   assert.match(emission.stdout, /pthread_mutex_lock/);
   assert.match(emission.stdout, /pthread_mutex_unlock/);
+  assert.match(emission.stdout, /mutex_with_lock_Z_Application_increment_[0-9]+_body/);
   assert.match(emission.stdout, /PTHREAD_MUTEX_INITIALIZER/);
   assert.match(
     emission.stdout,
