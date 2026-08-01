@@ -2830,7 +2830,9 @@ function appendEmbeddedRuntimeTypes(
 ): void {
   const prefix = embeddedRuntimeSymbolPart(targetName);
   const constant = embeddedRuntimeConstantPart(targetName);
-  output.append("/* Initialize before any exported call; join native work before shutdown. */\n#define ");
+  output.append("/* Initialize before any exported call; join native work before shutdown.\n");
+  output.append(" * Calling an ordinary export before successful initialization, while shutdown\n");
+  output.append(" * is draining, or after shutdown is a contract violation and terminates. */\n#define ");
   output.append(constant);
   if (requiresReleaseEnqueue) output.append("_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1\n");
   else output.append("_RUNTIME_REQUIRES_ENQUEUE_RELEASE 0\n");

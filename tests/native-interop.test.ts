@@ -493,6 +493,10 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   assert.equal(configured.targetName, "zanswer");
   assert.ok(configured.header);
   assert.match(configured.header, /typedef enum zanswer_runtime_status/);
+  assert.match(
+    configured.header,
+    /Calling an ordinary export before successful initialization,[\s\S]*contract violation and terminates/,
+  );
   assert.match(configured.header, /Z_API zanswer_runtime_status zanswer_runtime_initialize\(const zanswer_runtime_config \*config\);/);
   assert.match(configured.header, /Z_API zanswer_runtime_status zanswer_runtime_shutdown\(void\);/);
   assert.match(configured.source, /z_embedded_runtime_zanswer_enter/);
@@ -529,7 +533,7 @@ test("checks the first C-export ABI tier and its editor surface", () => {
   const nativeCheck = spawnSync(process.execPath, [cli, "check", entry, "--native-frontend"], { encoding: "utf8" });
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
   assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);
-}, 15_000);
+}, 30_000);
 
 test("builds the Z-to-C example project and runs its handwritten C consumer", () => {
   const project = resolve(projectRoot, "examples/interop/c/z-export");

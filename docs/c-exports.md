@@ -331,6 +331,13 @@ queue, and then retries shutdown to complete teardown. Separating these states
 prevents `BUSY` from implying that root-owned state remains available after its
 destruction has begun.
 
+Calling an ordinary exported function before successful initialization, while
+the runtime reports `DRAINING`, or after shutdown is an embedding-contract
+violation and traps. An arbitrary exported function cannot report lifecycle
+failure without changing its declared C return type, so only the generated
+initialize and shutdown functions return runtime statuses. The same rule is
+printed in every generated library header.
+
 The optional configuration carries one deliberately narrow host hook:
 
 ```c

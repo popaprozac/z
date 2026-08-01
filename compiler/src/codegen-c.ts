@@ -1211,7 +1211,9 @@ function embeddedRuntimeSymbolPart(targetName: string): string {
 function embeddedRuntimeTypeDeclarations(runtime: EmbeddedRuntimeExport): string {
   const prefix = embeddedRuntimeSymbolPart(runtime.targetName);
   const constant = prefix.toUpperCase();
-  return `/* Initialize before any exported call; join native work before shutdown. */
+  return `/* Initialize before any exported call; join native work before shutdown.
+ * Calling an ordinary export before successful initialization, while shutdown
+ * is draining, or after shutdown is a contract violation and terminates. */
 #define ${constant}_RUNTIME_REQUIRES_ENQUEUE_RELEASE ${runtime.requiresBoundReleaseEnqueue ? "1" : "0"}
 #define ${constant}_RUNTIME_REQUIRES_MAIN_THREAD ${runtime.requiresMainThread ? "1" : "0"}
 

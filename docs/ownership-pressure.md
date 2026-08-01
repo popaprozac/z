@@ -1886,6 +1886,15 @@ or release facts, while arbitrary-thread callbacks must be escaping `move`
 registrations with a complete release contract. A regression fixture now
 protects that fail-closed rule explicitly.
 
+The review also noted that the first weak-reference side table uses a
+non-atomic count. That is inside the current supported boundary rather than an
+unprotected cross-thread operation: `Weak<T>` cannot cross a native thread,
+and the transfer checker has a regression test for that rejection. Supporting
+concurrent weak upgrade requires one coherent atomic side-table protocol for
+control-block publication, value clearing, upgrade, and weak counts; changing
+only the counter would not make the operation safe. That broader protocol
+remains deliberately deferred.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
