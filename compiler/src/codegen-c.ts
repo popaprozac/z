@@ -645,15 +645,14 @@ export function generateC(
     lines.push(generateDynamicArrayPush(type, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.structs) {
-    const moduleUnused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
     if (hasSemanticCleanupType(declaration.name, structs, enums, semanticInfo)) {
-      lines.push(`static ${moduleUnused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
+      lines.push(`Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self);`);
     }
     if (declaration.kind === "class") {
-      lines.push(`static ${moduleUnused}${structName(declaration.name)} *${retainName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
-      lines.push(`static ${moduleUnused}void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
-      lines.push(`static ${moduleUnused}Z_Weak ${weakMakeName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
-      lines.push(`static ${moduleUnused}${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak value);`);
+      lines.push(`Z_UNUSED_FUNCTION static ${structName(declaration.name)} *${retainName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
+      lines.push(`Z_UNUSED_FUNCTION static void ${releaseName(declaration.name)}(${structName(declaration.name)} *value);`);
+      lines.push(`Z_UNUSED_FUNCTION static Z_Weak ${weakMakeName(declaration.name)}(const ${structName(declaration.name)} *borrowed);`);
+      lines.push(`Z_UNUSED_FUNCTION static ${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak value);`);
       lines.push(`${generateClassConstructorSignature(declaration, structs, enums, semanticInfo.foreignNamedTypes)};`);
     }
     for (const method of declaration.methods) {
@@ -3927,8 +3926,7 @@ function generateClassConstructorSignature(
     ? mapType(resultTypeName(declaration.name, declaration.constructor.errorType.name), structs, enums, foreignNamedTypes)
     : `${structName(declaration.name)} *`;
   const separator = result.endsWith("*") ? "" : " ";
-  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-  return `static ${unused}${result}${separator}${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
+  return `Z_UNUSED_FUNCTION static ${result}${separator}${constructorName(declaration.name)}(${parameters.join(", ") || "void"})`;
 }
 
 function generateClassLifecycle(
@@ -3939,7 +3937,6 @@ function generateClassLifecycle(
   semanticInfo: SemanticInfo,
 ): string {
   const cName = structName(declaration.name);
-  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
   const executorBound = semanticInfo.aggregateExecutorAffinities.has(declaration.name);
   const atomicArc = semanticInfo.shareableClasses.has(declaration.name)
     || executorBound;
@@ -3982,7 +3979,7 @@ ${declaration.fields.map((field) => `  self->${field.name} = ${field.name};`).jo
 ${indent(finalize, 4)}
   }`;
   const executorFinalizer = executorBound
-    ? `static ${unused}void ${executorBoundFinalizeName(declaration.name)}(void *opaque) {
+    ? `Z_UNUSED_FUNCTION static void ${executorBoundFinalizeName(declaration.name)}(void *opaque) {
   ${cName} *value = (${cName} *)opaque;
   Z_WeakControl *weak = value->_z_weak;
   if (weak != NULL) weak->value = NULL;
@@ -3996,18 +3993,18 @@ ${indent(finalize, 4)}
 
 `
     : "";
-  return `${executorFinalizer}static ${unused}${cName} *${retainName(declaration.name)}(const ${cName} *borrowed) {
+  return `${executorFinalizer}Z_UNUSED_FUNCTION static ${cName} *${retainName(declaration.name)}(const ${cName} *borrowed) {
   ${cName} *value = (${cName} *)borrowed;
   ${retain}
   return value;
 }
 
-static ${unused}void ${releaseName(declaration.name)}(${cName} *value) {
+Z_UNUSED_FUNCTION static void ${releaseName(declaration.name)}(${cName} *value) {
   if (value == NULL) return;
   ${release}
 }
 
-static ${unused}__attribute__((unused)) Z_Weak ${weakMakeName(declaration.name)}(const ${cName} *borrowed) {
+Z_UNUSED_FUNCTION static Z_Weak ${weakMakeName(declaration.name)}(const ${cName} *borrowed) {
   ${cName} *value = (${cName} *)borrowed;
   if (value->_z_weak == NULL) {
     value->_z_weak = (Z_WeakControl *)malloc(sizeof(Z_WeakControl));
@@ -4020,7 +4017,7 @@ static ${unused}__attribute__((unused)) Z_Weak ${weakMakeName(declaration.name)}
   return weak;
 }
 
-static ${unused}__attribute__((unused)) ${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak weak) {
+Z_UNUSED_FUNCTION static ${enumName(weakResultTypeName(declaration.name))} ${weakUpgradeName(declaration.name)}(Z_Weak weak) {
   ${cName} *value = (${cName} *)weak.control->value;
   if (value == NULL) {
     return (${enumName(weakResultTypeName(declaration.name))}){
@@ -4751,8 +4748,7 @@ function generateDeinit(
       body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }
   }
-  const unused = declaration.name.startsWith("__z_module_") ? "__attribute__((unused)) " : "";
-  return `static ${unused}void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
+  return `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
 }
 
 function generateFunctionSignature(
@@ -4762,9 +4758,8 @@ function generateFunctionSignature(
   receiver: StructDeclaration | null,
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
-  const moduleGenerated = (receiver?.name ?? declaration.name).startsWith("__z_module_");
   const storage = receiver || declaration.name !== "main"
-    ? `static ${moduleGenerated ? "__attribute__((unused)) " : ""}`
+    ? "Z_UNUSED_FUNCTION static "
     : "";
   const name = receiver ? methodName(receiver.name, declaration.name) : cFunctionName(declaration.name);
   const parameters = declaration.parameters.map((parameter) => {

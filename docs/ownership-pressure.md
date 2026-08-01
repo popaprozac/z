@@ -1831,6 +1831,32 @@ This is now a concrete self-hosting
 composition gap: native lowering needs generic `Mutex<T>` fields and aggregate
 methods before it can emit the full application root unchanged.
 
+## Diagnostic identity and mutex hardening
+
+Cross-module application probes exposed that linked identities such as
+`__z_module_1_Application` were escaping through member, affinity, construction,
+and ownership diagnostics. Type rendering now projects canonical compiler
+identity through the module display-name map at the diagnostic boundary,
+including nested forms such as `Mutex<Application>`. Generated names remain in
+C and native semantic evidence, but source diagnostics use names developers
+can actually write.
+
+The same pass reconciled two mutex analyses that had diverged. Native-thread
+transfer already treated `Mutex<T>` as retained shared identity when `T` was
+transferable, while deep class shareability treated the same field as an
+unknown generic representation. `shareableTypeIssue` now recognizes that
+contract, so a readonly class whose mutable state is entirely mutex-protected
+can cross a worker boundary without acquiring an unrelated main-only field.
+
+`Mutex<T>` also now rejects direct recursive acquisition of the same named
+storage during closure analysis. That closes the common self-deadlock shape
+without pretending that the current alias analysis can prove two arbitrary
+expressions identify the same mutex. Alias-derived reentrancy remains a later
+exclusivity-analysis problem. Finally, compiler-private static helpers are
+marked unused independently of whether their source declaration came from a
+linked module, so a valid but not-yet-instantiated class no longer fails in
+Clang under `-Werror`.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

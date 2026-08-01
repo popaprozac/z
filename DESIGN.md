@@ -1449,15 +1449,19 @@ empty. The failure is not stored and a later `get()` cannot replay it. This
 keeps `Once<T>` responsible only for publication and lifetime, while ordinary
 `try`/`attempt` remain responsible for creating the value.
 
-The first tier accepts only ARC class payloads declared `on thread.main`.
-The cell inherits that affinity, so construction, initialization, retrieval,
-and guard cleanup require main-executor proof. A worker may retrieve through
-`await on thread.main`, but it cannot dereference the class off-main. Ordinary
-mutable or readonly-shareable classes, structs, native owners, arbitrary
-cross-thread publication, replacement, and optional storage remain future
-designs. In particular, `Once<T>` is not module-level mutation, a lock, or a
-general singleton keyword; `Application` remains an ordinary user-defined
-framework type.
+The first tier accepts ARC class payloads whose lifecycle belongs to
+`thread.main`, whether that affinity is declared on the class or inherited
+from a main-bound field. Construction and initialization require main-executor
+proof. `get()` itself is intentionally unrestricted: it returns retained ARC
+identity, after which each field and method enforces its own executor contract.
+A worker may therefore use readonly thread-safe metadata and `Mutex`-guarded
+methods directly, while main-only behavior still requires explicit placement.
+Final release from a worker is queued to main so guard cleanup and `deinit`
+retain their lifecycle affinity. Ordinary mutable or readonly-shareable
+classes, structs, native owners, arbitrary cross-thread publication,
+replacement, and optional storage remain future designs. In particular,
+`Once<T>` is not module-level mutation, a lock, or a general singleton keyword;
+`Application` remains an ordinary user-defined framework type.
 
 Shared mutable state uses the separately imported `Mutex<T>` capability:
 
@@ -1502,6 +1506,9 @@ in an escaping closure are rejected. An independently owned result may leave
 the closure. An ordinary typed `throw` does not poison the mutex: cleanup runs
 before propagation and a later caller may acquire it again. An invariant trap
 terminates the process rather than unwinding through the critical section.
+`Mutex<T>` is non-reentrant. Directly nesting `withLock` on the same named
+mutex is rejected because the second acquisition would deadlock the current
+OS thread; code inside the first closure should reuse its protected binding.
 
 Z uses a closure rather than exposing a general lock guard in this first tier
 because the callable boundary makes the critical-section lifetime structural.

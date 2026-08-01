@@ -1990,6 +1990,67 @@ test("runs visible type-scoped static methods on structs, classes, and generic i
   assert.equal(completions(namespaceCompletion, main, namespaceOffset).some((item) => item.label === "answer"), true);
 });
 
+test("keeps linked module identities out of source-facing diagnostics", () => {
+  const directory = mkdtempSync("/tmp/z-module-diagnostic-names-");
+  const library = resolve(directory, "application.zs");
+  const main = resolve(directory, "main.zs");
+  try {
+    writeFileSync(library, `
+      import { thread } from "std/thread";
+
+      export class Application {
+        readonly name: String;
+        status: i32 on thread.main;
+      }
+    `);
+    const cases = [
+      {
+        body: "function inspect(in app: Application): i32 { return app.status; }",
+        expected: /field "Application\.status" requires thread\.main/,
+      },
+      {
+        body: "function inspect(in app: Application): i32 { return app.missing; }",
+        expected: /struct "Application" has no member "missing"/,
+      },
+      {
+        body: "function make(): Application { return Application({ name: \"Z\", status: 1 }); }",
+        expected: /class construction requires new Application\(\{ \.\.\. \}\)/,
+      },
+    ];
+    for (const current of cases) {
+      const source = `
+        import { Application } from "./application.zs";
+        ${current.body}
+        function main(): i32 { return 0; }
+      `;
+      writeFileSync(main, source);
+      const diagnostic = diagnostics(source, main)[0];
+      assert.match(diagnostic?.message ?? "", current.expected);
+      assert.doesNotMatch(diagnostic?.message ?? "", /__z_module_/);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("builds programs that declare an otherwise unused class", () => {
+  const directory = mkdtempSync("/tmp/z-unused-class-");
+  const file = resolve(directory, "main.zs");
+  try {
+    writeFileSync(file, `
+      class Never {
+        readonly value: i32;
+      }
+
+      function main(): i32 { return 0; }
+    `);
+    const result = spawnSync(process.execPath, [cli, "run", file], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps static and instance method capabilities distinct", () => {
   const base = `
     class Session {

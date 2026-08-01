@@ -427,6 +427,61 @@ test("shares one Mutex identity between the parent and native workers", () => {
   }
 }, 30_000);
 
+test("shares readonly classes whose mutable state is entirely Mutex-protected", () => {
+  const directory = mkdtempSync("/tmp/z-mutex-shareable-class-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct State {
+        value: i32;
+      }
+
+      class Holder {
+        readonly state: Mutex<State>;
+
+        function read(): i32 {
+          return this.state.withLock((in value): i32 => value.value);
+        }
+      }
+
+      async function main(): i32 {
+        const holder = new Holder({ state: Mutex(State({ value: 42 })) });
+        const worker = thread.spawn(move (): i32 => holder.read());
+        return await worker - 42;
+      }
+    `;
+    writeFileSync(file, source);
+
+    assert.equal(diagnostics(source, file).length, 0);
+    const result = spawnSync(process.execPath, [cli, "run", file], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects direct recursive acquisition of the same Mutex", () => {
+  const source = `
+    import { Mutex } from "std/sync";
+
+    struct State { value: i32; }
+
+    function main(): i32 {
+      const state = Mutex(State({ value: 42 }));
+      return state.withLock((in outer): i32 => {
+        return state.withLock((in inner): i32 => inner.value + outer.value);
+      });
+    }
+  `;
+  const diagnostic = diagnostics(source, "/tmp/z-mutex-direct-reentrant.zs")[0];
+  assert.equal(diagnostic?.code, "Z0211");
+  assert.match(diagnostic?.message ?? "", /cannot recursively acquire "state"/);
+  assert.match(diagnostic?.message ?? "", /non-reentrant/);
+});
+
 test("rejects a Mutex payload that cannot be destroyed on a worker", () => {
   const executorDiagnostic = diagnostics(`
     import { Mutex } from "std/sync";

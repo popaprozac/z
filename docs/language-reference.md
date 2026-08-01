@@ -168,6 +168,9 @@ synchronous and non-escaping. `in` grants read access to the protected value;
 `inout` grants read/write access. The lock is released when the callback
 returns normally or throws. A typed throw does not poison the mutex; after the
 error is handled, another `withLock` call may acquire it normally.
+`Mutex<T>` is non-reentrant. A direct nested `withLock` on the same named
+storage is a compile-time error because it would self-deadlock; reuse the
+outer closure parameter or finish that critical section first.
 
 The protected borrow cannot leave the callback. It cannot be returned as a
 `view`, stored in another owner, or captured by an escaping closure. `await` is
@@ -198,6 +201,12 @@ sharing, or rejection. `Mutex<T>` chooses retained sharing, while `String` and
 mutex, and `copy state` remains invalid. Payloads containing main-isolated
 identity, borrowed storage, or unknown destruction affinity are rejected when
 the Mutex is captured.
+
+A readonly ARC class whose reachable mutable state is entirely protected by a
+shareable `Mutex<T>` may itself cross a native thread boundary. The mutex is
+treated as synchronized retained identity rather than as an unknown mutable
+field; its payload must still satisfy the transfer and destruction checks
+above.
 
 The scoped closure is Z's first-tier alternative to a user-visible lock guard.
 It makes unlocking and the lifetime of the protected borrow structural, so
