@@ -1841,18 +1841,21 @@ bodies preserve their structured returns and mutations through a separate
 native helper.
 
 The next slice crossed the first real native-worker boundary. The self-emitted
-compiler now lowers a capture-free, expression-bodied `thread.spawn` closure to
-one pthread/Windows worker, represents its cleanup-free scalar result as an
-owned `Task<T>`, joins it on `await`, and also joins during deterministic task
-cleanup when no explicit await consumed the join. A `const Task<T>` keeps a
-fixed Z binding while its hidden native join state remains mutable, matching
-the existing class and mutex storage distinction. The strict-C fixture executes
-the generated worker and checks that the awaited value reaches `main`.
+compiler now lowers a capture-free `thread.spawn` closure to one
+pthread/Windows worker, represents its cleanup-free scalar result as an owned
+`Task<T>`, joins it on `await`, and also joins during deterministic task cleanup
+when no explicit await consumed the join. Expression and block bodies work;
+the block tier owns cleanup-free locals and can call ordinary Z functions. A
+direct callee is classified as a symbol rather than a captured value. A `const
+Task<T>` keeps a fixed Z binding while its hidden native join state remains
+mutable, matching the existing class and mutex storage distinction. The
+strict-C fixture executes the generated worker and checks that the awaited
+value reaches `main`.
 
 This is intentionally not yet the application's complete orchestration. The
 native async `main` is a synchronous host frame around the first worker/join
-operation; block-bodied workers, captures, typed worker failures, suspension,
-and executor placement remain explicit lowering errors. Those are now the
+operation; captures, typed worker failures, suspension, and executor placement
+remain explicit lowering errors. Those are now the
 concrete remaining steps before the Zapp worker entry can emit unchanged.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.

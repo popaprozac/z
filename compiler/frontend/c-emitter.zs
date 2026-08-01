@@ -3154,11 +3154,14 @@ function appendThreadSpawnHelpers(
         expressionIndex = expressionIndex + 1;
         continue;
       }
+      if (expression.labels.length < 2) {
+        throw "native C emission received malformed thread.spawn evidence";
+      }
+      const blockBody = expression.labels[0] == "lowered-block";
       if (
-        expression.labels.length < 2
-        || expression.labels[0] != "expression"
-        || expression.children.length != 1
-      ) throw "native C emission currently requires an expression-bodied thread.spawn closure";
+        (!blockBody && expression.labels[0] != "expression")
+        || (!blockBody && expression.children.length != 1)
+      ) throw "native C emission received an unsupported thread.spawn closure body";
       const taskName = expression.value.copyBytes(
         0,
         expression.value.byteLength
@@ -3173,10 +3176,19 @@ function appendThreadSpawnHelpers(
         declaration,
         expressionIndex
       );
-      output.append("_body(void) {\n  return ");
-      const body = expression.children[0];
-      try appendExpression(inout output, declaration, body);
-      output.append(";\n}\n\n");
+      output.append("_body(void) {\n");
+      if (blockBody) {
+        for (const root of expression.statements) {
+          try appendStatement(inout output, declaration, root, 1);
+        }
+        output.append("  abort();\n");
+      } else {
+        output.append("  return ");
+        const body = expression.children[0];
+        try appendExpression(inout output, declaration, body);
+        output.append(";\n");
+      }
+      output.append("}\n\n");
       output.append("#if defined(_WIN32)\nstatic DWORD WINAPI ");
       appendThreadSpawnHelperName(
         inout output,

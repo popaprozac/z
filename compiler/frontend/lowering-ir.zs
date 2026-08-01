@@ -3906,9 +3906,9 @@ function lowerExpression(
             inout output
           );
           children.push(body);
-        } else if (bodyKind == "block") {
-          throw "native thread.spawn lowering does not support block-bodied worker closures yet";
-        } else throw "native thread.spawn lowering received an unknown closure body shape";
+        } else if (bodyKind != "block") {
+          throw "native thread.spawn lowering received an unknown closure body shape";
+        }
         let labels = Array<String>();
         labels.push(copy bodyKind);
         labels.push(loweredTypeIdentity(resultType));
@@ -3920,6 +3920,11 @@ function lowerExpression(
           children,
           labels
         );
+        if (bodyKind == "block") {
+          for (const sourceStatement of tree.nodes[closureInput].statements) {
+            output[lowered].statements.push(sourceStatement);
+          }
+        }
         return lowered;
       }
     }
@@ -7379,7 +7384,7 @@ function testExpressionTypeName(
   return Option<String>.none;
 }
 
-function completeMutexClosureBlocks(
+function completeNativeClosureBlocks(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
@@ -7391,6 +7396,88 @@ function completeMutexClosureBlocks(
 ): void throws String {
   let expressionIndex = start;
   while (expressionIndex < expressions.length) {
+    if (
+      expressions[expressionIndex].kind
+        == LoweredExpressionKind.threadSpawn
+      && expressions[expressionIndex].labels.length >= 1
+      && expressions[expressionIndex].labels[0] == "block"
+    ) {
+      let sourceStatements = Array<usize>();
+      for (const source of expressions[expressionIndex].statements) {
+        sourceStatements.push(source);
+      }
+      let loweredStatements = Array<usize>();
+      const bodyExpressionStart = expressions.length;
+      const bodyStatementStart = statements.length;
+      for (const source of sourceStatements) {
+        const lowered = try lowerStatement(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          source,
+          inout expressions,
+          inout statements
+        );
+        loweredStatements.push(lowered);
+      }
+      let scanExpression = bodyExpressionStart;
+      while (scanExpression < expressions.length) {
+        if (
+          expressions[scanExpression].kind
+            == LoweredExpressionKind.receiverValue
+        ) throw "native thread.spawn closures cannot capture `this` yet";
+        if (
+          expressions[scanExpression].kind
+            == LoweredExpressionKind.localValue
+        ) {
+          const usedName = view expressions[scanExpression].value;
+          let directCallee = false;
+          let parentExpression = bodyExpressionStart;
+          while (parentExpression < expressions.length) {
+            if (
+              expressions[parentExpression].kind
+                == LoweredExpressionKind.directCall
+              && expressions[parentExpression].children.length > 0
+              && expressions[parentExpression].children[0]
+                == scanExpression
+            ) directCallee = true;
+            parentExpression = parentExpression + 1;
+          }
+          let declaredInside = false;
+          let scanStatement = bodyStatementStart;
+          while (scanStatement < statements.length) {
+            if (
+              statements[scanStatement].kind
+                == LoweredStatementKind.localStatement
+              && statements[scanStatement].name == usedName
+            ) declaredInside = true;
+            scanStatement = scanStatement + 1;
+          }
+          if (!declaredInside && !directCallee) {
+            throw `native thread.spawn block closures do not support capture ${usedName} yet`;
+          }
+        }
+        scanExpression = scanExpression + 1;
+      }
+      let statementIndex = bodyStatementStart;
+      while (statementIndex < statements.length) {
+        match (in statements[statementIndex].type) {
+          some(type) => {
+            if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+              throw "native thread.spawn block closures do not support cleanup-bearing local values yet";
+            }
+          }
+          none => {}
+        }
+        statementIndex = statementIndex + 1;
+      }
+      expressions[expressionIndex].statements = move loweredStatements;
+      expressions[expressionIndex].labels[0] = "lowered-block";
+      expressionIndex = expressionIndex + 1;
+      continue;
+    }
     if (
       expressions[expressionIndex].kind
         != LoweredExpressionKind.mutexWithLock
@@ -8286,7 +8373,7 @@ function lowerStatement(
         }
       }
       match (in source.tree) {
-        some(tree) => try completeMutexClosureBlocks(
+        some(tree) => try completeNativeClosureBlocks(
           program,
           importedTypes,
           evidence,

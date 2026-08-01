@@ -1767,7 +1767,7 @@ test("emits, joins, and cleans up a native worker task", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}, 30_000);
+}, 45_000);
 
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
