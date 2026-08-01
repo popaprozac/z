@@ -993,6 +993,7 @@ function flattenExpression(
           expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
           expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
           "block",
+          expression.async ? "async" : "",
         ],
         expression.location,
         [expression.body.statements],
@@ -1009,6 +1010,7 @@ function flattenExpression(
         expression.returnType ? canonicalTypeName(expression.returnType.name) : "",
         expression.errorType ? canonicalTypeName(expression.errorType.name) : "",
         "expression",
+        expression.async ? "async" : "",
       ],
     );
   }

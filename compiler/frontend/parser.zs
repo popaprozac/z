@@ -846,6 +846,10 @@ function startsClosureExpression(
   let cursor = current;
   if (
     cursor < end
+    && tokens[cursor].kind == TokenKind.asyncKeyword
+  ) cursor = cursor + 1;
+  if (
+    cursor < end
     && tokens[cursor].kind == TokenKind.identifier
     && tokens[cursor].text == "move"
   ) cursor = cursor + 1;
@@ -1430,6 +1434,11 @@ function parsePrimaryTree(
     return try parseMatchTree(tokens, inout current, end, inout nodes, inout statementNodes);
   }
   if (startsClosureExpression(tokens, current, end)) {
+    let asynchronous = false;
+    if (tokens[current].kind == TokenKind.asyncKeyword) {
+      asynchronous = true;
+      current = current + 1;
+    }
     let captureMode = "borrow";
     if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "move") {
       captureMode = "move";
@@ -1507,6 +1516,7 @@ function parsePrimaryTree(
         inout statementNodes
       );
       labels.push("block");
+      labels.push(asynchronous ? "async" : "");
       return pushExpressionNodeWithStatementsAndTypes(
         inout nodes,
         ExpressionKind.closureExpression,
@@ -1527,6 +1537,7 @@ function parsePrimaryTree(
     );
     children.push(body);
     labels.push("expression");
+    labels.push(asynchronous ? "async" : "");
     return pushExpressionNodeWithTypes(
       inout nodes,
       ExpressionKind.closureExpression,
@@ -2323,6 +2334,11 @@ function projectedExecutorPlacementEnd(
   while (true) {
     const kind = tokens[current].kind;
     if (kind == TokenKind.eof) throw fail(start, "unterminated executor placement");
+    if (
+      kind == TokenKind.semicolon
+      && parentheses == 0
+      && brackets == 0
+    ) return current;
     if (kind == TokenKind.leftBrace && parentheses == 0 && brackets == 0) break;
     if (kind == TokenKind.leftParen) parentheses = parentheses + 1;
     else if (kind == TokenKind.rightParen && parentheses > 0) parentheses = parentheses - 1;

@@ -892,10 +892,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Value-producing `if` expressions retain condition, then-value-block, and
    else-value-block/if-expression edges. Their branch statements use the shared
    statement arena, preserving local declarations and explicit `select` nodes.
-   Executor-placement expressions retain await/task mode, a distinct
-   source-located `on` marker, the executor expression root, optional success and
-   error types, and the placed body. This leaves a structural insertion point for
-   the planned contextual `using` capture clause.
+   Closures retain whether they are synchronous or `async`, including nested
+   block-bodied worker closures. Executor-placement expressions retain
+   await/task mode, a distinct source-located `on` marker, the executor
+   expression root, optional success and error types, and either a placed body
+   or direct placed call. This leaves a structural insertion point for the
+   planned contextual `using` capture clause.
    Contextual keywords are accepted as member names after `.` just as they are
    by stage 0. Unicode identifiers remain future lexer work.
    Exact lexer and parser parity now covers UTF-16 locations after BMP and
