@@ -48,6 +48,7 @@ function cType(in type: LoweredType): String throws String {
   if (
     type.kind == LoweredTypeKind.onceType
     || type.kind == LoweredTypeKind.onceLifetimeType
+    || type.kind == LoweredTypeKind.mutexType
   ) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.enumType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.foreignEnumType) {
@@ -213,6 +214,110 @@ function programOnceTypeNames(
   return names;
 }
 
+function appendMutexTypeName(
+  inout names: Array<String>,
+  in type: LoweredType
+): void {
+  if (type.kind != LoweredTypeKind.mutexType) return;
+  for (const existing of names) {
+    if (existing == type.name) return;
+  }
+  names.push(type.name.copyBytes(0, type.name.byteLength));
+}
+
+function programMutexTypeNames(
+  in program: LoweredProgram
+): Array<String> {
+  let names = Array<String>();
+  for (const constant of program.constants) {
+    appendMutexTypeName(inout names, constant.type);
+  }
+  for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      appendMutexTypeName(inout names, field.type);
+    }
+  }
+  for (const declaration of program.functions) {
+    appendMutexTypeName(inout names, declaration.returnType);
+    for (const parameter of declaration.parameters) {
+      appendMutexTypeName(inout names, parameter.type);
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => appendMutexTypeName(inout names, type);
+        none => {}
+      }
+    }
+  }
+  return names;
+}
+
+function loweredTypeForIdentity(
+  in program: LoweredProgram,
+  in identity: String
+): LoweredType throws String {
+  if (identity == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
+  if (identity == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
+  if (identity == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });
+  if (identity == "i32") return LoweredType({ kind: LoweredTypeKind.i32Type, name: "" });
+  if (identity == "i64") return LoweredType({ kind: LoweredTypeKind.i64Type, name: "" });
+  if (identity == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
+  if (identity == "u16") return LoweredType({ kind: LoweredTypeKind.u16Type, name: "" });
+  if (identity == "u32") return LoweredType({ kind: LoweredTypeKind.u32Type, name: "" });
+  if (identity == "u64") return LoweredType({ kind: LoweredTypeKind.u64Type, name: "" });
+  if (identity == "isize") return LoweredType({ kind: LoweredTypeKind.isizeType, name: "" });
+  if (identity == "usize") return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
+  if (identity == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
+  if (identity == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
+  if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
+  if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
+  for (const declaration of program.arrays) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.arrayType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  for (const declaration of program.maps) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.mapType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  for (const declaration of program.sets) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.setType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  for (const declaration of program.structs) {
+    if (declaration.name == identity) return LoweredType({
+      kind: declaration.referenceType
+        ? LoweredTypeKind.classType
+        : LoweredTypeKind.structType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  for (const declaration of program.enums) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
+  throw `native C emission cannot resolve intrinsic type identity ${identity}`;
+}
+
+function mutexValueType(
+  in program: LoweredProgram,
+  in mutexName: String
+): LoweredType throws String {
+  const prefix = "Mutex_";
+  if (!stringStartsWith(mutexName, prefix)) {
+    throw `native C emission received malformed Mutex identity ${mutexName}`;
+  }
+  const identity = mutexName.copyBytes(prefix.byteLength, mutexName.byteLength);
+  return try loweredTypeForIdentity(program, identity);
+}
+
 function appendIndent(inout output: TextBuffer, depth: usize): void {
   let current: usize = 0;
   while (current < depth) {
@@ -293,6 +398,31 @@ function appendClassAndOnceRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
+  const mutexNames = programMutexTypeNames(program);
+  for (const mutexName of mutexNames) {
+    const valueType = try mutexValueType(program, mutexName);
+    const nativeValueType = try cType(valueType);
+    output.append("static __attribute__((unused)) Z_");
+    output.append(mutexName);
+    output.append(" Z_");
+    output.append(mutexName);
+    output.append("_new(");
+    output.append(nativeValueType);
+    output.append(" value);\n");
+    output.append("static __attribute__((unused)) Z_");
+    output.append(mutexName);
+    output.append(" Z_");
+    output.append(mutexName);
+    output.append("_retain(Z_");
+    output.append(mutexName);
+    output.append(" mutex);\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(mutexName);
+    output.append("_deinit(Z_");
+    output.append(mutexName);
+    output.append(" *mutex);\n");
+  }
+  if (mutexNames.length > 0) output.append("\n");
   for (const aggregate of program.structs) {
     if (!aggregate.referenceType) continue;
     output.append("static __attribute__((unused)) Z_");
@@ -445,6 +575,57 @@ function appendClassAndOnceRuntime(
     output.append("  Z_");
     output.append(valueName);
     output.append("_release(value);\n}\n\n");
+  }
+  for (const mutexName of mutexNames) {
+    const valueType = try mutexValueType(program, mutexName);
+    const nativeValueType = try cType(valueType);
+    output.append("static __attribute__((unused)) Z_");
+    output.append(mutexName);
+    output.append(" Z_");
+    output.append(mutexName);
+    output.append("_new(");
+    output.append(nativeValueType);
+    output.append(" value) {\n  Z_");
+    output.append(mutexName);
+    output.append("Storage *storage = (Z_");
+    output.append(mutexName);
+    output.append("Storage *)calloc(1, sizeof(Z_");
+    output.append(mutexName);
+    output.append("Storage));\n  if (storage == NULL) abort();\n");
+    output.append("#if defined(_WIN32)\n  InitializeSRWLock(&storage->native);\n#else\n");
+    output.append("  if (pthread_mutex_init(&storage->native, NULL) != 0) { free(storage); abort(); }\n#endif\n");
+    output.append("  storage->refcount = 1;\n  storage->value = value;\n  return (Z_");
+    output.append(mutexName);
+    output.append("){ .storage = storage };\n}\n\n");
+    output.append("static __attribute__((unused)) Z_");
+    output.append(mutexName);
+    output.append(" Z_");
+    output.append(mutexName);
+    output.append("_retain(Z_");
+    output.append(mutexName);
+    output.append(" mutex) {\n  if (mutex.storage == NULL) abort();\n");
+    output.append("  __atomic_add_fetch(&mutex.storage->refcount, 1, __ATOMIC_RELAXED);\n  return mutex;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(mutexName);
+    output.append("_deinit(Z_");
+    output.append(mutexName);
+    output.append(" *mutex) {\n  if (mutex == NULL || mutex->storage == NULL) return;\n  Z_");
+    output.append(mutexName);
+    output.append("Storage *storage = mutex->storage;\n  mutex->storage = NULL;\n");
+    output.append("  if (__atomic_sub_fetch(&storage->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;\n");
+    output.append("#if !defined(_WIN32)\n  if (pthread_mutex_destroy(&storage->native) != 0) abort();\n#endif\n");
+    if (loweredTypeNeedsDeinit(program, valueType)) {
+      if (valueType.kind == LoweredTypeKind.classType) {
+        output.append("  Z_");
+        output.append(valueType.name);
+        output.append("_release(storage->value);\n");
+      } else {
+        output.append("  Z_");
+        output.append(valueType.name);
+        output.append("_deinit(&storage->value);\n");
+      }
+    }
+    output.append("  free(storage);\n}\n\n");
   }
 }
 
@@ -1363,6 +1544,22 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.mutexValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed Mutex construction";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_new(");
+    const value = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      value
+    );
+    output.append(")");
+    return;
+  }
   if (
     declaration.expressions[index].kind
       == LoweredExpressionKind.onceInitialize
@@ -1974,7 +2171,8 @@ function appendStatement(
           && storageType.kind != LoweredTypeKind.setType
           && storageType.kind != LoweredTypeKind.stringType
           && storageType.kind != LoweredTypeKind.classType
-          && storageType.kind != LoweredTypeKind.onceLifetimeType;
+          && storageType.kind != LoweredTypeKind.onceLifetimeType
+          && storageType.kind != LoweredTypeKind.mutexType;
       }
       none => false;
     };
@@ -3232,6 +3430,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
+    || type.kind == LoweredTypeKind.mutexType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -3465,6 +3664,21 @@ function appendTypeDefinitions(
   inout output: TextBuffer,
   in program: LoweredProgram
 ): void throws String {
+  const mutexNames = programMutexTypeNames(program);
+  for (const mutexName of mutexNames) {
+    output.append("typedef struct Z_");
+    output.append(mutexName);
+    output.append("Storage Z_");
+    output.append(mutexName);
+    output.append("Storage;\n");
+    output.append("typedef struct Z_");
+    output.append(mutexName);
+    output.append(" {\n  Z_");
+    output.append(mutexName);
+    output.append("Storage *storage;\n} Z_");
+    output.append(mutexName);
+    output.append(";\n\n");
+  }
   for (const declaration of program.arrays) {
     output.append("typedef struct Z_");
     output.append(declaration.name);
@@ -3570,6 +3784,15 @@ function appendTypeDefinitions(
       inout enumStates
     );
     structIndex = structIndex + 1;
+  }
+  for (const mutexName of mutexNames) {
+    const valueType = try mutexValueType(program, mutexName);
+    const nativeValueType = try cType(valueType);
+    output.append("struct Z_");
+    output.append(mutexName);
+    output.append("Storage {\n#if defined(_WIN32)\n  SRWLOCK native;\n#else\n  pthread_mutex_t native;\n#endif\n  size_t refcount;\n  ");
+    output.append(nativeValueType);
+    output.append(" value;\n};\n\n");
   }
   const onceNames = programOnceTypeNames(program);
   for (const onceName of onceNames) {
@@ -4578,6 +4801,8 @@ function emitLoweredC(
     || programUsesStandardCall(program, "console.write")
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
+  const mutexTypeNames = programMutexTypeNames(program);
+  const usesMutex = mutexTypeNames.length > 0;
   if (usesRealPath || usesCreateDirectories || usesProcessExecutablePath) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
@@ -4623,6 +4848,9 @@ function emitLoweredC(
   }
   if (usesLock) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <fcntl.h>\n#include <sys/file.h>\n#include <unistd.h>\n#endif\n");
+  }
+  if (usesMutex) {
+    output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
   if (usesReplace) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#endif\n");

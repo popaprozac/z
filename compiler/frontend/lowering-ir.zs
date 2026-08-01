@@ -57,6 +57,7 @@ export enum LoweredTypeKind {
   classType,
   onceType,
   onceLifetimeType,
+  mutexType,
   enumType,
   foreignEnumType,
 }
@@ -158,6 +159,7 @@ export enum LoweredExpressionKind {
   fieldValue,
   structValue,
   classValue,
+  mutexValue,
   onceEmpty,
   onceInitialize,
   onceGet,
@@ -366,6 +368,9 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   if (type.kind == LoweredTypeKind.cstringType) return "cstring";
+  if (type.kind == LoweredTypeKind.mutexType) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
   return type.name.copyBytes(0, type.name.byteLength);
 }
 
@@ -401,6 +406,11 @@ function intrinsicOnceName(in valueType: LoweredType): String {
 function intrinsicOnceLifetimeName(in valueType: LoweredType): String {
   const identity = loweredTypeIdentity(valueType);
   return `OnceLifetime_${identity}`;
+}
+
+function intrinsicMutexName(in valueType: LoweredType): String {
+  const identity = loweredTypeIdentity(valueType);
+  return `Mutex_${identity}`;
 }
 
 function intrinsicResultName(
@@ -563,6 +573,13 @@ function lowerTypeName(
           name: intrinsicOnceLifetimeName(valueType),
         });
       }
+      if (generic.base == "Mutex" && generic.arguments.length == 1) {
+        const valueType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.mutexType,
+          name: intrinsicMutexName(valueType),
+        });
+      }
       if (generic.base == "Result" && generic.arguments.length == 2) {
         const successType = try lowerTypeName(program, generic.arguments[0]);
         const errorType = try lowerTypeName(program, generic.arguments[1]);
@@ -689,6 +706,17 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.onceLifetimeType,
           name: intrinsicOnceLifetimeName(valueType),
+        });
+      }
+      if (generic.base == "Mutex" && generic.arguments.length == 1) {
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.mutexType,
+          name: intrinsicMutexName(valueType),
         });
       }
       if (generic.base == "Result" && generic.arguments.length == 2) {
@@ -885,6 +913,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
+    || type.kind == LoweredTypeKind.mutexType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1058,6 +1087,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.onceLifetimeType
+    || type.kind == LoweredTypeKind.mutexType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -3491,6 +3521,84 @@ function lowerExpression(
     }
     const calleeInput = tree.nodes[index].children[0];
     if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      && tree.nodes[index].children.length == 2
+    ) {
+      let bindingName = tree.nodes[calleeInput].value.copyBytes(
+        0,
+        tree.nodes[calleeInput].value.byteLength
+      );
+      match (genericTypeShape(bindingName)) {
+        some(generic) => bindingName = generic.base.copyBytes(
+          0,
+          generic.base.byteLength
+        );
+        none => {}
+      }
+      if (isImportedStandardBinding(
+        program,
+        "std/sync",
+        "Mutex",
+        bindingName
+      )) {
+        let valueTypeName = "";
+        match (genericTypeShape(tree.nodes[calleeInput].value)) {
+          some(generic) => {
+            if (generic.arguments.length == 1) {
+              valueTypeName = generic.arguments[0].copyBytes(
+                0,
+                generic.arguments[0].byteLength
+              );
+            }
+          }
+          none => {}
+        }
+        const valueInput = tree.nodes[index].children[1];
+        if (valueTypeName.byteLength == 0) {
+          match (evidenceResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            valueInput
+          )) {
+            some(name) => valueTypeName = move name;
+            none => throw "native Mutex construction could not resolve its payload type";
+          }
+        }
+        const valueType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          valueTypeName
+        );
+        let value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          valueInput,
+          valueTypeName,
+          inout output
+        );
+        value = wrapImplicitOwnedTransfer(
+          tree,
+          valueInput,
+          value,
+          inout output
+        );
+        let children = Array<usize>();
+        children.push(value);
+        const mutexName = intrinsicMutexName(valueType);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.mutexValue,
+          mutexName,
+          children,
+          Array<String>()
+        );
+      }
+    }
+    if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
     ) {
@@ -5328,6 +5436,65 @@ function lowerExpressionExpected(
 ): usize throws String {
   match (genericTypeShape(expectedTypeName)) {
     some(generic) => {
+      if (
+        generic.base == "Mutex"
+        && generic.arguments.length == 1
+        && tree.nodes[index].kind == ExpressionKind.callExpression
+        && tree.nodes[index].children.length == 2
+      ) {
+        const callee = tree.nodes[index].children[0];
+        if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+          let bindingName = tree.nodes[callee].value.copyBytes(
+            0,
+            tree.nodes[callee].value.byteLength
+          );
+          match (genericTypeShape(bindingName)) {
+            some(calleeType) => bindingName = calleeType.base.copyBytes(
+              0,
+              calleeType.base.byteLength
+            );
+            none => {}
+          }
+          if (isImportedStandardBinding(
+            program,
+            "std/sync",
+            "Mutex",
+            bindingName
+          )) {
+            const valueType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              generic.arguments[0]
+            );
+            const valueInput = tree.nodes[index].children[1];
+            let value = try lowerExpressionExpected(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              valueInput,
+              generic.arguments[0],
+              inout output
+            );
+            value = wrapImplicitOwnedTransfer(
+              tree,
+              valueInput,
+              value,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(value);
+            const mutexName = intrinsicMutexName(valueType);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.mutexValue,
+              mutexName,
+              children,
+              Array<String>()
+            );
+          }
+        }
+      }
       if (generic.base == "Option" && generic.arguments.length == 1) {
         const intrinsic = try intrinsicOptionDeclaration(
           program,
@@ -6450,6 +6617,24 @@ function standardTestBindingName(
     }
   }
   return "";
+}
+
+function isImportedStandardBinding(
+  in program: Program,
+  in header: String,
+  in importedName: String,
+  in localName: String
+): boolean {
+  for (const declaration of program.imports) {
+    if (declaration.header != header) continue;
+    for (const binding of declaration.bindings) {
+      if (
+        binding.importedName == importedName
+        && binding.localName == localName
+      ) return true;
+    }
+  }
+  return false;
 }
 
 function testBorrowInput(in tree: ExpressionTree, index: usize): usize {
