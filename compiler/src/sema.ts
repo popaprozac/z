@@ -638,6 +638,17 @@ type AnalysisState = {
 
 type AccessCapability = "value" | "in" | "inout" | "out" | "move";
 
+type ClosureExecutionContext = "inherit" | "main" | "unknown";
+
+type ClosureInferenceOptions = {
+  readonly expectedFunction?: FunctionType | null;
+  readonly transientBorrow?: boolean;
+  readonly oneShotOwnedCaptures?: boolean;
+  readonly nativeThreadBody?: boolean;
+  readonly scheduledAsyncBody?: boolean;
+  readonly executionContext?: ClosureExecutionContext;
+};
+
 type AccessLoan = {
   readonly root: string;
   readonly capability: AccessCapability;
@@ -3603,7 +3614,9 @@ function analyzeStatement(
         ? parseFunctionType(String(declaredVariableType))
         : null;
       let initializerType = statement.initializer.kind === "closure"
-        ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, contextualFunction)
+        ? inferClosureExpression(statement.initializer, locals, globals, structs, enums, fileName, state, {
+            expectedFunction: contextualFunction,
+          })
         : inferDirectValue(
           statement.initializer,
           owner,
@@ -4866,12 +4879,14 @@ function inferClosureExpression(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
-  expectedFunction: FunctionType | null = null,
-  transientBorrow = false,
-  oneShotOwnedCaptures = false,
-  nativeThreadBody = false,
-  scheduledAsyncBody = false,
+  options: ClosureInferenceOptions = {},
 ): ValueType {
+  const expectedFunction = options.expectedFunction ?? null;
+  const transientBorrow = options.transientBorrow ?? false;
+  const oneShotOwnedCaptures = options.oneShotOwnedCaptures ?? false;
+  const nativeThreadBody = options.nativeThreadBody ?? false;
+  const scheduledAsyncBody = options.scheduledAsyncBody ?? false;
+  const executionContext = options.executionContext ?? "unknown";
   if (expression.async && !nativeThreadBody && !scheduledAsyncBody) {
     throw new DiagnosticError(fileName, expression.location, "async closures are currently executable only through thread.spawn", {
       code: "Z0703",
@@ -5099,7 +5114,13 @@ function inferClosureExpression(
   let returnType: ValueType;
   let body: Statement[];
   const previousFunction = state.activeFunction;
+  const previousExecutorContext = state.executorContext;
   state.activeFunction = syntheticBase;
+  state.executorContext = executionContext === "inherit"
+    ? previousExecutorContext
+    : executionContext === "main"
+      ? "main"
+      : null;
   if (nativeThreadBody) state.nativeThreadBodyDepth += 1;
   try {
     if (expression.body.kind === "block") {
@@ -5131,6 +5152,7 @@ function inferClosureExpression(
     }
   } finally {
     if (nativeThreadBody) state.nativeThreadBodyDepth -= 1;
+    state.executorContext = previousExecutorContext;
     state.activeFunction = previousFunction;
   }
 
@@ -9174,7 +9196,27 @@ function inferExpressionInner(
               const operation = expression.arguments[1];
               const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null };
               const expectedType = functionTypeName([], "void");
-              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, expectedFunction);
+              const controlExecutionContext: ClosureExecutionContext = executorAffinityForType(
+                controlType,
+                structs,
+                enums,
+                state,
+              )?.executor === "main"
+                ? "main"
+                : "unknown";
+              inferClosureExpression(
+                operation,
+                locals,
+                globals,
+                structs,
+                enums,
+                fileName,
+                state,
+                {
+                  expectedFunction,
+                  executionContext: controlExecutionContext,
+                },
+              );
               finalizeClosureFunctionValue(
                 operation,
                 expectedFunction,
@@ -9210,7 +9252,11 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[0];
-              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, null, false, true, true);
+              inferClosureExpression(operation, locals, globals, structs, enums, fileName, state, {
+                oneShotOwnedCaptures: true,
+                nativeThreadBody: true,
+                executionContext: "unknown",
+              });
               const closure = state.closures.get(operation.location.offset)!;
               if (closure.parameterCount !== 0) {
                 throw new DiagnosticError(fileName, operation.location, "thread.spawn closure cannot declare parameters in the first thread tier", {
@@ -9600,8 +9646,10 @@ function inferExpressionInner(
             enums,
             fileName,
             state,
-            null,
-            true,
+            {
+              transientBorrow: true,
+              executionContext: "inherit",
+            },
           );
           const closure = state.closures.get(callback.location.offset)!;
           const functionType = closureFunctionType(closure);
@@ -9848,26 +9896,21 @@ function inferExpressionInner(
                 helps: ["handle fallible work locally with `attempt await`"],
               });
             }
-            const previousExecutorContext = state.executorContext;
-            state.executorContext = "main";
-            try {
-              inferClosureExpression(
-                operation,
-                locals,
-                globals,
-                structs,
-                enums,
-                fileName,
-                state,
+            inferClosureExpression(
+              operation,
+              locals,
+              globals,
+              structs,
+              enums,
+              fileName,
+              state,
+              {
                 expectedFunction,
-                false,
-                operation.async,
-                false,
-                operation.async,
-              );
-            } finally {
-              state.executorContext = previousExecutorContext;
-            }
+                oneShotOwnedCaptures: operation.async,
+                scheduledAsyncBody: operation.async,
+                executionContext: "main",
+              },
+            );
             const closure = operation.async
               ? state.closures.get(operation.location.offset)!
               : finalizeClosureFunctionValue(
@@ -11105,7 +11148,20 @@ function checkArguments(
       if (!expectedFunction) {
         throw new DiagnosticError(fileName, argument.location, `expected ${parameter.type.name}, found a closure`);
       }
-      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, true);
+      inferClosureExpression(
+        argument,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        {
+          expectedFunction,
+          transientBorrow: true,
+          executionContext: parameter.mode === "in" ? "inherit" : "unknown",
+        },
+      );
       finalizeClosureFunctionValue(
         argument,
         expectedFunction,
@@ -13565,7 +13621,23 @@ function checkObjCArguments(
     if (parameter.type.kind === "block" && argument.kind === "closure") {
       const expectedType = foreignValueType(parameter.type);
       const expectedFunction = parseFunctionType(String(expectedType))!;
-      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, !parameter.type.escaping);
+      const executionContext: ClosureExecutionContext = parameter.type.thread === "any"
+        ? "unknown"
+        : "inherit";
+      inferClosureExpression(
+        argument,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        {
+          expectedFunction,
+          transientBorrow: !parameter.type.escaping,
+          executionContext,
+        },
+      );
       finalizeClosureFunctionValue(
         argument,
         expectedFunction,
@@ -14596,7 +14668,25 @@ function checkForeignCall(
     if (parameter?.type.kind === "callback" && argument.kind === "closure") {
       const expectedCallback = foreignValueType(parameter.type);
       const expectedFunction = parseFunctionType(String(expectedCallback))!;
-      inferClosureExpression(argument, locals, globals, structs, enums, fileName, state, expectedFunction, true);
+      const executionContext: ClosureExecutionContext = parameter.type.thread === "any"
+        ? "unknown"
+        : parameter.type.thread === "caller" || parameter.type.lifetime === "call"
+          ? "inherit"
+          : "unknown";
+      inferClosureExpression(
+        argument,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+        {
+          expectedFunction,
+          transientBorrow: true,
+          executionContext,
+        },
+      );
       const actualFunction = closureFunctionType(state.closures.get(argument.location.offset)!);
       const actualCallback = functionTypeName(
         actualFunction.parameters,

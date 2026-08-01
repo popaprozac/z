@@ -446,10 +446,10 @@ test("rejects a Mutex payload that cannot be destroyed on a worker", () => {
       return await worker;
     }
   `, "/tmp/z-mutex-thread-affine-payload.zs")[0];
-  assert.equal(executorDiagnostic?.code, "Z0704");
+  assert.equal(executorDiagnostic?.code, "Z0711");
   assert.match(
     executorDiagnostic?.message ?? "",
-    /Mutex payload WindowState is executor-bound|Mutex<WindowState>.*cannot cross/,
+    /WindowState.*requires thread\.main executor context/,
   );
 
   const cleanupDiagnostic = diagnostics(`

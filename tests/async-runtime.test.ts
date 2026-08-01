@@ -2634,8 +2634,8 @@ test("carries main-isolated ARC identity opaquely through a native worker", () =
     "return presenter.publish(40);",
   );
   const directDiagnostic = diagnostics(directAccess, "executor-bound-direct.zs")[0];
-  assert.equal(directDiagnostic.code, "Z0704");
-  assert.match(directDiagnostic.message, /main-isolated capture "presenter" is only opaque/);
+  assert.equal(directDiagnostic.code, "Z0711");
+  assert.match(directDiagnostic.message, /requires thread\.main executor context/);
   assert.match(directDiagnostic.message, /await on thread\.main/);
 
   const escapedAlias = source.replace(
@@ -2648,6 +2648,48 @@ test("carries main-isolated ARC identity opaquely through a native worker", () =
   const aliasDiagnostic = diagnostics(escapedAlias, "executor-bound-alias.zs")[0];
   assert.equal(aliasDiagnostic.code, "Z0704");
   assert.match(aliasDiagnostic.message, /main-isolated capture "presenter" is only opaque/);
+
+  const ambientExecutorLeak = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application {
+      status: String on thread.main;
+
+      function currentStatus(): usize on thread.main {
+        return this.status.byteLength;
+      }
+    }
+
+    const application = Once<Application>();
+
+    function currentApplication(): Application {
+      return application.get();
+    }
+
+    export async function launchBad(): usize on thread.main {
+      const worker = thread.spawn(move (): usize => {
+        const current = currentApplication();
+        return current.status.byteLength;
+      });
+      return await worker;
+    }
+
+    function main(): i32 {
+      return 0;
+    }
+  `;
+  const fieldLeakDiagnostic = diagnostics(ambientExecutorLeak, "main-caller-worker-field.zs")[0];
+  assert.equal(fieldLeakDiagnostic.code, "Z0711");
+  assert.match(fieldLeakDiagnostic.message, /field .*Application.*status.*requires thread\.main/);
+
+  const methodLeak = ambientExecutorLeak.replace(
+    "current.status.byteLength",
+    "current.currentStatus()",
+  );
+  const methodLeakDiagnostic = diagnostics(methodLeak, "main-caller-worker-method.zs")[0];
+  assert.equal(methodLeakDiagnostic.code, "Z0711");
+  assert.match(methodLeakDiagnostic.message, /method .*Application.*currentStatus.*requires thread\.main/);
 });
 
 test("preserves typed errors from thread.spawn as Task<T, E>", () => {

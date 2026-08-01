@@ -2623,6 +2623,36 @@ test("owns arbitrary-thread native callback environments atomically and checks c
   `;
   const stored = diagnostics(storedEnvironment, fixture).find((item) => item.code === "Z0704");
   assert.match(stored?.message ?? "", /requires an inline closure or named function/);
+
+  const mainCallerLeak = `
+    import callbacks from "callbacks-any-thread.h";
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    class Application {
+      published: i32 on thread.main;
+    }
+
+    const application = Once<Application>();
+
+    function currentApplication(): Application {
+      return application.get();
+    }
+
+    function main(): i32 on thread.main {
+      callbacks.z_start_any_thread_callback(
+        42,
+        move (value): i32 => {
+          const current = currentApplication();
+          current.published = value;
+          return value;
+        }
+      );
+      return 0;
+    }
+  `;
+  const mainCallerDiagnostic = diagnostics(mainCallerLeak, fixture).find((item) => item.code === "Z0711");
+  assert.match(mainCallerDiagnostic?.message ?? "", /field .*Application.*published.*requires thread\.main/);
 });
 
 test("rejects unknown functions from imported headers", () => {

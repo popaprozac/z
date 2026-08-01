@@ -1772,6 +1772,19 @@ Both callbacks retrieve a mixed-affinity `Once<Application>`, mutate only its
 `Mutex` surface, and publish through a joined `TaskScope` operation on main.
 Direct access to the main-only field from the Swift callback remains `Z0711`.
 
+An adversarial main-affine registration probe found that this guarantee was
+initially lexical rather than executable: a closure inferred inside an
+`on thread.main` function inherited that proof even when `thread.spawn`, a C
+`thread any` callback, or an Objective-C `thread any` block would execute the
+body elsewhere. Closure inference now receives an explicit execution context.
+Synchronous nonescaping callbacks and `Mutex.withLock` inherit the caller,
+`TaskScope.schedule(thread.main, ...)` supplies main proof, and native workers
+or arbitrary-thread callbacks begin with no executor proof. Regression tests
+exercise all three unsafe registration paths from a main-affine caller, not
+only from an unrestricted helper. This preserves the ergonomic unrestricted
+`Once.get()` facade while making member-level affinity the actual enforcement
+boundary rather than a documentation claim.
+
 ## Generated-library runtime entry
 
 The same bounded-entry rule now applies in the opposite interop direction.

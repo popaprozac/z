@@ -1265,6 +1265,15 @@ hostToolchainTest("enters the captured Z runtime for arbitrary-thread Objective-
   assert.match(artifact.source, /_z_runtime_retain\(_z_runtime_context\)/);
   assert.match(artifact.source, /_z_runtime_release\(_z_runtime_context\)/);
 
+  const mainCallerLeak = source
+    .replace(
+      "function observeNativeCallback(updates: TaskScope): void {",
+      "function observeNativeCallback(updates: TaskScope): void on thread.main {",
+    )
+    .replace("current.record(value);", "current.published = value;");
+  const mainCallerDiagnostic = diagnostics(mainCallerLeak, fixture).find((item) => item.code === "Z0711");
+  assert.match(mainCallerDiagnostic?.message ?? "", /field .*Application.*published.*requires thread\.main/);
+
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
