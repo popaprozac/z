@@ -206,15 +206,15 @@ test("traps when Once is read before initialization, after lifetime cleanup, or 
       export const application: Once<Application> = Once<Application>();
     `);
 
-    const cases = new Map<string, string>([
-      ["before", `
+    const cases = new Map<string, { readonly source: string; readonly expected: RegExp }>([
+      ["before", { source: `
         import { application } from "./state.zs";
         function main(): i32 {
           const current = application.get();
           return current.id;
         }
-      `],
-      ["after", `
+      `, expected: /Once<.*Application> has not been initialized/i }],
+      ["after", { source: `
         import { Application, application } from "./state.zs";
         function main(): i32 {
           {
@@ -225,8 +225,8 @@ test("traps when Once is read before initialization, after lifetime cleanup, or 
           const current = application.get();
           return current.id;
         }
-      `],
-      ["duplicate", `
+      `, expected: /Once<.*Application> lifetime has already closed/i }],
+      ["duplicate", { source: `
         import { Application, application } from "./state.zs";
         function main(): i32 {
           const lifetime = application.initialize(
@@ -237,8 +237,8 @@ test("traps when Once is read before initialization, after lifetime cleanup, or 
           );
           return 0;
         }
-      `],
-      ["reinitialize", `
+      `, expected: /Once<.*Application> is already initialized and cannot reinitialize/i }],
+      ["reinitialize", { source: `
         import { Application, application } from "./state.zs";
         function main(): i32 {
           {
@@ -251,22 +251,17 @@ test("traps when Once is read before initialization, after lifetime cleanup, or 
           );
           return 0;
         }
-      `],
+      `, expected: /Once<.*Application> lifetime has already closed and cannot reinitialize/i }],
     ]);
 
-    for (const [name, source] of cases) {
+    for (const [name, current] of cases) {
       const file = resolve(directory, `${name}.zs`);
-      writeFileSync(file, source);
+      writeFileSync(file, current.source);
       const result = spawnSync(process.execPath, [cli, "run", file], {
         encoding: "utf8",
       });
       assert.notEqual(result.status, 0, `${name} unexpectedly succeeded`);
-      assert.match(
-        result.stderr,
-        name === "duplicate" || name === "reinitialize"
-          ? /Once<.*Application>.*(already initialized|already contains|already active|more than once|cannot reinitialize)/i
-          : /Once<.*Application>.*(not initialized|empty|no active value|before initialize|inactive)/i,
-      );
+      assert.match(result.stderr, current.expected);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

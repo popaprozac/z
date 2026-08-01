@@ -1430,7 +1430,11 @@ deinitializing it removes the value from the cell and releases the cell's strong
 ARC reference on the required executor. `get(): T` returns a retained class
 identity while that interval is active. Access before initialization, duplicate
 initialization, and access after guard cleanup are invariant violations and
-trap; absence is not part of the result type.
+trap; absence is not part of the result type. The runtime distinguishes a cell
+that has never been initialized from one whose publication lifetime has closed.
+Retrieval and cleanup are serialized: a retrieval that wins retains an
+independent ARC reference, while a retrieval after cleanup traps. Structured
+workers that may call `get()` must therefore join before the lifetime closes.
 `OnceLifetime<T>` is exported from `std/sync` so a wrapper may state its public
 return type, but user code cannot construct one independently of
 `Once<T>.initialize`.
@@ -2193,8 +2197,10 @@ interfaces are ARC-managed reference values; superclass metadata is used for
 foreign method lookup without adding inheritance to Z's own type system. The
 bootstrap supports class and instance messages, property getters and setters,
 `instancetype`, object nullability, contextual Objective-C string literals,
-and an autorelease pool around `main`. Positional calls resolve a selector by
-its first component and arity. A call may label every argument after the first
+and autorelease pools around `main` and every public C export. The latter keeps
+host-created threads from leaking temporary Objective-C objects without
+assuming the host installed a pool. Positional calls resolve a selector by its
+first component and arity. A call may label every argument after the first
 to spell the complete selector shape without repeating the first component:
 
 ```z

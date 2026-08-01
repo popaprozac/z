@@ -139,6 +139,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
         const analysis = analyzeSource(source, inputPath, {
           requireMain: input.mode === "project"
             && input.project.targetKind === "executable",
+          validateTarget: input.mode === "project",
           nativeFrontendResolver: nativeFrontend
             ? (sourceBatch) => {
               nativeRun = runStage1Resolver(inputPath, sourceBatch);

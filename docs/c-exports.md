@@ -365,6 +365,17 @@ the public wrapper, so the cost occurs only at the foreign boundary. A future
 proven stateless export mode may omit it, but the default embedding contract
 will not make safe shutdown depend on an undocumented host promise.
 
+When a library uses the Objective-C backend, every public C wrapper also opens
+an autorelease pool around the Z invocation. A host pthread therefore receives
+the same temporary-object cleanup boundary as Z `main`; the embedding contract
+does not rely on the foreign host having installed its own pool.
+
+Libraries do not implicitly receive the host process's `argc`/`argv`.
+`process.args()` and `process.executablePath()` are rejected in static and
+shared-library targets for now. Hosts pass required argument or executable
+information through an explicit exported function; a future runtime config
+field may make that channel reusable without inventing ambient state.
+
 ### Owned runtime root
 
 A library may opt into one explicit ownership-bearing root in `z.json`:

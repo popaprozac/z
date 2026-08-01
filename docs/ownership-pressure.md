@@ -1857,6 +1857,35 @@ marked unused independently of whether their source declaration came from a
 linked module, so a valid but not-yet-instantiated class no longer fails in
 Clang under `-Werror`.
 
+## Host-thread and ambient-process hardening
+
+The library review also separated two concerns that an executable gets from
+`main` but a foreign host does not. Every Objective-C-backed C export now opens
+its own autorelease pool around the public invocation, so a pthread supplied by
+the host does not leak autoreleased temporaries merely because it entered Z.
+The pool is outside the private Z implementation and therefore adds cost only
+at the native boundary.
+
+Conversely, library targets now reject `process.args()` and
+`process.executablePath()`. Their current runtime source is the argument vector
+installed by Z `main`; silently returning an empty array or a missing path from
+a shared library would turn absent host configuration into ordinary data.
+Passing host data through an explicit C export is the safe current shape, and a
+future embedding config may add a reusable argument channel deliberately.
+
+`Once<T>` runtime traps now distinguish never initialized, already active, and
+publication lifetime already closed. Retrieval and cleanup already serialize
+on the cell mutex: a winning retrieval retains independent ARC identity, while
+a losing retrieval traps after closure. This proves memory safety but not
+logical scheduling, so structured workers that may call `get()` must join
+before the `OnceLifetime<T>` owner leaves scope.
+
+Finally, the review's proposed `thread any` plus call-scoped callback hole was
+already rejected by `.zd` validation: `in` callbacks cannot declare threading
+or release facts, while arbitrary-thread callbacks must be escaping `move`
+registrations with a complete release contract. A regression fixture now
+protects that fail-closed rule explicitly.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -83,6 +83,9 @@ interval. Its deterministic cleanup empties the cell on the payload's executor.
 return `Option<T>` or carry a hidden initialization error. Calling `get()` before
 initialization or after guard cleanup, initializing twice, and cleaning up on
 the wrong executor are rejected or trap as appropriate.
+The two empty states have distinct invariant messages: a cell that has never
+been initialized is reported separately from a publication lifetime that has
+already closed. Reinitializing a closed cell remains invalid.
 `OnceLifetime<T>` is exported from `std/sync` so a public startup wrapper may
 name its return, but it has no user-callable constructor.
 
@@ -127,6 +130,12 @@ transition is mutex-protected, and a worker's final release is queued back to
 the owning executor so `deinit` remains on main. Arbitrary foreign-created
 threads will require an executor-registration contract before they receive the
 same cleanup guarantee.
+
+`get()` and lifetime cleanup are synchronized. If `get()` wins, its retained
+identity remains valid after the module root is removed; if cleanup wins, the
+later `get()` traps as a closed-lifetime access. Code must therefore join
+workers that may retrieve the cell before allowing `OnceLifetime<T>` to leave
+scope. This is an ordering contract, not a use-after-free race.
 
 Ordinary mutable or readonly-shareable classes, structs, native resources,
 replacement, optional storage, and concurrent weak upgrade are not implied by
@@ -1817,6 +1826,11 @@ a typed failure; a child program's nonzero exit is a successful `i32` result.
 currently running executable or throws a typed operating-system `String`
 failure. It is intended for locating resources and helper tools distributed
 beside an application; it does not expose the compiler host's executable.
+`process.args()` and `process.executablePath()` currently require an executable
+target, because only Z `main` receives and installs the process argument vector.
+Static and shared libraries receive a source diagnostic; their host should pass
+required arguments through an explicit `export c function` until an embedding
+argument contract is designed.
 
 `z run file.zs -- one two` forwards `one` and `two` to the native program.
 Stage 0 currently lowers these APIs to a small cross-platform C runtime. The

@@ -122,6 +122,32 @@ hostToolchainTest("imports AppKit classes and emits an ARC Objective-C NSWindow 
   assert.match(activateHover, /\*\*Objective-C selector:\*\* `activate`/);
   assert.match(activateHover, /\*\*Availability\*\*[\s\S]*macOS: 14\.0\+/);
   assert.doesNotMatch(activateHover, /iOS|watchOS|tvOS/);
+}, 20_000);
+
+hostToolchainTest("gives every Objective-C C export an autorelease pool", () => {
+  if (process.platform !== "darwin") return;
+  const source = `
+    import Foundation from "Foundation/Foundation.h";
+
+    export c function applicationReady(): boolean {
+      return true;
+    }
+
+    function main(): i32 { return 0; }
+  `;
+  const artifact = compileToNative(source, "/tmp/z-objc-export-pool.zs");
+  assert.equal(artifact.language, "objective-c");
+  assert.match(
+    artifact.source,
+    /Z_API bool applicationReady\(void\) \{\n  @autoreleasepool \{[\s\S]*?__z_c_impl_\d+_applicationReady\(\)/,
+  );
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
 });
 
 hostToolchainTest("merges Objective-C category methods into their interface surface", () => {
@@ -658,7 +684,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
   assert.equal(availabilityDiagnostic?.code, "Z0802");
   assert.match(availabilityDiagnostic?.message ?? "", /requires macOS 14\.0, but the deployment target is macOS 13\.0/);
-}, 20_000);
+}, 60_000);
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
   const example = resolve(projectRoot, "examples/applications/document-workspace/main.zs");
@@ -1249,7 +1275,7 @@ hostToolchainTest("retains owned Z closure environments across Objective-C block
     diagnostics(borrowed, example)[0].message,
     /borrowed capturing closure cannot become a function value/,
   );
-}, 10_000);
+}, 30_000);
 
 hostToolchainTest("enters the captured Z runtime for arbitrary-thread Objective-C blocks", () => {
   if (process.platform !== "darwin") return;

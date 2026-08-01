@@ -230,6 +230,37 @@ test("separates project validation from explicit source-file checking", () => {
   assert.equal(exported.status, 0, exported.stderr);
 });
 
+test("rejects implicit host argv access from library targets", () => {
+  const directory = mkdtempSync("/tmp/z-project-library-argv-");
+  const entry = resolve(directory, "library.zs");
+  writeFileSync(entry, `
+    import process from "std/process";
+
+    export c function argumentCount(): usize {
+      const arguments = process.args();
+      return arguments.length;
+    }
+  `);
+
+  for (const kind of ["static-library", "shared-library"]) {
+    writeManifest(directory, {
+      kind,
+      name: "host-arguments",
+      entry: "library.zs",
+    });
+    const result = invoke(["check", directory]);
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      new RegExp(`process\\.args\\(\\) is unavailable in a ${kind} target`),
+    );
+    assert.match(result.stderr, /pass the required host data through an export c function/);
+  }
+
+  const explicitSource = invoke(["check", entry]);
+  assert.equal(explicitSource.status, 0, explicitSource.stderr);
+});
+
 test("tests a project entry without requiring an executable main", () => {
   const directory = mkdtempSync("/tmp/z-project-test-mode-");
   const entry = resolve(directory, "calculator.zs");

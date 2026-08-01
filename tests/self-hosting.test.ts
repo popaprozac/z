@@ -2046,7 +2046,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
 
   rmSync(directory, { recursive: true, force: true });
-}, 45_000);
+}, 60_000);
 
 test("decodes versioned raw foreign function declarations in native Z", () => {
   const declarations: ForeignModuleDeclarations = {

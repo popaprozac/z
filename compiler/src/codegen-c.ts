@@ -898,12 +898,17 @@ function generateOnceRuntime(
   if (pthread_mutex_lock(&cell->native) != 0) abort();
 #endif
   if (cell->state != 0) {
+    const uint8_t state = cell->state;
 #if defined(_WIN32)
     ReleaseSRWLockExclusive(&cell->native);
 #else
     if (pthread_mutex_unlock(&cell->native) != 0) abort();
 #endif
-    fprintf(stderr, "Once<${label}> is already initialized and cannot reinitialize\\n");
+    if (state == 2) {
+      fprintf(stderr, "Once<${label}> lifetime has already closed and cannot reinitialize\\n");
+    } else {
+      fprintf(stderr, "Once<${label}> is already initialized and cannot reinitialize\\n");
+    }
     abort();
   }
   cell->value = value;
@@ -918,7 +923,7 @@ function generateOnceRuntime(
 
 static __attribute__((unused)) ${valueCType} ${onceGetName(valueType)}(${onceName(valueType)} *cell) {
   if (cell == NULL) {
-    fprintf(stderr, "Once<${label}> is not initialized or no longer active\\n");
+    fprintf(stderr, "Once<${label}> received an invalid cell\\n");
     abort();
   }
 #if defined(_WIN32)
@@ -927,12 +932,19 @@ static __attribute__((unused)) ${valueCType} ${onceGetName(valueType)}(${onceNam
   if (pthread_mutex_lock(&cell->native) != 0) abort();
 #endif
   if (cell->state != 1 || cell->value == NULL) {
+    const uint8_t state = cell->state;
 #if defined(_WIN32)
     ReleaseSRWLockShared(&cell->native);
 #else
     if (pthread_mutex_unlock(&cell->native) != 0) abort();
 #endif
-    fprintf(stderr, "Once<${label}> is not initialized or no longer active\\n");
+    if (state == 0) {
+      fprintf(stderr, "Once<${label}> has not been initialized\\n");
+    } else if (state == 2) {
+      fprintf(stderr, "Once<${label}> lifetime has already closed\\n");
+    } else {
+      fprintf(stderr, "Once<${label}> has invalid runtime state\\n");
+    }
     abort();
   }
   ${valueCType} value = ${retainName(valueType)}(cell->value);
@@ -1514,7 +1526,11 @@ function generateNativeExportDefinitions(
       : runtime?.requiresEntry
         ? `${entry}  ${nativeExportCType(declaration.returnType.name, structs, enums)} _z_result = ${invocation};\n${leave}\n  return _z_result;`
         : `  return ${invocation};`;
-    return `${nativeExportSignature(declaration, "", structs, enums)} {\n${[...validations, body].join("\n")}\n}`;
+    const statements = [...validations, body].join("\n");
+    const protectedBody = semanticInfo.objectiveC
+      ? `  @autoreleasepool {\n${indent(statements, 2)}\n  }`
+      : statements;
+    return `${nativeExportSignature(declaration, "", structs, enums)} {\n${protectedBody}\n}`;
   });
   return `#ifndef Z_API
 #define Z_API

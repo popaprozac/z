@@ -19,7 +19,7 @@ import {
   resolveForeignHandleTypeAnnotations,
 } from "./foreign-handle-types.ts";
 import { resolveTypeAliases } from "./type-aliases.ts";
-import type { Program } from "./ast.ts";
+import type { Program, SourceLocation } from "./ast.ts";
 import type { ForeignModule } from "./foreign.ts";
 import type { SemanticInfo } from "./sema.ts";
 import { prepareProject, type ProjectBuild } from "./project.ts";
@@ -228,6 +228,7 @@ function embeddedRuntimeInitializer(
 export type AnalysisOptions = {
   readonly requireMain?: boolean;
   readonly includeTests?: boolean;
+  readonly validateTarget?: boolean;
   readonly nativeFrontendResolver?: (sourceBatch: SourceModuleBatch) => Stage1ModuleGraph;
   readonly foreignDeclarationOverrides?: Readonly<Record<string, {
     readonly source: string;
@@ -332,6 +333,9 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     nativeSemanticBridge?.observer ?? null,
     genericAggregateMaterializations,
   );
+  if (options.validateTarget !== false) {
+    validateLibraryStandardCalls(program, semanticInfo, projectBuild, fileName);
+  }
   if (hasRawNativeBodies(program)) {
     const asyncDeclaration = [
       ...program.functions,
@@ -485,6 +489,54 @@ function sourceOffset(source: string, targetLine: number, targetColumn: number):
     line += 1;
   }
   return offset + targetColumn - 1;
+}
+
+function validateLibraryStandardCalls(
+  program: Program,
+  semanticInfo: SemanticInfo,
+  projectBuild: ProjectBuild,
+  fileName: string,
+): void {
+  if (projectBuild.targetKind === "executable") return;
+  const unsupported = [...semanticInfo.standardFunctionReferences]
+    .find(([, name]) => name === "process.args" || name === "process.executablePath");
+  if (!unsupported) return;
+  const [offset, name] = unsupported;
+  const location = sourceLocationAtOffset(program, offset)
+    ?? { offset: 0, line: 1, column: 1, fileName };
+  throw new DiagnosticError(
+    location.fileName ?? fileName,
+    location,
+    `${name}() is unavailable in a ${projectBuild.targetKind} target because no Z main receives the host process arguments`,
+    {
+      code: "Z0604",
+      notes: ["library entry points run inside a foreign host process and do not implicitly own its argc/argv"],
+      helps: ["pass the required host data through an export c function; an explicit embedding argument contract remains future work"],
+    },
+  );
+}
+
+function sourceLocationAtOffset(value: unknown, offset: number): SourceLocation | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = sourceLocationAtOffset(item, offset);
+      if (found) return found;
+    }
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const location = record.location;
+  if (
+    location
+    && typeof location === "object"
+    && (location as SourceLocation).offset === offset
+  ) return location as SourceLocation;
+  for (const child of Object.values(record)) {
+    const found = sourceLocationAtOffset(child, offset);
+    if (found) return found;
+  }
+  return null;
 }
 
 export function compileToNative(

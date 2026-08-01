@@ -2558,6 +2558,22 @@ test("rejects escaping C callbacks without complete release and threading contra
   writeFileSync(sourceFile, source);
   const diagnostic = diagnostics(source, sourceFile).find((item) => item.code === "Z0214");
   assert.match(diagnostic?.message ?? "", /requires deinit and thread contracts/);
+
+  writeFileSync(`${header}.zd`, `
+    declare module "escaping.h" {
+      export function retain_callback(in callback: _, context: _, release: _): _ {
+        callback callback {
+          context context;
+          invoked once;
+          thread any;
+        }
+      }
+    }
+  `);
+  assert.throws(
+    () => compileToC(source, sourceFile),
+    /call-scoped callback "callback" cannot declare deinit or threading contracts/,
+  );
 });
 
 test("owns arbitrary-thread native callback environments atomically and checks captures", () => {
