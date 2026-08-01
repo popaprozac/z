@@ -162,6 +162,7 @@ export enum LoweredExpressionKind {
   structValue,
   classValue,
   mutexValue,
+  mutexWithLock,
   onceEmpty,
   onceInitialize,
   onceGet,
@@ -2456,6 +2457,40 @@ function resolvedCallParameterModes(
   return Array<String>();
 }
 
+function rewriteClosureParameterValues(
+  inout expressions: Array<LoweredExpression>,
+  start: usize,
+  in parameterName: String
+): void {
+  let index = start;
+  while (index < expressions.length) {
+    if (
+      expressions[index].kind == LoweredExpressionKind.localValue
+      && expressions[index].value == parameterName
+    ) expressions[index].kind = LoweredExpressionKind.parameterValue;
+    index = index + 1;
+  }
+}
+
+function mutexClosureBodyOnlyUsesParameter(
+  in expressions: Array<LoweredExpression>,
+  start: usize,
+  in parameterName: String
+): boolean {
+  let index = start;
+  while (index < expressions.length) {
+    if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
+      return false;
+    }
+    if (
+      expressions[index].kind == LoweredExpressionKind.localValue
+      && expressions[index].value != parameterName
+    ) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
 function resolvedExpressionTypeName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -3722,6 +3757,131 @@ function lowerExpression(
               onceName,
               children,
               Array<String>()
+            );
+          }
+          if (
+            generic.base == "Mutex"
+            && generic.arguments.length == 1
+            && tree.nodes[calleeInput].value == "withLock"
+          ) {
+            if (tree.nodes[index].children.length != 2) {
+              throw "Mutex.withLock expects one inline closure";
+            }
+            const closureInput = tree.nodes[index].children[1];
+            if (
+              tree.nodes[closureInput].kind
+                != ExpressionKind.closureExpression
+            ) throw "Mutex.withLock expects one inline closure";
+            if (
+              tree.nodes[closureInput].labels.length < 3
+              || tree.nodes[closureInput].labels[2] != "expression"
+            ) {
+              throw "native Mutex.withLock lowering currently supports expression-bodied closures; block bodies remain Stage 0 authoritative";
+            }
+            let parameterInput: usize = tree.nodes.length;
+            let bodyInput: usize = tree.nodes.length;
+            for (const child of tree.nodes[closureInput].children) {
+              if (
+                tree.nodes[child].kind
+                  == ExpressionKind.closureParameterExpression
+              ) parameterInput = child;
+              else bodyInput = child;
+            }
+            if (
+              parameterInput >= tree.nodes.length
+              || bodyInput >= tree.nodes.length
+            ) throw "native Mutex.withLock lowering requires one closure parameter and one expression body";
+            const parameterMode = tree.nodes[parameterInput].labels[0].copyBytes(
+              0,
+              tree.nodes[parameterInput].labels[0].byteLength
+            );
+            if (parameterMode != "in" && parameterMode != "inout") {
+              throw "native Mutex.withLock closure parameters require `in` or `inout`";
+            }
+            const resultTypeName = match (
+              evidenceResolvedExpressionTypeName(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                index
+              )
+            ) {
+              some(name) => name;
+              none => tree.nodes[closureInput].labels[0].copyBytes(
+                0,
+                tree.nodes[closureInput].labels[0].byteLength
+              );
+            };
+            if (resultTypeName.byteLength == 0) {
+              throw "native Mutex.withLock lowering could not resolve its result type";
+            }
+            const resultType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              resultTypeName
+            );
+            if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
+              throw "native Mutex.withLock lowering currently requires a cleanup-free result";
+            }
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            const bodyStart = output.length;
+            const body = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              bodyInput,
+              inout output
+            );
+            const parameterName = tree.nodes[parameterInput].value.copyBytes(
+              0,
+              tree.nodes[parameterInput].value.byteLength
+            );
+            if (!mutexClosureBodyOnlyUsesParameter(
+              output,
+              bodyStart,
+              parameterName
+            )) {
+              throw "native Mutex.withLock expression closures cannot capture outer values yet";
+            }
+            rewriteClosureParameterValues(
+              inout output,
+              bodyStart,
+              parameterName
+            );
+            const valueType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              generic.arguments[0]
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            children.push(body);
+            let labels = Array<String>();
+            labels.push(parameterName.copyBytes(
+              0,
+              parameterName.byteLength
+            ));
+            labels.push(parameterMode.copyBytes(
+              0,
+              parameterMode.byteLength
+            ));
+            labels.push(loweredTypeIdentity(resultType));
+            const mutexName = intrinsicMutexName(valueType);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.mutexWithLock,
+              mutexName,
+              children,
+              labels
             );
           }
         }
@@ -9432,6 +9592,9 @@ function appendLoweredProgram(
       }
       if (method.receiverMode == ReceiverMode.move) {
         throw `native lowering does not support consuming method ${aggregate.name}.${method.name} yet`;
+      }
+      if (method.receiverMode == ReceiverMode.inputOutput) {
+        throw `native lowering does not support inout receiver method ${aggregate.name}.${method.name} yet`;
       }
       match (in method.errorType) {
         some(_) => throw `native lowering does not support throwing method ${aggregate.name}.${method.name} yet`;

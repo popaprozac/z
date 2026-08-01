@@ -521,6 +521,13 @@ test("owns Mutex fields through native aggregate lowering", () => {
     emission.stdout,
     /static __attribute__\(\(unused\)\) int32_t Z_Application_answer\(const Z_Application \*self\)/,
   );
+  assert.match(emission.stdout, /pthread_mutex_lock/);
+  assert.match(emission.stdout, /pthread_mutex_unlock/);
+  assert.match(emission.stdout, /PTHREAD_MUTEX_INITIALIZER/);
+  assert.match(
+    emission.stdout,
+    /__atomic_fetch_sub\(&self->_z_refcount, 1, __ATOMIC_ACQ_REL\)/,
+  );
 
   const directory = mkdtempSync("/tmp/z-native-mutex-field-");
   const executable = resolve(directory, "program");

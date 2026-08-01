@@ -165,6 +165,17 @@ function appendCBindingName(
   output.append(name);
 }
 
+function appendMutexWithLockHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_mutex_with_lock_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
 function appendOnceTypeName(
   inout names: Array<String>,
   in type: LoweredType
@@ -375,11 +386,15 @@ function appendModuleConstants(
       continue;
     }
     if (declaration.type.kind == LoweredTypeKind.onceType) {
-      output.append("static __attribute__((unused)) Z_");
+      output.append("#if defined(_WIN32)\nstatic __attribute__((unused)) Z_");
       output.append(declaration.type.name);
       output.append(" ");
       appendCBindingName(inout output, declaration.name);
-      output.append(" = { .value = NULL, .state = 0 };\n");
+      output.append(" = { .native = SRWLOCK_INIT, .value = NULL, .state = 0 };\n#else\nstatic __attribute__((unused)) Z_");
+      output.append(declaration.type.name);
+      output.append(" ");
+      appendCBindingName(inout output, declaration.name);
+      output.append(" = { .native = PTHREAD_MUTEX_INITIALIZER, .value = NULL, .state = 0 };\n#endif\n");
       continue;
     }
     output.append("static __attribute__((unused)) const ");
@@ -460,15 +475,15 @@ function appendClassAndOnceRuntime(
     output.append(aggregate.name);
     output.append("_retain(Z_");
     output.append(aggregate.name);
-    output.append(" *value) {\n  if (value != NULL) value->_z_refcount += 1;\n}\n\n");
+    output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(aggregate.name);
     output.append("_release(Z_");
     output.append(aggregate.name);
     output.append(" *self) {\n  if (self == NULL) return;\n");
-    output.append("  if (self->_z_refcount == 0) abort();\n");
-    output.append("  self->_z_refcount -= 1;\n");
-    output.append("  if (self->_z_refcount != 0) return;\n");
+    output.append("  const size_t previous = __atomic_fetch_sub(&self->_z_refcount, 1, __ATOMIC_ACQ_REL);\n");
+    output.append("  if (previous == 0) abort();\n");
+    output.append("  if (previous != 1) return;\n");
     match (in aggregate.deinitializer) {
       some(deinitializer) => {
         for (const root of deinitializer.roots) {
@@ -522,6 +537,7 @@ function appendClassAndOnceRuntime(
     output.append("  if (cell == NULL || value == NULL) { fprintf(stderr, \"Once<");
     output.append(valueName);
     output.append("> cannot initialize an invalid value\\n\"); abort(); }\n");
+    output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_lock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  if (cell->state != 0) {\n");
     output.append("    if (cell->state == 2) fprintf(stderr, \"Once<");
     output.append(valueName);
@@ -531,6 +547,7 @@ function appendClassAndOnceRuntime(
     output.append("> is already initialized and cannot reinitialize\\n\");\n");
     output.append("    abort();\n  }\n");
     output.append("  cell->value = value;\n  cell->state = 1;\n");
+    output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_unlock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  return (Z_OnceLifetime_");
     output.append(valueName);
     output.append("){ .cell = cell };\n}\n\n");
@@ -544,6 +561,7 @@ function appendClassAndOnceRuntime(
     output.append("  if (cell == NULL) { fprintf(stderr, \"Once<");
     output.append(valueName);
     output.append("> received an invalid cell\\n\"); abort(); }\n");
+    output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_lock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  if (cell->state != 1 || cell->value == NULL) {\n");
     output.append("    if (cell->state == 0) fprintf(stderr, \"Once<");
     output.append(valueName);
@@ -557,7 +575,11 @@ function appendClassAndOnceRuntime(
     output.append("    abort();\n  }\n");
     output.append("  Z_");
     output.append(valueName);
-    output.append("_retain(cell->value);\n  return cell->value;\n}\n\n");
+    output.append(" *value = cell->value;\n  Z_");
+    output.append(valueName);
+    output.append("_retain(value);\n");
+    output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_unlock(&cell->native) != 0) abort();\n#endif\n");
+    output.append("  return value;\n}\n\n");
     output.append("static __attribute__((unused)) void Z_OnceLifetime_");
     output.append(valueName);
     output.append("_deinit(Z_OnceLifetime_");
@@ -567,11 +589,13 @@ function appendClassAndOnceRuntime(
     output.append("  Z_");
     output.append(onceName);
     output.append(" *cell = lifetime->cell;\n  lifetime->cell = NULL;\n");
+    output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_lock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  if (cell->state != 1 || cell->value == NULL) abort();\n");
     output.append("  Z_");
     output.append(valueName);
     output.append(" *value = cell->value;\n");
     output.append("  cell->value = NULL;\n  cell->state = 2;\n");
+    output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&cell->native);\n#else\n  if (pthread_mutex_unlock(&cell->native) != 0) abort();\n#endif\n");
     output.append("  Z_");
     output.append(valueName);
     output.append("_release(value);\n}\n\n");
@@ -1593,6 +1617,24 @@ function appendExpression(
       inout output,
       declaration,
       value
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.mutexWithLock
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed Mutex.withLock";
+    }
+    appendMutexWithLockHelperName(inout output, declaration, index);
+    output.append("(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
     );
     output.append(")");
     return;
@@ -2933,6 +2975,71 @@ function appendFunction(
   output.append("}\n\n");
 }
 
+function appendMutexWithLockHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < declaration.expressions.length) {
+      const expression = view declaration.expressions[expressionIndex];
+      if (expression.kind != LoweredExpressionKind.mutexWithLock) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (
+        expression.children.length != 2
+        || expression.labels.length != 3
+      ) throw "native C emission received malformed Mutex.withLock evidence";
+      const resultType = try loweredTypeForIdentity(
+        program,
+        expression.labels[2]
+      );
+      const nativeResultType = try cType(resultType);
+      const valueType = try mutexValueType(program, expression.value);
+      const nativeValueType = try cType(valueType);
+      output.append("static __attribute__((unused)) ");
+      output.append(nativeResultType);
+      output.append(" ");
+      appendMutexWithLockHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("(Z_");
+      output.append(expression.value);
+      output.append(" mutex) {\n");
+      output.append("  if (mutex.storage == NULL) abort();\n");
+      output.append("#if defined(_WIN32)\n  AcquireSRWLockExclusive(&mutex.storage->native);\n#else\n");
+      output.append("  if (pthread_mutex_lock(&mutex.storage->native) != 0) abort();\n#endif\n");
+      output.append("  ");
+      if (expression.labels[1] == "in") output.append("const ");
+      output.append(nativeValueType);
+      output.append(" *");
+      appendCBindingName(inout output, expression.labels[0]);
+      output.append(" = &mutex.storage->value;\n");
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("  ");
+        output.append(nativeResultType);
+        output.append(" result = ");
+      } else output.append("  ");
+      try appendExpression(
+        inout output,
+        declaration,
+        expression.children[1]
+      );
+      output.append(";\n");
+      output.append("#if defined(_WIN32)\n  ReleaseSRWLockExclusive(&mutex.storage->native);\n#else\n");
+      output.append("  if (pthread_mutex_unlock(&mutex.storage->native) != 0) abort();\n#endif\n");
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("  return result;\n");
+      }
+      output.append("}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendTestRunner(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -3862,7 +3969,7 @@ function appendTypeDefinitions(
     );
     output.append("typedef struct Z_");
     output.append(onceName);
-    output.append(" {\n  Z_");
+    output.append(" {\n#if defined(_WIN32)\n  SRWLOCK native;\n#else\n  pthread_mutex_t native;\n#endif\n  Z_");
     output.append(valueName);
     output.append(" *value;\n  uint8_t state;\n} Z_");
     output.append(onceName);
@@ -4862,6 +4969,8 @@ function emitLoweredC(
     || programUsesStandardCall(program, "console.debug");
   const mutexTypeNames = programMutexTypeNames(program);
   const usesMutex = mutexTypeNames.length > 0;
+  const onceTypeNames = programOnceTypeNames(program);
+  const usesOnce = onceTypeNames.length > 0;
   if (usesRealPath || usesCreateDirectories || usesProcessExecutablePath) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
@@ -4891,6 +5000,7 @@ function emitLoweredC(
     || usesWriteText
     || usesReplace
     || usesConsole
+    || usesOnce
     || testCount > 0
   ) {
     output.append("#include <stdio.h>\n");
@@ -4908,7 +5018,7 @@ function emitLoweredC(
   if (usesLock) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <fcntl.h>\n#include <sys/file.h>\n#include <unistd.h>\n#endif\n");
   }
-  if (usesMutex) {
+  if (usesMutex || usesOnce) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
   if (usesReplace) {
@@ -5368,6 +5478,7 @@ function emitLoweredC(
     output.append(";\n");
   }
   output.append("\n");
+  try appendMutexWithLockHelpers(inout output, program);
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);

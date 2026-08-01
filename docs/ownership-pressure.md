@@ -1823,13 +1823,22 @@ with `Once.get()`, mutates its `Mutex<EmbeddedState>`, and leaves one completed
 job visible to a later C call. Attempting to read the same application's
 main-only `uiRevision` from that export remains a compile-time affinity error.
 The fixed-point native semantic graph accepts the same Once/Mutex/affinity
-shape, while native C lowering still stops at its existing non-generic
-data-only aggregate boundary. Its generated target-root storage and teardown
-remain executable for data-only owners, and every generated public wrapper now
-installs and restores the same foreign-thread executor-release route as Stage 0.
-This is now a concrete self-hosting
-composition gap: native lowering needs generic `Mutex<T>` fields and aggregate
-methods before it can emit the full application root unchanged.
+shape, and the first native lowering gap is now closed. Non-generic structs and
+classes may own `Mutex<T>` fields, ordinary borrowing methods carry explicit
+receiver evidence into C, and a capture-free expression-bodied
+`Mutex.withLock` closure lowers to real pthread/SRW acquisition and release.
+The native `Once<T>` cell now uses the same synchronized publication protocol,
+and native class retain/release is atomic, so the synchronous
+`application-root/application.zs` core strict-compiles directly from the
+self-emitted frontend.
+
+Block-bodied or capturing lock closures and the application's async
+`thread.spawn` entry remain later lowering slices. That is a narrower and more
+honest composition boundary than the former generic-field/method wall: the
+native compiler can represent the application root and its synchronized read
+surface today, but cannot yet emit the worker orchestration unchanged. Every
+generated public wrapper still installs and restores the same foreign-thread
+executor-release route as Stage 0.
 
 ## Diagnostic identity and mutex hardening
 
