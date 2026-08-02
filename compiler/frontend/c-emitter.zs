@@ -3383,14 +3383,14 @@ function appendThreadSpawnHelpers(
         expressionIndex = expressionIndex + 1;
         continue;
       }
-      if (expression.labels.length < 3) {
+      if (expression.labels.length < 4) {
         throw "native C emission received malformed thread.spawn evidence";
       }
       const blockBody = expression.labels[0] == "lowered-block";
-      if ((expression.labels.length - 3) % 2 != 0) {
+      if ((expression.labels.length - 4) % 2 != 0) {
         throw "native C emission received malformed thread.spawn captures";
       }
-      const captureCount = (expression.labels.length - 3) / 2;
+      const captureCount = (expression.labels.length - 4) / 2;
       let bodyChildCount: usize = 0;
       if (!blockBody) bodyChildCount = 1;
       if (
@@ -3411,7 +3411,7 @@ function appendThreadSpawnHelpers(
           expressionIndex
         );
         output.append("_Context {\n");
-        let captureLabel: usize = 3;
+        let captureLabel: usize = 4;
         while (captureLabel + 1 < expression.labels.length) {
           const captureType = try loweredTypeForIdentity(
             program,
@@ -3445,7 +3445,7 @@ function appendThreadSpawnHelpers(
       output.append("Z_");
       output.append(taskName);
       output.append("Storage *_z_stage1_task_storage");
-      let captureLabel: usize = 3;
+      let captureLabel: usize = 4;
       while (captureLabel + 1 < expression.labels.length) {
         output.append(", ");
         const captureType = try loweredTypeForIdentity(
@@ -3512,7 +3512,7 @@ function appendThreadSpawnHelpers(
         expressionIndex
       );
       output.append("_body(storage");
-      captureLabel = 3;
+      captureLabel = 4;
       while (captureLabel + 1 < expression.labels.length) {
         output.append(", ");
         output.append("&worker_context->");
@@ -3536,9 +3536,9 @@ function appendThreadSpawnHelpers(
         expressionIndex
       );
       output.append("(");
-      captureLabel = 3;
+      captureLabel = 4;
       while (captureLabel + 1 < expression.labels.length) {
-        if (captureLabel > 3) output.append(", ");
+        if (captureLabel > 4) output.append(", ");
         const captureType = try loweredTypeForIdentity(
           program,
           expression.labels[captureLabel + 1]
@@ -3578,7 +3578,7 @@ function appendThreadSpawnHelpers(
           expressionIndex
         );
         output.append("_Context));\n  if (worker_context == NULL) {\n#if !defined(_WIN32)\n    pthread_cond_destroy(&storage->state_condition);\n    pthread_mutex_destroy(&storage->state_mutex);\n#endif\n    free(storage);\n    abort();\n  }\n");
-        captureLabel = 3;
+        captureLabel = 4;
         while (captureLabel + 1 < expression.labels.length) {
           output.append("  worker_context->");
           appendCBindingName(inout output, expression.labels[captureLabel]);
@@ -4549,13 +4549,9 @@ function appendTypeDefinitions(
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
   }
   for (const taskName of taskNames) {
-    const resultType = try taskResultType(program, taskName);
-    const nativeResultType = try cType(resultType);
     output.append("typedef struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
-    output.append(nativeResultType);
-    output.append(" result;\n} Z_");
+    output.append("Storage Z_");
     output.append(taskName);
     output.append("Storage;\n");
     output.append("typedef struct Z_");
@@ -4686,6 +4682,15 @@ function appendTypeDefinitions(
       inout enumStates
     );
     structIndex = structIndex + 1;
+  }
+  for (const taskName of taskNames) {
+    const resultType = try taskResultType(program, taskName);
+    const nativeResultType = try cType(resultType);
+    output.append("struct Z_");
+    output.append(taskName);
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
+    output.append(nativeResultType);
+    output.append(" result;\n};\n\n");
   }
   for (const mutexName of mutexNames) {
     const valueType = try mutexValueType(program, mutexName);

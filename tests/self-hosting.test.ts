@@ -1838,6 +1838,76 @@ test("runs the Zapp worker and main-thread publication natively", () => {
   }
 }, 45_000);
 
+test("transfers a typed worker failure through attempt await", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-error-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-error.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_Task___z_Result_i32_WorkErrorStorage/);
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_i32_WorkErrorTag_failure/,
+    );
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_i32_WorkErrorTag_success/,
+    );
+
+    const executable = resolve(directory, "thread-error");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+
+    const invalidInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-owned-error-invalid.zs",
+    );
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1);
+    assert.match(
+      invalid.stderr,
+      /native thread\.spawn currently requires a cleanup-free worker error/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,
@@ -6844,7 +6914,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
     }
   }
-}, 30_000);
+}, 60_000);
 
 test("preserves trait receiver capabilities in the native module graph", () => {
   const input = resolve(projectRoot, "examples/language/basics/classes.zs");

@@ -1875,9 +1875,17 @@ The native path constructs its imported `Application`, publishes it through
 `Once`, mutates `Mutex` state on a pthread, executes `std/time.sleep`, publishes
 status on main, resumes and joins the worker, prints the final status, and
 releases the root. Native async `main` still uses a synchronous host frame, and
-the private worker blocks at this first placed continuation; typed worker
-failures, ownership-bearing captures, general suspension, cleanup-bearing
-placed arguments/results, and additional executor forms remain later slices.
+the private worker blocks at this first placed continuation.
+
+The next task slice carries cleanup-free typed failures. `Task<T, E>` stores the
+same `Result<T, E>` representation used by synchronous throwing calls; worker
+`return` writes `success(T)`, worker `throw` writes `failure(E)`, and `attempt
+await` transfers that tagged value to ordinary exhaustive matching. The strict
+fixture executes both outcomes. Cleanup-bearing errors fail before C emission
+because discarding, cancellation, and propagation still need live-state-aware
+destruction. Ownership-bearing captures, `try await` propagation, general
+suspension, cleanup-bearing placed arguments/results, and additional executor
+forms remain later slices.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
 

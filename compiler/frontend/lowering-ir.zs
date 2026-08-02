@@ -601,8 +601,22 @@ function lowerTypeName(
           name: intrinsicMutexName(valueType),
         });
       }
-      if (generic.base == "Task" && generic.arguments.length == 1) {
-        const resultType = try lowerTypeName(program, generic.arguments[0]);
+      if (
+        generic.base == "Task"
+        && (generic.arguments.length == 1 || generic.arguments.length == 2)
+      ) {
+        const successType = try lowerTypeName(program, generic.arguments[0]);
+        let resultType = LoweredType({
+          kind: successType.kind,
+          name: successType.name.copyBytes(0, successType.name.byteLength),
+        });
+        if (generic.arguments.length == 2) {
+          const errorType = try lowerTypeName(program, generic.arguments[1]);
+          resultType = LoweredType({
+            kind: LoweredTypeKind.enumType,
+            name: intrinsicResultName(successType, errorType),
+          });
+        }
         return LoweredType({
           kind: LoweredTypeKind.taskType,
           name: intrinsicTaskName(resultType),
@@ -747,12 +761,30 @@ function lowerModuleTypeName(
           name: intrinsicMutexName(valueType),
         });
       }
-      if (generic.base == "Task" && generic.arguments.length == 1) {
-        const resultType = try lowerModuleTypeName(
+      if (
+        generic.base == "Task"
+        && (generic.arguments.length == 1 || generic.arguments.length == 2)
+      ) {
+        const successType = try lowerModuleTypeName(
           program,
           importedTypes,
           generic.arguments[0]
         );
+        let resultType = LoweredType({
+          kind: successType.kind,
+          name: successType.name.copyBytes(0, successType.name.byteLength),
+        });
+        if (generic.arguments.length == 2) {
+          const errorType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            generic.arguments[1]
+          );
+          resultType = LoweredType({
+            kind: LoweredTypeKind.enumType,
+            name: intrinsicResultName(successType, errorType),
+          });
+        }
         return LoweredType({
           kind: LoweredTypeKind.taskType,
           name: intrinsicTaskName(resultType),
@@ -3098,7 +3130,49 @@ function staticallyResolvedExpressionTypeName(
           "thread",
           tree.nodes[namespace].value
         )
-      ) return Option.some(`Task<${tree.nodes[closure].labels[0]}>`);
+      ) {
+        if (
+          tree.nodes[closure].labels.length > 1
+          && tree.nodes[closure].labels[1].byteLength > 0
+        ) return Option.some(
+          `Task<${tree.nodes[closure].labels[0]}, ${tree.nodes[closure].labels[1]}>`
+        );
+        return Option.some(`Task<${tree.nodes[closure].labels[0]}>`);
+      }
+    }
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.attemptExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const attempted = tree.nodes[index].children[0];
+    if (
+      tree.nodes[attempted].kind == ExpressionKind.awaitExpression
+      && tree.nodes[attempted].children.length == 1
+    ) {
+      const task = tree.nodes[attempted].children[0];
+      match (staticallyResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        tree,
+        task
+      )) {
+        some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
+          some(generic) => {
+            if (
+              generic.base == "Task"
+              && generic.arguments.length == 2
+            ) return Option.some(
+              `Result<${generic.arguments[0]}, ${generic.arguments[1]}>`
+            );
+          }
+          none => {}
+        }
+        none => {}
+      }
     }
   }
   if (
@@ -4059,15 +4133,40 @@ function lowerExpression(
     )) {
       some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
         some(generic) => {
-          if (generic.base != "Task" || generic.arguments.length != 1) {
-            throw `native await lowering currently supports infallible Task<T>, found ${taskTypeName}`;
+          if (
+            generic.base != "Task"
+            || (generic.arguments.length != 1 && generic.arguments.length != 2)
+          ) {
+            throw `native await lowering currently supports Task<T> or Task<T, E>, found ${taskTypeName}`;
           }
-          const resultType = try lowerModuleTypeName(
+          const successType = try lowerModuleTypeName(
             program,
             importedTypes,
             generic.arguments[0]
           );
-          if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
+          let resultType = LoweredType({
+            kind: successType.kind,
+            name: successType.name.copyBytes(0, successType.name.byteLength),
+          });
+          if (generic.arguments.length == 2) {
+            const errorType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              generic.arguments[1]
+            );
+            if (
+              moduleTypeNeedsCleanup(program, importedTypes, successType)
+              || moduleTypeNeedsCleanup(program, importedTypes, errorType)
+            ) {
+              throw "native fallible await lowering currently requires cleanup-free success and error values";
+            }
+            resultType = LoweredType({
+              kind: LoweredTypeKind.enumType,
+              name: intrinsicResultName(successType, errorType),
+            });
+          } else if (
+            moduleTypeNeedsCleanup(program, importedTypes, resultType)
+          ) {
             throw "native await lowering currently requires a cleanup-free task result";
           }
           taskName = intrinsicTaskName(resultType);
@@ -4120,9 +4219,6 @@ function lowerExpression(
           tree.nodes[closureInput].kind != ExpressionKind.closureExpression
           || tree.nodes[closureInput].labels.length < 4
         ) throw "native thread.spawn lowering requires one inline closure";
-        if (tree.nodes[closureInput].labels[1].byteLength > 0) {
-          throw "native thread.spawn lowering does not support throwing worker closures yet";
-        }
         for (const child of tree.nodes[closureInput].children) {
           if (
             tree.nodes[child].kind
@@ -4147,6 +4243,28 @@ function lowerExpression(
         ) {
           throw "native thread.spawn lowering currently requires a cleanup-free non-void result";
         }
+        const errorTypeName = tree.nodes[closureInput].labels[1].copyBytes(
+          0,
+          tree.nodes[closureInput].labels[1].byteLength
+        );
+        let storageResultType = LoweredType({
+          kind: resultType.kind,
+          name: resultType.name.copyBytes(0, resultType.name.byteLength),
+        });
+        if (errorTypeName.byteLength > 0) {
+          const errorType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            errorTypeName
+          );
+          if (moduleTypeNeedsCleanup(program, importedTypes, errorType)) {
+            throw "native thread.spawn currently requires a cleanup-free worker error";
+          }
+          storageResultType = LoweredType({
+            kind: LoweredTypeKind.enumType,
+            name: intrinsicResultName(resultType, errorType),
+          });
+        }
         const bodyKind = tree.nodes[closureInput].labels[2].copyBytes(
           0,
           tree.nodes[closureInput].labels[2].byteLength
@@ -4165,7 +4283,7 @@ function lowerExpression(
           if (bodyInput >= tree.nodes.length) {
             throw "native thread.spawn lowering lost its worker expression";
           }
-          const body = try lowerExpressionExpected(
+          let body = try lowerExpressionExpected(
             program,
             importedTypes,
             evidence,
@@ -4174,6 +4292,19 @@ function lowerExpression(
             resultTypeName,
             inout output
           );
+          if (errorTypeName.byteLength > 0) {
+            let successChildren = Array<usize>();
+            successChildren.push(body);
+            let successLabels = Array<String>();
+            successLabels.push("success");
+            body = pushExpression(
+              inout output,
+              LoweredExpressionKind.enumPayloadValue,
+              storageResultType.name,
+              successChildren,
+              successLabels
+            );
+          }
           const noStatements = Array<LoweredStatement>();
           captures = try collectThreadClosureCaptures(
             program,
@@ -4199,11 +4330,12 @@ function lowerExpression(
         }
         let labels = Array<String>();
         labels.push(copy bodyKind);
-        labels.push(loweredTypeIdentity(resultType));
+        labels.push(loweredTypeIdentity(storageResultType));
         labels.push(tree.nodes[closureInput].labels[3].copyBytes(
           0,
           tree.nodes[closureInput].labels[3].byteLength
         ));
+        labels.push(move errorTypeName);
         for (const capture of captures) {
           labels.push(capture.name.copyBytes(
             0,
@@ -4219,7 +4351,7 @@ function lowerExpression(
           );
           children.push(captureValue);
         }
-        const taskName = intrinsicTaskName(resultType);
+        const taskName = intrinsicTaskName(storageResultType);
         const lowered = pushExpression(
           inout output,
           LoweredExpressionKind.threadSpawn,
@@ -7783,6 +7915,51 @@ function completeNativeClosureBlocks(
         );
         loweredStatements.push(lowered);
       }
+      if (expressions[expressionIndex].labels[3].byteLength > 0) {
+        const enclosingResult = try throwingFunctionResult(
+          program,
+          importedTypes,
+          ownerName
+        );
+        match (enclosingResult) {
+          some(_) => throw "native fallible worker lowering currently requires a nonthrowing enclosing main";
+          none => {}
+        }
+        const resultName = expressions[expressionIndex].labels[1].copyBytes(
+          0,
+          expressions[expressionIndex].labels[1].byteLength
+        );
+        let workerStatement = bodyStatementStart;
+        while (workerStatement < statements.length) {
+          if (
+            statements[workerStatement].kind
+              == LoweredStatementKind.returnStatement
+          ) {
+            const returned = match (in statements[workerStatement].expression) {
+              some(value) => value;
+              none => throw "native fallible worker lowering requires an explicit return value";
+            };
+            let variant = "success";
+            if (
+              statements[workerStatement].labels.length > 0
+              && statements[workerStatement].labels[0] == "throw"
+            ) variant = "failure";
+            let resultChildren = Array<usize>();
+            resultChildren.push(returned);
+            let resultLabels = Array<String>();
+            resultLabels.push(move variant);
+            const wrapped = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.enumPayloadValue,
+              resultName,
+              resultChildren,
+              resultLabels
+            );
+            statements[workerStatement].expression = Option.some(wrapped);
+          }
+          workerStatement = workerStatement + 1;
+        }
+      }
       let placedExpression = bodyExpressionStart;
       while (placedExpression < expressions.length) {
         if (
@@ -8912,6 +9089,9 @@ function lowerStatement(
     children.push(loweredChild);
   }
   let labels = Array<String>();
+  if (arena.nodes[index].kind == StatementKind.throwStatement) {
+    labels.push("throw");
+  }
   if (arena.nodes[index].kind == StatementKind.forStatement) {
     match (in arena.nodes[index].expression) {
       some(iterable) => match (in iterable.tree) {
@@ -9598,6 +9778,18 @@ function collectIntrinsicTypeName(
           inout enums
         );
       }
+      if (generic.base == "Task" && generic.arguments.length == 2) {
+        const resultName = `Result<${generic.arguments[0]}, ${generic.arguments[1]}>`;
+        try collectIntrinsicTypeName(
+          program,
+          importedTypes,
+          resultName,
+          inout arrays,
+          inout maps,
+          inout sets,
+          inout enums
+        );
+      }
       const array = try intrinsicArrayDeclaration(
         program,
         importedTypes,
@@ -9691,6 +9883,23 @@ function collectArenaIntrinsicEnums(
                 inout sets,
                 inout enums
               );
+              if (
+                node.kind == ExpressionKind.closureExpression
+                && node.labels.length > 1
+                && node.labels[0].byteLength > 0
+                && node.labels[1].byteLength > 0
+              ) {
+                const workerResult = `Result<${node.labels[0]}, ${node.labels[1]}>`;
+                try collectIntrinsicTypeName(
+                  program,
+                  importedTypes,
+                  workerResult,
+                  inout arrays,
+                  inout maps,
+                  inout sets,
+                  inout enums
+                );
+              }
             }
           }
           none => {}
