@@ -1743,6 +1743,9 @@ test("emits, joins, and cleans up a native worker task", () => {
     assert.match(emission.stdout, /pthread_join/);
     assert.match(emission.stdout, /Z_Task_i32_await/);
     assert.match(emission.stdout, /Z_Task_i32_deinit\(&worker\)/);
+    assert.match(emission.stdout, /thread_spawn_main_\d+_Context/);
+    assert.match(emission.stdout, /worker_context->adjustment = adjustment;/);
+    assert.match(emission.stdout, /free\(worker_context\);/);
 
     const executable = resolve(directory, "thread-task");
     const compilation = spawnSync(
@@ -1764,6 +1767,21 @@ test("emits, joins, and cleans up a native worker task", () => {
     assert.equal(compilation.status, 0, compilation.stderr);
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
+
+    const invalidInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-owned-capture-invalid.zs",
+    );
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1);
+    assert.match(
+      invalid.stderr,
+      /thread\.spawn does not support ownership-bearing capture message yet/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

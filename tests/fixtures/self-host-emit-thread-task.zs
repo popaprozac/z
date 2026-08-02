@@ -5,9 +5,10 @@ function calculate(): i32 {
 }
 
 async function main(): i32 {
-  const worker = thread.spawn((): i32 => {
+  const adjustment: i32 = 2;
+  const worker = thread.spawn(move (): i32 => {
     const base = calculate();
-    return base + 2;
+    return base + adjustment;
   });
   const answer = await worker;
   return answer - 42;

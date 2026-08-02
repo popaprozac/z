@@ -1759,7 +1759,20 @@ function appendExpression(
       == LoweredExpressionKind.threadSpawn
   ) {
     appendThreadSpawnHelperName(inout output, declaration, index);
-    output.append("()");
+    output.append("(");
+    let bodyOffset: usize = 0;
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "expression"
+    ) bodyOffset = 1;
+    let capture = bodyOffset;
+    while (capture < declaration.expressions[index].children.length) {
+      if (capture > bodyOffset) output.append(", ");
+      const captureValue = declaration.expressions[index].children[capture];
+      try appendExpression(inout output, declaration, captureValue);
+      capture = capture + 1;
+    }
+    output.append(")");
     return;
   }
   if (
@@ -3158,9 +3171,15 @@ function appendThreadSpawnHelpers(
         throw "native C emission received malformed thread.spawn evidence";
       }
       const blockBody = expression.labels[0] == "lowered-block";
+      if ((expression.labels.length - 2) % 2 != 0) {
+        throw "native C emission received malformed thread.spawn captures";
+      }
+      const captureCount = (expression.labels.length - 2) / 2;
+      let bodyChildCount: usize = 0;
+      if (!blockBody) bodyChildCount = 1;
       if (
         (!blockBody && expression.labels[0] != "expression")
-        || (!blockBody && expression.children.length != 1)
+        || expression.children.length != bodyChildCount + captureCount
       ) throw "native C emission received an unsupported thread.spawn closure body";
       const taskName = expression.value.copyBytes(
         0,
@@ -3168,6 +3187,36 @@ function appendThreadSpawnHelpers(
       );
       const resultType = try taskResultType(program, taskName);
       const nativeResultType = try cType(resultType);
+      if (captureCount > 0) {
+        output.append("typedef struct ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context {\n");
+        let captureLabel: usize = 2;
+        while (captureLabel + 1 < expression.labels.length) {
+          const captureType = try loweredTypeForIdentity(
+            program,
+            expression.labels[captureLabel + 1]
+          );
+          const nativeCaptureType = try cType(captureType);
+          output.append("  ");
+          output.append(nativeCaptureType);
+          output.append(" ");
+          appendCBindingName(inout output, expression.labels[captureLabel]);
+          output.append(";\n");
+          captureLabel = captureLabel + 2;
+        }
+        output.append("} ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context;\n\n");
+      }
       output.append("static ");
       output.append(nativeResultType);
       output.append(" ");
@@ -3176,7 +3225,23 @@ function appendThreadSpawnHelpers(
         declaration,
         expressionIndex
       );
-      output.append("_body(void) {\n");
+      output.append("_body(");
+      let captureLabel: usize = 2;
+      while (captureLabel + 1 < expression.labels.length) {
+        if (captureLabel > 2) output.append(", ");
+        const captureType = try loweredTypeForIdentity(
+          program,
+          expression.labels[captureLabel + 1]
+        );
+        const nativeCaptureType = try cType(captureType);
+        output.append("const ");
+        output.append(nativeCaptureType);
+        output.append(" *");
+        appendCBindingName(inout output, expression.labels[captureLabel]);
+        captureLabel = captureLabel + 2;
+      }
+      if (captureCount == 0) output.append("void");
+      output.append(") {\n");
       if (blockBody) {
         for (const root of expression.statements) {
           try appendStatement(inout output, declaration, root, 1);
@@ -3205,13 +3270,41 @@ function appendThreadSpawnHelpers(
       output.append(taskName);
       output.append("Storage *storage = (Z_");
       output.append(taskName);
-      output.append("Storage *)context;\n  storage->result = ");
+      output.append("Storage *)context;\n");
+      if (captureCount > 0) {
+        output.append("  ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *worker_context = (");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *)storage->context;\n");
+      }
+      output.append("  storage->result = ");
       appendThreadSpawnHelperName(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_body();\n#if defined(_WIN32)\n  return 0;\n#else\n  return NULL;\n#endif\n}\n\n");
+      output.append("_body(");
+      captureLabel = 2;
+      while (captureLabel + 1 < expression.labels.length) {
+        if (captureLabel > 2) output.append(", ");
+        output.append("&worker_context->");
+        appendCBindingName(inout output, expression.labels[captureLabel]);
+        captureLabel = captureLabel + 2;
+      }
+      output.append(");\n");
+      if (captureCount > 0) {
+        output.append("  free(worker_context);\n  storage->context = NULL;\n");
+      }
+      output.append("#if defined(_WIN32)\n  return 0;\n#else\n  return NULL;\n#endif\n}\n\n");
       output.append("static Z_");
       output.append(taskName);
       output.append(" ");
@@ -3220,25 +3313,72 @@ function appendThreadSpawnHelpers(
         declaration,
         expressionIndex
       );
-      output.append("(void) {\n  Z_");
+      output.append("(");
+      captureLabel = 2;
+      while (captureLabel + 1 < expression.labels.length) {
+        if (captureLabel > 2) output.append(", ");
+        const captureType = try loweredTypeForIdentity(
+          program,
+          expression.labels[captureLabel + 1]
+        );
+        const nativeCaptureType = try cType(captureType);
+        output.append(nativeCaptureType);
+        output.append(" ");
+        appendCBindingName(inout output, expression.labels[captureLabel]);
+        captureLabel = captureLabel + 2;
+      }
+      if (captureCount == 0) output.append("void");
+      output.append(") {\n  Z_");
       output.append(taskName);
       output.append("Storage *storage = (Z_");
       output.append(taskName);
       output.append("Storage *)calloc(1, sizeof(Z_");
       output.append(taskName);
-      output.append("Storage));\n  if (storage == NULL) abort();\n#if defined(_WIN32)\n  storage->thread = CreateThread(NULL, 0, ");
+      output.append("Storage));\n  if (storage == NULL) abort();\n");
+      if (captureCount > 0) {
+        output.append("  ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *worker_context = (");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *)malloc(sizeof(");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context));\n  if (worker_context == NULL) { free(storage); abort(); }\n");
+        captureLabel = 2;
+        while (captureLabel + 1 < expression.labels.length) {
+          output.append("  worker_context->");
+          appendCBindingName(inout output, expression.labels[captureLabel]);
+          output.append(" = ");
+          appendCBindingName(inout output, expression.labels[captureLabel]);
+          output.append(";\n");
+          captureLabel = captureLabel + 2;
+        }
+        output.append("  storage->context = worker_context;\n");
+      }
+      output.append("#if defined(_WIN32)\n  storage->thread = CreateThread(NULL, 0, ");
       appendThreadSpawnHelperName(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_worker, storage, 0, NULL);\n  if (storage->thread == NULL) { free(storage); abort(); }\n#else\n  if (pthread_create(&storage->thread, NULL, ");
+      output.append("_worker, storage, 0, NULL);\n  if (storage->thread == NULL) { free(storage->context); free(storage); abort(); }\n#else\n  if (pthread_create(&storage->thread, NULL, ");
       appendThreadSpawnHelperName(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_worker, storage) != 0) { free(storage); abort(); }\n#endif\n  return (Z_");
+      output.append("_worker, storage) != 0) { free(storage->context); free(storage); abort(); }\n#endif\n  return (Z_");
       output.append(taskName);
       output.append("){ .storage = storage };\n}\n\n");
       expressionIndex = expressionIndex + 1;
@@ -4187,7 +4327,7 @@ function appendTypeDefinitions(
     const nativeResultType = try cType(resultType);
     output.append("typedef struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n#else\n  pthread_t thread;\n#endif\n  bool joined;\n  ");
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n#else\n  pthread_t thread;\n#endif\n  bool joined;\n  void *context;\n  ");
     output.append(nativeResultType);
     output.append(" result;\n} Z_");
     output.append(taskName);

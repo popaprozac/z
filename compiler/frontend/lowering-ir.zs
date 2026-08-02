@@ -2570,6 +2570,116 @@ function collectMutexClosureCaptures(
   return captures;
 }
 
+function collectThreadClosureCaptures(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in ownerName: String,
+  in expressions: Array<LoweredExpression>,
+  start: usize,
+  in statements: Array<LoweredStatement>,
+  statementStart: usize,
+  useOffset: usize
+): Array<LoweredClosureCapture> throws String {
+  let captures = Array<LoweredClosureCapture>();
+  let index = start;
+  while (index < expressions.length) {
+    if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
+      throw "native thread.spawn closures cannot capture `this` yet";
+    }
+    if (expressions[index].kind != LoweredExpressionKind.localValue) {
+      index = index + 1;
+      continue;
+    }
+    let directCallee = false;
+    let parentExpression = start;
+    while (parentExpression < expressions.length) {
+      if (
+        expressions[parentExpression].kind
+          == LoweredExpressionKind.directCall
+        && expressions[parentExpression].children.length > 0
+        && expressions[parentExpression].children[0] == index
+      ) directCallee = true;
+      parentExpression = parentExpression + 1;
+    }
+    if (directCallee) {
+      index = index + 1;
+      continue;
+    }
+    const captureName = expressions[index].value.copyBytes(
+      0,
+      expressions[index].value.byteLength
+    );
+    let declaredInside = false;
+    let scanStatement = statementStart;
+    while (scanStatement < statements.length) {
+      if (
+        statements[scanStatement].kind == LoweredStatementKind.localStatement
+        && statements[scanStatement].name == captureName
+      ) declaredInside = true;
+      scanStatement = scanStatement + 1;
+    }
+    if (declaredInside) {
+      index = index + 1;
+      continue;
+    }
+    let exists = false;
+    for (const capture of captures) {
+      if (capture.name == captureName) exists = true;
+    }
+    if (exists) {
+      index = index + 1;
+      continue;
+    }
+    let resolvedType = Option<LoweredType>.none;
+    let priorStatement: usize = 0;
+    while (priorStatement < statementStart) {
+      if (
+        statements[priorStatement].kind == LoweredStatementKind.localStatement
+        && statements[priorStatement].name == captureName
+      ) {
+        match (in statements[priorStatement].type) {
+          some(type) => resolvedType = Option.some(LoweredType({
+            kind: type.kind,
+            name: type.name.copyBytes(0, type.name.byteLength),
+          }));
+          none => {}
+        }
+      }
+      priorStatement = priorStatement + 1;
+    }
+    const type = match (resolvedType) {
+      some(value) => value;
+      none => {
+        const typeName = match (namedValueTypeName(
+          program,
+          evidence,
+          ownerName,
+          captureName,
+          useOffset
+        )) {
+          some(name) => name;
+          none => throw `native thread.spawn cannot resolve capture ${captureName}`;
+        };
+        select try lowerModuleTypeName(
+          program,
+          importedTypes,
+          typeName
+        );
+      }
+    };
+    if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+      throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
+    }
+    captures.push(LoweredClosureCapture({
+      name: move captureName,
+      type,
+    }));
+    index = index + 1;
+  }
+  return captures;
+}
+
 function resolvedExpressionTypeName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -3885,7 +3995,9 @@ function lowerExpression(
           tree.nodes[closureInput].labels[2].byteLength
         );
         let children = Array<usize>();
+        let captures = Array<LoweredClosureCapture>();
         if (bodyKind == "expression") {
+          const bodyStart = output.length;
           let bodyInput: usize = tree.nodes.length;
           for (const child of tree.nodes[closureInput].children) {
             if (
@@ -3905,6 +4017,25 @@ function lowerExpression(
             resultTypeName,
             inout output
           );
+          const noStatements = Array<LoweredStatement>();
+          captures = try collectThreadClosureCaptures(
+            program,
+            importedTypes,
+            evidence,
+            "",
+            output,
+            bodyStart,
+            noStatements,
+            0,
+            tree.nodes[closureInput].offset
+          );
+          for (const capture of captures) {
+            rewriteClosureParameterValues(
+              inout output,
+              bodyStart,
+              capture.name
+            );
+          }
           children.push(body);
         } else if (bodyKind != "block") {
           throw "native thread.spawn lowering received an unknown closure body shape";
@@ -3912,6 +4043,21 @@ function lowerExpression(
         let labels = Array<String>();
         labels.push(copy bodyKind);
         labels.push(loweredTypeIdentity(resultType));
+        for (const capture of captures) {
+          labels.push(capture.name.copyBytes(
+            0,
+            capture.name.byteLength
+          ));
+          labels.push(loweredTypeIdentity(capture.type));
+          const captureValue = pushExpression(
+            inout output,
+            LoweredExpressionKind.localValue,
+            capture.name,
+            Array<usize>(),
+            Array<String>()
+          );
+          children.push(captureValue);
+        }
         const taskName = intrinsicTaskName(resultType);
         const lowered = pushExpression(
           inout output,
@@ -7422,44 +7568,42 @@ function completeNativeClosureBlocks(
         );
         loweredStatements.push(lowered);
       }
-      let scanExpression = bodyExpressionStart;
-      while (scanExpression < expressions.length) {
-        if (
-          expressions[scanExpression].kind
-            == LoweredExpressionKind.receiverValue
-        ) throw "native thread.spawn closures cannot capture `this` yet";
-        if (
-          expressions[scanExpression].kind
-            == LoweredExpressionKind.localValue
-        ) {
-          const usedName = view expressions[scanExpression].value;
-          let directCallee = false;
-          let parentExpression = bodyExpressionStart;
-          while (parentExpression < expressions.length) {
-            if (
-              expressions[parentExpression].kind
-                == LoweredExpressionKind.directCall
-              && expressions[parentExpression].children.length > 0
-              && expressions[parentExpression].children[0]
-                == scanExpression
-            ) directCallee = true;
-            parentExpression = parentExpression + 1;
-          }
-          let declaredInside = false;
-          let scanStatement = bodyStatementStart;
-          while (scanStatement < statements.length) {
-            if (
-              statements[scanStatement].kind
-                == LoweredStatementKind.localStatement
-              && statements[scanStatement].name == usedName
-            ) declaredInside = true;
-            scanStatement = scanStatement + 1;
-          }
-          if (!declaredInside && !directCallee) {
-            throw `native thread.spawn block closures do not support capture ${usedName} yet`;
-          }
-        }
-        scanExpression = scanExpression + 1;
+      let captureUseOffset: usize = 0;
+      if (sourceStatements.length > 0) {
+        captureUseOffset = arena.nodes[sourceStatements[0]].offset;
+      }
+      const captures = try collectThreadClosureCaptures(
+        program,
+        importedTypes,
+        evidence,
+        ownerName,
+        expressions,
+        bodyExpressionStart,
+        statements,
+        bodyStatementStart,
+        captureUseOffset
+      );
+      for (const capture of captures) {
+        rewriteClosureParameterValues(
+          inout expressions,
+          bodyExpressionStart,
+          capture.name
+        );
+        expressions[expressionIndex].labels.push(capture.name.copyBytes(
+          0,
+          capture.name.byteLength
+        ));
+        expressions[expressionIndex].labels.push(
+          loweredTypeIdentity(capture.type)
+        );
+        const captureValue = pushExpression(
+          inout expressions,
+          LoweredExpressionKind.localValue,
+          capture.name,
+          Array<usize>(),
+          Array<String>()
+        );
+        expressions[expressionIndex].children.push(captureValue);
       }
       let statementIndex = bodyStatementStart;
       while (statementIndex < statements.length) {

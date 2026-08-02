@@ -1852,10 +1852,18 @@ mutable, matching the existing class and mutex storage distinction. The
 strict-C fixture executes the generated worker and checks that the awaited
 value reaches `main`.
 
+Block-bodied workers may also capture a cleanup-free Copy value. Native
+lowering materializes a private per-spawn context, snapshots each value before
+the OS thread starts, passes immutable pointers into the worker body, and frees
+the context before reporting completion. The parent binding therefore remains
+valid. Ownership-bearing captures still fail before C emission; their context
+needs explicit move state plus worker-side destruction rather than the scalar
+copy protocol.
+
 This is intentionally not yet the application's complete orchestration. The
 native async `main` is a synchronous host frame around the first worker/join
-operation; captures, typed worker failures, suspension, and executor placement
-remain explicit lowering errors. Those are now the
+operation; ownership-bearing captures, typed worker failures, suspension, and
+executor placement remain explicit lowering errors. Those are now the
 concrete remaining steps before the Zapp worker entry can emit unchanged.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
