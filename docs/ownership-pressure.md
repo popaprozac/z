@@ -1860,11 +1860,24 @@ valid. Ownership-bearing captures still fail before C emission; their context
 needs explicit move state plus worker-side destruction rather than the scalar
 copy protocol.
 
-This is intentionally not yet the application's complete orchestration. The
-native async `main` is a synchronous host frame around the first worker/join
-operation; ownership-bearing captures, typed worker failures, suspension, and
-executor placement remain explicit lowering errors. Those are now the
-concrete remaining steps before the Zapp worker entry can emit unchanged.
+The actual Zapp worker then exposed the classic join-versus-main-hop deadlock.
+The native task storage now owns a condition-protected main-request slot. A
+worker executing a direct `await on thread.main` publishes a typed callback and
+waits; `main`'s await pumps the callback before joining, then wakes the worker
+to finish. This first native tier requires the task to be created and awaited
+by `main`; it fails closed rather than treating an arbitrary creator as the main
+thread. The current placed-call tier is deliberately narrow: one synchronous,
+nonthrowing `void` Z call with cleanup-free value arguments. Its stack context
+remains valid because the worker waits for completion.
+
+That is enough to emit, strict-compile, and run the unchanged Zapp skeleton.
+The native path constructs its imported `Application`, publishes it through
+`Once`, mutates `Mutex` state on a pthread, executes `std/time.sleep`, publishes
+status on main, resumes and joins the worker, prints the final status, and
+releases the root. Native async `main` still uses a synchronous host frame, and
+the private worker blocks at this first placed continuation; typed worker
+failures, ownership-bearing captures, general suspension, cleanup-bearing
+placed arguments/results, and additional executor forms remain later slices.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
 

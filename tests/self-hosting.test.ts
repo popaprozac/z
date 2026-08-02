@@ -1787,6 +1787,57 @@ test("emits, joins, and cleans up a native worker task", () => {
   }
 }, 45_000);
 
+test("runs the Zapp worker and main-thread publication natively", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-zapp-");
+  const input = resolve(
+    projectRoot,
+    "examples/applications/zapp-skeleton/main.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_Task_i32_run_on_main/);
+    assert.match(emission.stdout, /main_request_pending/);
+    assert.match(emission.stdout, /z_stage1_thread_main_call_main_\d+/);
+    assert.match(emission.stdout, /z_stage1_sleep\(10\)/);
+
+    const executable = resolve(directory, "zapp");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "Zapp: Ready after background job 1\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,

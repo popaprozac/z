@@ -169,6 +169,7 @@ export enum LoweredExpressionKind {
   onceGet,
   threadSpawn,
   threadAwait,
+  threadMainCall,
   enumValue,
   enumPayloadValue,
   stringEqual,
@@ -2493,6 +2494,26 @@ function resolvedCallParameterModes(
   return Array<String>();
 }
 
+function resolvedCallParameterTypes(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Array<String> {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+    ) continue;
+    let types = Array<String>();
+    for (const type of resolution.parameterTypes) {
+      types.push(type.copyBytes(0, type.byteLength));
+    }
+    return types;
+  }
+  return Array<String>();
+}
+
 function rewriteClosureParameterValues(
   inout expressions: Array<LoweredExpression>,
   start: usize,
@@ -3418,6 +3439,145 @@ function lowerExpression(
     );
     none => {}
   }
+  if (
+    tree.nodes[index].kind
+      == ExpressionKind.executorPlacementExpression
+  ) {
+    if (
+      tree.nodes[index].value != "await"
+      || tree.nodes[index].labels.length < 3
+      || tree.nodes[index].labels[2] != "call"
+      || tree.nodes[index].children.length != 3
+    ) {
+      throw "native executor placement lowering currently supports direct `await on thread.main` calls";
+    }
+    const executorInput = tree.nodes[index].children[1];
+    if (
+      tree.nodes[executorInput].kind != ExpressionKind.memberExpression
+      || tree.nodes[executorInput].value != "main"
+      || tree.nodes[executorInput].children.length != 1
+    ) throw "native executor placement lowering currently requires thread.main";
+    const executorNamespace = tree.nodes[executorInput].children[0];
+    if (
+      tree.nodes[executorNamespace].kind
+        != ExpressionKind.identifierExpression
+      || !isImportedStandardBinding(
+        program,
+        "std/thread",
+        "thread",
+        tree.nodes[executorNamespace].value
+      )
+    ) throw "native executor placement lowering currently requires imported thread.main";
+    const callInput = tree.nodes[index].children[2];
+    if (tree.nodes[callInput].kind != ExpressionKind.callExpression) {
+      throw "native executor placement lowering requires one direct call";
+    }
+    let callReturnType = "";
+    let callErrorType = "";
+    let callAsynchronous = false;
+    for (const resolution of evidence.callResolutions) {
+      if (
+        resolution.offset == tree.nodes[callInput].offset
+        && resolution.line == tree.nodes[callInput].line
+        && resolution.column == tree.nodes[callInput].column
+      ) {
+        callReturnType = resolution.returnType.copyBytes(
+          0,
+          resolution.returnType.byteLength
+        );
+        callErrorType = resolution.errorType.copyBytes(
+          0,
+          resolution.errorType.byteLength
+        );
+        callAsynchronous = resolution.asynchronous;
+      }
+    }
+    if (
+      callReturnType != "void"
+      || callErrorType.byteLength > 0
+      || callAsynchronous
+    ) {
+      throw "native main placement currently requires a synchronous nonthrowing void call";
+    }
+    const parameterTypes = resolvedCallParameterTypes(
+      evidence,
+      tree,
+      callInput
+    );
+    const parameterModes = resolvedCallParameterModes(
+      program,
+      evidence,
+      tree,
+      callInput
+    );
+    const loweredCall = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      callInput,
+      inout output
+    );
+    if (
+      output[loweredCall].kind != LoweredExpressionKind.directCall
+      || output[loweredCall].children.length == 0
+      || output[loweredCall].children.length != parameterTypes.length + 1
+      || parameterModes.length != parameterTypes.length
+    ) throw "native main placement currently requires one resolved direct Z call";
+    let runnerChildren = Array<usize>();
+    runnerChildren.push(output[loweredCall].children[0]);
+    let labels = Array<String>();
+    let argument: usize = 0;
+    while (argument < parameterTypes.length) {
+      if (parameterModes[argument] != "value") {
+        throw "native main placement currently requires value parameters";
+      }
+      const parameterType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        parameterTypes[argument]
+      );
+      if (moduleTypeNeedsCleanup(program, importedTypes, parameterType)) {
+        throw "native main placement currently requires cleanup-free arguments";
+      }
+      labels.push(loweredTypeIdentity(parameterType));
+      const parameterName = `_z_stage1_main_argument_${argument}`;
+      const parameterValue = pushExpression(
+        inout output,
+        LoweredExpressionKind.parameterValue,
+        parameterName,
+        Array<usize>(),
+        Array<String>()
+      );
+      runnerChildren.push(parameterValue);
+      argument = argument + 1;
+    }
+    let runnerLabels = Array<String>();
+    for (const label of output[loweredCall].labels) {
+      runnerLabels.push(label.copyBytes(0, label.byteLength));
+    }
+    const runnerCall = pushExpression(
+      inout output,
+      LoweredExpressionKind.directCall,
+      "",
+      runnerChildren,
+      runnerLabels
+    );
+    let children = Array<usize>();
+    children.push(runnerCall);
+    argument = 1;
+    while (argument < output[loweredCall].children.length) {
+      children.push(output[loweredCall].children[argument]);
+      argument = argument + 1;
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.threadMainCall,
+      "",
+      children,
+      labels
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
     const kind = tree.nodes[index].value == "this"
       ? LoweredExpressionKind.receiverValue
@@ -3963,9 +4123,6 @@ function lowerExpression(
         if (tree.nodes[closureInput].labels[1].byteLength > 0) {
           throw "native thread.spawn lowering does not support throwing worker closures yet";
         }
-        if (tree.nodes[closureInput].labels[3] == "async") {
-          throw "native thread.spawn lowering does not support suspending worker closures yet";
-        }
         for (const child of tree.nodes[closureInput].children) {
           if (
             tree.nodes[child].kind
@@ -4043,6 +4200,10 @@ function lowerExpression(
         let labels = Array<String>();
         labels.push(copy bodyKind);
         labels.push(loweredTypeIdentity(resultType));
+        labels.push(tree.nodes[closureInput].labels[3].copyBytes(
+          0,
+          tree.nodes[closureInput].labels[3].byteLength
+        ));
         for (const capture of captures) {
           labels.push(capture.name.copyBytes(
             0,
@@ -4117,7 +4278,40 @@ function lowerExpression(
             valueInput
           )) {
             some(name) => valueTypeName = move name;
-            none => throw "native Mutex construction could not resolve its payload type";
+            none => {
+              if (
+                tree.nodes[valueInput].kind == ExpressionKind.callExpression
+                && tree.nodes[valueInput].children.length > 0
+              ) {
+                const valueCallee = tree.nodes[valueInput].children[0];
+                if (
+                  tree.nodes[valueCallee].kind
+                    == ExpressionKind.identifierExpression
+                ) {
+                  const candidateName = tree.nodes[valueCallee].value.copyBytes(
+                    0,
+                    tree.nodes[valueCallee].value.byteLength
+                  );
+                  const candidate = attempt lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    candidateName
+                  );
+                  match (candidate) {
+                    success(type) => {
+                      if (
+                        type.kind == LoweredTypeKind.structType
+                        || type.kind == LoweredTypeKind.classType
+                      ) valueTypeName = move candidateName;
+                    }
+                    failure(_) => {}
+                  }
+                }
+              }
+            }
+          }
+          if (valueTypeName.byteLength == 0) {
+            throw "native Mutex construction could not resolve its payload type";
           }
         }
         const valueType = try lowerModuleTypeName(
@@ -5676,6 +5870,17 @@ function lowerExpression(
     match (resolvedCallTarget(evidence, tree, index)) {
       some(target) => {
         if (
+          target == "sleep"
+          && tree.nodes[calleeInput].kind
+            == ExpressionKind.identifierExpression
+          && isImportedStandardBinding(
+            program,
+            "std/time",
+            "sleep",
+            tree.nodes[calleeInput].value
+          )
+        ) standardTarget = "time.sleep";
+        else if (
           target == "fs.lock"
           || target == "fs.readBytes"
           || target == "fs.readText"
@@ -5696,6 +5901,16 @@ function lowerExpression(
       }
       none => {}
     }
+    if (
+      standardTarget.byteLength == 0
+      && tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      && isImportedStandardBinding(
+        program,
+        "std/time",
+        "sleep",
+        tree.nodes[calleeInput].value
+      )
+    ) standardTarget = "time.sleep";
     match (resolvedForeignCallTarget(evidence, tree, index)) {
       some(target) => foreignTarget = move target;
       none => {}
@@ -7567,6 +7782,23 @@ function completeNativeClosureBlocks(
           inout statements
         );
         loweredStatements.push(lowered);
+      }
+      let placedExpression = bodyExpressionStart;
+      while (placedExpression < expressions.length) {
+        if (
+          expressions[placedExpression].kind
+            == LoweredExpressionKind.threadMainCall
+        ) {
+          if (ownerName != "main") {
+            throw "native thread.main placement currently requires a task created in main";
+          }
+          expressions[placedExpression].value = expressions[expressionIndex]
+            .value.copyBytes(
+              0,
+              expressions[expressionIndex].value.byteLength
+            );
+        }
+        placedExpression = placedExpression + 1;
       }
       let captureUseOffset: usize = 0;
       if (sourceStatements.length > 0) {
