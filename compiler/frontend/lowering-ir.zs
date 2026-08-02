@@ -204,6 +204,7 @@ export struct LoweredExpression {
   children: Array<usize>;
   statements: Array<usize>;
   labels: Array<String>;
+  captureBindingOffsets: Array<usize> = Array<usize>();
 }
 
 export enum LoweredStatementKind {
@@ -253,6 +254,7 @@ export struct LoweredLiveFlag {
 struct LoweredClosureCapture {
   name: String;
   type: LoweredType;
+  owned: boolean;
 }
 
 export struct LoweredFunction {
@@ -1657,6 +1659,42 @@ function arenaMovesName(
   return false;
 }
 
+function loweredThreadSpawnMovesBinding(
+  in expressions: Array<LoweredExpression>,
+  in name: String,
+  bindingOffset: usize
+): boolean {
+  for (const expression of expressions) {
+    if (
+      expression.kind != LoweredExpressionKind.threadSpawn
+      || expression.labels.length < 5
+      || (expression.labels.length - 5) % 2 != 0
+    ) continue;
+    let captureChild: usize = 0;
+    if (expression.labels[0] == "expression") captureChild = 1;
+    let captureLabel: usize = 5;
+    let captureIndex: usize = 0;
+    while (captureLabel + 1 < expression.labels.length) {
+      if (
+        expression.labels[captureLabel] == name
+        && captureIndex < expression.captureBindingOffsets.length
+        && expression.captureBindingOffsets[captureIndex] == bindingOffset
+        && captureChild < expression.children.length
+      ) {
+        const value = expression.children[captureChild];
+        if (
+          expressions[value].kind == LoweredExpressionKind.moveValue
+          && expressions[value].children.length == 1
+        ) return true;
+      }
+      captureLabel = captureLabel + 2;
+      captureChild = captureChild + 1;
+      captureIndex = captureIndex + 1;
+    }
+  }
+  return false;
+}
+
 function statementMovesName(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
@@ -1822,6 +1860,7 @@ function planCleanupStatement(
   sourceIndex: usize,
   loweredIndex: usize,
   in live: Array<LoweredCleanup>,
+  in expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
   insideLoop: boolean,
@@ -1878,6 +1917,7 @@ function planCleanupStatement(
       sourceIndex,
       loweredMatch,
       initializerLive,
+      expressions,
       inout statements,
       inout liveFlags,
       insideLoop,
@@ -1952,6 +1992,7 @@ function planCleanupStatement(
                 sourceRoots,
                 loweredRoots,
                 armLive,
+                expressions,
                 inout statements,
                 inout liveFlags,
                 insideLoop,
@@ -2001,6 +2042,7 @@ function planCleanupStatement(
       sourceChildren,
       loweredChildren,
       live,
+      expressions,
       inout statements,
       inout liveFlags,
       insideLoop,
@@ -2043,6 +2085,7 @@ function planCleanupStatement(
         sourceChild,
         loweredChild,
         live,
+        expressions,
         inout statements,
         inout liveFlags,
         insideLoop
@@ -2064,6 +2107,7 @@ function planCleanupSequence(
   in sourceRoots: Array<usize>,
   in loweredRoots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
+  in expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
   insideLoop: boolean,
@@ -2105,11 +2149,20 @@ function planCleanupSequence(
             !borrowedView
             && moduleTypeNeedsCleanup(program, importedTypes, ownedType)
           ) {
+            const bindingName = arena.nodes[sourceIndex].name.copyBytes(
+              0,
+              arena.nodes[sourceIndex].name.byteLength
+            );
+            const bindingOffset = arena.nodes[sourceIndex].nameOffset;
             const moved = arenaMovesName(
               program,
               evidence,
               arena,
-              arena.nodes[sourceIndex].name
+              bindingName
+            ) || loweredThreadSpawnMovesBinding(
+              expressions,
+              bindingName,
+              bindingOffset
             );
             let guard = "";
             if (moved && arenaHasControlFlow(arena)) {
@@ -2164,6 +2217,7 @@ function planCleanupSequence(
       sourceIndex,
       loweredIndex,
       live,
+      expressions,
       inout statements,
       inout liveFlags,
       insideLoop,
@@ -2561,6 +2615,71 @@ function rewriteClosureParameterValues(
   }
 }
 
+function loweredRangeMovesName(
+  in expressions: Array<LoweredExpression>,
+  start: usize,
+  in name: String
+): boolean {
+  let index = start;
+  while (index < expressions.length) {
+    if (
+      expressions[index].kind == LoweredExpressionKind.moveValue
+      && expressions[index].children.length == 1
+    ) {
+      const operand = expressions[index].children[0];
+      if (
+        (
+          expressions[operand].kind == LoweredExpressionKind.localValue
+          || expressions[operand].kind == LoweredExpressionKind.parameterValue
+        )
+        && expressions[operand].value == name
+      ) return true;
+    }
+    index = index + 1;
+  }
+  return false;
+}
+
+function validateOwnedThreadCaptures(
+  in captures: Array<LoweredClosureCapture>,
+  in captureMode: String,
+  in expressions: Array<LoweredExpression>,
+  bodyStart: usize
+): void throws String {
+  for (const capture of captures) {
+    if (!capture.owned) continue;
+    if (captureMode != "move") {
+      throw `native thread.spawn requires a move closure to transfer ownership-bearing capture ${capture.name}`;
+    }
+    if (loweredRangeMovesName(expressions, bodyStart, capture.name)) {
+      throw `native thread.spawn cannot re-move ownership-bearing capture ${capture.name} yet`;
+    }
+  }
+}
+
+function pushThreadCaptureValue(
+  inout expressions: Array<LoweredExpression>,
+  in capture: LoweredClosureCapture
+): usize {
+  const local = pushExpression(
+    inout expressions,
+    LoweredExpressionKind.localValue,
+    capture.name,
+    Array<usize>(),
+    Array<String>()
+  );
+  if (!capture.owned) return local;
+  let children = Array<usize>();
+  children.push(local);
+  return pushExpression(
+    inout expressions,
+    LoweredExpressionKind.moveValue,
+    "",
+    children,
+    Array<String>()
+  );
+}
+
 function collectMutexClosureCaptures(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -2617,6 +2736,7 @@ function collectMutexClosureCaptures(
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
+      owned: false,
     }));
     index = index + 1;
   }
@@ -2704,16 +2824,24 @@ function collectThreadClosureCaptures(
     const type = match (resolvedType) {
       some(value) => value;
       none => {
-        const typeName = match (namedValueTypeName(
-          program,
-          evidence,
-          ownerName,
-          captureName,
-          useOffset
-        )) {
-          some(name) => name;
-          none => throw `native thread.spawn cannot resolve capture ${captureName}`;
-        };
+        let typeName = "";
+        if (expressions[index].labels.length > 0) {
+          typeName = expressions[index].labels[0].copyBytes(
+            0,
+            expressions[index].labels[0].byteLength
+          );
+        } else {
+          match (namedValueTypeName(
+            program,
+            evidence,
+            ownerName,
+            captureName,
+            useOffset
+          )) {
+            some(name) => typeName = move name;
+            none => throw `native thread.spawn cannot resolve capture ${captureName}`;
+          }
+        }
         select try lowerModuleTypeName(
           program,
           importedTypes,
@@ -2721,12 +2849,17 @@ function collectThreadClosureCaptures(
         );
       }
     };
-    if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+    const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+    if (
+      owned
+      && type.kind != LoweredTypeKind.stringType
+    ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
+      owned,
     }));
     index = index + 1;
   }
@@ -3656,12 +3789,17 @@ function lowerExpression(
     const kind = tree.nodes[index].value == "this"
       ? LoweredExpressionKind.receiverValue
       : LoweredExpressionKind.localValue;
+    let labels = Array<String>();
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(typeName) => labels.push(move typeName);
+      none => {}
+    }
     return pushExpression(
       inout output,
       kind,
       tree.nodes[index].value,
       Array<usize>(),
-      Array<String>()
+      labels
     );
   }
   if (
@@ -4317,6 +4455,12 @@ function lowerExpression(
             0,
             tree.nodes[closureInput].offset
           );
+          try validateOwnedThreadCaptures(
+            captures,
+            tree.nodes[closureInput].value,
+            output,
+            bodyStart
+          );
           for (const capture of captures) {
             rewriteClosureParameterValues(
               inout output,
@@ -4336,18 +4480,19 @@ function lowerExpression(
           tree.nodes[closureInput].labels[3].byteLength
         ));
         labels.push(move errorTypeName);
+        labels.push(tree.nodes[closureInput].value.copyBytes(
+          0,
+          tree.nodes[closureInput].value.byteLength
+        ));
         for (const capture of captures) {
           labels.push(capture.name.copyBytes(
             0,
             capture.name.byteLength
           ));
           labels.push(loweredTypeIdentity(capture.type));
-          const captureValue = pushExpression(
+          const captureValue = pushThreadCaptureValue(
             inout output,
-            LoweredExpressionKind.localValue,
-            capture.name,
-            Array<usize>(),
-            Array<String>()
+            capture
           );
           children.push(captureValue);
         }
@@ -7877,18 +8022,90 @@ function testExpressionTypeName(
   return Option<String>.none;
 }
 
+function threadCaptureBindingOffset(
+  in program: Program,
+  in arena: StatementArena,
+  in ownerName: String,
+  in name: String,
+  useOffset: usize
+): usize throws String {
+  let resolvedOffset: usize = 0;
+  for (const statement of arena.nodes) {
+    if (
+      statement.kind == StatementKind.variableStatement
+      && statement.name == name
+      && statement.nameOffset < useOffset
+      && statement.nameOffset >= resolvedOffset
+    ) resolvedOffset = statement.nameOffset;
+  }
+  if (resolvedOffset > 0) return resolvedOffset;
+  for (const declaration of program.functions) {
+    if (declaration.name != ownerName) continue;
+    for (const parameter of declaration.parameters) {
+      if (parameter.name == name) return parameter.offset;
+    }
+  }
+  throw `native thread.spawn cannot resolve binding identity for capture ${name}`;
+}
+
+function resolveThreadCaptureBindingOffsets(
+  in program: Program,
+  in arena: StatementArena,
+  in ownerName: String,
+  useOffset: usize,
+  expressionIndex: usize,
+  inout expressions: Array<LoweredExpression>
+): void throws String {
+  if (
+    expressions[expressionIndex].labels.length < 5
+    || (expressions[expressionIndex].labels.length - 5) % 2 != 0
+  ) throw "native thread.spawn lowering lost its capture evidence";
+  if (expressions[expressionIndex].captureBindingOffsets.length > 0) return;
+  let captureLabel: usize = 5;
+  while (captureLabel + 1 < expressions[expressionIndex].labels.length) {
+    const name = expressions[expressionIndex].labels[captureLabel].copyBytes(
+      0,
+      expressions[expressionIndex].labels[captureLabel].byteLength
+    );
+    const bindingOffset = try threadCaptureBindingOffset(
+      program,
+      arena,
+      ownerName,
+      name,
+      useOffset
+    );
+    expressions[expressionIndex].captureBindingOffsets.push(bindingOffset);
+    captureLabel = captureLabel + 2;
+  }
+}
+
 function completeNativeClosureBlocks(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in arena: StatementArena,
   in ownerName: String,
+  sourceStatementIndex: usize,
   start: usize,
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): void throws String {
+  const closureUseOffset = arena.nodes[sourceStatementIndex].offset;
   let expressionIndex = start;
   while (expressionIndex < expressions.length) {
+    if (
+      expressions[expressionIndex].kind
+        == LoweredExpressionKind.threadSpawn
+      && expressions[expressionIndex].labels.length >= 1
+      && expressions[expressionIndex].labels[0] != "block"
+    ) try resolveThreadCaptureBindingOffsets(
+      program,
+      arena,
+      ownerName,
+      closureUseOffset,
+      expressionIndex,
+      inout expressions
+    );
     if (
       expressions[expressionIndex].kind
         == LoweredExpressionKind.threadSpawn
@@ -7992,6 +8209,15 @@ function completeNativeClosureBlocks(
         bodyStatementStart,
         captureUseOffset
       );
+      if (expressions[expressionIndex].labels.length < 5) {
+        throw "native thread.spawn lowering lost its capture mode";
+      }
+      try validateOwnedThreadCaptures(
+        captures,
+        expressions[expressionIndex].labels[4],
+        expressions,
+        bodyExpressionStart
+      );
       for (const capture of captures) {
         rewriteClosureParameterValues(
           inout expressions,
@@ -8005,15 +8231,20 @@ function completeNativeClosureBlocks(
         expressions[expressionIndex].labels.push(
           loweredTypeIdentity(capture.type)
         );
-        const captureValue = pushExpression(
+        const captureValue = pushThreadCaptureValue(
           inout expressions,
-          LoweredExpressionKind.localValue,
-          capture.name,
-          Array<usize>(),
-          Array<String>()
+          capture
         );
         expressions[expressionIndex].children.push(captureValue);
       }
+      try resolveThreadCaptureBindingOffsets(
+        program,
+        arena,
+        ownerName,
+        closureUseOffset,
+        expressionIndex,
+        inout expressions
+      );
       let statementIndex = bodyStatementStart;
       while (statementIndex < statements.length) {
         match (in statements[statementIndex].type) {
@@ -8932,6 +9163,7 @@ function lowerStatement(
           evidence,
           arena,
           ownerName,
+          index,
           expressionStart,
           inout expressions,
           inout statements
@@ -9241,36 +9473,6 @@ function lowerFunction(
       importedTypes,
       parameter.type
     );
-    if (
-      parameter.mode == ParameterMode.value
-      && moduleTypeNeedsCleanup(program, importedTypes, parameterType)
-    ) {
-      const moved = arenaMovesName(
-        program,
-        evidence,
-        declaration.body,
-        parameter.name
-      );
-      let guard = "";
-      if (moved && arenaHasControlFlow(declaration.body)) {
-        guard = ownerLiveFlag(parameter.name);
-        liveFlags.push(LoweredLiveFlag({
-          owner: parameter.name.copyBytes(0, parameter.name.byteLength),
-          name: guard.copyBytes(0, guard.byteLength),
-          parameter: true,
-        }));
-      }
-      if (!moved || guard.byteLength > 0) {
-        ownedParameters.push(LoweredCleanup({
-          name: parameter.name.copyBytes(0, parameter.name.byteLength),
-          type: LoweredType({
-            kind: parameterType.kind,
-            name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
-          }),
-          guard: move guard,
-        }));
-      }
-    }
     parameters.push(LoweredParameter({
       name: parameter.name.copyBytes(0, parameter.name.byteLength),
       type: move parameterType,
@@ -9295,6 +9497,51 @@ function lowerFunction(
     );
     roots.push(loweredRoot);
   }
+  let parameterIndex: usize = 0;
+  while (parameterIndex < declaration.parameters.length) {
+    const parameter = view declaration.parameters[parameterIndex];
+    const parameterType = view parameters[parameterIndex].type;
+    if (
+      parameter.mode == ParameterMode.value
+      && moduleTypeNeedsCleanup(program, importedTypes, parameterType)
+    ) {
+      const parameterName = parameter.name.copyBytes(
+        0,
+        parameter.name.byteLength
+      );
+      const parameterOffset = parameter.offset;
+      const moved = arenaMovesName(
+        program,
+        evidence,
+        declaration.body,
+        parameterName
+      ) || loweredThreadSpawnMovesBinding(
+        expressions,
+        parameterName,
+        parameterOffset
+      );
+      let guard = "";
+      if (moved && arenaHasControlFlow(declaration.body)) {
+        guard = ownerLiveFlag(parameter.name);
+        liveFlags.push(LoweredLiveFlag({
+          owner: parameter.name.copyBytes(0, parameter.name.byteLength),
+          name: guard.copyBytes(0, guard.byteLength),
+          parameter: true,
+        }));
+      }
+      if (!moved || guard.byteLength > 0) {
+        ownedParameters.push(LoweredCleanup({
+          name: parameter.name.copyBytes(0, parameter.name.byteLength),
+          type: LoweredType({
+            kind: parameterType.kind,
+            name: parameterType.name.copyBytes(0, parameterType.name.byteLength),
+          }),
+          guard: move guard,
+        }));
+      }
+    }
+    parameterIndex = parameterIndex + 1;
+  }
   const rootLoopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
@@ -9305,6 +9552,7 @@ function lowerFunction(
     sourceRoots,
     roots,
     ownedParameters,
+    expressions,
     inout statements,
     inout liveFlags,
     false,
@@ -9410,6 +9658,7 @@ function lowerDeinitializer(
     sourceRoots,
     roots,
     inherited,
+    expressions,
     inout statements,
     inout liveFlags,
     false,

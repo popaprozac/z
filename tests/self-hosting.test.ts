@@ -1768,6 +1768,61 @@ test("emits, joins, and cleans up a native worker task", () => {
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
 
+    const ownedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-owned-capture.zs",
+    );
+    const ownedEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", ownedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(ownedEmission.status, 0, ownedEmission.stderr);
+    assert.match(
+      ownedEmission.stdout,
+      /Z_String_deinit\(&worker_context->message\);/,
+    );
+    assert.match(
+      ownedEmission.stdout,
+      /Z_String_deinit\(&worker_context->blockMessage\);/,
+    );
+    assert.match(
+      ownedEmission.stdout,
+      /Z_String_deinit\(&worker_context->input\);/,
+    );
+    assert.doesNotMatch(ownedEmission.stdout, /Z_String_deinit\(&input\);/);
+    assert.match(
+      ownedEmission.stdout,
+      /_z_stage1_live_message = false/,
+    );
+    assert.match(
+      ownedEmission.stdout,
+      /if \(_z_stage1_live_message\) Z_String_deinit\(&message\);/,
+    );
+
+    const ownedExecutable = resolve(directory, "thread-owned-capture");
+    const ownedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        ownedExecutable,
+      ],
+      { encoding: "utf8", input: ownedEmission.stdout },
+    );
+    assert.equal(ownedCompilation.status, 0, ownedCompilation.stderr);
+    const ownedExecution = spawnSync(ownedExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(ownedExecution.status, 0, ownedExecution.stderr);
+
     const invalidInput = resolve(
       projectRoot,
       "tests/fixtures/self-host-emit-thread-owned-capture-invalid.zs",
@@ -1780,7 +1835,28 @@ test("emits, joins, and cleans up a native worker task", () => {
     assert.equal(invalid.status, 1);
     assert.match(
       invalid.stderr,
-      /thread\.spawn does not support ownership-bearing capture message yet/,
+      /thread\.spawn cannot re-move ownership-bearing capture message yet/,
+    );
+
+    const sharedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-shared-capture-invalid.zs",
+    );
+    const sharedParity = spawnSync(
+      process.execPath,
+      [cli, "check", sharedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(sharedParity.status, 0, sharedParity.stderr);
+    const shared = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", sharedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(shared.status, 1);
+    assert.match(
+      shared.stderr,
+      /thread\.spawn does not support ownership-bearing capture snapshot yet/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

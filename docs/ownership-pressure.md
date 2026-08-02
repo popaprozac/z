@@ -1852,13 +1852,24 @@ mutable, matching the existing class and mutex storage distinction. The
 strict-C fixture executes the generated worker and checks that the awaited
 value reaches `main`.
 
-Block-bodied workers may also capture a cleanup-free Copy value. Native
-lowering materializes a private per-spawn context, snapshots each value before
-the OS thread starts, passes immutable pointers into the worker body, and frees
-the context before reporting completion. The parent binding therefore remains
-valid. Ownership-bearing captures still fail before C emission; their context
-needs explicit move state plus worker-side destruction rather than the scalar
-copy protocol.
+Thread workers may capture a cleanup-free Copy value. Native lowering
+materializes a private per-spawn context, snapshots each value before the OS
+thread starts, passes immutable pointers into the worker body, and frees the
+context before reporting completion. The parent binding therefore remains
+valid.
+
+An ownership-bearing capture now follows the other half of that contract. An
+explicit `move` closure transfers the owner into the private worker context;
+the capture expression retires the parent's cleanup state, including its live
+flag when the transfer is conditional. The worker destroys context fields in
+reverse order after the body returns and also destroys them if native thread
+creation fails. Expression- and block-bodied strict-C fixtures transfer owned
+`String` storage and prove that the parent and worker cannot both clean it up.
+The first tier exposes captured String/TextBuffer storage immutably and rejects
+consuming or re-moving it inside the worker. Shared ARC identity and other
+cleanup-bearing aggregates continue to fail closed rather than being mistaken
+for unique transfer. Those restrictions keep context destruction total until
+owned task results, ARC retain semantics, and capture-to-result transfer land.
 
 The actual Zapp worker then exposed the classic join-versus-main-hop deadlock.
 The native task storage now owns a condition-protected main-request slot. A
@@ -1883,9 +1894,9 @@ same `Result<T, E>` representation used by synchronous throwing calls; worker
 await` transfers that tagged value to ordinary exhaustive matching. The strict
 fixture executes both outcomes. Cleanup-bearing errors fail before C emission
 because discarding, cancellation, and propagation still need live-state-aware
-destruction. Ownership-bearing captures, `try await` propagation, general
-suspension, cleanup-bearing placed arguments/results, and additional executor
-forms remain later slices.
+destruction. Re-moving ownership-bearing captures, owned task results, `try
+await` propagation, general suspension, cleanup-bearing placed arguments/results,
+and additional executor forms remain later slices.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
 

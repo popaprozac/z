@@ -3383,14 +3383,14 @@ function appendThreadSpawnHelpers(
         expressionIndex = expressionIndex + 1;
         continue;
       }
-      if (expression.labels.length < 4) {
+      if (expression.labels.length < 5) {
         throw "native C emission received malformed thread.spawn evidence";
       }
       const blockBody = expression.labels[0] == "lowered-block";
-      if ((expression.labels.length - 4) % 2 != 0) {
+      if ((expression.labels.length - 5) % 2 != 0) {
         throw "native C emission received malformed thread.spawn captures";
       }
-      const captureCount = (expression.labels.length - 4) / 2;
+      const captureCount = (expression.labels.length - 5) / 2;
       let bodyChildCount: usize = 0;
       if (!blockBody) bodyChildCount = 1;
       if (
@@ -3411,7 +3411,7 @@ function appendThreadSpawnHelpers(
           expressionIndex
         );
         output.append("_Context {\n");
-        let captureLabel: usize = 4;
+        let captureLabel: usize = 5;
         while (captureLabel + 1 < expression.labels.length) {
           const captureType = try loweredTypeForIdentity(
             program,
@@ -3431,7 +3431,42 @@ function appendThreadSpawnHelpers(
           declaration,
           expressionIndex
         );
-        output.append("_Context;\n\n");
+        output.append("_Context;\n\nstatic void ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_destroy_context(");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *worker_context) {\n  if (worker_context == NULL) return;\n");
+        let remaining = expression.labels.length;
+        while (remaining > 5) {
+          remaining = remaining - 2;
+          const captureType = try loweredTypeForIdentity(
+            program,
+            expression.labels[remaining + 1]
+          );
+          if (loweredTypeNeedsDeinit(program, captureType)) {
+            output.append("  Z_");
+            output.append(captureType.name);
+            if (captureType.kind == LoweredTypeKind.classType) {
+              output.append("_release(worker_context->");
+            } else {
+              output.append("_deinit(&worker_context->");
+            }
+            appendCBindingName(
+              inout output,
+              expression.labels[remaining]
+            );
+            output.append(");\n");
+          }
+        }
+        output.append("  free(worker_context);\n}\n\n");
       }
       output.append("static ");
       output.append(nativeResultType);
@@ -3445,7 +3480,7 @@ function appendThreadSpawnHelpers(
       output.append("Z_");
       output.append(taskName);
       output.append("Storage *_z_stage1_task_storage");
-      let captureLabel: usize = 4;
+      let captureLabel: usize = 5;
       while (captureLabel + 1 < expression.labels.length) {
         output.append(", ");
         const captureType = try loweredTypeForIdentity(
@@ -3512,7 +3547,7 @@ function appendThreadSpawnHelpers(
         expressionIndex
       );
       output.append("_body(storage");
-      captureLabel = 4;
+      captureLabel = 5;
       while (captureLabel + 1 < expression.labels.length) {
         output.append(", ");
         output.append("&worker_context->");
@@ -3521,7 +3556,13 @@ function appendThreadSpawnHelpers(
       }
       output.append(");\n");
       if (captureCount > 0) {
-        output.append("  free(worker_context);\n  storage->context = NULL;\n");
+        output.append("  ");
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_destroy_context(worker_context);\n  storage->context = NULL;\n");
       }
       output.append("  Z_");
       output.append(taskName);
@@ -3536,9 +3577,9 @@ function appendThreadSpawnHelpers(
         expressionIndex
       );
       output.append("(");
-      captureLabel = 4;
+      captureLabel = 5;
       while (captureLabel + 1 < expression.labels.length) {
-        if (captureLabel > 4) output.append(", ");
+        if (captureLabel > 5) output.append(", ");
         const captureType = try loweredTypeForIdentity(
           program,
           expression.labels[captureLabel + 1]
@@ -3578,7 +3619,7 @@ function appendThreadSpawnHelpers(
           expressionIndex
         );
         output.append("_Context));\n  if (worker_context == NULL) {\n#if !defined(_WIN32)\n    pthread_cond_destroy(&storage->state_condition);\n    pthread_mutex_destroy(&storage->state_mutex);\n#endif\n    free(storage);\n    abort();\n  }\n");
-        captureLabel = 4;
+        captureLabel = 5;
         while (captureLabel + 1 < expression.labels.length) {
           output.append("  worker_context->");
           appendCBindingName(inout output, expression.labels[captureLabel]);
@@ -3595,13 +3636,31 @@ function appendThreadSpawnHelpers(
         declaration,
         expressionIndex
       );
-      output.append("_worker, storage, 0, NULL);\n  if (storage->thread == NULL) { free(storage->context); free(storage); abort(); }\n#else\n  if (pthread_create(&storage->thread, NULL, ");
+      output.append("_worker, storage, 0, NULL);\n  if (storage->thread == NULL) { ");
+      if (captureCount > 0) {
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_destroy_context(worker_context); ");
+      }
+      output.append("free(storage); abort(); }\n#else\n  if (pthread_create(&storage->thread, NULL, ");
       appendThreadSpawnHelperName(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_worker, storage) != 0) { free(storage->context); pthread_cond_destroy(&storage->state_condition); pthread_mutex_destroy(&storage->state_mutex); free(storage); abort(); }\n#endif\n  return (Z_");
+      output.append("_worker, storage) != 0) { ");
+      if (captureCount > 0) {
+        appendThreadSpawnHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_destroy_context(worker_context); ");
+      }
+      output.append("pthread_cond_destroy(&storage->state_condition); pthread_mutex_destroy(&storage->state_mutex); free(storage); abort(); }\n#endif\n  return (Z_");
       output.append(taskName);
       output.append("){ .storage = storage };\n}\n\n");
       expressionIndex = expressionIndex + 1;
