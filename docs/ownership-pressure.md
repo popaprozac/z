@@ -1897,6 +1897,16 @@ because discarding, cancellation, and propagation still need live-state-aware
 destruction. Re-moving ownership-bearing captures, owned task results, `try
 await` propagation, general suspension, cleanup-bearing placed arguments/results,
 and additional executor forms remain later slices.
+
+Owned String results now cross the same native task boundary without widening
+that error tier prematurely. Every task storage has explicit result liveness.
+Worker completion publishes the result before waking the owner; `await`
+transfers the String and clears the bit, while task cleanup joins first and
+destroys a still-live unobserved result. A strict-C fixture exercises both paths
+and then uses ordinary `.byteLength` plus checked integer conversion on the
+observed value. Other owned result shapes, ownership-bearing typed errors, and
+fallible owned results remain fail-closed until the same protocol covers each
+active payload.
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
 

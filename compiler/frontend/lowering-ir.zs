@@ -4375,11 +4375,14 @@ function lowerExpression(
           importedTypes,
           resultTypeName
         );
+        if (resultType.kind == LoweredTypeKind.voidType) {
+          throw "native thread.spawn lowering currently requires a non-void result";
+        }
         if (
-          resultType.kind == LoweredTypeKind.voidType
-          || moduleTypeNeedsCleanup(program, importedTypes, resultType)
+          moduleTypeNeedsCleanup(program, importedTypes, resultType)
+          && resultType.kind != LoweredTypeKind.stringType
         ) {
-          throw "native thread.spawn lowering currently requires a cleanup-free non-void result";
+          throw "native thread.spawn lowering currently supports only cleanup-free or owned String results";
         }
         const errorTypeName = tree.nodes[closureInput].labels[1].copyBytes(
           0,
@@ -4390,6 +4393,9 @@ function lowerExpression(
           name: resultType.name.copyBytes(0, resultType.name.byteLength),
         });
         if (errorTypeName.byteLength > 0) {
+          if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
+            throw "native fallible thread.spawn does not support an ownership-bearing result yet";
+          }
           const errorType = try lowerModuleTypeName(
             program,
             importedTypes,
@@ -4981,12 +4987,27 @@ function lowerExpression(
       )
     ) {
       const argumentInput = tree.nodes[index].children[1];
-      const sourceType = match (
-        resolvedExpressionTypeName(evidence, tree, argumentInput)
-      ) {
-        some(name) => name;
-        none => throw "native integer conversion could not resolve its source type";
-      };
+      const argument = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
+      let sourceType = "";
+      match (resolvedExpressionTypeName(evidence, tree, argumentInput)) {
+        some(name) => sourceType = move name;
+        none => {
+          if (
+            output[argument].kind == LoweredExpressionKind.stringLength
+            || output[argument].kind == LoweredExpressionKind.arrayLength
+          ) sourceType = "usize";
+        }
+      }
+      if (sourceType.byteLength == 0) {
+        throw "native integer conversion could not resolve its source type";
+      }
       const targetType = tree.nodes[calleeInput].value.copyBytes(
         0,
         tree.nodes[calleeInput].value.byteLength
@@ -4997,14 +5018,6 @@ function lowerExpression(
         some(typeName) => typeName;
         none => throw `native integer conversion does not support source type ${sourceType} yet`;
       };
-      const argument = try lowerExpression(
-        program,
-        importedTypes,
-        evidence,
-        tree,
-        argumentInput,
-        inout output
-      );
       let children = Array<usize>();
       children.push(argument);
       let labels = Array<String>();

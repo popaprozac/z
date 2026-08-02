@@ -3171,6 +3171,7 @@ function appendThreadTaskRuntime(
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
+    const resultNeedsDeinit = loweredTypeNeedsDeinit(program, resultType);
     output.append("static void Z_");
     output.append(taskName);
     output.append("_lock(Z_");
@@ -3215,11 +3216,9 @@ function appendThreadTaskRuntime(
     output.append("_wake(storage);\n  Z_");
     output.append(taskName);
     output.append("_unlock(storage);\n}\n\n");
-    output.append("static __attribute__((unused)) ");
-    output.append(nativeResultType);
-    output.append(" Z_");
+    output.append("static void Z_");
     output.append(taskName);
-    output.append("_await(Z_");
+    output.append("_join(Z_");
     output.append(taskName);
     output.append(" *task) {\n  if (task == NULL || task->storage == NULL) abort();\n  Z_");
     output.append(taskName);
@@ -3235,14 +3234,46 @@ function appendThreadTaskRuntime(
     output.append(taskName);
     output.append("_wake(storage);\n    }\n    Z_");
     output.append(taskName);
-    output.append("_unlock(storage);\n#if defined(_WIN32)\n    if (WaitForSingleObject(storage->thread, INFINITE) != WAIT_OBJECT_0) abort();\n    if (!CloseHandle(storage->thread)) abort();\n#else\n    if (pthread_join(storage->thread, NULL) != 0) abort();\n#endif\n    storage->joined = true;\n  }\n  return storage->result;\n}\n\n");
+    output.append("_unlock(storage);\n#if defined(_WIN32)\n    if (WaitForSingleObject(storage->thread, INFINITE) != WAIT_OBJECT_0) abort();\n    if (!CloseHandle(storage->thread)) abort();\n#else\n    if (pthread_join(storage->thread, NULL) != 0) abort();\n#endif\n    storage->joined = true;\n  }\n}\n\n");
+    output.append("static __attribute__((unused)) ");
+    output.append(nativeResultType);
+    output.append(" Z_");
+    output.append(taskName);
+    output.append("_await(Z_");
+    output.append(taskName);
+    output.append(" *task) {\n  Z_");
+    output.append(taskName);
+    output.append("_join(task);\n  Z_");
+    output.append(taskName);
+    output.append("Storage *storage = task->storage;\n");
+    if (resultNeedsDeinit) {
+      output.append("  if (!storage->result_live) abort();\n  ");
+      output.append(nativeResultType);
+      output.append(" result = storage->result;\n  storage->result_live = false;\n  return result;\n}\n\n");
+    } else {
+      output.append("  return storage->result;\n}\n\n");
+    }
     output.append("static __attribute__((unused)) void Z_");
     output.append(taskName);
     output.append("_deinit(Z_");
     output.append(taskName);
-    output.append(" *task) {\n  if (task == NULL || task->storage == NULL) return;\n  (void)Z_");
+    output.append(" *task) {\n  if (task == NULL || task->storage == NULL) return;\n  Z_");
     output.append(taskName);
-    output.append("_await(task);\n#if !defined(_WIN32)\n  if (pthread_cond_destroy(&task->storage->state_condition) != 0) abort();\n  if (pthread_mutex_destroy(&task->storage->state_mutex) != 0) abort();\n#endif\n  free(task->storage);\n  task->storage = NULL;\n}\n\n");
+    output.append("_join(task);\n");
+    if (resultNeedsDeinit) {
+      output.append("  if (task->storage->result_live) {");
+      if (resultType.kind == LoweredTypeKind.classType) {
+        output.append(" Z_");
+        output.append(resultType.name);
+        output.append("_release(task->storage->result);");
+      } else {
+        output.append(" Z_");
+        output.append(resultType.name);
+        output.append("_deinit(&task->storage->result);");
+      }
+      output.append(" task->storage->result_live = false; }\n");
+    }
+    output.append("#if !defined(_WIN32)\n  if (pthread_cond_destroy(&task->storage->state_condition) != 0) abort();\n  if (pthread_mutex_destroy(&task->storage->state_mutex) != 0) abort();\n#endif\n  free(task->storage);\n  task->storage = NULL;\n}\n\n");
   }
 }
 
@@ -3555,6 +3586,7 @@ function appendThreadSpawnHelpers(
         captureLabel = captureLabel + 2;
       }
       output.append(");\n");
+      output.append("  storage->result_live = true;\n");
       if (captureCount > 0) {
         output.append("  ");
         appendThreadSpawnHelperName(
@@ -4747,7 +4779,7 @@ function appendTypeDefinitions(
     const nativeResultType = try cType(resultType);
     output.append("struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
     output.append(nativeResultType);
     output.append(" result;\n};\n\n");
   }

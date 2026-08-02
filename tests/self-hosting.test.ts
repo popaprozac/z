@@ -1914,6 +1914,63 @@ test("runs the Zapp worker and main-thread publication natively", () => {
   }
 }, 45_000);
 
+test("transfers and discards owned native worker results exactly once", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-owned-result-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-owned-result.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /struct Z_Task_StringStorage/);
+    assert.match(emission.stdout, /bool result_live;/);
+    assert.match(emission.stdout, /storage->result_live = true;/);
+    assert.match(
+      emission.stdout,
+      /Z_String result = storage->result;\n  storage->result_live = false;/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(task->storage->result_live\) \{ Z_String_deinit\(&task->storage->result\);/,
+    );
+
+    const executable = resolve(directory, "thread-owned-result");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
 test("transfers a typed worker failure through attempt await", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-error-");
   const input = resolve(
