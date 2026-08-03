@@ -2,6 +2,7 @@
 
 import { TextBuffer } from "std/text";
 import {
+  LoweredExpression,
   LoweredExpressionKind,
   LoweredFunction,
   LoweredCleanup,
@@ -3410,6 +3411,19 @@ function appendThreadMainCallHelpers(
   }
 }
 
+function threadSpawnOwnsCapture(
+  in declaration: LoweredFunction,
+  in expression: LoweredExpression,
+  bodyChildCount: usize,
+  captureIndex: usize
+): boolean {
+  const childIndex = bodyChildCount + captureIndex;
+  if (childIndex >= expression.children.length) return false;
+  const capture = expression.children[childIndex];
+  return declaration.expressions[capture].kind
+    == LoweredExpressionKind.moveValue;
+}
+
 function appendThreadSpawnHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -3451,6 +3465,7 @@ function appendThreadSpawnHelpers(
         );
         output.append("_Context {\n");
         let captureLabel: usize = 5;
+        let captureIndex: usize = 0;
         while (captureLabel + 1 < expression.labels.length) {
           const captureType = try loweredTypeForIdentity(
             program,
@@ -3462,7 +3477,14 @@ function appendThreadSpawnHelpers(
           output.append(" ");
           appendCBindingName(inout output, expression.labels[captureLabel]);
           output.append(";\n");
+          if (threadSpawnOwnsCapture(
+            declaration,
+            expression,
+            bodyChildCount,
+            captureIndex
+          )) output.append(`  bool _z_stage1_capture_live_${captureIndex};\n`);
           captureLabel = captureLabel + 2;
+          captureIndex = captureIndex + 1;
         }
         output.append("} ");
         appendThreadSpawnHelperName(
@@ -3486,12 +3508,22 @@ function appendThreadSpawnHelpers(
         let remaining = expression.labels.length;
         while (remaining > 5) {
           remaining = remaining - 2;
+          const remainingCapture = (remaining - 5) / 2;
           const captureType = try loweredTypeForIdentity(
             program,
             expression.labels[remaining + 1]
           );
           if (loweredTypeNeedsDeinit(program, captureType)) {
-            output.append("  Z_");
+            output.append("  ");
+            if (threadSpawnOwnsCapture(
+              declaration,
+              expression,
+              bodyChildCount,
+              remainingCapture
+            )) output.append(
+              `if (worker_context->_z_stage1_capture_live_${remainingCapture}) `
+            );
+            output.append("Z_");
             output.append(captureType.name);
             if (captureType.kind == LoweredTypeKind.classType) {
               output.append("_release(worker_context->");
@@ -3536,10 +3568,32 @@ function appendThreadSpawnHelpers(
           output.append(" *");
         }
         appendCBindingName(inout output, expression.labels[captureLabel]);
+        const bodyCaptureIndex = (captureLabel - 5) / 2;
+        if (threadSpawnOwnsCapture(
+          declaration,
+          expression,
+          bodyChildCount,
+          bodyCaptureIndex
+        )) output.append(
+          `, bool *_z_stage1_capture_live_${bodyCaptureIndex}`
+        );
         captureLabel = captureLabel + 2;
       }
       output.append(") {\n");
       output.append("  (void)_z_stage1_task_storage;\n");
+      captureLabel = 5;
+      while (captureLabel + 1 < expression.labels.length) {
+        const bodyCaptureIndex = (captureLabel - 5) / 2;
+        if (threadSpawnOwnsCapture(
+          declaration,
+          expression,
+          bodyChildCount,
+          bodyCaptureIndex
+        )) output.append(
+          `  (void)_z_stage1_capture_live_${bodyCaptureIndex};\n`
+        );
+        captureLabel = captureLabel + 2;
+      }
       if (blockBody) {
         for (const root of expression.statements) {
           try appendStatement(inout output, declaration, root, 1);
@@ -3596,6 +3650,15 @@ function appendThreadSpawnHelpers(
         output.append(", ");
         output.append("&worker_context->");
         appendCBindingName(inout output, expression.labels[captureLabel]);
+        const workerCaptureIndex = (captureLabel - 5) / 2;
+        if (threadSpawnOwnsCapture(
+          declaration,
+          expression,
+          bodyChildCount,
+          workerCaptureIndex
+        )) output.append(
+          `, &worker_context->_z_stage1_capture_live_${workerCaptureIndex}`
+        );
         captureLabel = captureLabel + 2;
       }
       output.append(");\n");
@@ -3675,6 +3738,15 @@ function appendThreadSpawnHelpers(
           output.append(" = ");
           appendCBindingName(inout output, expression.labels[captureLabel]);
           output.append(";\n");
+          const initializedCapture = (captureLabel - 5) / 2;
+          if (threadSpawnOwnsCapture(
+            declaration,
+            expression,
+            bodyChildCount,
+            initializedCapture
+          )) output.append(
+            `  worker_context->_z_stage1_capture_live_${initializedCapture} = true;\n`
+          );
           if (captureType.kind == LoweredTypeKind.classType) {
             output.append("  Z_");
             output.append(captureType.name);

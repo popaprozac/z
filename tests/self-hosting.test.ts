@@ -1823,20 +1823,46 @@ test("emits, joins, and cleans up a native worker task", () => {
     });
     assert.equal(ownedExecution.status, 0, ownedExecution.stderr);
 
-    const invalidInput = resolve(
+    const consumingInput = resolve(
       projectRoot,
-      "tests/fixtures/self-host-emit-thread-owned-capture-invalid.zs",
+      "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs",
     );
-    const invalid = spawnSync(
+    const consumingEmission = spawnSync(
       process.execPath,
-      [cli, "self-host-emit", invalidInput],
+      [cli, "self-host-emit", consumingInput],
       { encoding: "utf8" },
     );
-    assert.equal(invalid.status, 1);
+    assert.equal(consumingEmission.status, 0, consumingEmission.stderr);
     assert.match(
-      invalid.stderr,
-      /thread\.spawn cannot re-move ownership-bearing capture message yet/,
+      consumingEmission.stdout,
+      /\(\*_z_stage1_capture_live_0\) = false/,
     );
+    const consumingExecutable = resolve(directory, "thread-capture-consume");
+    const consumingCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        consumingExecutable,
+      ],
+      { encoding: "utf8", input: consumingEmission.stdout },
+    );
+    assert.equal(
+      consumingCompilation.status,
+      0,
+      consumingCompilation.stderr,
+    );
+    const consumingExecution = spawnSync(consumingExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(consumingExecution.status, 0, consumingExecution.stderr);
 
     const sharedInput = resolve(
       projectRoot,
@@ -2000,7 +2026,7 @@ test("emits, joins, and cleans up a native worker task", () => {
     assert.equal(sharedRemoval.status, 1);
     assert.match(
       sharedRemoval.stderr,
-      /thread\.spawn cannot re-move ownership-bearing capture snapshot yet/,
+      /thread\.spawn cannot consume shared ARC capture snapshot/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2155,6 +2181,9 @@ test("transfers a typed worker failure through attempt await", () => {
       emission.stdout,
       /Z___z_Result_i32_WorkErrorTag_failure/,
     );
+    assert.match(emission.stdout, /_z_stage1_live_directSource = false/);
+    assert.match(emission.stdout, /_z_stage1_live_blockSource = false/);
+    assert.match(emission.stdout, /_z_stage1_live_errorSource = false/);
     assert.match(
       emission.stdout,
       /Z___z_Result_i32_WorkErrorTag_success/,
@@ -2273,6 +2302,87 @@ test("cleans owned native worker locals across return and throw", () => {
     );
 
     const executable = resolve(directory, "thread-owned-local");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("transfers consumed worker captures into results and failures", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-capture-result-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-capture-result.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /bool _z_stage1_capture_live_0;/);
+    assert.match(emission.stdout, /bool _z_stage1_capture_live_1;/);
+    assert.match(
+      emission.stdout,
+      /worker_context->_z_stage1_capture_live_0 = true;/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(worker_context->_z_stage1_capture_live_0\) Z_String_deinit/,
+    );
+    assert.match(
+      emission.stdout,
+      /\(\*_z_stage1_capture_live_0\) = false/,
+    );
+    assert.match(
+      emission.stdout,
+      /\(\*_z_stage1_capture_live_1\) = false/,
+    );
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_i32_WorkErrorTag_failure/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_directSource\) Z_String_deinit\(&directSource\);/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_blockSource\) Z_String_deinit\(&blockSource\);/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_errorSource\) Z_String_deinit\(&errorSource\);/,
+    );
+    assert.match(emission.stdout, /Z_Task_String_deinit\(&discarded\)/);
+
+    const executable = resolve(directory, "thread-capture-result");
     const compilation = spawnSync(
       "clang",
       [

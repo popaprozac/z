@@ -9,5 +9,5 @@ async function main(): i32 {
   const worker = thread.spawn(
     move (): i32 => consume(message)
   );
-  return await worker;
+  return await worker - 18;
 }

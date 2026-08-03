@@ -1865,11 +1865,15 @@ flag when the transfer is conditional. The worker destroys context fields in
 reverse order after the body returns and also destroys them if native thread
 creation fails. Expression- and block-bodied strict-C fixtures transfer owned
 `String` storage and prove that the parent and worker cannot both clean it up.
-The first tier exposes captured String/TextBuffer storage immutably and rejects
-consuming or re-moving it inside the worker. Shared ARC identity and other
+Each uniquely owned context field now carries its own live bit. An explicit
+worker-side move clears that bit before context destruction, so captured
+String/TextBuffer storage may transfer into an owned callee, a worker local, a
+task success result, or a typed failure. If no move executes, context cleanup
+still destroys the field; if the returned task is discarded, task-result
+cleanup destroys the transferred value instead. Shared ARC identity remains a
+retained immutable capture and cannot be consumed, while other unsupported
 cleanup-bearing aggregates continue to fail closed rather than being mistaken
-for unique transfer. Those restrictions keep context destruction total until
-owned task results, ARC retain semantics, and capture-to-result transfer land.
+for unique transfer.
 
 The actual Zapp worker then exposed the classic join-versus-main-hop deadlock.
 The native task storage now owns a condition-protected main-request slot. A

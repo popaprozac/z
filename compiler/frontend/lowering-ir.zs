@@ -2900,6 +2900,43 @@ function loweredRangeMovesName(
   return false;
 }
 
+function attachThreadCaptureMoveFlags(
+  inout expressions: Array<LoweredExpression>,
+  start: usize,
+  end: usize,
+  in captures: Array<LoweredClosureCapture>
+): void {
+  let index = start;
+  while (index < end) {
+    if (
+      expressions[index].kind != LoweredExpressionKind.moveValue
+      || expressions[index].children.length != 1
+    ) {
+      index = index + 1;
+      continue;
+    }
+    const operand = expressions[index].children[0];
+    if (
+      expressions[operand].kind != LoweredExpressionKind.localValue
+      && expressions[operand].kind != LoweredExpressionKind.parameterValue
+    ) {
+      index = index + 1;
+      continue;
+    }
+    let captureIndex: usize = 0;
+    while (captureIndex < captures.length) {
+      if (
+        captures[captureIndex].owned
+        && captures[captureIndex].name == expressions[operand].value
+      ) {
+        expressions[index].value = `(*_z_stage1_capture_live_${captureIndex})`;
+      }
+      captureIndex = captureIndex + 1;
+    }
+    index = index + 1;
+  }
+}
+
 function validateOwnedThreadCaptures(
   in captures: Array<LoweredClosureCapture>,
   in captureMode: String,
@@ -2912,10 +2949,10 @@ function validateOwnedThreadCaptures(
       throw `native thread.spawn requires a move closure to transfer ownership-bearing capture ${capture.name}`;
     }
     if (
-      (capture.owned || sharedArc)
+      sharedArc
       && loweredRangeMovesName(expressions, bodyStart, capture.name)
     ) {
-      throw `native thread.spawn cannot re-move ownership-bearing capture ${capture.name} yet`;
+      throw `native thread.spawn cannot consume shared ARC capture ${capture.name}`;
     }
   }
 }
@@ -4765,6 +4802,18 @@ function lowerExpression(
               capture.name
             );
           }
+          const bodyEnd = output.length;
+          attachThreadCaptureMoveFlags(
+            inout output,
+            bodyStart,
+            bodyEnd,
+            captures
+          );
+          markWorkerOwnedMoveRange(
+            inout output,
+            bodyStart,
+            bodyEnd
+          );
           children.push(body);
         } else if (bodyKind != "block") {
           throw "native thread.spawn lowering received an unknown closure body shape";
@@ -8730,6 +8779,12 @@ function completeNativeClosureBlocks(
         workerLiveFlags,
         bodyExpressionStart,
         bodyExpressionEnd
+      );
+      attachThreadCaptureMoveFlags(
+        inout expressions,
+        bodyExpressionStart,
+        bodyExpressionEnd,
+        captures
       );
       markWorkerOwnedMoveRange(
         inout expressions,
