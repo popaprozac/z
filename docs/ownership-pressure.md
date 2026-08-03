@@ -1907,6 +1907,21 @@ and then uses ordinary `.byteLength` plus checked integer conversion on the
 observed value. Other owned result shapes, ownership-bearing typed errors, and
 fallible owned results remain fail-closed until the same protocol covers each
 active payload.
+
+Deeply readonly ARC identity now exercises the shared half of worker capture.
+Native lowering carries conservative shareability with each lowered class,
+including across module imports. A capture retains into the private worker
+context instead of retiring the parent's binding; context cleanup releases
+that retain after the body completes and on native thread-creation failure.
+The parent therefore remains independently usable before and after `await`.
+The strict-C probes cover local and imported classes and reject mutable,
+custom-cleanup, executor-bound, and re-consumed capture shapes. This tier keeps
+captured identity immutable and deliberately does not yet route opaque
+main-isolated ARC destruction through its owning executor. A second imported
+probe stores mutable `Counter` state behind a readonly `Mutex<Counter>` field;
+the class remains shareable because exclusion protects access and the payload
+is proven safe to destroy on the worker that releases the last identity.
+
 Every generated public wrapper still installs and restores the same
 foreign-thread executor-release route as Stage 0.
 

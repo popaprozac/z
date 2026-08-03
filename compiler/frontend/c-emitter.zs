@@ -570,20 +570,20 @@ function appendClassAndOnceRuntime(
     if (aggregate.fields.length == 0) output.append("void");
     output.append(") {\n  Z_");
     output.append(aggregate.name);
-    output.append(" *value = (Z_");
+    output.append(" *_z_stage1_instance = (Z_");
     output.append(aggregate.name);
     output.append(" *)malloc(sizeof(Z_");
     output.append(aggregate.name);
-    output.append("));\n  if (value == NULL) abort();\n");
-    output.append("  value->_z_refcount = 1;\n");
+    output.append("));\n  if (_z_stage1_instance == NULL) abort();\n");
+    output.append("  _z_stage1_instance->_z_refcount = 1;\n");
     for (const item of aggregate.fields) {
-      output.append("  value->");
+      output.append("  _z_stage1_instance->");
       output.append(item.name);
       output.append(" = ");
       appendCBindingName(inout output, item.name);
       output.append(";\n");
     }
-    output.append("  return value;\n}\n\n");
+    output.append("  return _z_stage1_instance;\n}\n\n");
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(aggregate.name);
     output.append("_retain(Z_");
@@ -3519,9 +3519,14 @@ function appendThreadSpawnHelpers(
           expression.labels[captureLabel + 1]
         );
         const nativeCaptureType = try cType(captureType);
-        output.append("const ");
-        output.append(nativeCaptureType);
-        output.append(" *");
+        if (captureType.kind == LoweredTypeKind.classType) {
+          output.append(nativeCaptureType);
+          output.append(" const *");
+        } else {
+          output.append("const ");
+          output.append(nativeCaptureType);
+          output.append(" *");
+        }
         appendCBindingName(inout output, expression.labels[captureLabel]);
         captureLabel = captureLabel + 2;
       }
@@ -3653,11 +3658,25 @@ function appendThreadSpawnHelpers(
         output.append("_Context));\n  if (worker_context == NULL) {\n#if !defined(_WIN32)\n    pthread_cond_destroy(&storage->state_condition);\n    pthread_mutex_destroy(&storage->state_mutex);\n#endif\n    free(storage);\n    abort();\n  }\n");
         captureLabel = 5;
         while (captureLabel + 1 < expression.labels.length) {
+          const captureType = try loweredTypeForIdentity(
+            program,
+            expression.labels[captureLabel + 1]
+          );
           output.append("  worker_context->");
           appendCBindingName(inout output, expression.labels[captureLabel]);
           output.append(" = ");
           appendCBindingName(inout output, expression.labels[captureLabel]);
           output.append(";\n");
+          if (captureType.kind == LoweredTypeKind.classType) {
+            output.append("  Z_");
+            output.append(captureType.name);
+            output.append("_retain(worker_context->");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabel]
+            );
+            output.append(");\n");
+          }
           captureLabel = captureLabel + 2;
         }
         output.append("  storage->context = worker_context;\n");

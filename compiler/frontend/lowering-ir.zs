@@ -80,6 +80,8 @@ export struct LoweredStruct {
   nativeCName: String;
   fields: Array<LoweredField>;
   referenceType: boolean;
+  threadShareable: boolean;
+  workerDestructible: boolean;
   needsDeinit: boolean;
   deinitializer: Option<LoweredFunction>;
 }
@@ -308,6 +310,8 @@ struct LoweredImportedType {
   localName: String;
   targetName: String;
   kind: LoweredTypeKind;
+  threadShareable: boolean;
+  workerDestructible: boolean;
   needsDeinit: boolean;
   fields: Array<LoweredField>;
   variants: Array<LoweredVariant>;
@@ -1206,6 +1210,221 @@ function moduleTypeNeedsCleanup(
   in type: LoweredType
 ): boolean {
   return moduleTypeNeedsCleanupDepth(program, importedTypes, type, 0);
+}
+
+function threadShareablePrimitive(in name: String): boolean {
+  return name == "void"
+    || name == "boolean"
+    || name == "i8"
+    || name == "i16"
+    || name == "i32"
+    || name == "i64"
+    || name == "u8"
+    || name == "u16"
+    || name == "u32"
+    || name == "u64"
+    || name == "isize"
+    || name == "usize"
+    || name == "f32"
+    || name == "f64"
+    || name == "String";
+}
+
+function copyTypePath(in values: Array<String>): Array<String> {
+  let output = Array<String>();
+  for (const value of values) {
+    output.push(value.copyBytes(0, value.byteLength));
+  }
+  return output;
+}
+
+function moduleTypeIsWorkerDestructible(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String,
+  in visiting: Array<String>
+): boolean {
+  if (threadShareablePrimitive(name)) return true;
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        (
+          generic.base == "Option"
+          || generic.base == "Mutex"
+        )
+        && generic.arguments.length == 1
+      ) return moduleTypeIsWorkerDestructible(
+        program,
+        importedTypes,
+        generic.arguments[0],
+        visiting
+      );
+      if (generic.base == "Result" && generic.arguments.length == 2) {
+        for (const argument of generic.arguments) {
+          if (!moduleTypeIsWorkerDestructible(
+            program,
+            importedTypes,
+            argument,
+            visiting
+          )) return false;
+        }
+        return true;
+      }
+      return false;
+    }
+    none => {}
+  }
+  if (containsString(visiting, name)) return true;
+  for (const declaration of program.aggregates) {
+    if (declaration.name != name) continue;
+    if (declaration.kind == DeclarationKind.classDeclaration) {
+      return moduleTypeIsThreadShareable(
+        program,
+        importedTypes,
+        name,
+        visiting
+      );
+    }
+    if (declaration.executorAffinity.byteLength > 0) return false;
+    match (in declaration.deinitializer) {
+      some(_) => return false;
+      none => {}
+    }
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const field of declaration.fields) {
+      if (
+        field.executorAffinity.byteLength > 0
+        || !moduleTypeIsWorkerDestructible(
+          program,
+          importedTypes,
+          field.type.name,
+          nextVisiting
+        )
+      ) return false;
+    }
+    return true;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.name != name) continue;
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (!moduleTypeIsWorkerDestructible(
+            program,
+            importedTypes,
+            payload.name,
+            nextVisiting
+          )) return false;
+        }
+        none => {}
+      }
+    }
+    return true;
+  }
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].localName == name
+      || importedTypes[importedIndex].targetName == name
+    ) return importedTypes[importedIndex].workerDestructible;
+  }
+  return false;
+}
+
+function moduleTypeIsThreadShareable(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String,
+  in visiting: Array<String>
+): boolean {
+  if (threadShareablePrimitive(name)) return true;
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        (generic.base == "Option" && generic.arguments.length == 1)
+        || (generic.base == "Result" && generic.arguments.length == 2)
+      ) {
+        for (const argument of generic.arguments) {
+          if (!moduleTypeIsThreadShareable(
+            program,
+            importedTypes,
+            argument,
+            visiting
+          )) return false;
+        }
+        return true;
+      }
+      if (generic.base == "Mutex" && generic.arguments.length == 1) {
+        return moduleTypeIsWorkerDestructible(
+          program,
+          importedTypes,
+          generic.arguments[0],
+          visiting
+        );
+      }
+      return false;
+    }
+    none => {}
+  }
+  if (containsString(visiting, name)) return true;
+  for (const declaration of program.aggregates) {
+    if (declaration.name != name) continue;
+    if (declaration.executorAffinity.byteLength > 0) return false;
+    match (in declaration.deinitializer) {
+      some(_) => return false;
+      none => {}
+    }
+    for (const method of declaration.methods) {
+      if (method.receiverMode == ReceiverMode.inputOutput) return false;
+    }
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const field of declaration.fields) {
+      if (
+        !field.readonlyField
+        || field.executorAffinity.byteLength > 0
+        || !moduleTypeIsThreadShareable(
+          program,
+          importedTypes,
+          field.type.name,
+          nextVisiting
+        )
+      ) return false;
+    }
+    return true;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.name != name) continue;
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (!moduleTypeIsThreadShareable(
+            program,
+            importedTypes,
+            payload.name,
+            nextVisiting
+          )) return false;
+        }
+        none => {}
+      }
+    }
+    return true;
+  }
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].localName == name
+      || importedTypes[importedIndex].targetName == name
+    ) return importedTypes[importedIndex].threadShareable;
+  }
+  return false;
 }
 
 function intrinsicArrayDeclaration(
@@ -2647,14 +2866,35 @@ function validateOwnedThreadCaptures(
   bodyStart: usize
 ): void throws String {
   for (const capture of captures) {
-    if (!capture.owned) continue;
-    if (captureMode != "move") {
+    const sharedArc = capture.type.kind == LoweredTypeKind.classType;
+    if (capture.owned && captureMode != "move") {
       throw `native thread.spawn requires a move closure to transfer ownership-bearing capture ${capture.name}`;
     }
-    if (loweredRangeMovesName(expressions, bodyStart, capture.name)) {
+    if (
+      (capture.owned || sharedArc)
+      && loweredRangeMovesName(expressions, bodyStart, capture.name)
+    ) {
       throw `native thread.spawn cannot re-move ownership-bearing capture ${capture.name} yet`;
     }
   }
+}
+
+function importedTypeThreadShareable(
+  in importedTypes: Array<LoweredImportedType>,
+  in type: LoweredType
+): boolean {
+  let index = importedTypes.length;
+  while (index > 0) {
+    index = index - 1;
+    if (
+      importedTypes[index].kind == type.kind
+      && (
+        importedTypes[index].localName == type.name
+        || importedTypes[index].targetName == type.name
+      )
+    ) return importedTypes[index].threadShareable;
+  }
+  return false;
 }
 
 function pushThreadCaptureValue(
@@ -2849,17 +3089,31 @@ function collectThreadClosureCaptures(
         );
       }
     };
-    const owned = moduleTypeNeedsCleanup(program, importedTypes, type);
+    const needsCleanup = moduleTypeNeedsCleanup(
+      program,
+      importedTypes,
+      type
+    );
+    const sharedArc = type.kind == LoweredTypeKind.classType
+      && importedTypeThreadShareable(importedTypes, type);
     if (
-      owned
+      needsCleanup
+      && type.kind == LoweredTypeKind.classType
+      && !sharedArc
+    ) {
+      throw `native thread.spawn cannot retain non-shareable ARC capture ${captureName} of type ${type.name} yet`;
+    }
+    if (
+      needsCleanup
       && type.kind != LoweredTypeKind.stringType
+      && !sharedArc
     ) {
       throw `native thread.spawn does not support ownership-bearing capture ${captureName} yet`;
     }
     captures.push(LoweredClosureCapture({
       name: move captureName,
       type,
-      owned,
+      owned: needsCleanup && !sharedArc,
     }));
     index = index + 1;
   }
@@ -10385,6 +10639,26 @@ function loweredStructIsReference(
   return false;
 }
 
+function loweredStructThreadShareable(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): boolean {
+  for (const declaration of structs) {
+    if (declaration.name == name) return declaration.threadShareable;
+  }
+  return false;
+}
+
+function loweredStructWorkerDestructible(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): boolean {
+  for (const declaration of structs) {
+    if (declaration.name == name) return declaration.workerDestructible;
+  }
+  return false;
+}
+
 function copyLoweredVariant(in variant: LoweredVariant): LoweredVariant {
   let payload = Option<LoweredType>.none;
   match (in variant.payload) {
@@ -10453,6 +10727,8 @@ function importedTypesForModule(
                 signature.foreignNativeName.byteLength
               ),
               kind: LoweredTypeKind.foreignEnumType,
+              threadShareable: false,
+              workerDestructible: false,
               needsDeinit: false,
               fields: Array<LoweredField>(),
               variants: Array<LoweredVariant>(),
@@ -10501,10 +10777,18 @@ function importedTypesForModule(
           );
           types.push(LoweredImportedType({
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-            targetName,
+            targetName: targetName.copyBytes(0, targetName.byteLength),
             kind: referenceType
               ? LoweredTypeKind.classType
               : LoweredTypeKind.structType,
+            threadShareable: loweredStructThreadShareable(
+              structs,
+              targetName
+            ),
+            workerDestructible: loweredStructWorkerDestructible(
+              structs,
+              targetName
+            ),
             needsDeinit,
             fields,
             variants: Array<LoweredVariant>(),
@@ -10534,6 +10818,8 @@ function importedTypesForModule(
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName,
             kind: LoweredTypeKind.enumType,
+            threadShareable: false,
+            workerDestructible: !declaration.needsDeinit,
             needsDeinit: declaration.needsDeinit,
             fields: Array<LoweredField>(),
             variants,
@@ -10572,6 +10858,14 @@ function importedTypesForModule(
               kind: loweredStructIsReference(structs, symbol.name)
                 ? LoweredTypeKind.classType
                 : LoweredTypeKind.structType,
+              threadShareable: loweredStructThreadShareable(
+                structs,
+                symbol.name
+              ),
+              workerDestructible: loweredStructWorkerDestructible(
+                structs,
+                symbol.name
+              ),
               needsDeinit,
               fields,
               variants: Array<LoweredVariant>(),
@@ -10592,6 +10886,8 @@ function importedTypesForModule(
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
               kind: LoweredTypeKind.enumType,
+              threadShareable: false,
+              workerDestructible: !declaration.needsDeinit,
               needsDeinit: declaration.needsDeinit,
               fields: Array<LoweredField>(),
               variants,
@@ -10758,6 +11054,8 @@ function appendLoweredProgram(
       ),
       targetName,
       kind: LoweredTypeKind.enumType,
+      threadShareable: false,
+      workerDestructible: false,
       needsDeinit: false,
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
@@ -10784,6 +11082,8 @@ function appendLoweredProgram(
       kind: aggregate.kind == DeclarationKind.classDeclaration
         ? LoweredTypeKind.classType
         : LoweredTypeKind.structType,
+      threadShareable: false,
+      workerDestructible: false,
       needsDeinit: false,
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
@@ -10873,6 +11173,8 @@ function appendLoweredProgram(
       ),
       targetName: emittedName,
       kind: LoweredTypeKind.enumType,
+      threadShareable: false,
+      workerDestructible: !needsDeinit,
       needsDeinit,
       fields: Array<LoweredField>(),
       variants: importedVariants,
@@ -10953,6 +11255,19 @@ function appendLoweredProgram(
       aggregateIndex,
       0
     );
+    const visiting = Array<String>();
+    const threadShareable = moduleTypeIsThreadShareable(
+      program,
+      importedTypes,
+      aggregate.name,
+      visiting
+    );
+    const workerDestructible = moduleTypeIsWorkerDestructible(
+      program,
+      importedTypes,
+      aggregate.name,
+      visiting
+    );
     structs.push(LoweredStruct({
       name: emittedName,
       nativeCName: aggregate.nativeCLayout
@@ -10960,6 +11275,8 @@ function appendLoweredProgram(
         : "",
       fields,
       referenceType: aggregate.kind == DeclarationKind.classDeclaration,
+      threadShareable,
+      workerDestructible,
       needsDeinit,
       deinitializer,
     }));
@@ -10978,10 +11295,18 @@ function appendLoweredProgram(
         const fields = loweredStructFields(structs, emittedName);
         importedTypes.push(LoweredImportedType({
           localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
-          targetName: emittedName,
+          targetName: emittedName.copyBytes(0, emittedName.byteLength),
           kind: aggregate.kind == DeclarationKind.classDeclaration
             ? LoweredTypeKind.classType
             : LoweredTypeKind.structType,
+          threadShareable: loweredStructThreadShareable(
+            structs,
+            emittedName
+          ),
+          workerDestructible: loweredStructWorkerDestructible(
+            structs,
+            emittedName
+          ),
           needsDeinit,
           fields,
           variants: Array<LoweredVariant>(),

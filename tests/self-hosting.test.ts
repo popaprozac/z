@@ -1840,7 +1840,7 @@ test("emits, joins, and cleans up a native worker task", () => {
 
     const sharedInput = resolve(
       projectRoot,
-      "tests/fixtures/self-host-emit-thread-shared-capture-invalid.zs",
+      "tests/fixtures/self-host-emit-thread-shared-capture.zs",
     );
     const sharedParity = spawnSync(
       process.execPath,
@@ -1848,15 +1848,159 @@ test("emits, joins, and cleans up a native worker task", () => {
       { encoding: "utf8" },
     );
     assert.equal(sharedParity.status, 0, sharedParity.stderr);
-    const shared = spawnSync(
+    const sharedEmission = spawnSync(
       process.execPath,
       [cli, "self-host-emit", sharedInput],
       { encoding: "utf8" },
     );
-    assert.equal(shared.status, 1);
+    assert.equal(sharedEmission.status, 0, sharedEmission.stderr);
     assert.match(
-      shared.stderr,
-      /thread\.spawn does not support ownership-bearing capture snapshot yet/,
+      sharedEmission.stdout,
+      /Z_Snapshot_retain\(worker_context->snapshot\);/,
+    );
+    assert.match(
+      sharedEmission.stdout,
+      /Z_Snapshot_release\(worker_context->snapshot\);/,
+    );
+    assert.match(
+      sharedEmission.stdout,
+      /Z_Snapshot_release\(snapshot\);/,
+    );
+
+    const sharedExecutable = resolve(directory, "thread-shared-capture");
+    const sharedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        sharedExecutable,
+      ],
+      { encoding: "utf8", input: sharedEmission.stdout },
+    );
+    assert.equal(sharedCompilation.status, 0, sharedCompilation.stderr);
+    const sharedExecution = spawnSync(sharedExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(sharedExecution.status, 0, sharedExecution.stderr);
+
+    const sharedModuleInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-thread-shared-module/main.zs",
+    );
+    const sharedModuleEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", sharedModuleInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      sharedModuleEmission.status,
+      0,
+      sharedModuleEmission.stderr,
+    );
+    assert.match(
+      sharedModuleEmission.stdout,
+      /Z_Snapshot_retain\(worker_context->snapshot\);/,
+    );
+    assert.match(
+      sharedModuleEmission.stdout,
+      /Z_SharedCounter_retain\(worker_context->shared\);/,
+    );
+    const sharedModuleExecutable = resolve(
+      directory,
+      "thread-shared-module",
+    );
+    const sharedModuleCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        sharedModuleExecutable,
+      ],
+      { encoding: "utf8", input: sharedModuleEmission.stdout },
+    );
+    assert.equal(
+      sharedModuleCompilation.status,
+      0,
+      sharedModuleCompilation.stderr,
+    );
+    const sharedModuleExecution = spawnSync(sharedModuleExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(
+      sharedModuleExecution.status,
+      0,
+      sharedModuleExecution.stderr,
+    );
+
+    const unshareableInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-unshareable-capture-invalid.zs",
+    );
+    const unshareable = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", unshareableInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(unshareable.status, 1);
+    assert.match(
+      unshareable.stderr,
+      /thread\.spawn cannot retain non-shareable ARC capture snapshot of type MutableSnapshot yet/,
+    );
+
+    for (const [fixture, binding, type] of [
+      [
+        "self-host-emit-thread-custom-deinit-capture-invalid.zs",
+        "snapshot",
+        "ManagedSnapshot",
+      ],
+      [
+        "self-host-emit-thread-affine-capture-invalid.zs",
+        "presenter",
+        "Presenter",
+      ],
+    ] as const) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const result = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(result.status, 1);
+      assert.match(
+        result.stderr,
+        new RegExp(
+          `thread\\.spawn cannot retain non-shareable ARC capture ${binding} of type ${type} yet`,
+        ),
+      );
+    }
+
+    const sharedRemovalInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-shared-removal-invalid.zs",
+    );
+    const sharedRemoval = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", sharedRemovalInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(sharedRemoval.status, 1);
+    assert.match(
+      sharedRemoval.stderr,
+      /thread\.spawn cannot re-move ownership-bearing capture snapshot yet/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
