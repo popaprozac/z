@@ -2181,9 +2181,6 @@ test("transfers a typed worker failure through attempt await", () => {
       emission.stdout,
       /Z___z_Result_i32_WorkErrorTag_failure/,
     );
-    assert.match(emission.stdout, /_z_stage1_live_directSource = false/);
-    assert.match(emission.stdout, /_z_stage1_live_blockSource = false/);
-    assert.match(emission.stdout, /_z_stage1_live_errorSource = false/);
     assert.match(
       emission.stdout,
       /Z___z_Result_i32_WorkErrorTag_success/,
@@ -2368,6 +2365,9 @@ test("transfers consumed worker captures into results and failures", () => {
       emission.stdout,
       /Z___z_Result_i32_WorkErrorTag_failure/,
     );
+    assert.match(emission.stdout, /_z_stage1_live_directSource = false/);
+    assert.match(emission.stdout, /_z_stage1_live_blockSource = false/);
+    assert.match(emission.stdout, /_z_stage1_live_errorSource = false/);
     assert.match(
       emission.stdout,
       /if \(_z_stage1_live_directSource\) Z_String_deinit\(&directSource\);/,
@@ -2474,6 +2474,72 @@ int main(void) {
     assert.equal(compilation.status, 0, compilation.stderr);
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
+
+    const positionsInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-try-await-positions.zs",
+    );
+    const positionsParity = spawnSync(
+      process.execPath,
+      [cli, "check", positionsInput, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(positionsParity.status, 0, positionsParity.stderr);
+    const positionsEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", positionsInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(positionsEmission.status, 0, positionsEmission.stderr);
+    assert.match(positionsEmission.stdout, /Z_String inferred;/);
+    assert.match(
+      positionsEmission.stdout,
+      /Z___z_Result_String_WorkError _z_stage1_try_\d+ =/,
+    );
+    assert.match(
+      positionsEmission.stdout,
+      /Z___z_Result_i32_WorkError _z_stage1_return_\d+ = Z_Task___z_Result_i32_WorkError_await/,
+    );
+    const positionsWrapped = `${positionsEmission.stdout}
+#undef main
+int main(void) {
+  Z___z_Result_i32_WorkError result = z_entry();
+  if (result.tag != Z___z_Result_i32_WorkErrorTag_success) {
+    Z___z_Result_i32_WorkError_deinit(&result);
+    return 1;
+  }
+  const int status = result.payload.success;
+  Z___z_Result_i32_WorkError_deinit(&result);
+  return status;
+}
+`;
+    const positionsExecutable = resolve(directory, "thread-try-positions");
+    const positionsCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-Dmain=z_entry",
+        "-",
+        "-o",
+        positionsExecutable,
+      ],
+      { encoding: "utf8", input: positionsWrapped },
+    );
+    assert.equal(
+      positionsCompilation.status,
+      0,
+      positionsCompilation.stderr,
+    );
+    const positionsExecution = spawnSync(positionsExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(positionsExecution.status, 0, positionsExecution.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

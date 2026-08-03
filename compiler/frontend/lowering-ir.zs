@@ -3641,6 +3641,41 @@ function staticallyResolvedExpressionTypeName(
     }
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.tryExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const attempted = tree.nodes[index].children[0];
+    if (
+      tree.nodes[attempted].kind == ExpressionKind.awaitExpression
+      && tree.nodes[attempted].children.length == 1
+    ) {
+      const task = tree.nodes[attempted].children[0];
+      match (staticallyResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        tree,
+        task
+      )) {
+        some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
+          some(generic) => {
+            if (
+              generic.base == "Task"
+              && generic.arguments.length == 2
+            ) return Option.some(generic.arguments[0].copyBytes(
+              0,
+              generic.arguments[0].byteLength
+            ));
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.awaitExpression
     && tree.nodes[index].children.length == 1
   ) {

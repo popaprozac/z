@@ -1909,6 +1909,14 @@ String into the local cleanup plan. The task handle then frees only its empty
 storage. The runtime also emits aggregate/enum cleanup declarations before task
 helpers so unobserved cleanup-bearing results remain valid strict C.
 
+The native type resolver now infers the success type of
+`const value = try await task` directly from `Task<T, E>`; the annotation is an
+optional source-level aid rather than a backend requirement. A direct
+`return try await task` preserves the complete compatible Result storage while
+running the enclosing cleanup plan first. Nested propagation inside another
+call, operator, or conditional still needs expression normalization before it
+can lower through the same temporary.
+
 Block-bodied native workers now own an independent cleanup scope rather than
 borrowing the enclosing function's liveness plan. Cleanup-bearing locals are
 destroyed in reverse order on every worker `return` and `throw`; moving a local
@@ -1922,7 +1930,7 @@ Native lowering admits result and error shapes only when their complete value
 graph is safe to transfer and destroy away from the producing worker. A
 custom-deinitializer result is a negative fixture and fails before C emission;
 it is not silently treated as Send-like. Re-moving ownership-bearing captures,
-`try await` in every expression/storage position, general suspension,
+nesting `try await` inside arbitrary value expressions, general suspension,
 cleanup-bearing placed arguments/results, void-result native workers, and
 additional executor forms remain later slices.
 
