@@ -2447,15 +2447,28 @@ function planCleanupSequence(
   return introduced;
 }
 
-function attachMoveLiveFlags(
+function expressionHasLabel(
+  in expression: LoweredExpression,
+  in label: String
+): boolean {
+  for (const candidate of expression.labels) {
+    if (candidate == label) return true;
+  }
+  return false;
+}
+
+function attachMoveLiveFlagsRange(
   inout expressions: Array<LoweredExpression>,
-  in liveFlags: Array<LoweredLiveFlag>
+  in liveFlags: Array<LoweredLiveFlag>,
+  start: usize,
+  end: usize
 ): void {
-  let index: usize = 0;
-  while (index < expressions.length) {
+  let index = start;
+  while (index < end) {
     if (
       expressions[index].kind == LoweredExpressionKind.moveValue
       && expressions[index].children.length == 1
+      && !expressionHasLabel(expressions[index], "worker-owned-scope")
     ) {
       const operand = expressions[index].children[0];
       expressions[index].value = "";
@@ -2469,6 +2482,34 @@ function attachMoveLiveFlags(
     }
     index = index + 1;
   }
+}
+
+function markWorkerOwnedMoveRange(
+  inout expressions: Array<LoweredExpression>,
+  start: usize,
+  end: usize
+): void {
+  let index = start;
+  while (index < end) {
+    if (
+      expressions[index].kind == LoweredExpressionKind.moveValue
+      && !expressionHasLabel(expressions[index], "worker-owned-scope")
+    ) expressions[index].labels.push("worker-owned-scope");
+    index = index + 1;
+  }
+}
+
+function attachMoveLiveFlags(
+  inout expressions: Array<LoweredExpression>,
+  in liveFlags: Array<LoweredLiveFlag>
+): void {
+  const end = expressions.length;
+  attachMoveLiveFlagsRange(
+    inout expressions,
+    liveFlags,
+    0,
+    end
+  );
 }
 
 function rewriteParameterValues(
@@ -8562,6 +8603,34 @@ function completeNativeClosureBlocks(
           workerStatement = workerStatement + 1;
         }
       }
+      let workerReturnType = LoweredType({
+        kind: LoweredTypeKind.enumType,
+        name: expressions[expressionIndex].labels[1].copyBytes(
+          0,
+          expressions[expressionIndex].labels[1].byteLength
+        ),
+      });
+      if (expressions[expressionIndex].labels[3].byteLength == 0) {
+        workerReturnType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          expressions[expressionIndex].labels[1]
+        );
+      }
+      let workerReturnStatement = bodyStatementStart;
+      while (workerReturnStatement < statements.length) {
+        if (
+          statements[workerReturnStatement].kind
+            == LoweredStatementKind.returnStatement
+        ) statements[workerReturnStatement].type = Option.some(LoweredType({
+          kind: workerReturnType.kind,
+          name: workerReturnType.name.copyBytes(
+            0,
+            workerReturnType.name.byteLength
+          ),
+        }));
+        workerReturnStatement = workerReturnStatement + 1;
+      }
       let placedExpression = bodyExpressionStart;
       while (placedExpression < expressions.length) {
         if (
@@ -8579,6 +8648,7 @@ function completeNativeClosureBlocks(
         }
         placedExpression = placedExpression + 1;
       }
+      const bodyExpressionEnd = expressions.length;
       let captureUseOffset: usize = 0;
       if (sourceStatements.length > 0) {
         captureUseOffset = arena.nodes[sourceStatements[0]].offset;
@@ -8630,18 +8700,42 @@ function completeNativeClosureBlocks(
         expressionIndex,
         inout expressions
       );
-      let statementIndex = bodyStatementStart;
-      while (statementIndex < statements.length) {
-        match (in statements[statementIndex].type) {
-          some(type) => {
-            if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
-              throw "native thread.spawn block closures do not support cleanup-bearing local values yet";
-            }
-          }
-          none => {}
-        }
-        statementIndex = statementIndex + 1;
+      let workerLiveFlags = Array<LoweredLiveFlag>();
+      const inherited = Array<LoweredCleanup>();
+      const loopCleanups = Array<LoweredCleanup>();
+      const workerIntroduced = try planCleanupSequence(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        sourceStatements,
+        loweredStatements,
+        inherited,
+        expressions,
+        inout statements,
+        inout workerLiveFlags,
+        false,
+        loopCleanups
+      );
+      if (
+        workerIntroduced.length > 0
+        && sequenceFallsThrough(arena, sourceStatements)
+        && loweredSequenceFallsThrough(statements, loweredStatements)
+      ) {
+        throw "native cleanup-bearing thread.spawn body cannot fall through without returning its result";
       }
+      attachMoveLiveFlagsRange(
+        inout expressions,
+        workerLiveFlags,
+        bodyExpressionStart,
+        bodyExpressionEnd
+      );
+      markWorkerOwnedMoveRange(
+        inout expressions,
+        bodyExpressionStart,
+        bodyExpressionEnd
+      );
       expressions[expressionIndex].statements = move loweredStatements;
       expressions[expressionIndex].labels[0] = "lowered-block";
       expressionIndex = expressionIndex + 1;

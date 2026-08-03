@@ -2546,7 +2546,11 @@ function appendStatement(
       match (in declaration.statements[index].expression) {
         some(expression) => {
           appendIndent(inout output, depth);
-          const returnType = try cType(declaration.returnType);
+          let returnType = "";
+          match (in declaration.statements[index].type) {
+            some(type) => returnType = try cType(type);
+            none => returnType = try cType(declaration.returnType);
+          }
           output.append(returnType);
           output.append(` _z_stage1_return_${index} = `);
           try appendExpression(inout output, declaration, expression);
@@ -2575,7 +2579,11 @@ function appendStatement(
         none => throw "native C emission lost a borrowed return temporary";
       };
       appendIndent(inout output, depth);
-      const returnType = try cType(declaration.returnType);
+      let returnType = "";
+      match (in declaration.statements[index].type) {
+        some(type) => returnType = try cType(type);
+        none => returnType = try cType(declaration.returnType);
+      }
       output.append(returnType);
       output.append(` _z_stage1_return_${index} = `);
       try appendExpression(inout output, declaration, expression);

@@ -1905,12 +1905,21 @@ String into the local cleanup plan. The task handle then frees only its empty
 storage. The runtime also emits aggregate/enum cleanup declarations before task
 helpers so unobserved cleanup-bearing results remain valid strict C.
 
+Block-bodied native workers now own an independent cleanup scope rather than
+borrowing the enclosing function's liveness plan. Cleanup-bearing locals are
+destroyed in reverse order on every worker `return` and `throw`; moving a local
+into the success or failure payload retires only that worker-local live flag.
+The worker return statement also carries its own native result type, so cleanup
+temporaries cannot accidentally inherit `main`'s return type. One executable
+fixture covers an infallible local `String`, success-side transfer beside an
+unused owned error, and failure-side transfer that destroys the unused String.
+
 Native lowering admits result and error shapes only when their complete value
 graph is safe to transfer and destroy away from the producing worker. A
 custom-deinitializer result is a negative fixture and fails before C emission;
-it is not silently treated as Send-like. Cleanup-bearing worker locals,
-re-moving ownership-bearing captures, `try await` in every expression/storage
-position, general suspension, cleanup-bearing placed arguments/results, and
+it is not silently treated as Send-like. Re-moving ownership-bearing captures,
+`try await` in every expression/storage position, general suspension,
+cleanup-bearing placed arguments/results, void-result native workers, and
 additional executor forms remain later slices.
 
 Deeply readonly ARC identity now exercises the shared half of worker capture.

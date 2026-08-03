@@ -2228,6 +2228,75 @@ test("transfers a typed worker failure through attempt await", () => {
   }
 }, 45_000);
 
+test("cleans owned native worker locals across return and throw", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-owned-local-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-owned-local.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /bool _z_stage1_live_local = true;/);
+    assert.match(emission.stdout, /bool _z_stage1_live_scratch = true;/);
+    assert.match(emission.stdout, /bool _z_stage1_live_error = true;/);
+    assert.match(
+      emission.stdout,
+      /\(_z_stage1_live_local = false, local\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /\(_z_stage1_live_scratch = false, scratch\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /\(_z_stage1_live_error = false, error\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_scratch\) Z_String_deinit\(&scratch\);/,
+    );
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_error\) Z_WorkError_deinit\(&error\);/,
+    );
+
+    const executable = resolve(directory, "thread-owned-local");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
 test("propagates an owned worker failure through native try await", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-try-await-");
   const input = resolve(
