@@ -4546,20 +4546,10 @@ function lowerExpression(
               importedTypes,
               generic.arguments[1]
             );
-            if (
-              moduleTypeNeedsCleanup(program, importedTypes, successType)
-              || moduleTypeNeedsCleanup(program, importedTypes, errorType)
-            ) {
-              throw "native fallible await lowering currently requires cleanup-free success and error values";
-            }
             resultType = LoweredType({
               kind: LoweredTypeKind.enumType,
               name: intrinsicResultName(successType, errorType),
             });
-          } else if (
-            moduleTypeNeedsCleanup(program, importedTypes, resultType)
-          ) {
-            throw "native await lowering currently requires a cleanup-free task result";
           }
           taskName = intrinsicTaskName(resultType);
         }
@@ -4632,11 +4622,14 @@ function lowerExpression(
         if (resultType.kind == LoweredTypeKind.voidType) {
           throw "native thread.spawn lowering currently requires a non-void result";
         }
-        if (
-          moduleTypeNeedsCleanup(program, importedTypes, resultType)
-          && resultType.kind != LoweredTypeKind.stringType
-        ) {
-          throw "native thread.spawn lowering currently supports only cleanup-free or owned String results";
+        const resultPath = Array<String>();
+        if (!moduleTypeIsWorkerDestructible(
+          program,
+          importedTypes,
+          resultTypeName,
+          resultPath
+        )) {
+          throw `native thread.spawn cannot transfer worker result ${resultTypeName} to its owner thread yet`;
         }
         const errorTypeName = tree.nodes[closureInput].labels[1].copyBytes(
           0,
@@ -4647,16 +4640,19 @@ function lowerExpression(
           name: resultType.name.copyBytes(0, resultType.name.byteLength),
         });
         if (errorTypeName.byteLength > 0) {
-          if (moduleTypeNeedsCleanup(program, importedTypes, resultType)) {
-            throw "native fallible thread.spawn does not support an ownership-bearing result yet";
-          }
           const errorType = try lowerModuleTypeName(
             program,
             importedTypes,
             errorTypeName
           );
-          if (moduleTypeNeedsCleanup(program, importedTypes, errorType)) {
-            throw "native thread.spawn currently requires a cleanup-free worker error";
+          const errorPath = Array<String>();
+          if (!moduleTypeIsWorkerDestructible(
+            program,
+            importedTypes,
+            errorTypeName,
+            errorPath
+          )) {
+            throw `native thread.spawn cannot transfer worker error ${errorTypeName} to its owner thread yet`;
           }
           storageResultType = LoweredType({
             kind: LoweredTypeKind.enumType,
@@ -7373,8 +7369,68 @@ function directThrowingCallResult(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
-  index: usize
+  index: usize,
+  in ownerName: String
 ): Option<LoweredEnum> throws String {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const task = tree.nodes[index].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      task
+    )) {
+      some(taskTypeName) => match (genericTypeShape(taskTypeName)) {
+        some(generic) => {
+          if (generic.base == "Task" && generic.arguments.length == 2) {
+            const resultName = `Result<${generic.arguments[0]}, ${generic.arguments[1]}>`;
+            return try intrinsicResultDeclaration(
+              program,
+              importedTypes,
+              resultName
+            );
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(successTypeName) => {
+        const outer = try throwingFunctionResult(
+          program,
+          importedTypes,
+          ownerName
+        );
+        match (outer) {
+          some(result) => {
+            for (const variant of result.variants) {
+              if (variant.name != "failure") continue;
+              match (in variant.payload) {
+                some(errorType) => {
+                  const errorTypeName = loweredTypeIdentity(errorType);
+                  const resultName = `Result<${successTypeName}, ${errorTypeName}>`;
+                  return try intrinsicResultDeclaration(
+                    program,
+                    importedTypes,
+                    resultName
+                  );
+                }
+                none => {}
+              }
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+    return Option<LoweredEnum>.none;
+  }
   if (
     tree.nodes[index].kind != ExpressionKind.callExpression
     || tree.nodes[index].children.length == 0
@@ -7415,6 +7471,59 @@ function directThrowingCallResult(
         }
         none => return Option<LoweredEnum>.none;
       }
+    }
+  }
+  return Option<LoweredEnum>.none;
+}
+
+function awaitedResultForSuccessType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  index: usize,
+  in successType: LoweredType,
+  in outer: LoweredEnum
+): Option<LoweredEnum> {
+  if (tree.nodes[index].kind != ExpressionKind.awaitExpression) {
+    return Option<LoweredEnum>.none;
+  }
+  for (const variant of outer.variants) {
+    if (variant.name != "failure") continue;
+    match (in variant.payload) {
+      some(errorType) => {
+        let variants = Array<LoweredVariant>();
+        let successPayload = Option<LoweredType>.none;
+        if (successType.kind != LoweredTypeKind.voidType) {
+          successPayload = Option.some(LoweredType({
+            kind: successType.kind,
+            name: successType.name.copyBytes(0, successType.name.byteLength),
+          }));
+        }
+        variants.push(LoweredVariant({
+          name: "success",
+          payload: successPayload,
+        }));
+        variants.push(LoweredVariant({
+          name: "failure",
+          payload: Option.some(LoweredType({
+            kind: errorType.kind,
+            name: errorType.name.copyBytes(0, errorType.name.byteLength),
+          })),
+        }));
+        return Option.some(LoweredEnum({
+          name: intrinsicResultName(successType, errorType),
+          nativeCName: "",
+          nativeCUnderlyingType: "",
+          variants,
+          payloadBearing: true,
+          needsDeinit: moduleTypeNeedsCleanup(
+            program,
+            importedTypes,
+            successType
+          ) || moduleTypeNeedsCleanup(program, importedTypes, errorType),
+        }));
+      }
+      none => {}
     }
   }
   return Option<LoweredEnum>.none;
@@ -7690,7 +7799,8 @@ function lowerValueDestination(
           importedTypes,
           evidence,
           tree,
-          attempted
+          attempted,
+          ownerName
         );
         const inner = match (innerResult) {
           some(declaration) => declaration;
@@ -8405,10 +8515,6 @@ function completeNativeClosureBlocks(
           importedTypes,
           ownerName
         );
-        match (enclosingResult) {
-          some(_) => throw "native fallible worker lowering currently requires a nonthrowing enclosing main";
-          none => {}
-        }
         const resultName = expressions[expressionIndex].labels[1].copyBytes(
           0,
           expressions[expressionIndex].labels[1].byteLength
@@ -8423,13 +8529,25 @@ function completeNativeClosureBlocks(
               some(value) => value;
               none => throw "native fallible worker lowering requires an explicit return value";
             };
+            let workerPayload = returned;
+            match (in enclosingResult) {
+              some(outer) => {
+                if (
+                  expressions[returned].kind
+                    == LoweredExpressionKind.enumPayloadValue
+                  && expressions[returned].value == outer.name
+                  && expressions[returned].children.length == 1
+                ) workerPayload = expressions[returned].children[0];
+              }
+              none => {}
+            }
             let variant = "success";
             if (
               statements[workerStatement].labels.length > 0
               && statements[workerStatement].labels[0] == "throw"
             ) variant = "failure";
             let resultChildren = Array<usize>();
-            resultChildren.push(returned);
+            resultChildren.push(workerPayload);
             let resultLabels = Array<String>();
             resultLabels.push(move variant);
             const wrapped = pushExpression(
@@ -8893,7 +9011,8 @@ function lowerStatement(
               importedTypes,
               evidence,
               tree,
-              attempted
+              attempted,
+              ownerName
             );
             const inner = match (innerResult) {
               some(declaration) => declaration;
@@ -9020,7 +9139,8 @@ function lowerStatement(
                 importedTypes,
                 evidence,
                 tree,
-                attempted
+                attempted,
+                ownerName
               );
               const inner = match (innerResult) {
                 some(declaration) => declaration;
@@ -9095,17 +9215,6 @@ function lowerStatement(
               && tree.nodes[root].children.length == 1
             ) {
               const attempted = tree.nodes[root].children[0];
-              const innerResult = try directThrowingCallResult(
-                program,
-                importedTypes,
-                evidence,
-                tree,
-                attempted
-              );
-              const inner = match (innerResult) {
-                some(declaration) => declaration;
-                none => throw "native try lowering requires one direct throwing function call yet";
-              };
               const outerResult = try throwingFunctionResult(
                 program,
                 importedTypes,
@@ -9123,6 +9232,29 @@ function lowerStatement(
                 ownerName,
                 index
               );
+              const directResult = try directThrowingCallResult(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                attempted,
+                ownerName
+              );
+              const innerResult: Option<LoweredEnum> = match (directResult) {
+                some(declaration) => Option<LoweredEnum>.some(move declaration);
+                none => awaitedResultForSuccessType(
+                  program,
+                  importedTypes,
+                  tree,
+                  attempted,
+                  bindingType,
+                  outer
+                );
+              };
+              const inner = match (innerResult) {
+                some(declaration) => declaration;
+                none => throw "native try lowering requires one direct throwing function call or fallible task await yet";
+              };
               const call = try lowerExpression(
                 program,
                 importedTypes,

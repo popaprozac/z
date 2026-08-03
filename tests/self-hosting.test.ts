@@ -2110,6 +2110,21 @@ test("transfers and discards owned native worker results exactly once", () => {
     assert.equal(compilation.status, 0, compilation.stderr);
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
+
+    const invalidInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-affine-result-invalid.zs",
+    );
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1);
+    assert.match(
+      invalid.stderr,
+      /native thread\.spawn cannot transfer worker result AffineResource to its owner thread yet/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -2166,20 +2181,120 @@ test("transfers a typed worker failure through attempt await", () => {
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
 
-    const invalidInput = resolve(
+    const ownedInput = resolve(
       projectRoot,
-      "tests/fixtures/self-host-emit-thread-owned-error-invalid.zs",
+      "tests/fixtures/self-host-emit-thread-owned-error.zs",
     );
-    const invalid = spawnSync(
+    const ownedEmission = spawnSync(
       process.execPath,
-      [cli, "self-host-emit", invalidInput],
+      [cli, "self-host-emit", ownedInput],
       { encoding: "utf8" },
     );
-    assert.equal(invalid.status, 1);
+    assert.equal(ownedEmission.status, 0, ownedEmission.stderr);
     assert.match(
-      invalid.stderr,
-      /native thread\.spawn currently requires a cleanup-free worker error/,
+      ownedEmission.stdout,
+      /if \(task->storage->result_live\) \{ Z___z_Result_String_OwnedError_deinit\(&task->storage->result\);/,
     );
+    assert.match(
+      ownedEmission.stdout,
+      /case Z___z_Result_String_OwnedErrorTag_failure:[\s\S]*Z_OwnedError_deinit\(&self->payload\.failure\);/,
+    );
+    assert.match(
+      ownedEmission.stdout,
+      /case Z___z_Result_String_OwnedErrorTag_success:[\s\S]*Z_String_deinit\(&self->payload\.success\);/,
+    );
+    const ownedExecutable = resolve(directory, "thread-owned-error");
+    const ownedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        ownedExecutable,
+      ],
+      { encoding: "utf8", input: ownedEmission.stdout },
+    );
+    assert.equal(ownedCompilation.status, 0, ownedCompilation.stderr);
+    const ownedExecution = spawnSync(ownedExecutable, [], { encoding: "utf8" });
+    assert.equal(ownedExecution.status, 0, ownedExecution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 45_000);
+
+test("propagates an owned worker failure through native try await", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-try-await-");
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-try-await.zs",
+  );
+  try {
+    const parity = spawnSync(
+      process.execPath,
+      [cli, "check", input, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(parity.status, 0, parity.stderr);
+
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_String_OwnedError _z_stage1_try_\d+ = Z_Task___z_Result_String_OwnedError_await/,
+    );
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_i32_OwnedErrorTag_failure, \.payload\.failure = _z_stage1_try_\d+\.payload\.failure/,
+    );
+    assert.match(
+      emission.stdout,
+      /Z_String_deinit\(&value\);[\s\S]*Z_Task___z_Result_String_OwnedError_deinit\(&worker\);/,
+    );
+
+    const wrapped = `${emission.stdout}
+#undef main
+int main(void) {
+  Z___z_Result_i32_OwnedError result = z_entry();
+  if (result.tag != Z___z_Result_i32_OwnedErrorTag_failure) {
+    Z___z_Result_i32_OwnedError_deinit(&result);
+    return 1;
+  }
+  const int status = result.payload.failure.message.length == 13 ? 0 : 2;
+  Z___z_Result_i32_OwnedError_deinit(&result);
+  return status;
+}
+`;
+    const executable = resolve(directory, "thread-try-await");
+    const compilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-Dmain=z_entry",
+        "-",
+        "-o",
+        executable,
+      ],
+      { encoding: "utf8", input: wrapped },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

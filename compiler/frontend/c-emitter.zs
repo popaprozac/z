@@ -6186,6 +6186,25 @@ function emitLoweredC(
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
   try appendTypeDefinitions(inout output, program);
+  for (const aggregate of program.structs) {
+    if (aggregate.needsDeinit && !aggregate.referenceType) {
+      output.append("static __attribute__((unused)) void Z_");
+      output.append(aggregate.name);
+      output.append("_deinit(Z_");
+      output.append(aggregate.name);
+      output.append(" *self);\n");
+    }
+  }
+  for (const declaration of program.enums) {
+    if (declaration.needsDeinit) {
+      output.append("static __attribute__((unused)) void Z_");
+      output.append(declaration.name);
+      output.append("_deinit(Z_");
+      output.append(declaration.name);
+      output.append(" *self);\n");
+    }
+  }
+  output.append("\n");
   try appendThreadTaskRuntime(inout output, program);
   try appendModuleConstants(inout output, program);
   for (const foreign of program.foreignFunctions) {
@@ -6317,24 +6336,6 @@ function emitLoweredC(
     output.append(declaration.name);
     output.append(" *self);\n");
   }
-  for (const aggregate of program.structs) {
-    if (aggregate.needsDeinit && !aggregate.referenceType) {
-      output.append("static __attribute__((unused)) void Z_");
-      output.append(aggregate.name);
-      output.append("_deinit(Z_");
-      output.append(aggregate.name);
-      output.append(" *self);\n");
-    }
-  }
-  for (const declaration of program.enums) {
-    if (declaration.needsDeinit) {
-      output.append("static __attribute__((unused)) void Z_");
-      output.append(declaration.name);
-      output.append("_deinit(Z_");
-      output.append(declaration.name);
-      output.append(" *self);\n");
-    }
-  }
   for (const declaration of program.functions) {
     try appendFunctionSignature(
       inout output,
@@ -6429,9 +6430,15 @@ function emitLoweredC(
             if (loweredTypeNeedsDeinit(program, type)) {
               output.append("\n      Z_");
               output.append(type.name);
-              output.append("_deinit(&self->payload.");
-              output.append(variant.name);
-              output.append(");\n      break;\n");
+              if (type.kind == LoweredTypeKind.classType) {
+                output.append("_release(self->payload.");
+                output.append(variant.name);
+                output.append(");\n      break;\n");
+              } else {
+                output.append("_deinit(&self->payload.");
+                output.append(variant.name);
+                output.append(");\n      break;\n");
+              }
             } else output.append(" break;\n");
           }
           none => output.append(" break;\n");

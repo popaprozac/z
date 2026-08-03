@@ -1888,25 +1888,30 @@ status on main, resumes and joins the worker, prints the final status, and
 releases the root. Native async `main` still uses a synchronous host frame, and
 the private worker blocks at this first placed continuation.
 
-The next task slice carries cleanup-free typed failures. `Task<T, E>` stores the
-same `Result<T, E>` representation used by synchronous throwing calls; worker
-`return` writes `success(T)`, worker `throw` writes `failure(E)`, and `attempt
-await` transfers that tagged value to ordinary exhaustive matching. The strict
-fixture executes both outcomes. Cleanup-bearing errors fail before C emission
-because discarding, cancellation, and propagation still need live-state-aware
-destruction. Re-moving ownership-bearing captures, owned task results, `try
-await` propagation, general suspension, cleanup-bearing placed arguments/results,
-and additional executor forms remain later slices.
+The task result path now carries typed failures and ownership through one
+representation. `Task<T, E>` stores the same `Result<T, E>` tagged union used by
+synchronous throwing calls; worker `return` writes `success(T)` and worker
+`throw` writes `failure(E)`. Every task storage has explicit result liveness.
+Worker completion publishes the whole tagged value before waking the owner;
+`await` transfers it and clears the bit, while task cleanup joins first and
+destroys an unobserved result by inspecting its active payload.
 
-Owned String results now cross the same native task boundary without widening
-that error tier prematurely. Every task storage has explicit result liveness.
-Worker completion publishes the result before waking the owner; `await`
-transfers the String and clears the bit, while task cleanup joins first and
-destroys a still-live unobserved result. A strict-C fixture exercises both paths
-and then uses ordinary `.byteLength` plus checked integer conversion on the
-observed value. Other owned result shapes, ownership-bearing typed errors, and
-fallible owned results remain fail-closed until the same protocol covers each
-active payload.
+Strict-C fixtures exercise cleanup-free failures, owned `String` success, and a
+fallible `Result<String, OwnedError>` whose error struct itself owns a String.
+Consuming `attempt await` matches transfer and destroy exactly one active
+payload. A typed local `try await` uses that same result storage: failure moves
+the owned error into the enclosing function's Result, while success moves the
+String into the local cleanup plan. The task handle then frees only its empty
+storage. The runtime also emits aggregate/enum cleanup declarations before task
+helpers so unobserved cleanup-bearing results remain valid strict C.
+
+Native lowering admits result and error shapes only when their complete value
+graph is safe to transfer and destroy away from the producing worker. A
+custom-deinitializer result is a negative fixture and fails before C emission;
+it is not silently treated as Send-like. Cleanup-bearing worker locals,
+re-moving ownership-bearing captures, `try await` in every expression/storage
+position, general suspension, cleanup-bearing placed arguments/results, and
+additional executor forms remain later slices.
 
 Deeply readonly ARC identity now exercises the shared half of worker capture.
 Native lowering carries conservative shareability with each lowered class,
