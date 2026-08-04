@@ -2612,6 +2612,73 @@ int main(void) {
       encoding: "utf8",
     });
     assert.equal(nestedExecution.status, 0, nestedExecution.stderr);
+
+    const nestedFailureInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-nested-try-await-failure.zs",
+    );
+    const nestedFailureEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", nestedFailureInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      nestedFailureEmission.status,
+      0,
+      nestedFailureEmission.stderr,
+    );
+    const nestedFailureWrapped = `${nestedFailureEmission.stdout}
+#undef main
+int main(void) {
+  Z___z_Result_i32_WorkError result = z_entry();
+  if (result.tag != Z___z_Result_i32_WorkErrorTag_failure) {
+    Z___z_Result_i32_WorkError_deinit(&result);
+    return 1;
+  }
+  const int valid = z_string_equal(
+    result.payload.failure.message,
+    Z_STRING_LITERAL("selected failure")
+  ) ? 0 : 2;
+  Z___z_Result_i32_WorkError_deinit(&result);
+  return valid;
+}
+`;
+    const nestedFailureExecutable = resolve(
+      directory,
+      "thread-nested-try-await-failure",
+    );
+    const nestedFailureCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-Dmain=z_entry",
+        "-",
+        "-o",
+        nestedFailureExecutable,
+      ],
+      { encoding: "utf8", input: nestedFailureWrapped },
+    );
+    assert.equal(
+      nestedFailureCompilation.status,
+      0,
+      nestedFailureCompilation.stderr,
+    );
+    const nestedFailureExecution = spawnSync(
+      nestedFailureExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      nestedFailureExecution.status,
+      0,
+      nestedFailureExecution.stderr,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -3087,7 +3154,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const emission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", fixture],
-    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /decodeRawForeignDeclarations/);
@@ -3151,7 +3218,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const contractEmission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", contractFixture],
-    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(contractEmission.status, 0, contractEmission.stderr);
   assert.match(contractEmission.stdout, /parseForeignContracts/);
@@ -3501,7 +3568,7 @@ test("compiles a multi-module Z application through the standalone native driver
   const driverEmission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", driverSource],
-    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(driverEmission.status, 0, driverEmission.stderr);
   assert.match(driverEmission.stdout, /Z___z_Result_void_String loadModule\(/);
@@ -5213,7 +5280,7 @@ test("lowers the complete native frontend graph to C", () => {
   const emission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", frontend],
-    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /void appendCStringLiteral\(Z_String \*output, const Z_String \*value\);/);

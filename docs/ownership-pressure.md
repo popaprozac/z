@@ -1919,9 +1919,13 @@ Every hidden failure edge cleans prior hidden results plus the ordinary live
 owner set. Cleanup-bearing success values are destroyed after a borrowed use
 or transferred without a second cleanup when an owned parameter consumes them.
 The normalized statement sequence deliberately stays in the user's lexical
-scope so a surrounding `const` remains visible afterward. Lazy conditional
-branches still require branch-local result normalization rather than eager
-hoisting.
+scope so a surrounding `const` remains visible afterward. Ternaries now add a
+branch-local destination: only the selected branch awaits, its success value
+moves into the destination, and its failure path cleans both ordinary live
+owners and branch-local temporaries. Executable probes cover a heap-backed
+String result, an unselected throwing branch, and a selected typed failure.
+Value-`if` and value-`match` still require the corresponding branch-local
+normalization rather than eager hoisting.
 
 Block-bodied native workers now own an independent cleanup scope rather than
 borrowing the enclosing function's liveness plan. Cleanup-bearing locals are
@@ -1936,7 +1940,7 @@ Native lowering admits result and error shapes only when their complete value
 graph is safe to transfer and destroy away from the producing worker. A
 custom-deinitializer result is a negative fixture and fails before C emission;
 it is not silently treated as Send-like. Re-moving ownership-bearing captures,
-selected-branch nested `try await`, general suspension,
+selected value-`if`/value-`match` nested `try await`, general suspension,
 cleanup-bearing placed arguments/results, void-result native workers, and
 additional executor forms remain later slices.
 

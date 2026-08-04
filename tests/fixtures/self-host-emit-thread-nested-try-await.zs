@@ -37,5 +37,26 @@ async function main(): i32 throws WorkError {
     return "consumed";
   });
   const consumed = consume(try await consumedWorker);
-  return combined + measured + consumed - 58;
+
+  const selectedWorker = thread.spawn((): i32 throws WorkError => {
+    return 7;
+  });
+  const ignoredWorker = thread.spawn((): i32 throws WorkError => {
+    throw WorkError({ message: "ignored" });
+  });
+  const selected = true
+    ? try await selectedWorker
+    : try await ignoredWorker;
+
+  const textWorker = thread.spawn((): String throws WorkError => {
+    return `branch ${7}`;
+  });
+  const ignoredTextWorker = thread.spawn((): String throws WorkError => {
+    throw WorkError({ message: "ignored text" });
+  });
+  const chosenText = true
+    ? try await textWorker
+    : try await ignoredTextWorker;
+  const chosenLength = measure(chosenText);
+  return combined + measured + consumed + selected + chosenLength - 73;
 }
