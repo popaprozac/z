@@ -2085,6 +2085,98 @@ function planCleanupStatement(
   insideLoop: boolean,
   in loopCleanups: Array<LoweredCleanup>
 ): void throws String {
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.blockStatement
+    && statements[loweredIndex].labels.length == 1
+    && statements[loweredIndex].labels[0] == "nested-try-normalized"
+  ) {
+    if (statements[loweredIndex].children.length < 2) {
+      throw "native cleanup planning received an empty nested try block";
+    }
+    let preludeLive = Array<LoweredCleanup>();
+    for (const cleanup of live) {
+      if (
+        arena.nodes[sourceIndex].kind == StatementKind.variableStatement
+        && cleanup.name == arena.nodes[sourceIndex].name
+      ) continue;
+      preludeLive.push(copyCleanup(cleanup));
+    }
+    let finalTemporaryCleanups = Array<LoweredCleanup>();
+    let childPosition: usize = 0;
+    while (childPosition + 1 < statements[loweredIndex].children.length) {
+      const local = statements[loweredIndex].children[childPosition];
+      if (
+        statements[local].kind != LoweredStatementKind.localStatement
+        || statements[local].children.length != 1
+        || statements[statements[local].children[0]].kind
+          != LoweredStatementKind.tryStatement
+      ) throw "native cleanup planning received a malformed nested try prelude";
+      const loweredTry = statements[local].children[0];
+      appendStatementCleanupCopies(
+        inout statements,
+        loweredTry,
+        preludeLive
+      );
+      match (in statements[local].type) {
+        some(type) => {
+          const ownedType = LoweredType({
+            kind: type.kind,
+            name: type.name.copyBytes(0, type.name.byteLength),
+          });
+          if (moduleTypeNeedsCleanup(program, importedTypes, ownedType)) {
+            const cleanup = LoweredCleanup({
+              name: statements[local].name.copyBytes(
+                0,
+                statements[local].name.byteLength
+              ),
+              type: move ownedType,
+              guard: "",
+            });
+            preludeLive.push(copyCleanup(cleanup));
+            let transferred = false;
+            for (const label of statements[local].labels) {
+              if (label == "transferred") transferred = true;
+            }
+            if (!transferred) {
+              finalTemporaryCleanups.push(move cleanup);
+            }
+          }
+        }
+        none => throw "native cleanup planning lost a nested try success type";
+      }
+      childPosition = childPosition + 1;
+    }
+    let finalLive = Array<LoweredCleanup>();
+    appendCleanupCopies(inout finalLive, live);
+    appendCleanupCopies(inout finalLive, finalTemporaryCleanups);
+    const finalStatement = statements[loweredIndex].children[
+      statements[loweredIndex].children.length - 1
+    ];
+    try planCleanupStatement(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      sourceIndex,
+      finalStatement,
+      finalLive,
+      expressions,
+      inout statements,
+      inout liveFlags,
+      insideLoop,
+      loopCleanups
+    );
+    if (loweredSequenceFallsThrough(
+      statements,
+      statements[loweredIndex].children
+    )) appendStatementCleanupCopies(
+      inout statements,
+      loweredIndex,
+      finalTemporaryCleanups
+    );
+    return;
+  }
   if (statements[loweredIndex].kind == LoweredStatementKind.returnStatement) {
     appendStatementCleanupCopies(inout statements, loweredIndex, live);
     return;
@@ -4386,6 +4478,20 @@ function lowerExpression(
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.tryExpression) {
+    const bindingName = `_z_stage1_nested_try_${tree.nodes[index].offset}`;
+    let nestedTryCandidateIndex: usize = 0;
+    while (nestedTryCandidateIndex < output.length) {
+      if (
+        output[nestedTryCandidateIndex].kind
+          == LoweredExpressionKind.localValue
+        && output[nestedTryCandidateIndex].value == bindingName
+        && expressionHasLabel(
+          output[nestedTryCandidateIndex],
+          "nested-try-binding"
+        )
+      ) return nestedTryCandidateIndex;
+      nestedTryCandidateIndex = nestedTryCandidateIndex + 1;
+    }
     throw `native lowering does not support nested try propagation at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
   }
   if (tree.nodes[index].kind == ExpressionKind.unaryExpression) {
@@ -8923,7 +9029,372 @@ function completeNativeClosureBlocks(
   }
 }
 
+function expressionTreeContainsTry(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.tryExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsTry(tree, child)) return true;
+  }
+  return false;
+}
+
+function collectNestedTryExpressions(
+  in tree: ExpressionTree,
+  index: usize,
+  includeRoot: boolean,
+  inout output: Array<usize>
+): void throws String {
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return;
+  if (tree.nodes[index].kind == ExpressionKind.tryExpression) {
+    if (!includeRoot) return;
+    if (tree.nodes[index].children.length != 1) {
+      throw "native nested try lowering received a malformed try expression";
+    }
+    const attempted = tree.nodes[index].children[0];
+    try collectNestedTryExpressions(
+      tree,
+      attempted,
+      true,
+      inout output
+    );
+    output.push(index);
+    return;
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.conditionalExpression
+    || tree.nodes[index].kind == ExpressionKind.ifExpression
+  ) {
+    for (const child of tree.nodes[index].children) {
+      if (expressionTreeContainsTry(tree, child)) {
+        throw `native nested try propagation inside a selected conditional branch at ${tree.nodes[index].line}:${tree.nodes[index].column} still requires branch-result normalization`;
+      }
+    }
+    return;
+  }
+  for (const child of tree.nodes[index].children) {
+    try collectNestedTryExpressions(tree, child, true, inout output);
+  }
+}
+
+function appendNestedTryPreludeRoots(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  in syntax: ExpressionSyntax,
+  includeRoot: boolean,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout roots: Array<usize>
+): void throws String {
+  match (in syntax.tree) {
+    some(tree) => {
+      let nested = Array<usize>();
+      const root = tree.root;
+      try collectNestedTryExpressions(
+        tree,
+        root,
+        includeRoot,
+        inout nested
+      );
+      if (nested.length == 0) return;
+      const outerResult = try throwingFunctionResult(
+        program,
+        importedTypes,
+        ownerName
+      );
+      const outer = match (outerResult) {
+        some(declaration) => declaration;
+        none => throw "native nested try lowering requires an enclosing throwing function";
+      };
+      for (const nestedTry of nested) {
+        const attempted = tree.nodes[nestedTry].children[0];
+        const successTypeName = match (staticallyResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          nestedTry
+        )) {
+          some(name) => name;
+          none => throw `native nested try lowering could not resolve its success type at ${tree.nodes[nestedTry].line}:${tree.nodes[nestedTry].column}`;
+        };
+        const successType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          successTypeName
+        );
+        const directResult = try directThrowingCallResult(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          attempted,
+          ownerName
+        );
+        const innerResult: Option<LoweredEnum> = match (directResult) {
+          some(declaration) => Option<LoweredEnum>.some(move declaration);
+          none => awaitedResultForSuccessType(
+            program,
+            importedTypes,
+            tree,
+            attempted,
+            successType,
+            outer
+          );
+        };
+        const inner = match (innerResult) {
+          some(declaration) => declaration;
+          none => throw "native nested try lowering requires one direct throwing call or fallible task await";
+        };
+        const attemptedValue = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          attempted,
+          inout expressions
+        );
+        const bindingName = `_z_stage1_nested_try_${tree.nodes[nestedTry].offset}`;
+        let bindingLabels = Array<String>();
+        bindingLabels.push("nested-try-binding");
+        pushExpression(
+          inout expressions,
+          LoweredExpressionKind.localValue,
+          bindingName,
+          Array<usize>(),
+          move bindingLabels
+        );
+        let tryLabels = Array<String>();
+        tryLabels.push(bindingName.copyBytes(0, bindingName.byteLength));
+        tryLabels.push(outer.name.copyBytes(0, outer.name.byteLength));
+        const loweredTry = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.tryStatement,
+          mutableBinding: false,
+          name: inner.name.copyBytes(0, inner.name.byteLength),
+          type: Option.some(LoweredType({
+            kind: successType.kind,
+            name: successType.name.copyBytes(0, successType.name.byteLength),
+          })),
+          expression: Option.some(attemptedValue),
+          secondExpression: Option<usize>.none,
+          children: Array<usize>(),
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: tryLabels,
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+        let localChildren = Array<usize>();
+        localChildren.push(loweredTry);
+        let localLabels = Array<String>();
+        localLabels.push("nested-try");
+        const local = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.localStatement,
+          mutableBinding: true,
+          name: move bindingName,
+          type: Option.some(move successType),
+          expression: Option<usize>.none,
+          secondExpression: Option<usize>.none,
+          children: move localChildren,
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: move localLabels,
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+        roots.push(local);
+      }
+    }
+    none => {}
+  }
+}
+
+function loweredExpressionDirectlyConsumesChild(
+  in expressions: Array<LoweredExpression>,
+  parent: usize,
+  childPosition: usize
+): boolean {
+  if (expressions[parent].kind == LoweredExpressionKind.moveValue) return true;
+  if (
+    expressions[parent].kind == LoweredExpressionKind.structValue
+    || expressions[parent].kind == LoweredExpressionKind.classValue
+    || expressions[parent].kind == LoweredExpressionKind.enumPayloadValue
+    || expressions[parent].kind == LoweredExpressionKind.mutexValue
+    || expressions[parent].kind == LoweredExpressionKind.onceInitialize
+  ) return true;
+  if (
+    expressions[parent].kind == LoweredExpressionKind.directCall
+    && childPosition > 0
+    && expressions[parent].labels.length >= childPosition
+  ) return expressions[parent].labels[childPosition - 1] == "value";
+  if (expressions[parent].kind == LoweredExpressionKind.methodCall) {
+    if (
+      childPosition == 0
+      && expressions[parent].labels.length > 1
+    ) return expressions[parent].labels[1] == "move";
+    if (
+      childPosition > 0
+      && expressions[parent].labels.length > childPosition + 1
+    ) return expressions[parent].labels[childPosition + 1] == "value";
+  }
+  return false;
+}
+
+function nestedTryBindingWasTransferred(
+  in expressions: Array<LoweredExpression>,
+  in name: String
+): boolean {
+  let parent: usize = 0;
+  while (parent < expressions.length) {
+    let childPosition: usize = 0;
+    while (childPosition < expressions[parent].children.length) {
+      const child = expressions[parent].children[childPosition];
+      if (
+        expressions[child].kind == LoweredExpressionKind.localValue
+        && expressions[child].value == name
+        && loweredExpressionDirectlyConsumesChild(
+          expressions,
+          parent,
+          childPosition
+        )
+      ) return true;
+      childPosition = childPosition + 1;
+    }
+    parent = parent + 1;
+  }
+  return false;
+}
+
 function lowerStatement(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in ownerName: String,
+  index: usize,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): usize throws String {
+  let preludeRoots = Array<usize>();
+  match (in arena.nodes[index].expression) {
+    some(syntax) => {
+      let includeRoot = true;
+      match (in syntax.tree) {
+        some(tree) => {
+          if (
+            tree.nodes[tree.root].kind == ExpressionKind.tryExpression
+            && (
+              arena.nodes[index].kind == StatementKind.variableStatement
+              || arena.nodes[index].kind == StatementKind.expressionStatement
+              || arena.nodes[index].kind == StatementKind.returnStatement
+            )
+          ) includeRoot = false;
+        }
+        none => {}
+      }
+      try appendNestedTryPreludeRoots(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        syntax,
+        includeRoot,
+        inout expressions,
+        inout statements,
+        inout preludeRoots
+      );
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => {
+      let includeRoot = true;
+      match (in syntax.tree) {
+        some(tree) => {
+          if (
+            tree.nodes[tree.root].kind == ExpressionKind.tryExpression
+            && arena.nodes[index].kind == StatementKind.assignmentStatement
+          ) includeRoot = false;
+        }
+        none => {}
+      }
+      try appendNestedTryPreludeRoots(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        syntax,
+        includeRoot,
+        inout expressions,
+        inout statements,
+        inout preludeRoots
+      );
+    }
+    none => {}
+  }
+  if (preludeRoots.length == 0) {
+    return try lowerStatementCore(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      index,
+      inout expressions,
+      inout statements
+    );
+  }
+  const lowered = try lowerStatementCore(
+    program,
+    importedTypes,
+    evidence,
+    arena,
+    ownerName,
+    index,
+    inout expressions,
+    inout statements
+  );
+  for (const prelude of preludeRoots) {
+    if (
+      nestedTryBindingWasTransferred(
+        expressions,
+        statements[prelude].name
+      )
+    ) statements[prelude].labels.push("transferred");
+  }
+  preludeRoots.push(lowered);
+  let labels = Array<String>();
+  labels.push("nested-try-normalized");
+  const block = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.blockStatement,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: move preludeRoots,
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: move labels,
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  }));
+  return block;
+}
+
+function lowerStatementCore(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,

@@ -2823,6 +2823,29 @@ test("preserves typed errors from thread.spawn as Task<T, E>", () => {
   const embeddedTryDiagnostic = diagnostics(embeddedTry, "thread-embedded-try.zs")[0];
   assert.match(embeddedTryDiagnostic.message, /try must be the direct value of a binding/);
 
+  const nestedTryAwait = `
+    import { thread } from "std/thread";
+    struct WorkError { code: i32; }
+    async function main(): i32 throws WorkError {
+      const task = thread.spawn((): i32 throws WorkError => {
+        return 41;
+      });
+      return (try await task) + 1 - 42;
+    }
+  `;
+  const nestedTryAwaitFile = resolve(directory, "nested-try-await.zs");
+  writeFileSync(nestedTryAwaitFile, nestedTryAwait);
+  const nestedTryAwaitResult = spawnSync(
+    process.execPath,
+    [cli, "run", nestedTryAwaitFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    nestedTryAwaitResult.status,
+    0,
+    nestedTryAwaitResult.stderr,
+  );
+
   const missingReturnType = `
     import { thread } from "std/thread";
     struct WorkError { code: i32; }

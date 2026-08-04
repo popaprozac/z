@@ -893,6 +893,23 @@ function load(id: i32): User throws UserError { ... }
 - `try operation()` propagates failure and produces the success value.
 - `attempt operation()` materializes `Result<T, E>` for local inspection.
 
+Propagation is an expression and can compose where its success value is
+needed. In async code, suspension and propagation remain explicit together:
+
+```z
+const total = combine(
+  try await firstTask,
+  try await secondTask
+);
+const length = measure(try await textTask);
+```
+
+Each operation is awaited in source order. A failure skips the enclosing value
+expression, destroys already-produced hidden values plus ordinary live owners,
+and returns the compatible error from the enclosing function. A successful
+cleanup-bearing value is borrowed or transferred according to the receiving
+parameter capability exactly as though it had first been given a local name.
+
 Synchronous and async error values may contain cleanup-bearing fields such as
 `String`, ARC identity, or move-only native owners nested in a Z value.
 `throw` transfers the error into failure storage; `try` transfers it onward;

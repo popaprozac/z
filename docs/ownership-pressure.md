@@ -1913,9 +1913,15 @@ The native type resolver now infers the success type of
 `const value = try await task` directly from `Task<T, E>`; the annotation is an
 optional source-level aid rather than a backend requirement. A direct
 `return try await task` preserves the complete compatible Result storage while
-running the enclosing cleanup plan first. Nested propagation inside another
-call, operator, or conditional still needs expression normalization before it
-can lower through the same temporary.
+running the enclosing cleanup plan first. Nested `try await` now normalizes
+call arguments and eager value operators into source-ordered hidden locals.
+Every hidden failure edge cleans prior hidden results plus the ordinary live
+owner set. Cleanup-bearing success values are destroyed after a borrowed use
+or transferred without a second cleanup when an owned parameter consumes them.
+The normalized statement sequence deliberately stays in the user's lexical
+scope so a surrounding `const` remains visible afterward. Lazy conditional
+branches still require branch-local result normalization rather than eager
+hoisting.
 
 Block-bodied native workers now own an independent cleanup scope rather than
 borrowing the enclosing function's liveness plan. Cleanup-bearing locals are
@@ -1930,7 +1936,7 @@ Native lowering admits result and error shapes only when their complete value
 graph is safe to transfer and destroy away from the producing worker. A
 custom-deinitializer result is a negative fixture and fails before C emission;
 it is not silently treated as Send-like. Re-moving ownership-bearing captures,
-nesting `try await` inside arbitrary value expressions, general suspension,
+selected-branch nested `try await`, general suspension,
 cleanup-bearing placed arguments/results, void-result native workers, and
 additional executor forms remain later slices.
 

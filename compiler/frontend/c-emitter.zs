@@ -2940,6 +2940,21 @@ function appendStatement(
     throw "native C emission received a detached match arm";
   }
   if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
+    if (
+      declaration.statements[index].labels.length == 1
+      && declaration.statements[index].labels[0]
+        == "nested-try-normalized"
+    ) {
+      for (const child of declaration.statements[index].children) {
+        try appendStatement(inout output, declaration, child, depth);
+      }
+      appendCleanups(
+        inout output,
+        declaration.statements[index].cleanups,
+        depth
+      );
+      return;
+    }
     appendIndent(inout output, depth);
     output.append("{\n");
     for (const child of declaration.statements[index].children) {

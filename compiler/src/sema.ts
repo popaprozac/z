@@ -8443,8 +8443,32 @@ function inferExpressionInner(
       }
       return result;
     }
-    case "try":
-      throw new DiagnosticError(fileName, expression.location, "try must be the direct value of a binding, return, or expression statement");
+    case "try": {
+      if (
+        expression.expression.kind !== "await"
+        && expression.expression.kind !== "executorPlacement"
+      ) {
+        throw new DiagnosticError(
+          fileName,
+          expression.location,
+          "try must be the direct value of a binding, return, or expression statement",
+        );
+      }
+      const owner = state.activeFunction;
+      if (!owner) {
+        throw new DiagnosticError(fileName, expression.location, "try requires an enclosing throwing function");
+      }
+      return inferTrySuccess(
+        expression,
+        owner,
+        locals,
+        globals,
+        structs,
+        enums,
+        fileName,
+        state,
+      );
+    }
     case "matchExpression":
       throw new DiagnosticError(fileName, expression.location, "match must be the direct value of a binding, return, or expression statement");
     case "ifExpression":
@@ -11219,6 +11243,7 @@ function checkArguments(
         && !aggregateTemporary
         && argument.kind !== "template"
         && argument.kind !== "string"
+        && argument.kind !== "try"
       ) {
         throw new DiagnosticError(
           fileName,
@@ -11233,6 +11258,7 @@ function checkArguments(
         && !isNamedStorageExpression(borrowedArgument)
         && argument.kind !== "template"
         && argument.kind !== "string"
+        && argument.kind !== "try"
       ) {
         throw new DiagnosticError(fileName, argument.location, "a cleanup-bearing borrowed temporary must be bound before the call");
       }

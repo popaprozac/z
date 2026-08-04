@@ -2540,10 +2540,82 @@ int main(void) {
       encoding: "utf8",
     });
     assert.equal(positionsExecution.status, 0, positionsExecution.stderr);
+
+    const nestedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-nested-try-await.zs",
+    );
+    const nestedParity = spawnSync(
+      process.execPath,
+      [cli, "check", nestedInput, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(nestedParity.status, 0, nestedParity.stderr);
+    const nestedEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", nestedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(nestedEmission.status, 0, nestedEmission.stderr);
+    const firstAwait = nestedEmission.stdout.indexOf(
+      "Z_Task___z_Result_i32_WorkError_await(&(firstWorker))",
+    );
+    const secondAwait = nestedEmission.stdout.indexOf(
+      "Z_Task___z_Result_i32_WorkError_await(&(secondWorker))",
+    );
+    assert.ok(firstAwait >= 0 && secondAwait > firstAwait);
+    assert.match(
+      nestedEmission.stdout,
+      /measure\(&\(_z_stage1_nested_try_\d+\)\);\n  Z_String_deinit\(&_z_stage1_nested_try_\d+\);/,
+    );
+    const consumedCall = /consume\((_z_stage1_nested_try_\d+)\)/.exec(
+      nestedEmission.stdout,
+    );
+    assert.ok(consumedCall);
+    assert.doesNotMatch(
+      nestedEmission.stdout,
+      new RegExp(`Z_String_deinit\\(&${consumedCall[1]}\\)`),
+    );
+    const nestedWrapped = `${nestedEmission.stdout}
+#undef main
+int main(void) {
+  Z___z_Result_i32_WorkError result = z_entry();
+  if (result.tag != Z___z_Result_i32_WorkErrorTag_success) {
+    Z___z_Result_i32_WorkError_deinit(&result);
+    return 1;
+  }
+  const int status = result.payload.success;
+  Z___z_Result_i32_WorkError_deinit(&result);
+  return status;
+}
+`;
+    const nestedExecutable = resolve(directory, "thread-nested-try-await");
+    const nestedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-Dmain=z_entry",
+        "-",
+        "-o",
+        nestedExecutable,
+      ],
+      { encoding: "utf8", input: nestedWrapped },
+    );
+    assert.equal(nestedCompilation.status, 0, nestedCompilation.stderr);
+    const nestedExecution = spawnSync(nestedExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(nestedExecution.status, 0, nestedExecution.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}, 45_000);
+}, 60_000);
 
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
