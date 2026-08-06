@@ -120,6 +120,7 @@ function validateEmbeddedRuntimePublicNames(
     `${prefix}_runtime_status`,
     `${prefix}_runtime_config`,
     `${prefix}_runtime_enqueue_release`,
+    `${prefix}_runtime_is_main_thread`,
   ]);
   for (const declaration of program.functions) {
     const name = declaration.nativeExport?.name;

@@ -1979,7 +1979,7 @@ function inferExpressionNodeType(
         node.column
       );
     }
-    let declaredReturn = "void";
+    let declaredReturn = "";
     let declaredError = "";
     let bodyKind = "";
     if (node.labels.length > 0) {
@@ -1989,6 +1989,21 @@ function inferExpressionNodeType(
       );
       if (label.byteLength > 0) {
         declaredReturn = label.copyBytes(0, label.byteLength);
+      }
+    }
+    if (declaredReturn.byteLength == 0) {
+      const contextualReturn = contextualExpectedType(
+        bindings,
+        tree,
+        index
+      );
+      if (contextualReturn.byteLength > 0) {
+        declaredReturn = contextualReturn.copyBytes(
+          0,
+          contextualReturn.byteLength
+        );
+      } else {
+        declaredReturn = "void";
       }
     }
     if (node.labels.length > 1) {
@@ -2055,6 +2070,8 @@ function inferExpressionNodeType(
     let movedCaptures = Array<String>();
     const capturesReady = try prepareExecutorCaptureBindings(
       module,
+      modules,
+      moduleIndex,
       tree,
       children,
       bindings,
@@ -3175,6 +3192,14 @@ function inferExpressionNodeType(
       }
     }
     let closureBindings = copyValueBindings(bindings);
+    const closureAsynchronous = node.labels.length > 3
+      && node.labels[3] == "async";
+    const closureAsyncContext = closureAsynchronous ? "true" : "";
+    addValueBinding(
+      inout closureBindings,
+      "__z_native_async_context",
+      closureAsyncContext
+    );
     for (const capture of captures) {
       const initialization = valueBindingInitialization(bindings, capture);
       if (initialization != NativeInitializationState.initialized) {

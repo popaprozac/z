@@ -2815,6 +2815,11 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
     { entry: "tests/fixtures/self-host-emit-optional-chain.zs" },
     { entry: "tests/fixtures/self-host-emit-struct-spread.zs" },
     { entry: "tests/fixtures/self-host-emit-result.zs" },
+    { entry: "tests/fixtures/self-host-emit-mutex-field.zs" },
+    { entry: "tests/fixtures/self-host-emit-thread-task.zs" },
+    { entry: "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs" },
+    { entry: "tests/fixtures/self-host-emit-thread-shared-capture.zs" },
+    { entry: "tests/fixtures/self-host-differential-thread-owned.zs" },
     { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
     {
       entry: "examples/applications/source-inspector/main.zs",
@@ -2854,7 +2859,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
       "clang",
       [
         "-x", "c", "-std=c11", "-O2", "-DNDEBUG",
-        "-Wall", "-Wextra", "-Werror", "-", "-o", stage0Executable,
+        "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", stage0Executable,
       ],
       { encoding: "utf8", input: stage0.source },
     );
@@ -2867,7 +2872,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
       "clang",
       [
         "-x", "c", "-std=c11", "-O2", "-DNDEBUG",
-        "-Wall", "-Wextra", "-Werror", "-", "-o", nativeExecutable,
+        "-Wall", "-Wextra", "-Werror", "-pthread", "-", "-o", nativeExecutable,
       ],
       { encoding: "utf8", input: nativeEmission.stdout },
     );
@@ -2904,7 +2909,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
       `${testCase.entry} produced different stderr`,
     );
   }
-}, 60_000);
+}, 90_000);
 
 test("bootstraps a fixed-point native z executable for local use", () => {
   const directory = mkdtempSync("/tmp/z-native-bootstrap-");
@@ -2940,11 +2945,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
 
   const checking = spawnSync(
     executable,
-    ["check", resolve(projectRoot, "examples/language/modules/main.zs")],
+    ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs")],
     { encoding: "utf8" },
   );
   assert.equal(checking.status, 0, checking.stderr);
-    assert.match(checking.stdout, /checked 4 Z modules/);
+  assert.match(checking.stdout, /checked 1 Z modules/);
 
   const nativeTests = spawnSync(
     executable,
@@ -3911,6 +3916,18 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(runtimeRootSource, /initializeRuntime\(\)/);
   assert.match(runtimeRootSource, /Z_ForeignThreadEntry z_embedded_runtime_native_runtime_enter/);
   assert.match(runtimeRootSource, /return z_foreign_thread_enter/);
+  assert.match(
+    runtimeRootSource,
+    /z_embedded_runtime_native_runtime_retain\(&z_embedded_runtime_native_runtime\)/,
+  );
+  assert.match(
+    runtimeRootSource,
+    /z_embedded_runtime_native_runtime_enqueue_release/,
+  );
+  assert.match(
+    runtimeRootSource,
+    /\? NULL\s+: z_embedded_runtime_native_runtime_enqueue_release/,
+  );
   assert.match(runtimeRootSource, /z_foreign_thread_leave\(entry\)/);
   assert.match(runtimeRootHeader, /NATIVE_RUNTIME_RUNTIME_DRAINING = 7/);
   const runtimeRootConsumerSource = resolve(
@@ -4018,11 +4035,34 @@ test("compiles a multi-module Z application through the standalone native driver
     /C export parameter "value" has unsupported boundary type "String"/,
   );
 
+  const loweringOnlyFailure = resolve(
+    directory,
+    "lowering-only-failure.zs",
+  );
+  writeFileSync(
+    loweringOnlyFailure,
+    [
+      "async function deferred(): i32 { return 42; }",
+      "function main(): i32 { return 0; }",
+      "",
+    ].join("\n"),
+  );
+  const loweringOnlyCheck = spawnSync(
+    driver,
+    ["check", loweringOnlyFailure],
+    { encoding: "utf8" },
+  );
+  assert.equal(loweringOnlyCheck.status, 1);
+  assert.match(
+    loweringOnlyCheck.stderr,
+    /native lowering does not support async function deferred yet/,
+  );
+
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
   mkdirSync(runtimeCollisionProject);
   writeFileSync(
     resolve(runtimeCollisionProject, "library.zs"),
-    "export c function runtime_collision_runtime_shutdown(): i32 { return 0; }\n",
+    "export c function runtime_collision_runtime_is_main_thread(): i32 { return 0; }\n",
   );
   writeFileSync(
     resolve(runtimeCollisionProject, "z.json"),

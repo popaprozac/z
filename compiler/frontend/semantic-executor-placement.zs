@@ -2,7 +2,7 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
-  borrowClosureBindingInPlace,
+  addBorrowedValueBinding,
   borrowValueBindingInPlace,
   setValueBindingOwnership,
   valueBindingInitialization,
@@ -11,10 +11,16 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  ModuleSymbolKind,
   ModuleResolveError,
   ModuleResolveErrorKind,
+  ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
+import {
+  transparentTypeName,
+  typeSymbolLocation,
+} from "./semantic-type-identities.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
   ExpressionKind,
@@ -31,6 +37,8 @@ export function taskEffectType(
 
 export function prepareExecutorCaptureBindings(
   in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
   in tree: ExpressionTree,
   in children: Array<usize>,
   in bindings: Array<NativeValueBinding>,
@@ -84,7 +92,24 @@ export function prepareExecutorCaptureBindings(
     if (capability == "in") {
       borrowValueBindingInPlace(inout blockBindings, name);
     } else if (capability == "inout") {
-      if (!valueBindingIsMutable(bindings, name)) {
+      const expandedType = transparentTypeName(
+        modules,
+        moduleIndex,
+        typeName
+      );
+      let mutatesThroughIdentity = false;
+      match (typeSymbolLocation(modules, moduleIndex, expandedType)) {
+        some(location) => {
+          mutatesThroughIdentity = modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].kind == ModuleSymbolKind.classSymbol;
+        }
+        none => {}
+      }
+      if (
+        !valueBindingIsMutable(bindings, name)
+        && !mutatesThroughIdentity
+      ) {
         throw moduleResolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -93,7 +118,12 @@ export function prepareExecutorCaptureBindings(
           tree.nodes[capture].column
         );
       }
-      borrowClosureBindingInPlace(inout blockBindings, name);
+      addBorrowedValueBinding(
+        inout blockBindings,
+        name,
+        typeName,
+        true
+      );
     } else if (capability == "move") {
       movedNames.push(name.copyBytes(0, name.byteLength));
     }

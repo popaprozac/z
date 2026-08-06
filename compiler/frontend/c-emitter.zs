@@ -4292,6 +4292,12 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
   if (hasRoot) drainingState = "4";
   let activeCallbackStatus = `${constant}_RUNTIME_BUSY`;
   if (hasRoot) activeCallbackStatus = `${constant}_RUNTIME_DRAINING`;
+  let pendingReleaseThreadProof = "";
+  if (initializerRequiresMain) {
+    pendingReleaseThreadProof = `  if (z_embedded_runtime_${prefix}.is_main_thread == NULL
+      || !z_embedded_runtime_${prefix}.is_main_thread(z_embedded_runtime_${prefix}.context)) abort();
+`;
+  }
   appendEmbeddedRuntimeTypes(
     inout output,
     targetName,
@@ -4316,9 +4322,56 @@ ${rootInitializer}  .active_entries = 0,
   .state = 0,
 };
 
+static __attribute__((unused)) void z_embedded_runtime_${prefix}_retain(void *context) {
+  (void)context;
+  for (;;) {
+    uint8_t state = __atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE);
+    if (state == 3) continue;
+    if (state != 1 && state != 5) abort();
+    __atomic_add_fetch(&z_embedded_runtime_${prefix}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+    state = __atomic_load_n(&z_embedded_runtime_${prefix}.state, __ATOMIC_ACQUIRE);
+    if (state == 1 || state == 5) return;
+    __atomic_sub_fetch(&z_embedded_runtime_${prefix}.active_callbacks, 1, __ATOMIC_ACQ_REL);
+  }
+}
+
 static __attribute__((unused)) void z_embedded_runtime_${prefix}_release(void *context) {
   (void)context;
   if (__atomic_fetch_sub(&z_embedded_runtime_${prefix}.active_callbacks, 1, __ATOMIC_ACQ_REL) == 0) abort();
+}
+
+typedef struct z_embedded_runtime_${prefix}_pending_release {
+  void *value;
+  void (*finalize)(void *value);
+} z_embedded_runtime_${prefix}_pending_release;
+
+static void z_embedded_runtime_${prefix}_complete_release(void *opaque) {
+  z_embedded_runtime_${prefix}_pending_release *pending = (z_embedded_runtime_${prefix}_pending_release *)opaque;
+${pendingReleaseThreadProof}  pending->finalize(pending->value);
+  free(pending);
+  z_embedded_runtime_${prefix}_release(&z_embedded_runtime_${prefix});
+}
+
+static void z_embedded_runtime_${prefix}_enqueue_release(
+  void *context,
+  void *value,
+  void (*finalize)(void *value)
+) {
+  (void)context;
+  if (z_embedded_runtime_${prefix}.enqueue_release == NULL) abort();
+  z_embedded_runtime_${prefix}_pending_release *pending =
+    (z_embedded_runtime_${prefix}_pending_release *)malloc(
+      sizeof(z_embedded_runtime_${prefix}_pending_release)
+    );
+  if (pending == NULL) abort();
+  pending->value = value;
+  pending->finalize = finalize;
+  z_embedded_runtime_${prefix}_retain(&z_embedded_runtime_${prefix});
+  z_embedded_runtime_${prefix}.enqueue_release(
+    z_embedded_runtime_${prefix}.context,
+    pending,
+    z_embedded_runtime_${prefix}_complete_release
+  );
 }
 
 ${rootHelpers}
@@ -4334,7 +4387,9 @@ static Z_ForeignThreadEntry z_embedded_runtime_${prefix}_enter(void) {
   }
   return z_foreign_thread_enter(
     &z_embedded_runtime_${prefix},
-    z_embedded_runtime_${prefix}.enqueue_release
+    z_embedded_runtime_${prefix}.enqueue_release == NULL
+      ? NULL
+      : z_embedded_runtime_${prefix}_enqueue_release
   );
 }
 

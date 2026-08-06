@@ -20,13 +20,16 @@ export function parseFixedArrayType(name: string): FixedArrayType | null {
   return { length, elementType: name.slice(separator + 1) };
 }
 
-export function displayArrayType(name: string): string {
+export function displayArrayType(
+  name: string,
+  displayElement: (name: string) => string = (element) => displayArrayType(element),
+): string {
   const array = parseFixedArrayType(name);
-  if (array) return `${displayArrayType(array.elementType)}[${array.length}]`;
+  if (array) return `${displayElement(array.elementType)}[${array.length}]`;
   const slice = parseSliceType(name);
-  if (slice) return `Slice<${displayArrayType(slice.elementType)}>`;
+  if (slice) return `Slice<${displayElement(slice.elementType)}>`;
   const dynamic = parseDynamicArrayType(name);
-  return dynamic ? `Array<${displayArrayType(dynamic.elementType)}>` : name;
+  return dynamic ? `Array<${displayElement(dynamic.elementType)}>` : name;
 }
 
 export function sliceTypeName(elementType: string): string {

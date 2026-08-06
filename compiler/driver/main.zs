@@ -9,6 +9,7 @@ import {
   emitModulesC,
   emitTestModulesC,
 } from "../frontend/c-emitter.zs";
+import { lowerModules } from "../frontend/lowering-ir.zs";
 import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
@@ -290,6 +291,7 @@ function checkProject(in entryPath: String): i32 throws String {
       throw `a ${project.config.targetKind} project must declare at least one \`export c function\``;
     }
   }
+  const checkedLowering = try lowerModules(project.modules, project.graph);
   console.log(`checked ${project.modules.length} Z modules`);
   return 0;
 }
@@ -464,11 +466,19 @@ function validateEmbeddedRuntimeNames(
   const status = `${prefix}_runtime_status`;
   const config = `${prefix}_runtime_config`;
   const enqueue = `${prefix}_runtime_enqueue_release`;
+  const isMainThread = `${prefix}_runtime_is_main_thread`;
   for (const module of project.modules) {
     for (const declaration of module.program.functions) {
       if (
         declaration.nativeCExport
-        && (declaration.name == initialize || declaration.name == shutdown)
+        && (
+          declaration.name == initialize
+          || declaration.name == shutdown
+          || declaration.name == status
+          || declaration.name == config
+          || declaration.name == enqueue
+          || declaration.name == isMainThread
+        )
       ) {
         throw `C export name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;
       }
@@ -477,9 +487,12 @@ function validateEmbeddedRuntimeNames(
       if (
         declaration.nativeCLayout
         && (
-          declaration.name == status
+          declaration.name == initialize
+          || declaration.name == shutdown
+          || declaration.name == status
           || declaration.name == config
           || declaration.name == enqueue
+          || declaration.name == isMainThread
         )
       ) {
         throw `public C type name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;
@@ -489,9 +502,12 @@ function validateEmbeddedRuntimeNames(
       if (
         declaration.nativeCLayout
         && (
-          declaration.name == status
+          declaration.name == initialize
+          || declaration.name == shutdown
+          || declaration.name == status
           || declaration.name == config
           || declaration.name == enqueue
+          || declaration.name == isMainThread
         )
       ) {
         throw `public C type name "${declaration.name}" collides with the generated runtime contract for target "${targetName}"`;

@@ -530,6 +530,13 @@ test("checks the first C-export ABI tier and its editor surface", () => {
     ),
     /collides with the generated runtime contract for target "zanswer"/,
   );
+  assert.throws(
+    () => compileToNative(
+      "export c function zanswer_runtime_is_main_thread(): i32 { return 0; }",
+      entry,
+    ),
+    /collides with the generated runtime contract for target "zanswer"/,
+  );
   const nativeCheck = spawnSync(process.execPath, [cli, "check", entry, "--native-frontend"], { encoding: "utf8" });
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
   assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 module/);

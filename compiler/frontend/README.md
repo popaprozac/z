@@ -131,14 +131,16 @@ recursive path.
   uncontracted imported functions remain unavailable.
 - `parser-protocol.zs` encodes the temporary parity protocol shared by native
   clients.
-- `c-emitter.zs` is the first native lowering/code-generation slice. It emits
-  ordinary `i32`/`boolean`/`void` functions, value parameters, explicitly typed
-  locals, direct calls, arithmetic, assignment, `if`, `while`, loop control,
-  returns, ternary expressions, and non-generic data-only value structs from
-  the owned Stage 1 AST.
-  Struct layout, construction, value passing, and field access are executable.
-  Signed `i32` addition, subtraction, multiplication, and negation retain Z's
-  checked-overflow behavior.
+- `c-emitter.zs` lowers the executable native subset through typed IR into
+  readable C. In addition to scalar control flow, it emits owned value structs
+  and enums, `Option`/`Result`, deterministic cleanup and transfer, Strings,
+  arrays and collections, ARC classes and closures with atomic strong counts,
+  `Once`/`OnceLifetime`/`Mutex`, structured tasks, native worker threads,
+  typed task failures, nested `try await`, first-tier checked foreign calls,
+  C exports, and embedded-runtime entry points. Signed integer arithmetic keeps
+  Z's checked-overflow behavior. Unsupported ownership, executor, and foreign
+  shapes fail during native lowering rather than being approximated by the C
+  printer.
 - `lowering-ir.zs` owns the typed flat-arena boundary between parser semantics
   and target text. Checked arithmetic, direct calls, field reads, and struct
   construction are settled operations in this IR; the C printer does not
@@ -168,8 +170,11 @@ Cold library preparation also asks the compiled self-emitted frontend to emit
 the same frontend graph again and requires byte-identical C before caching the
 library. This consecutive-generation fixed-point gate catches seed/native
 lowering drift before any parse, resolve, or emit command can use the artifact.
-Stage 0 still owns full-language semantic analysis, lowering, module linking,
-runtime support, foreign interop, and production `emit`/`run`.
+Stage 0 remains the trusted seed and still owns the complete language surface,
+the production Bun CLI, Clang/Swift metadata production, and every semantic or
+foreign shape not yet represented by the native graph. The native compiler now
+owns a substantial executable subset—including runtime and interop slices—but
+does not yet replace Stage 0 for arbitrary Z programs.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
@@ -189,9 +194,11 @@ module graph, emits C, writes the translation unit, and invokes Clang. Its
 regression fixture compiles a two-module Z application
 whose expected exit status is 42, with no Bun or TypeScript process in that
 compilation path. Separate native `check`, `emit`, `build`, and project-cached
-`run` commands share one project-loading operation; checking stops after
-resolution, emission does not invoke Clang, and run forwards child arguments
-without a shell. Export-only entries remain checkable, while executable
+`run` commands share one project-loading operation. `check` now runs semantic
+resolution and typed lowering without writing a target artifact, so it fails
+closed on programs that `build` cannot lower. `emit` writes C without invoking
+Clang, and `run` forwards child arguments without a shell. Export-only entries
+remain checkable, while executable
 commands produce Z-owned missing/invalid-`main` diagnostics before Clang.
 Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
@@ -513,9 +520,12 @@ The reported native interval therefore does more semantic work than the
 graph-and-symbol-only stage-zero comparison.
 A representative ordinary-check corpus now covers the native frontend itself,
 two application-shaped multi-module programs, `Result`, arenas, owned closures,
-generic constraints, async ownership, and C++-backed resource fields. Every
-Stage-0 semantic resolution observed on that corpus has a validated native
-authority contract. Migrating the remaining unsupported ownership/effect
-contexts is the next self-hosting layer.
+generic constraints, async ownership, C++-backed resource fields, `Mutex`,
+worker tasks, owned worker-result transfer, and shared ARC capture. The
+differential gate compiles and runs the same 16 roots through Stage 0 and the
+native frontend under strict warnings (and pthread support where required).
+Every Stage-0 semantic resolution observed on that corpus has a validated
+native authority contract. Migrating the remaining unsupported
+ownership/effect contexts is the next self-hosting layer.
 The ordered continuation plan and current criteria live in
 [`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-continuation-point).

@@ -2002,24 +2002,40 @@ test("keeps linked module identities out of source-facing diagnostics", () => {
         readonly name: String;
         status: i32 on thread.main;
       }
+
+      export struct Status {
+        value: i32;
+      }
+
+      export function statuses(): Status[1] {
+        return [Status({ value: 1 })];
+      }
     `);
     const cases = [
       {
+        imports: "Application",
         body: "function inspect(in app: Application): i32 { return app.status; }",
         expected: /field "Application\.status" requires thread\.main/,
       },
       {
+        imports: "Application",
         body: "function inspect(in app: Application): i32 { return app.missing; }",
         expected: /struct "Application" has no member "missing"/,
       },
       {
+        imports: "Application",
         body: "function make(): Application { return Application({ name: \"Z\", status: 1 }); }",
         expected: /class construction requires new Application\(\{ \.\.\. \}\)/,
+      },
+      {
+        imports: "Status, statuses",
+        body: "function inspect(): i32 { const values = statuses(); const [first, second] = values; return 0; }",
+        expected: /Status\[1\]/,
       },
     ];
     for (const current of cases) {
       const source = `
-        import { Application } from "./application.zs";
+        import { ${current.imports} } from "./application.zs";
         ${current.body}
         function main(): i32 { return 0; }
       `;

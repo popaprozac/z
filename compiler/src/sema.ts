@@ -1378,7 +1378,7 @@ export function analyze(
       );
     }
     if (declaration.type) {
-      validateType(declaration.type, structs, enums, foreignNamedTypes, fileName, false);
+      validateType(declaration.type, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     state.analyzingModuleConstant = true;
     let initializerType = inferExpression(
@@ -1413,7 +1413,7 @@ export function analyze(
         throw new DiagnosticError(
           declaration.location.fileName ?? fileName,
           declaration.type?.location ?? declaration.initializer.location,
-          `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`,
+          `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`,
           {
             code: "Z0604",
             notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
@@ -1480,7 +1480,7 @@ export function analyze(
   }
 
   for (const declaration of program.typeAliases) {
-    validateType(declaration.target, structs, enums, foreignNamedTypes, fileName, true);
+    validateType(declaration.target, structs, enums, foreignNamedTypes, fileName, true, state);
   }
 
   for (const declaration of program.structs) {
@@ -1488,11 +1488,11 @@ export function analyze(
     if (map) {
       validateCollectionKeyType("Map key", map.keyType, structs, enums, state, declaration.location, fileName);
       if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
-        throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
+        throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
       }
       const nativeMapValue = state.foreignNamedTypes.get(map.valueType);
       if (nativeMapValue?.kind === "value" && !nativeMapValue.lifecycle.move) {
-        throw new DiagnosticError(fileName, declaration.location, `Map native value type ${JSON.stringify(displayArrayType(map.valueType))} must provide move construction in the current storage tier`, {
+        throw new DiagnosticError(fileName, declaration.location, `Map native value type ${JSON.stringify(displayAssignableType(map.valueType, state))} must provide move construction in the current storage tier`, {
           code: "Z0240",
           notes: ["Map growth and removal relocate stored native values without copying them"],
           helps: ["declare `move;` in the adjacent .zd contract when the C++ type is genuinely movable"],
@@ -1502,7 +1502,7 @@ export function analyze(
         parseFunctionType(map.valueType)
         || parseWeakType(map.valueType)
       ) {
-        throw new DiagnosticError(fileName, declaration.location, `Map value type ${JSON.stringify(displayArrayType(map.valueType))} needs a storage-specific lookup contract`, {
+        throw new DiagnosticError(fileName, declaration.location, `Map value type ${JSON.stringify(displayAssignableType(map.valueType, state))} needs a storage-specific lookup contract`, {
           code: "Z0206",
           notes: ["function values and weak references need distinct retention rules inside collection storage"],
           helps: ["store the identity or native value inside an ordinary Z value struct, or keep it outside Map until that storage tier lands"],
@@ -2133,7 +2133,7 @@ function analyzeStructDeclaration(
       throw new DiagnosticError(fileName, field.location, `duplicate member ${JSON.stringify(field.name)} in ${declaration.kind} ${JSON.stringify(declaration.name)}`);
     }
     members.add(field.name);
-    validateType(field.type, structs, enums, foreignNamedTypes, fileName, false);
+    validateType(field.type, structs, enums, foreignNamedTypes, fileName, false, state);
     if (parseOnceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.type.location, `${displayAssignableType(field.type.name, state)} cannot be stored in a field`, {
         code: "Z0604",
@@ -2480,7 +2480,7 @@ function analyzeEnumDeclaration(
     }
     names.add(variant.name);
     if (variant.payload) {
-      validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false);
+      validateType(variant.payload, structs, enums, foreignNamedTypes, fileName, false, state);
       if (parseOnceType(variant.payload.name)) {
         throw new DiagnosticError(fileName, variant.payload.location, `${displayAssignableType(variant.payload.name, state)} cannot be stored in an enum payload`, {
           code: "Z0604",
@@ -2513,7 +2513,7 @@ function validateFunctionSignature(
   fileName: string,
   state: AnalysisState,
 ): void {
-  validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true);
+  validateType(declaration.returnType, structs, enums, foreignNamedTypes, fileName, true, state);
   if (parseOnceType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, `${displayAssignableType(declaration.returnType.name, state)} cannot be returned by value`, {
       code: "Z0604",
@@ -2533,9 +2533,9 @@ function validateFunctionSignature(
         notes: ["the native body needs one concrete ABI signature"],
       });
     }
-    validateRawBoundaryType(declaration.returnType, true, foreignNamedTypes, foreignTypes, fileName);
+    validateRawBoundaryType(declaration.returnType, true, foreignNamedTypes, foreignTypes, fileName, state);
     for (const parameter of declaration.parameters) {
-      validateRawBoundaryType(parameter.type, false, foreignNamedTypes, foreignTypes, fileName);
+      validateRawBoundaryType(parameter.type, false, foreignNamedTypes, foreignTypes, fileName, state);
     }
   }
   if (declaration.async && parseGeneratorType(declaration.returnType.name)) {
@@ -2551,7 +2551,7 @@ function validateFunctionSignature(
         fileName,
         declaration.returnType.location,
         generator.errorType
-          ? `generator error capability ${displayArrayType(generator.errorType)} requires a matching throws declaration`
+          ? `generator error capability ${displayAssignableType(generator.errorType, state)} requires a matching throws declaration`
           : "a throwing generator must carry its declared error capability",
       );
     }
@@ -2608,7 +2608,7 @@ function validateFunctionSignature(
         fileName,
         declaration.returnType.location,
         asyncGenerator.errorType
-          ? `async generator error capability ${displayArrayType(asyncGenerator.errorType)} requires a matching throws declaration`
+          ? `async generator error capability ${displayAssignableType(asyncGenerator.errorType, state)} requires a matching throws declaration`
           : "a throwing async generator must carry its declared error capability",
       );
     }
@@ -2652,7 +2652,7 @@ function validateFunctionSignature(
   if (containsSliceType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
   }
-  if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false);
+  if (declaration.errorType) validateType(declaration.errorType, structs, enums, foreignNamedTypes, fileName, false, state);
   if (declaration.errorType && declaration.parameters.some((parameter) => parameter.mode === "out")) {
     throw new DiagnosticError(fileName, declaration.location, "throwing functions with out parameters are not implemented yet");
   }
@@ -2661,7 +2661,7 @@ function validateFunctionSignature(
       throw new DiagnosticError(fileName, parameter.location, "`this` is reserved for a method receiver");
     }
     validateUserName(parameter.name, parameter.location, fileName);
-    validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false);
+    validateType(parameter.type, structs, enums, foreignNamedTypes, fileName, false, state);
     if (parseOnceType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.type.location, `${displayAssignableType(parameter.type.name, state)} cannot be passed as a function parameter`, {
         code: "Z0604",
@@ -2726,6 +2726,7 @@ function validateRawBoundaryType(
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   foreignTypes: ReadonlyMap<string, ForeignPointerType>,
   fileName: string,
+  state: AnalysisState,
 ): void {
   const supportedPrimitive = type.name === "boolean"
     || type.name === "cstring"
@@ -2733,7 +2734,7 @@ function validateRawBoundaryType(
     || floatTypes.has(type.name)
     || (allowVoid && type.name === "void");
   if (supportedPrimitive || foreignNamedTypes.has(type.name) || foreignTypes.has(type.name)) return;
-  throw new DiagnosticError(fileName, type.location, `type ${JSON.stringify(displayArrayType(type.name))} cannot cross a raw native boundary in the first tier`, {
+  throw new DiagnosticError(fileName, type.location, `type ${JSON.stringify(displayAssignableType(type.name, state))} cannot cross a raw native boundary in the first tier`, {
     code: "Z0821",
     notes: ["raw boundaries currently accept ABI-stable scalars, cstring, and imported native types"],
     helps: ["keep Z-owned storage outside the block and expose an imported native representation through an adjacent .zd contract"],
@@ -3553,7 +3554,7 @@ function analyzeStatement(
           return;
         }
         const declaredType = statement.type;
-        validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false);
+        validateType(declaredType, structs, enums, state.foreignNamedTypes, fileName, false, state);
         const declaredTypeName = resolveSemanticTypeName(declaredType, structs, enums, state);
         if (parseOnceType(declaredTypeName)) {
           throw new DiagnosticError(fileName, declaredType.location, `${displayAssignableType(declaredTypeName, state)} cannot be declared as local storage`, {
@@ -3613,7 +3614,7 @@ function analyzeStatement(
       }
       let declaredVariableType: ValueType | null = null;
       if (statement.type) {
-        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
+        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false, state);
         declaredVariableType = resolveSemanticTypeName(statement.type, structs, enums, state);
       }
       const contextualFunction = statement.initializer.kind === "closure" && statement.type
@@ -3901,7 +3902,7 @@ function analyzeStatement(
       }
       let expected: ValueType | null = null;
       if (statement.type) {
-        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false);
+        validateType(statement.type, structs, enums, state.foreignNamedTypes, fileName, false, state);
         expected = resolveSemanticTypeName(statement.type, structs, enums, state);
       }
       const initializerType = inferDirectValue(
@@ -3924,7 +3925,7 @@ function analyzeStatement(
         const slice = parseSliceType(sourceType);
         const collection = fixed ?? dynamic ?? slice;
         if (!collection) {
-          throw new DiagnosticError(fileName, statement.location, `array destructuring requires a fixed array, Array<T>, or Slice<T>, found ${displayArrayType(sourceType)}`, {
+          throw new DiagnosticError(fileName, statement.location, `array destructuring requires a fixed array, Array<T>, or Slice<T>, found ${displayAssignableType(sourceType, state)}`, {
             code: "Z0220",
           });
         }
@@ -3958,7 +3959,7 @@ function analyzeStatement(
         }
         const requiredLength = statement.arrayBindings.filter((binding) => binding.kind !== "rest").length;
         if (fixed && requiredLength > fixed.length) {
-          throw new DiagnosticError(fileName, statement.location, `array pattern requires ${requiredLength} elements, but ${displayArrayType(sourceType)} has length ${fixed.length}`, {
+          throw new DiagnosticError(fileName, statement.location, `array pattern requires ${requiredLength} elements, but ${displayAssignableType(sourceType, state)} has length ${fixed.length}`, {
             code: "Z0220",
           });
         }
@@ -3983,7 +3984,7 @@ function analyzeStatement(
         }
         const selectedElement = namedBindings.some((binding) => binding.kind === "binding");
         if (!arrayViewInitializer && selectedElement && hasOwnershipType(collection.elementType, structs, enums, state)) {
-          throw new DiagnosticError(fileName, statement.initializer.location, `destructuring ownership-bearing ${displayArrayType(collection.elementType)} elements requires an explicit view`, {
+          throw new DiagnosticError(fileName, statement.initializer.location, `destructuring ownership-bearing ${displayAssignableType(collection.elementType, state)} elements requires an explicit view`, {
             code: "Z0220",
             notes: ["plain array destructuring does not retain, copy, or move elements out of their collection"],
             helps: ["use `view values` for borrowed element bindings, or copy individual elements explicitly"],
@@ -4064,7 +4065,7 @@ function analyzeStatement(
       }
       const declaration = structs.get(sourceType);
       if (!declaration || declaration.kind !== "struct" || parseMapType(sourceType) || parseSetType(sourceType)) {
-        throw new DiagnosticError(fileName, statement.location, `object destructuring requires a Z value struct, found ${displayArrayType(sourceType)}`, {
+        throw new DiagnosticError(fileName, statement.location, `object destructuring requires a Z value struct, found ${displayAssignableType(sourceType, state)}`, {
           code: "Z0220",
           notes: ["classes preserve shared identity and collections expose their storage through iteration instead"],
         });
@@ -4258,12 +4259,12 @@ function analyzeStatement(
       if (generator) {
         if (!generator.returnType && statement.expression) {
           throw new DiagnosticError(fileName, statement.location, "a generator finishes with `return;` and cannot return a value", {
-            notes: [`this generator yields ${displayArrayType(generator.elementType)} values`],
-            helps: [`declare Generator<${displayArrayType(generator.elementType)}, ReturnType> to carry a terminal value`],
+            notes: [`this generator yields ${displayAssignableType(generator.elementType, state)} values`],
+            helps: [`declare Generator<${displayAssignableType(generator.elementType, state)}, ReturnType> to carry a terminal value`],
           });
         }
         if (generator.returnType && !statement.expression) {
-          throw new DiagnosticError(fileName, statement.location, `Generator<${displayArrayType(generator.elementType)}, ${displayArrayType(generator.returnType)}> must return a terminal value`);
+          throw new DiagnosticError(fileName, statement.location, `Generator<${displayAssignableType(generator.elementType, state)}, ${displayAssignableType(generator.returnType, state)}> must return a terminal value`);
         }
         if (generator.returnType && statement.expression) {
           const actual = inferDirectValue(
@@ -4954,7 +4955,7 @@ function inferClosureExpression(
     }
     parameterNames.add(parameter.name);
     validateUserName(parameter.name, parameter.location, fileName);
-    validateType(parameter.type, structs, enums, state.foreignNamedTypes, fileName, false);
+    validateType(parameter.type, structs, enums, state.foreignNamedTypes, fileName, false, state);
     const resolvedTypeName = expression.parameters[parameterIndex]?.type
       ? resolveSemanticTypeName(parameter.type, structs, enums, state)
       : parameter.type.name;
@@ -5081,7 +5082,7 @@ function inferClosureExpression(
     throw new DiagnosticError(fileName, contextualReturn.location, "closures cannot return receiver-tied views", { code: "Z0206" });
   }
   if (expression.returnType) {
-    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true, state);
     contextualReturn = {
       ...expression.returnType,
       name: resolveSemanticTypeName(expression.returnType, structs, enums, state),
@@ -5090,7 +5091,7 @@ function inferClosureExpression(
   let resolvedErrorType = expression.errorType
     ?? (expectedFunction?.errorType ? { name: expectedFunction.errorType, location: expression.location } : null);
   if (expression.errorType) {
-    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false, state);
     resolvedErrorType = {
       ...expression.errorType,
       name: resolveSemanticTypeName(expression.errorType, structs, enums, state),
@@ -6423,7 +6424,7 @@ function inferExecutorPlacement(
   }
   let resolvedReturnType = expression.returnType;
   if (expression.returnType) {
-    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true);
+    validateType(expression.returnType, structs, enums, state.foreignNamedTypes, fileName, true, state);
     resolvedReturnType = {
       ...expression.returnType,
       name: resolveSemanticTypeName(expression.returnType, structs, enums, state),
@@ -6431,7 +6432,7 @@ function inferExecutorPlacement(
   }
   let resolvedErrorType = expression.errorType;
   if (expression.errorType) {
-    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false);
+    validateType(expression.errorType, structs, enums, state.foreignNamedTypes, fileName, false, state);
     resolvedErrorType = {
       ...expression.errorType,
       name: resolveSemanticTypeName(expression.errorType, structs, enums, state),
@@ -6479,7 +6480,7 @@ function inferExecutorPlacement(
       ? null
       : executorAffinityForType(success, structs, enums, state);
     if (escapingAffinity) {
-      throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayArrayType(success))} to a non-main continuation`, {
+      throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayAssignableType(success, state))} to a non-main continuation`, {
         code: "Z0712",
         notes: ["main-isolated identity, cleanup, and destruction must remain on thread.main"],
         helps: ["return a thread-independent owned snapshot, or consume the result inside an `on thread.main` block"],
@@ -6551,7 +6552,7 @@ function inferExecutorPlacement(
     ? null
     : executorAffinityForType(successType, structs, enums, state);
   if (escapingAffinity) {
-    throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayArrayType(String(successType)))} to a non-main continuation`, {
+    throw new DiagnosticError(fileName, expression.location, `executor placement cannot return main-isolated type ${JSON.stringify(displayAssignableType(String(successType), state))} to a non-main continuation`, {
       code: "Z0712",
       notes: ["main-isolated identity, cleanup, and destruction must remain on thread.main"],
       helps: ["select a thread-independent owned snapshot, or consume the result inside the `on thread.main` block"],
@@ -7443,7 +7444,7 @@ function inferExpressionInner(
           notes: ["the native helper is synchronous, but async frame lowering does not compose with raw expressions yet"],
         });
       }
-      validateRawBoundaryType(expression.returnType, true, state.foreignNamedTypes, state.foreignTypes, fileName);
+      validateRawBoundaryType(expression.returnType, true, state.foreignNamedTypes, state.foreignTypes, fileName, state);
       const captures: RawExpressionPlan["captures"][number][] = [];
       const declared = new Map<string, typeof expression.captures[number]>();
       for (const capture of expression.captures) {
@@ -7468,7 +7469,7 @@ function inferExpressionInner(
             helps: [`add a type annotation to the \`let ${capture.name}\` declaration`],
           });
         }
-        validateRawBoundaryType({ name: type, location: capture.nameLocation }, false, state.foreignNamedTypes, state.foreignTypes, fileName);
+        validateRawBoundaryType({ name: type, location: capture.nameLocation }, false, state.foreignNamedTypes, state.foreignTypes, fileName, state);
         if (type === "cstring" && capture.mode !== "in") {
           throw new DiagnosticError(fileName, capture.nameLocation, "cstring is already a borrowed native string and only supports `in` at a raw boundary", {
             code: "Z0821",
@@ -7591,7 +7592,7 @@ function inferExpressionInner(
           && !parseDynamicArrayType(target)
           && !parseSliceType(target)
         ) {
-          throw new DiagnosticError(fileName, expression.operand.location, `array view destructuring requires contiguous collection storage, found ${displayArrayType(target)}`, {
+          throw new DiagnosticError(fileName, expression.operand.location, `array view destructuring requires contiguous collection storage, found ${displayAssignableType(target, state)}`, {
             code: "Z0206",
             helps: ["use a fixed array, Array<T>, or Slice<T> source"],
           });
@@ -8844,7 +8845,7 @@ function inferExpressionInner(
               state.foreignNamedTypes,
             )
           ) {
-            throw new DiagnosticError(fileName, expression.callee.location, `Mutex cannot own ${JSON.stringify(displayArrayType(mutex.valueType))} in the first synchronization tier`, {
+            throw new DiagnosticError(fileName, expression.callee.location, `Mutex cannot own ${JSON.stringify(displayAssignableType(mutex.valueType, state))} in the first synchronization tier`, {
               code: "Z0240",
               notes: ["a Mutex payload must be independently owned storage with no borrowed lifetime"],
             });
@@ -8886,7 +8887,7 @@ function inferExpressionInner(
           }
           const stored = structs.get(once.valueType);
           if (stored?.kind !== "class" || !state.aggregateExecutorAffinities.has(once.valueType)) {
-            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+            throw new DiagnosticError(fileName, expression.callee.location, `Once<T> requires a class whose lifecycle belongs to thread.main in the first tier, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`, {
               code: "Z0604",
               notes: ["one-time initialization does not by itself make mutable identity safe to share across threads"],
               helps: ["declare the stored class with `on thread.main` or give it a main-bound field"],
@@ -8909,7 +8910,7 @@ function inferExpressionInner(
           }
           validateCollectionKeyType("Map key", map.keyType, structs, enums, state, expression.callee.location, fileName);
           if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
-            throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayArrayType(map.valueType))} in the first collections tier`);
+            throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
           }
           if (
             hasMoveOnlyForeignType(map.keyType, structs, enums, state.foreignNamedTypes)
@@ -9702,7 +9703,7 @@ function inferExpressionInner(
           const closure = state.closures.get(callback.location.offset)!;
           const functionType = closureFunctionType(closure);
           if (functionType.parameters[0]?.mode !== parameter.mode || functionType.parameters[0]?.type !== mutex.valueType) {
-            throw new DiagnosticError(fileName, parameter.location, `Mutex.withLock expected ${parameter.mode} ${displayArrayType(mutex.valueType)}, found ${displayFunctionType(functionTypeName(functionType.parameters, functionType.returnType, functionType.errorType))}`);
+            throw new DiagnosticError(fileName, parameter.location, `Mutex.withLock expected ${parameter.mode} ${displayAssignableType(mutex.valueType, state)}, found ${displayFunctionType(functionTypeName(functionType.parameters, functionType.returnType, functionType.errorType), (part) => displayAssignableType(part, state))}`);
           }
           if (containsViewType(functionType.returnType) || containsSliceType(functionType.returnType)) {
             throw new DiagnosticError(fileName, callback.returnType?.location ?? callback.location, "a borrowed value cannot escape Mutex.withLock", {
@@ -9758,7 +9759,7 @@ function inferExpressionInner(
             requireMainExecutorContext(
               true,
               expression.location,
-              `Once<${displayArrayType(once.valueType)}> initialization`,
+              `Once<${displayAssignableType(once.valueType, state)}> initialization`,
               fileName,
               state,
               {
@@ -10148,7 +10149,7 @@ function inferExpressionInner(
           const nativeEnum = state.foreignNamedTypes.get(actual)?.kind === "enum";
           const customHashable = structs.get(actual)?.implements.some((trait) => trait.name === "Hashable") ?? false;
           if (!integerTypes.has(actual) && actual !== "boolean" && actual !== "String" && !payloadFreeEnum && !nativeEnum && !customHashable) {
-            throw new DiagnosticError(fileName, argument.location, `Hasher.add cannot hash ${JSON.stringify(displayArrayType(actual))}`, {
+            throw new DiagnosticError(fileName, argument.location, `Hasher.add cannot hash ${JSON.stringify(displayAssignableType(actual, state))}`, {
               code: "Z0401",
               helps: ["add a supported scalar, String, enum, or another Hashable value"],
             });
@@ -10383,7 +10384,7 @@ function inferExpressionInner(
             throw new DiagnosticError(
               fileName,
               argument.location,
-              `${expression.callee.property} requires ${integerReceiverType}, found ${displayArrayType(String(actual))}`,
+              `${expression.callee.property} requires ${integerReceiverType}, found ${displayAssignableType(String(actual), state)}`,
             );
           }
           state.integerOperations.set(expression.location.offset, { kind: integerMethod, type: integerReceiverType });
@@ -10490,7 +10491,7 @@ function inferExpressionInner(
               throw new DiagnosticError(
                 fileName,
                 expression.location,
-                `the first executable async Objective-C projection tier requires a scalar callback value, found ${displayArrayType(result)}`,
+                `the first executable async Objective-C projection tier requires a scalar callback value, found ${displayAssignableType(result, state)}`,
                 {
                   code: "Z0700",
                   helps: ["use the raw callback overload while ownership-bearing async payload frames are implemented"],
@@ -12441,7 +12442,7 @@ function analyzeForLoop(
       });
     }
     if (!asyncGenerator) {
-      throw new DiagnosticError(fileName, statement.iterable.location, `for await requires AsyncGenerator<T>, found ${displayArrayType(iterableName)}`, {
+      throw new DiagnosticError(fileName, statement.iterable.location, `for await requires AsyncGenerator<T>, found ${displayAssignableType(iterableName, state)}`, {
         code: "Z0311",
         helps: ["iterate an AsyncGenerator<T>, or remove `await` for a synchronous collection"],
       });
@@ -12450,7 +12451,7 @@ function analyzeForLoop(
       throw new DiagnosticError(
         fileName,
         statement.iterable.location,
-        `for await...of cannot discard the terminal ${displayArrayType(asyncGenerator.returnType)} value from ${displayArrayType(iterableName)}`,
+        `for await...of cannot discard the terminal ${displayAssignableType(asyncGenerator.returnType, state)} value from ${displayAssignableType(iterableName, state)}`,
         {
           code: "Z0311",
           helps: ["advance the async generator with `.next()` and match `yielded(value)` or `complete(result)`"],
@@ -12467,14 +12468,14 @@ function analyzeForLoop(
       if (!owner.errorType) {
         throw new DiagnosticError(fileName, statement.location, "try for await requires an enclosing throwing function", {
           code: "Z0311",
-          helps: [`add \`throws ${displayArrayType(asyncGenerator.errorType)}\` to the enclosing async function`],
+          helps: [`add \`throws ${displayAssignableType(asyncGenerator.errorType, state)}\` to the enclosing async function`],
         });
       }
       if (owner.errorType.name !== asyncGenerator.errorType) {
         throw new DiagnosticError(
           fileName,
           statement.location,
-          `cannot propagate ${displayArrayType(asyncGenerator.errorType)} from a function throwing ${displayArrayType(owner.errorType.name)}`,
+          `cannot propagate ${displayAssignableType(asyncGenerator.errorType, state)} from a function throwing ${displayAssignableType(owner.errorType.name, state)}`,
           { code: "Z0311" },
         );
       }
@@ -12483,7 +12484,7 @@ function analyzeForLoop(
       throw new DiagnosticError(
         fileName,
         statement.iterable.location,
-        `for await...of cannot implicitly propagate ${displayArrayType(asyncGenerator.errorType)} from a throwing async generator`,
+        `for await...of cannot implicitly propagate ${displayAssignableType(asyncGenerator.errorType, state)} from a throwing async generator`,
         {
           code: "Z0311",
           notes: ["throwing iteration requires an explicit propagation boundary"],
@@ -12522,7 +12523,7 @@ function analyzeForLoop(
     throw new DiagnosticError(
       fileName,
       statement.iterable.location,
-      `for...of cannot discard the terminal ${displayArrayType(generator.returnType)} value from ${displayArrayType(iterableName)}`,
+      `for...of cannot discard the terminal ${displayAssignableType(generator.returnType, state)} value from ${displayAssignableType(iterableName, state)}`,
       {
         code: "Z0311",
         helps: ["advance the generator with `.next()` and match `yielded(value)` or `complete(result)`"],
@@ -12533,7 +12534,7 @@ function analyzeForLoop(
     throw new DiagnosticError(
       fileName,
       statement.iterable.location,
-      `for...of cannot implicitly propagate ${displayArrayType(generator.errorType)} from a throwing generator`,
+      `for...of cannot implicitly propagate ${displayAssignableType(generator.errorType, state)} from a throwing generator`,
       {
         code: "Z0311",
         helps: ["advance the generator with `try generator.next()` or `attempt generator.next()`"],
@@ -12586,7 +12587,7 @@ function analyzeForLoop(
   const collectionBorrow = Boolean(map || set);
   const elementDeclaration = statement.objectBindings ? structs.get(collection.elementType) : null;
   if (statement.objectBindings && (!elementDeclaration || elementDeclaration.kind !== "struct")) {
-    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayArrayType(collection.elementType)}`, {
+    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayAssignableType(collection.elementType, state)}`, {
       code: "Z0220",
     });
   }
@@ -12731,7 +12732,7 @@ function analyzeIteratorForLoop(
 
   const elementDeclaration = statement.objectBindings ? structs.get(elementType) : null;
   if (statement.objectBindings && (!elementDeclaration || elementDeclaration.kind !== "struct")) {
-    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayArrayType(elementType)}`, {
+    throw new DiagnosticError(fileName, statement.location, `object iteration pattern requires struct elements, found ${displayAssignableType(elementType, state)}`, {
       code: "Z0220",
     });
   }
@@ -13171,13 +13172,13 @@ function shareableTypeIssue(
   }
   if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
     return {
-      reason: `${path} contains mutable ${displayArrayType(actual)} storage`,
+      reason: `${path} contains mutable ${displayAssignableType(actual, state)} storage`,
       help: ["store an immutable owned snapshot such as String", "or keep this class on one thread"].join(", "),
     };
   }
   if (actual === "Arena" || parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual) || parseWeakType(actual)) {
     return {
-      reason: `${path} contains thread-local type ${displayArrayType(actual)}`,
+      reason: `${path} contains thread-local type ${displayAssignableType(actual, state)}`,
       help: "replace the field with owned immutable state, or keep this class on one thread",
     };
   }
@@ -15141,15 +15142,15 @@ function validateCollectionKeyType(
   if (aggregate?.kind === "struct" && aggregate.implements.some((trait) => trait.name === "Hashable")) {
     const mutableField = aggregate.fields.find((field) => !field.readonly);
     if (mutableField) {
-      throw new DiagnosticError(fileName, mutableField.location, `${role} type ${JSON.stringify(displayArrayType(type))} must be readonly to preserve its stored hash`, {
+      throw new DiagnosticError(fileName, mutableField.location, `${role} type ${JSON.stringify(displayAssignableType(type, state))} must be readonly to preserve its stored hash`, {
         code: "Z0401",
         notes: ["a key changing after insertion would make its hashed bucket unreachable"],
-        helps: [`declare \`readonly struct ${displayArrayType(type)} implements Hashable\``],
+        helps: [`declare \`readonly struct ${displayAssignableType(type, state)} implements Hashable\``],
       });
     }
     return;
   }
-  throw new DiagnosticError(fileName, location, `${role} type ${JSON.stringify(displayArrayType(type))} is not hashable in the first collections tier`, {
+  throw new DiagnosticError(fileName, location, `${role} type ${JSON.stringify(displayAssignableType(type, state))} is not hashable in the first collections tier`, {
     code: "Z0401",
     notes: ["collection keys currently support integers, boolean, String, and payload-free Z or native enums"],
     helps: ["use a supported stable key; custom nominal hashing and equality contracts are planned"],
@@ -15207,10 +15208,11 @@ function validateType(
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   fileName: string,
   allowVoid: boolean,
+  state: AnalysisState,
 ): void {
   const mutex = parseMutexType(type.name);
   if (mutex) {
-    validateType({ name: mutex.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: mutex.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     if (
       mutex.valueType === "void"
       || containsViewType(mutex.valueType)
@@ -15226,7 +15228,7 @@ function validateType(
         foreignNamedTypes,
       )
     ) {
-      throw new DiagnosticError(fileName, type.location, `Mutex cannot own ${JSON.stringify(displayArrayType(mutex.valueType))} in the first synchronization tier`, {
+      throw new DiagnosticError(fileName, type.location, `Mutex cannot own ${JSON.stringify(displayAssignableType(mutex.valueType, state))} in the first synchronization tier`, {
         code: "Z0240",
       });
     }
@@ -15234,13 +15236,13 @@ function validateType(
   }
   const once = parseOnceType(type.name);
   if (once) {
-    validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: once.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     const stored = structs.get(once.valueType);
     if (
       stored?.kind !== "class"
       || !typeHasMainLifecycleDeclaration(once.valueType, structs, enums, foreignNamedTypes)
     ) {
-      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayArrayType(once.valueType))}`, {
+      throw new DiagnosticError(fileName, type.location, `Once<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayAssignableType(once.valueType, state))}`, {
         code: "Z0604",
       });
     }
@@ -15248,13 +15250,13 @@ function validateType(
   }
   const onceLifetime = parseOnceLifetimeType(type.name);
   if (onceLifetime) {
-    validateType({ name: onceLifetime.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: onceLifetime.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     const stored = structs.get(onceLifetime.valueType);
     if (
       stored?.kind !== "class"
       || !typeHasMainLifecycleDeclaration(onceLifetime.valueType, structs, enums, foreignNamedTypes)
     ) {
-      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayArrayType(onceLifetime.valueType))}`, {
+      throw new DiagnosticError(fileName, type.location, `OnceLifetime<T> requires a class whose lifecycle belongs to thread.main, found ${JSON.stringify(displayAssignableType(onceLifetime.valueType, state))}`, {
         code: "Z0604",
       });
     }
@@ -15262,23 +15264,23 @@ function validateType(
   }
   const generator = parseGeneratorType(type.name);
   if (generator) {
-    validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: generator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     if (generator.returnType) {
-      validateType({ name: generator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: generator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     if (generator.errorType) {
-      validateType({ name: generator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: generator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     return;
   }
   const asyncGenerator = parseAsyncGeneratorType(type.name);
   if (asyncGenerator) {
-    validateType({ name: asyncGenerator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: asyncGenerator.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     if (asyncGenerator.returnType) {
-      validateType({ name: asyncGenerator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: asyncGenerator.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     if (asyncGenerator.errorType) {
-      validateType({ name: asyncGenerator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: asyncGenerator.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     return;
   }
@@ -15287,7 +15289,7 @@ function validateType(
     if (parseViewType(view.target)) {
       throw new DiagnosticError(fileName, type.location, "nested view types are not valid", { code: "Z0206" });
     }
-    validateType({ name: view.target, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: view.target, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     return;
   }
   if (isNullableObjCTypeName(type.name)) {
@@ -15315,14 +15317,14 @@ function validateType(
       if (parseFunctionType(parameter.type)) {
         throw new DiagnosticError(fileName, type.location, "nested function types are deferred beyond the first function-value tier");
       }
-      validateType({ name: parameter.type, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: parameter.type, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     if (parseFunctionType(functionType.returnType)) {
       throw new DiagnosticError(fileName, type.location, "returning another function type is deferred beyond the first function-value tier");
     }
-    validateType({ name: functionType.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, true);
+    validateType({ name: functionType.returnType, location: type.location }, structs, enums, foreignNamedTypes, fileName, true, state);
     if (functionType.errorType) {
-      validateType({ name: functionType.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+      validateType({ name: functionType.errorType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     }
     return;
   }
@@ -15337,17 +15339,17 @@ function validateType(
   if (parsePointerTypeName(type.name)) return;
   const slice = parseSliceType(type.name);
   if (slice) {
-    validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: slice.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     return;
   }
   const dynamic = parseDynamicArrayType(type.name);
   if (dynamic) {
-    validateType({ name: dynamic.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: dynamic.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     return;
   }
   const array = parseFixedArrayType(type.name);
   if (array) {
-    validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false);
+    validateType({ name: array.elementType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     return;
   }
   if (!primitiveTypes.has(type.name) && !structs.has(type.name) && !enums.has(type.name) && !foreignNamedTypes.has(type.name)) {
@@ -15550,7 +15552,7 @@ function requireAssignable(
     throw new DiagnosticError(
       fileName,
       expression.location,
-      `expected ${displayFunctionType(String(expectedType)) ?? displayArrayType(String(expectedType))}, found ${displayFunctionType(String(underlyingType(actual))) ?? displayArrayType(String(actual))}`,
+      `expected ${displayFunctionType(String(expectedType), (part) => displayAssignableType(part, state)) ?? displayAssignableType(String(expectedType), state)}, found ${displayFunctionType(String(underlyingType(actual)), (part) => displayAssignableType(part, state)) ?? displayAssignableType(String(actual), state)}`,
     );
   }
   if (isNumericType(expectedType) && requireContextualSignedLiteral(expression, expectedType, fileName, numericLiteralTypes)) {
@@ -15707,11 +15709,11 @@ function containsOpaqueCleanupStorage(
   return Boolean(result);
 }
 
-function displayAssignableType(type: ValueType, state?: AnalysisState): string {
+function displayAssignableType(type: ValueType, state: AnalysisState): string {
   const name = String(underlyingType(type));
   const unsafeNative = displayUnsafeNativeType(name);
   if (unsafeNative) return unsafeNative;
-  const sourceName = state?.typeDisplayNames.get(name);
+  const sourceName = state.typeDisplayNames.get(name);
   if (sourceName) return sourceName;
   const view = parseViewType(name);
   if (view) return `view ${displayAssignableType(view.target, state)}`;
@@ -15721,7 +15723,9 @@ function displayAssignableType(type: ValueType, state?: AnalysisState): string {
   if (onceLifetime) return `OnceLifetime<${displayAssignableType(onceLifetime.valueType, state)}>`;
   const mutex = parseMutexType(name);
   if (mutex) return `Mutex<${displayAssignableType(mutex.valueType, state)}>`;
-  return isNullableObjCTypeName(name) ? `${publicObjCTypeName(name)} | null` : displayArrayType(name);
+  return isNullableObjCTypeName(name)
+    ? `${publicObjCTypeName(name)} | null`
+    : displayArrayType(name, (element) => displayAssignableType(element, state));
 }
 
 function requireContextualSignedLiteral(
