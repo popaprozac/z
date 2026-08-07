@@ -171,6 +171,7 @@ export enum LoweredExpressionKind {
   onceGet,
   threadSpawn,
   threadAwait,
+  threadCancel,
   threadMainCall,
   enumValue,
   enumPayloadValue,
@@ -438,6 +439,36 @@ function intrinsicMutexName(in valueType: LoweredType): String {
 function intrinsicTaskName(in resultType: LoweredType): String {
   const identity = loweredTypeIdentity(resultType);
   return `Task_${identity}`;
+}
+
+function taskStorageType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in taskTypeName: String
+): LoweredType throws String {
+  const generic = match (genericTypeShape(taskTypeName)) {
+    some(shape) => shape;
+    none => throw "native task lowering requires Task<T> or Task<T, E>";
+  };
+  if (
+    generic.base != "Task"
+    || (generic.arguments.length != 1 && generic.arguments.length != 2)
+  ) throw "native task lowering requires Task<T> or Task<T, E>";
+  const successType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    generic.arguments[0]
+  );
+  if (generic.arguments.length == 1) return successType;
+  const errorType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    generic.arguments[1]
+  );
+  return LoweredType({
+    kind: LoweredTypeKind.enumType,
+    name: intrinsicResultName(successType, errorType),
+  });
 }
 
 function intrinsicResultName(
@@ -10073,6 +10104,78 @@ function lowerStatementCore(
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
           const root = tree.root;
+          if (
+            tree.nodes[root].kind == ExpressionKind.awaitExpression
+            && tree.nodes[root].children.length == 1
+          ) {
+            const operation = tree.nodes[root].children[0];
+            if (
+              tree.nodes[operation].kind == ExpressionKind.callExpression
+              && tree.nodes[operation].children.length == 1
+            ) {
+              const callee = tree.nodes[operation].children[0];
+              if (
+                tree.nodes[callee].kind == ExpressionKind.memberExpression
+                && tree.nodes[callee].value == "cancel"
+                && tree.nodes[callee].children.length == 1
+              ) {
+                const receiver = tree.nodes[callee].children[0];
+                const receiverTypeName = match (
+                  staticallyResolvedExpressionTypeName(
+                    program,
+                    importedTypes,
+                    evidence,
+                    arena,
+                    ownerName,
+                    tree,
+                    receiver
+                  )
+                ) {
+                  some(name) => name;
+                  none => throw "native task cancellation could not resolve its Task type";
+                };
+                const storageType = try taskStorageType(
+                  program,
+                  importedTypes,
+                  receiverTypeName
+                );
+                const loweredReceiver = try lowerExpression(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  receiver,
+                  inout expressions
+                );
+                let cancelChildren = Array<usize>();
+                cancelChildren.push(loweredReceiver);
+                const taskName = intrinsicTaskName(storageType);
+                const cancellation = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.threadCancel,
+                  taskName,
+                  cancelChildren,
+                  Array<String>()
+                );
+                const lowered = statements.length;
+                statements.push(LoweredStatement({
+                  kind: LoweredStatementKind.expressionStatement,
+                  mutableBinding: false,
+                  name: "",
+                  type: Option<LoweredType>.none,
+                  expression: Option.some(cancellation),
+                  secondExpression: Option<usize>.none,
+                  children: Array<usize>(),
+                  cleanups: Array<LoweredCleanup>(),
+                  liveFlag: "",
+                  labels: Array<String>(),
+                  matchConsumesSubject: false,
+                  matchBindingNeedsCleanup: false,
+                }));
+                return lowered;
+              }
+            }
+          }
           if (
             tree.nodes[root].kind == ExpressionKind.callExpression
             && tree.nodes[root].children.length == 2

@@ -1829,6 +1829,21 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.threadCancel
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed thread cancellation";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_cancel(&(");
+    const task = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, task);
+    output.append("))");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.onceInitialize
   ) {
     if (declaration.expressions[index].children.length != 2) {
@@ -3216,6 +3231,15 @@ function appendThreadTaskRuntime(
     output.append("_wake(Z_");
     output.append(taskName);
     output.append("Storage *storage) {\n#if defined(_WIN32)\n  WakeAllConditionVariable(&storage->state_condition);\n#else\n  if (pthread_cond_broadcast(&storage->state_condition) != 0) abort();\n#endif\n}\n\n");
+    output.append("static bool Z_");
+    output.append(taskName);
+    output.append("_is_cancellation_requested(Z_");
+    output.append(taskName);
+    output.append("Storage *storage) {\n  Z_");
+    output.append(taskName);
+    output.append("_lock(storage);\n  const bool requested = storage->cancellation_requested;\n  Z_");
+    output.append(taskName);
+    output.append("_unlock(storage);\n  return requested;\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(taskName);
     output.append("_run_on_main(Z_");
@@ -3270,8 +3294,9 @@ function appendThreadTaskRuntime(
     output.append("_join(task);\n  Z_");
     output.append(taskName);
     output.append("Storage *storage = task->storage;\n");
+    output.append("  if (!storage->result_live) abort();\n");
     if (resultNeedsDeinit) {
-      output.append("  if (!storage->result_live) abort();\n  ");
+      output.append("  ");
       output.append(nativeResultType);
       output.append(" result = storage->result;\n  storage->result_live = false;\n  return result;\n}\n\n");
     } else {
@@ -3298,6 +3323,21 @@ function appendThreadTaskRuntime(
       output.append(" task->storage->result_live = false; }\n");
     }
     output.append("#if !defined(_WIN32)\n  if (pthread_cond_destroy(&task->storage->state_condition) != 0) abort();\n  if (pthread_mutex_destroy(&task->storage->state_mutex) != 0) abort();\n#endif\n  free(task->storage);\n  task->storage = NULL;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(taskName);
+    output.append("_cancel(Z_");
+    output.append(taskName);
+    output.append(" *task) {\n  if (task == NULL || task->storage == NULL) return;\n  Z_");
+    output.append(taskName);
+    output.append("Storage *storage = task->storage;\n  Z_");
+    output.append(taskName);
+    output.append("_lock(storage);\n  storage->cancellation_requested = true;\n  Z_");
+    output.append(taskName);
+    output.append("_wake(storage);\n  Z_");
+    output.append(taskName);
+    output.append("_unlock(storage);\n  Z_");
+    output.append(taskName);
+    output.append("_deinit(task);\n}\n\n");
   }
 }
 
@@ -3680,7 +3720,9 @@ function appendThreadSpawnHelpers(
         );
         output.append("_Context *)storage->context;\n");
       }
-      output.append("  storage->result = ");
+      output.append("  if (!Z_");
+      output.append(taskName);
+      output.append("_is_cancellation_requested(storage)) {\n    storage->result = ");
       appendThreadSpawnHelperName(
         inout output,
         declaration,
@@ -3704,7 +3746,7 @@ function appendThreadSpawnHelpers(
         captureLabel = captureLabel + 2;
       }
       output.append(");\n");
-      output.append("  storage->result_live = true;\n");
+      output.append("    storage->result_live = true;\n  }\n");
       if (captureCount > 0) {
         output.append("  ");
         appendThreadSpawnHelperName(
@@ -4975,7 +5017,7 @@ function appendTypeDefinitions(
     const nativeResultType = try cType(resultType);
     output.append("struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
     output.append(nativeResultType);
     output.append(" result;\n};\n\n");
   }

@@ -332,6 +332,16 @@ the outcome. The handle is unavailable afterward. Cancellation therefore stays
 a structural outcome rather than being smuggled into `throws E` or used to
 manufacture a `T`.
 
+The fixed-point native backend now preserves that consuming join for its first
+`thread.spawn` tier. A worker polls cancellation before entering its body; if
+the request wins that race, the body is skipped and transferred captures are
+still destroyed. If the worker has started—or has already completed—`cancel()`
+joins it and destroys the unclaimed `T` or active `Result<T, E>` payload. A
+pending direct request to `thread.main` is completed while joining so neither
+side deadlocks, then its unclaimed outcome is destroyed. This is deliberately
+cooperative: the first tier does not interrupt a synchronous worker body or an
+already-running main-thread operation.
+
 The first async ownership tier permits owned values, ARC class references,
 owned closures, direct move-only native values, and whole Z value structs or
 enums containing them in task frames. Non-default-constructible C++ storage

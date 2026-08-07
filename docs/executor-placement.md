@@ -701,9 +701,13 @@ later without making executor blocks a special case.
     owned value arguments to either a synchronous nonthrowing main-isolated
     function or a suspension-free async one, then receive scalar,
     ownership-bearing, or typed-error results without deadlocking the joining
-    main thread. Cancellation-aware in-flight cleanup, suspending callee
-    taskification, and cross-executor loans remain the next native slices;
-    Stage 0 already implements the broader direct-call surface.
+    main thread. Consuming `await worker.cancel()` atomically records the
+    request, joins the worker, and destroys an unclaimed owned or typed-error
+    result. If a direct main request is already pending, the joining main thread
+    completes it before discarding the outcome; synchronous work is not
+    interrupted. Suspended-callee cancellation, callee taskification, and
+    cross-executor loans remain the next native slices; Stage 0 already
+    implements the broader direct-call surface.
 
 ## Open questions
 

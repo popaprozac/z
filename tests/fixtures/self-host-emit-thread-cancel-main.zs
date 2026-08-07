@@ -1,0 +1,32 @@
+import { sleep } from "std/time";
+import { thread } from "std/thread";
+
+struct PublishError {
+  message: String;
+}
+
+function duplicate(in value: String): String {
+  return value.copyBytes(0, value.byteLength);
+}
+
+async function publish(
+  value: String,
+  shouldFail: boolean
+): String throws PublishError on thread.main {
+  if (shouldFail) {
+    throw PublishError({ message: duplicate("cancelled publish") });
+  }
+  return value;
+}
+
+async function main(): i32 on thread.main {
+  const worker = thread.spawn(
+    async (): String throws PublishError => {
+      const payload = duplicate("pending main request");
+      return try await on thread.main publish(move payload, true);
+    }
+  );
+  sleep(10);
+  await worker.cancel();
+  return 0;
+}

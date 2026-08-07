@@ -2029,6 +2029,24 @@ control-block publication, value clearing, upgrade, and weak counts; changing
 only the counter would not make the operation safe. That broader protocol
 remains deliberately deferred.
 
+## Native worker cancellation owns the losing outcome
+
+The fixed-point native backend now lowers the same consuming `await
+task.cancel()` surface as Stage 0 for its first `thread.spawn` tier. The task
+storage carries a synchronized cancellation request. A worker checks it before
+entering the body, but cancellation does not attempt to interrupt synchronous
+native code after that boundary. In either race outcome the caller joins the
+thread and destroys the transferred capture context.
+
+The more important ownership result is after completion: cancellation destroys
+an unobserved cleanup-bearing success or the active payload of `Result<T, E>`
+exactly once. A second executable probe leaves a typed-error main-thread request
+pending while the owner asks to cancel. The joining main thread executes the
+request to release the worker, the worker publishes completion, and cancellation
+discards the owned error. This avoids both deadlock and abandonment without
+claiming stronger preemption than the runtime provides. Cancellation inside a
+genuinely suspending placed callee remains a later executor-aware tier.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

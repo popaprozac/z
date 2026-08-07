@@ -2752,6 +2752,73 @@ test("returns scalar, owned, and typed-error values through native thread.main p
   }
 }, 30_000);
 
+test("requests native worker cancellation and joins owned cleanup", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-cancel-");
+  const fixtures = [
+    "self-host-emit-thread-cancel.zs",
+    "self-host-emit-thread-cancel-main.zs",
+  ];
+  try {
+    for (const fixture of fixtures) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(emission.stdout, /bool cancellation_requested;/);
+      assert.match(emission.stdout, /_is_cancellation_requested\(/);
+      assert.match(emission.stdout, /storage->cancellation_requested = true;/);
+      assert.match(emission.stdout, /_cancel\(&\(worker\)\);/);
+      assert.match(
+        emission.stdout,
+        /if \(task->storage->result_live\) \{ Z_.*_deinit\(&task->storage->result\); task->storage->result_live = false; \}/,
+      );
+
+      if (fixture.endsWith("-main.zs")) {
+        assert.match(emission.stdout, /main_request_pending = true;/);
+        assert.match(emission.stdout, /request\(context\);/);
+        assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
+        assert.match(
+          emission.stdout,
+          /Z___z_Result_String_PublishError_deinit/,
+        );
+      }
+
+      const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
+      const compilation = spawnSync(
+        "clang",
+        [
+          "-x",
+          "c",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pthread",
+          "-",
+          "-o",
+          executable,
+        ],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
     projectRoot,
