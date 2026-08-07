@@ -6,6 +6,14 @@ struct PublishError {
   message: String;
 }
 
+struct FrameResource {
+  message: String;
+
+  deinit {
+    console.log(`released ${this.message}`);
+  }
+}
+
 function duplicate(in value: String): String {
   return value.copyBytes(0, value.byteLength);
 }
@@ -14,6 +22,7 @@ async function publish(
   value: String,
   shouldFail: boolean
 ): String throws PublishError on thread.main {
+  const staged = FrameResource({ message: duplicate("main frame") });
   console.log("entered main segment");
   await delay(1000);
   console.log("unexpected suspended continuation resume");

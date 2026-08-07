@@ -1895,10 +1895,14 @@ segment. The worker waits on its condition variable rather than blocking main,
 then publishes the next segment back to main. It carries `void`, scalar, or
 ownership-bearing results and transfers owned value arguments through the
 request context. Borrowed and mutable arguments remain deferred to the unified
-cross-executor exclusivity checker. Cross-suspension locals, parameter writes
-and ownership transfers, nested suspension, and dynamic delays fail closed.
-The stack context remains valid because the worker waits for completion, and
-its `Result<T, E>` moves back into the worker before that context ends.
+cross-executor exclusivity checker. Initialized top-level locals and direct
+local assignments now survive in one heap-owned invocation frame. A
+cleanup-bearing local occupies one field plus one liveness bit; segment
+handoffs transfer its bits without copy or retain, and cancellation routes its
+destructor through main. Parameter writes and ownership transfers, nested-scope
+locals, nested suspension, and dynamic delays fail closed. The frame remains
+valid through every main callback, and its `Result<T, E>` moves back into the
+worker before the frame is freed.
 
 That is enough to emit, strict-compile, and run the unchanged Zapp skeleton.
 The native path constructs its imported `Application`, publishes it through

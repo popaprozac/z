@@ -32,8 +32,9 @@ The example combines the four framework foundations:
    main, and carries an owned `String` or typed status failure back through
    `Task<String, i32>`. The fixed-point backend also supports multiple such
    top-level literal delays separated by synchronous main-thread expressions;
-   locals that must survive a delay remain deliberately fail-closed until task
-   frames own their storage.
+   initialized top-level locals and direct assignments survive in one
+   heap-owned invocation frame with cancellation-aware cleanup. Nested-scope
+   locals and control-flow-nested suspension remain deliberately fail-closed.
 
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.

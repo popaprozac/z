@@ -2074,11 +2074,12 @@ than one timer suspension:
 
 ```z
 async function publish(value: i32): i32 on thread.main {
-  markLoading(value);       // main segment 1
-  await delay(10);          // cancellable worker wait
-  refreshWindow(value);     // main segment 2
-  await delay(10);          // cancellable worker wait
-  return finishWindow(value); // final main segment
+  let progress = beginLoading(value); // main segment 1
+  await delay(10);                    // cancellable worker wait
+  progress = refreshWindow(progress); // main segment 2
+  const result = finishWindow(progress);
+  await delay(10);                    // cancellable worker wait
+  return result;                      // final main segment
 }
 ```
 
@@ -2089,10 +2090,14 @@ statements before and between them, and the direct placed call must be the
 worker closure's tail return. Main executes each synchronous segment; every
 delay waits cancellably on the worker, never on main. Success, owned results,
 typed failure, cancellation, and main-thread cleanup of transferred arguments
-are executable in that tier. Cross-suspension local bindings, writes or
-ownership transfers involving parameters, a delay nested in control flow, a
-computed delay duration, or code after the placed call fails closed in native
-lowering for now. Stage 0 retains the broader async surface described above.
+are executable in that tier. Initialized top-level locals and direct local
+assignments live in one heap-owned invocation frame. Cleanup-bearing locals
+carry explicit liveness, can move into later locals or the final result without
+duplication, and are destroyed on main when cancellation wins. Parameter writes
+or ownership transfers, locals inside nested scopes, a delay nested in control
+flow, a computed delay duration, or code after the placed call fails closed in
+native lowering for now. Stage 0 retains the broader async surface described
+above.
 
 Executor-isolated declarations place the contract after the declaration
 signature and before the body:

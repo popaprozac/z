@@ -708,13 +708,17 @@ later without making executor blocks a special case.
     each condition-backed cancellable wait without occupying main, then submits
     the next segment. A cancellation request wakes the active wait and sends
     ownership-bearing argument cleanup to main instead of resuming the callee.
-    Consuming
+    Initialized top-level locals and direct assignments survive those waits in
+    one heap-owned invocation frame. Cleanup-bearing locals carry one liveness
+    bit, move between segments without cloning, and are destroyed on main if
+    cancellation wins. Consuming
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
-    outcome is discarded. Cross-suspension local bindings, control-flow-nested
-    suspension points, dynamic delay expressions, non-tail suspended placement,
-    and cross-executor loans remain the next native state-machine slices; Stage
-    0 already implements the broader direct-call surface.
+    outcome is discarded. Parameter writes or ownership transfers,
+    control-flow-nested suspension points, locals declared inside nested scopes,
+    dynamic delay expressions, non-tail suspended placement, and cross-executor
+    loans remain the next native state-machine slices; Stage 0 already implements
+    the broader direct-call surface.
 
 ## Open questions
 

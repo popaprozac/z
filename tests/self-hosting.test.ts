@@ -2709,8 +2709,14 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       );
       assert.equal(emission.status, 0, emission.stderr);
       assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
-      assert.match(emission.stdout, /context->result = publish/);
-      assert.match(emission.stdout, /return context\.result;/);
+      assert.match(
+        emission.stdout,
+        /context->result = .*_continue\(context\)/,
+      );
+      assert.match(
+        emission.stdout,
+        /result = context->result;[\s\S]*return result;/,
+      );
       assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
@@ -2734,6 +2740,54 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
     }
+
+    const synchronousInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-synchronous.zs",
+    );
+    const synchronousEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", synchronousInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(synchronousEmission.status, 0, synchronousEmission.stderr);
+    assert.match(synchronousEmission.stdout, /_Context context = \{/);
+    assert.doesNotMatch(
+      synchronousEmission.stdout,
+      /_Context \*context = \([^)]*_Context \*\)calloc\(1, sizeof\(/,
+    );
+    const synchronousExecutable = resolve(directory, "thread-main-sync");
+    const synchronousCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        synchronousExecutable,
+      ],
+      { encoding: "utf8", input: synchronousEmission.stdout },
+    );
+    assert.equal(
+      synchronousCompilation.status,
+      0,
+      synchronousCompilation.stderr,
+    );
+    const synchronousExecution = spawnSync(
+      synchronousExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      synchronousExecution.status,
+      0,
+      synchronousExecution.stderr,
+    );
 
     const unplacedInput = resolve(
       projectRoot,
@@ -2768,7 +2822,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     assert.equal(segmentsEmission.status, 0, segmentsEmission.stderr);
     assert.match(
       segmentsEmission.stdout,
-      /_run_on_main\(storage, [^,]*_segment_0, &context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)[\s\S]*_run_on_main\(storage, [^,]*_segment_1, &context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)/,
+      /_run_on_main\(storage, [^,]*_segment_0, context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)[\s\S]*_run_on_main\(storage, [^,]*_segment_1, context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)/,
     );
     const segmentsExecutable = resolve(directory, "thread-main-segments");
     const segmentsCompilation = spawnSync(
@@ -2803,20 +2857,77 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       "main segment 1: 0\nmain segment 2: 0\n",
     );
 
-    const crossSuspensionLocalInput = resolve(
-      projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-cross-suspension-local-invalid.zs",
-    );
-    const crossSuspensionLocal = spawnSync(
-      process.execPath,
-      [cli, "self-host-emit", crossSuspensionLocalInput],
-      { encoding: "utf8" },
-    );
-    assert.equal(crossSuspensionLocal.status, 1);
-    assert.match(
-      crossSuspensionLocal.stderr,
-      /does not yet preserve local control flow or bindings across suspension/,
-    );
+    for (const fixture of [
+      "self-host-emit-thread-main-locals.zs",
+      "self-host-emit-thread-main-owned-local.zs",
+    ]) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(emission.stdout, /frame_local_\d+/);
+      assert.match(
+        emission.stdout,
+        /_Context \*context = \([^)]*_Context \*\)calloc\(1, sizeof\(/,
+      );
+      assert.match(emission.stdout, /free\(context\);/);
+      if (fixture.endsWith("owned-local.zs")) {
+        assert.match(emission.stdout, /frame_local_\d+_live/);
+        assert.match(
+          emission.stdout,
+          /_z_stage1_live_staged = false[\s\S]*frame_local_\d+_live = _z_stage1_live_staged/,
+        );
+      }
+      const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
+      const compilation = spawnSync(
+        "clang",
+        [
+          "-x",
+          "c",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pthread",
+          "-",
+          "-o",
+          executable,
+        ],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+
+    for (const [fixture, diagnostic] of [
+      [
+        "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
+        /does not yet preserve control flow across suspension/,
+      ],
+      [
+        "self-host-emit-thread-main-uninitialized-local-invalid.zs",
+        /requires local staged to be initialized before it crosses a suspension/,
+      ],
+    ] as const) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 1);
+      assert.match(emission.stderr, diagnostic);
+    }
 
     const nonTailInput = resolve(
       projectRoot,
@@ -2835,7 +2946,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-}, 30_000);
+}, 60_000);
 
 test("requests native worker cancellation and joins owned cleanup", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-cancel-");
@@ -2880,6 +2991,10 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         );
         assert.match(
           emission.stdout,
+          /_cancel_suspended[\s\S]*Z_FrameResource_deinit\(&context->frame_local_\d+\)/,
+        );
+        assert.match(
+          emission.stdout,
           /Z___z_Result_String_PublishError_deinit/,
         );
       }
@@ -2905,7 +3020,10 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
       if (fixture.endsWith("-main.zs")) {
-        assert.equal(execution.stdout, "entered main segment\n");
+        assert.equal(
+          execution.stdout,
+          "entered main segment\nreleased main frame\n",
+        );
       }
     }
   } finally {

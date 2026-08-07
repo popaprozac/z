@@ -45,6 +45,36 @@ deterministic ownership, structured task overhead, and native threads. ARC
 identity, Map/Set, generators, Objective-C/C++ boundary calls, and richer async
 fan-out remain explicit follow-up cases.
 
+## Native main-executor frame audit
+
+On 2026-08-08, the fixed-point backend's first cross-suspension-local tier was
+checked at the generated-C boundary. This is a code-shape audit, not a
+cross-language runtime benchmark:
+
+| Operation | Generated cost |
+| --- | --- |
+| Synchronous or suspension-free placed call | Stack context; zero frame allocations |
+| Placed callee containing one or more timer suspensions | One `calloc`/`free` invocation frame |
+| Each additional top-level `await delay(...)` | One condition-backed wait and main-executor request; no additional allocation |
+| Cleanup-free local across suspension | One direct frame field |
+| Cleanup-bearing local across suspension | One direct frame field plus one liveness bit |
+| Local move between segments or into the result | Bitwise ownership transfer; no clone, retain, or second allocation |
+| Cancellation | Main-executor destruction of each live owned field, then one frame free |
+
+The separately created `thread.spawn` task still owns its existing task-storage
+allocation and native thread. The extra frame allocation is therefore explicit
+async machinery, not a tax on ordinary functions. A later lightweight executor
+can pool frames or embed them in task storage; any such optimization must retain
+the same liveness and executor-routed cleanup behavior.
+
+The same checkpoint also compared equal one-module self-host emission commands
+with warm filesystem caches over seven Hyperfine runs. Stage 0 through Bun
+measured 47.4 ms ± 1.2 ms; the fixed-point native `z emit` measured 1.8 ms ±
+0.3 ms. The native command is short enough that shell-startup noise is material,
+so the reported 26.5-times ratio is directional rather than a precise speedup.
+It nevertheless confirms that the new frame lowering has not compromised the
+native compiler's low-startup-cost edit loop.
+
 ## Standalone native compiler checkpoint
 
 On 2026-07-27, the recursively self-built 30-module native driver made a

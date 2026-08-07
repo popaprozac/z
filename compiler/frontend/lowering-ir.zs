@@ -9559,6 +9559,35 @@ function statementExpressionWritesName(
   return false;
 }
 
+function loweredRootsDeclareLocal(
+  in statements: Array<LoweredStatement>,
+  in roots: Array<usize>,
+  in name: String
+): boolean {
+  for (const root of roots) {
+    if (
+      statements[root].kind == LoweredStatementKind.localStatement
+      && statements[root].name == name
+    ) return true;
+  }
+  return false;
+}
+
+function loweredSegmentsDeclareLocal(
+  in statements: Array<LoweredStatement>,
+  in segments: Array<LoweredMainDelaySegment>,
+  in currentRoots: Array<usize>,
+  in name: String
+): boolean {
+  if (loweredRootsDeclareLocal(statements, currentRoots, name)) return true;
+  for (const segment of segments) {
+    if (loweredRootsDeclareLocal(statements, segment.roots, name)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function collectNestedTryExpressions(
   in tree: ExpressionTree,
   index: usize,
@@ -11517,12 +11546,28 @@ function lowerFunction(
       delayCount > 0
       && rootPosition < lastDelayPosition
       && (
-        declaration.body.nodes[root].kind
-          != StatementKind.expressionStatement
+        (
+          declaration.body.nodes[root].kind
+            != StatementKind.expressionStatement
+          && declaration.body.nodes[root].kind
+            != StatementKind.variableStatement
+          && declaration.body.nodes[root].kind
+            != StatementKind.assignmentStatement
+        )
         || statementExpressionContainsTry(declaration.body, root)
       )
     ) {
-      throw `native lowering does not yet preserve local control flow or bindings across suspension in ${declaration.name}; keep pre-suspension segments to synchronous expression statements`;
+      throw `native lowering does not yet preserve control flow across suspension in ${declaration.name}; keep pre-suspension segments to initialized locals, direct local assignments, and synchronous expression statements`;
+    }
+    if (
+      delayCount > 0
+      && rootPosition < lastDelayPosition
+      && declaration.body.nodes[root].kind == StatementKind.variableStatement
+    ) {
+      match (in declaration.body.nodes[root].expression) {
+        some(_) => {}
+        none => throw `native lowering requires local ${declaration.body.nodes[root].name} to be initialized before it crosses a suspension in ${declaration.name}`;
+      }
     }
     if (delayCount > 0 && rootPosition < lastDelayPosition) {
       let parameterIndex: usize = 0;
@@ -11572,8 +11617,74 @@ function lowerFunction(
       && rootPosition < lastDelayPosition
       && statements[loweredRoot].kind
         != LoweredStatementKind.expressionStatement
+      && statements[loweredRoot].kind
+        != LoweredStatementKind.localStatement
+      && statements[loweredRoot].kind
+        != LoweredStatementKind.assignmentStatement
     ) {
       throw `native lowering does not yet preserve normalized control flow across suspension in ${declaration.name}`;
+    }
+    if (
+      delayCount > 0
+      && rootPosition < lastDelayPosition
+      && statements[loweredRoot].kind == LoweredStatementKind.localStatement
+    ) {
+      match (in statements[loweredRoot].expression) {
+        some(initializer) => {
+          if (
+            expressions[initializer].kind
+              == LoweredExpressionKind.viewProjection
+            || expressions[initializer].kind
+              == LoweredExpressionKind.borrowedTemporary
+          ) {
+            throw `native lowering does not yet preserve borrowed local ${statements[loweredRoot].name} across suspension in ${declaration.name}`;
+          }
+        }
+        none => throw `native lowering lost the initializer for cross-suspension local ${statements[loweredRoot].name}`;
+      }
+    }
+    if (
+      delayCount > 0
+      && rootPosition < lastDelayPosition
+      && statements[loweredRoot].kind
+        == LoweredStatementKind.assignmentStatement
+    ) {
+      const target = match (in statements[loweredRoot].expression) {
+        some(value) => value;
+        none => throw "native lowering received an assignment without a target";
+      };
+      if (
+        expressions[target].kind != LoweredExpressionKind.localValue
+        || !loweredSegmentsDeclareLocal(
+          statements,
+          mainDelaySegments,
+          segmentRoots,
+          expressions[target].value
+        )
+      ) {
+        throw `native lowering only preserves direct local assignment across suspension in ${declaration.name}`;
+      }
+    }
+    if (delayCount > 0 && rootPosition < lastDelayPosition) {
+      let parameterIndex: usize = 0;
+      while (parameterIndex < declaration.parameters.length) {
+        if (
+          moduleTypeNeedsCleanup(
+            program,
+            importedTypes,
+            parameters[parameterIndex].type
+          )
+          && loweredStatementDirectlyTransfersBinding(
+            expressions,
+            statements,
+            loweredRoot,
+            declaration.parameters[parameterIndex].name
+          )
+        ) {
+          throw `native lowering does not yet preserve ownership transfer of parameter ${declaration.parameters[parameterIndex].name} across suspension in ${declaration.name}`;
+        }
+        parameterIndex = parameterIndex + 1;
+      }
     }
     planningRoots.push(loweredRoot);
     segmentRoots.push(loweredRoot);
@@ -11641,6 +11752,33 @@ function lowerFunction(
     false,
     rootLoopCleanups
   );
+  for (const segment of mainDelaySegments) {
+    for (const root of segment.roots) {
+      if (
+        statements[root].kind != LoweredStatementKind.localStatement
+        || statements[root].liveFlag.byteLength > 0
+      ) continue;
+      const frameLocalNeedsCleanup = match (in statements[root].type) {
+        some(type) => moduleTypeNeedsCleanup(
+          program,
+          importedTypes,
+          type
+        );
+        none => false;
+      };
+      if (!frameLocalNeedsCleanup) continue;
+      const guard = ownerLiveFlag(statements[root].name);
+      statements[root].liveFlag = guard.copyBytes(0, guard.byteLength);
+      liveFlags.push(LoweredLiveFlag({
+        owner: statements[root].name.copyBytes(
+          0,
+          statements[root].name.byteLength
+        ),
+        name: move guard,
+        parameter: false,
+      }));
+    }
+  }
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
