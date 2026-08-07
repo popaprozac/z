@@ -1,6 +1,8 @@
+import { delay } from "std/time";
 import { thread } from "std/thread";
 
-function publish(value: i32): i32 on thread.main {
+async function publish(value: i32): i32 on thread.main {
+  await delay(1);
   return value + 2;
 }
 

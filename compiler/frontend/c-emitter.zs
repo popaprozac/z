@@ -3207,6 +3207,7 @@ function appendThreadTaskRuntime(
   in program: LoweredProgram
 ): void throws String {
   const taskNames = programTaskTypeNames(program);
+  const usesInitialMainDelay = programUsesInitialMainDelay(program);
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
@@ -3240,6 +3241,17 @@ function appendThreadTaskRuntime(
     output.append("_lock(storage);\n  const bool requested = storage->cancellation_requested;\n  Z_");
     output.append(taskName);
     output.append("_unlock(storage);\n  return requested;\n}\n\n");
+    if (usesInitialMainDelay) {
+      output.append("static __attribute__((unused)) bool Z_");
+      output.append(taskName);
+      output.append("_suspend_for(Z_");
+      output.append(taskName);
+      output.append("Storage *storage, size_t milliseconds) {\n  Z_");
+      output.append(taskName);
+      output.append("_lock(storage);\n#if defined(_WIN32)\n  ULONGLONG measured = GetTickCount64();\n  while (!storage->cancellation_requested && milliseconds > 0) {\n    const DWORD slice = milliseconds >= UINT32_MAX ? UINT32_MAX - 1u : (DWORD)milliseconds;\n    const BOOL awakened = SleepConditionVariableSRW(&storage->state_condition, &storage->state_mutex, slice, 0);\n    if (!awakened && GetLastError() != ERROR_TIMEOUT) abort();\n    const ULONGLONG now = GetTickCount64();\n    const ULONGLONG elapsed = now - measured;\n    milliseconds = elapsed >= milliseconds ? 0 : milliseconds - (size_t)elapsed;\n    measured = now;\n  }\n#else\n  struct timespec deadline;\n  if (clock_gettime(CLOCK_REALTIME, &deadline) != 0) abort();\n  deadline.tv_sec += (time_t)(milliseconds / 1000);\n  deadline.tv_nsec += (long)((milliseconds % 1000) * 1000000);\n  if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec += 1; deadline.tv_nsec -= 1000000000L; }\n  while (!storage->cancellation_requested) {\n    const int status = pthread_cond_timedwait(&storage->state_condition, &storage->state_mutex, &deadline);\n    if (status == ETIMEDOUT) break;\n    if (status != 0) abort();\n  }\n#endif\n  const bool completed = !storage->cancellation_requested;\n  if (!completed) storage->continuation_cancelled = true;\n  Z_");
+      output.append(taskName);
+      output.append("_unlock(storage);\n  return completed;\n}\n\n");
+    }
     output.append("static __attribute__((unused)) void Z_");
     output.append(taskName);
     output.append("_run_on_main(Z_");
@@ -3341,6 +3353,72 @@ function appendThreadTaskRuntime(
   }
 }
 
+function threadMainCallTarget(
+  in declaration: LoweredFunction,
+  in expression: LoweredExpression
+): String throws String {
+  if (expression.children.length == 0) {
+    throw "native C emission received a thread.main call without a runner";
+  }
+  const runner = expression.children[0];
+  if (
+    declaration.expressions[runner].kind
+      != LoweredExpressionKind.directCall
+    || declaration.expressions[runner].children.length == 0
+  ) throw "native C emission received a thread.main runner without a direct call";
+  const callee = declaration.expressions[runner].children[0];
+  if (
+    declaration.expressions[callee].kind
+      != LoweredExpressionKind.localValue
+  ) throw "native C emission received a thread.main runner without a local target";
+  return declaration.expressions[callee].value.copyBytes(
+    0,
+    declaration.expressions[callee].value.byteLength
+  );
+}
+
+function threadMainCallInitialDelay(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in expression: LoweredExpression
+): String throws String {
+  const target = try threadMainCallTarget(declaration, expression);
+  for (const candidate of program.functions) {
+    if (candidate.name == target) {
+      return candidate.initialMainDelayMilliseconds.copyBytes(
+        0,
+        candidate.initialMainDelayMilliseconds.byteLength
+      );
+    }
+  }
+  return "";
+}
+
+function threadMainCallIsTail(
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): boolean {
+  for (const statement of declaration.statements) {
+    if (statement.kind != LoweredStatementKind.returnStatement) continue;
+    match (in statement.expression) {
+      some(value) => {
+        if (value == expressionIndex) return true;
+      }
+      none => {}
+    }
+  }
+  for (const expression of declaration.expressions) {
+    if (
+      expression.kind == LoweredExpressionKind.threadSpawn
+      && expression.labels.length > 0
+      && expression.labels[0] == "expression"
+      && expression.children.length > 0
+      && expression.children[0] == expressionIndex
+    ) return true;
+  }
+  return false;
+}
+
 function appendThreadMainCallHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -3364,6 +3442,17 @@ function appendThreadMainCallHelpers(
       );
       const nativeResultType = try cType(resultType);
       const argumentCount = expression.labels.length - 1;
+      const initialDelay = try threadMainCallInitialDelay(
+        program,
+        declaration,
+        expression
+      );
+      if (
+        initialDelay.byteLength > 0
+        && !threadMainCallIsTail(declaration, expressionIndex)
+      ) {
+        throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
+      }
       output.append("typedef struct ");
       appendThreadMainCallHelperName(
         inout output,
@@ -3435,7 +3524,50 @@ function appendThreadMainCallHelpers(
       }
       const runnerCall = expression.children[0];
       try appendExpression(inout output, declaration, runnerCall);
-      output.append(";\n}\n\nstatic ");
+      output.append(";\n}\n\n");
+      if (initialDelay.byteLength > 0) {
+        output.append("static void ");
+        appendThreadMainCallHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_cancel_suspended(void *raw_context) {\n  ");
+        appendThreadMainCallHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *context = (");
+        appendThreadMainCallHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_Context *)raw_context;\n");
+        let cleanup = argumentCount;
+        let emittedCleanup = false;
+        while (cleanup > 0) {
+          cleanup = cleanup - 1;
+          const argumentType = try loweredTypeForIdentity(
+            program,
+            expression.labels[cleanup + 1]
+          );
+          if (loweredTypeNeedsDeinit(program, argumentType)) {
+            emittedCleanup = true;
+            output.append("  Z_");
+            output.append(argumentType.name);
+            if (argumentType.kind == LoweredTypeKind.classType) {
+              output.append(`_release(context->argument_${cleanup});\n`);
+            } else {
+              output.append(`_deinit(&context->argument_${cleanup});\n`);
+            }
+          }
+        }
+        if (!emittedCleanup) output.append("  (void)context;\n");
+        output.append("}\n\n");
+      }
+      output.append("static ");
       output.append(nativeResultType);
       output.append(" ");
       appendThreadMainCallHelperName(
@@ -3475,7 +3607,30 @@ function appendThreadMainCallHelpers(
         output.append(`.argument_${argument} = argument_${argument}`);
         argument = argument + 1;
       }
-      output.append(" };\n  Z_");
+      output.append(" };\n");
+      if (initialDelay.byteLength > 0) {
+        output.append("  if (!Z_");
+        output.append(expression.value);
+        output.append("_suspend_for(storage, ");
+        output.append(initialDelay);
+        output.append(")) {\n    Z_");
+        output.append(expression.value);
+        output.append("_run_on_main(storage, ");
+        appendThreadMainCallHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append("_cancel_suspended, &context);\n");
+        if (resultType.kind == LoweredTypeKind.voidType) {
+          output.append("    return;\n  }\n");
+        } else {
+          output.append("    return (");
+          output.append(nativeResultType);
+          output.append("){0};\n  }\n");
+        }
+      }
+      output.append("  Z_");
       output.append(expression.value);
       output.append("_run_on_main(storage, ");
       appendThreadMainCallHelperName(
@@ -3746,7 +3901,7 @@ function appendThreadSpawnHelpers(
         captureLabel = captureLabel + 2;
       }
       output.append(");\n");
-      output.append("    storage->result_live = true;\n  }\n");
+      output.append("    if (!storage->continuation_cancelled) storage->result_live = true;\n  }\n");
       if (captureCount > 0) {
         output.append("  ");
         appendThreadSpawnHelperName(
@@ -5017,7 +5172,7 @@ function appendTypeDefinitions(
     const nativeResultType = try cType(resultType);
     output.append("struct Z_");
     output.append(taskName);
-    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
+    output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool continuation_cancelled;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
     output.append(nativeResultType);
     output.append(" result;\n};\n\n");
   }
@@ -5355,6 +5510,13 @@ function programUsesStandardCall(
       }
       none => {}
     }
+  }
+  return false;
+}
+
+function programUsesInitialMainDelay(in program: LoweredProgram): boolean {
+  for (const declaration of program.functions) {
+    if (declaration.initialMainDelayMilliseconds.byteLength > 0) return true;
   }
   return false;
 }
@@ -6042,6 +6204,7 @@ function emitLoweredC(
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
   const usesSleep = programUsesStandardCall(program, "time.sleep");
+  const usesInitialMainDelay = programUsesInitialMainDelay(program);
   const mutexTypeNames = programMutexTypeNames(program);
   const usesMutex = mutexTypeNames.length > 0;
   const onceTypeNames = programOnceTypeNames(program);
@@ -6053,6 +6216,7 @@ function emitLoweredC(
     || usesCreateDirectories
     || usesProcessExecutablePath
     || usesSleep
+    || usesInitialMainDelay
   ) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
@@ -6074,6 +6238,7 @@ function emitLoweredC(
     || usesProcessExecutablePath
     || usesProcessRun
     || usesSleep
+    || usesInitialMainDelay
   ) {
     output.append("#include <errno.h>\n");
   }
@@ -6104,7 +6269,9 @@ function emitLoweredC(
   if (usesMutex || usesOnce || usesThreads) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
-  if (usesSleep) output.append("#include <time.h>\n");
+  if (usesSleep || usesInitialMainDelay) {
+    output.append("#include <time.h>\n");
+  }
   if (usesReplace) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#endif\n");
   }

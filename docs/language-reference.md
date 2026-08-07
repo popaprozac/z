@@ -2069,6 +2069,16 @@ operation performed on that executor. Its continuation retains main-executor
 proof; after the placement completes, a native-worker caller resumes on its
 original private executor.
 
+The fixed-point native compiler currently implements one honest, bounded
+suspending-callee state machine: the main-isolated callee begins with one
+literal `await delay(...)`, and the direct placed call is the worker closure's
+tail return. The delay waits cancellably on the worker, never on main. Success,
+owned results, typed failure, cancellation, and main-thread cleanup of
+transferred arguments are executable in that tier. More than one suspension,
+a delay nested in control flow, a computed delay duration, or code after the
+placed call fails closed in native lowering for now. Stage 0 retains the broader
+async surface described above.
+
 Executor-isolated declarations place the contract after the declaration
 signature and before the body:
 

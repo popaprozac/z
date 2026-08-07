@@ -1,3 +1,4 @@
+import { delay } from "std/time";
 import { Mutex, Once, OnceLifetime } from "std/sync";
 import { thread } from "std/thread";
 
@@ -57,6 +58,9 @@ export function currentApplication(): Application {
 export async function publishApplicationStatus(
   ticket: i32
 ): String throws i32 on thread.main {
+  // This suspends without occupying main, then resumes the remaining
+  // application publication on main.
+  await delay(1);
   if (ticket < 0) {
     throw -1;
   }

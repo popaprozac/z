@@ -1,4 +1,5 @@
-import { sleep } from "std/time";
+import console from "std/console";
+import { delay, sleep } from "std/time";
 import { thread } from "std/thread";
 
 struct PublishError {
@@ -13,6 +14,8 @@ async function publish(
   value: String,
   shouldFail: boolean
 ): String throws PublishError on thread.main {
+  await delay(1000);
+  console.log("unexpected suspended continuation resume");
   if (shouldFail) {
     throw PublishError({ message: duplicate("cancelled publish") });
   }

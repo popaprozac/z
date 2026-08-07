@@ -699,15 +699,20 @@ later without making executor blocks a special case.
     blocks retain `using (...)` for lexical captures and multiple statements.
 13. **Partial in the fixed-point native backend:** a dedicated worker can send
     owned value arguments to either a synchronous nonthrowing main-isolated
-    function or a suspension-free async one, then receive scalar,
+    function or the first taskified suspending shape, then receive scalar,
     ownership-bearing, or typed-error results without deadlocking the joining
-    main thread. Consuming `await worker.cancel()` atomically records the
-    request, joins the worker, and destroys an unclaimed owned or typed-error
-    result. If a direct main request is already pending, the joining main thread
-    completes it before discarding the outcome; synchronous work is not
-    interrupted. Suspended-callee cancellation, callee taskification, and
-    cross-executor loans remain the next native slices; Stage 0 already
-    implements the broader direct-call surface.
+    main thread. That suspending shape begins with one literal
+    `await delay(...)` and uses the placed call as the worker closure's tail
+    return. The worker performs a condition-backed cancellable wait without
+    occupying main, then submits the remainder of the callee to main. A
+    cancellation request wakes that wait and sends ownership-bearing argument
+    cleanup to main instead of resuming the callee. Consuming
+    `await worker.cancel()` joins and destroys any other unclaimed result. If a
+    synchronous main request is already running, it completes before its
+    outcome is discarded. Multiple or control-flow-nested suspension points,
+    dynamic delay expressions, non-tail suspended placement, and
+    cross-executor loans remain the next native state-machine slices; Stage 0
+    already implements the broader direct-call surface.
 
 ## Open questions
 

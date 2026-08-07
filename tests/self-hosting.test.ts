@@ -2056,6 +2056,7 @@ test("runs the Zapp worker and main-thread publication natively", () => {
     assert.match(emission.stdout, /Z_Task_\S+_run_on_main/);
     assert.match(emission.stdout, /main_request_pending/);
     assert.match(emission.stdout, /z_stage1_thread_main_call_main_\d+/);
+    assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
     assert.match(emission.stdout, /z_stage1_sleep\(10\)/);
 
     const executable = resolve(directory, "zapp");
@@ -2710,6 +2711,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
       assert.match(emission.stdout, /context->result = publish/);
       assert.match(emission.stdout, /return context\.result;/);
+      assert.match(emission.stdout, /_suspend_for\(storage, 1\)/);
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
       const compilation = spawnSync(
@@ -2746,6 +2748,36 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     assert.match(
       unplaced.stderr,
       /requires an explicit supported placement for async function calls/,
+    );
+
+    const multipleSuspensionsInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-multiple-suspensions-invalid.zs",
+    );
+    const multipleSuspensions = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", multipleSuspensionsInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(multipleSuspensions.status, 1);
+    assert.match(
+      multipleSuspensions.stderr,
+      /supports one initial await delay\(integer-literal\)/,
+    );
+
+    const nonTailInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-nontail-suspension-invalid.zs",
+    );
+    const nonTail = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", nonTailInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(nonTail.status, 1);
+    assert.match(
+      nonTail.stderr,
+      /suspending thread\.main calls must be the worker closure's tail return/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2787,6 +2819,12 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         assert.match(emission.stdout, /main_request_pending = true;/);
         assert.match(emission.stdout, /request\(context\);/);
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
+        assert.match(emission.stdout, /_suspend_for\(storage, 1000\)/);
+        assert.match(emission.stdout, /continuation_cancelled = true;/);
+        assert.match(
+          emission.stdout,
+          /_cancel_suspended[\s\S]*Z_String_deinit\(&context->argument_0\)/,
+        );
         assert.match(
           emission.stdout,
           /Z___z_Result_String_PublishError_deinit/,
@@ -2813,6 +2851,9 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       assert.equal(compilation.status, 0, compilation.stderr);
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
+      if (fixture.endsWith("-main.zs")) {
+        assert.equal(execution.stdout, "");
+      }
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

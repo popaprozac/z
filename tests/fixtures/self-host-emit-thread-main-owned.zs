@@ -1,10 +1,12 @@
+import { delay } from "std/time";
 import { thread } from "std/thread";
 
 function duplicate(in value: String): String {
   return value.copyBytes(0, value.byteLength);
 }
 
-function publish(value: String): String on thread.main {
+async function publish(value: String): String on thread.main {
+  await delay(1);
   return value;
 }
 
