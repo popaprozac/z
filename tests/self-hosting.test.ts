@@ -2750,19 +2750,72 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       /requires an explicit supported placement for async function calls/,
     );
 
-    const multipleSuspensionsInput = resolve(
+    const segmentsInput = resolve(
       projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-multiple-suspensions-invalid.zs",
+      "tests/fixtures/self-host-emit-thread-main-segments.zs",
     );
-    const multipleSuspensions = spawnSync(
+    const segmentsParity = spawnSync(
       process.execPath,
-      [cli, "self-host-emit", multipleSuspensionsInput],
+      [cli, "check", segmentsInput, "--native-frontend"],
       { encoding: "utf8" },
     );
-    assert.equal(multipleSuspensions.status, 1);
+    assert.equal(segmentsParity.status, 0, segmentsParity.stderr);
+    const segmentsEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", segmentsInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(segmentsEmission.status, 0, segmentsEmission.stderr);
     assert.match(
-      multipleSuspensions.stderr,
-      /supports one initial await delay\(integer-literal\)/,
+      segmentsEmission.stdout,
+      /_run_on_main\(storage, [^,]*_segment_0, &context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)[\s\S]*_run_on_main\(storage, [^,]*_segment_1, &context\);\n  if \(!Z_.*_suspend_for\(storage, 1\)/,
+    );
+    const segmentsExecutable = resolve(directory, "thread-main-segments");
+    const segmentsCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        segmentsExecutable,
+      ],
+      { encoding: "utf8", input: segmentsEmission.stdout },
+    );
+    assert.equal(
+      segmentsCompilation.status,
+      0,
+      segmentsCompilation.stderr,
+    );
+    const segmentsExecution = spawnSync(
+      segmentsExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(segmentsExecution.status, 0, segmentsExecution.stderr);
+    assert.equal(
+      segmentsExecution.stdout,
+      "main segment 1: 0\nmain segment 2: 0\n",
+    );
+
+    const crossSuspensionLocalInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-cross-suspension-local-invalid.zs",
+    );
+    const crossSuspensionLocal = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", crossSuspensionLocalInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(crossSuspensionLocal.status, 1);
+    assert.match(
+      crossSuspensionLocal.stderr,
+      /does not yet preserve local control flow or bindings across suspension/,
     );
 
     const nonTailInput = resolve(
@@ -2852,7 +2905,7 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
       if (fixture.endsWith("-main.zs")) {
-        assert.equal(execution.stdout, "");
+        assert.equal(execution.stdout, "entered main segment\n");
       }
     }
   } finally {

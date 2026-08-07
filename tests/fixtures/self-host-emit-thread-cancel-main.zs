@@ -14,6 +14,7 @@ async function publish(
   value: String,
   shouldFail: boolean
 ): String throws PublishError on thread.main {
+  console.log("entered main segment");
   await delay(1000);
   console.log("unexpected suspended continuation resume");
   if (shouldFail) {

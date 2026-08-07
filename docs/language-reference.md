@@ -2069,15 +2069,30 @@ operation performed on that executor. Its continuation retains main-executor
 proof; after the placement completes, a native-worker caller resumes on its
 original private executor.
 
-The fixed-point native compiler currently implements one honest, bounded
-suspending-callee state machine: the main-isolated callee begins with one
-literal `await delay(...)`, and the direct placed call is the worker closure's
-tail return. The delay waits cancellably on the worker, never on main. Success,
-owned results, typed failure, cancellation, and main-thread cleanup of
-transferred arguments are executable in that tier. More than one suspension,
-a delay nested in control flow, a computed delay duration, or code after the
-placed call fails closed in native lowering for now. Stage 0 retains the broader
-async surface described above.
+The current fixed-point slice can execute ordered main segments around more
+than one timer suspension:
+
+```z
+async function publish(value: i32): i32 on thread.main {
+  markLoading(value);       // main segment 1
+  await delay(10);          // cancellable worker wait
+  refreshWindow(value);     // main segment 2
+  await delay(10);          // cancellable worker wait
+  return finishWindow(value); // final main segment
+}
+```
+
+The fixed-point native compiler currently implements an honest, bounded
+suspending-callee state machine. A main-isolated callee may contain multiple
+top-level literal `await delay(...)` statements with synchronous expression
+statements before and between them, and the direct placed call must be the
+worker closure's tail return. Main executes each synchronous segment; every
+delay waits cancellably on the worker, never on main. Success, owned results,
+typed failure, cancellation, and main-thread cleanup of transferred arguments
+are executable in that tier. Cross-suspension local bindings, writes or
+ownership transfers involving parameters, a delay nested in control flow, a
+computed delay duration, or code after the placed call fails closed in native
+lowering for now. Stage 0 retains the broader async surface described above.
 
 Executor-isolated declarations place the contract after the declaration
 signature and before the body:

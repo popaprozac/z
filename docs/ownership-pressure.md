@@ -1888,24 +1888,26 @@ to finish. This first native tier requires the task to be created and awaited
 by `main`; it fails closed rather than treating an arbitrary creator as the main
 thread. The placed-call tier accepts a synchronous nonthrowing call, a
 suspension-free async call with typed failure, or one deliberately bounded
-taskified shape: a main-isolated async callee whose first statement is one
-literal `await delay(...)` and whose placement is the worker closure's tail
-return. The worker waits on its condition variable rather than blocking main,
-then publishes the continuation back to main. It carries `void`, scalar, or
+taskified shape: a main-isolated async callee with multiple top-level literal
+`await delay(...)` statements separated by synchronous expression statements,
+whose placement is the worker closure's tail return. Main runs each synchronous
+segment. The worker waits on its condition variable rather than blocking main,
+then publishes the next segment back to main. It carries `void`, scalar, or
 ownership-bearing results and transfers owned value arguments through the
 request context. Borrowed and mutable arguments remain deferred to the unified
-cross-executor exclusivity checker. The stack context remains valid because the
-worker waits for completion, and its `Result<T, E>` moves back into the worker
-before that context ends.
+cross-executor exclusivity checker. Cross-suspension locals, parameter writes
+and ownership transfers, nested suspension, and dynamic delays fail closed.
+The stack context remains valid because the worker waits for completion, and
+its `Result<T, E>` moves back into the worker before that context ends.
 
 That is enough to emit, strict-compile, and run the unchanged Zapp skeleton.
 The native path constructs its imported `Application`, publishes it through
 `Once`, mutates `Mutex` state on a pthread, executes `std/time.sleep`, publishes
-status through a taskified main-isolated callee with an initial
-`await delay(1)`, resumes and joins the worker, prints the final status, and
-releases the root. Native async `main` still uses a synchronous host frame. The
-private worker owns the timer wait; the main thread only runs the resumed
-publication continuation.
+status through a taskified main-isolated callee containing `await delay(1)`,
+resumes and joins the worker, prints the final status, and releases the root.
+Native async `main` still uses a synchronous host frame. The private worker owns
+the timer wait; the main thread only runs the synchronous main-isolated
+segments.
 
 The task result path now carries typed failures and ownership through one
 representation. `Task<T, E>` stores the same `Result<T, E>` tagged union used by

@@ -699,20 +699,22 @@ later without making executor blocks a special case.
     blocks retain `using (...)` for lexical captures and multiple statements.
 13. **Partial in the fixed-point native backend:** a dedicated worker can send
     owned value arguments to either a synchronous nonthrowing main-isolated
-    function or the first taskified suspending shape, then receive scalar,
+    function or the current taskified suspending shape, then receive scalar,
     ownership-bearing, or typed-error results without deadlocking the joining
-    main thread. That suspending shape begins with one literal
-    `await delay(...)` and uses the placed call as the worker closure's tail
-    return. The worker performs a condition-backed cancellable wait without
-    occupying main, then submits the remainder of the callee to main. A
-    cancellation request wakes that wait and sends ownership-bearing argument
-    cleanup to main instead of resuming the callee. Consuming
+    main thread. A main-isolated callee may contain multiple top-level literal
+    `await delay(...)` statements, with synchronous expression statements
+    before and between them, and uses the placed call as the worker closure's
+    tail return. Main executes each synchronous segment; the worker performs
+    each condition-backed cancellable wait without occupying main, then submits
+    the next segment. A cancellation request wakes the active wait and sends
+    ownership-bearing argument cleanup to main instead of resuming the callee.
+    Consuming
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
-    outcome is discarded. Multiple or control-flow-nested suspension points,
-    dynamic delay expressions, non-tail suspended placement, and
-    cross-executor loans remain the next native state-machine slices; Stage 0
-    already implements the broader direct-call surface.
+    outcome is discarded. Cross-suspension local bindings, control-flow-nested
+    suspension points, dynamic delay expressions, non-tail suspended placement,
+    and cross-executor loans remain the next native state-machine slices; Stage
+    0 already implements the broader direct-call surface.
 
 ## Open questions
 

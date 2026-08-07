@@ -3175,6 +3175,13 @@ function appendFunction(
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
   }
+  if (declaration.mainDelaySegments.length > 0) {
+    for (const parameter of declaration.parameters) {
+      output.append("  (void)");
+      appendCBindingName(inout output, parameter.name);
+      output.append(";\n");
+    }
+  }
   for (const flag of declaration.liveFlags) {
     if (flag.parameter) {
       appendIndent(inout output, 1);
@@ -3207,7 +3214,7 @@ function appendThreadTaskRuntime(
   in program: LoweredProgram
 ): void throws String {
   const taskNames = programTaskTypeNames(program);
-  const usesInitialMainDelay = programUsesInitialMainDelay(program);
+  const usesMainDelay = programUsesMainDelay(program);
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
@@ -3241,7 +3248,7 @@ function appendThreadTaskRuntime(
     output.append("_lock(storage);\n  const bool requested = storage->cancellation_requested;\n  Z_");
     output.append(taskName);
     output.append("_unlock(storage);\n  return requested;\n}\n\n");
-    if (usesInitialMainDelay) {
+    if (usesMainDelay) {
       output.append("static __attribute__((unused)) bool Z_");
       output.append(taskName);
       output.append("_suspend_for(Z_");
@@ -3377,21 +3384,18 @@ function threadMainCallTarget(
   );
 }
 
-function threadMainCallInitialDelay(
+function threadMainCallTargetFunctionIndex(
   in program: LoweredProgram,
   in declaration: LoweredFunction,
   in expression: LoweredExpression
-): String throws String {
+): usize throws String {
   const target = try threadMainCallTarget(declaration, expression);
-  for (const candidate of program.functions) {
-    if (candidate.name == target) {
-      return candidate.initialMainDelayMilliseconds.copyBytes(
-        0,
-        candidate.initialMainDelayMilliseconds.byteLength
-      );
-    }
+  let index: usize = 0;
+  while (index < program.functions.length) {
+    if (program.functions[index].name == target) return index;
+    index = index + 1;
   }
-  return "";
+  throw `native C emission could not resolve thread.main target ${target}`;
 }
 
 function threadMainCallIsTail(
@@ -3442,17 +3446,23 @@ function appendThreadMainCallHelpers(
       );
       const nativeResultType = try cType(resultType);
       const argumentCount = expression.labels.length - 1;
-      const initialDelay = try threadMainCallInitialDelay(
+      const targetFunctionIndex = try threadMainCallTargetFunctionIndex(
         program,
         declaration,
         expression
       );
+      const suspending = program.functions[targetFunctionIndex]
+        .mainDelaySegments.length > 0;
       if (
-        initialDelay.byteLength > 0
+        suspending
         && !threadMainCallIsTail(declaration, expressionIndex)
       ) {
         throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
       }
+      if (
+        program.functions[targetFunctionIndex].parameters.length
+          != argumentCount
+      ) throw "native C emission received mismatched thread.main arguments";
       output.append("typedef struct ");
       appendThreadMainCallHelperName(
         inout output,
@@ -3487,7 +3497,66 @@ function appendThreadMainCallHelpers(
         declaration,
         expressionIndex
       );
-      output.append("_Context;\n\nstatic void ");
+      output.append("_Context;\n\n");
+      let segmentIndex: usize = 0;
+      while (
+        segmentIndex
+          < program.functions[targetFunctionIndex].mainDelaySegments.length
+      ) {
+        if (
+          program.functions[targetFunctionIndex]
+            .mainDelaySegments[segmentIndex].roots.length > 0
+        ) {
+          output.append("static void ");
+          appendThreadMainCallHelperName(
+            inout output,
+            declaration,
+            expressionIndex
+          );
+          output.append(`_segment_${segmentIndex}(void *raw_context) {\n  `);
+          appendThreadMainCallHelperName(
+            inout output,
+            declaration,
+            expressionIndex
+          );
+          output.append("_Context *context = (");
+          appendThreadMainCallHelperName(
+            inout output,
+            declaration,
+            expressionIndex
+          );
+          output.append("_Context *)raw_context;\n");
+          argument = 0;
+          while (argument < argumentCount) {
+            const targetParameter = view program.functions[
+              targetFunctionIndex
+            ].parameters[argument];
+            const nativeArgumentType = try cType(targetParameter.type);
+            output.append("  const ");
+            output.append(nativeArgumentType);
+            output.append(" ");
+            appendCBindingName(inout output, targetParameter.name);
+            output.append(` = context->argument_${argument};\n  (void)`);
+            appendCBindingName(inout output, targetParameter.name);
+            output.append(";\n");
+            argument = argument + 1;
+          }
+          for (
+            const root of program.functions[targetFunctionIndex]
+              .mainDelaySegments[segmentIndex].roots
+          ) {
+            try appendStatement(
+              inout output,
+              program.functions[targetFunctionIndex],
+              root,
+              1
+            );
+          }
+          output.append("}\n\n");
+        }
+        segmentIndex = segmentIndex + 1;
+      }
+      output.append("static void ");
       appendThreadMainCallHelperName(
         inout output,
         declaration,
@@ -3525,7 +3594,7 @@ function appendThreadMainCallHelpers(
       const runnerCall = expression.children[0];
       try appendExpression(inout output, declaration, runnerCall);
       output.append(";\n}\n\n");
-      if (initialDelay.byteLength > 0) {
+      if (suspending) {
         output.append("static void ");
         appendThreadMainCallHelperName(
           inout output,
@@ -3608,11 +3677,32 @@ function appendThreadMainCallHelpers(
         argument = argument + 1;
       }
       output.append(" };\n");
-      if (initialDelay.byteLength > 0) {
+      segmentIndex = 0;
+      while (
+        segmentIndex
+          < program.functions[targetFunctionIndex].mainDelaySegments.length
+      ) {
+        if (
+          program.functions[targetFunctionIndex]
+            .mainDelaySegments[segmentIndex].roots.length > 0
+        ) {
+          output.append("  Z_");
+          output.append(expression.value);
+          output.append("_run_on_main(storage, ");
+          appendThreadMainCallHelperName(
+            inout output,
+            declaration,
+            expressionIndex
+          );
+          output.append(`_segment_${segmentIndex}, &context);\n`);
+        }
         output.append("  if (!Z_");
         output.append(expression.value);
         output.append("_suspend_for(storage, ");
-        output.append(initialDelay);
+        output.append(
+          program.functions[targetFunctionIndex]
+            .mainDelaySegments[segmentIndex].milliseconds
+        );
         output.append(")) {\n    Z_");
         output.append(expression.value);
         output.append("_run_on_main(storage, ");
@@ -3629,6 +3719,7 @@ function appendThreadMainCallHelpers(
           output.append(nativeResultType);
           output.append("){0};\n  }\n");
         }
+        segmentIndex = segmentIndex + 1;
       }
       output.append("  Z_");
       output.append(expression.value);
@@ -5514,9 +5605,9 @@ function programUsesStandardCall(
   return false;
 }
 
-function programUsesInitialMainDelay(in program: LoweredProgram): boolean {
+function programUsesMainDelay(in program: LoweredProgram): boolean {
   for (const declaration of program.functions) {
-    if (declaration.initialMainDelayMilliseconds.byteLength > 0) return true;
+    if (declaration.mainDelaySegments.length > 0) return true;
   }
   return false;
 }
@@ -6204,7 +6295,7 @@ function emitLoweredC(
     || programUsesStandardCall(program, "console.error")
     || programUsesStandardCall(program, "console.debug");
   const usesSleep = programUsesStandardCall(program, "time.sleep");
-  const usesInitialMainDelay = programUsesInitialMainDelay(program);
+  const usesMainDelay = programUsesMainDelay(program);
   const mutexTypeNames = programMutexTypeNames(program);
   const usesMutex = mutexTypeNames.length > 0;
   const onceTypeNames = programOnceTypeNames(program);
@@ -6216,7 +6307,7 @@ function emitLoweredC(
     || usesCreateDirectories
     || usesProcessExecutablePath
     || usesSleep
-    || usesInitialMainDelay
+    || usesMainDelay
   ) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
@@ -6238,7 +6329,7 @@ function emitLoweredC(
     || usesProcessExecutablePath
     || usesProcessRun
     || usesSleep
-    || usesInitialMainDelay
+    || usesMainDelay
   ) {
     output.append("#include <errno.h>\n");
   }
@@ -6269,7 +6360,7 @@ function emitLoweredC(
   if (usesMutex || usesOnce || usesThreads) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
   }
-  if (usesSleep || usesInitialMainDelay) {
+  if (usesSleep || usesMainDelay) {
     output.append("#include <time.h>\n");
   }
   if (usesReplace) {

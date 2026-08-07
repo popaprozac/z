@@ -210,6 +210,11 @@ export struct LoweredExpression {
   captureBindingOffsets: Array<usize> = Array<usize>();
 }
 
+export struct LoweredMainDelaySegment {
+  roots: Array<usize>;
+  milliseconds: String;
+}
+
 export enum LoweredStatementKind {
   localStatement,
   assignmentStatement,
@@ -266,7 +271,7 @@ export struct LoweredFunction {
   sourcePath: String;
   nativeCExportName: String;
   asynchronous: boolean;
-  initialMainDelayMilliseconds: String;
+  mainDelaySegments: Array<LoweredMainDelaySegment>;
   receiverType: Option<LoweredType>;
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
@@ -9383,39 +9388,19 @@ function statementContainsSuspension(
   return false;
 }
 
-function functionBodyContainsSuspension(in arena: StatementArena): boolean {
-  for (const root of arena.roots) {
-    if (statementContainsSuspension(arena, root)) return true;
-  }
-  return false;
-}
-
-function initialMainDelayMilliseconds(
+function mainDelayMillisecondsAtRoot(
   in program: Program,
-  in declaration: FunctionDeclaration
+  in declaration: FunctionDeclaration,
+  rootStatement: usize
 ): String throws String {
-  if (!functionBodyContainsSuspension(declaration.body)) return "";
-  if (declaration.body.roots.length == 0) {
-    throw `native lowering requires the first suspension in ${declaration.name} to be an initial await delay(integer-literal)`;
-  }
-  let remaining: usize = 1;
-  while (remaining < declaration.body.roots.length) {
-    const remainingRoot = declaration.body.roots[remaining];
-    if (statementContainsSuspension(
-      declaration.body,
-      remainingRoot
-    )) {
-      throw `native lowering currently supports one initial await delay(integer-literal) in main-isolated async function ${declaration.name}`;
-    }
-    remaining = remaining + 1;
-  }
-  const first = declaration.body.roots[0];
+  if (!statementContainsSuspension(declaration.body, rootStatement)) return "";
   if (
-    declaration.body.nodes[first].kind != StatementKind.expressionStatement
+    declaration.body.nodes[rootStatement].kind
+      != StatementKind.expressionStatement
   ) {
-    throw `native lowering requires the first suspension in ${declaration.name} to be an initial await delay(integer-literal)`;
+    throw `native lowering requires every suspension in ${declaration.name} to be a top-level await delay(integer-literal)`;
   }
-  match (in declaration.body.nodes[first].expression) {
+  match (in declaration.body.nodes[rootStatement].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const root = tree.root;
@@ -9451,7 +9436,127 @@ function initialMainDelayMilliseconds(
     }
     none => {}
   }
-  throw `native lowering requires the first suspension in ${declaration.name} to be an initial await delay(integer-literal)`;
+  throw `native lowering requires every suspension in ${declaration.name} to be a top-level await delay(integer-literal)`;
+}
+
+function statementExpressionContainsTry(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        return expressionTreeContainsTry(tree, root);
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
+}
+
+function expressionTreeReferencesName(
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    (
+      tree.nodes[index].kind == ExpressionKind.identifierExpression
+      || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+    )
+    && tree.nodes[index].value == name
+  ) return true;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeReferencesName(tree, child, name)) return true;
+  }
+  return false;
+}
+
+function expressionTreeWritesName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length > 0
+  ) {
+    const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].children.length == 1
+      && resolvedCallReceiverMode(evidence, tree, index) == "inout"
+    ) {
+      const receiver = tree.nodes[callee].children[0];
+      if (expressionTreeReferencesName(tree, receiver, name)) return true;
+    }
+    const parameterModes = resolvedCallParameterModes(
+      program,
+      evidence,
+      tree,
+      index
+    );
+    let argument: usize = 1;
+    while (
+      argument < tree.nodes[index].children.length
+      && argument - 1 < parameterModes.length
+    ) {
+      if (
+        (
+          parameterModes[argument - 1] == "inout"
+          || parameterModes[argument - 1] == "out"
+        )
+      ) {
+        const argumentValue = tree.nodes[index].children[argument];
+        if (expressionTreeReferencesName(
+          tree,
+          argumentValue,
+          name
+        )) return true;
+      }
+      argument = argument + 1;
+    }
+  }
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeWritesName(
+      program,
+      evidence,
+      tree,
+      child,
+      name
+    )) return true;
+  }
+  return false;
+}
+
+function statementExpressionWritesName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize,
+  in name: String
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        return expressionTreeWritesName(
+          program,
+          evidence,
+          tree,
+          root,
+          name
+        );
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
 }
 
 function collectNestedTryExpressions(
@@ -11347,15 +11452,26 @@ function lowerFunction(
   in declaration: FunctionDeclaration,
   in sourcePath: String
 ): LoweredFunction throws String {
-  let initialDelayMilliseconds = "";
+  let delayCount: usize = 0;
+  let lastDelayPosition: usize = 0;
   if (declaration.asynchronous && declaration.name != "main") {
     if (declaration.executorAffinity != "thread.main") {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
-    initialDelayMilliseconds = try initialMainDelayMilliseconds(
-      program,
-      declaration
-    );
+    let position: usize = 0;
+    while (position < declaration.body.roots.length) {
+      const root = declaration.body.roots[position];
+      const delay = try mainDelayMillisecondsAtRoot(
+        program,
+        declaration,
+        root
+      );
+      if (delay.byteLength > 0) {
+        delayCount = delayCount + 1;
+        lastDelayPosition = position;
+      }
+      position = position + 1;
+    }
   }
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();
@@ -11375,15 +11491,70 @@ function lowerFunction(
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
   let sourceRoots = Array<usize>();
-  let roots = Array<usize>();
+  let planningRoots = Array<usize>();
+  let segmentRoots = Array<usize>();
+  let mainDelaySegments = Array<LoweredMainDelaySegment>();
   let rootPosition: usize = 0;
   for (const root of declaration.body.roots) {
-    if (
-      initialDelayMilliseconds.byteLength > 0
-      && rootPosition == 0
-    ) {
+    let delay = "";
+    if (delayCount > 0) {
+      delay = try mainDelayMillisecondsAtRoot(
+        program,
+        declaration,
+        root
+      );
+    }
+    if (delay.byteLength > 0) {
+      mainDelaySegments.push(LoweredMainDelaySegment({
+        roots: move segmentRoots,
+        milliseconds: move delay,
+      }));
+      segmentRoots = Array<usize>();
       rootPosition = rootPosition + 1;
       continue;
+    }
+    if (
+      delayCount > 0
+      && rootPosition < lastDelayPosition
+      && (
+        declaration.body.nodes[root].kind
+          != StatementKind.expressionStatement
+        || statementExpressionContainsTry(declaration.body, root)
+      )
+    ) {
+      throw `native lowering does not yet preserve local control flow or bindings across suspension in ${declaration.name}; keep pre-suspension segments to synchronous expression statements`;
+    }
+    if (delayCount > 0 && rootPosition < lastDelayPosition) {
+      let parameterIndex: usize = 0;
+      while (parameterIndex < declaration.parameters.length) {
+        const parameter = view declaration.parameters[parameterIndex];
+        if (statementExpressionWritesName(
+          program,
+          evidence,
+          declaration.body,
+          root,
+          parameter.name
+        )) {
+          throw `native lowering does not yet preserve writes to parameter ${parameter.name} across suspension in ${declaration.name}`;
+        }
+        if (
+          moduleTypeNeedsCleanup(
+            program,
+            importedTypes,
+            parameters[parameterIndex].type
+          )
+          && statementMovesName(
+            program,
+            evidence,
+            declaration.body,
+            declaration.body.nodes[root],
+            parameter.name
+          )
+        ) {
+          throw `native lowering does not yet preserve ownership transfer of parameter ${parameter.name} across suspension in ${declaration.name}`;
+        }
+        parameterIndex = parameterIndex + 1;
+      }
     }
     sourceRoots.push(root);
     const loweredRoot = try lowerStatement(
@@ -11396,9 +11567,19 @@ function lowerFunction(
       inout expressions,
       inout statements
     );
-    roots.push(loweredRoot);
+    if (
+      delayCount > 0
+      && rootPosition < lastDelayPosition
+      && statements[loweredRoot].kind
+        != LoweredStatementKind.expressionStatement
+    ) {
+      throw `native lowering does not yet preserve normalized control flow across suspension in ${declaration.name}`;
+    }
+    planningRoots.push(loweredRoot);
+    segmentRoots.push(loweredRoot);
     rootPosition = rootPosition + 1;
   }
+  const roots = move segmentRoots;
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
     const parameter = view declaration.parameters[parameterIndex];
@@ -11452,7 +11633,7 @@ function lowerFunction(
     declaration.body,
     declaration.name,
     sourceRoots,
-    roots,
+    planningRoots,
     ownedParameters,
     expressions,
     inout statements,
@@ -11510,7 +11691,7 @@ function lowerFunction(
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
     asynchronous: declaration.asynchronous,
-    initialMainDelayMilliseconds: move initialDelayMilliseconds,
+    mainDelaySegments,
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters,
@@ -11576,7 +11757,7 @@ function lowerDeinitializer(
     sourcePath: "",
     nativeCExportName: "",
     asynchronous: false,
-    initialMainDelayMilliseconds: "",
+    mainDelaySegments: Array<LoweredMainDelaySegment>(),
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters: Array<LoweredParameter>(),
