@@ -54,9 +54,13 @@ export function currentApplication(): Application {
   return application.get();
 }
 
-export function publishApplicationStatus(
+export async function publishApplicationStatus(
   ticket: i32
-): void on thread.main {
+): String throws i32 on thread.main {
+  if (ticket < 0) {
+    throw -1;
+  }
   const current = currentApplication();
   current.publish(ticket);
+  return current.currentStatus();
 }

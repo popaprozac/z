@@ -2804,6 +2804,21 @@ function resolvedCallKind(
   return "";
 }
 
+function resolvedCallIsAsynchronous(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.asynchronous;
+  }
+  return false;
+}
+
 function resolvedCallReceiverMode(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -4195,6 +4210,87 @@ function evidenceResolvedExpressionTypeName(
   return Option<String>.none;
 }
 
+function lowerPlacedDirectCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (
+    tree.nodes[index].kind != ExpressionKind.callExpression
+    || tree.nodes[index].children.length == 0
+  ) throw "native main placement requires one direct call";
+  const calleeInput = tree.nodes[index].children[0];
+  if (tree.nodes[calleeInput].kind != ExpressionKind.identifierExpression) {
+    throw "native main placement currently requires a direct Z function call";
+  }
+  let target = "";
+  match (resolvedCallTarget(evidence, tree, index)) {
+    some(name) => target = move name;
+    none => match (importedCallTarget(
+      program,
+      tree.nodes[calleeInput].value
+    )) {
+      some(name) => target = move name;
+      none => {}
+    }
+  }
+  if (target.byteLength == 0) {
+    throw "native main placement could not resolve its direct Z function";
+  }
+  const callee = pushExpression(
+    inout output,
+    LoweredExpressionKind.localValue,
+    target,
+    Array<usize>(),
+    Array<String>()
+  );
+  const parameterModes = resolvedCallParameterModes(
+    program,
+    evidence,
+    tree,
+    index
+  );
+  let labels = Array<String>();
+  for (const mode of parameterModes) {
+    labels.push(mode.copyBytes(0, mode.byteLength));
+  }
+  let children = Array<usize>();
+  children.push(callee);
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    const argumentInput = tree.nodes[index].children[argument];
+    let value = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      argumentInput,
+      inout output
+    );
+    if (
+      parameterModes.length >= argument
+      && parameterModes[argument - 1] == "value"
+    ) value = wrapImplicitOwnedTransfer(
+      tree,
+      argumentInput,
+      value,
+      inout output
+    );
+    children.push(value);
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.directCall,
+    "",
+    children,
+    labels
+  );
+}
+
 function lowerExpression(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -4248,7 +4344,6 @@ function lowerExpression(
     }
     let callReturnType = "";
     let callErrorType = "";
-    let callAsynchronous = false;
     for (const resolution of evidence.callResolutions) {
       if (
         resolution.offset == tree.nodes[callInput].offset
@@ -4263,15 +4358,23 @@ function lowerExpression(
           0,
           resolution.errorType.byteLength
         );
-        callAsynchronous = resolution.asynchronous;
       }
     }
-    if (
-      callReturnType != "void"
-      || callErrorType.byteLength > 0
-      || callAsynchronous
-    ) {
-      throw "native main placement currently requires a synchronous nonthrowing void call";
+    let returnType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      callReturnType
+    );
+    if (callErrorType.byteLength > 0) {
+      const errorType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        callErrorType
+      );
+      returnType = LoweredType({
+        kind: LoweredTypeKind.enumType,
+        name: intrinsicResultName(returnType, errorType),
+      });
     }
     const parameterTypes = resolvedCallParameterTypes(
       evidence,
@@ -4284,7 +4387,7 @@ function lowerExpression(
       tree,
       callInput
     );
-    const loweredCall = try lowerExpression(
+    const loweredCall = try lowerPlacedDirectCall(
       program,
       importedTypes,
       evidence,
@@ -4301,6 +4404,7 @@ function lowerExpression(
     let runnerChildren = Array<usize>();
     runnerChildren.push(output[loweredCall].children[0]);
     let labels = Array<String>();
+    labels.push(loweredTypeIdentity(returnType));
     let argument: usize = 0;
     while (argument < parameterTypes.length) {
       if (parameterModes[argument] != "value") {
@@ -4311,9 +4415,6 @@ function lowerExpression(
         importedTypes,
         parameterTypes[argument]
       );
-      if (moduleTypeNeedsCleanup(program, importedTypes, parameterType)) {
-        throw "native main placement currently requires cleanup-free arguments";
-      }
       labels.push(loweredTypeIdentity(parameterType));
       const parameterName = `_z_stage1_main_argument_${argument}`;
       const parameterValue = pushExpression(
@@ -4928,6 +5029,9 @@ function lowerExpression(
   if (tree.nodes[index].kind == ExpressionKind.callExpression) {
     if (tree.nodes[index].children.length == 0) {
       throw "native lowering received a malformed call expression";
+    }
+    if (resolvedCallIsAsynchronous(evidence, tree, index)) {
+      throw "native lowering requires an explicit supported placement for async function calls";
     }
     const calleeInput = tree.nodes[index].children[0];
     if (
@@ -7735,6 +7839,21 @@ function directThrowingCallResult(
   in ownerName: String
 ): Option<LoweredEnum> throws String {
   if (
+    tree.nodes[index].kind
+      == ExpressionKind.executorPlacementExpression
+    && tree.nodes[index].children.length == 3
+  ) {
+    const call = tree.nodes[index].children[2];
+    return try directThrowingCallResult(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      call,
+      ownerName
+    );
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.awaitExpression
     && tree.nodes[index].children.length == 1
   ) {
@@ -8891,6 +9010,15 @@ function completeNativeClosureBlocks(
               some(value) => value;
               none => throw "native fallible worker lowering requires an explicit return value";
             };
+            if (
+              expressions[returned].kind
+                == LoweredExpressionKind.threadMainCall
+              && expressions[returned].labels.length > 0
+              && expressions[returned].labels[0] == resultName
+            ) {
+              workerStatement = workerStatement + 1;
+              continue;
+            }
             let workerPayload = returned;
             match (in enclosingResult) {
               some(outer) => {
@@ -9168,6 +9296,64 @@ function expressionTreeContainsTry(
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
   for (const child of tree.nodes[index].children) {
     if (expressionTreeContainsTry(tree, child)) return true;
+  }
+  return false;
+}
+
+function expressionTreeContainsSuspension(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind
+      == ExpressionKind.executorPlacementExpression
+  ) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsSuspension(tree, child)) return true;
+  }
+  return false;
+}
+
+function statementContainsSuspension(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.asyncScopeStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
+  ) return true;
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsSuspension(tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsSuspension(tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsSuspension(arena, child)) return true;
+  }
+  return false;
+}
+
+function functionBodyContainsSuspension(in arena: StatementArena): boolean {
+  for (const root of arena.roots) {
+    if (statementContainsSuspension(arena, root)) return true;
   }
   return false;
 }
@@ -10994,7 +11180,12 @@ function lowerFunction(
   in sourcePath: String
 ): LoweredFunction throws String {
   if (declaration.asynchronous && declaration.name != "main") {
-    throw `native lowering does not support async function ${declaration.name} yet`;
+    if (
+      declaration.executorAffinity != "thread.main"
+      || functionBodyContainsSuspension(declaration.body)
+    ) {
+      throw `native lowering does not support suspending async function ${declaration.name} yet`;
+    }
   }
   let parameters = Array<LoweredParameter>();
   let ownedParameters = Array<LoweredCleanup>();

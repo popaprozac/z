@@ -1881,9 +1881,13 @@ worker executing a direct `await on thread.main` publishes a typed callback and
 waits; `main`'s await pumps the callback before joining, then wakes the worker
 to finish. This first native tier requires the task to be created and awaited
 by `main`; it fails closed rather than treating an arbitrary creator as the main
-thread. The current placed-call tier is deliberately narrow: one synchronous,
-nonthrowing `void` Z call with cleanup-free value arguments. Its stack context
-remains valid because the worker waits for completion.
+thread. The current placed-call tier accepts a synchronous nonthrowing call or
+a suspension-free async call with typed failure. It carries `void`, scalar, or
+ownership-bearing results and transfers owned value arguments through the
+request context. Borrowed and mutable arguments remain deferred to the unified
+cross-executor exclusivity checker. The stack context remains valid because the
+worker waits for completion, and its `Result<T, E>` moves back into the worker
+before that context ends.
 
 That is enough to emit, strict-compile, and run the unchanged Zapp skeleton.
 The native path constructs its imported `Application`, publishes it through

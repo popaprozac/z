@@ -26,8 +26,9 @@ The example combines the four framework foundations:
 3. `status: String on thread.main` makes presentation and lifecycle
    main-bound. The worker cannot read or write it directly.
 4. `thread.spawn(async ...)` performs blocking native work on a dedicated
-   worker, then `await on thread.main publishApplicationStatus(ticket)`
-   explicitly delivers the result to the UI executor.
+   worker, then `try await on thread.main publishApplicationStatus(ticket)`
+   explicitly delivers it to the UI executor and carries an owned `String` or
+   typed status failure back through `Task<String, i32>`.
 
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.

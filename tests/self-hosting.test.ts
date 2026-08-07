@@ -2053,7 +2053,7 @@ test("runs the Zapp worker and main-thread publication natively", () => {
       { encoding: "utf8" },
     );
     assert.equal(emission.status, 0, emission.stderr);
-    assert.match(emission.stdout, /Z_Task_i32_run_on_main/);
+    assert.match(emission.stdout, /Z_Task_\S+_run_on_main/);
     assert.match(emission.stdout, /main_request_pending/);
     assert.match(emission.stdout, /z_stage1_thread_main_call_main_\d+/);
     assert.match(emission.stdout, /z_stage1_sleep\(10\)/);
@@ -2683,6 +2683,74 @@ int main(void) {
     rmSync(directory, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("returns scalar, owned, and typed-error values through native thread.main placement", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-main-result-");
+  const fixtures = [
+    "self-host-emit-thread-main-result.zs",
+    "self-host-emit-thread-main-owned.zs",
+    "self-host-emit-thread-main-error.zs",
+  ];
+  try {
+    for (const fixture of fixtures) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(emission.stdout, /_Context \{[\s\S]* result;/);
+      assert.match(emission.stdout, /context->result = publish/);
+      assert.match(emission.stdout, /return context\.result;/);
+
+      const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
+      const compilation = spawnSync(
+        "clang",
+        [
+          "-x",
+          "c",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pthread",
+          "-",
+          "-o",
+          executable,
+        ],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+
+    const unplacedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-unplaced-async-invalid.zs",
+    );
+    const unplaced = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", unplacedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(unplaced.status, 1);
+    assert.match(
+      unplaced.stderr,
+      /requires an explicit supported placement for async function calls/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 30_000);
 
 test("lowers filesystem lock ownership through the native frontend", () => {
   const input = resolve(
@@ -4055,7 +4123,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(loweringOnlyCheck.status, 1);
   assert.match(
     loweringOnlyCheck.stderr,
-    /native lowering does not support async function deferred yet/,
+    /native lowering does not support suspending async function deferred yet/,
   );
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");

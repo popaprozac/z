@@ -3315,8 +3315,15 @@ function appendThreadMainCallHelpers(
       }
       if (
         expression.value.byteLength == 0
-        || expression.children.length != expression.labels.length + 1
+        || expression.labels.length == 0
+        || expression.children.length != expression.labels.length
       ) throw "native C emission received malformed thread.main call evidence";
+      const resultType = try loweredTypeForIdentity(
+        program,
+        expression.labels[0]
+      );
+      const nativeResultType = try cType(resultType);
+      const argumentCount = expression.labels.length - 1;
       output.append("typedef struct ");
       appendThreadMainCallHelperName(
         inout output,
@@ -3325,10 +3332,15 @@ function appendThreadMainCallHelpers(
       );
       output.append("_Context {\n");
       let argument: usize = 0;
-      while (argument < expression.labels.length) {
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("  ");
+        output.append(nativeResultType);
+        output.append(" result;\n");
+      }
+      while (argument < argumentCount) {
         const argumentType = try loweredTypeForIdentity(
           program,
-          expression.labels[argument]
+          expression.labels[argument + 1]
         );
         const nativeArgumentType = try cType(argumentType);
         output.append("  ");
@@ -3336,7 +3348,10 @@ function appendThreadMainCallHelpers(
         output.append(` argument_${argument};\n`);
         argument = argument + 1;
       }
-      if (expression.labels.length == 0) output.append("  char unused;\n");
+      if (
+        resultType.kind == LoweredTypeKind.voidType
+        && argumentCount == 0
+      ) output.append("  char unused;\n");
       output.append("} ");
       appendThreadMainCallHelperName(
         inout output,
@@ -3363,10 +3378,10 @@ function appendThreadMainCallHelpers(
       );
       output.append("_Context *)raw_context;\n");
       argument = 0;
-      while (argument < expression.labels.length) {
+      while (argument < argumentCount) {
         const argumentType = try loweredTypeForIdentity(
           program,
-          expression.labels[argument]
+          expression.labels[argument + 1]
         );
         const nativeArgumentType = try cType(argumentType);
         output.append("  const ");
@@ -3375,9 +3390,14 @@ function appendThreadMainCallHelpers(
         argument = argument + 1;
       }
       output.append("  ");
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("context->result = ");
+      }
       const runnerCall = expression.children[0];
       try appendExpression(inout output, declaration, runnerCall);
-      output.append(";\n}\n\nstatic void ");
+      output.append(";\n}\n\nstatic ");
+      output.append(nativeResultType);
+      output.append(" ");
       appendThreadMainCallHelperName(
         inout output,
         declaration,
@@ -3387,10 +3407,10 @@ function appendThreadMainCallHelpers(
       output.append(expression.value);
       output.append("Storage *storage");
       argument = 0;
-      while (argument < expression.labels.length) {
+      while (argument < argumentCount) {
         const argumentType = try loweredTypeForIdentity(
           program,
-          expression.labels[argument]
+          expression.labels[argument + 1]
         );
         const nativeArgumentType = try cType(argumentType);
         output.append(", ");
@@ -3405,9 +3425,12 @@ function appendThreadMainCallHelpers(
         expressionIndex
       );
       output.append("_Context context = { ");
-      if (expression.labels.length == 0) output.append(".unused = 0");
+      if (
+        resultType.kind == LoweredTypeKind.voidType
+        && argumentCount == 0
+      ) output.append(".unused = 0");
       argument = 0;
-      while (argument < expression.labels.length) {
+      while (argument < argumentCount) {
         if (argument > 0) output.append(", ");
         output.append(`.argument_${argument} = argument_${argument}`);
         argument = argument + 1;
@@ -3420,7 +3443,11 @@ function appendThreadMainCallHelpers(
         declaration,
         expressionIndex
       );
-      output.append("_run, &context);\n}\n\n");
+      output.append("_run, &context);\n");
+      if (resultType.kind != LoweredTypeKind.voidType) {
+        output.append("  return context.result;\n");
+      }
+      output.append("}\n\n");
       expressionIndex = expressionIndex + 1;
     }
   }

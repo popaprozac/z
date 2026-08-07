@@ -697,6 +697,13 @@ later without making executor blocks a special case.
     `try await on thread.main load(inout state)`. The function arguments are
     the capability boundary and therefore need no `using` clause. Placement
     blocks retain `using (...)` for lexical captures and multiple statements.
+13. **Partial in the fixed-point native backend:** a dedicated worker can send
+    owned value arguments to either a synchronous nonthrowing main-isolated
+    function or a suspension-free async one, then receive scalar,
+    ownership-bearing, or typed-error results without deadlocking the joining
+    main thread. Cancellation-aware in-flight cleanup, suspending callee
+    taskification, and cross-executor loans remain the next native slices;
+    Stage 0 already implements the broader direct-call surface.
 
 ## Open questions
 
