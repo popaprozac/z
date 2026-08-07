@@ -14,7 +14,7 @@ Run one tier while developing:
 
 | Command | Coverage |
 |---|---|
-| `bun run test:language` | Core syntax, semantics, ownership, collections, generators, errors, standard modules, and editor smoke tests |
+| `bun run test:language` | Core syntax, semantics, ownership, collections, generators, errors, standard modules, documentation links, and editor smoke tests |
 | `bun run test:native-interop` | C ABI export, C/C++ imports, `.zd`, callbacks, `unsafe`, and `raw` |
 | `bun run test:objc-interop` | Objective-C, AppKit, application pressure tests, ARC, and callback lifetimes |
 | `bun run test:swift-interop` | Generated Objective-C/C++ Swift interfaces, task projection, and current ABI boundaries |
@@ -26,6 +26,11 @@ after adding or moving a top-level `tests/*.test.ts` file. The verifier fails
 when a test is missing from the manifest, appears in multiple tiers, or a tier
 still names a deleted file. CI runs this coverage check once before starting
 the tier matrix.
+
+`tests/documentation.test.ts` walks the maintained Markdown surface and rejects
+broken repository-local links. It intentionally does not validate external URLs
+or turn prose implementation claims into tests; executable claims should point
+to a checked example or an owning regression test.
 
 The shared utilities in `tests/support/bootstrap.ts` provide repository paths,
 editor-token decoding, host-toolchain timeouts, and writable Clang/Swift module

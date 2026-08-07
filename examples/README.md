@@ -23,14 +23,34 @@ checked Z-to-C exports as static and shared native artifacts.
 runtime initialization, host-thread entry, busy versus draining teardown,
 join, and shutdown.
 
+Examples follow these conventions:
+
+- a standalone `.zs` file is expected to pass `z check`; use `z run` when it
+  defines an executable `main`;
+- a directory with `z.json` is a complete project and should be invoked by its
+  directory unless its README names a focused entry override;
+- platform, SDK, library, network, or GUI requirements are stated in the local
+  README; compile-only and intentionally negative probes live in the tests;
+- [`language/design/future.md`](language/design/future.md) is the sole
+  hypothetical syntax sketch and is deliberately not runnable.
+
+For a representative learning path, start with `first`, `construction`,
+`result`, `borrowed-parameters`, `copy-move`, and `parameter-views`; then move
+to collections, structured async, one native boundary, and finally an
+application-shaped pressure test such as Z Notes.
+
 ## Language
 
 ### Basics
 
 - [`first.zs`](language/basics/first.zs): first native program and direct C call
 - [`console.zs`](language/basics/console.zs): typed logging and interpolation
+- [`numeric-conversions.zs`](language/basics/numeric-conversions.zs): explicit checked and check-free numeric construction
 - [`construction.zs`](language/basics/construction.zs): struct construction and class-only `new`
 - [`struct-defaults.zs`](language/basics/struct-defaults.zs) and [`optional-fields.zs`](language/basics/optional-fields.zs): independently evaluated defaults and optional-presence fields backed by `Option<T>`
+- [`struct-spread.zs`](language/basics/struct-spread.zs): same-type derivation with explicit `copy` or `move` ownership
+- [`destructuring.zs`](language/basics/destructuring.zs) and [`array-destructuring.zs`](language/basics/array-destructuring.zs): field, alias, positional, discard, and borrowed rest patterns
+- [`optional-chaining.zs`](language/basics/optional-chaining.zs): flat conditional access over `Option` and nullable receivers
 - [`structs.zs`](language/basics/structs.zs), [`classes.zs`](language/basics/classes.zs), and [`constructors.zs`](language/basics/constructors.zs)
 - [`mutation.zs`](language/basics/mutation.zs), [`mutable-methods.zs`](language/basics/mutable-methods.zs), and [`static-methods.zs`](language/basics/static-methods.zs)
 - [`function-values.zs`](language/basics/function-values.zs) and [`closures.zs`](language/basics/closures.zs)
@@ -51,6 +71,8 @@ join, and shutdown.
 ### Ownership
 
 - [`borrowed-parameters.zs`](language/ownership/borrowed-parameters.zs) and [`consuming-methods.zs`](language/ownership/consuming-methods.zs)
+- [`copy-move.zs`](language/ownership/copy-move.zs): deliberate duplication versus ownership transfer
+- [`parameter-views.zs`](language/ownership/parameter-views.zs): owner-tied zero-copy return views
 - [`deinit.zs`](language/ownership/deinit.zs) and [`replacement.zs`](language/ownership/replacement.zs)
 - [`mutex-state.zs`](language/ownership/mutex-state.zs): blocking exclusive access through synchronous non-escaping `in` and `inout` closures
 - [`local-views.zs`](language/ownership/local-views.zs): name a zero-copy field/index projection until its last use
@@ -113,7 +135,7 @@ support or producing language-server diagnostics from hypothetical imports.
 
 ## Async
 
-- [`async-phase-0.zs`](async/async-phase-0.zs): overview of the implemented model
+- [`async-overview.zs`](async/async-overview.zs): overview of the implemented model
 - [`async-sequential.zs`](async/async-sequential.zs), [`async-tasks.zs`](async/async-tasks.zs), [`async-scopes.zs`](async/async-scopes.zs), and [`async-scope-locals.zs`](async/async-scope-locals.zs)
 - [`async-branch-expressions.zs`](async/async-branch-expressions.zs): selected-only suspension in logical, ternary, value-`if`, and loop-condition branches
 - [`async-errors.zs`](async/async-errors.zs), [`async-owned-errors.zs`](async/async-owned-errors.zs), [`async-cancellation.zs`](async/async-cancellation.zs), [`async-caller-cancellation.zs`](async/async-caller-cancellation.zs), [`async-delay.zs`](async/async-delay.zs), and [`scheduler-yield.zs`](async/scheduler-yield.zs)

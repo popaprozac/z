@@ -7,6 +7,12 @@ implementation coverage belongs in
 [`docs/bootstrap-status.md`](docs/bootstrap-status.md), not in the language
 contract.
 
+Reading convention: unqualified rules in the core-semantics sections describe
+accepted language design. Sections explicitly labeled future, intended,
+proposed, or open remain design direction rather than an implementation claim.
+The implementation-status document is the authority when deciding whether a
+program should compile today.
+
 ## Thesis
 
 Z is a memory-safe native language with TypeScript-like syntax and

@@ -48,8 +48,9 @@ explicit main placement. This mixed class exposes only its readonly thread-safe
 and mutex-backed surface there; `current.windowId` and
 `current.currentWindowId()` still require main proof. ARC retain is atomic, and
 when the worker releases its handle the final cleanup is queued back to the
-owning executor. Foreign-created threads remain a separate executor-registration
-contract.
+owning executor. Foreign-created threads must enter through a checked `thread
+any` callback or generated embedding-runtime boundary; bounded runtime entry
+does not make them executors or grant main-thread access.
 
 The next framework pressure test is a small user-defined Zapp skeleton that
 combines this root, mutex-protected framework state, background work, explicit

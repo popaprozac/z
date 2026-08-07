@@ -10,7 +10,7 @@ bun run bench
 
 The harness:
 
-- emits Z through the current Bun-hosted stage-0 compiler;
+- emits Z through the current Bun-hosted Stage-0 compiler;
 - compiles generated C with `-O3 -DNDEBUG`;
 - compiles C/C++ baselines with the same optimizer;
 - includes Rust, Zig ReleaseSafe, and Nim ARC release implementations where

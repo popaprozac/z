@@ -1,5 +1,10 @@
 # Performance
 
+This document is an append-only record of dated measurements. Results describe
+the named compiler revision, machine, profile, and semantic workload; they are
+evidence about Z's performance ceiling, not timeless headline numbers. Current
+feature coverage belongs in [`bootstrap-status.md`](bootstrap-status.md).
+
 Z's performance target is the ceiling of C, C++, Rust, and Zig when equivalent
 ownership and safety semantics are requested. Familiar syntax is not a reason to
 accept a JavaScript-like runtime tax.

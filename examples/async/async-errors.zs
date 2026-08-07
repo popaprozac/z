@@ -1,4 +1,4 @@
-// Phase 1 scalar task outcomes: throw, attempt await, and try await.
+// Typed async outcomes use throw, attempt await, and try await.
 
 async function succeed(value: i32): i32 throws i32 {
   return value;

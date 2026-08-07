@@ -35,7 +35,11 @@ published root is removed deterministically after all structured work joins.
 Atomic affine ARC and executor-routed final release keep `Application.deinit`
 on main even though workers temporarily retain the identity.
 
-Arbitrary foreign-created threads are not covered by this tier; they need a
-future executor-registration contract. Real platform windows, webviews, IPC,
-assets, packaging, and plugin APIs belong to the eventual framework rather
-than this language pressure test.
+This program uses a Z-created worker. A foreign-created thread enters Z through
+a checked `.zd` `thread any` callback or a generated embedding-runtime entry;
+that bounded entry restores runtime ownership but does not turn the foreign
+thread into a Z executor. See
+[`foreign-thread-application-root.zs`](../../async/foreign-thread-application-root.zs)
+and [`z-runtime-export`](../../interop/c/z-runtime-export) for those two shapes.
+Real platform windows, webviews, IPC, assets, packaging, and plugin APIs belong
+to the eventual framework rather than this language pressure test.

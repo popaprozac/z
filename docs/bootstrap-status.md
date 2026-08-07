@@ -1,11 +1,16 @@
 # Bootstrap implementation status
 
-Last reviewed: 2026-08-03.
+Last reviewed: 2026-08-07.
 
-This document answers “what does the Bun/TypeScript stage-0 compiler implement
-today?” It is not the language specification. Accepted source semantics live in
+This document answers “what do the Bun/TypeScript Stage-0 compiler and the
+fixed-point native compiler implement today?” It is not the language
+specification. Accepted source semantics live in
 [`language-reference.md`](language-reference.md); design rationale and open
 questions live in [`DESIGN.md`](../DESIGN.md).
+
+The summary tables describe the current tested boundary. Dated continuation
+notes later in this document are chronological engineering evidence; they are
+not a second, competing status definition.
 
 Status meanings:
 
@@ -66,7 +71,7 @@ an inferred receiver-tied view.
 | Area | Status | Current boundary |
 | --- | --- | --- |
 | Z source modules | Partial | Explicit exports, namespace/selective imports, aliases, cycle diagnostics, and canonical native type identity across intermediate modules. Stage 0 supports the broader language; the fixed-point native driver resolves and lowers its complete 37-module self-hosting graph plus the demonstrated application subset |
-| `std/sync` `Once<T>` | Implemented synchronized main-lifecycle ARC tier | A module-level `const` may hold a statically empty `Once<T>` for a Z ARC class whose lifecycle belongs to `thread.main`. `initialize(move value)` publishes one strong root and returns a move-only `OnceLifetime<T>` whose deterministic cleanup removes that root on main. Mutex-protected `get(): T` may retain the identity on any Z-managed thread; member affinity still restricts what the caller can use, affine ARC is atomic, and final worker release is routed to main. Construction errors occur before publication; never-initialized, closed-lifetime, duplicate-initialize, and closed-cell reinitialize traps are distinguished. Retrieval racing cleanup is memory-safe but outcome-ordered, so workers that may retrieve must join before lifetime cleanup. Foreign-thread executor registration, value/native payloads, optional cells, replacement, and concurrent weak upgrade remain deferred |
+| `std/sync` `Once<T>` | Implemented synchronized main-lifecycle ARC tier | A module-level `const` may hold a statically empty `Once<T>` for a Z ARC class whose lifecycle belongs to `thread.main`. `initialize(move value)` publishes one strong root and returns a move-only `OnceLifetime<T>` whose deterministic cleanup removes that root on main. Mutex-protected `get(): T` may retain the identity on any Z-managed thread; member affinity still restricts what the caller can use, affine ARC is atomic, and final worker release is routed to main. Construction errors occur before publication; never-initialized, closed-lifetime, duplicate-initialize, and closed-cell reinitialize traps are distinguished. Retrieval racing cleanup is memory-safe but outcome-ordered, so workers that may retrieve must join before lifetime cleanup. Checked foreign-thread runtime entry can retrieve the cell through `thread any` callbacks and embedding exports; turning arbitrary foreign threads into Z executors, value/native payloads, optional cells, replacement, and concurrent weak upgrade remain deferred |
 | `std/sync` `Mutex<T>` | Implemented scoped exclusive shared-identity tier | `const state = Mutex(value)` owns an atomically retained handle to address-stable storage backed by a real OS mutex. `withLock((in value) => ...)` and `withLock((inout value) => ...)` synchronously block the current OS thread, expose a non-escaping read or read/write borrow, and release the mutex on normal return or typed failure. Independently owned results may leave; `await`, escaping capture, and borrowed/view results are rejected while locked. A native-worker closure may retain the same Mutex when `T` is transferable and safely destructible on the worker; the caller remains valid and final release destroys the cell once. Main-isolated and otherwise unsafe payloads are rejected at the thread boundary. Read/write locks, atomics, condition variables, semaphores, asynchronous/timed/nonblocking acquisition, explicit handle copying, and public guard values remain deferred |
 | CLI | Implemented project-target slice | Stage 0 and the fixed-point native `z` accept a source file or a `z.json` project for `check`, `run`, and read-only source `emit`, and build named executable, static-library, or shared-library targets from a project directory. Every manifest target has `name` and `entry`; omitted `kind` means executable, while explicit source files override entry selection without discarding target configuration. Tests, `--release`, program arguments after `--`, and live run/test I/O remain. Versioned shared-library policy, Windows import libraries, header-only emission, and the remaining production options are later layers |
 | Native tests | Implemented expectation tier | Top-level `test "name" {}` declarations work in ordinary `.zs` modules, share private module scope, remain in native-frontend parser/semantic parity, and are omitted completely from production emission. Both Stage 0 and the fixed-point native `z test <file.zs>` discover synchronous tests through that file's project-owned imports and execute one native runner. Imported `std/test` provides statement-bounded `expect(...).toEqual(...)` and cleanup-preserving `fail(...)`; failures return owned diagnostics with source locations and later tests continue. Filtering, reusable assertion helpers, project-wide discovery outside the selected import graph, and async tests remain |

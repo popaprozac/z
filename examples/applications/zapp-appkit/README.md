@@ -40,5 +40,5 @@ bound.
 
 AppKit construction currently lives in the synchronous, main-bound
 `createApplication()` helper. Direct imported Objective-C expressions inside
-an async frame remain a known Phase 1 lowering boundary; the helper does not
-weaken or hide the executor contract.
+an async frame remain outside the current executable async lowering subset; the
+helper does not weaken or hide the executor contract.

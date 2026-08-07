@@ -690,7 +690,7 @@ hostToolchainTest("publishes owned worker results through borrowed Objective-C i
 }, 10_000);
 
 test("runs async match expressions with checked arithmetic and editor details", () => {
-  const example = resolve(projectRoot, "examples/async/async-phase-0.zs");
+  const example = resolve(projectRoot, "examples/async/async-overview.zs");
   const source = readFileSync(example, "utf8");
   check(source, example);
 

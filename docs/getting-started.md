@@ -52,6 +52,29 @@ Z uses `.zs` for source modules and `.zd` for foreign declaration contracts.
 The project intentionally does not associate `.z` with Z source because Unix
 tooling commonly recognizes it as a compressed archive.
 
+## Idiomatic starting points
+
+Z makes consequential operations readable at the point where they happen:
+
+| Need | Preferred shape |
+| --- | --- |
+| Immutable or mutable local storage | Start with `const`; use `let` only when the binding or value must be reassigned or mutated |
+| Read without ownership transfer | Declare `in value: T`; call-site `in` is optional for immutable borrows |
+| Mutate caller storage | Declare and call with `inout value`; both sides expose exclusive mutation |
+| Initialize caller storage | Declare and call with `out value`; the callee must initialize it on every successful path |
+| Transfer or duplicate ownership deliberately | Use `move value` or `copy value`; neither is a disguised borrow |
+| Construct values and identities | Use `Point({ x: 1, y: 2 })` for a struct and `new Session({ id: 1 })` for a class |
+| Handle typed failure | `try operation()` propagates; `attempt operation()` keeps a `Result<T, E>` for local matching |
+| Inspect without consuming an owned enum | Use `match (in value)`; plain `match (value)` consumes ownership-bearing storage |
+| Produce a local expression value | Use `select`; `return` always exits the enclosing function and `throw` exits through its typed error channel |
+| Represent Z-domain absence | Prefer `Option<T>`; use `T | null` at native nullable boundaries and `Option.fromNullable` when domain matching is clearer |
+| Run concurrent async work | Use hot `task` children plus lexical joins; use `thread.spawn` only for a dedicated OS thread |
+| Call native code safely | Import the real header, add `.zd` only for missing semantic facts, use `unsafe` for a local typed assertion, and reserve `raw` for an isolated native-language boundary |
+
+These are defaults rather than performance folklore. Copying, retaining,
+allocating, blocking, and executor placement remain explicit semantic choices;
+the optimizer may remove work only when doing so preserves those choices.
+
 ## CLI commands
 
 The repository Stage-0 command accepts either a source file or a project

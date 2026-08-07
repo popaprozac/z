@@ -28,7 +28,7 @@ function main(): i32 {
 bun run z run examples/language/basics/first.zs
 ```
 
-The stage-0 compiler is written in TypeScript, runs on Bun, and emits readable
+The Stage-0 compiler is written in TypeScript, runs on Bun, and emits readable
 C, C++20, Objective-C ARC, or Objective-C++ before the platform compiler
 produces a native binary:
 
@@ -189,6 +189,8 @@ bun run bootstrap
 The bootstrap suite is split into independently runnable language, native
 interop, Objective-C, Swift, self-hosting, and async tiers. See
 [`docs/testing.md`](docs/testing.md) for the commands and CI architecture.
+The `.test.zs` suffix shown above is an optional organization convention; tests
+are ordinary top-level declarations and may live beside the source they cover.
 
 `bun run bootstrap` additionally produces `.z-cache/bootstrap/z` and an
 adjacent standalone foreign-metadata adapter. That native toolchain runs its
@@ -220,7 +222,7 @@ Each document has one job:
 | [Examples](docs/examples.md) | Curated runnable programs by language area |
 | [Language reference](docs/language-reference.md) | Accepted source semantics |
 | [Design charter](DESIGN.md) | Rationale, tradeoffs, intended direction, open questions |
-| [Bootstrap status](docs/bootstrap-status.md) | What the stage-0 implementation supports now |
+| [Bootstrap status](docs/bootstrap-status.md) | Exact Stage-0 and fixed-point native implementation coverage |
 | [Async model](docs/async-model.md) | Structured concurrency semantics and lowering phases |
 | [Interop model](docs/interop-model.md) | Native boundary contracts and cost model |
 | [C export design](docs/c-exports.md) | Implemented scalar functions, C-layout value structs, generated headers, and the native-consumer growth path |
@@ -230,6 +232,12 @@ Each document has one job:
 | [Performance](docs/performance.md) | Repeatable release benchmarks, methodology, and current evidence |
 | [Ownership pressure log](docs/ownership-pressure.md) | Evidence from application-shaped ownership probes |
 | [Design checkpoint — 2026-07-19](docs/design-checkpoint-2026-07-19.md) | Dated thesis, performance target, risks, and validation sequence |
+
+Read the language reference for accepted semantics, then consult bootstrap
+status for the exact executable boundary. The design charter may describe
+accepted direction that has not landed yet, while dated checkpoints and
+performance reports preserve historical evidence rather than silently
+rewriting it as the compiler changes.
 
 Temporary compiler limitations belong in bootstrap status, not the language
 contract. New language decisions should update the reference and design charter;

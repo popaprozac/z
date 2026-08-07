@@ -1,8 +1,10 @@
 # Examples
 
-The examples are small executable specifications for the stage-0 compiler. Run
-them from the repository root with `bun run z run <path>`; use `check` for
-compile-only probes and `emit` to inspect generated native code.
+The examples are executable specifications for Z's implemented surface. Stage
+0 accepts the complete currently implemented language; the fixed-point native
+compiler accepts the documented self-hosting subset. Run examples from the
+repository root with `bun run z run <path>`; use `check` for compile-only probes
+and `emit` to inspect generated native code.
 
 Applications and interop probes with `z.json` are also runnable as projects.
 The repository wrapper accepts the directory, while a native `z` on `PATH`
@@ -117,6 +119,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 
 | Shape | Example |
 | --- | --- |
+| Model overview | [`async-overview.zs`](../examples/async/async-overview.zs) — typed outcomes, sequential await, a hot child task, lexical scope join, and awaited conditions |
 | Sequential await | [`async-sequential.zs`](../examples/async/async-sequential.zs) |
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
 | Cleanup-bearing async errors | [`async-owned-errors.zs`](../examples/async/async-owned-errors.zs) — owned String error fields across observation, propagation, completed discard, and cancellation |

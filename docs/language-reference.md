@@ -1850,9 +1850,11 @@ required arguments through an explicit `export c function` until an embedding
 argument contract is designed.
 
 `z run file.zs -- one two` forwards `one` and `two` to the native program.
-Stage 0 currently lowers these APIs to a small cross-platform C runtime. The
-portable standard-library layers are intended to become ordinary Z modules;
-OS/ABI calls remain a thin platform substrate.
+Stage 0 and the fixed-point native compiler lower their supported portions of
+these APIs to a small cross-platform C runtime. The portable standard-library
+layers are intended to become ordinary Z modules; OS/ABI calls remain a thin
+platform substrate. The exact native-compiler subset is tracked in
+[`bootstrap-status.md`](bootstrap-status.md).
 
 ## Async and structured concurrency
 

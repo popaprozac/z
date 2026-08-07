@@ -93,7 +93,8 @@ CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and
 machine-readable help text for future editor quick fixes.
 
-Suggestions must describe functionality that exists. For example, the
-bootstrap does not recommend `move` for a cleanup-bearing escaping closure,
-because owned closure environments are still deferred. It instead recommends a
-safe non-escaping shape and explains the current limitation.
+Suggestions must describe functionality that exists. The compiler recommends
+`move` only when the destination accepts an owned closure environment; when a
+borrowed non-escaping closure is required, it recommends that shape and names
+the capability mismatch. A diagnostic must never suggest syntax or ownership
+behavior that the destination cannot execute.

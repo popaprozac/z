@@ -1,5 +1,5 @@
-// This example exercises executable Phase 1 async task frames.
-// Run `bun run z run examples/async/async-phase-0.zs`.
+// An overview of executable tasks, typed outcomes, joins, and placed suspension.
+// Run `bun run z run examples/async/async-overview.zs`.
 
 import console from "std/console";
 
@@ -28,8 +28,7 @@ async function main(): i32 throws NetworkError {
   const secondTask = task fetchValue(22);
   const second = try await secondTask;
 
-  // The scope is an earlier implicit-join boundary. Both children are complete
-  // before the statement following the block executes.
+  // This narrower scope joins both children before the following statement.
   async scope {
     task warmValue(1);
     task warmValue(2);

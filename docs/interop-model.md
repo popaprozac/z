@@ -250,7 +250,7 @@ boundary**, not a claim that every bridge operation is free:
 | `String` / `NSString` ownership bridge | Deliberate allocation and byte copy so neither runtime borrows unstable storage |
 | Swift `String` return to explicit Z `String` | Swift overlay traversal plus one owned allocation and exact byte copy; embedded NUL preserved |
 | Logging an `NSString` | Reads its UTF-8 bytes for the duration of the console call; no Z `String` allocation |
-| Z ARC class reference | Retain/release traffic; the bootstrap runtime is non-atomic and not yet optimized |
+| Z ARC class reference | Retain/release traffic; proven cross-thread shareable or affine classes use atomic strong counts, while ordinary thread-local classes avoid atomic traffic. ORC/cycle collection remains later work |
 
 An eventual explicit foreign contract uses an ambient module declaration:
 

@@ -94,9 +94,12 @@ conditionals, loops, matches, async scopes, value-producing `if` expressions,
 enum payload construction, and explicit `out`/`inout` call arguments are
 structural too. Generic callees and generic member calls preserve their complete
 canonical names. Imports retain namespace names, selective bindings, aliases,
-headers, and binding locations for the future native module resolver. Unicode
-identifiers and the complete syntax tree remain future
-slices. Stage 0 and stage 1 expose one
+headers, and binding locations consumed by the native module resolver. The
+native frontend now owns lexing, structural parsing, canonical module
+resolution, semantic evidence, ownership-aware lowering, and C emission for
+the self-hosting subset. Unicode identifiers remain future lexer work; Stage 0
+remains authoritative for language features outside that explicitly tested
+native subset. Stage 0 and the native frontend expose one
 UTF-16 code-unit coordinate contract for offsets and columns while stage 1 keeps
 separate UTF-8 byte indexes for native slicing. Exact parity covers both BMP and
 supplementary text. [`parser-protocol.zs`](../../../compiler/frontend/parser-protocol.zs) owns the shared framing,
@@ -104,5 +107,14 @@ supplementary text. [`parser-protocol.zs`](../../../compiler/frontend/parser-pro
 [`parser-library.zs`](../../../compiler/frontend/parser-library.zs) is compiled into a content-addressed dynamic library. The Bun
 driver passes source bytes directly to that library through a narrow FFI wrapper,
 so parser parity no longer pays subprocess startup or native-side file I/O.
-Performance comparisons remain provisional until stage 1 covers the same
-frontend work as stage 0 and the temporary text protocol is replaced.
+Use the complete native pipeline directly with:
+
+```sh
+bun run z self-host-resolve compiler/frontend/main.zs --timings
+bun run z self-host-emit compiler/frontend/main.zs
+bun run z check compiler/frontend/main.zs --native-frontend --timings
+```
+
+These commands are self-hosting proofs and parity gates, not competing language
+specifications. Current native coverage and the remaining Stage-0 authority are
+recorded in [`docs/bootstrap-status.md`](../../../docs/bootstrap-status.md).

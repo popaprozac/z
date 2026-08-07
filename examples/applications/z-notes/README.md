@@ -83,10 +83,11 @@ The directory form selects `target.entry` from `z.json`. Passing a smoke
 `.zs` file explicitly overrides only the entry while retaining the same macOS
 deployment and SQLite link configuration.
 
-Today `bun` launches the stage-0 TypeScript driver. The driver resolves Z
-modules and native headers, emits Objective-C ARC into `.z-cache/main.m`, asks
-Clang to build `.z-cache/main`, and then executes that native binary. Bun is not
-the application runtime and is not involved after the executable starts.
+Today `bun` launches the Stage-0 TypeScript driver. The driver resolves Z
+modules and native headers, emits Objective-C ARC into the project's
+`.z-cache/run` cache, asks Clang to build the cached native executable, and then
+executes it. Bun is not the application runtime and is not involved after the
+executable starts.
 
 The project targets macOS 14 because `NSApplication.activate()` was introduced
 there. Setting a lower `target.minimumVersion` produces a diagnostic at the Z

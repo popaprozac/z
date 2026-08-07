@@ -1,4 +1,4 @@
-// Async Phase 1's first executable slice: scalar task frames and sequential await.
+// Sequential await executes each operation before the enclosing task continues.
 
 async function fetchValue(value: i32): i32 {
   return value;

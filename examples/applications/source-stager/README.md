@@ -15,8 +15,9 @@ launches `clang --version`, and reports the compiler exit code. `std/fs`
 operations and `process.run` use normal typed Z failure handling, so the example
 materializes the outer result with `attempt` and handles both arms explicitly.
 
-This is not yet a self-hosted compiler. The public APIs are the intended Z
-surface; their stage-0 implementations are native runtime helpers emitted by
-the TypeScript bootstrap compiler. Portable standard-library behavior will move
-into `.zs` modules while OS-specific file/process operations remain a small
-platform substrate.
+This application is not itself a compiler; it is an educational pressure test
+for the APIs used by the self-hosted driver. Stage 0 and the fixed-point native
+compiler lower their supported `std/fs` and `std/process` calls through native
+runtime helpers. Portable standard-library behavior will move into `.zs`
+modules while OS-specific file/process operations remain a small platform
+substrate.

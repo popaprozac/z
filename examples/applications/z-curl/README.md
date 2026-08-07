@@ -8,12 +8,12 @@ semantic facts the C header does not express:
 - a fixed `CURL_GLOBAL_ALL` policy argument;
 - owned nullable `CURL *` creation;
 - deterministic `curl_easy_cleanup`;
-- borrowed easy-handle operations; and
+- borrowed easy-handle operations;
 - `CURLcode` failures as typed Z errors;
-- symbolic `CURLE_OK` status evidence; and
-- a checked `CURLOPT_URL` variadic overload with a `cstring` value; and
+- symbolic `CURLE_OK` status evidence;
+- a checked `CURLOPT_URL` variadic overload with a `cstring` value;
 - a checked `CURLOPT_TIMEOUT` overload whose declaration-only `clong` preserves
-  C `long`'s target ABI; and
+  C `long`'s target ABI;
 - an owner-tied `CURLOPT_WRITEFUNCTION` callback projected as
   `move (bytes: Slice<u8>): usize throws WriteError => ...`; and
 - `failure CURL_WRITEFUNC_ERROR;`, which narrows a thrown Z callback error to
