@@ -707,22 +707,26 @@ later without making executor blocks a special case.
     tail return. The callee may alternatively contain one top-level braced
     `if`/`else` whose branches contain direct literal delays. Its condition runs
     once on main, only the selected branch waits, and both paths rejoin before
-    the following statements. Main executes each synchronous segment; the
-    worker performs each condition-backed cancellable wait without occupying
-    main, then submits the next segment. A cancellation request wakes the active wait and sends
-    ownership-bearing argument cleanup to main instead of resuming the callee.
+    the following statements. A third supported shape is one top-level
+    `match` over a payload-free enum, with braced arms containing direct
+    literal delays. Its subject is evaluated once on main, the worker waits
+    only along the selected arm, and every arm rejoins before the suffix. Main
+    executes each synchronous segment; the worker performs each cancellable
+    wait without occupying main, then submits the next segment. A cancellation
+    request wakes the active wait and sends ownership-bearing argument cleanup
+    to main instead of resuming the callee.
     Initialized top-level locals and direct assignments survive those waits in
     one heap-owned invocation frame. Cleanup-bearing locals carry one liveness
     bit, move between segments without cloning, and are destroyed on main if
     cancellation wins. Consuming
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
-    outcome is discarded. Parameter writes or ownership transfers, suspending
-    `match` and loops, an `if` nested inside another branch, dynamic delay
-    expressions, combining a suspending `if` with outer delays, non-tail
-    suspended placement, and cross-executor loans remain the next native
-    state-machine slices; Stage 0 already implements the broader direct-call
-    surface.
+    outcome is discarded. Parameter writes or ownership transfers,
+    payload-bearing suspending `match`, suspending loops, control flow nested
+    inside another branch, dynamic delay expressions, combining a structured
+    suspension with outer delays, non-tail suspended placement, and
+    cross-executor loans remain the next native state-machine slices; Stage 0
+    already implements the broader direct-call surface.
 
 ## Open questions
 

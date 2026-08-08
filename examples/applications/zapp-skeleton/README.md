@@ -35,8 +35,10 @@ The example combines the four framework foundations:
    initialized top-level locals and direct assignments survive in one
    heap-owned invocation frame with cancellation-aware cleanup. The same backend
    now accepts one top-level braced `if`/`else` with direct literal delays and
-   cleans branch-owned locals deterministically. Suspended matches, loops, and
-   deeper nested control flow remain deliberately fail-closed.
+   cleans branch-owned locals deterministically. It also accepts one top-level
+   statement `match` over a payload-free enum, evaluates the subject once, and
+   runs only the selected delayed arm. Payload-bearing suspended matches,
+   loops, and deeper nested control flow remain deliberately fail-closed.
 
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.

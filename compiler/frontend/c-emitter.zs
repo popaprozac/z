@@ -3207,6 +3207,7 @@ function appendFunction(
   if (
     declaration.mainDelaySegments.length > 0
     || declaration.mainDelayIfs.length > 0
+    || declaration.mainDelayMatches.length > 0
   ) {
     for (const parameter of declaration.parameters) {
       output.append("  (void)");
@@ -3671,7 +3672,7 @@ function appendMainFrameLocalCleanups(
   }
 }
 
-function appendThreadMainIfSegmentHelpers(
+function appendThreadMainBranchSegmentHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram,
   in declaration: LoweredFunction,
@@ -3763,7 +3764,7 @@ function appendThreadMainIfSegmentHelpers(
   }
 }
 
-function appendThreadMainIfCancellation(
+function appendThreadMainStructuredCancellation(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
   expressionIndex: usize,
@@ -3892,7 +3893,7 @@ function appendThreadMainIfCallHelper(
   );
   output.append("}\n\n");
 
-  try appendThreadMainIfSegmentHelpers(
+  try appendThreadMainBranchSegmentHelpers(
     inout output,
     program,
     declaration,
@@ -3902,7 +3903,7 @@ function appendThreadMainIfCallHelper(
     plan.thenSegments,
     "then"
   );
-  try appendThreadMainIfSegmentHelpers(
+  try appendThreadMainBranchSegmentHelpers(
     inout output,
     program,
     declaration,
@@ -4111,7 +4112,7 @@ function appendThreadMainIfCallHelper(
     output.append("_suspend_for(storage, ");
     output.append(plan.thenSegments[segmentIndex].milliseconds);
     output.append(")) {\n");
-    appendThreadMainIfCancellation(
+    appendThreadMainStructuredCancellation(
       inout output,
       declaration,
       expressionIndex,
@@ -4140,7 +4141,7 @@ function appendThreadMainIfCallHelper(
     output.append("_suspend_for(storage, ");
     output.append(plan.elseSegments[segmentIndex].milliseconds);
     output.append(")) {\n");
-    appendThreadMainIfCancellation(
+    appendThreadMainStructuredCancellation(
       inout output,
       declaration,
       expressionIndex,
@@ -4151,6 +4152,335 @@ function appendThreadMainIfCallHelper(
     segmentIndex = segmentIndex + 1;
   }
   output.append("  }\n  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run, context);\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result = context->result;\n  free(context);\n  return result;\n");
+  } else output.append("  free(context);\n");
+  output.append("}\n\n");
+}
+
+function appendThreadMainMatchCallHelper(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in expression: LoweredExpression,
+  targetFunctionIndex: usize
+): void throws String {
+  const target = view program.functions[targetFunctionIndex];
+  if (target.mainDelayMatches.length != 1) {
+    throw "native structured main suspension requires exactly one match plan";
+  }
+  const plan = view target.mainDelayMatches[0];
+  const matchStatement = view target.statements[plan.statement];
+  const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
+  const nativeResultType = try cType(resultType);
+  const argumentCount = expression.labels.length - 1;
+  if (!threadMainCallIsTail(declaration, expressionIndex)) {
+    throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
+  }
+  if (target.parameters.length != argumentCount) {
+    throw "native C emission received mismatched thread.main arguments";
+  }
+
+  output.append("typedef struct ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context {\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result;\n");
+  }
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append("  ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  size_t arm_0;\n");
+  try appendMainFrameRootFields(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots
+  );
+  for (const arm of plan.arms) {
+    for (const segment of arm.segments) {
+      try appendMainFrameRootFields(
+        inout output,
+        program,
+        target,
+        segment.roots
+      );
+    }
+  }
+  output.append("} ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context;\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_choose(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  for (const root of plan.prefixRoots) {
+    try appendStatement(inout output, target, root, 1);
+  }
+  output.append("  switch (");
+  try appendExpression(inout output, target, plan.subject);
+  output.append(") {\n");
+  let armIndex: usize = 0;
+  while (armIndex < plan.arms.length) {
+    const arm = view target.statements[plan.arms[armIndex].arm];
+    output.append("    case Z_");
+    output.append(matchStatement.name);
+    output.append("_");
+    output.append(arm.name);
+    output.append(`: context->arm_0 = ${armIndex}; break;\n`);
+    armIndex = armIndex + 1;
+  }
+  output.append("    default: abort();\n  }\n");
+  try appendMainFrameRootSaves(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("}\n\n");
+
+  armIndex = 0;
+  while (armIndex < plan.arms.length) {
+    const branchName = `arm_${armIndex}`;
+    try appendThreadMainBranchSegmentHelpers(
+      inout output,
+      program,
+      declaration,
+      expressionIndex,
+      target,
+      plan.prefixRoots,
+      plan.arms[armIndex].segments,
+      branchName
+    );
+    armIndex = armIndex + 1;
+  }
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context) {\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  try appendMainFrameRootRestores(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  for (const flag of target.liveFlags) {
+    if (!flag.parameter) continue;
+    output.append("  bool ");
+    appendCBindingName(inout output, flag.name);
+    output.append(" = true;\n");
+  }
+  output.append("  switch (context->arm_0) {\n");
+  armIndex = 0;
+  while (armIndex < plan.arms.length) {
+    const armPlan = view plan.arms[armIndex];
+    output.append(`    case ${armIndex}: {\n`);
+    for (const segment of armPlan.segments) {
+      try appendMainFrameRootRestores(
+        inout output,
+        program,
+        target,
+        segment.roots,
+        3
+      );
+    }
+    for (const root of armPlan.roots) {
+      try appendStatement(inout output, target, root, 3);
+    }
+    appendCleanups(
+      inout output,
+      target.statements[armPlan.block].cleanups,
+      3
+    );
+    output.append("      break;\n    }\n");
+    armIndex = armIndex + 1;
+  }
+  output.append("    default: abort();\n  }\n");
+  try appendFunctionTail(inout output, target);
+  output.append("}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  ");
+  if (resultType.kind != LoweredTypeKind.voidType) output.append("context->result = ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(context);\n}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_cancel_suspended(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  (void)context;\n");
+  let cleanupArm = plan.arms.length;
+  while (cleanupArm > 0) {
+    cleanupArm = cleanupArm - 1;
+    let cleanup = plan.arms[cleanupArm].segments.length;
+    while (cleanup > 0) {
+      cleanup = cleanup - 1;
+      try appendMainFrameRootCleanups(
+        inout output,
+        program,
+        target,
+        plan.arms[cleanupArm].segments[cleanup].roots,
+        1
+      );
+    }
+  }
+  try appendMainFrameRootCleanups(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  let cleanup = argumentCount;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[cleanup + 1]
+    );
+    if (loweredTypeNeedsDeinit(program, argumentType)) {
+      output.append("  Z_");
+      output.append(argumentType.name);
+      if (argumentType.kind == LoweredTypeKind.classType) {
+        output.append(`_release(context->argument_${cleanup});\n`);
+      } else {
+        output.append(`_deinit(&context->argument_${cleanup});\n`);
+      }
+    }
+  }
+  output.append("}\n\n");
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("(Z_");
+  output.append(expression.value);
+  output.append("Storage *storage");
+  argument = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append(", ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument}`);
+    argument = argument + 1;
+  }
+  output.append(") {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)calloc(1, sizeof(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context));\n  if (context == NULL) abort();\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    output.append(`  context->argument_${argument} = argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_choose, context);\n  switch (context->arm_0) {\n");
+  armIndex = 0;
+  while (armIndex < plan.arms.length) {
+    output.append(`    case ${armIndex}: {\n`);
+    let segmentIndex: usize = 0;
+    while (segmentIndex < plan.arms[armIndex].segments.length) {
+      if (plan.arms[armIndex].segments[segmentIndex].roots.length > 0) {
+        output.append("      Z_");
+        output.append(expression.value);
+        output.append("_run_on_main(storage, ");
+        appendThreadMainCallHelperName(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append(`_arm_${armIndex}_segment_${segmentIndex}, context);\n`);
+      }
+      output.append("      if (!Z_");
+      output.append(expression.value);
+      output.append("_suspend_for(storage, ");
+      output.append(plan.arms[armIndex].segments[segmentIndex].milliseconds);
+      output.append(")) {\n");
+      appendThreadMainStructuredCancellation(
+        inout output,
+        declaration,
+        expressionIndex,
+        expression.value,
+        nativeResultType
+      );
+      output.append("      }\n");
+      segmentIndex = segmentIndex + 1;
+    }
+    output.append("      break;\n    }\n");
+    armIndex = armIndex + 1;
+  }
+  output.append("    default: abort();\n  }\n  Z_");
   output.append(expression.value);
   output.append("_run_on_main(storage, ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
@@ -4191,6 +4521,20 @@ function appendThreadMainCallHelpers(
         declaration,
         expression
       );
+      if (
+        program.functions[targetFunctionIndex].mainDelayMatches.length > 0
+      ) {
+        try appendThreadMainMatchCallHelper(
+          inout output,
+          program,
+          declaration,
+          expressionIndex,
+          expression,
+          targetFunctionIndex
+        );
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
       if (
         program.functions[targetFunctionIndex].mainDelayIfs.length > 0
       ) {
@@ -6508,6 +6852,7 @@ function programUsesMainDelay(in program: LoweredProgram): boolean {
     if (
       declaration.mainDelaySegments.length > 0
       || declaration.mainDelayIfs.length > 0
+      || declaration.mainDelayMatches.length > 0
     ) return true;
   }
   return false;

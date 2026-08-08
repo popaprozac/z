@@ -57,6 +57,7 @@ cross-language runtime benchmark:
 | Placed callee containing one or more timer suspensions | One `calloc`/`free` invocation frame |
 | Each additional top-level `await delay(...)` | One condition-backed wait and main-executor request; no additional allocation |
 | One top-level suspending `if`/`else` | One boolean selector field; only the chosen branch submits callbacks and waits |
+| One top-level payload-free suspending `match` | One `size_t` arm selector; only the chosen arm submits callbacks and waits |
 | Cleanup-free local across suspension | One direct frame field |
 | Cleanup-bearing local across suspension | One direct frame field plus one liveness bit |
 | Local move between segments or into the result | Bitwise ownership transfer; no clone, retain, or second allocation |
@@ -82,6 +83,14 @@ chosen branch. On the owned-branch fixture, seven warm Hyperfine runs measured
 50.6 ms ± 0.8 ms through Bun and 1.9 ms ± 0.3 ms through fixed-point native
 `z emit`. The same sub-5-ms shell-noise caveat applies to the 26.8-times
 directional ratio.
+
+The payload-free structured-`match` follow-up keeps the same allocation
+invariant. Generated C has one invocation frame, one `size_t` arm selector,
+and submits waits only for the selected arm; cleanup-bearing arm locals add
+their existing liveness bits without another allocation. Seven warm Hyperfine
+runs measured 41.1 ms ± 0.5 ms through Bun and 2.2 ms ± 0.3 ms through the
+fixed-point native `z emit`. The native command remains below Hyperfine's 5 ms
+precision threshold, so the 18.7-times ratio is directional.
 
 ## Standalone native compiler checkpoint
 

@@ -3022,6 +3022,135 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     );
     assert.equal(structuredIfOwnedExecution.stdout, "released branch 42\n");
 
+    const structuredMatchInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-match.zs",
+    );
+    const structuredMatchParity = spawnSync(
+      process.execPath,
+      [cli, "check", structuredMatchInput, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(structuredMatchParity.status, 0, structuredMatchParity.stderr);
+    const structuredMatchEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", structuredMatchInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchEmission.status,
+      0,
+      structuredMatchEmission.stderr,
+    );
+    assert.match(structuredMatchEmission.stdout, /size_t arm_0;/);
+    assert.equal(
+      structuredMatchEmission.stdout.match(
+        /switch \(chooseDirection\(direction\)\)/g,
+      )?.length,
+      3,
+    );
+    assert.match(
+      structuredMatchEmission.stdout,
+      /switch \(chooseDirection\(direction\)\)[\s\S]*context->arm_0 = 0[\s\S]*context->arm_0 = 1[\s\S]*context->arm_0 = 2/,
+    );
+    assert.match(
+      structuredMatchEmission.stdout,
+      /switch \(context->arm_0\)[\s\S]*_arm_0_segment_0[\s\S]*_arm_1_segment_0/,
+    );
+    const structuredMatchExecutable = resolve(directory, "thread-main-match");
+    const structuredMatchCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        structuredMatchExecutable,
+      ],
+      { encoding: "utf8", input: structuredMatchEmission.stdout },
+    );
+    assert.equal(
+      structuredMatchCompilation.status,
+      0,
+      structuredMatchCompilation.stderr,
+    );
+    const structuredMatchExecution = spawnSync(
+      structuredMatchExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchExecution.status,
+      0,
+      structuredMatchExecution.stderr,
+    );
+
+    const structuredMatchOwnedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-match-owned.zs",
+    );
+    const structuredMatchOwnedEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", structuredMatchOwnedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchOwnedEmission.status,
+      0,
+      structuredMatchOwnedEmission.stderr,
+    );
+    assert.match(structuredMatchOwnedEmission.stdout, /frame_local_\d+_live/);
+    assert.equal(
+      structuredMatchOwnedEmission.stdout.match(
+        /_Context \*context = \([^\n]*\)calloc\(1, sizeof\(/g,
+      )?.length,
+      1,
+    );
+    const structuredMatchOwnedExecutable = resolve(
+      directory,
+      "thread-main-match-owned",
+    );
+    const structuredMatchOwnedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        structuredMatchOwnedExecutable,
+      ],
+      { encoding: "utf8", input: structuredMatchOwnedEmission.stdout },
+    );
+    assert.equal(
+      structuredMatchOwnedCompilation.status,
+      0,
+      structuredMatchOwnedCompilation.stderr,
+    );
+    const structuredMatchOwnedExecution = spawnSync(
+      structuredMatchOwnedExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchOwnedExecution.status,
+      0,
+      structuredMatchOwnedExecution.stderr,
+    );
+    assert.equal(
+      structuredMatchOwnedExecution.stdout,
+      "released match branch 42\n",
+    );
+
     for (const [fixture, diagnostic] of [
       [
         "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
@@ -3034,6 +3163,10 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       [
         "self-host-emit-thread-main-nested-if-suspension-invalid.zs",
         /requires every suspension.*directly inside its supported statement sequence/,
+      ],
+      [
+        "self-host-emit-thread-main-match-payload-invalid.zs",
+        /does not yet preserve payload bindings across a suspending match/,
       ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
@@ -3070,6 +3203,7 @@ test("requests native worker cancellation and joins owned cleanup", () => {
   const fixtures = [
     "self-host-emit-thread-cancel.zs",
     "self-host-emit-thread-cancel-main.zs",
+    "self-host-emit-thread-cancel-main-match.zs",
   ];
   try {
     for (const fixture of fixtures) {
@@ -3091,12 +3225,14 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       assert.match(emission.stdout, /_is_cancellation_requested\(/);
       assert.match(emission.stdout, /storage->cancellation_requested = true;/);
       assert.match(emission.stdout, /_cancel\(&\(worker\)\);/);
-      assert.match(
-        emission.stdout,
-        /if \(task->storage->result_live\) \{ Z_.*_deinit\(&task->storage->result\); task->storage->result_live = false; \}/,
-      );
+      if (!fixture.endsWith("-match.zs")) {
+        assert.match(
+          emission.stdout,
+          /if \(task->storage->result_live\) \{ Z_.*_deinit\(&task->storage->result\); task->storage->result_live = false; \}/,
+        );
+      }
 
-      if (fixture.endsWith("-main.zs")) {
+      if (fixture.includes("thread-cancel-main")) {
         assert.match(emission.stdout, /main_request_pending = true;/);
         assert.match(emission.stdout, /request\(context\);/);
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
@@ -3104,16 +3240,18 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         assert.match(emission.stdout, /continuation_cancelled = true;/);
         assert.match(
           emission.stdout,
-          /_cancel_suspended[\s\S]*Z_String_deinit\(&context->argument_0\)/,
+          /_cancel_suspended[\s\S]*Z_(?:FrameResource|MatchFrameResource)_deinit\(&context->frame_local_\d+\)/,
         );
-        assert.match(
-          emission.stdout,
-          /_cancel_suspended[\s\S]*Z_FrameResource_deinit\(&context->frame_local_\d+\)/,
-        );
-        assert.match(
-          emission.stdout,
-          /Z___z_Result_String_PublishError_deinit/,
-        );
+        if (fixture == "self-host-emit-thread-cancel-main.zs") {
+          assert.match(
+            emission.stdout,
+            /_cancel_suspended[\s\S]*Z_String_deinit\(&context->argument_0\)/,
+          );
+          assert.match(
+            emission.stdout,
+            /Z___z_Result_String_PublishError_deinit/,
+          );
+        }
       }
 
       const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
@@ -3136,10 +3274,13 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       assert.equal(compilation.status, 0, compilation.stderr);
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
-      if (fixture.endsWith("-main.zs")) {
+      if (fixture == "self-host-emit-thread-cancel-main.zs") {
+        assert.equal(execution.stdout, "entered main segment\nreleased main frame\n");
+      }
+      if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
         assert.equal(
           execution.stdout,
-          "entered main segment\nreleased main frame\n",
+          "entered match main segment\nreleased match main frame\n",
         );
       }
     }
