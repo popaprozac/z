@@ -2909,6 +2909,119 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       assert.equal(execution.status, 0, execution.stderr);
     }
 
+    const structuredIfInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-if.zs",
+    );
+    const structuredIfParity = spawnSync(
+      process.execPath,
+      [cli, "check", structuredIfInput, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(structuredIfParity.status, 0, structuredIfParity.stderr);
+    const structuredIfEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", structuredIfInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(structuredIfEmission.status, 0, structuredIfEmission.stderr);
+    assert.match(structuredIfEmission.stdout, /bool branch_0;/);
+    assert.match(structuredIfEmission.stdout, /_choose\(void \*raw_context\)/);
+    assert.match(
+      structuredIfEmission.stdout,
+      /if \(context->branch_0\)[\s\S]*_then_segment_0[\s\S]*else[\s\S]*_else_segment_0/,
+    );
+    const structuredIfExecutable = resolve(directory, "thread-main-if");
+    const structuredIfCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        structuredIfExecutable,
+      ],
+      { encoding: "utf8", input: structuredIfEmission.stdout },
+    );
+    assert.equal(
+      structuredIfCompilation.status,
+      0,
+      structuredIfCompilation.stderr,
+    );
+    const structuredIfExecution = spawnSync(
+      structuredIfExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredIfExecution.status,
+      0,
+      structuredIfExecution.stderr,
+    );
+
+    const structuredIfOwnedInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-if-owned.zs",
+    );
+    const structuredIfOwnedEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", structuredIfOwnedInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredIfOwnedEmission.status,
+      0,
+      structuredIfOwnedEmission.stderr,
+    );
+    assert.match(structuredIfOwnedEmission.stdout, /frame_local_\d+_live/);
+    assert.equal(
+      structuredIfOwnedEmission.stdout.match(
+        /_Context \*context = \([^\n]*\)calloc\(1, sizeof\(/g,
+      )?.length,
+      1,
+    );
+    const structuredIfOwnedExecutable = resolve(
+      directory,
+      "thread-main-if-owned",
+    );
+    const structuredIfOwnedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        structuredIfOwnedExecutable,
+      ],
+      { encoding: "utf8", input: structuredIfOwnedEmission.stdout },
+    );
+    assert.equal(
+      structuredIfOwnedCompilation.status,
+      0,
+      structuredIfOwnedCompilation.stderr,
+    );
+    const structuredIfOwnedExecution = spawnSync(
+      structuredIfOwnedExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredIfOwnedExecution.status,
+      0,
+      structuredIfOwnedExecution.stderr,
+    );
+    assert.equal(structuredIfOwnedExecution.stdout, "released branch 42\n");
+
     for (const [fixture, diagnostic] of [
       [
         "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
@@ -2917,6 +3030,10 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       [
         "self-host-emit-thread-main-uninitialized-local-invalid.zs",
         /requires local staged to be initialized before it crosses a suspension/,
+      ],
+      [
+        "self-host-emit-thread-main-nested-if-suspension-invalid.zs",
+        /requires every suspension.*directly inside its supported statement sequence/,
       ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);

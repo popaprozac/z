@@ -13,8 +13,8 @@ async function publish(
   value: String,
   shouldFail: boolean
 ): String throws PublishError on thread.main {
-  await delay(1);
   if (shouldFail) {
+    await delay(1);
     throw PublishError({ message: duplicate("publish failed") });
   }
   return value;

@@ -2083,21 +2083,41 @@ async function publish(value: i32): i32 on thread.main {
 }
 ```
 
+One top-level braced conditional may instead own the suspensions:
+
+```z
+async function publish(value: i32, refresh: boolean): i32 on thread.main {
+  let progress = value;
+  if (refresh) {
+    progress = beginRefresh(progress);
+    await delay(10);
+    progress = finishRefresh(progress);
+  } else {
+    await delay(1);
+    progress = keepCurrent(progress);
+  }
+  return progress;
+}
+```
+
 The fixed-point native compiler currently implements an honest, bounded
 suspending-callee state machine. A main-isolated callee may contain multiple
 top-level literal `await delay(...)` statements with synchronous expression
-statements before and between them, and the direct placed call must be the
-worker closure's tail return. Main executes each synchronous segment; every
-delay waits cancellably on the worker, never on main. Success, owned results,
+statements before and between them, or one top-level braced `if`/`else` with
+direct literal delays in its branches. The direct placed call must be the
+worker closure's tail return. A branch condition executes once on main and only
+the selected branch waits. Main executes each synchronous segment; every delay
+waits cancellably on the worker, never on main. Success, owned results,
 typed failure, cancellation, and main-thread cleanup of transferred arguments
 are executable in that tier. Initialized top-level locals and direct local
 assignments live in one heap-owned invocation frame. Cleanup-bearing locals
 carry explicit liveness, can move into later locals or the final result without
-duplication, and are destroyed on main when cancellation wins. Parameter writes
-or ownership transfers, locals inside nested scopes, a delay nested in control
-flow, a computed delay duration, or code after the placed call fails closed in
-native lowering for now. Stage 0 retains the broader async surface described
-above.
+duplication, and are destroyed on main when cancellation wins. Branch-local
+owned values use the same frame liveness and deterministic cleanup. Parameter
+writes or ownership transfers, suspending `match` and loops, nested suspending
+conditionals, combining an outer delay sequence with a suspending conditional,
+a computed delay duration, or code after the placed call fails closed in native
+lowering for now. Stage 0 retains the broader async surface described above.
 
 Executor-isolated declarations place the contract after the declaration
 signature and before the body:

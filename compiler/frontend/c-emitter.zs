@@ -6,6 +6,7 @@ import {
   LoweredExpressionKind,
   LoweredFunction,
   LoweredCleanup,
+  LoweredMainDelaySegment,
   LoweredParameterMode,
   LoweredProgram,
   LoweredStatementKind,
@@ -3007,6 +3008,12 @@ function appendStatement(
     output.append("}\n");
     return;
   }
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.delayStatement
+  ) {
+    throw "native C emission received a detached delay statement";
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.whileStatement) {
     appendIndent(inout output, depth);
     output.append("while ");
@@ -3197,7 +3204,10 @@ function appendFunction(
     output.append("  z_stage1_process_argc = argc;\n");
     output.append("  z_stage1_process_argv = argv;\n");
   }
-  if (declaration.mainDelaySegments.length > 0) {
+  if (
+    declaration.mainDelaySegments.length > 0
+    || declaration.mainDelayIfs.length > 0
+  ) {
     for (const parameter of declaration.parameters) {
       output.append("  (void)");
       appendCBindingName(inout output, parameter.name);
@@ -3446,6 +3456,156 @@ function appendMainFrameLocalLiveFieldName(
   output.append(`frame_local_${statementIndex}_live`);
 }
 
+function appendMainFrameRootFields(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  in roots: Array<usize>
+): void throws String {
+  for (const root of roots) {
+    if (
+      target.statements[root].kind != LoweredStatementKind.localStatement
+    ) continue;
+    const localType = match (in target.statements[root].type) {
+      some(type) => LoweredType({
+        kind: type.kind,
+        name: type.name.copyBytes(0, type.name.byteLength),
+      });
+      none => throw "native main frame received an untyped local";
+    };
+    const nativeType = try cType(localType);
+    output.append("  ");
+    output.append(nativeType);
+    output.append(" ");
+    appendMainFrameLocalFieldName(inout output, root);
+    output.append(";\n");
+    if (loweredTypeNeedsDeinit(program, localType)) {
+      output.append("  bool ");
+      appendMainFrameLocalLiveFieldName(inout output, root);
+      output.append(";\n");
+    }
+  }
+}
+
+function appendMainFrameRootRestores(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  in roots: Array<usize>,
+  depth: usize
+): void throws String {
+  for (const root of roots) {
+    if (
+      target.statements[root].kind != LoweredStatementKind.localStatement
+    ) continue;
+    const localType = match (in target.statements[root].type) {
+      some(type) => LoweredType({
+        kind: type.kind,
+        name: type.name.copyBytes(0, type.name.byteLength),
+      });
+      none => throw "native main frame received an untyped local";
+    };
+    const nativeType = try cType(localType);
+    appendIndent(inout output, depth);
+    output.append(nativeType);
+    output.append(" ");
+    appendCBindingName(inout output, target.statements[root].name);
+    output.append(" __attribute__((unused)) = context->");
+    appendMainFrameLocalFieldName(inout output, root);
+    output.append(";\n");
+    if (loweredTypeNeedsDeinit(program, localType)) {
+      if (target.statements[root].liveFlag.byteLength > 0) {
+        appendIndent(inout output, depth);
+        output.append("bool ");
+        appendCBindingName(inout output, target.statements[root].liveFlag);
+        output.append(" __attribute__((unused)) = context->");
+        appendMainFrameLocalLiveFieldName(inout output, root);
+        output.append(";\n");
+      }
+      appendIndent(inout output, depth);
+      output.append("context->");
+      appendMainFrameLocalLiveFieldName(inout output, root);
+      output.append(" = false;\n");
+    }
+  }
+}
+
+function appendMainFrameRootSaves(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  in roots: Array<usize>,
+  depth: usize
+): void throws String {
+  for (const root of roots) {
+    if (
+      target.statements[root].kind != LoweredStatementKind.localStatement
+    ) continue;
+    const localType = match (in target.statements[root].type) {
+      some(type) => LoweredType({
+        kind: type.kind,
+        name: type.name.copyBytes(0, type.name.byteLength),
+      });
+      none => throw "native main frame received an untyped local";
+    };
+    appendIndent(inout output, depth);
+    output.append("context->");
+    appendMainFrameLocalFieldName(inout output, root);
+    output.append(" = ");
+    appendCBindingName(inout output, target.statements[root].name);
+    output.append(";\n");
+    if (loweredTypeNeedsDeinit(program, localType)) {
+      appendIndent(inout output, depth);
+      output.append("context->");
+      appendMainFrameLocalLiveFieldName(inout output, root);
+      output.append(" = ");
+      if (target.statements[root].liveFlag.byteLength > 0) {
+        appendCBindingName(inout output, target.statements[root].liveFlag);
+      } else output.append("true");
+      output.append(";\n");
+    }
+  }
+}
+
+function appendMainFrameRootCleanups(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  in roots: Array<usize>,
+  depth: usize
+): void throws String {
+  let rootIndex = roots.length;
+  while (rootIndex > 0) {
+    rootIndex = rootIndex - 1;
+    const root = roots[rootIndex];
+    if (
+      target.statements[root].kind != LoweredStatementKind.localStatement
+    ) continue;
+    const localType = match (in target.statements[root].type) {
+      some(type) => LoweredType({
+        kind: type.kind,
+        name: type.name.copyBytes(0, type.name.byteLength),
+      });
+      none => throw "native main frame received an untyped local";
+    };
+    if (!loweredTypeNeedsDeinit(program, localType)) continue;
+    appendIndent(inout output, depth);
+    output.append("if (context->");
+    appendMainFrameLocalLiveFieldName(inout output, root);
+    output.append(") { Z_");
+    output.append(localType.name);
+    if (localType.kind == LoweredTypeKind.classType) {
+      output.append("_release(context->");
+    } else {
+      output.append("_deinit(&context->");
+    }
+    appendMainFrameLocalFieldName(inout output, root);
+    output.append("); context->");
+    appendMainFrameLocalLiveFieldName(inout output, root);
+    output.append(" = false; }\n");
+  }
+}
+
 function appendMainFrameRestores(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -3458,44 +3618,13 @@ function appendMainFrameRestores(
     segmentIndex < segmentLimit
     && segmentIndex < target.mainDelaySegments.length
   ) {
-    for (const root of target.mainDelaySegments[segmentIndex].roots) {
-      if (
-        target.statements[root].kind
-          != LoweredStatementKind.localStatement
-      ) continue;
-      const localType = match (in target.statements[root].type) {
-        some(type) => LoweredType({
-          kind: type.kind,
-          name: type.name.copyBytes(0, type.name.byteLength),
-        });
-        none => throw "native main frame received an untyped local";
-      };
-      const nativeType = try cType(localType);
-      appendIndent(inout output, depth);
-      output.append(nativeType);
-      output.append(" ");
-      appendCBindingName(inout output, target.statements[root].name);
-      output.append(" __attribute__((unused)) = context->");
-      appendMainFrameLocalFieldName(inout output, root);
-      output.append(";\n");
-      if (loweredTypeNeedsDeinit(program, localType)) {
-        if (target.statements[root].liveFlag.byteLength > 0) {
-          appendIndent(inout output, depth);
-          output.append("bool ");
-          appendCBindingName(
-            inout output,
-            target.statements[root].liveFlag
-          );
-          output.append(" __attribute__((unused)) = context->");
-          appendMainFrameLocalLiveFieldName(inout output, root);
-          output.append(";\n");
-        }
-        appendIndent(inout output, depth);
-        output.append("context->");
-        appendMainFrameLocalLiveFieldName(inout output, root);
-        output.append(" = false;\n");
-      }
-    }
+    try appendMainFrameRootRestores(
+      inout output,
+      program,
+      target,
+      target.mainDelaySegments[segmentIndex].roots,
+      depth
+    );
     segmentIndex = segmentIndex + 1;
   }
 }
@@ -3512,38 +3641,13 @@ function appendMainFrameSaves(
     segmentIndex < segmentLimit
     && segmentIndex < target.mainDelaySegments.length
   ) {
-    for (const root of target.mainDelaySegments[segmentIndex].roots) {
-      if (
-        target.statements[root].kind
-          != LoweredStatementKind.localStatement
-      ) continue;
-      const localType = match (in target.statements[root].type) {
-        some(type) => LoweredType({
-          kind: type.kind,
-          name: type.name.copyBytes(0, type.name.byteLength),
-        });
-        none => throw "native main frame received an untyped local";
-      };
-      appendIndent(inout output, depth);
-      output.append("context->");
-      appendMainFrameLocalFieldName(inout output, root);
-      output.append(" = ");
-      appendCBindingName(inout output, target.statements[root].name);
-      output.append(";\n");
-      if (loweredTypeNeedsDeinit(program, localType)) {
-        appendIndent(inout output, depth);
-        output.append("context->");
-        appendMainFrameLocalLiveFieldName(inout output, root);
-        output.append(" = ");
-        if (target.statements[root].liveFlag.byteLength > 0) {
-          appendCBindingName(
-            inout output,
-            target.statements[root].liveFlag
-          );
-        } else output.append("true");
-        output.append(";\n");
-      }
-    }
+    try appendMainFrameRootSaves(
+      inout output,
+      program,
+      target,
+      target.mainDelaySegments[segmentIndex].roots,
+      depth
+    );
     segmentIndex = segmentIndex + 1;
   }
 }
@@ -3557,38 +3661,506 @@ function appendMainFrameLocalCleanups(
   let segmentIndex = target.mainDelaySegments.length;
   while (segmentIndex > 0) {
     segmentIndex = segmentIndex - 1;
-    let rootIndex = target.mainDelaySegments[segmentIndex].roots.length;
-    while (rootIndex > 0) {
-      rootIndex = rootIndex - 1;
-      const root = target.mainDelaySegments[segmentIndex].roots[rootIndex];
-      if (
-        target.statements[root].kind
-          != LoweredStatementKind.localStatement
-      ) continue;
-      const localType = match (in target.statements[root].type) {
-        some(type) => LoweredType({
-          kind: type.kind,
-          name: type.name.copyBytes(0, type.name.byteLength),
-        });
-        none => throw "native main frame received an untyped local";
-      };
-      if (!loweredTypeNeedsDeinit(program, localType)) continue;
-      appendIndent(inout output, depth);
-      output.append("if (context->");
-      appendMainFrameLocalLiveFieldName(inout output, root);
-      output.append(") { Z_");
-      output.append(localType.name);
-      if (localType.kind == LoweredTypeKind.classType) {
-        output.append("_release(context->");
-      } else {
-        output.append("_deinit(&context->");
+    try appendMainFrameRootCleanups(
+      inout output,
+      program,
+      target,
+      target.mainDelaySegments[segmentIndex].roots,
+      depth
+    );
+  }
+}
+
+function appendThreadMainIfSegmentHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in target: LoweredFunction,
+  in prefixRoots: Array<usize>,
+  in segments: Array<LoweredMainDelaySegment>,
+  in branchName: String
+): void throws String {
+  let segmentIndex: usize = 0;
+  while (segmentIndex < segments.length) {
+    if (segments[segmentIndex].roots.length > 0) {
+      output.append("static void ");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append(`_${branchName}_segment_${segmentIndex}(void *raw_context) {\n  `);
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_Context *context = (");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_Context *)raw_context;\n");
+      let parameterIndex: usize = 0;
+      while (parameterIndex < target.parameters.length) {
+        const parameter = view target.parameters[parameterIndex];
+        const nativeParameterType = try cType(parameter.type);
+        output.append("  const ");
+        output.append(nativeParameterType);
+        output.append(" ");
+        appendCBindingName(inout output, parameter.name);
+        output.append(` = context->argument_${parameterIndex};\n  (void)`);
+        appendCBindingName(inout output, parameter.name);
+        output.append(";\n");
+        parameterIndex = parameterIndex + 1;
       }
-      appendMainFrameLocalFieldName(inout output, root);
-      output.append("); context->");
-      appendMainFrameLocalLiveFieldName(inout output, root);
-      output.append(" = false; }\n");
+      try appendMainFrameRootRestores(
+        inout output,
+        program,
+        target,
+        prefixRoots,
+        1
+      );
+      output.append("  {\n");
+      let prior: usize = 0;
+      while (prior < segmentIndex) {
+        try appendMainFrameRootRestores(
+          inout output,
+          program,
+          target,
+          segments[prior].roots,
+          2
+        );
+        prior = prior + 1;
+      }
+      for (const root of segments[segmentIndex].roots) {
+        try appendStatement(inout output, target, root, 2);
+      }
+      let saved: usize = 0;
+      while (saved <= segmentIndex) {
+        try appendMainFrameRootSaves(
+          inout output,
+          program,
+          target,
+          segments[saved].roots,
+          2
+        );
+        saved = saved + 1;
+      }
+      output.append("  }\n");
+      try appendMainFrameRootSaves(
+        inout output,
+        program,
+        target,
+        prefixRoots,
+        1
+      );
+      output.append("}\n\n");
+    }
+    segmentIndex = segmentIndex + 1;
+  }
+}
+
+function appendThreadMainIfCancellation(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in taskName: String,
+  in nativeResultType: String
+): void {
+  output.append("    Z_");
+  output.append(taskName);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("_cancel_suspended, context);\n    free(context);\n");
+  if (nativeResultType == "void") {
+    output.append("    return;\n");
+  } else {
+    output.append("    return (");
+    output.append(nativeResultType);
+    output.append("){0};\n");
+  }
+}
+
+function appendThreadMainIfCallHelper(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in expression: LoweredExpression,
+  targetFunctionIndex: usize
+): void throws String {
+  const target = view program.functions[targetFunctionIndex];
+  if (target.mainDelayIfs.length != 1) {
+    throw "native structured main suspension requires exactly one if plan";
+  }
+  const plan = view target.mainDelayIfs[0];
+  const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
+  const nativeResultType = try cType(resultType);
+  const argumentCount = expression.labels.length - 1;
+  if (!threadMainCallIsTail(declaration, expressionIndex)) {
+    throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
+  }
+  if (target.parameters.length != argumentCount) {
+    throw "native C emission received mismatched thread.main arguments";
+  }
+
+  output.append("typedef struct ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context {\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result;\n");
+  }
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append("  ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  bool branch_0;\n");
+  try appendMainFrameRootFields(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots
+  );
+  for (const segment of plan.thenSegments) {
+    try appendMainFrameRootFields(
+      inout output,
+      program,
+      target,
+      segment.roots
+    );
+  }
+  for (const segment of plan.elseSegments) {
+    try appendMainFrameRootFields(
+      inout output,
+      program,
+      target,
+      segment.roots
+    );
+  }
+  output.append("} ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context;\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_choose(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  for (const root of plan.prefixRoots) {
+    try appendStatement(inout output, target, root, 1);
+  }
+  output.append("  context->branch_0 = ");
+  try appendCondition(inout output, target, plan.condition);
+  output.append(";\n");
+  try appendMainFrameRootSaves(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("}\n\n");
+
+  try appendThreadMainIfSegmentHelpers(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    target,
+    plan.prefixRoots,
+    plan.thenSegments,
+    "then"
+  );
+  try appendThreadMainIfSegmentHelpers(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    target,
+    plan.prefixRoots,
+    plan.elseSegments,
+    "else"
+  );
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context) {\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  try appendMainFrameRootRestores(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  for (const flag of target.liveFlags) {
+    if (!flag.parameter) continue;
+    output.append("  bool ");
+    appendCBindingName(inout output, flag.name);
+    output.append(" = true;\n");
+  }
+  output.append("  if (context->branch_0) {\n");
+  for (const segment of plan.thenSegments) {
+    try appendMainFrameRootRestores(
+      inout output,
+      program,
+      target,
+      segment.roots,
+      2
+    );
+  }
+  for (const root of plan.thenRoots) {
+    try appendStatement(inout output, target, root, 2);
+  }
+  appendCleanups(
+    inout output,
+    target.statements[plan.thenBlock].cleanups,
+    2
+  );
+  output.append("  } else {\n");
+  for (const segment of plan.elseSegments) {
+    try appendMainFrameRootRestores(
+      inout output,
+      program,
+      target,
+      segment.roots,
+      2
+    );
+  }
+  for (const root of plan.elseRoots) {
+    try appendStatement(inout output, target, root, 2);
+  }
+  match (in plan.elseBlock) {
+    some(block) => appendCleanups(
+      inout output,
+      target.statements[block].cleanups,
+      2
+    );
+    none => {}
+  }
+  output.append("  }\n");
+  try appendFunctionTail(inout output, target);
+  output.append("}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  ");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("context->result = ");
+  }
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(context);\n}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_cancel_suspended(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  (void)context;\n");
+  let cleanup = plan.elseSegments.length;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    try appendMainFrameRootCleanups(
+      inout output,
+      program,
+      target,
+      plan.elseSegments[cleanup].roots,
+      1
+    );
+  }
+  cleanup = plan.thenSegments.length;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    try appendMainFrameRootCleanups(
+      inout output,
+      program,
+      target,
+      plan.thenSegments[cleanup].roots,
+      1
+    );
+  }
+  try appendMainFrameRootCleanups(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  cleanup = argumentCount;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[cleanup + 1]
+    );
+    if (loweredTypeNeedsDeinit(program, argumentType)) {
+      output.append("  Z_");
+      output.append(argumentType.name);
+      if (argumentType.kind == LoweredTypeKind.classType) {
+        output.append(`_release(context->argument_${cleanup});\n`);
+      } else {
+        output.append(`_deinit(&context->argument_${cleanup});\n`);
+      }
     }
   }
+  output.append("}\n\n");
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("(Z_");
+  output.append(expression.value);
+  output.append("Storage *storage");
+  argument = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append(", ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument}`);
+    argument = argument + 1;
+  }
+  output.append(") {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)calloc(1, sizeof(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context));\n  if (context == NULL) abort();\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    output.append(`  context->argument_${argument} = argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_choose, context);\n");
+  output.append("  if (context->branch_0) {\n");
+  let segmentIndex: usize = 0;
+  while (segmentIndex < plan.thenSegments.length) {
+    if (plan.thenSegments[segmentIndex].roots.length > 0) {
+      output.append("    Z_");
+      output.append(expression.value);
+      output.append("_run_on_main(storage, ");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append(`_then_segment_${segmentIndex}, context);\n`);
+    }
+    output.append("    if (!Z_");
+    output.append(expression.value);
+    output.append("_suspend_for(storage, ");
+    output.append(plan.thenSegments[segmentIndex].milliseconds);
+    output.append(")) {\n");
+    appendThreadMainIfCancellation(
+      inout output,
+      declaration,
+      expressionIndex,
+      expression.value,
+      nativeResultType
+    );
+    output.append("    }\n");
+    segmentIndex = segmentIndex + 1;
+  }
+  output.append("  } else {\n");
+  segmentIndex = 0;
+  while (segmentIndex < plan.elseSegments.length) {
+    if (plan.elseSegments[segmentIndex].roots.length > 0) {
+      output.append("    Z_");
+      output.append(expression.value);
+      output.append("_run_on_main(storage, ");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append(`_else_segment_${segmentIndex}, context);\n`);
+    }
+    output.append("    if (!Z_");
+    output.append(expression.value);
+    output.append("_suspend_for(storage, ");
+    output.append(plan.elseSegments[segmentIndex].milliseconds);
+    output.append(")) {\n");
+    appendThreadMainIfCancellation(
+      inout output,
+      declaration,
+      expressionIndex,
+      expression.value,
+      nativeResultType
+    );
+    output.append("    }\n");
+    segmentIndex = segmentIndex + 1;
+  }
+  output.append("  }\n  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run, context);\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result = context->result;\n  free(context);\n  return result;\n");
+  } else output.append("  free(context);\n");
+  output.append("}\n\n");
 }
 
 function appendThreadMainCallHelpers(
@@ -3619,6 +4191,20 @@ function appendThreadMainCallHelpers(
         declaration,
         expression
       );
+      if (
+        program.functions[targetFunctionIndex].mainDelayIfs.length > 0
+      ) {
+        try appendThreadMainIfCallHelper(
+          inout output,
+          program,
+          declaration,
+          expressionIndex,
+          expression,
+          targetFunctionIndex
+        );
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
       const suspending = program.functions[targetFunctionIndex]
         .mainDelaySegments.length > 0;
       if (
@@ -5919,7 +6505,10 @@ function programUsesStandardCall(
 
 function programUsesMainDelay(in program: LoweredProgram): boolean {
   for (const declaration of program.functions) {
-    if (declaration.mainDelaySegments.length > 0) return true;
+    if (
+      declaration.mainDelaySegments.length > 0
+      || declaration.mainDelayIfs.length > 0
+    ) return true;
   }
   return false;
 }

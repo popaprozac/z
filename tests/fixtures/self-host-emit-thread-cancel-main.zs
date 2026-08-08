@@ -22,11 +22,11 @@ async function publish(
   value: String,
   shouldFail: boolean
 ): String throws PublishError on thread.main {
-  const staged = FrameResource({ message: duplicate("main frame") });
-  console.log("entered main segment");
-  await delay(1000);
-  console.log("unexpected suspended continuation resume");
   if (shouldFail) {
+    const staged = FrameResource({ message: duplicate("main frame") });
+    console.log("entered main segment");
+    await delay(1000);
+    console.log("unexpected suspended continuation resume");
     throw PublishError({ message: duplicate("cancelled publish") });
   }
   return value;

@@ -56,6 +56,7 @@ cross-language runtime benchmark:
 | Synchronous or suspension-free placed call | Stack context; zero frame allocations |
 | Placed callee containing one or more timer suspensions | One `calloc`/`free` invocation frame |
 | Each additional top-level `await delay(...)` | One condition-backed wait and main-executor request; no additional allocation |
+| One top-level suspending `if`/`else` | One boolean selector field; only the chosen branch submits callbacks and waits |
 | Cleanup-free local across suspension | One direct frame field |
 | Cleanup-bearing local across suspension | One direct frame field plus one liveness bit |
 | Local move between segments or into the result | Bitwise ownership transfer; no clone, retain, or second allocation |
@@ -74,6 +75,13 @@ measured 47.4 ms ± 1.2 ms; the fixed-point native `z emit` measured 1.8 ms ±
 so the reported 26.5-times ratio is directional rather than a precise speedup.
 It nevertheless confirms that the new frame lowering has not compromised the
 native compiler's low-startup-cost edit loop.
+
+The structured-`if` follow-up retained that shape: optimized generated C has
+one invocation-frame allocation, one selector bit, and waits only inside the
+chosen branch. On the owned-branch fixture, seven warm Hyperfine runs measured
+50.6 ms ± 0.8 ms through Bun and 1.9 ms ± 0.3 ms through fixed-point native
+`z emit`. The same sub-5-ms shell-noise caveat applies to the 26.8-times
+directional ratio.
 
 ## Standalone native compiler checkpoint
 

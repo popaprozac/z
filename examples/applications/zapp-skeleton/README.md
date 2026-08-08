@@ -33,8 +33,10 @@ The example combines the four framework foundations:
    `Task<String, i32>`. The fixed-point backend also supports multiple such
    top-level literal delays separated by synchronous main-thread expressions;
    initialized top-level locals and direct assignments survive in one
-   heap-owned invocation frame with cancellation-aware cleanup. Nested-scope
-   locals and control-flow-nested suspension remain deliberately fail-closed.
+   heap-owned invocation frame with cancellation-aware cleanup. The same backend
+   now accepts one top-level braced `if`/`else` with direct literal delays and
+   cleans branch-owned locals deterministically. Suspended matches, loops, and
+   deeper nested control flow remain deliberately fail-closed.
 
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.
