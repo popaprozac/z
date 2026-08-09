@@ -252,6 +252,9 @@ language and Stage-0 compiler remain generic; these diagnostics describe only
 the fixed-point compiler runtime that is being grown under bootstrap pressure.
 The same resolved operand evidence now reports non-`String` explicit `copy`
 operations at the keyword; `copy String` remains the implemented native path.
+Graph ownership facts now also classify cleanup-bearing `Mutex.withLock`
+results at the call. Cleanup-free results keep the existing native scoped-lock
+path; independently owned results remain valid Z and await native lowering.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported

@@ -5298,6 +5298,24 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: 'explicit copy of "Array<i32>" is not executable in the native compiler yet; only String copy is supported',
     },
+    {
+      name: "mutex-cleanup-bearing-result",
+      source: [
+        'import { Mutex } from "std/sync";',
+        "struct State { count: i32; }",
+        "function main(): i32 {",
+        "  const state = Mutex(State({ count: 40 }));",
+        '  const label = state.withLock((in value): String => "locked");',
+        "  return i32(label.byteLength) - 6;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 5,
+      column: 23,
+      marker: "^^^^^^^^",
+      code: "Z1000",
+      summary: 'Mutex.withLock result type "String" is not executable in the native compiler yet; only cleanup-free results are supported',
+    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);

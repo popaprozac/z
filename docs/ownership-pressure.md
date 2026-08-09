@@ -2182,7 +2182,10 @@ This is deliberately a fixed-point runtime boundary, not a retreat from Z's
 generic `Map<K, V>` and `Set<T>` language surface. Explicit `copy` now uses the
 same evidence path: non-`String` copies report `Z1000` at the keyword while the
 implemented owned `String` copy continues through native lowering and C
-emission.
+emission. Native `Mutex.withLock` result checking now reuses the semantic
+graph's recursive cleanup analysis as well: owned results such as `String`
+receive a source-mapped `Z1000` at `withLock`, while cleanup-free scalar and
+`void` results continue through the implemented scoped-lock lowering.
 
 ## Not tested yet
 

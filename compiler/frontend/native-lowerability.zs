@@ -12,6 +12,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
+import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
@@ -551,6 +552,35 @@ function validateNativeExpressionTree(
       && node.children.length > 0
     ) {
       const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.memberExpression
+        && callee.value == "withLock"
+      ) {
+        const resultType = resolvedExpressionType(
+          graph,
+          moduleIndex,
+          tree,
+          index
+        );
+        if (resultType.byteLength > 0 && moduleIndex < graph.modules.length) {
+          let visiting = Array<String>();
+          if (typeHasCleanup(
+            graph.modules,
+            moduleIndex,
+            resultType,
+            visiting
+          )) {
+            throw loweringBoundary(
+              path,
+              "Z1000",
+              `Mutex.withLock result type "${resultType}" is not executable in the native compiler yet; only cleanup-free results are supported`,
+              callee.line,
+              callee.column,
+              8
+            );
+          }
+        }
+      }
       if (
         callee.kind == ExpressionKind.memberExpression
         && callee.optionalAccess
