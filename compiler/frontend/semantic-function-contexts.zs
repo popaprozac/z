@@ -110,6 +110,7 @@ function statementArenaContainsYield(in arena: StatementArena): boolean {
 export function prepareFunctionBindings(
   in declaration: FunctionDeclaration,
   in ownerType: String,
+  in ownerExecutorAffinity: String,
   in inheritedTypeParameters: Array<TypeParameter>,
   inout bindings: Array<NativeValueBinding>
 ): String {
@@ -161,6 +162,17 @@ export function prepareFunctionBindings(
   );
   if (declaration.asynchronous) {
     addValueBinding(inout bindings, "__z_native_async_context", "true");
+  }
+  if (
+    declaration.name == "main"
+    || declaration.executorAffinity == "thread.main"
+    || ownerExecutorAffinity == "thread.main"
+  ) {
+    addValueBinding(
+      inout bindings,
+      "__z_native_executor_context",
+      "thread.main"
+    );
   }
   match (in declaration.errorType) {
     some(error) => addValueBinding(

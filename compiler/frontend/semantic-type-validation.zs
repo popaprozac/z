@@ -836,6 +836,28 @@ function nativeTypeHasMainLifecycle(
   };
 }
 
+export function typeHasMainExecutorLifecycle(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const location = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    typeName
+  )) {
+    some(location) => location;
+    none => return false;
+  };
+  let visiting = Array<String>();
+  return nativeTypeHasMainLifecycle(
+    modules,
+    location.moduleIndex,
+    location.symbolIndex,
+    inout visiting
+  );
+}
+
 function requireMainAffineOncePayload(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,

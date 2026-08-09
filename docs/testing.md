@@ -10,6 +10,12 @@ Run the complete suite:
 bun run test
 ```
 
+Bare `bun test` uses the same 60-second default budget through the Bun test
+preload configured in `bunfig.toml`. Focused tests may declare tighter budgets,
+while the tier runner supplies its explicit 60- or 120-second default through
+the environment. This keeps toolchain-heavy tests deterministic under
+full-suite contention without changing the tier boundaries.
+
 Run one tier while developing:
 
 | Command | Coverage |
@@ -26,6 +32,14 @@ after adding or moving a top-level `tests/*.test.ts` file. The verifier fails
 when a test is missing from the manifest, appears in multiple tiers, or a tier
 still names a deleted file. CI runs this coverage check once before starting
 the tier matrix.
+
+Top-level `tests/fixtures/self-host-emit-*.zs` files have a separate fail-closed
+catalog in `tests/support/self-host-fixtures.ts`. Each fixture is classified as
+an executable Stage-0/native differential case, a focused positive or negative
+case, or an intentional exclusion with a reason. The tier verifier and every
+tier run reject new or stale fixtures until the catalog is updated; this keeps
+the expensive differential corpus deliberate rather than making every emitter
+probe a full runtime comparison.
 
 `tests/documentation.test.ts` walks the maintained Markdown surface and rejects
 broken repository-local links. It intentionally does not validate external URLs
@@ -54,6 +68,29 @@ This separates two different performance concerns:
 The complete `bun run test` suite remains the local pre-commit authority. The
 tier split changes orchestration, not coverage: every top-level test file must
 belong to exactly one manifest tier.
+
+## Native semantic parity policy
+
+The fixed-point native compiler has two different kinds of evidence:
+
+- positive execution parity: Stage 0 and native C are strict-compiled and run
+  with matching arguments, exit status, standard output, and standard error;
+- negative semantic parity: source that violates ownership, capabilities,
+  sendability, executor affinity, or another settled rule is rejected by both
+  frontends for the same reason.
+
+A lowering slice is not complete with only the first kind. Before native
+execution expands, its owning tests must include a positive executable case,
+the relevant negative rejection cases, and an update to
+[`bootstrap-status.md`](bootstrap-status.md). This rule is especially important
+for executor placement: successful main-thread handoff does not by itself prove
+that an off-main access is rejected.
+
+The current differential corpus has sixteen positive roots. Direct
+`tests/fixtures/self-host-emit-*.zs` files also include negative and specialized
+protocol/diagnostic fixtures, so raw filename count is not a coverage target.
+The fixture catalog classifies each one and fails closed when a new or stale
+fixture has no declared role.
 
 ## Native Z tests
 

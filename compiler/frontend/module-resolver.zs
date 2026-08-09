@@ -157,7 +157,10 @@ import {
   qualifiedTypeMember,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
-import { validateModuleTypes } from "./semantic-type-validation.zs";
+import {
+  typeHasMainExecutorLifecycle,
+  validateModuleTypes,
+} from "./semantic-type-validation.zs";
 import {
   substituteGenericType,
   typeContainsForeignValueStorage,
@@ -248,6 +251,54 @@ function contextualExpectedType(
   return valueBindingType(bindings, bindingName);
 }
 
+function currentExecutorContext(
+  in bindings: Array<NativeValueBinding>
+): String {
+  return valueBindingType(bindings, "__z_native_executor_context");
+}
+
+function requireMainExecutorContext(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  in requiredAffinity: String,
+  in subject: String
+): void throws ModuleResolveError {
+  if (
+    requiredAffinity.byteLength == 0
+    || requiredAffinity != "thread.main"
+    || currentExecutorContext(bindings) == "thread.main"
+  ) return;
+  throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `${subject} requires thread.main executor context`,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+}
+
+function aggregateExecutorAffinity(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  symbolIndex: usize
+): String {
+  if (
+    moduleIndex >= modules.length
+    || symbolIndex >= modules[moduleIndex].symbols.length
+  ) return "";
+  return match (
+    in modules[moduleIndex].symbols[symbolIndex].typeSignature
+  ) {
+    some(signature) => signature.executorAffinity.copyBytes(
+      0,
+      signature.executorAffinity.byteLength
+    );
+    none => "";
+  };
+}
+
 
 function explicitCallTypeArguments(
   in tree: ExpressionTree,
@@ -287,6 +338,21 @@ function importedStandardType(
         && binding.importedName == importedName
       ) return true;
     }
+  }
+  return false;
+}
+
+function importedStandardNamespace(
+  in module: ParsedModule,
+  in localName: String,
+  in header: String
+): boolean {
+  for (const declaration of module.program.imports) {
+    if (
+      !declaration.selective
+      && declaration.moduleName == localName
+      && declaration.header == header
+    ) return true;
   }
   return false;
 }
@@ -475,6 +541,19 @@ function inferContextualObjectExpressionNode(
     some(shape) => construction = move shape;
     none => return "";
   }
+  const constructionAffinity = typeHasMainExecutorLifecycle(
+    modules,
+    moduleIndex,
+    expectedType
+  ) ? "thread.main" : "";
+  try requireMainExecutorContext(
+    module,
+    tree,
+    index,
+    bindings,
+    constructionAffinity,
+    `construction of "${expectedType}"`
+  );
   let genericParameters = Array<String>();
   if (!construction.genericInstance) {
     for (const parameter of construction.typeParameters) {
@@ -1309,6 +1388,14 @@ function inferSignatureCallType(
   in callKind: String,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
+  try requireMainExecutorContext(
+    module,
+    tree,
+    callIndex,
+    bindings,
+    signature.executorAffinity,
+    `function "${functionName}"`
+  );
   const argumentCount = argumentNodes.length;
   if (signature.parameterTypes.length != argumentCount) {
     throw genericCallError(
@@ -1867,6 +1954,19 @@ function inferExpressionNodeType(
         tree.nodes[children[0]].column
       );
     }
+    const weakAffinity = typeHasMainExecutorLifecycle(
+      modules,
+      moduleIndex,
+      target
+    ) ? "thread.main" : "";
+    try requireMainExecutorContext(
+      module,
+      tree,
+      index,
+      bindings,
+      weakAffinity,
+      `weak reference construction for "${target}"`
+    );
     return `Weak<${target}>`;
   }
   if (
@@ -2020,6 +2120,12 @@ function inferExpressionNodeType(
     }
     if (bodyKind == "call" && children.length > 2) {
       const callIndex = children[children.length - 1];
+      let placedBindings = copyValueBindings(bindings);
+      addValueBinding(
+        inout placedBindings,
+        "__z_native_executor_context",
+        "thread.main"
+      );
       const outcome = try inferExpressionNodeType(
         module,
         modules,
@@ -2027,9 +2133,10 @@ function inferExpressionNodeType(
         arena,
         tree,
         callIndex,
-        inout bindings,
+        inout placedBindings,
         inout evidence
       );
+      copyBindingFlowStates(inout bindings, placedBindings);
       if (outcome.byteLength == 0) return "";
       let successType = outcome.copyBytes(0, outcome.byteLength);
       let errorType = "";
@@ -2079,6 +2186,11 @@ function inferExpressionNodeType(
       inout movedCaptures
     );
     if (!capturesReady) return "";
+    addValueBinding(
+      inout blockBindings,
+      "__z_native_executor_context",
+      "thread.main"
+    );
     const selectBinding = loopSelectTypeBindingName();
     addValueBinding(inout blockBindings, selectBinding, declaredReturn);
     if (declaredError.byteLength > 0) {
@@ -2252,6 +2364,19 @@ function inferExpressionNodeType(
             node.column
           );
         }
+        const constructionAffinity = typeHasMainExecutorLifecycle(
+          modules,
+          moduleIndex,
+          value
+        ) ? "thread.main" : "";
+        try requireMainExecutorContext(
+          module,
+          tree,
+          index,
+          bindings,
+          constructionAffinity,
+          `construction of class "${value}"`
+        );
         match (
           in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
         ) {
@@ -2563,6 +2688,25 @@ function inferExpressionNodeType(
           index,
           bindings,
           field
+        );
+        let requiredAffinity = field.executorAffinity.copyBytes(
+          0,
+          field.executorAffinity.byteLength
+        );
+        if (requiredAffinity.byteLength == 0) {
+          requiredAffinity = aggregateExecutorAffinity(
+            modules,
+            field.ownerModuleIndex,
+            field.ownerSymbolIndex
+          );
+        }
+        try requireMainExecutorContext(
+          module,
+          tree,
+          index,
+          bindings,
+          requiredAffinity,
+          `field "${field.ownerName}.${field.name}"`
         );
         let fieldType = field.typeName.copyBytes(
           0,
@@ -3199,6 +3343,15 @@ function inferExpressionNodeType(
       inout closureBindings,
       "__z_native_async_context",
       closureAsyncContext
+    );
+    const closureExecutorContext = valueBindingType(
+      bindings,
+      "__z_native_closure_executor_context"
+    );
+    addValueBinding(
+      inout closureBindings,
+      "__z_native_executor_context",
+      closureExecutorContext
     );
     for (const capture of captures) {
       const initialization = valueBindingInitialization(bindings, capture);
@@ -3929,6 +4082,67 @@ function inferExpressionNodeType(
         const memberName = identifierLookupName(
           tree.nodes[calleeIndex].value
         );
+        if (
+          memberName == "spawn"
+          && importedStandardType(
+            module,
+            namespaceName,
+            "std/thread",
+            "thread"
+          )
+        ) {
+          let workerBindings = copyValueBindings(bindings);
+          addValueBinding(
+            inout workerBindings,
+            "__z_native_executor_context",
+            ""
+          );
+          try inferUnclassifiedCallArguments(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            children,
+            inout workerBindings,
+            inout evidence
+          );
+          copyBindingFlowStates(inout bindings, workerBindings);
+          return "";
+        }
+        if (
+          memberName == "connect"
+          && importedStandardNamespace(
+            module,
+            namespaceName,
+            "std/objc"
+          )
+        ) {
+          // Stage 0 proves the target/action object's executor contract from
+          // imported Objective-C metadata. That metadata is not in the native
+          // source-module graph yet, so retain the proven caller executor while
+          // validating the callback instead of treating it as an arbitrary
+          // closure. A non-main caller remains unknown and cannot gain affinity.
+          let connectionBindings = copyValueBindings(bindings);
+          const connectionExecutorContext = currentExecutorContext(bindings);
+          addValueBinding(
+            inout connectionBindings,
+            "__z_native_closure_executor_context",
+            connectionExecutorContext
+          );
+          try inferUnclassifiedCallArguments(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            children,
+            inout connectionBindings,
+            inout evidence
+          );
+          copyBindingFlowStates(inout bindings, connectionBindings);
+          return "";
+        }
         match (nativeStandardCall(
           module.program,
           namespaceName,
@@ -4144,6 +4358,15 @@ function inferExpressionNodeType(
                 contextualReturnType,
                 errorType
               );
+              let withLockBindings = copyValueBindings(bindings);
+              const inheritedExecutorContext = currentExecutorContext(
+                bindings
+              );
+              addValueBinding(
+                inout withLockBindings,
+                "__z_native_closure_executor_context",
+                inheritedExecutorContext
+              );
               const closureType = try inferExpressionNodeTypeExpected(
                 module,
                 modules,
@@ -4152,9 +4375,10 @@ function inferExpressionNodeType(
                 tree,
                 closureIndex,
                 contextualType,
-                inout bindings,
+                inout withLockBindings,
                 inout evidence
               );
+              copyBindingFlowStates(inout bindings, withLockBindings);
               const closureSignature = match (
                 nativeFunctionSignature(closureType)
               ) {
@@ -4431,6 +4655,25 @@ function inferExpressionNodeType(
               );
               ownerIndex = ownerIndex + 1;
             }
+            let requiredAffinity = method.signature.executorAffinity.copyBytes(
+              0,
+              method.signature.executorAffinity.byteLength
+            );
+            if (requiredAffinity.byteLength == 0) {
+              requiredAffinity = aggregateExecutorAffinity(
+                modules,
+                method.ownerModuleIndex,
+                method.ownerSymbolIndex
+              );
+            }
+            try requireMainExecutorContext(
+              module,
+              tree,
+              index,
+              bindings,
+              requiredAffinity,
+              `method "${method.ownerName}.${method.name}"`
+            );
             const callableSignature = methodCallableSignature(method);
             const argumentNodes = callArgumentNodes(children);
             let callKind = "method";
@@ -5398,6 +5641,7 @@ function inferFunctionExpressions(
   moduleIndex: usize,
   in declaration: FunctionDeclaration,
   in ownerType: String,
+  in ownerExecutorAffinity: String,
   in inheritedTypeParameters: Array<TypeParameter>,
   inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
@@ -5405,6 +5649,7 @@ function inferFunctionExpressions(
   const bodyReturnType = prepareFunctionBindings(
     declaration,
     ownerType,
+    ownerExecutorAffinity,
     inheritedTypeParameters,
     inout bindings
   );
@@ -5440,6 +5685,7 @@ function validateExpressionTypesAndLocals(
       moduleIndex,
       declaration,
       "",
+      "",
       noTypeParameters,
       inout evidence
     );
@@ -5457,6 +5703,24 @@ function validateExpressionTypesAndLocals(
         addMutableValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
+        let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
+          0,
+          aggregate.executorAffinity.byteLength
+        );
+        if (lifecycleExecutorAffinity.byteLength == 0) {
+          for (const field of aggregate.fields) {
+            if (field.executorAffinity == "thread.main") {
+              lifecycleExecutorAffinity = "thread.main";
+            }
+          }
+        }
+        if (lifecycleExecutorAffinity == "thread.main") {
+          addValueBinding(
+            inout bindings,
+            "__z_native_executor_context",
+            "thread.main"
+          );
+        }
         addTypeParameterBindings(inout bindings, aggregate.typeParameters);
         try inferStatementSequence(
           module,
@@ -5484,6 +5748,7 @@ function validateExpressionTypesAndLocals(
         moduleIndex,
         method,
         aggregate.name,
+        aggregate.executorAffinity,
         aggregate.typeParameters,
         inout evidence
       );
@@ -5495,6 +5760,24 @@ function validateExpressionTypesAndLocals(
         addValueBinding(inout bindings, "__z_native_return_type", "void");
         addValueBinding(inout bindings, "this", aggregate.name);
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
+        let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
+          0,
+          aggregate.executorAffinity.byteLength
+        );
+        if (lifecycleExecutorAffinity.byteLength == 0) {
+          for (const field of aggregate.fields) {
+            if (field.executorAffinity == "thread.main") {
+              lifecycleExecutorAffinity = "thread.main";
+            }
+          }
+        }
+        if (lifecycleExecutorAffinity == "thread.main") {
+          addValueBinding(
+            inout bindings,
+            "__z_native_executor_context",
+            "thread.main"
+          );
+        }
         addTypeParameterBindings(inout bindings, aggregate.typeParameters);
         try inferStatementSequence(
           module,

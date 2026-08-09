@@ -1,0 +1,5 @@
+[test]
+# Bun 1.3.14 does not yet honor `test.timeout` from bunfig even though newer
+# releases document it. The preload supplies the repository default; the tier
+# runner passes its larger self-hosting budget through the environment.
+preload = ["./tests/support/bun-test-defaults.ts"]

@@ -80,6 +80,7 @@ export struct LoweredStruct {
   nativeCName: String;
   fields: Array<LoweredField>;
   referenceType: boolean;
+  executorBound: boolean;
   threadShareable: boolean;
   workerDestructible: boolean;
   needsDeinit: boolean;
@@ -357,6 +358,7 @@ struct LoweredImportedType {
   localName: String;
   targetName: String;
   kind: LoweredTypeKind;
+  executorBound: boolean;
   threadShareable: boolean;
   workerDestructible: boolean;
   needsDeinit: boolean;
@@ -1313,6 +1315,96 @@ function copyTypePath(in values: Array<String>): Array<String> {
     output.push(value.copyBytes(0, value.byteLength));
   }
   return output;
+}
+
+function moduleTypeHasExecutorAffinity(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String,
+  in visiting: Array<String>
+): boolean {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        (
+          generic.base == "Option"
+          || generic.base == "Array"
+          || generic.base == "Set"
+        )
+        && generic.arguments.length == 1
+      ) return moduleTypeHasExecutorAffinity(
+        program,
+        importedTypes,
+        generic.arguments[0],
+        visiting
+      );
+      if (
+        (
+          generic.base == "Map"
+          || generic.base == "Result"
+        )
+        && generic.arguments.length == 2
+      ) {
+        for (const argument of generic.arguments) {
+          if (moduleTypeHasExecutorAffinity(
+            program,
+            importedTypes,
+            argument,
+            visiting
+          )) return true;
+        }
+      }
+      return false;
+    }
+    none => {}
+  }
+  if (containsString(visiting, name)) return false;
+  for (const declaration of program.aggregates) {
+    if (declaration.name != name) continue;
+    if (declaration.executorAffinity.byteLength > 0) return true;
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const field of declaration.fields) {
+      if (
+        field.executorAffinity.byteLength > 0
+        || moduleTypeHasExecutorAffinity(
+          program,
+          importedTypes,
+          field.type.name,
+          nextVisiting
+        )
+      ) return true;
+    }
+    return false;
+  }
+  for (const declaration of program.enums) {
+    if (declaration.name != name) continue;
+    let nextVisiting = copyTypePath(visiting);
+    nextVisiting.push(name.copyBytes(0, name.byteLength));
+    for (const variant of declaration.variants) {
+      match (in variant.payload) {
+        some(payload) => {
+          if (moduleTypeHasExecutorAffinity(
+            program,
+            importedTypes,
+            payload.name,
+            nextVisiting
+          )) return true;
+        }
+        none => {}
+      }
+    }
+    return false;
+  }
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].localName == name
+      || importedTypes[importedIndex].targetName == name
+    ) return importedTypes[importedIndex].executorBound;
+  }
+  return false;
 }
 
 function moduleTypeIsWorkerDestructible(
@@ -13947,6 +14039,16 @@ function loweredStructIsReference(
   return false;
 }
 
+function loweredStructExecutorBound(
+  in structs: Array<LoweredStruct>,
+  in name: String
+): boolean {
+  for (const declaration of structs) {
+    if (declaration.name == name) return declaration.executorBound;
+  }
+  return false;
+}
+
 function loweredStructThreadShareable(
   in structs: Array<LoweredStruct>,
   in name: String
@@ -14035,6 +14137,7 @@ function importedTypesForModule(
                 signature.foreignNativeName.byteLength
               ),
               kind: LoweredTypeKind.foreignEnumType,
+              executorBound: false,
               threadShareable: false,
               workerDestructible: false,
               needsDeinit: false,
@@ -14089,6 +14192,7 @@ function importedTypesForModule(
             kind: referenceType
               ? LoweredTypeKind.classType
               : LoweredTypeKind.structType,
+            executorBound: loweredStructExecutorBound(structs, targetName),
             threadShareable: loweredStructThreadShareable(
               structs,
               targetName
@@ -14126,6 +14230,7 @@ function importedTypesForModule(
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName,
             kind: LoweredTypeKind.enumType,
+            executorBound: false,
             threadShareable: false,
             workerDestructible: !declaration.needsDeinit,
             needsDeinit: declaration.needsDeinit,
@@ -14166,6 +14271,10 @@ function importedTypesForModule(
               kind: loweredStructIsReference(structs, symbol.name)
                 ? LoweredTypeKind.classType
                 : LoweredTypeKind.structType,
+              executorBound: loweredStructExecutorBound(
+                structs,
+                symbol.name
+              ),
               threadShareable: loweredStructThreadShareable(
                 structs,
                 symbol.name
@@ -14194,6 +14303,7 @@ function importedTypesForModule(
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
               kind: LoweredTypeKind.enumType,
+              executorBound: false,
               threadShareable: false,
               workerDestructible: !declaration.needsDeinit,
               needsDeinit: declaration.needsDeinit,
@@ -14362,6 +14472,7 @@ function appendLoweredProgram(
       ),
       targetName,
       kind: LoweredTypeKind.enumType,
+      executorBound: false,
       threadShareable: false,
       workerDestructible: false,
       needsDeinit: false,
@@ -14384,12 +14495,23 @@ function appendLoweredProgram(
       )
     ) continue;
     const targetName = emittedPrivateTypeName(moduleIndex, aggregate.name);
+    let executorBound = false;
+    if (aggregate.kind == DeclarationKind.classDeclaration) {
+      const visiting = Array<String>();
+      executorBound = moduleTypeHasExecutorAffinity(
+        program,
+        importedTypes,
+        aggregate.name,
+        visiting
+      );
+    }
     importedTypes.push(LoweredImportedType({
       localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       targetName,
       kind: aggregate.kind == DeclarationKind.classDeclaration
         ? LoweredTypeKind.classType
         : LoweredTypeKind.structType,
+      executorBound,
       threadShareable: false,
       workerDestructible: false,
       needsDeinit: false,
@@ -14481,6 +14603,7 @@ function appendLoweredProgram(
       ),
       targetName: emittedName,
       kind: LoweredTypeKind.enumType,
+      executorBound: false,
       threadShareable: false,
       workerDestructible: !needsDeinit,
       needsDeinit,
@@ -14576,6 +14699,13 @@ function appendLoweredProgram(
       aggregate.name,
       visiting
     );
+    const executorBound = aggregate.kind == DeclarationKind.classDeclaration
+      && moduleTypeHasExecutorAffinity(
+        program,
+        importedTypes,
+        aggregate.name,
+        visiting
+      );
     structs.push(LoweredStruct({
       name: emittedName,
       nativeCName: aggregate.nativeCLayout
@@ -14583,6 +14713,7 @@ function appendLoweredProgram(
         : "",
       fields,
       referenceType: aggregate.kind == DeclarationKind.classDeclaration,
+      executorBound,
       threadShareable,
       workerDestructible,
       needsDeinit,
@@ -14607,6 +14738,10 @@ function appendLoweredProgram(
           kind: aggregate.kind == DeclarationKind.classDeclaration
             ? LoweredTypeKind.classType
             : LoweredTypeKind.structType,
+          executorBound: loweredStructExecutorBound(
+            structs,
+            emittedName
+          ),
           threadShareable: loweredStructThreadShareable(
             structs,
             emittedName

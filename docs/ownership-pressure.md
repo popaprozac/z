@@ -2014,7 +2014,11 @@ class remains shareable because exclusion protects access and the payload is
 proven safe to destroy on the worker that releases the last identity.
 
 Every generated public wrapper still installs and restores the same
-foreign-thread executor-release route as Stage 0.
+foreign-thread executor-release route as Stage 0. Native ARC release now
+consumes that route for executor-bound identity: its last release enqueues an
+extracted finalizer when a route is installed and invokes the same finalizer
+inline otherwise. A fresh fixed-point emitter builds the embedding application
+with that route, and the handwritten consumer preserves its expected lifecycle.
 
 ## Diagnostic identity and mutex hardening
 
@@ -2098,6 +2102,46 @@ callee's transferred `String` argument, and the remainder of the callee never
 runs. This avoids both deadlock and abandonment without claiming interruption
 of synchronous code. Arbitrary suspension points, cancellation after multiple
 continuations, and cross-executor loans remain later state-machine tiers.
+
+## Native semantic authority must include rejection parity
+
+The main-executor state-machine work exposed a more important pressure result
+than another accepted async shape: executable native lowering can advance
+faster than the native semantic checker that is supposed to constrain it.
+
+A mixed-affinity ARC class may intentionally expose synchronized metadata on
+any thread while keeping one field on `thread.main`. Stage 0 correctly rejects
+reading that field from a `thread.spawn` worker with `Z0711`. The review
+checkpoint found that the fixed-point native `check` and `build` paths retained
+the field's affinity in their graph but did not perform the access-context
+comparison, so they accepted and emitted the same invalid program. This was a
+semantic safety gap, not merely an unsupported feature or a diagnostic-quality
+issue.
+
+The corrective invariant is now explicit: a native lowering slice requires
+positive execution parity, negative ownership/capability/sendability/affinity
+parity, and a current status boundary. The existing sixteen-root differential
+corpus supplies broad positive evidence but cannot prove invalid programs are
+rejected. Native sema now closes the observed gap for off-main field, method,
+and function access, while preserving valid inherited context inside placed
+bodies and `Mutex.withLock` closures. Construction and weak operations also
+consult lifecycle affinity. Dedicated negative fixtures keep those rules in
+Stage-0/native parity.
+
+The same review found two supporting process lessons that now have mechanical
+guards:
+
+- direct `self-host-emit-*.zs` fixtures now require a catalog classification as
+  positive differential roots, negative cases, specialized protocol cases, or
+  intentional exclusions, because adding an executable fixture does not
+  automatically add it to the parity corpus;
+- bare `bun test` now receives the same 60-second default budget as the package
+  script through `bunfig.toml`, avoiding the former five-second false failures
+  under parallel Clang, bootstrap, and Swift contention.
+
+Native hard-stop diagnostics and the frontend status document also need to
+move with each slice. Diagnostic codes and polished resolver messages are a DX
+follow-up; they do not substitute for semantic rejection coverage.
 
 ## Not tested yet
 

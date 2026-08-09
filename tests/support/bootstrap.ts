@@ -133,7 +133,7 @@ if (process.platform === "darwin") {
 function hostToolchainTest(
   name: string,
   callback: () => void | Promise<void>,
-  timeout = 5_000,
+  timeout?: number,
 ): void {
   test(name, callback, timeout);
 }

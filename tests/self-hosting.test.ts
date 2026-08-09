@@ -54,6 +54,7 @@ import type {
   ForeignModuleDeclarations,
   ImportDeclaration,
 } from "./support/bootstrap.ts";
+import { selfHostExecutableDifferentialCorpus } from "./support/self-host-fixtures.ts";
 
 hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and TextBuffer", () => {
   const application = resolve(projectRoot, "examples/applications/source-inspector/main.zs");
@@ -1987,18 +1988,11 @@ test("emits, joins, and cleans up a native worker task", () => {
       /thread\.spawn cannot retain non-shareable ARC capture snapshot of type MutableSnapshot yet/,
     );
 
-    for (const [fixture, binding, type] of [
-      [
-        "self-host-emit-thread-custom-deinit-capture-invalid.zs",
-        "snapshot",
-        "ManagedSnapshot",
-      ],
-      [
-        "self-host-emit-thread-affine-capture-invalid.zs",
-        "presenter",
-        "Presenter",
-      ],
-    ] as const) {
+    for (const [fixture, binding, type] of [[
+      "self-host-emit-thread-custom-deinit-capture-invalid.zs",
+      "snapshot",
+      "ManagedSnapshot",
+    ]] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const result = spawnSync(
         process.execPath,
@@ -2013,6 +2007,21 @@ test("emits, joins, and cleans up a native worker task", () => {
         ),
       );
     }
+
+    const affineInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-affine-capture-invalid.zs",
+    );
+    const affine = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", affineInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(affine.status, 1);
+    assert.match(
+      affine.stderr,
+      /field "Presenter\.value" requires thread\.main executor context/,
+    );
 
     const sharedRemovalInput = resolve(
       projectRoot,
@@ -3693,37 +3702,10 @@ test("runs the source stager through native file, process, and console runtimes"
 }, 15_000);
 
 test("runs Stage 0 and the native compiler against the same executable corpus", () => {
-  const corpus: readonly {
-    readonly entry: string;
-    readonly arguments?: readonly string[];
-  }[] = [
-    { entry: "tests/fixtures/self-host-emit-input.zs" },
-    { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
-    { entry: "tests/fixtures/self-host-emit-map.zs" },
-    { entry: "tests/fixtures/self-host-emit-set.zs" },
-    { entry: "tests/fixtures/self-host-emit-option.zs" },
-    { entry: "tests/fixtures/self-host-emit-optional-field-direct.zs" },
-    { entry: "tests/fixtures/self-host-emit-optional-chain.zs" },
-    { entry: "tests/fixtures/self-host-emit-struct-spread.zs" },
-    { entry: "tests/fixtures/self-host-emit-result.zs" },
-    { entry: "tests/fixtures/self-host-emit-mutex-field.zs" },
-    { entry: "tests/fixtures/self-host-emit-thread-task.zs" },
-    { entry: "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs" },
-    { entry: "tests/fixtures/self-host-emit-thread-shared-capture.zs" },
-    { entry: "tests/fixtures/self-host-differential-thread-owned.zs" },
-    { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
-    {
-      entry: "examples/applications/source-inspector/main.zs",
-      arguments: [resolve(
-        projectRoot,
-        "examples/applications/source-inspector/lexer-smoke.zs",
-      )],
-    },
-  ];
   const directory = mkdtempSync("/tmp/z-stage0-native-differential-");
 
-  for (let index = 0; index < corpus.length; index += 1) {
-    const testCase = corpus[index]!;
+  for (let index = 0; index < selfHostExecutableDifferentialCorpus.length; index += 1) {
+    const testCase = selfHostExecutableDifferentialCorpus[index]!;
     const input = resolve(projectRoot, testCase.entry);
     const source = readFileSync(input, "utf8");
     const stage0 = compileToNative(source, input);
@@ -4819,6 +4801,14 @@ test("compiles a multi-module Z application through the standalone native driver
     runtimeRootSource,
     /\? NULL\s+: z_embedded_runtime_native_runtime_enqueue_release/,
   );
+  assert.match(
+    runtimeRootSource,
+    /static void Z_RuntimeRoot_finalize_executor_bound\(void \*opaque\)/,
+  );
+  assert.match(
+    runtimeRootSource,
+    /static[^]*void Z_RuntimeRoot_release\(Z_RuntimeRoot \*self\)[^]*if \(z_executor_bound_release_enqueue != NULL\) \{[^]*z_executor_bound_release_enqueue\([^]*z_executor_bound_release_context,[^]*self,[^]*Z_RuntimeRoot_finalize_executor_bound[^]*\);[^]*return;[^]*\}[^]*Z_RuntimeRoot_finalize_executor_bound\(self\);/,
+  );
   assert.match(runtimeRootSource, /z_foreign_thread_leave\(entry\)/);
   assert.match(runtimeRootHeader, /NATIVE_RUNTIME_RUNTIME_DRAINING = 7/);
   const runtimeRootConsumerSource = resolve(
@@ -4883,6 +4873,69 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(runtimeRootRun.status, 0, runtimeRootRun.stderr);
+
+  const releaseOnlyRuntimeProject = resolve(
+    directory,
+    "release-only-runtime-project",
+  );
+  mkdirSync(releaseOnlyRuntimeProject);
+  writeFileSync(
+    resolve(releaseOnlyRuntimeProject, "library.zs"),
+    [
+      'import { thread } from "std/thread";',
+      "",
+      "class MainIdentity on thread.main {",
+      "  value: i32;",
+      "}",
+      "",
+      "export c function z_release_marker(): i32 { return 42; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(releaseOnlyRuntimeProject, "z.json"),
+    JSON.stringify({
+      target: {
+        kind: "static-library",
+        name: "release_only",
+        entry: "library.zs",
+      },
+    }),
+  );
+  const releaseOnlyRuntimeBuild = spawnSync(
+    driver,
+    ["build", releaseOnlyRuntimeProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    releaseOnlyRuntimeBuild.status,
+    0,
+    releaseOnlyRuntimeBuild.stderr,
+  );
+  const releaseOnlyRuntimeHeader = readFileSync(
+    resolve(releaseOnlyRuntimeProject, "build/release_only.h"),
+    "utf8",
+  );
+  assert.match(
+    releaseOnlyRuntimeHeader,
+    /#define RELEASE_ONLY_RUNTIME_REQUIRES_ENQUEUE_RELEASE 1/,
+  );
+  assert.match(
+    releaseOnlyRuntimeHeader,
+    /#define RELEASE_ONLY_RUNTIME_REQUIRES_MAIN_THREAD 1/,
+  );
+  const releaseOnlyRuntimeSource = readFileSync(
+    resolve(releaseOnlyRuntimeProject, ".z-cache/build/release_only.c"),
+    "utf8",
+  );
+  assert.match(
+    releaseOnlyRuntimeSource,
+    /if \(config == NULL \|\| config->enqueue_release == NULL\)/,
+  );
+  assert.match(
+    releaseOnlyRuntimeSource,
+    /Z_MainIdentity_finalize_executor_bound/,
+  );
 
   const synchronizedRuntimeProject = resolve(
     projectRoot,
@@ -8572,6 +8625,34 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     /malformed stage-1 method receiver mode/,
   );
 }, 10_000);
+
+test("rejects executor-affinity violations in the native resolver", () => {
+  const cases = [
+    {
+      fixture: "self-host-reject-thread-affinity-field.zs",
+      diagnostic: 'field "Application.published" requires thread.main executor context',
+    },
+    {
+      fixture: "self-host-reject-thread-affinity-method.zs",
+      diagnostic: 'method "Application.publishedValue" requires thread.main executor context',
+    },
+    {
+      fixture: "self-host-reject-thread-affinity-function.zs",
+      diagnostic: 'function "publishedValue" requires thread.main executor context',
+    },
+  ] as const;
+
+  for (const testCase of cases) {
+    const input = resolve(projectRoot, "tests/fixtures", testCase.fixture);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1, `${testCase.fixture}\n${result.stderr}`);
+    assert.ok(result.stderr.includes(testCase.diagnostic), result.stderr);
+  }
+});
 
 test("keeps native semantic authority composable across a representative Z corpus", () => {
   const entries = [

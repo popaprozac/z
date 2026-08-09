@@ -229,17 +229,19 @@ export function collectionMethodSignature(
       0,
       generic.arguments[0].byteLength
     );
+    let executorAffinity = "";
     if (methodName == "initialize") {
       parameterModes.push("move");
       parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
       returnType = `OnceLifetime<${valueType}>`;
+      executorAffinity = "thread.main";
     } else if (methodName == "get") {
       returnType = valueType;
     }
     if (returnType.byteLength > 0) {
       return Option.some(ModuleFunctionSignature({
         asynchronous: false,
-        executorAffinity: "thread.main",
+        executorAffinity,
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         parameterModes,

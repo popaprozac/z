@@ -1,5 +1,9 @@
 import { readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  selfHostEmitFixtureClassifications,
+  verifySelfHostEmitFixtureCoverage,
+} from "../tests/support/self-host-fixtures.ts";
 
 export type TestTier = {
   readonly timeoutMilliseconds: number;
@@ -101,6 +105,7 @@ function runTier(name: string): never {
     process.exit(2);
   }
   verifyTestTierCoverage();
+  verifySelfHostEmitFixtureCoverage();
   const result = Bun.spawnSync({
     cmd: [
       process.execPath,
@@ -111,6 +116,10 @@ function runTier(name: string): never {
       ...tier.files,
     ],
     cwd: resolve(import.meta.dir, ".."),
+    env: {
+      ...process.env,
+      Z_BUN_TEST_TIMEOUT_MS: String(tier.timeoutMilliseconds),
+    },
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",
@@ -122,7 +131,9 @@ if (import.meta.main) {
   const [command, tier] = process.argv.slice(2);
   if (command === "verify") {
     verifyTestTierCoverage();
+    verifySelfHostEmitFixtureCoverage();
     console.log(`test tier coverage: ${Object.keys(testTiers).length} tiers, all top-level test files assigned exactly once`);
+    console.log(`self-host fixture coverage: ${Object.keys(selfHostEmitFixtureClassifications).length} direct emitter fixtures classified`);
   } else if (command === "run" && tier) {
     runTier(tier);
   } else {

@@ -137,10 +137,16 @@ recursive path.
   arrays and collections, ARC classes and closures with atomic strong counts,
   `Once`/`OnceLifetime`/`Mutex`, structured tasks, native worker threads,
   typed task failures, nested `try await`, first-tier checked foreign calls,
-  C exports, and embedded-runtime entry points. Signed integer arithmetic keeps
-  Z's checked-overflow behavior. Unsupported ownership, executor, and foreign
-  shapes fail during native lowering rather than being approximated by the C
-  printer.
+  C exports, and embedded-runtime entry points. Its bounded main-executor
+  suspension tier uses one heap-owned invocation frame for top-level linear
+  segments and one top-level `if`, consuming `match`, or `while`. The `while`
+  form preserves per-iteration cleanup, `break`, `continue`, `return`, `throw`,
+  direct synchronous `try`, and cancellation. Suspending `for`, nested
+  structured suspension, `try await` inside the placed loop, dynamic delays,
+  and cross-executor borrowed arguments remain explicit failures. Signed
+  integer arithmetic keeps Z's checked-overflow behavior. Unsupported
+  ownership, executor, and foreign shapes fail during native lowering rather
+  than being approximated by the C printer.
 - `lowering-ir.zs` owns the typed flat-arena boundary between parser semantics
   and target text. Checked arithmetic, direct calls, field reads, and struct
   construction are settled operations in this IR; the C printer does not
@@ -175,6 +181,44 @@ the production Bun CLI, Clang/Swift metadata production, and every semantic or
 foreign shape not yet represented by the native graph. The native compiler now
 owns a substantial executable subset—including runtime and interop slices—but
 does not yet replace Stage 0 for arbitrary Z programs.
+
+## Semantic authority gate
+
+Executable lowering is not evidence that the native frontend is ready to be
+the sole semantic authority for that shape. Every newly lowered feature must
+carry all three of these proofs before the executable boundary expands:
+
+1. positive execution parity between Stage 0 and the fixed-point native
+   compiler;
+2. negative rejection parity for the feature's ownership, capability,
+   sendability, and executor-affinity rules;
+3. an updated implementation-status boundary that names what still fails
+   closed.
+
+The current positive differential corpus has sixteen roots. It is useful
+execution evidence, but it does not replace negative semantic fixtures. Native
+semantic rejection now covers off-main field, method, and function access,
+including a mixed-affinity class captured by `thread.spawn`; placed bodies and
+`Mutex.withLock` closures inherit their proven context. Construction and weak
+reference operations also consult lifecycle affinity. Native embedding closes
+the companion destruction-affinity gap: executor-bound ARC release consumes
+the route installed at foreign entry, enqueues the extracted finalizer when a
+route is present, and uses the same finalizer inline otherwise. These are the
+current model for closing a lowering slice: the positive path executes, its
+invalid safety boundary rejects, and destruction follows the same affinity.
+
+The standalone executable subset is intentionally narrower than the native
+parser and semantic graph. Unplaced suspending async functions, traits and type
+aliases at the lowering boundary, generic methods, and fixed-array or
+function-value combinations without a settled representation still stop before
+C emission. Those explicit rejections are staged implementation boundaries;
+accepting a program that violates an already-settled Stage-0 safety rule is
+not.
+
+Native semantic diagnostics carry source locations and readable messages, but
+many lowering hard stops do not yet have stable `Z` diagnostic codes. Coding
+and polishing that remaining surface is a later native-driver DX layer, not a
+substitute for fail-closed behavior.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
@@ -527,5 +571,10 @@ native frontend under strict warnings (and pthread support where required).
 Every Stage-0 semantic resolution observed on that corpus has a validated
 native authority contract. Migrating the remaining unsupported
 ownership/effect contexts is the next self-hosting layer.
+This corpus is the positive half of the semantic authority gate above. Each
+direct `self-host-emit-*.zs` fixture must also be classified as a differential
+root, a negative semantic fixture, a specialized protocol/diagnostic fixture,
+or an intentional exclusion. The fixture catalog fails closed when a direct
+fixture has no declared role.
 The ordered continuation plan and current criteria live in
 [`docs/bootstrap-status.md`](../../docs/bootstrap-status.md#self-hosting-continuation-point).

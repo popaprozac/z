@@ -11,6 +11,7 @@ import {
   LoweredParameterMode,
   LoweredProgram,
   LoweredStatementKind,
+  LoweredStruct,
   LoweredType,
   LoweredTypeKind,
   lowerModules,
@@ -256,6 +257,15 @@ function programOnceTypeNames(
     }
   }
   return names;
+}
+
+function programUsesExecutorBoundClasses(
+  in program: LoweredProgram
+): boolean {
+  for (const aggregate of program.structs) {
+    if (aggregate.referenceType && aggregate.executorBound) return true;
+  }
+  return false;
 }
 
 function appendMutexTypeName(
@@ -532,6 +542,48 @@ function appendModuleConstants(
   if (program.constants.length > 0) output.append("\n");
 }
 
+function appendClassFinalizationBody(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in aggregate: LoweredStruct,
+  depth: usize
+): void throws String {
+  match (in aggregate.deinitializer) {
+    some(deinitializer) => {
+      for (const root of deinitializer.roots) {
+        try appendStatement(inout output, deinitializer, root, depth);
+      }
+      appendCleanups(
+        inout output,
+        deinitializer.fallthroughCleanups,
+        depth
+      );
+    }
+    none => {}
+  }
+  let cleanup = aggregate.fields.length;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    if (!loweredTypeNeedsDeinit(program, aggregate.fields[cleanup].type)) {
+      continue;
+    }
+    appendIndent(inout output, depth);
+    output.append("Z_");
+    output.append(aggregate.fields[cleanup].type.name);
+    if (aggregate.fields[cleanup].type.kind == LoweredTypeKind.classType) {
+      output.append("_release(self->");
+      output.append(aggregate.fields[cleanup].name);
+      output.append(");\n");
+    } else {
+      output.append("_deinit(&self->");
+      output.append(aggregate.fields[cleanup].name);
+      output.append(");\n");
+    }
+  }
+  appendIndent(inout output, depth);
+  output.append("free(self);\n");
+}
+
 function appendClassAndOnceRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -599,6 +651,17 @@ function appendClassAndOnceRuntime(
     output.append("_retain(Z_");
     output.append(aggregate.name);
     output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n}\n\n");
+    if (aggregate.executorBound) {
+      output.append("static void Z_");
+      output.append(aggregate.name);
+      output.append("_finalize_executor_bound(void *opaque) {\n  Z_");
+      output.append(aggregate.name);
+      output.append(" *self = (Z_");
+      output.append(aggregate.name);
+      output.append(" *)opaque;\n");
+      try appendClassFinalizationBody(inout output, program, aggregate, 1);
+      output.append("}\n\n");
+    }
     output.append("static __attribute__((unused)) void Z_");
     output.append(aggregate.name);
     output.append("_release(Z_");
@@ -607,39 +670,19 @@ function appendClassAndOnceRuntime(
     output.append("  const size_t previous = __atomic_fetch_sub(&self->_z_refcount, 1, __ATOMIC_ACQ_REL);\n");
     output.append("  if (previous == 0) abort();\n");
     output.append("  if (previous != 1) return;\n");
-    match (in aggregate.deinitializer) {
-      some(deinitializer) => {
-        for (const root of deinitializer.roots) {
-          try appendStatement(inout output, deinitializer, root, 1);
-        }
-        appendCleanups(
-          inout output,
-          deinitializer.fallthroughCleanups,
-          1
-        );
-      }
-      none => {}
+    if (aggregate.executorBound) {
+      output.append("  if (z_executor_bound_release_enqueue != NULL) {\n");
+      output.append("    z_executor_bound_release_enqueue(\n");
+      output.append("      z_executor_bound_release_context,\n");
+      output.append("      self,\n      Z_");
+      output.append(aggregate.name);
+      output.append("_finalize_executor_bound\n    );\n    return;\n  }\n  Z_");
+      output.append(aggregate.name);
+      output.append("_finalize_executor_bound(self);\n");
+    } else {
+      try appendClassFinalizationBody(inout output, program, aggregate, 1);
     }
-    let cleanup = aggregate.fields.length;
-    while (cleanup > 0) {
-      cleanup = cleanup - 1;
-      if (loweredTypeNeedsDeinit(program, aggregate.fields[cleanup].type)) {
-        output.append("  Z_");
-        output.append(aggregate.fields[cleanup].type.name);
-        if (
-          aggregate.fields[cleanup].type.kind == LoweredTypeKind.classType
-        ) {
-          output.append("_release(self->");
-          output.append(aggregate.fields[cleanup].name);
-          output.append(");\n");
-        } else {
-          output.append("_deinit(&self->");
-          output.append(aggregate.fields[cleanup].name);
-          output.append(");\n");
-        }
-      }
-    }
-    output.append("  free(self);\n}\n\n");
+    output.append("}\n\n");
   }
   const onceNames = programOnceTypeNames(program);
   for (const onceName of onceNames) {
@@ -6818,6 +6861,10 @@ function appendEmbeddedRuntimeDefinitions(
 ): void throws String {
   const prefix = embeddedRuntimeSymbolPart(targetName);
   const constant = embeddedRuntimeConstantPart(targetName);
+  const requiresBoundReleaseEnqueue = initializerRequiresMain
+    || programUsesExecutorBoundClasses(program);
+  const requiresMainThread = initializerRequiresMain
+    || programUsesExecutorBoundClasses(program);
   let initializerIndex = program.functions.length;
   if (initializerName.byteLength > 0) {
     let index: usize = 0;
@@ -6907,8 +6954,15 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
       shutdownRoot = `  z_embedded_runtime_${prefix}_destroy_root();\n`;
     }
   }
-  if (initializerRequiresMain) {
-    initializerValidation = `  if (config == NULL || config->enqueue_release == NULL || config->is_main_thread == NULL) {
+  if (requiresBoundReleaseEnqueue) {
+    initializerValidation = `  if (config == NULL || config->enqueue_release == NULL) {
+    __atomic_store_n(&z_embedded_runtime_${prefix}.state, 0, __ATOMIC_RELEASE);
+    return ${constant}_RUNTIME_INVALID_CONFIG;
+  }
+`;
+  }
+  if (requiresMainThread) {
+    initializerValidation = `${initializerValidation}  if (config == NULL || config->is_main_thread == NULL) {
     __atomic_store_n(&z_embedded_runtime_${prefix}.state, 0, __ATOMIC_RELEASE);
     return ${constant}_RUNTIME_INVALID_CONFIG;
   }
@@ -6923,7 +6977,7 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
   let activeCallbackStatus = `${constant}_RUNTIME_BUSY`;
   if (hasRoot) activeCallbackStatus = `${constant}_RUNTIME_DRAINING`;
   let pendingReleaseThreadProof = "";
-  if (initializerRequiresMain) {
+  if (requiresMainThread) {
     pendingReleaseThreadProof = `  if (z_embedded_runtime_${prefix}.is_main_thread == NULL
       || !z_embedded_runtime_${prefix}.is_main_thread(z_embedded_runtime_${prefix}.context)) abort();
 `;
@@ -6931,8 +6985,8 @@ ${rootThreadProof}  z_embedded_runtime_${prefix}_destroy_root();
   appendEmbeddedRuntimeTypes(
     inout output,
     targetName,
-    initializerRequiresMain,
-    initializerRequiresMain
+    requiresBoundReleaseEnqueue,
+    requiresMainThread
   );
   output.append(`typedef struct z_embedded_runtime_${prefix}_storage {
   void *context;
@@ -8622,6 +8676,7 @@ function emitLoweredC(
   const usesOnce = onceTypeNames.length > 0;
   const taskTypeNames = programTaskTypeNames(program);
   const usesThreads = taskTypeNames.length > 0;
+  const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
   if (
     usesRealPath
     || usesCreateDirectories
@@ -8696,7 +8751,10 @@ function emitLoweredC(
     output.append("#if defined(_WIN32)\n#include <direct.h>\n#endif\n");
   }
   output.append("\n");
-  if (embeddedRuntimeName.byteLength > 0) {
+  if (
+    embeddedRuntimeName.byteLength > 0
+    || usesExecutorBoundClasses
+  ) {
     appendForeignRuntimeEntrySupport(inout output);
   }
   if (usesProcessArguments) {
@@ -9331,11 +9389,13 @@ function emitLoweredCHeader(
   output.append("#include <stdbool.h>\n#include <stdint.h>\n\n");
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n\n");
   if (embeddedRuntimeName.byteLength > 0) {
+    const requiresExecutorRuntime = runtimeInitializerRequiresMain
+      || programUsesExecutorBoundClasses(program);
     appendEmbeddedRuntimeTypes(
       inout output,
       embeddedRuntimeName,
-      runtimeInitializerRequiresMain,
-      runtimeInitializerRequiresMain
+      requiresExecutorRuntime,
+      requiresExecutorRuntime
     );
   }
   let emittedTypes = Array<String>();
