@@ -430,6 +430,30 @@ function validateNativeExpressionTree(
         length
       );
     }
+    let optionalMemberType = "";
+    if (
+      node.kind == ExpressionKind.memberExpression
+      && node.optionalAccess
+    ) {
+      optionalMemberType = resolvedExpressionType(
+        graph,
+        moduleIndex,
+        tree,
+        index
+      );
+    }
+    if (stringContains(optionalMemberType, "view ")) {
+      let length = node.value.byteLength;
+      if (length == 0) length = 1;
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "cleanup-bearing optional-chain view projections are not executable in the native compiler yet",
+        node.line,
+        node.column,
+        length
+      );
+    }
     if (
       node.kind == ExpressionKind.callExpression
       && node.children.length > 0

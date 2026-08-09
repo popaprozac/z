@@ -2170,7 +2170,10 @@ source-mapped `Z0700` instead of exposing a C-emitter-only hard stop.
 Graph-provided expression types also moved the first evidence-dependent backend
 gap out of the internal-error fallback: iteration over `Set`, `Map`, or another
 non-`Array` iterable now reports source-mapped `Z1000` before the current
-Array-only native loop lowering runs.
+Array-only native loop lowering runs. The same evidence path recognizes
+cleanup-bearing optional field projections as `Option<view T>` and reports
+their current native boundary at the member access instead of leaking the
+lowerer's deferred-projection string.
 
 ## Not tested yet
 

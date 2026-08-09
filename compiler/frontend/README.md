@@ -241,7 +241,9 @@ tail return. The standalone native `check` command therefore agrees with native
 emission without running a no-write C-emission pass. The same resolved-type
 evidence now classifies iteration over `Set`, `Map`, and other non-`Array`
 collections as source-mapped `Z1000` before the Array-only lowering tier; this
-is an expected representation boundary rather than malformed IR.
+is an expected representation boundary rather than malformed IR. Resolved
+`Option<view T>` evidence does the same for cleanup-bearing optional field
+projections before the current optional-chain lowerer.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported

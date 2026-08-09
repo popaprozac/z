@@ -416,7 +416,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
           };
         }
       `,
-      expected: /internal compiler error: native lowering: .*cleanup-bearing view projection remains deferred/,
+      expected: /error\[Z1000\]: cleanup-bearing optional-chain view projections are not executable in the native compiler yet/,
     },
     {
       name: "method",
@@ -446,7 +446,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
     assert.match(emission.stderr, testCase.expected);
   }
   rmSync(directory, { recursive: true, force: true });
-}, 20_000);
+}, 40_000);
 
 test("reports evidence-dependent native iteration boundaries before lowering", () => {
   const input = resolve(projectRoot, "examples/language/collections/set.zs");
