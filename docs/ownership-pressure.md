@@ -1141,7 +1141,7 @@ fresh installation can remove TypeScript.
 
 That proof is now also an explicit local workflow instead of only a test
 fixture. `bun run bootstrap [output]` uses Stage 0 exactly once to emit the
-current 37-module driver, strict-compiles generation one, asks generation one
+current 38-module driver, strict-compiles generation one, asks generation one
 to build generation two in release mode, and compares their complete generated
 C before publishing an executable named `z`. The published binary performs
 ordinary pure-Z project discovery, checking, emission, building, caching, and
@@ -2142,6 +2142,16 @@ guards:
 Native hard-stop diagnostics and the frontend status document also need to
 move with each slice. Diagnostic codes and polished resolver messages are a DX
 follow-up; they do not substitute for semantic rejection coverage.
+
+The first follow-up now inserts a lowerability preflight between native semantic
+resolution and IR construction. Ordinary unplaced async functions retain
+`Z0700`; generic aggregates, traits, aliases, function-value types, fixed arrays,
+and unsupported method tiers use `Z1000`, which explicitly means “valid Z,
+outside the current fixed-point executable tier.” Both the standalone driver
+and the Bun-hosted native emitter preserve the code, declaration/type location,
+and source span. The remaining inventory is deliberately split: expected tier
+boundaries must become coded diagnostics, while malformed, lost, or mismatched
+IR guards must become visible internal compiler errors.
 
 ## Not tested yet
 

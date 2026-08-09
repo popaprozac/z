@@ -3,6 +3,7 @@
 
 import { renderProgram } from "./parser-protocol.zs";
 import { emitModulesC } from "./c-emitter.zs";
+import { validateNativeLowerability } from "./native-lowerability.zs";
 import { parseModuleSources } from "./module-graph.zs";
 import { resolveParsedModules } from "./module-resolver.zs";
 import {
@@ -103,6 +104,14 @@ function stage1Emit(in entryPath: String, in batch: String): String {
       return `error\n${message}`;
     }
   };
+  const lowerabilityOutcome = attempt validateNativeLowerability(parsed);
+  match (lowerabilityOutcome) {
+    success => {}
+    failure(error) => {
+      const message = resolverMessage(error);
+      return `error\n${message}`;
+    }
+  }
   const entry = graph.entry;
   const emitOutcome = attempt emitModulesC(parsed, graph);
   return match (emitOutcome) {

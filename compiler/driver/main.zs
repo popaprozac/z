@@ -10,6 +10,7 @@ import {
   emitTestModulesC,
 } from "../frontend/c-emitter.zs";
 import { lowerModules } from "../frontend/lowering-ir.zs";
+import { validateNativeLowerability } from "../frontend/native-lowerability.zs";
 import {
   decodeRawForeignDeclarations,
 } from "../frontend/foreign-declaration-protocol.zs";
@@ -229,6 +230,18 @@ function loadProject(in entryPath: String): NativeProject throws String {
       throw message;
     }
   };
+  const lowerabilityOutcome = attempt validateNativeLowerability(modules);
+  match (lowerabilityOutcome) {
+    success => {}
+    failure(error) => {
+      const sourceOutcome = attempt fs.readText(error.path);
+      const message = match (sourceOutcome) {
+        success(source) => diagnosticMessage(error, source);
+        failure(_) => `${error.path}:${error.line}:${error.column}: error[${error.code}]: ${error.message}`;
+      };
+      throw message;
+    }
+  }
   return NativeProject({
     entryPath: canonicalEntry,
     config,

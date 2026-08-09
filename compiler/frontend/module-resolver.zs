@@ -181,6 +181,7 @@ import {
   ModuleTypeParameterConstraint,
   ModuleTypeSignature,
   ResolvedModule,
+  codedModuleResolutionError,
   moduleResolutionError,
 } from "./semantic-model.zs";
 import {
@@ -270,12 +271,16 @@ function requireMainExecutorContext(
     || requiredAffinity != "thread.main"
     || currentExecutorContext(bindings) == "thread.main"
   ) return;
-  throw resolutionError(
+  let length = tree.nodes[index].value.byteLength;
+  if (length == 0) length = 1;
+  throw codedModuleResolutionError(
     ModuleResolveErrorKind.typeMismatch,
+    "Z0711",
     module.path,
     `${subject} requires thread.main executor context`,
     tree.nodes[index].line,
-    tree.nodes[index].column
+    tree.nodes[index].column,
+    length
   );
 }
 

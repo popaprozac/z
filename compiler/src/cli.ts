@@ -18,6 +18,7 @@ import { writeForeignDeclarationArtifact } from "./foreign-adapter.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { lex, type Token } from "./lexer.ts";
 import { loadSourceModuleBatch, type SourceModuleBatch } from "./modules.ts";
+import { NativeFrontendDiagnosticError } from "./native-frontend-diagnostics.ts";
 import {
   emitWithNativeFrontendLibrary,
   parseWithNativeFrontendLibrary,
@@ -454,7 +455,42 @@ function emitWithStage1(inputPath: string): void {
   const batch = encodeStage1ModuleBatch(sources);
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareSelfHostedStage1StringLibrary(projectRoot, bridgePath);
-  process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch));
+  try {
+    process.stdout.write(emitWithNativeFrontendLibrary(boundary.libraryPath, entryPath, batch));
+  } catch (error) {
+    if (error instanceof NativeFrontendDiagnosticError && error.code !== null) {
+      const module = sourceBatch.modules.find((candidate) => candidate.fileName === error.fileName);
+      if (module) {
+        throw new DiagnosticError(
+          error.fileName,
+          {
+            offset: sourcePositionOffset(module.source, error.line, error.column),
+            line: error.line,
+            column: error.column,
+            fileName: error.fileName,
+          },
+          error.summary,
+          {
+            code: error.code,
+            length: error.length,
+          },
+        );
+      }
+    }
+    throw error;
+  }
+}
+
+function sourcePositionOffset(source: string, targetLine: number, targetColumn: number): number {
+  let offset = 0;
+  let line = 1;
+  while (line < targetLine) {
+    const newline = source.indexOf("\n", offset);
+    if (newline < 0) return 0;
+    offset = newline + 1;
+    line += 1;
+  }
+  return offset + targetColumn - 1;
 }
 
 function stage0ImportShapes(program: Program, fileName: string): readonly Stage1ImportShape[] {

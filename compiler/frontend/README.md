@@ -216,9 +216,15 @@ accepting a program that violates an already-settled Stage-0 safety rule is
 not.
 
 Native semantic diagnostics carry source locations and readable messages, but
-many lowering hard stops do not yet have stable `Z` diagnostic codes. Coding
-and polishing that remaining surface is a later native-driver DX layer, not a
-substitute for fail-closed behavior.
+the backend still contains hard stops that must be classified. The first
+source-mapped lowerability preflight now reports ordinary async as `Z0700` and
+valid non-async shapes without a current native representation as `Z1000`;
+generic aggregates, traits, aliases, function-value types, fixed arrays, and
+unsupported method tiers no longer fall into resolver-internal messages.
+Remaining expected boundaries must migrate to stable diagnostics, while
+malformed or lost lowered IR must surface as an internal compiler error rather
+than a language limitation. This DX work does not substitute for fail-closed
+behavior.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
@@ -248,7 +254,7 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 37-module driver to
+0 seeds generation one, which now rebuilds the same 38-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone

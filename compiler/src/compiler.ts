@@ -455,6 +455,7 @@ const authoritativeNativeDiagnosticKinds = new Set<NativeFrontendDiagnosticKind>
   "typeMismatch",
   "invalidOperator",
   "invalidMatch",
+  "unsupportedLowering",
 ]);
 
 function authoritativeNativeDiagnostic(
@@ -477,6 +478,10 @@ function authoritativeNativeDiagnostic(
       fileName: error.fileName,
     },
     error.summary,
+    {
+      code: error.code ?? undefined,
+      length: error.length,
+    },
   );
 }
 

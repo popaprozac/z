@@ -113,22 +113,31 @@ function resolverErrorKindName(kind: ModuleResolveErrorKind): String {
     typeMismatch => "typeMismatch";
     invalidOperator => "invalidOperator";
     invalidMatch => "invalidMatch";
+    unsupportedLowering => "unsupportedLowering";
   };
 }
 
 export function resolverMessage(in error: ModuleResolveError): String {
   let output = TextBuffer();
-  output.append("diagnostic");
+  output.append(error.code.byteLength > 0 ? "diagnostic2" : "diagnostic");
   output.appendAscii(9);
   const kind = resolverErrorKindName(error.kind);
   output.append(kind);
   output.appendAscii(9);
+  if (error.code.byteLength > 0) {
+    appendHexText(inout output, error.code);
+    output.appendAscii(9);
+  }
   appendHexText(inout output, error.path);
   output.appendAscii(9);
   appendHexUsize(inout output, error.line);
   output.appendAscii(9);
   appendHexUsize(inout output, error.column);
   output.appendAscii(9);
+  if (error.code.byteLength > 0) {
+    appendHexUsize(inout output, error.length);
+    output.appendAscii(9);
+  }
   appendHexText(inout output, error.message);
   return output.finish();
 }

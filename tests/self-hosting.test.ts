@@ -4645,7 +4645,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 37 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 38 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -4979,28 +4979,122 @@ test("compiles a multi-module Z application through the standalone native driver
     /C export parameter "value" has unsupported boundary type "String"/,
   );
 
-  const loweringOnlyFailure = resolve(
-    directory,
-    "lowering-only-failure.zs",
-  );
-  writeFileSync(
-    loweringOnlyFailure,
-    [
-      "async function deferred(): i32 { return 42; }",
-      "function main(): i32 { return 0; }",
-      "",
-    ].join("\n"),
-  );
-  const loweringOnlyCheck = spawnSync(
-    driver,
-    ["check", loweringOnlyFailure],
-    { encoding: "utf8" },
-  );
-  assert.equal(loweringOnlyCheck.status, 1);
-  assert.match(
-    loweringOnlyCheck.stderr,
-    /native lowering does not support suspending async function deferred yet/,
-  );
+  const nativeLoweringBoundaries = [
+    {
+      name: "ordinary-async",
+      source: [
+        "async function deferred(): i32 { return 42; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 7,
+      marker: "^^^^^",
+      code: "Z0700",
+      summary: 'ordinary async function "deferred" is not executable in the native compiler yet',
+    },
+    {
+      name: "generic-aggregate",
+      source: [
+        "struct Pair<T> { first: T; second: T; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 1,
+      marker: "^^^^^^",
+      code: "Z1000",
+      summary: 'generic struct "Pair" is not executable in the native compiler yet',
+    },
+    {
+      name: "trait",
+      source: [
+        "trait Named { function name(): String; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 1,
+      marker: "^^^^^",
+      code: "Z1000",
+      summary: 'trait declaration "Named" is not executable in the native compiler yet',
+    },
+    {
+      name: "type-alias",
+      source: [
+        "type Count = i32;",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 1,
+      marker: "^^^^",
+      code: "Z1000",
+      summary: 'type alias "Count" is not executable in the native compiler yet',
+    },
+    {
+      name: "function-value",
+      source: [
+        "function accept(operation: (value: i32) => i32): void {}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 28,
+      marker: "^^^^^^^^^^^^^^^^^^^",
+      code: "Z1000",
+      summary: 'function-value type "(value: i32) => i32" has no native representation yet',
+    },
+    {
+      name: "fixed-array",
+      source: [
+        "function sum(values: i32[3]): i32 { return values[0]; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      column: 22,
+      marker: "^^^^^^",
+      code: "Z1000",
+      summary: 'fixed-array type "i32[3]" has no native representation yet',
+    },
+  ] as const;
+  for (const boundary of nativeLoweringBoundaries) {
+    const input = resolve(directory, `native-lowering-${boundary.name}.zs`);
+    writeFileSync(input, boundary.source);
+    assert.doesNotThrow(
+      () => check(boundary.source, input),
+      `${boundary.name} must remain valid Z`,
+    );
+    const checking = spawnSync(driver, ["check", input], { encoding: "utf8" });
+    assert.equal(checking.status, 1, `${boundary.name}\n${checking.stderr}`);
+    assert.ok(
+      checking.stderr.includes(
+        `${input}:1:${boundary.column}: error[${boundary.code}]: ${boundary.summary}`,
+      ),
+      checking.stderr,
+    );
+    assert.ok(checking.stderr.includes(`1 | ${boundary.source.split("\n")[0]}`));
+    assert.ok(checking.stderr.includes(`${boundary.marker} ${boundary.summary}`));
+    assert.doesNotMatch(checking.stderr, /against \d+ local aggregate/);
+
+    if (boundary.name === "function-value") {
+      const hosted = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(hosted.status, 1, hosted.stderr);
+      assert.ok(
+        hosted.stderr.includes(
+          `${input}:1:${boundary.column}: error[${boundary.code}]: ${boundary.summary}`,
+        ),
+        hosted.stderr,
+      );
+      assert.ok(hosted.stderr.includes(`${boundary.marker} ${boundary.summary}`));
+    }
+
+    if (boundary.name === "fixed-array") {
+      const output = resolve(directory, `native-lowering-${boundary.name}`);
+      const building = spawnSync(driver, ["build", input, output], { encoding: "utf8" });
+      assert.equal(building.status, 1, `${boundary.name}\n${building.stderr}`);
+      assert.equal(existsSync(output), false);
+    }
+  }
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
   mkdirSync(runtimeCollisionProject);

@@ -27,6 +27,8 @@ The bootstrap reserves these code families:
 | `Z04xx` | formatting, console, and string construction |
 | `Z07xx` | async effects, task structure, and suspension safety |
 | `Z08xx` | foreign declaration and API-contract normalization |
+| `Z09xx` | tests and project-command validation |
+| `Z10xx` | valid Z shapes outside the current native executable tier |
 
 Currently structured codes include:
 
@@ -88,10 +90,16 @@ Currently structured codes include:
 | `Z0821` | a value representation cannot cross the first raw native boundary |
 | `Z0822` | an unsafe block is nested, asynchronous, suspending, or captures an escaping environment |
 | `Z0823` | an unsupported native call needs unsafe, or an unsafe pointer assertion/pass-through is incompatible |
+| `Z1000` | valid Z declaration or type has no representation in the current native compiler tier |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and
 machine-readable help text for future editor quick fixes.
+
+`Z1000` is a compiler-staging boundary, not a language rejection. The same
+source remains valid Z and may compile through Stage 0; the fixed-point native
+compiler reports the exact declaration or type that its current backend cannot
+yet represent. Async staging continues to use the more specific `Z0700`.
 
 Suggestions must describe functionality that exists. The compiler recommends
 `move` only when the destination accepts an owned closure environment; when a

@@ -18,14 +18,17 @@ export enum ModuleResolveErrorKind {
   typeMismatch,
   invalidOperator,
   invalidMatch,
+  unsupportedLowering,
 }
 
 export struct ModuleResolveError {
   kind: ModuleResolveErrorKind;
+  code: String = "";
   path: String;
   message: String;
   line: usize;
   column: usize;
+  length: usize = 1;
 }
 
 export function moduleResolutionError(
@@ -37,10 +40,32 @@ export function moduleResolutionError(
 ): ModuleResolveError {
   return ModuleResolveError({
     kind,
+    code: "",
     path: path.copyBytes(0, path.byteLength),
     message: message.copyBytes(0, message.byteLength),
     line,
     column,
+    length: 1,
+  });
+}
+
+export function codedModuleResolutionError(
+  kind: ModuleResolveErrorKind,
+  in code: String,
+  in path: String,
+  in message: String,
+  line: usize,
+  column: usize,
+  length: usize
+): ModuleResolveError {
+  return ModuleResolveError({
+    kind,
+    code: code.copyBytes(0, code.byteLength),
+    path: path.copyBytes(0, path.byteLength),
+    message: message.copyBytes(0, message.byteLength),
+    line,
+    column,
+    length,
   });
 }
 

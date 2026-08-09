@@ -1860,6 +1860,40 @@ function nativeUsize(value: number | bigint, description: string): number {
 
 function decodeNativeResolverError(payload: string): Error {
   const fields = payload.split("\t");
+  if (fields[0] === "diagnostic2") {
+    if (
+      fields.length !== 8
+      || !isNativeFrontendDiagnosticKind(fields[1] ?? "")
+      || !/^(?:[0-9a-f]{2})+$/.test(fields[2] ?? "")
+      || !/^(?:[0-9a-f]{2})+$/.test(fields[3] ?? "")
+      || !/^[0-9a-f]{16}$/.test(fields[4] ?? "")
+      || !/^[0-9a-f]{16}$/.test(fields[5] ?? "")
+      || !/^[0-9a-f]{16}$/.test(fields[6] ?? "")
+      || !/^(?:[0-9a-f]{2})+$/.test(fields[7] ?? "")
+    ) return new Error(payload);
+    const code = Buffer.from(fields[2]!, "hex").toString("utf8");
+    const line = Number.parseInt(fields[4]!, 16);
+    const column = Number.parseInt(fields[5]!, 16);
+    const length = Number.parseInt(fields[6]!, 16);
+    if (
+      !/^Z\d{4}$/.test(code)
+      || !Number.isSafeInteger(line)
+      || line < 1
+      || !Number.isSafeInteger(column)
+      || column < 1
+      || !Number.isSafeInteger(length)
+      || length < 1
+    ) return new Error(payload);
+    return new NativeFrontendDiagnosticError(
+      fields[1]!,
+      Buffer.from(fields[3]!, "hex").toString("utf8"),
+      line,
+      column,
+      Buffer.from(fields[7]!, "hex").toString("utf8"),
+      code as `Z${number}`,
+      length,
+    );
+  }
   if (
     fields.length !== 6
     || fields[0] !== "diagnostic"

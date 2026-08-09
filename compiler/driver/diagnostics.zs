@@ -10,10 +10,36 @@ export function sourceDiagnostic(
   in message: String,
   in source: String
 ): String {
-  let output = TextBuffer();
-  output.append(
-    `${path}:${lineNumber}:${columnNumber}: error: ${message}`
+  return sourceDiagnosticDetail(
+    path,
+    lineNumber,
+    columnNumber,
+    "",
+    1,
+    message,
+    source
   );
+}
+
+function sourceDiagnosticDetail(
+  in path: String,
+  lineNumber: usize,
+  columnNumber: usize,
+  in code: String,
+  requestedLength: usize,
+  in message: String,
+  in source: String
+): String {
+  let output = TextBuffer();
+  if (code.byteLength > 0) {
+    output.append(
+      `${path}:${lineNumber}:${columnNumber}: error[${code}]: ${message}`
+    );
+  } else {
+    output.append(
+      `${path}:${lineNumber}:${columnNumber}: error: ${message}`
+    );
+  }
   let line: usize = 1;
   let lineStart: usize = 0;
   while (line < lineNumber && lineStart < source.byteLength) {
@@ -38,7 +64,19 @@ export function sourceDiagnostic(
     output.append(" ");
     column = column + 1;
   }
-  output.append("^");
+  let length = requestedLength;
+  if (length == 0) length = 1;
+  let available: usize = 1;
+  if (lineEnd > lineStart + columnNumber - 1) {
+    available = lineEnd - (lineStart + columnNumber - 1);
+  }
+  if (length > available) length = available;
+  let marker: usize = 0;
+  while (marker < length) {
+    output.append("^");
+    marker = marker + 1;
+  }
+  if (code.byteLength > 0) output.append(` ${message}`);
   return output.finish();
 }
 
@@ -49,11 +87,15 @@ export function diagnosticMessage(
   const path = copy error.path;
   const line = error.line;
   const column = error.column;
+  const code = copy error.code;
+  const length = error.length;
   const message = copy error.message;
-  return sourceDiagnostic(
+  return sourceDiagnosticDetail(
     path,
     line,
     column,
+    code,
+    length,
     message,
     source
   );
