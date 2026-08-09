@@ -2181,10 +2181,12 @@ waits remain on the worker. `break` exits and `continue` begins the next
 condition check, including deterministic cleanup of live iteration-local
 owners. `return` and `throw` complete the enclosing callee from any supported
 synchronous loop segment, transfer its success or typed failure to the worker,
-and run ordinary ownership cleanup first. Scalar, plain-struct, and
-cleanup-bearing payload bindings are supported. A cleanup-bearing match must
-consume its subject with
-`match (value)`. A stable
+and run ordinary ownership cleanup first. Direct synchronous `try` bindings,
+assignments, and expression statements propagate through that same typed
+completion path. Successful cleanup-bearing values can cross the next wait in
+the existing frame without cloning. Scalar, plain-struct, and cleanup-bearing
+payload bindings are supported. A cleanup-bearing match must consume its
+subject with `match (value)`. A stable
 named owner transfers into the frame, while a computed call or constructor
 result is adopted there directly. Its active payload moves between the
 invocation frame and selected arm binding without cloning. The
@@ -2200,8 +2202,9 @@ carry explicit liveness, can move into later locals or the final result without
 duplication, and are destroyed on main when cancellation wins. Branch-local
 owned values use the same frame liveness and deterministic cleanup. Parameter
 writes or unrelated ownership transfers, borrowed cleanup-bearing match
-subjects, suspending `for` loops, nested loop/match or `try` inside a suspending
-`while`, nested suspending control flow, combining an outer
+subjects, suspending `for` loops, nested loop/match, `try await`, or nested
+try-value normalization across a suspending `while`, nested suspending control
+flow, combining an outer
 delay sequence with
 a structured suspension, a computed delay duration, or code after the placed
 call fails closed in native lowering for now. Stage 0 retains the broader async

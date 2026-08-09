@@ -127,6 +127,18 @@ placed call and no per-iteration allocation. Seven warm Hyperfine runs measured
 `z emit`. The 16.5-times ratio is directional because the native command remains
 below Hyperfine's 5 ms precision threshold.
 
+Direct synchronous `try` inside that loop adds no frame or completion object.
+The native result is checked on main; success writes its payload into the
+ordinary local/frame slot, while failure reuses loop completion state `3` and
+the existing invocation result. Cleanup-bearing success and error payloads
+move directly, with their existing liveness bits carrying responsibility across
+the next wait. The three-call success/pre-wait-failure/post-wait-failure fixture
+emits exactly one invocation-frame allocation per placed call and no
+per-iteration allocation. Seven warm Hyperfine runs measured 49.0 ms ± 0.9 ms
+through Bun and 2.8 ms ± 0.2 ms through fixed-point native `z emit`. The
+17.2-times ratio is directional because the native command remains below
+Hyperfine's 5 ms precision threshold.
+
 ## Standalone native compiler checkpoint
 
 On 2026-07-27, the recursively self-built 30-module native driver made a

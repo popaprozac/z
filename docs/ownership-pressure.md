@@ -1921,9 +1921,13 @@ frame slot and liveness bit, and are destroyed once on normal iteration exit,
 loop control, function exit, or cancellation. `return` and `throw` evaluate
 their payload on main, run the existing cleanup plan, set one completion state,
 and hand the success or typed failure to the worker without another frame.
-Suspending `for` loops, nested loops or matches, `try` inside that loop, deeper
-nested suspension, mixed
-outer/branch delay plans, and dynamic delays fail closed. The frame remains
+A direct synchronous `try` statement reuses that completion state. Its success
+payload either remains local or moves into an existing frame field across the
+next wait; its failure payload moves into the frame's `Result` slot after the
+ordinary cleanup plan runs. The callback returns before saving an intentionally
+uninitialized success binding. Suspending `for` loops, nested loops or matches,
+`try await`, nested try-value normalization across a wait, deeper suspension,
+mixed outer/branch delay plans, and dynamic delays fail closed. The frame remains
 valid through every main callback, and its `Result<T, E>` moves back into the
 worker before the frame is freed.
 

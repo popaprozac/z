@@ -2330,6 +2330,241 @@ function appendTestFormattedValue(
   throw `native C emission cannot format test value type ${target}`;
 }
 
+function appendLocalStatementStorage(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize
+): void throws String {
+  const type = match (in declaration.statements[index].type) {
+    some(type) => try cType(type);
+    none => throw "native C emission received an untyped local";
+  };
+  const constStorage = match (in declaration.statements[index].type) {
+    some(storageType) => {
+      select storageType.kind != LoweredTypeKind.structType
+        && storageType.kind != LoweredTypeKind.enumType
+        && storageType.kind != LoweredTypeKind.arrayType
+        && storageType.kind != LoweredTypeKind.mapType
+        && storageType.kind != LoweredTypeKind.setType
+        && storageType.kind != LoweredTypeKind.stringType
+        && storageType.kind != LoweredTypeKind.classType
+        && storageType.kind != LoweredTypeKind.onceLifetimeType
+        && storageType.kind != LoweredTypeKind.mutexType
+        && storageType.kind != LoweredTypeKind.taskType;
+    }
+    none => false;
+  };
+  const hasInitializer = match (in declaration.statements[index].expression) {
+    some(_) => true;
+    none => false;
+  };
+  const viewStorage = match (in declaration.statements[index].expression) {
+    some(initializer) => declaration.expressions[initializer].kind
+      == LoweredExpressionKind.viewProjection;
+    none => false;
+  };
+  const classStorage = match (in declaration.statements[index].type) {
+    some(storageType) => storageType.kind == LoweredTypeKind.classType;
+    none => false;
+  };
+  match (in declaration.statements[index].expression) {
+    some(initializer) => try appendBorrowedTemporaryInitializers(
+      inout output,
+      declaration,
+      initializer,
+      depth
+    );
+    none => {}
+  }
+  appendIndent(inout output, depth);
+  if (viewStorage) {
+    output.append("const ");
+    output.append(type);
+    output.append(" * const ");
+  } else if (
+    !declaration.statements[index].mutableBinding
+    && hasInitializer
+    && classStorage
+  ) {
+    output.append(type);
+    output.append(" const ");
+  } else if (
+    !declaration.statements[index].mutableBinding
+    && constStorage
+    && hasInitializer
+  ) {
+    output.append("const ");
+    output.append(type);
+    output.append(" ");
+  } else {
+    output.append(type);
+    output.append(" ");
+  }
+  appendCBindingName(inout output, declaration.statements[index].name);
+  if (
+    !localNameIsUsed(
+      declaration,
+      declaration.statements[index].name
+    )
+  ) output.append(" __attribute__((unused))");
+  match (in declaration.statements[index].expression) {
+    some(expression) => {
+      output.append(" = ");
+      try appendExpression(inout output, declaration, expression);
+    }
+    none => {}
+  }
+  output.append(";\n");
+  match (in declaration.statements[index].expression) {
+    some(initializer) => appendBorrowedTemporaryCleanups(
+      inout output,
+      declaration,
+      initializer,
+      depth
+    );
+    none => {}
+  }
+  if (declaration.statements[index].liveFlag.byteLength > 0) {
+    appendIndent(inout output, depth);
+    output.append("bool ");
+    appendCBindingName(inout output, declaration.statements[index].liveFlag);
+    output.append(" = true;\n");
+  }
+}
+
+function appendTryStatement(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize,
+  in loopDoneLabel: String
+): void throws String {
+  if (
+    declaration.statements[index].labels.length < 2
+    || declaration.statements[index].labels.length > 3
+  ) {
+    throw "native C emission received a malformed try statement";
+  }
+  const temporary = `_z_stage1_try_${index}`;
+  const propagated = `_z_stage1_failure_${index}`;
+  match (in declaration.statements[index].expression) {
+    some(expression) => try appendBorrowedTemporaryInitializers(
+      inout output,
+      declaration,
+      expression,
+      depth
+    );
+    none => {}
+  }
+  appendIndent(inout output, depth);
+  output.append("Z_");
+  output.append(declaration.statements[index].name);
+  output.append(" ");
+  output.append(temporary);
+  output.append(" = ");
+  match (in declaration.statements[index].expression) {
+    some(expression) => try appendExpression(
+      inout output,
+      declaration,
+      expression
+    );
+    none => throw "native C emission received a try statement without a call";
+  }
+  output.append(";\n");
+  match (in declaration.statements[index].expression) {
+    some(expression) => appendBorrowedTemporaryCleanups(
+      inout output,
+      declaration,
+      expression,
+      depth
+    );
+    none => {}
+  }
+  appendIndent(inout output, depth);
+  output.append("if (");
+  output.append(temporary);
+  output.append(".tag == Z_");
+  output.append(declaration.statements[index].name);
+  output.append("Tag_failure) {\n");
+  appendIndent(inout output, depth + 1);
+  output.append("Z_");
+  output.append(declaration.statements[index].labels[1]);
+  output.append(" ");
+  output.append(propagated);
+  output.append(" = (Z_");
+  output.append(declaration.statements[index].labels[1]);
+  output.append("){.tag = Z_");
+  output.append(declaration.statements[index].labels[1]);
+  output.append("Tag_failure, .payload.failure = ");
+  output.append(temporary);
+  output.append(".payload.failure};\n");
+  appendCleanups(
+    inout output,
+    declaration.statements[index].cleanups,
+    depth + 1
+  );
+  appendIndent(inout output, depth + 1);
+  if (loopDoneLabel.byteLength > 0) {
+    output.append("context->result = ");
+    output.append(propagated);
+    output.append(";\n");
+    appendIndent(inout output, depth + 1);
+    output.append("context->loop_control = 3; goto ");
+    output.append(loopDoneLabel);
+    output.append(";\n");
+  } else {
+    output.append("return ");
+    output.append(propagated);
+    output.append(";\n");
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+  if (declaration.statements[index].labels[0].byteLength > 0) {
+    if (
+      declaration.statements[index].labels.length == 3
+      && declaration.statements[index].labels[2] == "replace"
+    ) {
+      let replacementName = "";
+      match (in declaration.statements[index].type) {
+        some(type) => replacementName = type.name.copyBytes(
+          0,
+          type.name.byteLength
+        );
+        none => {}
+      }
+      if (replacementName.byteLength == 0) {
+        throw "native C emission lost an owned try replacement type";
+      }
+      appendIndent(inout output, depth);
+      output.append("Z_");
+      output.append(replacementName);
+      output.append("_deinit(&");
+      match (in declaration.statements[index].secondExpression) {
+        some(target) => try appendExpression(
+          inout output,
+          declaration,
+          target
+        );
+        none => output.append(declaration.statements[index].labels[0]);
+      }
+      output.append(");\n");
+    }
+    appendIndent(inout output, depth);
+    match (in declaration.statements[index].secondExpression) {
+      some(target) => try appendExpression(
+        inout output,
+        declaration,
+        target
+      );
+      none => output.append(declaration.statements[index].labels[0]);
+    }
+    output.append(" = ");
+    output.append(temporary);
+    output.append(".payload.success;\n");
+  }
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -2449,101 +2684,12 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.localStatement) {
-    const type = match (in declaration.statements[index].type) {
-      some(type) => try cType(type);
-      none => throw "native C emission received an untyped local";
-    };
-    const constStorage = match (in declaration.statements[index].type) {
-      some(storageType) => {
-        select storageType.kind != LoweredTypeKind.structType
-          && storageType.kind != LoweredTypeKind.enumType
-          && storageType.kind != LoweredTypeKind.arrayType
-          && storageType.kind != LoweredTypeKind.mapType
-          && storageType.kind != LoweredTypeKind.setType
-          && storageType.kind != LoweredTypeKind.stringType
-          && storageType.kind != LoweredTypeKind.classType
-          && storageType.kind != LoweredTypeKind.onceLifetimeType
-          && storageType.kind != LoweredTypeKind.mutexType
-          && storageType.kind != LoweredTypeKind.taskType;
-      }
-      none => false;
-    };
-    const hasInitializer = match (in declaration.statements[index].expression) {
-      some(_) => true;
-      none => false;
-    };
-    const viewStorage = match (in declaration.statements[index].expression) {
-      some(initializer) => declaration.expressions[initializer].kind
-        == LoweredExpressionKind.viewProjection;
-      none => false;
-    };
-    const classStorage = match (in declaration.statements[index].type) {
-      some(storageType) => storageType.kind == LoweredTypeKind.classType;
-      none => false;
-    };
-    match (in declaration.statements[index].expression) {
-      some(initializer) => try appendBorrowedTemporaryInitializers(
-        inout output,
-        declaration,
-        initializer,
-        depth
-      );
-      none => {}
-    }
-    appendIndent(inout output, depth);
-    if (viewStorage) {
-      output.append("const ");
-      output.append(type);
-      output.append(" * const ");
-    } else if (
-      !declaration.statements[index].mutableBinding
-      && hasInitializer
-      && classStorage
-    ) {
-      output.append(type);
-      output.append(" const ");
-    } else if (
-      !declaration.statements[index].mutableBinding
-      && constStorage
-      && hasInitializer
-    ) {
-      output.append("const ");
-      output.append(type);
-      output.append(" ");
-    } else {
-      output.append(type);
-      output.append(" ");
-    }
-    appendCBindingName(inout output, declaration.statements[index].name);
-    if (
-      !localNameIsUsed(
-        declaration,
-        declaration.statements[index].name
-      )
-    ) output.append(" __attribute__((unused))");
-    match (in declaration.statements[index].expression) {
-      some(expression) => {
-        output.append(" = ");
-        try appendExpression(inout output, declaration, expression);
-      }
-      none => {}
-    }
-    output.append(";\n");
-    match (in declaration.statements[index].expression) {
-      some(initializer) => appendBorrowedTemporaryCleanups(
-        inout output,
-        declaration,
-        initializer,
-        depth
-      );
-      none => {}
-    }
-    if (declaration.statements[index].liveFlag.byteLength > 0) {
-      appendIndent(inout output, depth);
-      output.append("bool ");
-      appendCBindingName(inout output, declaration.statements[index].liveFlag);
-      output.append(" = true;\n");
-    }
+    try appendLocalStatementStorage(
+      inout output,
+      declaration,
+      index,
+      depth
+    );
     for (const child of declaration.statements[index].children) {
       try appendStatement(inout output, declaration, child, depth);
     }
@@ -2733,119 +2879,13 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.tryStatement) {
-    if (
-      declaration.statements[index].labels.length < 2
-      || declaration.statements[index].labels.length > 3
-    ) {
-      throw "native C emission received a malformed try statement";
-    }
-    const temporary = `_z_stage1_try_${index}`;
-    const propagated = `_z_stage1_failure_${index}`;
-    match (in declaration.statements[index].expression) {
-      some(expression) => try appendBorrowedTemporaryInitializers(
-        inout output,
-        declaration,
-        expression,
-        depth
-      );
-      none => {}
-    }
-    appendIndent(inout output, depth);
-    output.append("Z_");
-    output.append(declaration.statements[index].name);
-    output.append(" ");
-    output.append(temporary);
-    output.append(" = ");
-    match (in declaration.statements[index].expression) {
-      some(expression) => try appendExpression(
-        inout output,
-        declaration,
-        expression
-      );
-      none => throw "native C emission received a try statement without a call";
-    }
-    output.append(";\n");
-    match (in declaration.statements[index].expression) {
-      some(expression) => appendBorrowedTemporaryCleanups(
-        inout output,
-        declaration,
-        expression,
-        depth
-      );
-      none => {}
-    }
-    appendIndent(inout output, depth);
-    output.append("if (");
-    output.append(temporary);
-    output.append(".tag == Z_");
-    output.append(declaration.statements[index].name);
-    output.append("Tag_failure) {\n");
-    appendIndent(inout output, depth + 1);
-    output.append("Z_");
-    output.append(declaration.statements[index].labels[1]);
-    output.append(" ");
-    output.append(propagated);
-    output.append(" = (Z_");
-    output.append(declaration.statements[index].labels[1]);
-    output.append("){.tag = Z_");
-    output.append(declaration.statements[index].labels[1]);
-    output.append("Tag_failure, .payload.failure = ");
-    output.append(temporary);
-    output.append(".payload.failure};\n");
-    appendCleanups(
+    try appendTryStatement(
       inout output,
-      declaration.statements[index].cleanups,
-      depth + 1
+      declaration,
+      index,
+      depth,
+      ""
     );
-    appendIndent(inout output, depth + 1);
-    output.append("return ");
-    output.append(propagated);
-    output.append(";\n");
-    appendIndent(inout output, depth);
-    output.append("}\n");
-    if (declaration.statements[index].labels[0].byteLength > 0) {
-      if (
-        declaration.statements[index].labels.length == 3
-        && declaration.statements[index].labels[2] == "replace"
-      ) {
-        let replacementName = "";
-        match (in declaration.statements[index].type) {
-          some(type) => replacementName = type.name.copyBytes(
-            0,
-            type.name.byteLength
-          );
-          none => {}
-        }
-        if (replacementName.byteLength == 0) {
-          throw "native C emission lost an owned try replacement type";
-        }
-        appendIndent(inout output, depth);
-        output.append("Z_");
-        output.append(replacementName);
-        output.append("_deinit(&");
-        match (in declaration.statements[index].secondExpression) {
-          some(target) => try appendExpression(
-            inout output,
-            declaration,
-            target
-          );
-          none => output.append(declaration.statements[index].labels[0]);
-        }
-        output.append(");\n");
-      }
-      appendIndent(inout output, depth);
-      match (in declaration.statements[index].secondExpression) {
-        some(target) => try appendExpression(
-          inout output,
-          declaration,
-          target
-        );
-        none => output.append(declaration.statements[index].labels[0]);
-      }
-      output.append(" = ");
-      output.append(temporary);
-      output.append(".payload.success;\n");
-    }
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
@@ -4131,6 +4171,8 @@ function threadMainLoopStatementContainsControl(
       == LoweredStatementKind.continueStatement
     || declaration.statements[index].kind
       == LoweredStatementKind.returnStatement
+    || declaration.statements[index].kind
+      == LoweredStatementKind.tryStatement
   ) return true;
   for (const child of declaration.statements[index].children) {
     if (threadMainLoopStatementContainsControl(
@@ -4154,16 +4196,18 @@ function threadMainLoopRootsContainControl(
   return false;
 }
 
-function threadMainLoopStatementContainsReturn(
+function threadMainLoopStatementContainsCompletion(
   in declaration: LoweredFunction,
   index: usize
 ): boolean {
   if (
     declaration.statements[index].kind
       == LoweredStatementKind.returnStatement
+    || declaration.statements[index].kind
+      == LoweredStatementKind.tryStatement
   ) return true;
   for (const child of declaration.statements[index].children) {
-    if (threadMainLoopStatementContainsReturn(
+    if (threadMainLoopStatementContainsCompletion(
       declaration,
       child
     )) return true;
@@ -4171,12 +4215,12 @@ function threadMainLoopStatementContainsReturn(
   return false;
 }
 
-function threadMainLoopRootsContainReturn(
+function threadMainLoopRootsContainCompletion(
   in declaration: LoweredFunction,
   in roots: Array<usize>
 ): boolean {
   for (const root of roots) {
-    if (threadMainLoopStatementContainsReturn(
+    if (threadMainLoopStatementContainsCompletion(
       declaration,
       root
     )) return true;
@@ -4191,6 +4235,19 @@ function appendThreadMainLoopStatement(
   depth: usize,
   in doneLabel: String
 ): void throws String {
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.tryStatement
+  ) {
+    try appendTryStatement(
+      inout output,
+      declaration,
+      index,
+      depth,
+      doneLabel
+    );
+    return;
+  }
   if (
     declaration.statements[index].kind
       == LoweredStatementKind.returnStatement
@@ -4259,7 +4316,49 @@ function appendThreadMainLoopStatement(
     output.append(";\n");
     return;
   }
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.localStatement
+  ) {
+    try appendLocalStatementStorage(
+      inout output,
+      declaration,
+      index,
+      depth
+    );
+    for (const child of declaration.statements[index].children) {
+      try appendThreadMainLoopStatement(
+        inout output,
+        declaration,
+        child,
+        depth,
+        doneLabel
+      );
+    }
+    return;
+  }
   if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
+    if (
+      declaration.statements[index].labels.length == 1
+      && declaration.statements[index].labels[0]
+        == "nested-try-normalized"
+    ) {
+      for (const child of declaration.statements[index].children) {
+        try appendThreadMainLoopStatement(
+          inout output,
+          declaration,
+          child,
+          depth,
+          doneLabel
+        );
+      }
+      appendCleanups(
+        inout output,
+        declaration.statements[index].cleanups,
+        depth
+      );
+      return;
+    }
     appendIndent(inout output, depth);
     output.append("{\n");
     for (const child of declaration.statements[index].children) {
@@ -4389,6 +4488,13 @@ function appendThreadMainLoopSegmentHelpers(
         appendIndent(inout output, 2);
         output.append(doneLabel);
         output.append(": ;\n");
+        if (threadMainLoopRootsContainCompletion(
+          target,
+          plan.segments[segmentIndex].roots
+        )) {
+          appendIndent(inout output, 2);
+          output.append("if (context->loop_control == 3) return;\n");
+        }
       }
       let saved: usize = 0;
       while (saved <= segmentIndex) {
@@ -4428,12 +4534,12 @@ function appendThreadMainLoopCallHelper(
     throw "native structured main suspension requires exactly one while plan";
   }
   const plan = view target.mainDelayLoops[0];
-  let hasFunctionExit = threadMainLoopRootsContainReturn(
+  let hasFunctionExit = threadMainLoopRootsContainCompletion(
     target,
     plan.roots
   );
   for (const segment of plan.segments) {
-    if (threadMainLoopRootsContainReturn(
+    if (threadMainLoopRootsContainCompletion(
       target,
       segment.roots
     )) hasFunctionExit = true;
@@ -4600,6 +4706,13 @@ function appendThreadMainLoopCallHelper(
     appendIndent(inout output, 2);
     output.append(finishLabel);
     output.append(": ;\n");
+    if (threadMainLoopRootsContainCompletion(
+      target,
+      plan.roots
+    )) {
+      appendIndent(inout output, 2);
+      output.append("if (context->loop_control == 3) return;\n");
+    }
   }
   for (const segment of plan.segments) {
     try appendMainFrameRootSaves(

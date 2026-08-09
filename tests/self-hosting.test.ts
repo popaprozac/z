@@ -3358,6 +3358,10 @@ test("preserves while iteration, loop control, and owned locals across main susp
       "self-host-emit-thread-main-while-throw.zs",
       "released throw iteration 1\nreleased throw iteration 2\n",
     ],
+    [
+      "self-host-emit-thread-main-while-try.zs",
+      "released try iteration 1\nreleased try iteration 2\nreleased try iteration 1\nreleased try iteration 1\nreleased try iteration 2\n",
+    ],
   ] as const;
   try {
     for (const [fixture, expectedOutput] of fixtures) {
@@ -3388,9 +3392,25 @@ test("preserves while iteration, loop control, and owned locals across main susp
       if (
         fixture.endsWith("-return.zs")
         || fixture.endsWith("-throw.zs")
+        || fixture.endsWith("-try.zs")
       ) {
         assert.match(emission.stdout, /context->loop_control = 3;/);
         assert.match(emission.stdout, /goto _z_thread_main_completed;/);
+      }
+      if (fixture.endsWith("-try.zs")) {
+        assert.match(
+          emission.stdout,
+          /context->result = _z_stage1_failure_\d+;/,
+        );
+        assert.match(
+          emission.stdout,
+          /if \(context->loop_control == 3\) return;/,
+        );
+        assert.match(emission.stdout, /frame_local_\d+_live/);
+        assert.match(
+          emission.stdout,
+          /Z_String_deinit\(&replacement\);/,
+        );
       }
       if (fixture.endsWith("-owned.zs")) {
         assert.match(emission.stdout, /frame_local_\d+_live/);

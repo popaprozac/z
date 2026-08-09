@@ -9618,6 +9618,43 @@ function statementExpressionContainsTry(
     }
     none => {}
   }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsTry(tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return false;
+}
+
+function statementHasDirectTryExpression(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind == ExpressionKind.tryExpression) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (tree.nodes[root].kind == ExpressionKind.tryExpression) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
   return false;
 }
 
@@ -11669,17 +11706,23 @@ function validateMainFrameSourceStatement(
   sourceIndex: usize
 ): void throws String {
   if (
-    (
-      declaration.body.nodes[sourceIndex].kind
-        != StatementKind.expressionStatement
-      && declaration.body.nodes[sourceIndex].kind
-        != StatementKind.variableStatement
-      && declaration.body.nodes[sourceIndex].kind
-        != StatementKind.assignmentStatement
-    )
-    || statementExpressionContainsTry(declaration.body, sourceIndex)
+    declaration.body.nodes[sourceIndex].kind
+      != StatementKind.expressionStatement
+    && declaration.body.nodes[sourceIndex].kind
+      != StatementKind.variableStatement
+    && declaration.body.nodes[sourceIndex].kind
+      != StatementKind.assignmentStatement
   ) {
     throw `native lowering does not yet preserve control flow across suspension inside a segment in ${declaration.name}; keep it to initialized locals, direct local assignments, and synchronous expression statements`;
+  }
+  if (
+    statementTreeContainsTry(declaration.body, sourceIndex)
+    && !statementHasDirectTryExpression(
+      declaration.body,
+      sourceIndex
+    )
+  ) {
+    throw `native lowering does not yet preserve nested try values across suspension inside a segment in ${declaration.name}; use a direct try binding, assignment, or expression statement`;
   }
   if (
     declaration.body.nodes[sourceIndex].kind
@@ -11741,6 +11784,8 @@ function validateMainFrameLoweredStatement(
       != LoweredStatementKind.localStatement
     && statements[loweredRoot].kind
       != LoweredStatementKind.assignmentStatement
+    && statements[loweredRoot].kind
+      != LoweredStatementKind.tryStatement
   ) {
     throw `native lowering does not yet preserve normalized control flow inside a suspension segment in ${declaration.name}`;
   }
@@ -11755,7 +11800,15 @@ function validateMainFrameLoweredStatement(
           throw `native lowering does not yet preserve borrowed local ${statements[loweredRoot].name} across suspension in ${declaration.name}`;
         }
       }
-      none => throw `native lowering lost the initializer for cross-suspension local ${statements[loweredRoot].name}`;
+      none => {
+        if (
+          statements[loweredRoot].children.length != 1
+          || statements[statements[loweredRoot].children[0]].kind
+            != LoweredStatementKind.tryStatement
+        ) {
+          throw `native lowering lost the initializer for cross-suspension local ${statements[loweredRoot].name}`;
+        }
+      }
     }
   }
   if (
@@ -12111,9 +12164,6 @@ function lowerMainDelayLoopBody(
       sourceChild
     )) {
       throw `native lowering does not yet preserve nested loop or match inside suspending while in ${declaration.name}`;
-    }
-    if (statementTreeContainsTry(declaration.body, sourceChild)) {
-      throw `native lowering does not yet preserve try inside suspending while in ${declaration.name}`;
     }
     if (
       statementContainsLoopControl(declaration.body, sourceChild)

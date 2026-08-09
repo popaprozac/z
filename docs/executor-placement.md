@@ -726,8 +726,11 @@ later without making executor blocks a special case.
     iteration exit, loop control, function exit, or cancellation. `return` and
     `throw` evaluate on main, run the ordinary cleanup plan, and transfer the
     completed success or typed failure directly back to the waiting worker.
-    Main
-    executes each synchronous segment; the worker performs each cancellable
+    A direct synchronous `try` binding, assignment, or expression statement
+    uses the same path: success continues on main and an owned success value
+    may cross the next wait in the existing frame; failure runs the ordinary
+    cleanup plan and completes the callee's typed result. Main executes each
+    synchronous segment; the worker performs each cancellable
     wait without occupying main, then submits the next segment. A cancellation
     request wakes the active wait and sends ownership-bearing argument cleanup
     to main instead of resuming the callee.
@@ -739,9 +742,10 @@ later without making executor blocks a special case.
     synchronous main request is already running, it completes before its
     outcome is discarded. Parameter writes or unrelated ownership transfers,
     borrowed cleanup-bearing match subjects, suspending `for` loops, nested
-    loops or matches inside a suspending `while`, `try` inside that loop, loop
-    control or function exit followed by more work in the same synchronous
-    segment, other suspending control flow nested
+    loops or matches inside a suspending `while`, `try await` and nested
+    try-value normalization across a loop suspension, loop control or function
+    exit followed by more work in the same synchronous segment, other
+    suspending control flow nested
     inside another branch, dynamic delay expressions, combining a structured
     suspension with outer delays, non-tail suspended placement, and
     cross-executor loans remain the next native state-machine slices; Stage 0
