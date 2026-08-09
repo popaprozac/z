@@ -1918,11 +1918,21 @@ frame: main reevaluates its condition and runs synchronous body segments, the
 worker owns cancellable waits and repetition, and one control field transports
 ordinary `break`/`continue`. Per-iteration cleanup-bearing locals reuse their
 frame slot and liveness bit, and are destroyed once on normal iteration exit,
-loop control, or cancellation. Suspending `for` loops, nested loops or matches,
-function exit or `try` inside that loop, deeper nested suspension, mixed
+loop control, function exit, or cancellation. `return` and `throw` evaluate
+their payload on main, run the existing cleanup plan, set one completion state,
+and hand the success or typed failure to the worker without another frame.
+Suspending `for` loops, nested loops or matches, `try` inside that loop, deeper
+nested suspension, mixed
 outer/branch delay plans, and dynamic delays fail closed. The frame remains
 valid through every main callback, and its `Result<T, E>` moves back into the
 worker before the frame is freed.
+
+The `if`, `match`, and `while` emitters now share one invocation-frame
+lifecycle for context layout, argument liveness, callback rehydration,
+cancellation cleanup, allocation, and result transfer. Shape-specific code is
+limited to choosing and scheduling branches, arms, or iterations. This is the
+important consolidation point: adding structured control no longer means
+duplicating the ownership protocol and hoping its cleanup paths remain aligned.
 
 That is enough to emit, strict-compile, and run the unchanged Zapp skeleton.
 The native path constructs its imported `Application`, publishes it through

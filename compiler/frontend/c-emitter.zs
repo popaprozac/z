@@ -3762,6 +3762,7 @@ function appendThreadMainBranchSegmentHelpers(
   in branchName: String,
   matchArm: Option<usize>
 ): void throws String {
+  const parameterCount = target.parameters.length;
   let segmentIndex: usize = 0;
   while (segmentIndex < segments.length) {
     if (segments[segmentIndex].roots.length > 0) {
@@ -3771,32 +3772,18 @@ function appendThreadMainBranchSegmentHelpers(
         declaration,
         expressionIndex
       );
-      output.append(`_${branchName}_segment_${segmentIndex}(void *raw_context) {\n  `);
-      appendThreadMainCallHelperName(
+      output.append(`_${branchName}_segment_${segmentIndex}(void *raw_context) {\n`);
+      appendThreadMainStructuredContextPointer(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_Context *context = (");
-      appendThreadMainCallHelperName(
+      try appendThreadMainStructuredParameterLocals(
         inout output,
-        declaration,
-        expressionIndex
+        target,
+        parameterCount,
+        true
       );
-      output.append("_Context *)raw_context;\n");
-      let parameterIndex: usize = 0;
-      while (parameterIndex < target.parameters.length) {
-        const parameter = view target.parameters[parameterIndex];
-        const nativeParameterType = try cType(parameter.type);
-        output.append("  const ");
-        output.append(nativeParameterType);
-        output.append(" ");
-        appendCBindingName(inout output, parameter.name);
-        output.append(` = context->argument_${parameterIndex};\n  (void)`);
-        appendCBindingName(inout output, parameter.name);
-        output.append(";\n");
-        parameterIndex = parameterIndex + 1;
-      }
       try appendMainFrameRootRestores(
         inout output,
         program,
@@ -3889,6 +3876,218 @@ function appendThreadMainStructuredCancellation(
   }
 }
 
+function appendThreadMainStructuredContextFields(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in expression: LoweredExpression,
+  in resultType: LoweredType,
+  in nativeResultType: String,
+  trackArgumentLiveness: boolean
+): void throws String {
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result;\n");
+  }
+  let argument: usize = 0;
+  while (argument + 1 < expression.labels.length) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append("  ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument};\n`);
+    if (
+      trackArgumentLiveness
+      && loweredTypeNeedsDeinit(program, argumentType)
+    ) output.append(`  bool argument_${argument}_live;\n`);
+    argument = argument + 1;
+  }
+}
+
+function appendThreadMainStructuredContextPointer(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+}
+
+function appendThreadMainStructuredParameterLocals(
+  inout output: TextBuffer,
+  in target: LoweredFunction,
+  argumentCount: usize,
+  immutable: boolean
+): void throws String {
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  ");
+    if (immutable) output.append("const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+}
+
+function appendThreadMainStructuredParameterLiveFlags(
+  inout output: TextBuffer,
+  in target: LoweredFunction,
+  argumentCount: usize,
+  restoreFromContext: boolean
+): void throws String {
+  for (const flag of target.liveFlags) {
+    if (!flag.parameter) continue;
+    let liveArgument = argumentCount;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < target.parameters.length) {
+      if (target.parameters[parameterIndex].name == flag.owner) {
+        liveArgument = parameterIndex;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (liveArgument == argumentCount) {
+      throw "native main frame lost a cleanup-bearing parameter live field";
+    }
+    output.append("  bool ");
+    appendCBindingName(inout output, flag.name);
+    output.append(" = ");
+    if (restoreFromContext) {
+      output.append(`context->argument_${liveArgument}_live`);
+    } else output.append("true");
+    output.append(";\n");
+  }
+}
+
+function appendThreadMainStructuredParameterLiveFlagSaves(
+  inout output: TextBuffer,
+  in target: LoweredFunction,
+  argumentCount: usize
+): void throws String {
+  for (const flag of target.liveFlags) {
+    if (!flag.parameter) continue;
+    let liveArgument = argumentCount;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < target.parameters.length) {
+      if (target.parameters[parameterIndex].name == flag.owner) {
+        liveArgument = parameterIndex;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (liveArgument == argumentCount) {
+      throw "native main frame lost a cleanup-bearing parameter live field";
+    }
+    output.append(`  context->argument_${liveArgument}_live = `);
+    appendCBindingName(inout output, flag.name);
+    output.append(";\n");
+  }
+}
+
+function appendThreadMainStructuredArgumentCleanups(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in expression: LoweredExpression,
+  guarded: boolean
+): void throws String {
+  let cleanup = expression.labels.length - 1;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[cleanup + 1]
+    );
+    if (!loweredTypeNeedsDeinit(program, argumentType)) continue;
+    if (guarded) output.append(`  if (context->argument_${cleanup}_live) { `);
+    else output.append("  ");
+    output.append("Z_");
+    output.append(argumentType.name);
+    if (argumentType.kind == LoweredTypeKind.classType) {
+      output.append(`_release(context->argument_${cleanup});`);
+    } else {
+      output.append(`_deinit(&context->argument_${cleanup});`);
+    }
+    if (guarded) {
+      output.append(` context->argument_${cleanup}_live = false; }`);
+    }
+    output.append("\n");
+  }
+}
+
+function appendThreadMainStructuredWrapperPrefix(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in expression: LoweredExpression,
+  in nativeResultType: String,
+  trackArgumentLiveness: boolean
+): void throws String {
+  const argumentCount = expression.labels.length - 1;
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("(Z_");
+  output.append(expression.value);
+  output.append("Storage *storage");
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append(", ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument}`);
+    argument = argument + 1;
+  }
+  output.append(") {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)calloc(1, sizeof(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context));\n  if (context == NULL) abort();\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    output.append(`  context->argument_${argument} = argument_${argument};\n`);
+    if (trackArgumentLiveness) {
+      const argumentType = try loweredTypeForIdentity(
+        program,
+        expression.labels[argument + 1]
+      );
+      if (loweredTypeNeedsDeinit(program, argumentType)) {
+        output.append(`  context->argument_${argument}_live = true;\n`);
+      }
+    }
+    argument = argument + 1;
+  }
+}
+
+function appendThreadMainStructuredWrapperResult(
+  inout output: TextBuffer,
+  in resultType: LoweredType,
+  in nativeResultType: String
+): void {
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result = context->result;\n  free(context);\n  return result;\n");
+  } else output.append("  free(context);\n");
+  output.append("}\n\n");
+}
+
 function appendThreadMainLoopBranch(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -3930,6 +4129,8 @@ function threadMainLoopStatementContainsControl(
     declaration.statements[index].kind == LoweredStatementKind.breakStatement
     || declaration.statements[index].kind
       == LoweredStatementKind.continueStatement
+    || declaration.statements[index].kind
+      == LoweredStatementKind.returnStatement
   ) return true;
   for (const child of declaration.statements[index].children) {
     if (threadMainLoopStatementContainsControl(
@@ -3953,6 +4154,36 @@ function threadMainLoopRootsContainControl(
   return false;
 }
 
+function threadMainLoopStatementContainsReturn(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.returnStatement
+  ) return true;
+  for (const child of declaration.statements[index].children) {
+    if (threadMainLoopStatementContainsReturn(
+      declaration,
+      child
+    )) return true;
+  }
+  return false;
+}
+
+function threadMainLoopRootsContainReturn(
+  in declaration: LoweredFunction,
+  in roots: Array<usize>
+): boolean {
+  for (const root of roots) {
+    if (threadMainLoopStatementContainsReturn(
+      declaration,
+      root
+    )) return true;
+  }
+  return false;
+}
+
 function appendThreadMainLoopStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -3960,6 +4191,54 @@ function appendThreadMainLoopStatement(
   depth: usize,
   in doneLabel: String
 ): void throws String {
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.returnStatement
+  ) {
+    match (in declaration.statements[index].expression) {
+      some(expression) => {
+        try appendBorrowedTemporaryInitializers(
+          inout output,
+          declaration,
+          expression,
+          depth
+        );
+        let returnType = "";
+        match (in declaration.statements[index].type) {
+          some(type) => returnType = try cType(type);
+          none => returnType = try cType(declaration.returnType);
+        }
+        appendIndent(inout output, depth);
+        output.append(returnType);
+        output.append(` _z_stage1_return_${index} = `);
+        try appendExpression(inout output, declaration, expression);
+        output.append(";\n");
+        appendBorrowedTemporaryCleanups(
+          inout output,
+          declaration,
+          expression,
+          depth
+        );
+        appendCleanups(
+          inout output,
+          declaration.statements[index].cleanups,
+          depth
+        );
+        appendIndent(inout output, depth);
+        output.append(`context->result = _z_stage1_return_${index};\n`);
+      }
+      none => appendCleanups(
+        inout output,
+        declaration.statements[index].cleanups,
+        depth
+      );
+    }
+    appendIndent(inout output, depth);
+    output.append("context->loop_control = 3; goto ");
+    output.append(doneLabel);
+    output.append(";\n");
+    return;
+  }
   if (
     declaration.statements[index].kind == LoweredStatementKind.breakStatement
     || declaration.statements[index].kind
@@ -4051,6 +4330,7 @@ function appendThreadMainLoopSegmentHelpers(
   in target: LoweredFunction,
   in plan: LoweredMainDelayLoop
 ): void throws String {
+  const parameterCount = target.parameters.length;
   let segmentIndex: usize = 0;
   while (segmentIndex < plan.segments.length) {
     if (plan.segments[segmentIndex].roots.length > 0) {
@@ -4060,32 +4340,18 @@ function appendThreadMainLoopSegmentHelpers(
         declaration,
         expressionIndex
       );
-      output.append(`_loop_segment_${segmentIndex}(void *raw_context) {\n  `);
-      appendThreadMainCallHelperName(
+      output.append(`_loop_segment_${segmentIndex}(void *raw_context) {\n`);
+      appendThreadMainStructuredContextPointer(
         inout output,
         declaration,
         expressionIndex
       );
-      output.append("_Context *context = (");
-      appendThreadMainCallHelperName(
+      try appendThreadMainStructuredParameterLocals(
         inout output,
-        declaration,
-        expressionIndex
+        target,
+        parameterCount,
+        true
       );
-      output.append("_Context *)raw_context;\n");
-      let parameterIndex: usize = 0;
-      while (parameterIndex < target.parameters.length) {
-        const parameter = view target.parameters[parameterIndex];
-        const nativeParameterType = try cType(parameter.type);
-        output.append("  const ");
-        output.append(nativeParameterType);
-        output.append(" ");
-        appendCBindingName(inout output, parameter.name);
-        output.append(` = context->argument_${parameterIndex};\n  (void)`);
-        appendCBindingName(inout output, parameter.name);
-        output.append(";\n");
-        parameterIndex = parameterIndex + 1;
-      }
       try appendMainFrameRootRestores(
         inout output,
         program,
@@ -4162,6 +4428,16 @@ function appendThreadMainLoopCallHelper(
     throw "native structured main suspension requires exactly one while plan";
   }
   const plan = view target.mainDelayLoops[0];
+  let hasFunctionExit = threadMainLoopRootsContainReturn(
+    target,
+    plan.roots
+  );
+  for (const segment of plan.segments) {
+    if (threadMainLoopRootsContainReturn(
+      target,
+      segment.roots
+    )) hasFunctionExit = true;
+  }
   const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
   const nativeResultType = try cType(resultType);
   const argumentCount = expression.labels.length - 1;
@@ -4175,23 +4451,14 @@ function appendThreadMainLoopCallHelper(
   output.append("typedef struct ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context {\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result;\n");
-  }
-  let argument: usize = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append("  ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument};\n`);
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredContextFields(
+    inout output,
+    program,
+    expression,
+    resultType,
+    nativeResultType,
+    false
+  );
   output.append("  bool loop_condition;\n  int loop_control;\n");
   try appendMainFrameRootFields(
     inout output,
@@ -4213,23 +4480,18 @@ function appendThreadMainLoopCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_initialize(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  const ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  output.append("_initialize(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   for (const root of plan.prefixRoots) {
     try appendStatement(inout output, target, root, 1);
   }
@@ -4244,23 +4506,18 @@ function appendThreadMainLoopCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_condition(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  const ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  output.append("_condition(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   try appendMainFrameRootRestores(
     inout output,
     program,
@@ -4291,23 +4548,18 @@ function appendThreadMainLoopCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_finish_iteration(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  const ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  output.append("_finish_iteration(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   try appendMainFrameRootRestores(
     inout output,
     program,
@@ -4375,18 +4627,12 @@ function appendThreadMainLoopCallHelper(
   output.append("_continue(");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context *context) {\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    false
+  );
   try appendMainFrameRootRestores(
     inout output,
     program,
@@ -4394,33 +4640,37 @@ function appendThreadMainLoopCallHelper(
     plan.prefixRoots,
     1
   );
-  for (const flag of target.liveFlags) {
-    if (!flag.parameter) continue;
-    output.append("  bool ");
-    appendCBindingName(inout output, flag.name);
-    output.append(" = true;\n");
-  }
+  try appendThreadMainStructuredParameterLiveFlags(
+    inout output,
+    target,
+    argumentCount,
+    false
+  );
   try appendFunctionTail(inout output, target);
   output.append("}\n\n");
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_run(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  ");
+  output.append("_run(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  ");
   if (resultType.kind != LoweredTypeKind.voidType) output.append("context->result = ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_continue(context);\n}\n\n");
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_cancel_suspended(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  (void)context;\n");
+  output.append("_cancel_suspended(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  (void)context;\n");
   let cleanup = plan.segments.length;
   while (cleanup > 0) {
     cleanup = cleanup - 1;
@@ -4439,56 +4689,23 @@ function appendThreadMainLoopCallHelper(
     plan.prefixRoots,
     1
   );
-  cleanup = argumentCount;
-  while (cleanup > 0) {
-    cleanup = cleanup - 1;
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[cleanup + 1]
-    );
-    if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append("  Z_");
-      output.append(argumentType.name);
-      if (argumentType.kind == LoweredTypeKind.classType) {
-        output.append(`_release(context->argument_${cleanup});\n`);
-      } else {
-        output.append(`_deinit(&context->argument_${cleanup});\n`);
-      }
-    }
-  }
+  try appendThreadMainStructuredArgumentCleanups(
+    inout output,
+    program,
+    expression,
+    false
+  );
   output.append("}\n\n");
 
-  output.append("static ");
-  output.append(nativeResultType);
-  output.append(" ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("(Z_");
-  output.append(expression.value);
-  output.append("Storage *storage");
-  argument = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append(", ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument}`);
-    argument = argument + 1;
-  }
-  output.append(") {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)calloc(1, sizeof(");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context));\n  if (context == NULL) abort();\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    output.append(`  context->argument_${argument} = argument_${argument};\n`);
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredWrapperPrefix(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    expression,
+    nativeResultType,
+    false
+  );
   output.append("  Z_");
   output.append(expression.value);
   output.append("_run_on_main(storage, ");
@@ -4510,6 +4727,9 @@ function appendThreadMainLoopCallHelper(
         expressionIndex
       );
       output.append(`_loop_segment_${segmentIndex}, context);\n`);
+      if (hasFunctionExit) {
+        output.append("    if (context->loop_control == 3) goto _z_thread_main_completed;\n");
+      }
       output.append("    if (context->loop_control == 2) break;\n");
       output.append("    if (context->loop_control == 1) continue;\n");
     }
@@ -4533,18 +4753,23 @@ function appendThreadMainLoopCallHelper(
   output.append("_run_on_main(storage, ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_finish_iteration, context);\n");
+  if (hasFunctionExit) {
+    output.append("    if (context->loop_control == 3) goto _z_thread_main_completed;\n");
+  }
   output.append("    if (context->loop_control == 2) break;\n");
   output.append("  }\n  Z_");
   output.append(expression.value);
   output.append("_run_on_main(storage, ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_run, context);\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result = context->result;\n  free(context);\n  return result;\n");
-  } else output.append("  free(context);\n");
-  output.append("}\n\n");
+  if (hasFunctionExit) {
+    output.append("  _z_thread_main_completed: ;\n");
+  }
+  appendThreadMainStructuredWrapperResult(
+    inout output,
+    resultType,
+    nativeResultType
+  );
 }
 
 function appendThreadMainIfCallHelper(
@@ -4573,23 +4798,14 @@ function appendThreadMainIfCallHelper(
   output.append("typedef struct ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context {\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result;\n");
-  }
-  let argument: usize = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append("  ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument};\n`);
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredContextFields(
+    inout output,
+    program,
+    expression,
+    resultType,
+    nativeResultType,
+    false
+  );
   output.append("  bool branch_0;\n");
   try appendMainFrameRootFields(
     inout output,
@@ -4619,23 +4835,18 @@ function appendThreadMainIfCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_choose(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  const ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  output.append("_choose(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   for (const root of plan.prefixRoots) {
     try appendStatement(inout output, target, root, 1);
   }
@@ -4681,18 +4892,12 @@ function appendThreadMainIfCallHelper(
   output.append("_continue(");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context *context) {\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    false
+  );
   try appendMainFrameRootRestores(
     inout output,
     program,
@@ -4700,12 +4905,12 @@ function appendThreadMainIfCallHelper(
     plan.prefixRoots,
     1
   );
-  for (const flag of target.liveFlags) {
-    if (!flag.parameter) continue;
-    output.append("  bool ");
-    appendCBindingName(inout output, flag.name);
-    output.append(" = true;\n");
-  }
+  try appendThreadMainStructuredParameterLiveFlags(
+    inout output,
+    target,
+    argumentCount,
+    false
+  );
   output.append("  if (context->branch_0) {\n");
   for (const segment of plan.thenSegments) {
     try appendMainFrameRootRestores(
@@ -4751,11 +4956,13 @@ function appendThreadMainIfCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_run(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  ");
+  output.append("_run(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  ");
   if (resultType.kind != LoweredTypeKind.voidType) {
     output.append("context->result = ");
   }
@@ -4764,11 +4971,13 @@ function appendThreadMainIfCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_cancel_suspended(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  (void)context;\n");
+  output.append("_cancel_suspended(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  (void)context;\n");
   let cleanup = plan.elseSegments.length;
   while (cleanup > 0) {
     cleanup = cleanup - 1;
@@ -4798,56 +5007,23 @@ function appendThreadMainIfCallHelper(
     plan.prefixRoots,
     1
   );
-  cleanup = argumentCount;
-  while (cleanup > 0) {
-    cleanup = cleanup - 1;
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[cleanup + 1]
-    );
-    if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append("  Z_");
-      output.append(argumentType.name);
-      if (argumentType.kind == LoweredTypeKind.classType) {
-        output.append(`_release(context->argument_${cleanup});\n`);
-      } else {
-        output.append(`_deinit(&context->argument_${cleanup});\n`);
-      }
-    }
-  }
+  try appendThreadMainStructuredArgumentCleanups(
+    inout output,
+    program,
+    expression,
+    false
+  );
   output.append("}\n\n");
 
-  output.append("static ");
-  output.append(nativeResultType);
-  output.append(" ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("(Z_");
-  output.append(expression.value);
-  output.append("Storage *storage");
-  argument = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append(", ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument}`);
-    argument = argument + 1;
-  }
-  output.append(") {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)calloc(1, sizeof(");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context));\n  if (context == NULL) abort();\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    output.append(`  context->argument_${argument} = argument_${argument};\n`);
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredWrapperPrefix(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    expression,
+    nativeResultType,
+    false
+  );
   output.append("  Z_");
   output.append(expression.value);
   output.append("_run_on_main(storage, ");
@@ -4916,12 +5092,11 @@ function appendThreadMainIfCallHelper(
   output.append("_run_on_main(storage, ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_run, context);\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result = context->result;\n  free(context);\n  return result;\n");
-  } else output.append("  free(context);\n");
-  output.append("}\n\n");
+  appendThreadMainStructuredWrapperResult(
+    inout output,
+    resultType,
+    nativeResultType
+  );
 }
 
 function appendThreadMainMatchCallHelper(
@@ -4952,26 +5127,14 @@ function appendThreadMainMatchCallHelper(
   output.append("typedef struct ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context {\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result;\n");
-  }
-  let argument: usize = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append("  ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument};\n`);
-    if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append(`  bool argument_${argument}_live;\n`);
-    }
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredContextFields(
+    inout output,
+    program,
+    expression,
+    resultType,
+    nativeResultType,
+    true
+  );
   output.append("  size_t arm_0;\n");
   output.append("  ");
   output.append(nativeSubjectType);
@@ -5007,33 +5170,24 @@ function appendThreadMainMatchCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_choose(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  const ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    if (loweredTypeNeedsDeinit(program, target.parameters[argument].type)) {
-      for (const flag of target.liveFlags) {
-        if (!flag.parameter || flag.owner != target.parameters[argument].name) {
-          continue;
-        }
-        output.append("  bool ");
-        appendCBindingName(inout output, flag.name);
-        output.append(` = context->argument_${argument}_live;\n`);
-      }
-    }
-    argument = argument + 1;
-  }
+  output.append("_choose(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
+  try appendThreadMainStructuredParameterLiveFlags(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   for (const root of plan.prefixRoots) {
     try appendStatement(inout output, target, root, 1);
   }
@@ -5081,20 +5235,11 @@ function appendThreadMainMatchCallHelper(
     plan.prefixRoots,
     1
   );
-  argument = 0;
-  while (argument < argumentCount) {
-    if (loweredTypeNeedsDeinit(program, target.parameters[argument].type)) {
-      for (const flag of target.liveFlags) {
-        if (!flag.parameter || flag.owner != target.parameters[argument].name) {
-          continue;
-        }
-        output.append(`  context->argument_${argument}_live = `);
-        appendCBindingName(inout output, flag.name);
-        output.append(";\n");
-      }
-    }
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredParameterLiveFlagSaves(
+    inout output,
+    target,
+    argumentCount
+  );
   output.append("}\n\n");
 
   armIndex = 0;
@@ -5122,18 +5267,12 @@ function appendThreadMainMatchCallHelper(
   output.append("_continue(");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_Context *context) {\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    const nativeParameterType = try cType(target.parameters[argument].type);
-    output.append("  ");
-    output.append(nativeParameterType);
-    output.append(" ");
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(` = context->argument_${argument};\n  (void)`);
-    appendCBindingName(inout output, target.parameters[argument].name);
-    output.append(";\n");
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredParameterLocals(
+    inout output,
+    target,
+    argumentCount,
+    false
+  );
   try appendMainFrameRootRestores(
     inout output,
     program,
@@ -5141,23 +5280,12 @@ function appendThreadMainMatchCallHelper(
     plan.prefixRoots,
     1
   );
-  for (const flag of target.liveFlags) {
-    if (!flag.parameter) continue;
-    let liveArgument = argumentCount;
-    let parameterIndex: usize = 0;
-    while (parameterIndex < target.parameters.length) {
-      if (target.parameters[parameterIndex].name == flag.owner) {
-        liveArgument = parameterIndex;
-      }
-      parameterIndex = parameterIndex + 1;
-    }
-    if (liveArgument == argumentCount) {
-      throw "native main frame lost a cleanup-bearing parameter live field";
-    }
-    output.append("  bool ");
-    appendCBindingName(inout output, flag.name);
-    output.append(` = context->argument_${liveArgument}_live;\n`);
-  }
+  try appendThreadMainStructuredParameterLiveFlags(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   output.append("  switch (context->arm_0) {\n");
   armIndex = 0;
   while (armIndex < plan.arms.length) {
@@ -5196,22 +5324,26 @@ function appendThreadMainMatchCallHelper(
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_run(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  ");
+  output.append("_run(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  ");
   if (resultType.kind != LoweredTypeKind.voidType) output.append("context->result = ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_continue(context);\n}\n\n");
 
   output.append("static void ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_cancel_suspended(void *raw_context) {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)raw_context;\n  (void)context;\n");
+  output.append("_cancel_suspended(void *raw_context) {\n");
+  appendThreadMainStructuredContextPointer(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  output.append("  (void)context;\n");
   let cleanupArm = plan.arms.length;
   while (cleanupArm > 0) {
     cleanupArm = cleanupArm - 1;
@@ -5239,64 +5371,23 @@ function appendThreadMainMatchCallHelper(
     plan.prefixRoots,
     1
   );
-  let cleanup = argumentCount;
-  while (cleanup > 0) {
-    cleanup = cleanup - 1;
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[cleanup + 1]
-    );
-    if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append(`  if (context->argument_${cleanup}_live) { Z_`);
-      output.append(argumentType.name);
-      if (argumentType.kind == LoweredTypeKind.classType) {
-        output.append(`_release(context->argument_${cleanup});\n`);
-      } else {
-        output.append(`_deinit(&context->argument_${cleanup});\n`);
-      }
-      output.append(`    context->argument_${cleanup}_live = false; }\n`);
-    }
-  }
+  try appendThreadMainStructuredArgumentCleanups(
+    inout output,
+    program,
+    expression,
+    true
+  );
   output.append("}\n\n");
 
-  output.append("static ");
-  output.append(nativeResultType);
-  output.append(" ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("(Z_");
-  output.append(expression.value);
-  output.append("Storage *storage");
-  argument = 0;
-  while (argument < argumentCount) {
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    const nativeArgumentType = try cType(argumentType);
-    output.append(", ");
-    output.append(nativeArgumentType);
-    output.append(` argument_${argument}`);
-    argument = argument + 1;
-  }
-  output.append(") {\n  ");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *context = (");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context *)calloc(1, sizeof(");
-  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
-  output.append("_Context));\n  if (context == NULL) abort();\n");
-  argument = 0;
-  while (argument < argumentCount) {
-    output.append(`  context->argument_${argument} = argument_${argument};\n`);
-    const argumentType = try loweredTypeForIdentity(
-      program,
-      expression.labels[argument + 1]
-    );
-    if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append(`  context->argument_${argument}_live = true;\n`);
-    }
-    argument = argument + 1;
-  }
+  try appendThreadMainStructuredWrapperPrefix(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    expression,
+    nativeResultType,
+    true
+  );
   output.append("  Z_");
   output.append(expression.value);
   output.append("_run_on_main(storage, ");
@@ -5341,12 +5432,11 @@ function appendThreadMainMatchCallHelper(
   output.append("_run_on_main(storage, ");
   appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
   output.append("_run, context);\n");
-  if (resultType.kind != LoweredTypeKind.voidType) {
-    output.append("  ");
-    output.append(nativeResultType);
-    output.append(" result = context->result;\n  free(context);\n  return result;\n");
-  } else output.append("  free(context);\n");
-  output.append("}\n\n");
+  appendThreadMainStructuredWrapperResult(
+    inout output,
+    resultType,
+    nativeResultType
+  );
 }
 
 function appendThreadMainCallHelpers(

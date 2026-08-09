@@ -723,7 +723,10 @@ later without making executor blocks a special case.
     the worker owns repetition and cancellable waits. Ordinary `break` and
     `continue` preserve their source meaning across those boundaries, and
     cleanup-bearing iteration locals are destroyed exactly once on normal
-    iteration exit, loop control, or cancellation. Main
+    iteration exit, loop control, function exit, or cancellation. `return` and
+    `throw` evaluate on main, run the ordinary cleanup plan, and transfer the
+    completed success or typed failure directly back to the waiting worker.
+    Main
     executes each synchronous segment; the worker performs each cancellable
     wait without occupying main, then submits the next segment. A cancellation
     request wakes the active wait and sends ownership-bearing argument cleanup
@@ -736,8 +739,8 @@ later without making executor blocks a special case.
     synchronous main request is already running, it completes before its
     outcome is discarded. Parameter writes or unrelated ownership transfers,
     borrowed cleanup-bearing match subjects, suspending `for` loops, nested
-    loops or matches inside a suspending `while`, function exit or `try` inside
-    that loop, loop control followed by more work in the same synchronous
+    loops or matches inside a suspending `while`, `try` inside that loop, loop
+    control or function exit followed by more work in the same synchronous
     segment, other suspending control flow nested
     inside another branch, dynamic delay expressions, combining a structured
     suspension with outer delays, non-tail suspended placement, and

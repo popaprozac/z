@@ -110,6 +110,8 @@ The first suspending-`while` tier also retains the one-frame invariant. The
 condition and synchronous body segments are submitted to main once per active
 iteration; direct literal delays remain cancellable worker waits. `break` and
 `continue` use one integer control field rather than allocating child frames.
+`return` and `throw` reuse a third value of that same control field and write
+the existing result slot; they add no allocation or completion object.
 Cleanup-bearing iteration locals reuse their existing frame slot and liveness
 bit, so normal iteration exit, loop control, and cancellation do not clone or
 retain the value. On the owned-local fixture combining normal iteration,
@@ -117,6 +119,13 @@ retain the value. On the owned-local fixture combining normal iteration,
 through Bun and 3.1 ms ± 0.3 ms through fixed-point native `z emit`. The native
 command remains below Hyperfine's 5 ms precision threshold, so the 16.9-times
 ratio is directional.
+
+The function-exit follow-up preserves that shape. A fixture that returns both
+before and after its suspension emits one invocation-frame allocation for each
+placed call and no per-iteration allocation. Seven warm Hyperfine runs measured
+47.5 ms ± 1.1 ms through Bun and 2.9 ms ± 0.5 ms through fixed-point native
+`z emit`. The 16.5-times ratio is directional because the native command remains
+below Hyperfine's 5 ms precision threshold.
 
 ## Standalone native compiler checkpoint
 

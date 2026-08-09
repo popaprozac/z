@@ -12104,10 +12104,7 @@ function lowerMainDelayLoopBody(
       continue;
     }
     if (controlEndsSegment) {
-      throw `native lowering requires break or continue to end its synchronous while segment in ${declaration.name}`;
-    }
-    if (statementContainsFunctionExit(declaration.body, sourceChild)) {
-      throw `native lowering does not yet preserve return or throw inside suspending while in ${declaration.name}`;
+      throw `native lowering requires break, continue, return, or throw to end its synchronous while segment in ${declaration.name}`;
     }
     if (statementContainsNestedLoopOrMatch(
       declaration.body,
@@ -12118,10 +12115,10 @@ function lowerMainDelayLoopBody(
     if (statementTreeContainsTry(declaration.body, sourceChild)) {
       throw `native lowering does not yet preserve try inside suspending while in ${declaration.name}`;
     }
-    if (statementContainsLoopControl(
-      declaration.body,
-      sourceChild
-    )) controlEndsSegment = true;
+    if (
+      statementContainsLoopControl(declaration.body, sourceChild)
+      || statementContainsFunctionExit(declaration.body, sourceChild)
+    ) controlEndsSegment = true;
     position = position + 1;
   }
   if (delayCount == 0) {
@@ -12155,6 +12152,7 @@ function lowerMainDelayLoopBody(
     }
     const structuredControl = (
       statementContainsLoopControl(declaration.body, sourceChild)
+      || statementContainsFunctionExit(declaration.body, sourceChild)
       || declaration.body.nodes[sourceChild].kind
         == StatementKind.ifStatement
       || declaration.body.nodes[sourceChild].kind

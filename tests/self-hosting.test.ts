@@ -3350,6 +3350,14 @@ test("preserves while iteration, loop control, and owned locals across main susp
       "self-host-emit-thread-main-while-owned.zs",
       "released iteration 1\nreleased iteration 2\nreleased iteration 3\nreleased iteration 4\n",
     ],
+    [
+      "self-host-emit-thread-main-while-return.zs",
+      "released return iteration 1\nreleased return iteration 1\nreleased return iteration 2\n",
+    ],
+    [
+      "self-host-emit-thread-main-while-throw.zs",
+      "released throw iteration 1\nreleased throw iteration 2\n",
+    ],
   ] as const;
   try {
     for (const [fixture, expectedOutput] of fixtures) {
@@ -3376,6 +3384,13 @@ test("preserves while iteration, loop control, and owned locals across main susp
       if (fixture.endsWith("-control.zs")) {
         assert.match(emission.stdout, /context->loop_control = 1;/);
         assert.match(emission.stdout, /context->loop_control = 2;/);
+      }
+      if (
+        fixture.endsWith("-return.zs")
+        || fixture.endsWith("-throw.zs")
+      ) {
+        assert.match(emission.stdout, /context->loop_control = 3;/);
+        assert.match(emission.stdout, /goto _z_thread_main_completed;/);
       }
       if (fixture.endsWith("-owned.zs")) {
         assert.match(emission.stdout, /frame_local_\d+_live/);
@@ -3408,21 +3423,6 @@ test("preserves while iteration, loop control, and owned locals across main susp
       assert.equal(execution.stdout, expectedOutput);
     }
 
-    const invalidInput = resolve(
-      projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-while-return-invalid.zs",
-    );
-    const invalid = spawnSync(
-      process.execPath,
-      [cli, "self-host-emit", invalidInput],
-      { encoding: "utf8" },
-    );
-    assert.equal(invalid.status, 1);
-    assert.match(
-      invalid.stderr,
-      /does not yet preserve return or throw inside suspending while/,
-    );
-
     const invalidControlInput = resolve(
       projectRoot,
       "tests/fixtures/self-host-emit-thread-main-while-control-invalid.zs",
@@ -3435,7 +3435,7 @@ test("preserves while iteration, loop control, and owned locals across main susp
     assert.equal(invalidControl.status, 1);
     assert.match(
       invalidControl.stderr,
-      /requires break or continue to end its synchronous while segment/,
+      /requires break, continue, return, or throw to end its synchronous while segment/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
