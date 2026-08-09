@@ -13,10 +13,12 @@ import {
 import { ParsedModule } from "./module-symbols.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
+import { typeSymbolLocation } from "./semantic-type-identities.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
   ModuleResolveErrorKind,
+  ModuleSymbolKind,
   codedModuleResolutionError,
 } from "./semantic-model.zs";
 
@@ -324,6 +326,115 @@ function resolvedExpressionType(
   return "";
 }
 
+function resolvedLocalBindingType(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in name: String,
+  useOffset: usize
+): String {
+  if (moduleIndex >= graph.modules.length) return "";
+  let selectedOffset: usize = 0;
+  let selectedType = "";
+  for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+    if (
+      binding.name == name
+      && binding.offset < useOffset
+      && (selectedType.byteLength == 0 || binding.offset >= selectedOffset)
+    ) {
+      selectedOffset = binding.offset;
+      selectedType = binding.typeName.copyBytes(0, binding.typeName.byteLength);
+    }
+  }
+  return selectedType;
+}
+
+function closureParameterNamed(
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  in name: String
+): boolean {
+  for (const child of tree.nodes[closureIndex].children) {
+    if (
+      tree.nodes[child].kind == ExpressionKind.closureParameterExpression
+      && tree.nodes[child].value == name
+    ) return true;
+  }
+  return false;
+}
+
+function validateNativeThreadCaptureExpression(
+  in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in tree: ExpressionTree,
+  closureIndex: usize,
+  index: usize,
+  directCallee: boolean
+): void throws ModuleResolveError {
+  const node = view tree.nodes[index];
+  if (
+    node.kind == ExpressionKind.identifierExpression
+    && !directCallee
+    && !closureParameterNamed(tree, closureIndex, node.value)
+  ) {
+    const captureName = node.value.copyBytes(0, node.value.byteLength);
+    const useOffset = node.offset;
+    const typeName = resolvedLocalBindingType(
+      graph,
+      moduleIndex,
+      captureName,
+      useOffset
+    );
+    if (
+      typeName.byteLength > 0
+      && typeName != "String"
+      && typeName != "TextBuffer"
+      && moduleIndex < graph.modules.length
+    ) {
+      let visiting = Array<String>();
+      if (typeHasCleanup(
+        graph.modules,
+        moduleIndex,
+        typeName,
+        visiting
+      )) {
+        let sharedClassCandidate = false;
+        match (typeSymbolLocation(graph.modules, moduleIndex, typeName)) {
+          some(location) => sharedClassCandidate = graph.modules[location.moduleIndex]
+            .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+          none => {}
+        }
+        if (!sharedClassCandidate) {
+          let length = captureName.byteLength;
+          if (length == 0) length = 1;
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            `ownership-bearing thread.spawn capture "${captureName}" of type "${typeName}" is not executable in the native compiler yet`,
+            node.line,
+            node.column,
+            length
+          );
+        }
+      }
+    }
+  }
+  let childIndex: usize = 0;
+  while (childIndex < node.children.length) {
+    const child = node.children[childIndex];
+    try validateNativeThreadCaptureExpression(
+      path,
+      moduleIndex,
+      graph,
+      tree,
+      closureIndex,
+      child,
+      node.kind == ExpressionKind.callExpression && childIndex == 0
+    );
+    childIndex = childIndex + 1;
+  }
+}
+
 function placedCallTargetSuspends(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -552,6 +663,35 @@ function validateNativeExpressionTree(
       && node.children.length > 0
     ) {
       const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.memberExpression
+        && callee.value == "spawn"
+        && callee.children.length == 1
+        && tree.nodes[callee.children[0]].kind == ExpressionKind.identifierExpression
+        && tree.nodes[callee.children[0]].value == "thread"
+        && node.children.length == 2
+      ) {
+        const closureIndex = node.children[1];
+        if (
+          tree.nodes[closureIndex].kind == ExpressionKind.closureExpression
+          && tree.nodes[closureIndex].labels.length > 2
+          && tree.nodes[closureIndex].labels[2] == "expression"
+          && tree.nodes[closureIndex].children.length > 0
+        ) {
+          const bodyIndex = tree.nodes[closureIndex].children[
+            tree.nodes[closureIndex].children.length - 1
+          ];
+          try validateNativeThreadCaptureExpression(
+            path,
+            moduleIndex,
+            graph,
+            tree,
+            closureIndex,
+            bodyIndex,
+            false
+          );
+        }
+      }
       if (
         callee.kind == ExpressionKind.memberExpression
         && callee.value == "withLock"

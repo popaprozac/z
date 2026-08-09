@@ -5316,6 +5316,24 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: 'Mutex.withLock result type "String" is not executable in the native compiler yet; only cleanup-free results are supported',
     },
+    {
+      name: "thread-ownership-bearing-capture",
+      source: [
+        'import { thread } from "std/thread";',
+        "struct Payload { text: String; }",
+        "async function main(): i32 {",
+        '  const payload = Payload({ text: "worker" });',
+        "  const worker = thread.spawn(move (): i32 => i32(payload.text.byteLength));",
+        "  return await worker - 6;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 5,
+      column: 51,
+      marker: "^^^^^^^",
+      code: "Z1000",
+      summary: 'ownership-bearing thread.spawn capture "payload" of type "Payload" is not executable in the native compiler yet',
+    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);

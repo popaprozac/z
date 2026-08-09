@@ -2186,6 +2186,12 @@ emission. Native `Mutex.withLock` result checking now reuses the semantic
 graph's recursive cleanup analysis as well: owned results such as `String`
 receive a source-mapped `Z1000` at `withLock`, while cleanup-free scalar and
 `void` results continue through the implemented scoped-lock lowering.
+The same audit now distinguishes supported thread capture forms rather than
+blanket-rejecting ownership. A move closure can still transfer an owned
+`String`, and shareable readonly ARC identity is still retained. An inferred
+local struct or enum whose graph recursively needs cleanup now reports `Z1000`
+at the captured identifier before the current worker-context lowering would
+lose its destruction obligations.
 
 ## Not tested yet
 
