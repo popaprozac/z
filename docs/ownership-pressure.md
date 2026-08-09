@@ -2179,7 +2179,10 @@ non-`String` `Set` elements, non-`String` `Map` keys, and the currently known
 unsupported `String` or nested collection values receive source-mapped `Z1000`
 diagnostics.
 This is deliberately a fixed-point runtime boundary, not a retreat from Z's
-generic `Map<K, V>` and `Set<T>` language surface.
+generic `Map<K, V>` and `Set<T>` language surface. Explicit `copy` now uses the
+same evidence path: non-`String` copies report `Z1000` at the keyword while the
+implemented owned `String` copy continues through native lowering and C
+emission.
 
 ## Not tested yet
 

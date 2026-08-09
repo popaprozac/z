@@ -426,6 +426,29 @@ function validateNativeExpressionTree(
       );
     }
     if (
+      node.kind == ExpressionKind.unaryExpression
+      && node.value == "copy"
+      && node.children.length == 1
+    ) {
+      const operand = node.children[0];
+      const operandType = resolvedExpressionType(
+        graph,
+        moduleIndex,
+        tree,
+        operand
+      );
+      if (operandType.byteLength > 0 && operandType != "String") {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `explicit copy of "${operandType}" is not executable in the native compiler yet; only String copy is supported`,
+          node.line,
+          node.column,
+          4
+        );
+      }
+    }
+    if (
       node.kind == ExpressionKind.executorPlacementExpression
       && node.value != "spawn"
       && node.labels.length > 2

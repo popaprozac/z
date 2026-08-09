@@ -5282,6 +5282,22 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: 'Map value type "String" is not executable in the native compiler yet; only cleanup-free scalar values are supported',
     },
+    {
+      name: "explicit-copy-representation",
+      source: [
+        "function main(): i32 {",
+        "  const values = Array<i32>(20, 22);",
+        "  const copied = copy values;",
+        "  return copied[0] + copied[1] - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 3,
+      column: 18,
+      marker: "^^^^",
+      code: "Z1000",
+      summary: 'explicit copy of "Array<i32>" is not executable in the native compiler yet; only String copy is supported',
+    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);
