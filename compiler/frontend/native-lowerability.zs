@@ -1,8 +1,13 @@
 import {
   AggregateDeclaration,
   DeclarationKind,
+  ExpressionKind,
+  ExpressionSyntax,
+  ExpressionTree,
   FunctionDeclaration,
   ReceiverMode,
+  StatementArena,
+  StatementKind,
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
@@ -31,26 +36,51 @@ function loweringBoundary(
   );
 }
 
+function stringContains(in value: String, in candidate: String): boolean {
+  if (candidate.byteLength == 0) return true;
+  if (candidate.byteLength > value.byteLength) return false;
+  let start: usize = 0;
+  while (start + candidate.byteLength <= value.byteLength) {
+    let offset: usize = 0;
+    while (
+      offset < candidate.byteLength
+      && value.byteAt(start + offset) == candidate.byteAt(offset)
+    ) {
+      offset = offset + 1;
+    }
+    if (offset == candidate.byteLength) return true;
+    start = start + 1;
+  }
+  return false;
+}
+
 function typeIsFunctionValue(in name: String): boolean {
-  return name.byteLength > 0 && name.byteAt(0) == 40;
+  return stringContains(name, "=>");
 }
 
 function typeIsFixedArray(in name: String): boolean {
-  if (name.byteLength < 4 || name.byteAt(name.byteLength - 1) != 93) {
-    return false;
+  let open: usize = 0;
+  while (open + 2 < name.byteLength) {
+    if (name.byteAt(open) == 91) {
+      let digit = open + 1;
+      while (
+        digit < name.byteLength
+        && name.byteAt(digit) >= 48
+        && name.byteAt(digit) <= 57
+      ) {
+        digit = digit + 1;
+      }
+      if (digit > open + 1 && digit < name.byteLength && name.byteAt(digit) == 93) {
+        return true;
+      }
+    }
+    open = open + 1;
   }
-  let open = name.byteLength - 2;
-  while (open > 0 && name.byteAt(open) != 91) {
-    open = open - 1;
-  }
-  if (name.byteAt(open) != 91 || open + 1 >= name.byteLength - 1) return false;
-  let digit = open + 1;
-  while (digit < name.byteLength - 1) {
-    const byte = name.byteAt(digit);
-    if (byte < 48 || byte > 57) return false;
-    digit = digit + 1;
-  }
-  return true;
+  return false;
+}
+
+function typeUsesGeneric(in name: String, in base: String): boolean {
+  return stringContains(name, `${base}<`);
 }
 
 function validateNativeType(
@@ -76,6 +106,273 @@ function validateNativeType(
       type.column,
       type.name.byteLength
     );
+  }
+  if (typeUsesGeneric(type.name, "Slice")) {
+    throw loweringBoundary(
+      path,
+      "Z1000",
+      `Slice type "${type.name}" has no native representation yet`,
+      type.line,
+      type.column,
+      type.name.byteLength
+    );
+  }
+  if (typeUsesGeneric(type.name, "AsyncGenerator")) {
+    throw loweringBoundary(
+      path,
+      "Z0700",
+      `async-generator type "${type.name}" is not executable in the native compiler yet`,
+      type.line,
+      type.column,
+      type.name.byteLength
+    );
+  }
+  if (typeUsesGeneric(type.name, "Generator")) {
+    throw loweringBoundary(
+      path,
+      "Z1000",
+      `generator type "${type.name}" is not executable in the native compiler yet`,
+      type.line,
+      type.column,
+      type.name.byteLength
+    );
+  }
+}
+
+function stableOptionalChainSource(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.identifierExpression
+    || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+    || tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+  ) return true;
+  if (
+    tree.nodes[index].kind != ExpressionKind.memberExpression
+    || tree.nodes[index].optionalAccess
+    || tree.nodes[index].children.length != 1
+  ) return false;
+  const receiver = tree.nodes[index].children[0];
+  return stableOptionalChainSource(tree, receiver);
+}
+
+function validateNativeExpressionTree(
+  in path: String,
+  in tree: ExpressionTree
+): void throws ModuleResolveError {
+  let index: usize = 0;
+  while (index < tree.nodes.length) {
+    const node = view tree.nodes[index];
+    for (const type of node.typeReferences) {
+      try validateNativeType(path, type);
+    }
+    if (node.kind == ExpressionKind.arrayExpression) {
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "fixed-array literals are not executable in the native compiler yet",
+        node.line,
+        node.column,
+        1
+      );
+    }
+    if (node.kind == ExpressionKind.unsafeExpression) {
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "unsafe expressions are not executable in the native compiler yet",
+        node.line,
+        node.column,
+        6
+      );
+    }
+    if (
+      node.kind == ExpressionKind.forExpression
+      || node.kind == ExpressionKind.whileExpression
+    ) {
+      const subject = node.kind == ExpressionKind.forExpression ? "for" : "while";
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        `value-producing ${subject} expressions are not executable in the native compiler yet`,
+        node.line,
+        node.column,
+        subject.byteLength
+      );
+    }
+    if (node.kind == ExpressionKind.matchObjectFieldExpression) {
+      let length = node.value.byteLength;
+      if (length == 0) length = 1;
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "object-destructuring match patterns are not executable in the native compiler yet",
+        node.line,
+        node.column,
+        length
+      );
+    }
+    if (
+      node.kind == ExpressionKind.memberExpression
+      && node.optionalAccess
+      && node.children.length == 1
+      && !stableOptionalChainSource(tree, node.children[0])
+    ) {
+      let length = node.value.byteLength;
+      if (length == 0) length = 1;
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "temporary optional-chain receivers are not executable in the native compiler yet",
+        node.line,
+        node.column,
+        length
+      );
+    }
+    if (
+      node.kind == ExpressionKind.callExpression
+      && node.children.length > 0
+    ) {
+      const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.memberExpression
+        && callee.optionalAccess
+        && callee.value != "byteAt"
+      ) {
+        let length = callee.value.byteLength;
+        if (length == 0) length = 1;
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `optional-chain method "${callee.value}" is not executable in the native compiler yet`,
+          callee.line,
+          callee.column,
+          length
+        );
+      }
+    }
+    index = index + 1;
+  }
+}
+
+function validateNativeExpression(
+  in path: String,
+  in expression: ExpressionSyntax
+): void throws ModuleResolveError {
+  match (in expression.tree) {
+    some(tree) => try validateNativeExpressionTree(path, tree);
+    none => throw loweringBoundary(
+      path,
+      "Z1000",
+      "expression is outside the current native expression-tree tier",
+      expression.line,
+      expression.column,
+      1
+    );
+  }
+}
+
+function validateNativeBody(
+  in path: String,
+  in body: StatementArena,
+  asynchronous: boolean
+): void throws ModuleResolveError {
+  for (const statement of body.nodes) {
+    match (in statement.typeAnnotation) {
+      some(type) => try validateNativeType(path, type);
+      none => {}
+    }
+    match (in statement.expression) {
+      some(expression) => try validateNativeExpression(path, expression);
+      none => {}
+    }
+    match (in statement.secondExpression) {
+      some(expression) => try validateNativeExpression(path, expression);
+      none => {}
+    }
+    if (statement.kind == StatementKind.yieldStatement) {
+      const code = asynchronous ? "Z0700" : "Z1000";
+      const summary = asynchronous
+        ? "async-generator yield is not executable in the native compiler yet"
+        : "generator yield is not executable in the native compiler yet";
+      throw loweringBoundary(
+        path,
+        code,
+        summary,
+        statement.line,
+        statement.column,
+        5
+      );
+    }
+    if (statement.kind == StatementKind.asyncScopeStatement) {
+      throw loweringBoundary(
+        path,
+        "Z0700",
+        "async scope is not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        5
+      );
+    }
+    if (statement.kind == StatementKind.unsafeStatement) {
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "unsafe statements are not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        6
+      );
+    }
+    if (statement.kind == StatementKind.destructureStatement) {
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "destructuring statements are not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        5
+      );
+    }
+    if (
+      statement.kind == StatementKind.forAwaitStatement
+      || statement.kind == StatementKind.forTryAwaitStatement
+    ) {
+      throw loweringBoundary(
+        path,
+        "Z0700",
+        "asynchronous iteration is not executable in the native compiler yet",
+        statement.line,
+        statement.column,
+        3
+      );
+    }
+    if (statement.kind == StatementKind.forStatement) {
+      if (statement.mutableBinding) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          "inout iteration is not executable in the native compiler yet",
+          statement.line,
+          statement.column,
+          3
+        );
+      }
+      if (
+        statement.objectBindings.length > 0
+        || statement.arrayBindings.length > 0
+      ) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          "destructuring for bindings are not executable in the native compiler yet",
+          statement.line,
+          statement.column,
+          3
+        );
+      }
+    }
   }
 }
 
@@ -152,6 +449,8 @@ function validateNativeFunction(
     some(error) => try validateNativeType(path, error);
     none => {}
   }
+  const asynchronous = declaration.asynchronous;
+  try validateNativeBody(path, declaration.body, asynchronous);
 }
 
 function aggregateKindName(in aggregate: AggregateDeclaration): String {
@@ -188,9 +487,14 @@ function validateNativeAggregate(
   }
   for (const field of aggregate.fields) {
     try validateNativeType(path, field.type);
+    try validateNativeBody(path, field.defaultStatements, false);
   }
   for (const method of aggregate.methods) {
     try validateNativeFunction(path, method, aggregate.name);
+  }
+  match (in aggregate.deinitializer) {
+    some(deinitializer) => try validateNativeBody(path, deinitializer.body, false);
+    none => {}
   }
 }
 
@@ -222,6 +526,13 @@ export function validateNativeLowerability(
     }
     for (const aggregate of module.program.aggregates) {
       try validateNativeAggregate(module.path, aggregate);
+    }
+    for (const declaration of module.program.constants) {
+      match (in declaration.typeAnnotation) {
+        some(type) => try validateNativeType(module.path, type);
+        none => {}
+      }
+      try validateNativeExpression(module.path, declaration.initializer);
     }
     for (const declaration of module.program.enums) {
       for (const variant of declaration.variants) {

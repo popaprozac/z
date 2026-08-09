@@ -219,12 +219,21 @@ Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
-generic aggregates, traits, aliases, function-value types, fixed arrays, and
-unsupported method tiers no longer fall into resolver-internal messages.
-Remaining expected boundaries must migrate to stable diagnostics, while
-malformed or lost lowered IR must surface as an internal compiler error rather
-than a language limitation. This DX work does not substitute for fail-closed
-behavior.
+generic aggregates, traits, aliases, function-value types, fixed arrays,
+`Slice`, generators, destructuring, value-producing loops, `async scope`,
+unsafe expressions, and the syntactically decidable optional-chain boundaries
+no longer fall into resolver-internal messages. Public lowering and C-emission
+boundaries now label every still-uncatalogued failure as an internal compiler
+error instead of presenting it as a user mistake. Remaining expected
+boundaries must migrate from that fallback to stable diagnostics; malformed or
+lost lowered IR stays an internal compiler error. This DX work does not
+substitute for fail-closed behavior.
+
+Two nearby findings remain explicitly separate from lowerability: native
+semantic resolution still needs Stage-0 `Z0704` parity for a borrowed match
+payload held across `await`, and native `check` can currently stop after IR
+construction before a non-tail main-executor suspension reaches its C-emission
+constraint. These are safety/check-command parity work, not `Z1000` cases.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
@@ -254,7 +263,7 @@ Parser and resolver failures also render the source line and caret entirely
 inside the native driver. The driver also parses and validates the established
 `z.json` target/link subset itself, carrying include directories, link
 directories, native libraries, and the macOS minimum target into Clang. Stage
-0 seeds generation one, which now rebuilds the same 38-module driver to
+0 seeds generation one, which now rebuilds the same 39-module driver to
 byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone

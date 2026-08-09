@@ -32,6 +32,7 @@ import {
   ModuleSymbolKind,
 } from "./semantic-model.zs";
 import { genericTypeShape } from "./semantic-type-shapes.zs";
+import { internalBackendFailure } from "./native-backend-errors.zs";
 
 export enum LoweredTypeKind {
   voidType,
@@ -14873,7 +14874,7 @@ function appendLoweredProgram(
   }
 }
 
-export function lowerProgram(
+function lowerProgramUnchecked(
   in program: Program,
   in evidence: ModuleSemanticEvidence
 ): LoweredProgram throws String {
@@ -14924,18 +14925,46 @@ export function lowerProgram(
   });
 }
 
+export function lowerProgram(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence
+): LoweredProgram throws String {
+  const outcome = attempt lowerProgramUnchecked(program, evidence);
+  return match (outcome) {
+    success(lowered) => lowered;
+    failure(message) => throw internalBackendFailure(
+      "native lowering",
+      message
+    );
+  };
+}
+
 export function lowerModules(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): LoweredProgram throws String {
-  return try lowerModulesIncludingTests(parsed, graph, false);
+  const outcome = attempt lowerModulesIncludingTests(parsed, graph, false);
+  return match (outcome) {
+    success(lowered) => lowered;
+    failure(message) => throw internalBackendFailure(
+      "native lowering",
+      message
+    );
+  };
 }
 
 export function lowerTestModules(
   in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): LoweredProgram throws String {
-  return try lowerModulesIncludingTests(parsed, graph, true);
+  const outcome = attempt lowerModulesIncludingTests(parsed, graph, true);
+  return match (outcome) {
+    success(lowered) => lowered;
+    failure(message) => throw internalBackendFailure(
+      "native lowering",
+      message
+    );
+  };
 }
 
 function lowerModulesIncludingTests(

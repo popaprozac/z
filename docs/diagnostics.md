@@ -90,7 +90,7 @@ Currently structured codes include:
 | `Z0821` | a value representation cannot cross the first raw native boundary |
 | `Z0822` | an unsafe block is nested, asynchronous, suspending, or captures an escaping environment |
 | `Z0823` | an unsupported native call needs unsafe, or an unsafe pointer assertion/pass-through is incompatible |
-| `Z1000` | valid Z declaration or type has no representation in the current native compiler tier |
+| `Z1000` | valid Z declaration, type, statement, or expression has no representation in the current native compiler tier |
 
 CLI diagnostics render source context. Language-server diagnostics expose the
 same code and message, secondary locations through related information, and
@@ -98,8 +98,13 @@ machine-readable help text for future editor quick fixes.
 
 `Z1000` is a compiler-staging boundary, not a language rejection. The same
 source remains valid Z and may compile through Stage 0; the fixed-point native
-compiler reports the exact declaration or type that its current backend cannot
-yet represent. Async staging continues to use the more specific `Z0700`.
+compiler reports the exact source construct that its current backend cannot yet
+represent. Async staging continues to use the more specific `Z0700`.
+
+A backend failure that escapes this catalog is rendered as `internal compiler
+error: native lowering: ...` or `internal compiler error: C emission: ...`.
+It has no stable language diagnostic code because it identifies a missing
+compiler classification or broken backend invariant, not invalid user code.
 
 Suggestions must describe functionality that exists. The compiler recommends
 `move` only when the destination accepts an owned closure environment; when a

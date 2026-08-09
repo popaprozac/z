@@ -1141,7 +1141,7 @@ fresh installation can remove TypeScript.
 
 That proof is now also an explicit local workflow instead of only a test
 fixture. `bun run bootstrap [output]` uses Stage 0 exactly once to emit the
-current 38-module driver, strict-compiles generation one, asks generation one
+current 39-module driver, strict-compiles generation one, asks generation one
 to build generation two in release mode, and compares their complete generated
 C before publishing an executable named `z`. The published binary performs
 ordinary pure-Z project discovery, checking, emission, building, caching, and
@@ -2145,13 +2145,25 @@ follow-up; they do not substitute for semantic rejection coverage.
 
 The first follow-up now inserts a lowerability preflight between native semantic
 resolution and IR construction. Ordinary unplaced async functions retain
-`Z0700`; generic aggregates, traits, aliases, function-value types, fixed arrays,
-and unsupported method tiers use `Z1000`, which explicitly means “valid Z,
-outside the current fixed-point executable tier.” Both the standalone driver
-and the Bun-hosted native emitter preserve the code, declaration/type location,
-and source span. The remaining inventory is deliberately split: expected tier
-boundaries must become coded diagnostics, while malformed, lost, or mismatched
-IR guards must become visible internal compiler errors.
+`Z0700`; generic aggregates, traits, aliases, function-value and fixed-array
+types, `Slice`, generators, destructuring, value-producing loops, unsafe
+expressions, and other syntactically settled body gaps use `Z1000`, which
+explicitly means “valid Z, outside the current fixed-point executable tier.”
+Both the standalone driver and the Bun-hosted native emitter preserve the code,
+source location, and span. Public lowering and C-emission boundaries now mark
+anything that still evades the catalog as an explicit internal compiler error.
+The remaining inventory is deliberately split: expected tier boundaries move
+from that fallback to coded diagnostics, while malformed, lost, or mismatched
+IR guards stay visible compiler errors.
+
+The same audit found two issues that must not be disguised as `Z1000`. A
+borrowed cleanup-bearing match payload can currently reach native lowering
+across `await` even though Stage 0 rejects it as `Z0704`; the native resolver
+must gain that suspension-safety parity. Separately, native `check` validates IR
+construction but can still accept a non-tail main-executor suspension that the
+C emitter rejects. The next parity slice should close the borrowed-match rule
+and decide whether `check` performs a no-write emission validation or whether
+that tail constraint moves fully into typed lowering evidence.
 
 ## Not tested yet
 

@@ -25,6 +25,7 @@ import {
   ModuleSemanticEvidence,
 } from "./semantic-model.zs";
 import { stringStartsWith } from "./semantic-type-shapes.zs";
+import { internalBackendFailure } from "./native-backend-errors.zs";
 
 function labelsContain(in labels: Array<String>, in candidate: String): boolean {
   for (const label of labels) {
@@ -9526,7 +9527,11 @@ export function emitC(
   in evidence: ModuleSemanticEvidence
 ): String throws String {
   const lowered = try lowerProgram(program, evidence);
-  return try emitLoweredC(lowered, "", "", false);
+  const outcome = attempt emitLoweredC(lowered, "", "", false);
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }
 
 export function emitModulesC(
@@ -9534,7 +9539,11 @@ export function emitModulesC(
   in graph: ModuleGraph
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredC(lowered, "", "", false);
+  const outcome = attempt emitLoweredC(lowered, "", "", false);
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }
 
 export function emitLibraryModulesC(
@@ -9545,12 +9554,16 @@ export function emitLibraryModulesC(
   runtimeInitializerRequiresMain: boolean
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredC(
+  const outcome = attempt emitLoweredC(
     lowered,
     targetName,
     runtimeInitializerName,
     runtimeInitializerRequiresMain
   );
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }
 
 export function emitTestModulesC(
@@ -9561,7 +9574,11 @@ export function emitTestModulesC(
   if (programTestCount(lowered) == 0) {
     throw "no tests were found in this module or its imports";
   }
-  return try emitLoweredC(lowered, "", "", false);
+  const outcome = attempt emitLoweredC(lowered, "", "", false);
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }
 
 export function emitModulesCHeader(
@@ -9569,7 +9586,11 @@ export function emitModulesCHeader(
   in graph: ModuleGraph
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredCHeader(lowered, "", false);
+  const outcome = attempt emitLoweredCHeader(lowered, "", false);
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }
 
 export function emitLibraryModulesCHeader(
@@ -9579,9 +9600,13 @@ export function emitLibraryModulesCHeader(
   runtimeInitializerRequiresMain: boolean
 ): String throws String {
   const lowered = try lowerModules(parsed, graph);
-  return try emitLoweredCHeader(
+  const outcome = attempt emitLoweredCHeader(
     lowered,
     targetName,
     runtimeInitializerRequiresMain
   );
+  return match (outcome) {
+    success(emitted) => emitted;
+    failure(message) => throw internalBackendFailure("C emission", message);
+  };
 }

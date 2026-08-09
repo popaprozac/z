@@ -112,11 +112,10 @@ function stage1Emit(in entryPath: String, in batch: String): String {
       return `error\n${message}`;
     }
   }
-  const entry = graph.entry;
   const emitOutcome = attempt emitModulesC(parsed, graph);
   return match (emitOutcome) {
     success(emitted) => `ok\n${emitted}`;
-    failure(message) => `error\n${entryPath}: ${message}`;
+    failure(message) => `error\n${message}`;
   };
 }
 

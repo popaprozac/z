@@ -398,7 +398,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
           return match (selected) { some(value) => value - 42; none => 1; };
         }
       `,
-      expected: /requires a named stable receiver/,
+      expected: /error\[Z1000\]: temporary optional-chain receivers are not executable in the native compiler yet/,
     },
     {
       name: "view",
@@ -416,7 +416,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
           };
         }
       `,
-      expected: /cleanup-bearing view projection remains deferred/,
+      expected: /internal compiler error: native lowering: .*cleanup-bearing view projection remains deferred/,
     },
     {
       name: "method",
@@ -430,7 +430,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
           };
         }
       `,
-      expected: /supports stable Option<String>\?\.byteAt\(index\)/,
+      expected: /error\[Z1000\]: optional-chain method "copyBytes" is not executable in the native compiler yet/,
     },
   ] as const;
 
@@ -446,6 +446,25 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
     assert.match(emission.stderr, testCase.expected);
   }
   rmSync(directory, { recursive: true, force: true });
+}, 20_000);
+
+test("renders uncatalogued native backend failures as internal compiler errors", () => {
+  const input = resolve(projectRoot, "examples/language/collections/set.zs");
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 1);
+  assert.match(
+    emission.stderr,
+    /internal compiler error: native lowering: .*only supports Array for iteration, found Set<String>/,
+  );
+  assert.doesNotMatch(emission.stderr, /error\[Z\d{4}\]/);
+  assert.equal(
+    emission.stderr.includes(`${input}: internal compiler error`),
+    false,
+  );
 }, 20_000);
 
 test("preserves local views through native lowering and C emission", () => {
@@ -4645,7 +4664,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 38 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 39 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
@@ -4987,6 +5006,7 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 7,
       marker: "^^^^^",
       code: "Z0700",
@@ -4999,6 +5019,7 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 1,
       marker: "^^^^^^",
       code: "Z1000",
@@ -5011,6 +5032,7 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 1,
       marker: "^^^^^",
       code: "Z1000",
@@ -5023,6 +5045,7 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 1,
       marker: "^^^^",
       code: "Z1000",
@@ -5035,6 +5058,7 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 28,
       marker: "^^^^^^^^^^^^^^^^^^^",
       code: "Z1000",
@@ -5047,10 +5071,113 @@ test("compiles a multi-module Z application through the standalone native driver
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
+      line: 1,
       column: 22,
       marker: "^^^^^^",
       code: "Z1000",
       summary: 'fixed-array type "i32[3]" has no native representation yet',
+    },
+    {
+      name: "slice",
+      source: [
+        "function first(values: Slice<i32>): i32 { return values[0]; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      line: 1,
+      column: 24,
+      marker: "^^^^^^^^^^",
+      code: "Z1000",
+      summary: 'Slice type "Slice<i32>" has no native representation yet',
+    },
+    {
+      name: "local-fixed-array",
+      source: [
+        "function main(): i32 { const values = [20, 22]; return values[1] - 22; }",
+        "",
+      ].join("\n"),
+      line: 1,
+      column: 39,
+      marker: "^",
+      code: "Z1000",
+      summary: "fixed-array literals are not executable in the native compiler yet",
+    },
+    {
+      name: "generator",
+      source: [
+        'import { Generator } from "std/iteration";',
+        "function values(): Generator<i32> { yield 42; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      line: 2,
+      column: 20,
+      marker: "^^^^^^^^^^^^^^",
+      code: "Z1000",
+      summary: 'generator type "Generator<i32>" is not executable in the native compiler yet',
+    },
+    {
+      name: "destructuring",
+      source: [
+        "struct Pair { left: i32; right: i32; }",
+        "function main(): i32 {",
+        "  const pair = Pair({ left: 20, right: 22 });",
+        "  const { left, right } = pair;",
+        "  return left + right - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 4,
+      column: 3,
+      marker: "^^^^^",
+      code: "Z1000",
+      summary: "destructuring statements are not executable in the native compiler yet",
+    },
+    {
+      name: "async-scope",
+      source: [
+        "async function main(): i32 {",
+        "  async scope {}",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 2,
+      column: 3,
+      marker: "^^^^^",
+      code: "Z0700",
+      summary: "async scope is not executable in the native compiler yet",
+    },
+    {
+      name: "unsafe-expression",
+      source: [
+        "function main(): i32 {",
+        "  const value: i32 = unsafe { select 42; };",
+        "  return value - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 2,
+      column: 22,
+      marker: "^^^^^^",
+      code: "Z1000",
+      summary: "unsafe expressions are not executable in the native compiler yet",
+    },
+    {
+      name: "loop-expression",
+      source: [
+        "function main(): i32 {",
+        "  const values = Array<i32>(42);",
+        "  const selected = for (const value of values) { select value; } else { select 0; };",
+        "  return selected - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 3,
+      column: 20,
+      marker: "^^^",
+      code: "Z1000",
+      summary: "value-producing for expressions are not executable in the native compiler yet",
     },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
@@ -5064,11 +5191,15 @@ test("compiles a multi-module Z application through the standalone native driver
     assert.equal(checking.status, 1, `${boundary.name}\n${checking.stderr}`);
     assert.ok(
       checking.stderr.includes(
-        `${input}:1:${boundary.column}: error[${boundary.code}]: ${boundary.summary}`,
+        `${input}:${boundary.line}:${boundary.column}: error[${boundary.code}]: ${boundary.summary}`,
       ),
       checking.stderr,
     );
-    assert.ok(checking.stderr.includes(`1 | ${boundary.source.split("\n")[0]}`));
+    assert.ok(
+      checking.stderr.includes(
+        `${boundary.line} | ${boundary.source.split("\n")[boundary.line - 1]}`,
+      ),
+    );
     assert.ok(checking.stderr.includes(`${boundary.marker} ${boundary.summary}`));
     assert.doesNotMatch(checking.stderr, /against \d+ local aggregate/);
 
@@ -5095,6 +5226,22 @@ test("compiles a multi-module Z application through the standalone native driver
       assert.equal(existsSync(output), false);
     }
   }
+
+  const backendIceInput = resolve(
+    projectRoot,
+    "examples/language/collections/set.zs",
+  );
+  const backendIce = spawnSync(
+    driver,
+    ["check", backendIceInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(backendIce.status, 1, backendIce.stderr);
+  assert.match(
+    backendIce.stderr,
+    /internal compiler error: native lowering: .*only supports Array for iteration, found Set<String>/,
+  );
+  assert.doesNotMatch(backendIce.stderr, /error\[Z\d{4}\]/);
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
   mkdirSync(runtimeCollisionProject);
