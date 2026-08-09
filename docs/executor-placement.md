@@ -708,9 +708,11 @@ later without making executor blocks a special case.
     `if`/`else` whose branches contain direct literal delays. Its condition runs
     once on main, only the selected branch waits, and both paths rejoin before
     the following statements. A third supported shape is one top-level
-    `match` over a payload-free enum, with braced arms containing direct
-    literal delays. Its subject is evaluated once on main, the worker waits
-    only along the selected arm, and every arm rejoins before the suffix. Main
+    `match` over a cleanup-free enum, including scalar or plain-value payload
+    bindings, with braced arms containing direct literal delays. Its subject is
+    evaluated once into the invocation frame on main, bindings are recreated
+    from that stable subject for each segment, the worker waits only along the
+    selected arm, and every arm rejoins before the suffix. Main
     executes each synchronous segment; the worker performs each cancellable
     wait without occupying main, then submits the next segment. A cancellation
     request wakes the active wait and sends ownership-bearing argument cleanup
@@ -722,7 +724,7 @@ later without making executor blocks a special case.
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
     outcome is discarded. Parameter writes or ownership transfers,
-    payload-bearing suspending `match`, suspending loops, control flow nested
+    cleanup-bearing suspending `match`, suspending loops, control flow nested
     inside another branch, dynamic delay expressions, combining a structured
     suspension with outer delays, non-tail suspended placement, and
     cross-executor loans remain the next native state-machine slices; Stage 0

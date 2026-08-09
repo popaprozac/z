@@ -2100,26 +2100,27 @@ async function publish(value: i32, refresh: boolean): i32 on thread.main {
 }
 ```
 
-One top-level statement match over a payload-free enum may do the same:
+One top-level statement match over an enum with cleanup-free payloads may do
+the same:
 
 ```z
 enum Direction {
-  increase,
-  decrease,
+  increase i32,
+  decrease i32,
   unchanged,
 }
 
 async function publish(value: i32, direction: Direction): i32 on thread.main {
   let progress = value;
   match (direction) {
-    increase => {
-      progress = beginRefresh(progress);
+    increase(amount) => {
+      progress = beginRefresh(progress, amount);
       await delay(10);
       progress = finishRefresh(progress);
     }
-    decrease => {
+    decrease(amount) => {
       await delay(10);
-      progress = removeRefresh(progress);
+      progress = removeRefresh(progress, amount);
     }
     unchanged => {
       await delay(1);
@@ -2133,7 +2134,8 @@ The fixed-point native compiler currently implements an honest, bounded
 suspending-callee state machine. A main-isolated callee may contain multiple
 top-level literal `await delay(...)` statements with synchronous expression
 statements before and between them, one top-level braced `if`/`else`, or one
-top-level statement `match` over a payload-free enum with braced arms. The
+top-level statement `match` over a cleanup-free enum with braced arms. Scalar
+and plain-struct payload bindings are supported. The
 structured branches contain direct literal delays. The direct placed call must
 be the worker closure's tail return. A condition or match subject executes once
 on main and only the selected branch or arm waits. Main executes each
@@ -2145,7 +2147,7 @@ assignments live in one heap-owned invocation frame. Cleanup-bearing locals
 carry explicit liveness, can move into later locals or the final result without
 duplication, and are destroyed on main when cancellation wins. Branch-local
 owned values use the same frame liveness and deterministic cleanup. Parameter
-writes or ownership transfers, payload-bearing suspending matches, suspending
+writes or ownership transfers, cleanup-bearing suspending matches, suspending
 loops, nested suspending control flow, combining an outer delay sequence with
 a structured suspension, a computed delay duration, or code after the placed
 call fails closed in native lowering for now. Stage 0 retains the broader async

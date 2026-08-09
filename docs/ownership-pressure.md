@@ -1892,9 +1892,11 @@ taskified shape: a main-isolated async callee with multiple top-level literal
 `await delay(...)` statements separated by synchronous expression statements,
 whose placement is the worker closure's tail return. One top-level braced
 `if`/`else` may instead contain direct literal delays. A top-level statement
-`match` over a payload-free enum may likewise contain braced delayed arms. The
-condition or match subject is evaluated once on main, the worker enters only
-the chosen wait path, and the paths merge before the suffix. Main runs each
+`match` over a cleanup-free enum may likewise contain braced delayed arms,
+including direct scalar or plain-value payload bindings. The condition or
+match subject is evaluated once on main, the match subject remains in the
+invocation frame so bindings can be recreated for each selected-arm segment,
+the worker enters only the chosen wait path, and the paths merge before the suffix. Main runs each
 synchronous segment. The worker waits on its condition variable rather than blocking main,
 then publishes the next segment back to main. It carries `void`, scalar, or
 ownership-bearing results and transfers owned value arguments through the
@@ -1905,7 +1907,7 @@ cleanup-bearing local occupies one field plus one liveness bit; segment
 handoffs transfer its bits without copy or retain, and cancellation routes its
 destructor through main. Branch-local owned values use independent live bits,
 so an unselected path never acquires cleanup responsibility. Parameter writes
-and ownership transfers, payload-bearing suspending matches, suspending loops,
+and ownership transfers, cleanup-bearing suspending matches, suspending loops,
 deeper nested suspension, mixed outer/branch delay plans, and dynamic delays
 fail closed. The frame remains
 valid through every main callback, and its `Result<T, E>` moves back into the

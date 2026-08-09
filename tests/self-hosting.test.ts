@@ -3045,13 +3045,13 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     assert.match(structuredMatchEmission.stdout, /size_t arm_0;/);
     assert.equal(
       structuredMatchEmission.stdout.match(
-        /switch \(chooseDirection\(direction\)\)/g,
+        /context->match_subject = chooseDirection\(direction\)/g,
       )?.length,
       3,
     );
     assert.match(
       structuredMatchEmission.stdout,
-      /switch \(chooseDirection\(direction\)\)[\s\S]*context->arm_0 = 0[\s\S]*context->arm_0 = 1[\s\S]*context->arm_0 = 2/,
+      /switch \(context->match_subject\)[\s\S]*context->arm_0 = 0[\s\S]*context->arm_0 = 1[\s\S]*context->arm_0 = 2/,
     );
     assert.match(
       structuredMatchEmission.stdout,
@@ -3088,6 +3088,82 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       structuredMatchExecution.status,
       0,
       structuredMatchExecution.stderr,
+    );
+
+    const structuredMatchPayloadInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-match-payload.zs",
+    );
+    const structuredMatchPayloadParity = spawnSync(
+      process.execPath,
+      [cli, "check", structuredMatchPayloadInput, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchPayloadParity.status,
+      0,
+      structuredMatchPayloadParity.stderr,
+    );
+    const structuredMatchPayloadEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", structuredMatchPayloadInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchPayloadEmission.status,
+      0,
+      structuredMatchPayloadEmission.stderr,
+    );
+    assert.match(
+      structuredMatchPayloadEmission.stdout,
+      /Z_Route match_subject;/,
+    );
+    assert.match(
+      structuredMatchPayloadEmission.stdout,
+      /switch \(context->match_subject\.tag\)/,
+    );
+    assert.match(
+      structuredMatchPayloadEmission.stdout,
+      /const int32_t __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = context->match_subject\.payload\.publish;/,
+    );
+    assert.match(
+      structuredMatchPayloadEmission.stdout,
+      /const Z_Adjustment __attribute__\(\(unused\)\) _z_stage1_match_payload_\d+_\d+ = context->match_subject\.payload\.adjust;/,
+    );
+    const structuredMatchPayloadExecutable = resolve(
+      directory,
+      "thread-main-match-payload",
+    );
+    const structuredMatchPayloadCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        structuredMatchPayloadExecutable,
+      ],
+      { encoding: "utf8", input: structuredMatchPayloadEmission.stdout },
+    );
+    assert.equal(
+      structuredMatchPayloadCompilation.status,
+      0,
+      structuredMatchPayloadCompilation.stderr,
+    );
+    const structuredMatchPayloadExecution = spawnSync(
+      structuredMatchPayloadExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      structuredMatchPayloadExecution.status,
+      0,
+      structuredMatchPayloadExecution.stderr,
     );
 
     const structuredMatchOwnedInput = resolve(
@@ -3166,7 +3242,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       ],
       [
         "self-host-emit-thread-main-match-payload-invalid.zs",
-        /does not yet preserve payload bindings across a suspending match/,
+        /does not yet preserve cleanup-bearing payloads across a suspending match/,
       ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);

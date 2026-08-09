@@ -238,6 +238,7 @@ export struct LoweredMainDelayMatch {
   statement: usize;
   prefixRoots: Array<usize>;
   subject: usize;
+  subjectType: LoweredType;
   arms: Array<LoweredMainDelayMatchArm>;
 }
 
@@ -8622,6 +8623,51 @@ function lowerValueArmStatement(
   throw "native value-match lowering requires a concise expression or selecting block arm yet";
 }
 
+function rewriteLoweredMatchPayloadBinding(
+  inout expressions: Array<LoweredExpression>,
+  in statements: Array<LoweredStatement>,
+  expressionStart: usize,
+  statementStart: usize,
+  in sourceBinding: String,
+  in emittedBinding: String
+): void {
+  if (
+    sourceBinding.byteLength == 0
+    || sourceBinding == emittedBinding
+  ) return;
+  let expressionIndex = expressionStart;
+  while (expressionIndex < expressions.length) {
+    let assignmentTarget = false;
+    let statementIndex = statementStart;
+    while (statementIndex < statements.length) {
+      if (
+        statements[statementIndex].kind
+          == LoweredStatementKind.assignmentStatement
+      ) {
+        match (in statements[statementIndex].expression) {
+          some(target) => {
+            if (target == expressionIndex) assignmentTarget = true;
+          }
+          none => {}
+        }
+      }
+      statementIndex = statementIndex + 1;
+    }
+    if (
+      !assignmentTarget
+      && expressions[expressionIndex].kind
+        == LoweredExpressionKind.localValue
+      && expressions[expressionIndex].value == sourceBinding
+    ) {
+      expressions[expressionIndex].value = emittedBinding.copyBytes(
+        0,
+        emittedBinding.byteLength
+      );
+    }
+    expressionIndex = expressionIndex + 1;
+  }
+}
+
 function lowerMatchTree(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -8753,43 +8799,14 @@ function lowerMatchTree(
         children.push(loweredBody);
       }
     }
-    if (
-      sourcePayloadBinding.byteLength > 0
-      && emittedPayloadBinding != sourcePayloadBinding
-    ) {
-      let expressionIndex = armExpressionStart;
-      while (expressionIndex < expressions.length) {
-        let assignmentTarget = false;
-        let statementIndex = armStatementStart;
-        while (statementIndex < statements.length) {
-          if (
-            statements[statementIndex].kind
-              == LoweredStatementKind.assignmentStatement
-          ) {
-            match (in statements[statementIndex].expression) {
-              some(target) => {
-                if (target == expressionIndex) assignmentTarget = true;
-              }
-              none => {}
-            }
-          }
-          statementIndex = statementIndex + 1;
-        }
-        if (
-          !assignmentTarget
-          &&
-          expressions[expressionIndex].kind
-            == LoweredExpressionKind.localValue
-          && expressions[expressionIndex].value == sourcePayloadBinding
-        ) {
-          expressions[expressionIndex].value = emittedPayloadBinding.copyBytes(
-            0,
-            emittedPayloadBinding.byteLength
-          );
-        }
-        expressionIndex = expressionIndex + 1;
-      }
-    }
+    rewriteLoweredMatchPayloadBinding(
+      inout expressions,
+      statements,
+      armExpressionStart,
+      armStatementStart,
+      sourcePayloadBinding,
+      emittedPayloadBinding
+    );
     const matchBindingNeedsCleanup = match (in payloadType) {
       some(type) => tree.nodes[root].value != "in"
         && moduleTypeNeedsCleanup(program, importedTypes, type)
@@ -11956,8 +11973,15 @@ function lowerMainDelayMatchTree(
     tree,
     root
   );
-  if (enumDeclaration.payloadBearing) {
-    throw `native lowering does not yet preserve payload bindings across a suspending match in ${declaration.name}; use a payload-free enum in this tier`;
+  const subjectType = LoweredType({
+    kind: LoweredTypeKind.enumType,
+    name: enumDeclaration.name.copyBytes(
+      0,
+      enumDeclaration.name.byteLength
+    ),
+  });
+  if (moduleTypeNeedsCleanup(program, importedTypes, subjectType)) {
+    throw `native lowering does not yet preserve cleanup-bearing payloads across a suspending match in ${declaration.name}; use a cleanup-free payload in this tier`;
   }
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
@@ -12000,7 +12024,50 @@ function lowerMainDelayMatchTree(
     ) {
       throw `native lowering requires one braced body for every arm of a suspending match in ${declaration.name}`;
     }
+    let payloadType = Option<LoweredType>.none;
+    for (const variant of enumDeclaration.variants) {
+      if (variant.name != tree.nodes[sourceArm].value) continue;
+      match (in variant.payload) {
+        some(type) => payloadType = Option.some(LoweredType({
+          kind: type.kind,
+          name: type.name.copyBytes(0, type.name.byteLength),
+        }));
+        none => {}
+      }
+    }
+    let sourcePayloadBinding = "";
+    let emittedPayloadBinding = "";
+    let labels = Array<String>();
+    match (in payloadType) {
+      some(_) => {
+        if (
+          tree.nodes[sourceArm].children.length != 1
+          || tree.nodes[tree.nodes[sourceArm].children[0]].kind
+            != ExpressionKind.matchBindingExpression
+        ) {
+          throw `native lowering requires one direct payload binding in every payload-bearing arm of a suspending match in ${declaration.name}`;
+        }
+        const binding = tree.nodes[sourceArm].children[0];
+        sourcePayloadBinding = tree.nodes[binding].value.copyBytes(
+          0,
+          tree.nodes[binding].value.byteLength
+        );
+        emittedPayloadBinding =
+          `_z_stage1_match_payload_${expressions.length}_${armPosition}`;
+        labels.push(emittedPayloadBinding.copyBytes(
+          0,
+          emittedPayloadBinding.byteLength
+        ));
+      }
+      none => {
+        if (tree.nodes[sourceArm].children.length > 0) {
+          throw `native lowering received a payload binding for payload-free arm ${tree.nodes[sourceArm].value} in ${declaration.name}`;
+        }
+      }
+    }
     const sourceBlock = tree.nodes[sourceArm].statements[0];
+    const armExpressionStart = expressions.length;
+    const armStatementStart = statements.length;
     let block: usize = 0;
     let segments = Array<LoweredMainDelaySegment>();
     let roots = Array<usize>();
@@ -12018,6 +12085,14 @@ function lowerMainDelayMatchTree(
       inout segments,
       inout roots
     );
+    rewriteLoweredMatchPayloadBinding(
+      inout expressions,
+      statements,
+      armExpressionStart,
+      armStatementStart,
+      sourcePayloadBinding,
+      emittedPayloadBinding
+    );
     delayCount = delayCount + segments.length;
     let armChildren = Array<usize>();
     armChildren.push(block);
@@ -12029,13 +12104,13 @@ function lowerMainDelayMatchTree(
         0,
         tree.nodes[sourceArm].value.byteLength
       ),
-      type: Option<LoweredType>.none,
+      type: payloadType,
       expression: Option<usize>.none,
       secondExpression: Option<usize>.none,
       children: move armChildren,
       cleanups: Array<LoweredCleanup>(),
       liveFlag: "",
-      labels: Array<String>(),
+      labels,
       matchConsumesSubject: false,
       matchBindingNeedsCleanup: false,
     }));
@@ -12051,6 +12126,8 @@ function lowerMainDelayMatchTree(
   if (delayCount == 0) {
     throw `native lowering lost every delay inside the suspending match in ${declaration.name}`;
   }
+  let matchLabels = Array<String>();
+  if (enumDeclaration.payloadBearing) matchLabels.push("tagged");
   const statement = statements.length;
   statements.push(LoweredStatement({
     kind: LoweredStatementKind.matchStatement,
@@ -12060,18 +12137,15 @@ function lowerMainDelayMatchTree(
       enumDeclaration.name.byteLength
     ),
     type: Option.some(LoweredType({
-      kind: LoweredTypeKind.enumType,
-      name: enumDeclaration.name.copyBytes(
-        0,
-        enumDeclaration.name.byteLength
-      ),
+      kind: subjectType.kind,
+      name: subjectType.name.copyBytes(0, subjectType.name.byteLength),
     })),
     expression: Option.some(subject),
     secondExpression: Option<usize>.none,
     children: loweredArms,
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
-    labels: Array<String>(),
+    labels: move matchLabels,
     matchConsumesSubject: tree.nodes[root].value != "in",
     matchBindingNeedsCleanup: false,
   }));
@@ -12079,6 +12153,7 @@ function lowerMainDelayMatchTree(
     statement,
     prefixRoots: move prefixRoots,
     subject,
+    subjectType,
     arms: move plans,
   });
 }

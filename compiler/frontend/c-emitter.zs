@@ -3672,6 +3672,32 @@ function appendMainFrameLocalCleanups(
   }
 }
 
+function appendMainFrameMatchBinding(
+  inout output: TextBuffer,
+  in target: LoweredFunction,
+  armIndex: usize,
+  depth: usize
+): void throws String {
+  const arm = view target.statements[armIndex];
+  match (in arm.type) {
+    some(type) => {
+      if (arm.labels.length != 1) {
+        throw "native main frame received a payload arm without one binding";
+      }
+      const nativeType = try cType(type);
+      appendIndent(inout output, depth);
+      output.append("const ");
+      output.append(nativeType);
+      output.append(" __attribute__((unused)) ");
+      appendCBindingName(inout output, arm.labels[0]);
+      output.append(" = context->match_subject.payload.");
+      output.append(arm.name);
+      output.append(";\n");
+    }
+    none => {}
+  }
+}
+
 function appendThreadMainBranchSegmentHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -3680,7 +3706,8 @@ function appendThreadMainBranchSegmentHelpers(
   in target: LoweredFunction,
   in prefixRoots: Array<usize>,
   in segments: Array<LoweredMainDelaySegment>,
-  in branchName: String
+  in branchName: String,
+  matchArm: Option<usize>
 ): void throws String {
   let segmentIndex: usize = 0;
   while (segmentIndex < segments.length) {
@@ -3725,6 +3752,15 @@ function appendThreadMainBranchSegmentHelpers(
         1
       );
       output.append("  {\n");
+      match (in matchArm) {
+        some(arm) => try appendMainFrameMatchBinding(
+          inout output,
+          target,
+          arm,
+          2
+        );
+        none => {}
+      }
       let prior: usize = 0;
       while (prior < segmentIndex) {
         try appendMainFrameRootRestores(
@@ -3901,7 +3937,8 @@ function appendThreadMainIfCallHelper(
     target,
     plan.prefixRoots,
     plan.thenSegments,
-    "then"
+    "then",
+    Option<usize>.none
   );
   try appendThreadMainBranchSegmentHelpers(
     inout output,
@@ -3911,7 +3948,8 @@ function appendThreadMainIfCallHelper(
     target,
     plan.prefixRoots,
     plan.elseSegments,
-    "else"
+    "else",
+    Option<usize>.none
   );
 
   output.append("static ");
@@ -4180,6 +4218,7 @@ function appendThreadMainMatchCallHelper(
   const matchStatement = view target.statements[plan.statement];
   const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
   const nativeResultType = try cType(resultType);
+  const nativeSubjectType = try cType(plan.subjectType);
   const argumentCount = expression.labels.length - 1;
   if (!threadMainCallIsTail(declaration, expressionIndex)) {
     throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
@@ -4209,6 +4248,9 @@ function appendThreadMainMatchCallHelper(
     argument = argument + 1;
   }
   output.append("  size_t arm_0;\n");
+  output.append("  ");
+  output.append(nativeSubjectType);
+  output.append(" match_subject;\n");
   try appendMainFrameRootFields(
     inout output,
     program,
@@ -4251,14 +4293,17 @@ function appendThreadMainMatchCallHelper(
   for (const root of plan.prefixRoots) {
     try appendStatement(inout output, target, root, 1);
   }
-  output.append("  switch (");
+  output.append("  context->match_subject = ");
   try appendExpression(inout output, target, plan.subject);
+  output.append(";\n  switch (context->match_subject");
+  if (matchStatement.labels.length > 0) output.append(".tag");
   output.append(") {\n");
   let armIndex: usize = 0;
   while (armIndex < plan.arms.length) {
     const arm = view target.statements[plan.arms[armIndex].arm];
     output.append("    case Z_");
     output.append(matchStatement.name);
+    if (matchStatement.labels.length > 0) output.append("Tag");
     output.append("_");
     output.append(arm.name);
     output.append(`: context->arm_0 = ${armIndex}; break;\n`);
@@ -4277,6 +4322,7 @@ function appendThreadMainMatchCallHelper(
   armIndex = 0;
   while (armIndex < plan.arms.length) {
     const branchName = `arm_${armIndex}`;
+    const matchArm = Option<usize>.some(plan.arms[armIndex].arm);
     try appendThreadMainBranchSegmentHelpers(
       inout output,
       program,
@@ -4285,7 +4331,8 @@ function appendThreadMainMatchCallHelper(
       target,
       plan.prefixRoots,
       plan.arms[armIndex].segments,
-      branchName
+      branchName,
+      matchArm
     );
     armIndex = armIndex + 1;
   }
@@ -4327,6 +4374,12 @@ function appendThreadMainMatchCallHelper(
   while (armIndex < plan.arms.length) {
     const armPlan = view plan.arms[armIndex];
     output.append(`    case ${armIndex}: {\n`);
+    try appendMainFrameMatchBinding(
+      inout output,
+      target,
+      armPlan.arm,
+      3
+    );
     for (const segment of armPlan.segments) {
       try appendMainFrameRootRestores(
         inout output,

@@ -2,15 +2,19 @@ import { delay } from "std/time";
 import { thread } from "std/thread";
 
 enum Route {
-  publish i32,
+  publish String,
   idle,
 }
 
-async function publish(route: Route): i32 on thread.main {
+function duplicate(in value: String): String {
+  return value.copyBytes(0, value.byteLength);
+}
+
+async function publish(route: Route): usize on thread.main {
   match (route) {
     publish(value) => {
       await delay(1);
-      return value;
+      return value.byteLength;
     }
     idle => {
       return 0;
@@ -19,8 +23,9 @@ async function publish(route: Route): i32 on thread.main {
 }
 
 async function main(): i32 on thread.main {
-  const worker = thread.spawn(async (): i32 => {
-    return await on thread.main publish(Route.publish(42));
+  const worker = thread.spawn(async (): usize => {
+    return await on thread.main publish(Route.publish(duplicate("payload")));
   });
-  return await worker;
+  const length = await worker;
+  return i32(length) - 7;
 }
