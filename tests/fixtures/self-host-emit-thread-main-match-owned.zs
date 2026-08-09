@@ -11,16 +11,16 @@ struct BranchResource {
 }
 
 enum Route {
-  release,
+  release BranchResource,
   idle,
 }
 
-async function publish(value: i32, route: Route): i32 on thread.main {
+async function publish(route: Route): i32 on thread.main {
   match (route) {
-    release => {
-      const resource = BranchResource({ id: value });
+    release(resource) => {
+      const before = resource.id;
       await delay(1);
-      return resource.id;
+      return resource.id == before ? resource.id : 0;
     }
     idle => {
       await delay(1);
@@ -31,7 +31,9 @@ async function publish(value: i32, route: Route): i32 on thread.main {
 
 async function main(): i32 on thread.main {
   const worker = thread.spawn(async (): i32 => {
-    return await on thread.main publish(42, Route.release);
+    const resource = BranchResource({ id: 42 });
+    const route = Route.release(move resource);
+    return await on thread.main publish(move route);
   });
   const result = await worker;
   return result == 42 ? 0 : 1;

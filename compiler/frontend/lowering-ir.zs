@@ -2255,6 +2255,7 @@ function planCleanupStatement(
   in expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
+  forceMoveLiveGuards: boolean,
   insideLoop: boolean,
   in loopCleanups: Array<LoweredCleanup>
 ): void throws String {
@@ -2303,6 +2304,7 @@ function planCleanupStatement(
       expressions,
       inout statements,
       inout liveFlags,
+      forceMoveLiveGuards,
       insideLoop,
       loopCleanups
     );
@@ -2370,6 +2372,7 @@ function planCleanupStatement(
       expressions,
       inout statements,
       inout liveFlags,
+      forceMoveLiveGuards,
       insideLoop,
       loopCleanups
     );
@@ -2428,7 +2431,10 @@ function planCleanupStatement(
                     statements[loweredArm].labels[0].byteLength
                   ),
                   type: move payloadType,
-                  guard: "",
+                  guard: statements[loweredArm].liveFlag.copyBytes(
+                    0,
+                    statements[loweredArm].liveFlag.byteLength
+                  ),
                 });
                 armLive.push(copyCleanup(cleanup));
                 payloadCleanup = Option.some(move cleanup);
@@ -2445,6 +2451,7 @@ function planCleanupStatement(
                 expressions,
                 inout statements,
                 inout liveFlags,
+                forceMoveLiveGuards,
                 insideLoop,
                 loopCleanups
               );
@@ -2495,6 +2502,7 @@ function planCleanupStatement(
       expressions,
       inout statements,
       inout liveFlags,
+      forceMoveLiveGuards,
       insideLoop,
       loopCleanups
     );
@@ -2538,6 +2546,7 @@ function planCleanupStatement(
         expressions,
         inout statements,
         inout liveFlags,
+        forceMoveLiveGuards,
         insideLoop
           || arena.nodes[sourceIndex].kind == StatementKind.whileStatement
           || arena.nodes[sourceIndex].kind == StatementKind.forStatement,
@@ -2560,6 +2569,7 @@ function planCleanupSequence(
   in expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
+  forceMoveLiveGuards: boolean,
   insideLoop: boolean,
   in inheritedLoopCleanups: Array<LoweredCleanup>
 ): Array<LoweredCleanup> throws String {
@@ -2615,7 +2625,10 @@ function planCleanupSequence(
               bindingOffset
             );
             let guard = "";
-            if (moved && arenaHasControlFlow(arena)) {
+            if (
+              moved
+              && (forceMoveLiveGuards || arenaHasControlFlow(arena))
+            ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
               statements[loweredIndex].liveFlag = guard.copyBytes(
                 0,
@@ -2670,6 +2683,7 @@ function planCleanupSequence(
       expressions,
       inout statements,
       inout liveFlags,
+      forceMoveLiveGuards,
       insideLoop,
       loopCleanups
     );
@@ -9248,6 +9262,7 @@ function completeNativeClosureBlocks(
         inout statements,
         inout workerLiveFlags,
         false,
+        false,
         loopCleanups
       );
       if (
@@ -11980,8 +11995,21 @@ function lowerMainDelayMatchTree(
       enumDeclaration.name.byteLength
     ),
   });
-  if (moduleTypeNeedsCleanup(program, importedTypes, subjectType)) {
-    throw `native lowering does not yet preserve cleanup-bearing payloads across a suspending match in ${declaration.name}; use a cleanup-free payload in this tier`;
+  const subjectNeedsCleanup = moduleTypeNeedsCleanup(
+    program,
+    importedTypes,
+    subjectType
+  );
+  const consuming = tree.nodes[root].value != "in";
+  const subjectInput = tree.nodes[root].children[0];
+  if (subjectNeedsCleanup && !consuming) {
+    throw `native lowering requires a consuming match for cleanup-bearing suspended subject in ${declaration.name}; omit in so the invocation frame can own the selected payload`;
+  }
+  if (
+    subjectNeedsCleanup
+    && tree.nodes[subjectInput].kind != ExpressionKind.identifierExpression
+  ) {
+    throw `native lowering requires a stable named owner for cleanup-bearing suspended match subject in ${declaration.name}`;
   }
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
@@ -11998,12 +12026,18 @@ function lowerMainDelayMatchTree(
         root,
         declaration.parameters[parameterIndex].name
       )
+      && !(
+        subjectNeedsCleanup
+        && tree.nodes[subjectInput].kind
+          == ExpressionKind.identifierExpression
+        && tree.nodes[subjectInput].value
+          == declaration.parameters[parameterIndex].name
+      )
     ) {
       throw `native lowering does not yet preserve ownership transfer of parameter ${declaration.parameters[parameterIndex].name} through a suspending match subject in ${declaration.name}`;
     }
     parameterIndex = parameterIndex + 1;
   }
-  const subjectInput = tree.nodes[root].children[0];
   const subject = try lowerExpression(
     program,
     importedTypes,
@@ -12037,9 +12071,10 @@ function lowerMainDelayMatchTree(
     }
     let sourcePayloadBinding = "";
     let emittedPayloadBinding = "";
+    let payloadLiveFlag = "";
     let labels = Array<String>();
     match (in payloadType) {
-      some(_) => {
+      some(type) => {
         if (
           tree.nodes[sourceArm].children.length != 1
           || tree.nodes[tree.nodes[sourceArm].children[0]].kind
@@ -12058,6 +12093,10 @@ function lowerMainDelayMatchTree(
           0,
           emittedPayloadBinding.byteLength
         ));
+        if (
+          consuming
+          && moduleTypeNeedsCleanup(program, importedTypes, type)
+        ) payloadLiveFlag = ownerLiveFlag(emittedPayloadBinding);
       }
       none => {
         if (tree.nodes[sourceArm].children.length > 0) {
@@ -12096,6 +12135,7 @@ function lowerMainDelayMatchTree(
     delayCount = delayCount + segments.length;
     let armChildren = Array<usize>();
     armChildren.push(block);
+    const payloadNeedsCleanup = payloadLiveFlag.byteLength > 0;
     const arm = statements.length;
     statements.push(LoweredStatement({
       kind: LoweredStatementKind.matchArmStatement,
@@ -12109,10 +12149,10 @@ function lowerMainDelayMatchTree(
       secondExpression: Option<usize>.none,
       children: move armChildren,
       cleanups: Array<LoweredCleanup>(),
-      liveFlag: "",
+      liveFlag: move payloadLiveFlag,
       labels,
       matchConsumesSubject: false,
-      matchBindingNeedsCleanup: false,
+      matchBindingNeedsCleanup: payloadNeedsCleanup,
     }));
     loweredArms.push(arm);
     plans.push(LoweredMainDelayMatchArm({
@@ -12146,7 +12186,7 @@ function lowerMainDelayMatchTree(
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
     labels: move matchLabels,
-    matchConsumesSubject: tree.nodes[root].value != "in",
+    matchConsumesSubject: consuming,
     matchBindingNeedsCleanup: false,
   }));
   return LoweredMainDelayMatch({
@@ -12470,7 +12510,10 @@ function lowerFunction(
         parameterOffset
       );
       let guard = "";
-      if (moved && arenaHasControlFlow(declaration.body)) {
+      if (
+        moved
+        && (hasMainDelayMatch || arenaHasControlFlow(declaration.body))
+      ) {
         guard = ownerLiveFlag(parameter.name);
         liveFlags.push(LoweredLiveFlag({
           owner: parameter.name.copyBytes(0, parameter.name.byteLength),
@@ -12504,6 +12547,7 @@ function lowerFunction(
     expressions,
     inout statements,
     inout liveFlags,
+    hasMainDelayMatch,
     false,
     rootLoopCleanups
   );
@@ -12552,6 +12596,20 @@ function lowerFunction(
       inout liveFlags
     );
     for (const arm of plan.arms) {
+      const armStatement = view statements[arm.arm];
+      if (armStatement.liveFlag.byteLength > 0) {
+        liveFlags.push(LoweredLiveFlag({
+          owner: armStatement.labels[0].copyBytes(
+            0,
+            armStatement.labels[0].byteLength
+          ),
+          name: armStatement.liveFlag.copyBytes(
+            0,
+            armStatement.liveFlag.byteLength
+          ),
+          parameter: false,
+        }));
+      }
       for (const segment of arm.segments) {
         ensureMainFrameLocalLiveFlags(
           program,
@@ -12669,6 +12727,7 @@ function lowerDeinitializer(
     expressions,
     inout statements,
     inout liveFlags,
+    false,
     false,
     loopCleanups
   );

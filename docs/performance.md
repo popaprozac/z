@@ -57,7 +57,7 @@ cross-language runtime benchmark:
 | Placed callee containing one or more timer suspensions | One `calloc`/`free` invocation frame |
 | Each additional top-level `await delay(...)` | One condition-backed wait and main-executor request; no additional allocation |
 | One top-level suspending `if`/`else` | One boolean selector field; only the chosen branch submits callbacks and waits |
-| One top-level cleanup-free suspending `match` | One enum subject field plus one `size_t` arm selector; only the chosen arm submits callbacks and waits |
+| One top-level suspending `match` | One enum subject field plus one `size_t` arm selector; cleanup-bearing payloads add one live bit, and only the chosen arm submits callbacks and waits |
 | Cleanup-free local across suspension | One direct frame field |
 | Cleanup-bearing local across suspension | One direct frame field plus one liveness bit |
 | Local move between segments or into the result | Bitwise ownership transfer; no clone, retain, or second allocation |
@@ -84,15 +84,17 @@ chosen branch. On the owned-branch fixture, seven warm Hyperfine runs measured
 `z emit`. The same sub-5-ms shell-noise caveat applies to the 26.8-times
 directional ratio.
 
-The cleanup-free structured-`match` follow-up keeps the same allocation
+The ownership-bearing structured-`match` follow-up keeps the same allocation
 invariant. Generated C has one invocation frame, one enum subject field, one
 `size_t` arm selector, and submits waits only for the selected arm. Scalar and
-plain-struct payload bindings are direct reads from that subject;
-cleanup-bearing arm locals add their existing liveness bits without another
-allocation. Seven warm Hyperfine
-runs measured 48.7 ms ± 0.8 ms through Bun and 2.7 ms ± 0.2 ms through the
+plain-struct payload bindings are direct reads from that subject. A
+cleanup-bearing payload adds one live bit and transfers between the subject
+slot and arm binding with direct assignments; cleanup-bearing arm locals add
+their existing liveness bits without another allocation. On the owned-`String`
+payload fixture, seven warm Hyperfine runs measured 50.1 ms ± 0.9 ms through
+Bun and 2.9 ms ± 0.4 ms through the
 fixed-point native `z emit`. The native command remains below Hyperfine's 5 ms
-precision threshold, so the 17.9-times ratio is directional.
+precision threshold, so the 17.1-times ratio is directional.
 
 ## Standalone native compiler checkpoint
 

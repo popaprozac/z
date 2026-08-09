@@ -3674,6 +3674,7 @@ function appendMainFrameLocalCleanups(
 
 function appendMainFrameMatchBinding(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in target: LoweredFunction,
   armIndex: usize,
   depth: usize
@@ -3685,13 +3686,54 @@ function appendMainFrameMatchBinding(
         throw "native main frame received a payload arm without one binding";
       }
       const nativeType = try cType(type);
+      const needsCleanup = loweredTypeNeedsDeinit(program, type);
       appendIndent(inout output, depth);
-      output.append("const ");
+      if (!needsCleanup) output.append("const ");
       output.append(nativeType);
       output.append(" __attribute__((unused)) ");
       appendCBindingName(inout output, arm.labels[0]);
       output.append(" = context->match_subject.payload.");
       output.append(arm.name);
+      output.append(";\n");
+      if (needsCleanup) {
+        if (arm.liveFlag.byteLength == 0) {
+          throw "native main frame lost a cleanup-bearing match payload live flag";
+        }
+        appendIndent(inout output, depth);
+        output.append("bool ");
+        appendCBindingName(inout output, arm.liveFlag);
+        output.append(" __attribute__((unused)) = context->match_subject_live;\n");
+        appendIndent(inout output, depth);
+        output.append("context->match_subject_live = false;\n");
+      }
+    }
+    none => {}
+  }
+}
+
+function appendMainFrameMatchBindingSave(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in target: LoweredFunction,
+  armIndex: usize,
+  depth: usize
+): void throws String {
+  const arm = view target.statements[armIndex];
+  match (in arm.type) {
+    some(type) => {
+      if (!loweredTypeNeedsDeinit(program, type)) return;
+      if (arm.labels.length != 1 || arm.liveFlag.byteLength == 0) {
+        throw "native main frame lost a cleanup-bearing match payload binding";
+      }
+      appendIndent(inout output, depth);
+      output.append("context->match_subject.payload.");
+      output.append(arm.name);
+      output.append(" = ");
+      appendCBindingName(inout output, arm.labels[0]);
+      output.append(";\n");
+      appendIndent(inout output, depth);
+      output.append("context->match_subject_live = ");
+      appendCBindingName(inout output, arm.liveFlag);
       output.append(";\n");
     }
     none => {}
@@ -3755,6 +3797,7 @@ function appendThreadMainBranchSegmentHelpers(
       match (in matchArm) {
         some(arm) => try appendMainFrameMatchBinding(
           inout output,
+          program,
           target,
           arm,
           2
@@ -3785,6 +3828,16 @@ function appendThreadMainBranchSegmentHelpers(
           2
         );
         saved = saved + 1;
+      }
+      match (in matchArm) {
+        some(arm) => try appendMainFrameMatchBindingSave(
+          inout output,
+          program,
+          target,
+          arm,
+          2
+        );
+        none => {}
       }
       output.append("  }\n");
       try appendMainFrameRootSaves(
@@ -4245,12 +4298,20 @@ function appendThreadMainMatchCallHelper(
     output.append("  ");
     output.append(nativeArgumentType);
     output.append(` argument_${argument};\n`);
+    if (loweredTypeNeedsDeinit(program, argumentType)) {
+      output.append(`  bool argument_${argument}_live;\n`);
+    }
     argument = argument + 1;
   }
   output.append("  size_t arm_0;\n");
   output.append("  ");
   output.append(nativeSubjectType);
   output.append(" match_subject;\n");
+  const subjectNeedsCleanup = loweredTypeNeedsDeinit(
+    program,
+    plan.subjectType
+  );
+  if (subjectNeedsCleanup) output.append("  bool match_subject_live;\n");
   try appendMainFrameRootFields(
     inout output,
     program,
@@ -4288,6 +4349,16 @@ function appendThreadMainMatchCallHelper(
     output.append(` = context->argument_${argument};\n  (void)`);
     appendCBindingName(inout output, target.parameters[argument].name);
     output.append(";\n");
+    if (loweredTypeNeedsDeinit(program, target.parameters[argument].type)) {
+      for (const flag of target.liveFlags) {
+        if (!flag.parameter || flag.owner != target.parameters[argument].name) {
+          continue;
+        }
+        output.append("  bool ");
+        appendCBindingName(inout output, flag.name);
+        output.append(` = context->argument_${argument}_live;\n`);
+      }
+    }
     argument = argument + 1;
   }
   for (const root of plan.prefixRoots) {
@@ -4295,7 +4366,19 @@ function appendThreadMainMatchCallHelper(
   }
   output.append("  context->match_subject = ");
   try appendExpression(inout output, target, plan.subject);
-  output.append(";\n  switch (context->match_subject");
+  output.append(";\n");
+  if (subjectNeedsCleanup) {
+    if (
+      !matchStatement.matchConsumesSubject
+      || matchStatement.liveFlag.byteLength == 0
+    ) {
+      throw "native main frame lost its consuming match subject live flag";
+    }
+    output.append("  ");
+    appendCBindingName(inout output, matchStatement.liveFlag);
+    output.append(" = false;\n  context->match_subject_live = false;\n");
+  }
+  output.append("  switch (context->match_subject");
   if (matchStatement.labels.length > 0) output.append(".tag");
   output.append(") {\n");
   let armIndex: usize = 0;
@@ -4306,7 +4389,11 @@ function appendThreadMainMatchCallHelper(
     if (matchStatement.labels.length > 0) output.append("Tag");
     output.append("_");
     output.append(arm.name);
-    output.append(`: context->arm_0 = ${armIndex}; break;\n`);
+    output.append(`: context->arm_0 = ${armIndex};`);
+    if (subjectNeedsCleanup && arm.matchBindingNeedsCleanup) {
+      output.append(" context->match_subject_live = true;");
+    }
+    output.append(" break;\n");
     armIndex = armIndex + 1;
   }
   output.append("    default: abort();\n  }\n");
@@ -4317,6 +4404,20 @@ function appendThreadMainMatchCallHelper(
     plan.prefixRoots,
     1
   );
+  argument = 0;
+  while (argument < argumentCount) {
+    if (loweredTypeNeedsDeinit(program, target.parameters[argument].type)) {
+      for (const flag of target.liveFlags) {
+        if (!flag.parameter || flag.owner != target.parameters[argument].name) {
+          continue;
+        }
+        output.append(`  context->argument_${argument}_live = `);
+        appendCBindingName(inout output, flag.name);
+        output.append(";\n");
+      }
+    }
+    argument = argument + 1;
+  }
   output.append("}\n\n");
 
   armIndex = 0;
@@ -4365,9 +4466,20 @@ function appendThreadMainMatchCallHelper(
   );
   for (const flag of target.liveFlags) {
     if (!flag.parameter) continue;
+    let liveArgument = argumentCount;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < target.parameters.length) {
+      if (target.parameters[parameterIndex].name == flag.owner) {
+        liveArgument = parameterIndex;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (liveArgument == argumentCount) {
+      throw "native main frame lost a cleanup-bearing parameter live field";
+    }
     output.append("  bool ");
     appendCBindingName(inout output, flag.name);
-    output.append(" = true;\n");
+    output.append(` = context->argument_${liveArgument}_live;\n`);
   }
   output.append("  switch (context->arm_0) {\n");
   armIndex = 0;
@@ -4376,6 +4488,7 @@ function appendThreadMainMatchCallHelper(
     output.append(`    case ${armIndex}: {\n`);
     try appendMainFrameMatchBinding(
       inout output,
+      program,
       target,
       armPlan.arm,
       3
@@ -4437,6 +4550,11 @@ function appendThreadMainMatchCallHelper(
       );
     }
   }
+  if (subjectNeedsCleanup) {
+    output.append("  if (context->match_subject_live) { Z_");
+    output.append(plan.subjectType.name);
+    output.append("_deinit(&context->match_subject); context->match_subject_live = false; }\n");
+  }
   try appendMainFrameRootCleanups(
     inout output,
     program,
@@ -4452,13 +4570,14 @@ function appendThreadMainMatchCallHelper(
       expression.labels[cleanup + 1]
     );
     if (loweredTypeNeedsDeinit(program, argumentType)) {
-      output.append("  Z_");
+      output.append(`  if (context->argument_${cleanup}_live) { Z_`);
       output.append(argumentType.name);
       if (argumentType.kind == LoweredTypeKind.classType) {
         output.append(`_release(context->argument_${cleanup});\n`);
       } else {
         output.append(`_deinit(&context->argument_${cleanup});\n`);
       }
+      output.append(`    context->argument_${cleanup}_live = false; }\n`);
     }
   }
   output.append("}\n\n");
@@ -4492,6 +4611,13 @@ function appendThreadMainMatchCallHelper(
   argument = 0;
   while (argument < argumentCount) {
     output.append(`  context->argument_${argument} = argument_${argument};\n`);
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    if (loweredTypeNeedsDeinit(program, argumentType)) {
+      output.append(`  context->argument_${argument}_live = true;\n`);
+    }
     argument = argument + 1;
   }
   output.append("  Z_");

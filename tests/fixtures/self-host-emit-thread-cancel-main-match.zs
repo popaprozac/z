@@ -11,7 +11,7 @@ struct MatchFrameResource {
 }
 
 enum Route {
-  publish,
+  publish MatchFrameResource,
   idle,
 }
 
@@ -21,10 +21,7 @@ function duplicate(in value: String): String {
 
 async function publish(route: Route): i32 on thread.main {
   match (route) {
-    publish => {
-      const staged = MatchFrameResource({
-        message: duplicate("match main frame"),
-      });
+    publish(staged) => {
       console.log("entered match main segment");
       await delay(1000);
       console.log("unexpected match continuation resume");
@@ -38,7 +35,11 @@ async function publish(route: Route): i32 on thread.main {
 
 async function main(): i32 on thread.main {
   const worker = thread.spawn(async (): i32 => {
-    return await on thread.main publish(Route.publish);
+    const resource = MatchFrameResource({
+      message: duplicate("match payload frame"),
+    });
+    const route = Route.publish(move resource);
+    return await on thread.main publish(move route);
   });
   sleep(10);
   await worker.cancel();

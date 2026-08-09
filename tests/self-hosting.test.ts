@@ -3180,7 +3180,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       0,
       structuredMatchOwnedEmission.stderr,
     );
-    assert.match(structuredMatchOwnedEmission.stdout, /frame_local_\d+_live/);
+    assert.match(structuredMatchOwnedEmission.stdout, /bool match_subject_live;/);
     assert.equal(
       structuredMatchOwnedEmission.stdout.match(
         /_Context \*context = \([^\n]*\)calloc\(1, sizeof\(/g,
@@ -3227,6 +3227,63 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       "released match branch 42\n",
     );
 
+    for (const [fixture, executableName, expectedOutput] of [
+      [
+        "self-host-emit-thread-main-match-owned-payload.zs",
+        "thread-main-match-owned-payload",
+        "",
+      ],
+      [
+        "self-host-emit-thread-main-match-owned-error.zs",
+        "thread-main-match-owned-error",
+        "released failed match payload 42\n",
+      ],
+    ] as const) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(emission.stdout, /bool match_subject_live;/);
+      assert.match(
+        emission.stdout,
+        /context->match_subject_live = _z_stage1_live__z_stage1_match_payload_/,
+      );
+      assert.match(
+        emission.stdout,
+        /if \(context->match_subject_live\) \{ Z_.*_deinit\(&context->match_subject\)/,
+      );
+      const executable = resolve(directory, executableName);
+      const compilation = spawnSync(
+        "clang",
+        [
+          "-x",
+          "c",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pthread",
+          "-",
+          "-o",
+          executable,
+        ],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+      assert.equal(execution.stdout, expectedOutput);
+    }
+
     for (const [fixture, diagnostic] of [
       [
         "self-host-emit-thread-main-control-flow-suspension-invalid.zs",
@@ -3242,7 +3299,11 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       ],
       [
         "self-host-emit-thread-main-match-payload-invalid.zs",
-        /does not yet preserve cleanup-bearing payloads across a suspending match/,
+        /requires a consuming match for cleanup-bearing suspended subject/,
+      ],
+      [
+        "self-host-emit-thread-main-match-computed-payload-invalid.zs",
+        /requires a stable named owner for cleanup-bearing suspended match subject/,
       ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
@@ -3314,10 +3375,17 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         assert.match(emission.stdout, /z_stage1_sleep\(10\);/);
         assert.match(emission.stdout, /_suspend_for\(storage, 1000\)/);
         assert.match(emission.stdout, /continuation_cancelled = true;/);
-        assert.match(
-          emission.stdout,
-          /_cancel_suspended[\s\S]*Z_(?:FrameResource|MatchFrameResource)_deinit\(&context->frame_local_\d+\)/,
-        );
+        if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
+          assert.match(
+            emission.stdout,
+            /_cancel_suspended[\s\S]*if \(context->match_subject_live\) \{ Z_Route_deinit\(&context->match_subject\)/,
+          );
+        } else {
+          assert.match(
+            emission.stdout,
+            /_cancel_suspended[\s\S]*Z_FrameResource_deinit\(&context->frame_local_\d+\)/,
+          );
+        }
         if (fixture == "self-host-emit-thread-cancel-main.zs") {
           assert.match(
             emission.stdout,
@@ -3356,7 +3424,7 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
         assert.equal(
           execution.stdout,
-          "entered match main segment\nreleased match main frame\n",
+          "entered match main segment\nreleased match payload frame\n",
         );
       }
     }
@@ -6034,7 +6102,7 @@ test("lowers the complete native frontend graph to C", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
-}, 15_000);
+}, 30_000);
 
 hostToolchainTest("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");

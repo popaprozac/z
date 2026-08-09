@@ -2100,8 +2100,8 @@ async function publish(value: i32, refresh: boolean): i32 on thread.main {
 }
 ```
 
-One top-level statement match over an enum with cleanup-free payloads may do
-the same:
+One top-level statement match may do the same. This first example uses
+cleanup-free payloads:
 
 ```z
 enum Direction {
@@ -2130,12 +2130,41 @@ async function publish(value: i32, direction: Direction): i32 on thread.main {
 }
 ```
 
+An owned payload uses the same source shape. The match consumes the stable
+named enum owner, and returning `message` transfers the payload out:
+
+```z
+enum Delivery {
+  publish String,
+  idle,
+}
+
+function ownedText(in value: String): String {
+  return value.copyBytes(0, value.byteLength);
+}
+
+async function forward(delivery: Delivery): String on thread.main {
+  match (delivery) {
+    publish(message) => {
+      await delay(10);
+      return message;
+    }
+    idle => {
+      return ownedText("");
+    }
+  }
+}
+```
+
 The fixed-point native compiler currently implements an honest, bounded
 suspending-callee state machine. A main-isolated callee may contain multiple
 top-level literal `await delay(...)` statements with synchronous expression
 statements before and between them, one top-level braced `if`/`else`, or one
-top-level statement `match` over a cleanup-free enum with braced arms. Scalar
-and plain-struct payload bindings are supported. The
+top-level statement `match` over a stable named enum owner with braced arms.
+Scalar, plain-struct, and cleanup-bearing payload bindings are supported. A
+cleanup-bearing match must consume its named subject with `match (value)`; its
+active payload moves between the invocation frame and selected arm binding
+without cloning. The
 structured branches contain direct literal delays. The direct placed call must
 be the worker closure's tail return. A condition or match subject executes once
 on main and only the selected branch or arm waits. Main executes each
@@ -2147,8 +2176,8 @@ assignments live in one heap-owned invocation frame. Cleanup-bearing locals
 carry explicit liveness, can move into later locals or the final result without
 duplication, and are destroyed on main when cancellation wins. Branch-local
 owned values use the same frame liveness and deterministic cleanup. Parameter
-writes or ownership transfers, cleanup-bearing suspending matches, suspending
-loops, nested suspending control flow, combining an outer delay sequence with
+writes or unrelated ownership transfers, borrowed or computed cleanup-bearing
+match subjects, suspending loops, nested suspending control flow, combining an outer delay sequence with
 a structured suspension, a computed delay duration, or code after the placed
 call fails closed in native lowering for now. Stage 0 retains the broader async
 surface described above.
