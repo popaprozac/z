@@ -11,6 +11,7 @@ import {
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
+import { genericTypeShape } from "./semantic-type-shapes.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
@@ -84,10 +85,78 @@ function typeUsesGeneric(in name: String, in base: String): boolean {
   return stringContains(name, `${base}<`);
 }
 
+function validateNativeCollectionTypeName(
+  in path: String,
+  in name: String,
+  line: usize,
+  column: usize,
+  length: usize
+): void throws ModuleResolveError {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (
+        generic.base == "Set"
+        && generic.arguments.length == 1
+        && generic.arguments[0] != "String"
+      ) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `Set element type "${generic.arguments[0]}" is not executable in the native compiler yet; only String elements are supported`,
+          line,
+          column,
+          length
+        );
+      }
+      if (
+        generic.base == "Map"
+        && generic.arguments.length == 2
+      ) {
+        if (generic.arguments[0] != "String") {
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            `Map key type "${generic.arguments[0]}" is not executable in the native compiler yet; only String keys are supported`,
+            line,
+            column,
+            length
+          );
+        }
+        if (
+          generic.arguments[1] == "String"
+          || typeUsesGeneric(generic.arguments[1], "Array")
+          || typeUsesGeneric(generic.arguments[1], "Map")
+          || typeUsesGeneric(generic.arguments[1], "Set")
+        ) {
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            `Map value type "${generic.arguments[1]}" is not executable in the native compiler yet; only cleanup-free scalar values are supported`,
+            line,
+            column,
+            length
+          );
+        }
+      }
+    }
+    none => {}
+  }
+}
+
 function validateNativeType(
   in path: String,
   in type: TypeReference
 ): void throws ModuleResolveError {
+  const typeLength = type.name.byteLength;
+  const typeLine = type.line;
+  const typeColumn = type.column;
+  try validateNativeCollectionTypeName(
+    path,
+    type.name,
+    typeLine,
+    typeColumn,
+    typeLength
+  );
   if (typeIsFunctionValue(type.name)) {
     throw loweringBoundary(
       path,
@@ -819,6 +888,31 @@ export function validateNativeLowerability(
   let moduleIndex: usize = 0;
   while (moduleIndex < modules.length) {
     const module = view modules[moduleIndex];
+    if (moduleIndex < graph.modules.length) {
+      for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
+        const bindingLength = binding.name.byteLength;
+        const bindingLine = binding.line;
+        const bindingColumn = binding.column;
+        try validateNativeCollectionTypeName(
+          module.path,
+          binding.typeName,
+          bindingLine,
+          bindingColumn,
+          bindingLength
+        );
+      }
+      for (const expression of graph.modules[moduleIndex].semanticEvidence.expressionResolutions) {
+        const expressionLine = expression.line;
+        const expressionColumn = expression.column;
+        try validateNativeCollectionTypeName(
+          module.path,
+          expression.typeName,
+          expressionLine,
+          expressionColumn,
+          1
+        );
+      }
+    }
     if (module.program.traits.length > 0) {
       const declaration = view module.program.traits[0];
       throw loweringBoundary(

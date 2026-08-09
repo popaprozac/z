@@ -243,7 +243,13 @@ evidence now classifies iteration over `Set`, `Map`, and other non-`Array`
 collections as source-mapped `Z1000` before the Array-only lowering tier; this
 is an expected representation boundary rather than malformed IR. Resolved
 `Option<view T>` evidence does the same for cleanup-bearing optional field
-projections before the current optional-chain lowerer.
+projections before the current optional-chain lowerer. Collection type evidence
+also now classifies the fixed-point runtime's narrower storage tier before C
+emission: native `Set` storage currently requires `String` elements, and native
+`Map` storage requires `String` keys; known unsupported `String` and nested
+collection value shapes now stop before the scalar-only runtime. The Z
+language and Stage-0 compiler remain generic; these diagnostics describe only
+the fixed-point compiler runtime that is being grown under bootstrap pressure.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported

@@ -2173,7 +2173,13 @@ non-`Array` iterable now reports source-mapped `Z1000` before the current
 Array-only native loop lowering runs. The same evidence path recognizes
 cleanup-bearing optional field projections as `Option<view T>` and reports
 their current native boundary at the member access instead of leaking the
-lowerer's deferred-projection string.
+lowerer's deferred-projection string. Resolved binding and expression types now
+also stop unsupported collection representations before C emission:
+non-`String` `Set` elements, non-`String` `Map` keys, and the currently known
+unsupported `String` or nested collection values receive source-mapped `Z1000`
+diagnostics.
+This is deliberately a fixed-point runtime boundary, not a retreat from Z's
+generic `Map<K, V>` and `Set<T>` language surface.
 
 ## Not tested yet
 
