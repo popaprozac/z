@@ -58,6 +58,7 @@ cross-language runtime benchmark:
 | Each additional top-level `await delay(...)` | One condition-backed wait and main-executor request; no additional allocation |
 | One top-level suspending `if`/`else` | One boolean selector field; only the chosen branch submits callbacks and waits |
 | One top-level suspending `match` | One enum subject field plus one `size_t` arm selector; cleanup-bearing payloads add one live bit, and only the chosen arm submits callbacks and waits |
+| One top-level suspending `while` | One boolean condition field plus one integer control field; each iteration submits only its synchronous main segments and worker-side waits |
 | Cleanup-free local across suspension | One direct frame field |
 | Cleanup-bearing local across suspension | One direct frame field plus one liveness bit |
 | Local move between segments or into the result | Bitwise ownership transfer; no clone, retain, or second allocation |
@@ -104,6 +105,18 @@ On the inline owned-`String` constructor fixture, seven warm Hyperfine runs
 measured 69.6 ms ± 1.0 ms through Bun and 4.5 ms ± 1.1 ms through the
 fixed-point native `z emit`. The native command remains near Hyperfine's 5 ms
 precision threshold, so the 15.3-times ratio is directional.
+
+The first suspending-`while` tier also retains the one-frame invariant. The
+condition and synchronous body segments are submitted to main once per active
+iteration; direct literal delays remain cancellable worker waits. `break` and
+`continue` use one integer control field rather than allocating child frames.
+Cleanup-bearing iteration locals reuse their existing frame slot and liveness
+bit, so normal iteration exit, loop control, and cancellation do not clone or
+retain the value. On the owned-local fixture combining normal iteration,
+`continue`, and `break`, seven warm Hyperfine runs measured 51.9 ms ± 0.5 ms
+through Bun and 3.1 ms ± 0.3 ms through fixed-point native `z emit`. The native
+command remains below Hyperfine's 5 ms precision threshold, so the 16.9-times
+ratio is directional.
 
 ## Standalone native compiler checkpoint
 

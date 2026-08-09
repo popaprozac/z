@@ -2174,8 +2174,14 @@ suspending-callee state machine. A main-isolated callee may contain multiple
 top-level literal `await delay(...)` statements with synchronous expression
 statements before and between them, one top-level braced `if`/`else`, or one
 top-level statement `match` over a consuming enum-valued expression with
-braced arms. Scalar, plain-struct, and cleanup-bearing payload bindings are supported. A
-cleanup-bearing match must consume its subject with `match (value)`. A stable
+braced arms. It may instead contain one top-level braced `while` with direct
+literal delays. The loop condition is reevaluated on main for every iteration;
+synchronous body segments execute on main, while repetition and cancellable
+waits remain on the worker. `break` exits and `continue` begins the next
+condition check, including deterministic cleanup of live iteration-local
+owners. Scalar, plain-struct, and cleanup-bearing payload bindings are
+supported. A cleanup-bearing match must consume its subject with
+`match (value)`. A stable
 named owner transfers into the frame, while a computed call or constructor
 result is adopted there directly. Its active payload moves between the
 invocation frame and selected arm binding without cloning. The
@@ -2191,7 +2197,8 @@ carry explicit liveness, can move into later locals or the final result without
 duplication, and are destroyed on main when cancellation wins. Branch-local
 owned values use the same frame liveness and deterministic cleanup. Parameter
 writes or unrelated ownership transfers, borrowed cleanup-bearing match
-subjects, suspending loops, nested suspending control flow, combining an outer
+subjects, suspending `for` loops, nested loop/match or function exit inside a
+suspending `while`, nested suspending control flow, combining an outer
 delay sequence with
 a structured suspension, a computed delay duration, or code after the placed
 call fails closed in native lowering for now. Stage 0 retains the broader async

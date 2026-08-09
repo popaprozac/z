@@ -1911,11 +1911,16 @@ local assignments now survive in one heap-owned invocation frame. A
 cleanup-bearing local occupies one field plus one liveness bit; segment
 handoffs transfer its bits without copy or retain, and cancellation routes its
 destructor through main. Branch-local owned values use independent live bits,
-so an unselected path never acquires cleanup responsibility. Parameter writes
-and unrelated ownership transfers, borrowed cleanup-bearing match subjects,
-suspending loops,
-deeper nested suspension, mixed outer/branch delay plans, and dynamic delays
-fail closed. The frame remains
+so an unselected path never acquires cleanup responsibility. Parameter writes,
+unrelated ownership transfers, and borrowed cleanup-bearing match subjects
+still fail closed. A bounded top-level suspending `while` now reuses the same
+frame: main reevaluates its condition and runs synchronous body segments, the
+worker owns cancellable waits and repetition, and one control field transports
+ordinary `break`/`continue`. Per-iteration cleanup-bearing locals reuse their
+frame slot and liveness bit, and are destroyed once on normal iteration exit,
+loop control, or cancellation. Suspending `for` loops, nested loops or matches,
+function exit or `try` inside that loop, deeper nested suspension, mixed
+outer/branch delay plans, and dynamic delays fail closed. The frame remains
 valid through every main callback, and its `Result<T, E>` moves back into the
 worker before the frame is freed.
 

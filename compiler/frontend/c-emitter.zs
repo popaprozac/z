@@ -6,6 +6,7 @@ import {
   LoweredExpressionKind,
   LoweredFunction,
   LoweredCleanup,
+  LoweredMainDelayLoop,
   LoweredMainDelaySegment,
   LoweredParameterMode,
   LoweredProgram,
@@ -3217,6 +3218,7 @@ function appendFunction(
     declaration.mainDelaySegments.length > 0
     || declaration.mainDelayIfs.length > 0
     || declaration.mainDelayMatches.length > 0
+    || declaration.mainDelayLoops.length > 0
   ) {
     for (const parameter of declaration.parameters) {
       output.append("  (void)");
@@ -3885,6 +3887,664 @@ function appendThreadMainStructuredCancellation(
     output.append(nativeResultType);
     output.append("){0};\n");
   }
+}
+
+function appendThreadMainLoopBranch(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize,
+  in doneLabel: String
+): void throws String {
+  if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
+    for (const child of declaration.statements[index].children) {
+      try appendThreadMainLoopStatement(
+        inout output,
+        declaration,
+        child,
+        depth,
+        doneLabel
+      );
+    }
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth
+    );
+    return;
+  }
+  try appendThreadMainLoopStatement(
+    inout output,
+    declaration,
+    index,
+    depth,
+    doneLabel
+  );
+}
+
+function threadMainLoopStatementContainsControl(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  if (
+    declaration.statements[index].kind == LoweredStatementKind.breakStatement
+    || declaration.statements[index].kind
+      == LoweredStatementKind.continueStatement
+  ) return true;
+  for (const child of declaration.statements[index].children) {
+    if (threadMainLoopStatementContainsControl(
+      declaration,
+      child
+    )) return true;
+  }
+  return false;
+}
+
+function threadMainLoopRootsContainControl(
+  in declaration: LoweredFunction,
+  in roots: Array<usize>
+): boolean {
+  for (const root of roots) {
+    if (threadMainLoopStatementContainsControl(
+      declaration,
+      root
+    )) return true;
+  }
+  return false;
+}
+
+function appendThreadMainLoopStatement(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize,
+  in doneLabel: String
+): void throws String {
+  if (
+    declaration.statements[index].kind == LoweredStatementKind.breakStatement
+    || declaration.statements[index].kind
+      == LoweredStatementKind.continueStatement
+  ) {
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth
+    );
+    appendIndent(inout output, depth);
+    output.append("context->loop_control = ");
+    if (declaration.statements[index].kind == LoweredStatementKind.breakStatement) {
+      output.append("2");
+    } else output.append("1");
+    output.append("; goto ");
+    output.append(doneLabel);
+    output.append(";\n");
+    return;
+  }
+  if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
+    appendIndent(inout output, depth);
+    output.append("{\n");
+    for (const child of declaration.statements[index].children) {
+      try appendThreadMainLoopStatement(
+        inout output,
+        declaration,
+        child,
+        depth + 1,
+        doneLabel
+      );
+    }
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth + 1
+    );
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    return;
+  }
+  if (declaration.statements[index].kind == LoweredStatementKind.ifStatement) {
+    appendIndent(inout output, depth);
+    output.append("if ");
+    match (in declaration.statements[index].expression) {
+      some(condition) => try appendCondition(
+        inout output,
+        declaration,
+        condition
+      );
+      none => throw "native loop segment received an if without a condition";
+    }
+    output.append(" {\n");
+    if (declaration.statements[index].children.length == 0) {
+      throw "native loop segment received an if without a branch";
+    }
+    const thenBranch = declaration.statements[index].children[0];
+    try appendThreadMainLoopBranch(
+      inout output,
+      declaration,
+      thenBranch,
+      depth + 1,
+      doneLabel
+    );
+    appendIndent(inout output, depth);
+    if (declaration.statements[index].children.length > 1) {
+      output.append("} else {\n");
+      const elseBranch = declaration.statements[index].children[1];
+      try appendThreadMainLoopBranch(
+        inout output,
+        declaration,
+        elseBranch,
+        depth + 1,
+        doneLabel
+      );
+      appendIndent(inout output, depth);
+    }
+    output.append("}\n");
+    return;
+  }
+  try appendStatement(inout output, declaration, index, depth);
+}
+
+function appendThreadMainLoopSegmentHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in target: LoweredFunction,
+  in plan: LoweredMainDelayLoop
+): void throws String {
+  let segmentIndex: usize = 0;
+  while (segmentIndex < plan.segments.length) {
+    if (plan.segments[segmentIndex].roots.length > 0) {
+      output.append("static void ");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append(`_loop_segment_${segmentIndex}(void *raw_context) {\n  `);
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_Context *context = (");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append("_Context *)raw_context;\n");
+      let parameterIndex: usize = 0;
+      while (parameterIndex < target.parameters.length) {
+        const parameter = view target.parameters[parameterIndex];
+        const nativeParameterType = try cType(parameter.type);
+        output.append("  const ");
+        output.append(nativeParameterType);
+        output.append(" ");
+        appendCBindingName(inout output, parameter.name);
+        output.append(` = context->argument_${parameterIndex};\n  (void)`);
+        appendCBindingName(inout output, parameter.name);
+        output.append(";\n");
+        parameterIndex = parameterIndex + 1;
+      }
+      try appendMainFrameRootRestores(
+        inout output,
+        program,
+        target,
+        plan.prefixRoots,
+        1
+      );
+      output.append("  {\n");
+      let prior: usize = 0;
+      while (prior < segmentIndex) {
+        try appendMainFrameRootRestores(
+          inout output,
+          program,
+          target,
+          plan.segments[prior].roots,
+          2
+        );
+        prior = prior + 1;
+      }
+      const doneLabel = `_z_loop_segment_${segmentIndex}_done`;
+      const hasControl = threadMainLoopRootsContainControl(
+        target,
+        plan.segments[segmentIndex].roots
+      );
+      for (const root of plan.segments[segmentIndex].roots) {
+        try appendThreadMainLoopStatement(
+          inout output,
+          target,
+          root,
+          2,
+          doneLabel
+        );
+      }
+      if (hasControl) {
+        appendIndent(inout output, 2);
+        output.append(doneLabel);
+        output.append(": ;\n");
+      }
+      let saved: usize = 0;
+      while (saved <= segmentIndex) {
+        try appendMainFrameRootSaves(
+          inout output,
+          program,
+          target,
+          plan.segments[saved].roots,
+          2
+        );
+        saved = saved + 1;
+      }
+      output.append("  }\n");
+      try appendMainFrameRootSaves(
+        inout output,
+        program,
+        target,
+        plan.prefixRoots,
+        1
+      );
+      output.append("}\n\n");
+    }
+    segmentIndex = segmentIndex + 1;
+  }
+}
+
+function appendThreadMainLoopCallHelper(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in expression: LoweredExpression,
+  targetFunctionIndex: usize
+): void throws String {
+  const target = view program.functions[targetFunctionIndex];
+  if (target.mainDelayLoops.length != 1) {
+    throw "native structured main suspension requires exactly one while plan";
+  }
+  const plan = view target.mainDelayLoops[0];
+  const resultType = try loweredTypeForIdentity(program, expression.labels[0]);
+  const nativeResultType = try cType(resultType);
+  const argumentCount = expression.labels.length - 1;
+  if (!threadMainCallIsTail(declaration, expressionIndex)) {
+    throw "native suspending thread.main calls must be the worker closure's tail return in the first tier";
+  }
+  if (target.parameters.length != argumentCount) {
+    throw "native C emission received mismatched thread.main arguments";
+  }
+
+  output.append("typedef struct ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context {\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result;\n");
+  }
+  let argument: usize = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append("  ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  bool loop_condition;\n  int loop_control;\n");
+  try appendMainFrameRootFields(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots
+  );
+  for (const segment of plan.segments) {
+    try appendMainFrameRootFields(
+      inout output,
+      program,
+      target,
+      segment.roots
+    );
+  }
+  output.append("} ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context;\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_initialize(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  for (const root of plan.prefixRoots) {
+    try appendStatement(inout output, target, root, 1);
+  }
+  try appendMainFrameRootSaves(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_condition(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  try appendMainFrameRootRestores(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("  context->loop_control = 0;\n  context->loop_condition = ");
+  try appendCondition(inout output, target, plan.condition);
+  output.append(";\n");
+  try appendMainFrameRootSaves(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("}\n\n");
+
+  try appendThreadMainLoopSegmentHelpers(
+    inout output,
+    program,
+    declaration,
+    expressionIndex,
+    target,
+    plan
+  );
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_finish_iteration(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  const ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  try appendMainFrameRootRestores(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("  {\n");
+  for (const segment of plan.segments) {
+    try appendMainFrameRootRestores(
+      inout output,
+      program,
+      target,
+      segment.roots,
+      2
+    );
+  }
+  const finishLabel = "_z_loop_iteration_done";
+  const finishHasControl = threadMainLoopRootsContainControl(
+    target,
+    plan.roots
+  );
+  for (const root of plan.roots) {
+    try appendThreadMainLoopStatement(
+      inout output,
+      target,
+      root,
+      2,
+      finishLabel
+    );
+  }
+  appendCleanups(
+    inout output,
+    target.statements[plan.block].cleanups,
+    2
+  );
+  if (finishHasControl) {
+    appendIndent(inout output, 2);
+    output.append(finishLabel);
+    output.append(": ;\n");
+  }
+  for (const segment of plan.segments) {
+    try appendMainFrameRootSaves(
+      inout output,
+      program,
+      target,
+      segment.roots,
+      2
+    );
+  }
+  output.append("  }\n");
+  try appendMainFrameRootSaves(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  output.append("}\n\n");
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context) {\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    const nativeParameterType = try cType(target.parameters[argument].type);
+    output.append("  ");
+    output.append(nativeParameterType);
+    output.append(" ");
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(` = context->argument_${argument};\n  (void)`);
+    appendCBindingName(inout output, target.parameters[argument].name);
+    output.append(";\n");
+    argument = argument + 1;
+  }
+  try appendMainFrameRootRestores(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  for (const flag of target.liveFlags) {
+    if (!flag.parameter) continue;
+    output.append("  bool ");
+    appendCBindingName(inout output, flag.name);
+    output.append(" = true;\n");
+  }
+  try appendFunctionTail(inout output, target);
+  output.append("}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  ");
+  if (resultType.kind != LoweredTypeKind.voidType) output.append("context->result = ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_continue(context);\n}\n\n");
+
+  output.append("static void ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_cancel_suspended(void *raw_context) {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)raw_context;\n  (void)context;\n");
+  let cleanup = plan.segments.length;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    try appendMainFrameRootCleanups(
+      inout output,
+      program,
+      target,
+      plan.segments[cleanup].roots,
+      1
+    );
+  }
+  try appendMainFrameRootCleanups(
+    inout output,
+    program,
+    target,
+    plan.prefixRoots,
+    1
+  );
+  cleanup = argumentCount;
+  while (cleanup > 0) {
+    cleanup = cleanup - 1;
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[cleanup + 1]
+    );
+    if (loweredTypeNeedsDeinit(program, argumentType)) {
+      output.append("  Z_");
+      output.append(argumentType.name);
+      if (argumentType.kind == LoweredTypeKind.classType) {
+        output.append(`_release(context->argument_${cleanup});\n`);
+      } else {
+        output.append(`_deinit(&context->argument_${cleanup});\n`);
+      }
+    }
+  }
+  output.append("}\n\n");
+
+  output.append("static ");
+  output.append(nativeResultType);
+  output.append(" ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("(Z_");
+  output.append(expression.value);
+  output.append("Storage *storage");
+  argument = 0;
+  while (argument < argumentCount) {
+    const argumentType = try loweredTypeForIdentity(
+      program,
+      expression.labels[argument + 1]
+    );
+    const nativeArgumentType = try cType(argumentType);
+    output.append(", ");
+    output.append(nativeArgumentType);
+    output.append(` argument_${argument}`);
+    argument = argument + 1;
+  }
+  output.append(") {\n  ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *context = (");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context *)calloc(1, sizeof(");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_Context));\n  if (context == NULL) abort();\n");
+  argument = 0;
+  while (argument < argumentCount) {
+    output.append(`  context->argument_${argument} = argument_${argument};\n`);
+    argument = argument + 1;
+  }
+  output.append("  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_initialize, context);\n  while (true) {\n    Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_condition, context);\n    if (!context->loop_condition) break;\n");
+  let segmentIndex: usize = 0;
+  while (segmentIndex < plan.segments.length) {
+    if (plan.segments[segmentIndex].roots.length > 0) {
+      output.append("    Z_");
+      output.append(expression.value);
+      output.append("_run_on_main(storage, ");
+      appendThreadMainCallHelperName(
+        inout output,
+        declaration,
+        expressionIndex
+      );
+      output.append(`_loop_segment_${segmentIndex}, context);\n`);
+      output.append("    if (context->loop_control == 2) break;\n");
+      output.append("    if (context->loop_control == 1) continue;\n");
+    }
+    output.append("    if (!Z_");
+    output.append(expression.value);
+    output.append("_suspend_for(storage, ");
+    output.append(plan.segments[segmentIndex].milliseconds);
+    output.append(")) {\n");
+    appendThreadMainStructuredCancellation(
+      inout output,
+      declaration,
+      expressionIndex,
+      expression.value,
+      nativeResultType
+    );
+    output.append("    }\n");
+    segmentIndex = segmentIndex + 1;
+  }
+  output.append("    Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_finish_iteration, context);\n");
+  output.append("    if (context->loop_control == 2) break;\n");
+  output.append("  }\n  Z_");
+  output.append(expression.value);
+  output.append("_run_on_main(storage, ");
+  appendThreadMainCallHelperName(inout output, declaration, expressionIndex);
+  output.append("_run, context);\n");
+  if (resultType.kind != LoweredTypeKind.voidType) {
+    output.append("  ");
+    output.append(nativeResultType);
+    output.append(" result = context->result;\n  free(context);\n  return result;\n");
+  } else output.append("  free(context);\n");
+  output.append("}\n\n");
 }
 
 function appendThreadMainIfCallHelper(
@@ -4717,6 +5377,20 @@ function appendThreadMainCallHelpers(
         declaration,
         expression
       );
+      if (
+        program.functions[targetFunctionIndex].mainDelayLoops.length > 0
+      ) {
+        try appendThreadMainLoopCallHelper(
+          inout output,
+          program,
+          declaration,
+          expressionIndex,
+          expression,
+          targetFunctionIndex
+        );
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
       if (
         program.functions[targetFunctionIndex].mainDelayMatches.length > 0
       ) {
@@ -7049,6 +7723,7 @@ function programUsesMainDelay(in program: LoweredProgram): boolean {
       declaration.mainDelaySegments.length > 0
       || declaration.mainDelayIfs.length > 0
       || declaration.mainDelayMatches.length > 0
+      || declaration.mainDelayLoops.length > 0
     ) return true;
   }
   return false;

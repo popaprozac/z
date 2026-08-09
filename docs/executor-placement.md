@@ -717,7 +717,13 @@ later without making executor blocks a special case.
     boundary, so normal cleanup, move-out, typed failure, and cancellation each
     destroy it exactly once. The
     worker waits only along the selected arm, and every arm rejoins before the
-    suffix. Main
+    suffix. The fourth supported shape is one top-level braced `while` whose
+    body contains direct literal delays. Its condition is reevaluated on main
+    before every iteration. Synchronous body segments also run on main, while
+    the worker owns repetition and cancellable waits. Ordinary `break` and
+    `continue` preserve their source meaning across those boundaries, and
+    cleanup-bearing iteration locals are destroyed exactly once on normal
+    iteration exit, loop control, or cancellation. Main
     executes each synchronous segment; the worker performs each cancellable
     wait without occupying main, then submits the next segment. A cancellation
     request wakes the active wait and sends ownership-bearing argument cleanup
@@ -729,8 +735,10 @@ later without making executor blocks a special case.
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
     outcome is discarded. Parameter writes or unrelated ownership transfers,
-    borrowed cleanup-bearing match subjects, suspending loops,
-    control flow nested
+    borrowed cleanup-bearing match subjects, suspending `for` loops, nested
+    loops or matches inside a suspending `while`, function exit or `try` inside
+    that loop, loop control followed by more work in the same synchronous
+    segment, other suspending control flow nested
     inside another branch, dynamic delay expressions, combining a structured
     suspension with outer delays, non-tail suspended placement, and
     cross-executor loans remain the next native state-machine slices; Stage 0

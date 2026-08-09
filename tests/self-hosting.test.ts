@@ -3341,12 +3341,114 @@ test("returns scalar, owned, and typed-error values through native thread.main p
   }
 }, 60_000);
 
+test("preserves while iteration, loop control, and owned locals across main suspension", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-thread-main-while-");
+  const fixtures = [
+    ["self-host-emit-thread-main-while.zs", ""],
+    ["self-host-emit-thread-main-while-control.zs", ""],
+    [
+      "self-host-emit-thread-main-while-owned.zs",
+      "released iteration 1\nreleased iteration 2\nreleased iteration 3\nreleased iteration 4\n",
+    ],
+  ] as const;
+  try {
+    for (const [fixture, expectedOutput] of fixtures) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(emission.stdout, /bool loop_condition;/);
+      assert.match(emission.stdout, /int loop_control;/);
+      assert.match(
+        emission.stdout,
+        /while \(true\) \{[\s\S]*_condition, context\)[\s\S]*_finish_iteration, context\)/,
+      );
+      if (fixture.endsWith("-control.zs")) {
+        assert.match(emission.stdout, /context->loop_control = 1;/);
+        assert.match(emission.stdout, /context->loop_control = 2;/);
+      }
+      if (fixture.endsWith("-owned.zs")) {
+        assert.match(emission.stdout, /frame_local_\d+_live/);
+        assert.match(
+          emission.stdout,
+          /Z_IterationResource_deinit\(&context->frame_local_\d+\)/,
+        );
+      }
+
+      const executable = resolve(directory, fixture.replace(/\.zs$/, ""));
+      const compilation = spawnSync(
+        "clang",
+        [
+          "-x",
+          "c",
+          "-std=c11",
+          "-Wall",
+          "-Wextra",
+          "-Werror",
+          "-pthread",
+          "-",
+          "-o",
+          executable,
+        ],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+      assert.equal(execution.stdout, expectedOutput);
+    }
+
+    const invalidInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-while-return-invalid.zs",
+    );
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1);
+    assert.match(
+      invalid.stderr,
+      /does not yet preserve return or throw inside suspending while/,
+    );
+
+    const invalidControlInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-thread-main-while-control-invalid.zs",
+    );
+    const invalidControl = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidControlInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalidControl.status, 1);
+    assert.match(
+      invalidControl.stderr,
+      /requires break or continue to end its synchronous while segment/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 90_000);
+
 test("requests native worker cancellation and joins owned cleanup", () => {
   const directory = mkdtempSync("/tmp/z-self-host-thread-cancel-");
   const fixtures = [
     "self-host-emit-thread-cancel.zs",
     "self-host-emit-thread-cancel-main.zs",
     "self-host-emit-thread-cancel-main-match.zs",
+    "self-host-emit-thread-cancel-main-while.zs",
   ];
   try {
     for (const fixture of fixtures) {
@@ -3368,7 +3470,10 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       assert.match(emission.stdout, /_is_cancellation_requested\(/);
       assert.match(emission.stdout, /storage->cancellation_requested = true;/);
       assert.match(emission.stdout, /_cancel\(&\(worker\)\);/);
-      if (!fixture.endsWith("-match.zs")) {
+      if (
+        !fixture.endsWith("-match.zs")
+        && !fixture.endsWith("-while.zs")
+      ) {
         assert.match(
           emission.stdout,
           /if \(task->storage->result_live\) \{ Z_.*_deinit\(&task->storage->result\); task->storage->result_live = false; \}/,
@@ -3385,6 +3490,11 @@ test("requests native worker cancellation and joins owned cleanup", () => {
           assert.match(
             emission.stdout,
             /_cancel_suspended[\s\S]*if \(context->match_subject_live\) \{ Z_Route_deinit\(&context->match_subject\)/,
+          );
+        } else if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
+          assert.match(
+            emission.stdout,
+            /_cancel_suspended[\s\S]*Z_LoopResource_deinit\(&context->frame_local_\d+\)/,
           );
         } else {
           assert.match(
@@ -3431,6 +3541,12 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         assert.equal(
           execution.stdout,
           "entered match main segment\nreleased match payload frame\n",
+        );
+      }
+      if (fixture == "self-host-emit-thread-cancel-main-while.zs") {
+        assert.equal(
+          execution.stdout,
+          "entered loop main segment\nreleased loop frame 1\n",
         );
       }
     }

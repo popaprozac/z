@@ -242,6 +242,15 @@ export struct LoweredMainDelayMatch {
   arms: Array<LoweredMainDelayMatchArm>;
 }
 
+export struct LoweredMainDelayLoop {
+  statement: usize;
+  prefixRoots: Array<usize>;
+  condition: usize;
+  block: usize;
+  segments: Array<LoweredMainDelaySegment>;
+  roots: Array<usize>;
+}
+
 export enum LoweredStatementKind {
   localStatement,
   assignmentStatement,
@@ -302,6 +311,7 @@ export struct LoweredFunction {
   mainDelaySegments: Array<LoweredMainDelaySegment>;
   mainDelayIfs: Array<LoweredMainDelayIf>;
   mainDelayMatches: Array<LoweredMainDelayMatch>;
+  mainDelayLoops: Array<LoweredMainDelayLoop>;
   receiverType: Option<LoweredType>;
   receiverMode: LoweredParameterMode;
   parameters: Array<LoweredParameter>;
@@ -9453,6 +9463,96 @@ function statementContainsSuspension(
   return false;
 }
 
+function statementContainsLoopControl(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.breakStatement
+    || arena.nodes[index].kind == StatementKind.continueStatement
+  ) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsLoopControl(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementContainsFunctionExit(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.returnStatement
+    || arena.nodes[index].kind == StatementKind.throwStatement
+  ) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsFunctionExit(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementTreeContainsTry(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (statementExpressionContainsTry(arena, index)) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementTreeContainsTry(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementContainsNestedLoopOrMatch(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.whileStatement
+    || arena.nodes[index].kind == StatementKind.forStatement
+    || arena.nodes[index].kind == StatementKind.matchStatement
+  ) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsNestedLoopOrMatch(arena, child)) return true;
+  }
+  return false;
+}
+
+function statementTreeWritesName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.assignmentStatement
+  ) {
+    match (in arena.nodes[index].expression) {
+      some(target) => {
+        if (syntaxIsIdentifier(target, name)) return true;
+      }
+      none => {}
+    }
+  }
+  if (statementExpressionWritesName(
+    program,
+    evidence,
+    arena,
+    index,
+    name
+  )) return true;
+  for (const child of arena.nodes[index].children) {
+    if (statementTreeWritesName(
+      program,
+      evidence,
+      arena,
+      child,
+      name
+    )) return true;
+  }
+  return false;
+}
+
 function mainDelayMillisecondsAtStatement(
   in program: Program,
   in arena: StatementArena,
@@ -11963,6 +12063,279 @@ function lowerMainDelayIf(
   });
 }
 
+function lowerMainDelayLoopBody(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in parameters: Array<LoweredParameter>,
+  sourceBlock: usize,
+  in prefixRoots: Array<usize>,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>,
+  inout block: usize,
+  inout outputSegments: Array<LoweredMainDelaySegment>,
+  inout outputRoots: Array<usize>
+): void throws String {
+  if (
+    declaration.body.nodes[sourceBlock].kind != StatementKind.blockStatement
+  ) {
+    throw `native lowering requires a braced body when while contains suspension in ${declaration.name}`;
+  }
+  let delayCount: usize = 0;
+  let lastDelayPosition: usize = 0;
+  let controlEndsSegment = false;
+  let position: usize = 0;
+  for (const sourceChild of declaration.body.nodes[sourceBlock].children) {
+    if (statementContainsSuspension(declaration.body, sourceChild)) {
+      const milliseconds = try mainDelayMillisecondsAtStatement(
+        program,
+        declaration.body,
+        declaration.name,
+        sourceChild
+      );
+      if (milliseconds.byteLength == 0) {
+        throw `native lowering requires direct literal delays inside suspending while body in ${declaration.name}`;
+      }
+      delayCount = delayCount + 1;
+      lastDelayPosition = position;
+      controlEndsSegment = false;
+      position = position + 1;
+      continue;
+    }
+    if (controlEndsSegment) {
+      throw `native lowering requires break or continue to end its synchronous while segment in ${declaration.name}`;
+    }
+    if (statementContainsFunctionExit(declaration.body, sourceChild)) {
+      throw `native lowering does not yet preserve return or throw inside suspending while in ${declaration.name}`;
+    }
+    if (statementContainsNestedLoopOrMatch(
+      declaration.body,
+      sourceChild
+    )) {
+      throw `native lowering does not yet preserve nested loop or match inside suspending while in ${declaration.name}`;
+    }
+    if (statementTreeContainsTry(declaration.body, sourceChild)) {
+      throw `native lowering does not yet preserve try inside suspending while in ${declaration.name}`;
+    }
+    if (statementContainsLoopControl(
+      declaration.body,
+      sourceChild
+    )) controlEndsSegment = true;
+    position = position + 1;
+  }
+  if (delayCount == 0) {
+    throw `native lowering lost every delay inside the suspending while in ${declaration.name}`;
+  }
+
+  let loweredChildren = Array<usize>();
+  let segmentRoots = Array<usize>();
+  let segments = Array<LoweredMainDelaySegment>();
+  position = 0;
+  for (const sourceChild of declaration.body.nodes[sourceBlock].children) {
+    let milliseconds = "";
+    if (statementContainsSuspension(declaration.body, sourceChild)) {
+      milliseconds = try mainDelayMillisecondsAtStatement(
+        program,
+        declaration.body,
+        declaration.name,
+        sourceChild
+      );
+    }
+    if (milliseconds.byteLength > 0) {
+      const placeholder = appendMainDelayPlaceholder(inout statements);
+      loweredChildren.push(placeholder);
+      segments.push(LoweredMainDelaySegment({
+        roots: move segmentRoots,
+        milliseconds: move milliseconds,
+      }));
+      segmentRoots = Array<usize>();
+      position = position + 1;
+      continue;
+    }
+    const structuredControl = (
+      statementContainsLoopControl(declaration.body, sourceChild)
+      || declaration.body.nodes[sourceChild].kind
+        == StatementKind.ifStatement
+      || declaration.body.nodes[sourceChild].kind
+        == StatementKind.blockStatement
+    );
+    if (
+      delayCount > 0
+      && position < lastDelayPosition
+      && !structuredControl
+    ) {
+      try validateMainFrameSourceStatement(
+        program,
+        importedTypes,
+        evidence,
+        declaration,
+        parameters,
+        sourceChild
+      );
+    }
+    const loweredChild = try lowerStatement(
+      program,
+      importedTypes,
+      evidence,
+      declaration.body,
+      declaration.name,
+      sourceChild,
+      inout expressions,
+      inout statements
+    );
+    loweredChildren.push(loweredChild);
+    if (
+      delayCount > 0
+      && position < lastDelayPosition
+      && !structuredControl
+    ) {
+      try validateMainFrameLoweredStatement(
+        program,
+        importedTypes,
+        declaration,
+        parameters,
+        expressions,
+        statements,
+        prefixRoots,
+        segments,
+        segmentRoots,
+        loweredChild
+      );
+    }
+    segmentRoots.push(loweredChild);
+    position = position + 1;
+  }
+  block = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.blockStatement,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option<usize>.none,
+    secondExpression: Option<usize>.none,
+    children: move loweredChildren,
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: Array<String>(),
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  }));
+  outputSegments = move segments;
+  outputRoots = move segmentRoots;
+}
+
+function lowerMainDelayLoop(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in parameters: Array<LoweredParameter>,
+  sourceLoop: usize,
+  prefixRoots: Array<usize>,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): LoweredMainDelayLoop throws String {
+  if (
+    declaration.body.nodes[sourceLoop].kind != StatementKind.whileStatement
+    || declaration.body.nodes[sourceLoop].children.length != 1
+  ) throw `native lowering received a malformed suspending while in ${declaration.name}`;
+  if (statementExpressionContainsTry(declaration.body, sourceLoop)) {
+    throw `native lowering does not yet preserve a throwing while condition across suspension in ${declaration.name}`;
+  }
+  let parameterIndex: usize = 0;
+  while (parameterIndex < declaration.parameters.length) {
+    const parameter = view declaration.parameters[parameterIndex];
+    if (statementTreeWritesName(
+      program,
+      evidence,
+      declaration.body,
+      sourceLoop,
+      parameter.name
+    )) {
+      throw `native lowering does not yet preserve writes to parameter ${parameter.name} through a suspending while in ${declaration.name}`;
+    }
+    if (
+      moduleTypeNeedsCleanup(
+        program,
+        importedTypes,
+        parameters[parameterIndex].type
+      )
+      && statementMovesName(
+        program,
+        evidence,
+        declaration.body,
+        declaration.body.nodes[sourceLoop],
+        parameter.name
+      )
+    ) {
+      throw `native lowering does not yet preserve ownership transfer of parameter ${parameter.name} through a suspending while in ${declaration.name}`;
+    }
+    parameterIndex = parameterIndex + 1;
+  }
+  let condition: usize = 0;
+  match (in declaration.body.nodes[sourceLoop].expression) {
+    some(source) => match (in source.tree) {
+      some(tree) => {
+        const root = tree.root;
+        condition = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root,
+          inout expressions
+        );
+      }
+      none => throw "native lowering cannot lower an opaque while condition";
+    }
+    none => throw "native lowering received a while without a condition";
+  }
+  const sourceBlock = declaration.body.nodes[sourceLoop].children[0];
+  let block: usize = 0;
+  let segments = Array<LoweredMainDelaySegment>();
+  let roots = Array<usize>();
+  try lowerMainDelayLoopBody(
+    program,
+    importedTypes,
+    evidence,
+    declaration,
+    parameters,
+    sourceBlock,
+    prefixRoots,
+    inout expressions,
+    inout statements,
+    inout block,
+    inout segments,
+    inout roots
+  );
+  let children = Array<usize>();
+  children.push(block);
+  const statement = statements.length;
+  statements.push(LoweredStatement({
+    kind: LoweredStatementKind.whileStatement,
+    mutableBinding: false,
+    name: "",
+    type: Option<LoweredType>.none,
+    expression: Option.some(condition),
+    secondExpression: Option<usize>.none,
+    children,
+    cleanups: Array<LoweredCleanup>(),
+    liveFlag: "",
+    labels: Array<String>(),
+    matchConsumesSubject: false,
+    matchBindingNeedsCleanup: false,
+  }));
+  return LoweredMainDelayLoop({
+    statement,
+    prefixRoots: move prefixRoots,
+    condition,
+    block,
+    segments,
+    roots,
+  });
+}
+
 function lowerMainDelayMatchTree(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -12283,6 +12656,9 @@ function lowerFunction(
   let hasMainDelayMatch = false;
   let mainDelayMatchSource: usize = 0;
   let mainDelayMatchPosition: usize = 0;
+  let hasMainDelayLoop = false;
+  let mainDelayLoopSource: usize = 0;
+  let mainDelayLoopPosition: usize = 0;
   if (declaration.asynchronous && declaration.name != "main") {
     if (declaration.executorAffinity != "thread.main") {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
@@ -12292,10 +12668,33 @@ function lowerFunction(
       const root = declaration.body.roots[position];
       if (
         statementContainsSuspension(declaration.body, root)
+        && declaration.body.nodes[root].kind == StatementKind.whileStatement
+      ) {
+        if (
+          hasMainDelayIf
+          || hasMainDelayMatch
+          || hasMainDelayLoop
+          || delayCount > 0
+        ) {
+          throw `native lowering supports one top-level suspending if, match, while, or one linear delay sequence in ${declaration.name}`;
+        }
+        hasMainDelayLoop = true;
+        mainDelayLoopSource = root;
+        mainDelayLoopPosition = position;
+        position = position + 1;
+        continue;
+      }
+      if (
+        statementContainsSuspension(declaration.body, root)
         && declaration.body.nodes[root].kind == StatementKind.ifStatement
       ) {
-        if (hasMainDelayIf || hasMainDelayMatch || delayCount > 0) {
-          throw `native lowering supports one top-level suspending if, one top-level suspending match, or one linear delay sequence in ${declaration.name}`;
+        if (
+          hasMainDelayIf
+          || hasMainDelayMatch
+          || hasMainDelayLoop
+          || delayCount > 0
+        ) {
+          throw `native lowering supports one top-level suspending if, match, while, or one linear delay sequence in ${declaration.name}`;
         }
         hasMainDelayIf = true;
         mainDelayIfSource = root;
@@ -12333,8 +12732,13 @@ function lowerFunction(
         statementContainsSuspension(declaration.body, root)
         && declaration.body.nodes[root].kind == StatementKind.matchStatement
       ) {
-        if (hasMainDelayIf || hasMainDelayMatch || delayCount > 0) {
-          throw `native lowering supports one top-level suspending if, one top-level suspending match, or one linear delay sequence in ${declaration.name}`;
+        if (
+          hasMainDelayIf
+          || hasMainDelayMatch
+          || hasMainDelayLoop
+          || delayCount > 0
+        ) {
+          throw `native lowering supports one top-level suspending if, match, while, or one linear delay sequence in ${declaration.name}`;
         }
         hasMainDelayMatch = true;
         mainDelayMatchSource = root;
@@ -12343,10 +12747,10 @@ function lowerFunction(
         continue;
       }
       if (
-        (hasMainDelayIf || hasMainDelayMatch)
+        (hasMainDelayIf || hasMainDelayMatch || hasMainDelayLoop)
         && statementContainsSuspension(declaration.body, root)
       ) {
-        throw `native lowering supports one top-level suspending if, one top-level suspending match, or one linear delay sequence in ${declaration.name}`;
+        throw `native lowering supports one top-level suspending if, match, while, or one linear delay sequence in ${declaration.name}`;
       }
       const delay = try mainDelayMillisecondsAtStatement(
         program,
@@ -12355,8 +12759,8 @@ function lowerFunction(
         root
       );
       if (delay.byteLength > 0) {
-        if (hasMainDelayIf || hasMainDelayMatch) {
-          throw `native lowering supports one top-level suspending if, one top-level suspending match, or one linear delay sequence in ${declaration.name}`;
+        if (hasMainDelayIf || hasMainDelayMatch || hasMainDelayLoop) {
+          throw `native lowering supports one top-level suspending if, match, while, or one linear delay sequence in ${declaration.name}`;
         }
         delayCount = delayCount + 1;
         lastDelayPosition = position;
@@ -12387,6 +12791,7 @@ function lowerFunction(
   let mainDelaySegments = Array<LoweredMainDelaySegment>();
   let mainDelayIfs = Array<LoweredMainDelayIf>();
   let mainDelayMatches = Array<LoweredMainDelayMatch>();
+  let mainDelayLoops = Array<LoweredMainDelayLoop>();
   const linearPrefixRoots = Array<usize>();
   let rootPosition: usize = 0;
   for (const root of declaration.body.roots) {
@@ -12428,6 +12833,25 @@ function lowerFunction(
       rootPosition = rootPosition + 1;
       continue;
     }
+    if (hasMainDelayLoop && rootPosition == mainDelayLoopPosition) {
+      sourceRoots.push(root);
+      const mainDelayLoop = try lowerMainDelayLoop(
+        program,
+        importedTypes,
+        evidence,
+        declaration,
+        parameters,
+        mainDelayLoopSource,
+        move segmentRoots,
+        inout expressions,
+        inout statements
+      );
+      planningRoots.push(mainDelayLoop.statement);
+      mainDelayLoops.push(move mainDelayLoop);
+      segmentRoots = Array<usize>();
+      rootPosition = rootPosition + 1;
+      continue;
+    }
     let delay = "";
     if (delayCount > 0) {
       delay = try mainDelayMillisecondsAtStatement(
@@ -12452,6 +12876,8 @@ function lowerFunction(
       hasMainDelayIf && rootPosition < mainDelayIfPosition
     ) || (
       hasMainDelayMatch && rootPosition < mainDelayMatchPosition
+    ) || (
+      hasMainDelayLoop && rootPosition < mainDelayLoopPosition
     );
     if (beforeSuspension) {
       try validateMainFrameSourceStatement(
@@ -12519,7 +12945,11 @@ function lowerFunction(
       let guard = "";
       if (
         moved
-        && (hasMainDelayMatch || arenaHasControlFlow(declaration.body))
+        && (
+          hasMainDelayMatch
+          || hasMainDelayLoop
+          || arenaHasControlFlow(declaration.body)
+        )
       ) {
         guard = ownerLiveFlag(parameter.name);
         liveFlags.push(LoweredLiveFlag({
@@ -12554,7 +12984,7 @@ function lowerFunction(
     expressions,
     inout statements,
     inout liveFlags,
-    hasMainDelayMatch,
+    hasMainDelayMatch || hasMainDelayLoop,
     false,
     rootLoopCleanups
   );
@@ -12628,6 +13058,24 @@ function lowerFunction(
       }
     }
   }
+  for (const plan of mainDelayLoops) {
+    ensureMainFrameLocalLiveFlags(
+      program,
+      importedTypes,
+      plan.prefixRoots,
+      inout statements,
+      inout liveFlags
+    );
+    for (const segment of plan.segments) {
+      ensureMainFrameLocalLiveFlags(
+        program,
+        importedTypes,
+        segment.roots,
+        inout statements,
+        inout liveFlags
+      );
+    }
+  }
   let fallthroughCleanups = Array<LoweredCleanup>();
   appendCleanupCopies(inout fallthroughCleanups, ownedParameters);
   appendCleanupCopies(inout fallthroughCleanups, introduced);
@@ -12681,6 +13129,7 @@ function lowerFunction(
     mainDelaySegments,
     mainDelayIfs,
     mainDelayMatches,
+    mainDelayLoops,
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters,
@@ -12750,6 +13199,7 @@ function lowerDeinitializer(
     mainDelaySegments: Array<LoweredMainDelaySegment>(),
     mainDelayIfs: Array<LoweredMainDelayIf>(),
     mainDelayMatches: Array<LoweredMainDelayMatch>(),
+    mainDelayLoops: Array<LoweredMainDelayLoop>(),
     receiverType: Option<LoweredType>.none,
     receiverMode: LoweredParameterMode.value,
     parameters: Array<LoweredParameter>(),
