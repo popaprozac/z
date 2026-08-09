@@ -12005,14 +12005,24 @@ function lowerMainDelayMatchTree(
   if (subjectNeedsCleanup && !consuming) {
     throw `native lowering requires a consuming match for cleanup-bearing suspended subject in ${declaration.name}; omit in so the invocation frame can own the selected payload`;
   }
-  if (
-    subjectNeedsCleanup
-    && tree.nodes[subjectInput].kind != ExpressionKind.identifierExpression
-  ) {
-    throw `native lowering requires a stable named owner for cleanup-bearing suspended match subject in ${declaration.name}`;
-  }
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
+    let subjectTransfersParameter = false;
+    if (subjectNeedsCleanup && consuming) {
+      if (
+        tree.nodes[subjectInput].kind
+          == ExpressionKind.identifierExpression
+        && tree.nodes[subjectInput].value
+          == declaration.parameters[parameterIndex].name
+      ) subjectTransfersParameter = true;
+      else subjectTransfersParameter = treeMovesName(
+        program,
+        evidence,
+        tree,
+        subjectInput,
+        declaration.parameters[parameterIndex].name
+      );
+    }
     if (
       moduleTypeNeedsCleanup(
         program,
@@ -12026,13 +12036,7 @@ function lowerMainDelayMatchTree(
         root,
         declaration.parameters[parameterIndex].name
       )
-      && !(
-        subjectNeedsCleanup
-        && tree.nodes[subjectInput].kind
-          == ExpressionKind.identifierExpression
-        && tree.nodes[subjectInput].value
-          == declaration.parameters[parameterIndex].name
-      )
+      && !subjectTransfersParameter
     ) {
       throw `native lowering does not yet preserve ownership transfer of parameter ${declaration.parameters[parameterIndex].name} through a suspending match subject in ${declaration.name}`;
     }
@@ -12168,6 +12172,9 @@ function lowerMainDelayMatchTree(
   }
   let matchLabels = Array<String>();
   if (enumDeclaration.payloadBearing) matchLabels.push("tagged");
+  if (
+    tree.nodes[subjectInput].kind != ExpressionKind.identifierExpression
+  ) matchLabels.push("computed-subject");
   const statement = statements.length;
   statements.push(LoweredStatement({
     kind: LoweredStatementKind.matchStatement,

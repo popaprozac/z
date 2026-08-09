@@ -24,6 +24,13 @@ import {
 } from "./semantic-model.zs";
 import { stringStartsWith } from "./semantic-type-shapes.zs";
 
+function labelsContain(in labels: Array<String>, in candidate: String): boolean {
+  for (const label of labels) {
+    if (label == candidate) return true;
+  }
+  return false;
+}
+
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i8Type) return "int8_t";
   if (type.kind == LoweredTypeKind.i16Type) return "int16_t";
@@ -2882,7 +2889,9 @@ function appendStatement(
         none => throw "native C emission received a match without a subject";
       }
     }
-    if (declaration.statements[index].labels.length > 0) output.append(".tag");
+    if (labelsContain(declaration.statements[index].labels, "tagged")) {
+      output.append(".tag");
+    }
     output.append(") {\n");
     for (const arm of declaration.statements[index].children) {
       if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
@@ -4311,6 +4320,10 @@ function appendThreadMainMatchCallHelper(
     program,
     plan.subjectType
   );
+  const computedSubject = labelsContain(
+    matchStatement.labels,
+    "computed-subject"
+  );
   if (subjectNeedsCleanup) output.append("  bool match_subject_live;\n");
   try appendMainFrameRootFields(
     inout output,
@@ -4370,23 +4383,27 @@ function appendThreadMainMatchCallHelper(
   if (subjectNeedsCleanup) {
     if (
       !matchStatement.matchConsumesSubject
-      || matchStatement.liveFlag.byteLength == 0
+      || (!computedSubject && matchStatement.liveFlag.byteLength == 0)
     ) {
       throw "native main frame lost its consuming match subject live flag";
     }
-    output.append("  ");
-    appendCBindingName(inout output, matchStatement.liveFlag);
-    output.append(" = false;\n  context->match_subject_live = false;\n");
+    if (!computedSubject) {
+      output.append("  ");
+      appendCBindingName(inout output, matchStatement.liveFlag);
+      output.append(" = false;\n");
+    }
+    output.append("  context->match_subject_live = false;\n");
   }
   output.append("  switch (context->match_subject");
-  if (matchStatement.labels.length > 0) output.append(".tag");
+  const taggedSubject = labelsContain(matchStatement.labels, "tagged");
+  if (taggedSubject) output.append(".tag");
   output.append(") {\n");
   let armIndex: usize = 0;
   while (armIndex < plan.arms.length) {
     const arm = view target.statements[plan.arms[armIndex].arm];
     output.append("    case Z_");
     output.append(matchStatement.name);
-    if (matchStatement.labels.length > 0) output.append("Tag");
+    if (taggedSubject) output.append("Tag");
     output.append("_");
     output.append(arm.name);
     output.append(`: context->arm_0 = ${armIndex};`);

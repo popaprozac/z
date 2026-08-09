@@ -2130,8 +2130,8 @@ async function publish(value: i32, direction: Direction): i32 on thread.main {
 }
 ```
 
-An owned payload uses the same source shape. The match consumes the stable
-named enum owner, and returning `message` transfers the payload out:
+An owned payload uses the same source shape. The match consumes its enum
+subject, and returning `message` transfers the payload out:
 
 ```z
 enum Delivery {
@@ -2156,15 +2156,29 @@ async function forward(delivery: Delivery): String on thread.main {
 }
 ```
 
+The subject may also be computed. It still runs exactly once; its owned result
+is adopted directly by the invocation frame:
+
+```z
+match (Delivery.publish(ownedText("ready"))) {
+  publish(message) => {
+    await delay(10);
+    return message;
+  }
+  idle => return ownedText("");
+}
+```
+
 The fixed-point native compiler currently implements an honest, bounded
 suspending-callee state machine. A main-isolated callee may contain multiple
 top-level literal `await delay(...)` statements with synchronous expression
 statements before and between them, one top-level braced `if`/`else`, or one
-top-level statement `match` over a stable named enum owner with braced arms.
-Scalar, plain-struct, and cleanup-bearing payload bindings are supported. A
-cleanup-bearing match must consume its named subject with `match (value)`; its
-active payload moves between the invocation frame and selected arm binding
-without cloning. The
+top-level statement `match` over a consuming enum-valued expression with
+braced arms. Scalar, plain-struct, and cleanup-bearing payload bindings are supported. A
+cleanup-bearing match must consume its subject with `match (value)`. A stable
+named owner transfers into the frame, while a computed call or constructor
+result is adopted there directly. Its active payload moves between the
+invocation frame and selected arm binding without cloning. The
 structured branches contain direct literal delays. The direct placed call must
 be the worker closure's tail return. A condition or match subject executes once
 on main and only the selected branch or arm waits. Main executes each
@@ -2176,8 +2190,9 @@ assignments live in one heap-owned invocation frame. Cleanup-bearing locals
 carry explicit liveness, can move into later locals or the final result without
 duplication, and are destroyed on main when cancellation wins. Branch-local
 owned values use the same frame liveness and deterministic cleanup. Parameter
-writes or unrelated ownership transfers, borrowed or computed cleanup-bearing
-match subjects, suspending loops, nested suspending control flow, combining an outer delay sequence with
+writes or unrelated ownership transfers, borrowed cleanup-bearing match
+subjects, suspending loops, nested suspending control flow, combining an outer
+delay sequence with
 a structured suspension, a computed delay duration, or code after the placed
 call fails closed in native lowering for now. Stage 0 retains the broader async
 surface described above.

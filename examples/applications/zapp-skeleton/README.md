@@ -36,12 +36,13 @@ The example combines the four framework foundations:
    heap-owned invocation frame with cancellation-aware cleanup. The same backend
    now accepts one top-level braced `if`/`else` with direct literal delays and
    cleans branch-owned locals deterministically. It also accepts one top-level
-   consuming statement `match` over a stable named enum owner, evaluates the
+   consuming statement `match` over an enum-valued expression, evaluates the
    subject once, and keeps cleanup-free or cleanup-bearing payload bindings
-   available while running only the selected delayed arm. Cleanup-bearing
-   payloads retain exact cleanup through normal return, move-out, typed failure,
-   and cancellation. Borrowed/computed owned subjects, loops, and deeper nested
-   control flow remain deliberately fail-closed.
+   available while running only the selected delayed arm. Named subjects
+   transfer into the frame and computed subjects are adopted directly.
+   Cleanup-bearing payloads retain exact cleanup through normal return,
+   move-out, typed failure, and cancellation. Borrowed cleanup-bearing subjects,
+   loops, and deeper nested control flow remain deliberately fail-closed.
 
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.

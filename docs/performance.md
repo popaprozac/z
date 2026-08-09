@@ -96,6 +96,15 @@ Bun and 2.9 ms ± 0.4 ms through the
 fixed-point native `z emit`. The native command remains below Hyperfine's 5 ms
 precision threshold, so the 17.1-times ratio is directional.
 
+Computed cleanup-bearing match subjects retain that same frame shape. A call or
+inline enum construction writes its result directly into the existing subject
+field; no temporary frame or second allocation is introduced. Any named values
+consumed while computing the subject retire through their ordinary live guards.
+On the inline owned-`String` constructor fixture, seven warm Hyperfine runs
+measured 69.6 ms ± 1.0 ms through Bun and 4.5 ms ± 1.1 ms through the
+fixed-point native `z emit`. The native command remains near Hyperfine's 5 ms
+precision threshold, so the 15.3-times ratio is directional.
+
 ## Standalone native compiler checkpoint
 
 On 2026-07-27, the recursively self-built 30-module native driver made a

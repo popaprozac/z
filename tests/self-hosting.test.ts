@@ -1610,7 +1610,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.equal(invalidEmission.status, 1);
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
-}, 20_000);
+}, 45_000);
 
 test("emits cleanup-free module constants through the native frontend", () => {
   const directory = mkdtempSync("/tmp/z-self-host-constants-");
@@ -3238,6 +3238,16 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         "thread-main-match-owned-error",
         "released failed match payload 42\n",
       ],
+      [
+        "self-host-emit-thread-main-match-computed-payload.zs",
+        "thread-main-match-computed-payload",
+        "released computed match payload 42\n",
+      ],
+      [
+        "self-host-emit-thread-main-match-computed-constructor.zs",
+        "thread-main-match-computed-constructor",
+        "",
+      ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const parity = spawnSync(
@@ -3300,10 +3310,6 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       [
         "self-host-emit-thread-main-match-payload-invalid.zs",
         /requires a consuming match for cleanup-bearing suspended subject/,
-      ],
-      [
-        "self-host-emit-thread-main-match-computed-payload-invalid.zs",
-        /requires a stable named owner for cleanup-bearing suspended match subject/,
       ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);

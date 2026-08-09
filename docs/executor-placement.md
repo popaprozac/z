@@ -708,12 +708,14 @@ later without making executor blocks a special case.
     `if`/`else` whose branches contain direct literal delays. Its condition runs
     once on main, only the selected branch waits, and both paths rejoin before
     the following statements. A third supported shape is one top-level
-    consuming `match` over a stable named enum owner, including cleanup-free or
+    consuming `match` over an enum-valued expression, including cleanup-free or
     cleanup-bearing payload bindings, with braced arms containing direct
     literal delays. Its subject is evaluated once into the invocation frame on
-    main. A cleanup-bearing active payload transfers between that stable slot
-    and the selected arm binding at each segment boundary, so normal cleanup,
-    move-out, typed failure, and cancellation each destroy it exactly once. The
+    main. A named owner transfers into that frame; a computed call or enum
+    construction is adopted there directly. A cleanup-bearing active payload
+    transfers between the subject slot and selected arm binding at each segment
+    boundary, so normal cleanup, move-out, typed failure, and cancellation each
+    destroy it exactly once. The
     worker waits only along the selected arm, and every arm rejoins before the
     suffix. Main
     executes each synchronous segment; the worker performs each cancellable
@@ -727,7 +729,7 @@ later without making executor blocks a special case.
     `await worker.cancel()` joins and destroys any other unclaimed result. If a
     synchronous main request is already running, it completes before its
     outcome is discarded. Parameter writes or unrelated ownership transfers,
-    borrowed or computed cleanup-bearing match subjects, suspending loops,
+    borrowed cleanup-bearing match subjects, suspending loops,
     control flow nested
     inside another branch, dynamic delay expressions, combining a structured
     suspension with outer delays, non-tail suspended placement, and

@@ -19,8 +19,12 @@ function duplicate(in value: String): String {
   return value.copyBytes(0, value.byteLength);
 }
 
+function identity(route: Route): Route {
+  return route;
+}
+
 async function publish(route: Route): i32 on thread.main {
-  match (route) {
+  match (identity(route)) {
     publish(staged) => {
       console.log("entered match main segment");
       await delay(1000);
