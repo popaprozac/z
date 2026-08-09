@@ -2167,6 +2167,10 @@ The graph-aware lowerability preflight also resolves direct
 target suspends but the placed call is not the worker closure's tail return,
 both native emission and the standalone native `check` command now report a
 source-mapped `Z0700` instead of exposing a C-emitter-only hard stop.
+Graph-provided expression types also moved the first evidence-dependent backend
+gap out of the internal-error fallback: iteration over `Set`, `Map`, or another
+non-`Array` iterable now reports source-mapped `Z1000` before the current
+Array-only native loop lowering runs.
 
 ## Not tested yet
 

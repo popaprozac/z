@@ -448,7 +448,7 @@ test("keeps unsupported native optional-chain shapes explicit", () => {
   rmSync(directory, { recursive: true, force: true });
 }, 20_000);
 
-test("renders uncatalogued native backend failures as internal compiler errors", () => {
+test("reports evidence-dependent native iteration boundaries before lowering", () => {
   const input = resolve(projectRoot, "examples/language/collections/set.zs");
   const emission = spawnSync(
     process.execPath,
@@ -458,13 +458,9 @@ test("renders uncatalogued native backend failures as internal compiler errors",
   assert.equal(emission.status, 1);
   assert.match(
     emission.stderr,
-    /internal compiler error: native lowering: .*only supports Array for iteration, found Set<String>/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array is supported/,
   );
-  assert.doesNotMatch(emission.stderr, /error\[Z\d{4}\]/);
-  assert.equal(
-    emission.stderr.includes(`${input}: internal compiler error`),
-    false,
-  );
+  assert.match(emission.stderr, /for \(const path of openDocuments\)/);
 }, 20_000);
 
 test("preserves local views through native lowering and C emission", () => {
@@ -5298,9 +5294,8 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(backendIce.status, 1, backendIce.stderr);
   assert.match(
     backendIce.stderr,
-    /internal compiler error: native lowering: .*only supports Array for iteration, found Set<String>/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array is supported/,
   );
-  assert.doesNotMatch(backendIce.stderr, /error\[Z\d{4}\]/);
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
   mkdirSync(runtimeCollisionProject);

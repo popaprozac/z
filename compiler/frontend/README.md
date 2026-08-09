@@ -238,7 +238,10 @@ intentional exceptions. The lowerability pass is also graph-aware: it resolves
 direct main-executor callees, detects whether they suspend, and reports a
 source-mapped `Z0700` when a suspending placed call is not the worker closure's
 tail return. The standalone native `check` command therefore agrees with native
-emission without running a no-write C-emission pass.
+emission without running a no-write C-emission pass. The same resolved-type
+evidence now classifies iteration over `Set`, `Map`, and other non-`Array`
+collections as source-mapped `Z1000` before the Array-only lowering tier; this
+is an expected representation boundary rather than malformed IR.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported

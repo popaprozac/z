@@ -237,6 +237,23 @@ function parsedModuleIndexForGraphModule(
   return modules.length;
 }
 
+function resolvedExpressionType(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  if (moduleIndex >= graph.modules.length) return "";
+  for (const resolution of graph.modules[moduleIndex].semanticEvidence.expressionResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.typeName.copyBytes(0, resolution.typeName.byteLength);
+  }
+  return "";
+}
+
 function placedCallTargetSuspends(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
@@ -582,6 +599,34 @@ function validateNativeBody(
           statement.column,
           3
         );
+      }
+      match (in statement.expression) {
+        some(iterable) => match (in iterable.tree) {
+          some(tree) => {
+            const root = tree.root;
+            const iterableType = resolvedExpressionType(
+              graph,
+              moduleIndex,
+              tree,
+              root
+            );
+            if (
+              iterableType.byteLength > 0
+              && !typeUsesGeneric(iterableType, "Array")
+            ) {
+              throw loweringBoundary(
+                path,
+                "Z1000",
+                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array is supported`,
+                statement.line,
+                statement.column,
+                3
+              );
+            }
+          }
+          none => {}
+        }
+        none => {}
       }
     }
   }
