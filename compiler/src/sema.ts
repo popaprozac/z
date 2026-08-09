@@ -5982,7 +5982,13 @@ function inferMatchExpression(
     }
     const patternNames = [arm.binding, ...(arm.objectBindings ?? []).map((field) => field.bindingName)].filter((name): name is string => Boolean(name));
     const previousBorrows = new Map(patternNames.map((name) => [name, state.borrowOrigins.get(name)]));
+    const previousBorrowedRootOrigin = borrowedRoot
+      ? state.borrowOrigins.get(borrowedRoot.name)
+      : null;
     const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
+    if (borrowedRoot) {
+      state.borrowOrigins.set(borrowedRoot.name, { location: expression.location, kind: "match" });
+    }
     if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
     if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
       bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
@@ -6032,6 +6038,10 @@ function inferMatchExpression(
         const previousView = previousPatternViews.get(name);
         if (previousView) bindViewOrigin(name, previousView, fileName, state);
         else unbindViewOrigin(name, state);
+      }
+      if (borrowedRoot) {
+        if (previousBorrowedRootOrigin) state.borrowOrigins.set(borrowedRoot.name, previousBorrowedRootOrigin);
+        else state.borrowOrigins.delete(borrowedRoot.name);
       }
       if (optionalViewOrigin && candidateRoot) bindViewOrigin(candidateRoot.name, optionalViewOrigin, fileName, state);
     }

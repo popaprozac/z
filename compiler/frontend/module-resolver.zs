@@ -62,12 +62,14 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
+  activeSuspensionBorrowRoot,
   addBorrowedValueBinding,
   addMatchBorrowedValueBinding,
   addMutableValueBinding,
   addUninitializedMutableValueBinding,
   addValueBinding,
   borrowClosureBindingInPlace,
+  borrowMatchValueBindingInPlace,
   borrowValueBindingInPlace,
   copyBindingFlowStates,
   copyValueBindings,
@@ -281,6 +283,32 @@ function requireMainExecutorContext(
     tree.nodes[index].line,
     tree.nodes[index].column,
     length
+  );
+}
+
+function requireNoLexicalBorrowAtSuspension(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const returnType = valueBindingType(bindings, "__z_native_return_type");
+  match (genericTypeShape(returnType)) {
+    some(shape) => {
+      if (shape.base == "AsyncGenerator") return;
+    }
+    none => {}
+  }
+  const root = activeSuspensionBorrowRoot(bindings);
+  if (root.byteLength == 0) return;
+  throw codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z0704",
+    module.path,
+    `cannot await while borrowed storage "${root}" is live`,
+    tree.nodes[index].line,
+    tree.nodes[index].column,
+    5
   );
 }
 
@@ -1205,7 +1233,7 @@ function inferMatchExpressionNodeType(
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);
     if (borrowedMatch && subjectRoot.byteLength > 0) {
-      borrowValueBindingInPlace(inout armBindings, subjectRoot);
+      borrowMatchValueBindingInPlace(inout armBindings, subjectRoot);
     }
     try addMatchArmValueBindings(
       module,
@@ -1215,6 +1243,7 @@ function inferMatchExpressionNodeType(
       armIndex,
       shape.variants[variantIndex],
       borrowedMatch,
+      subjectRoot,
       inout armBindings,
       inout evidence
     );
@@ -2246,6 +2275,12 @@ function inferExpressionNodeType(
         node.column
       );
     }
+    try requireNoLexicalBorrowAtSuspension(
+      module,
+      tree,
+      index,
+      bindings
+    );
     const outcome = try inferExpressionNodeType(
       module,
       modules,

@@ -119,6 +119,7 @@ export function addMatchArmValueBindings(
   armIndex: usize,
   in variant: NativeMatchVariant,
   borrowedMatch: boolean,
+  in subjectRoot: String,
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): void throws ModuleResolveError {
@@ -153,7 +154,8 @@ export function addMatchArmValueBindings(
       addMatchBorrowedValueBinding(
         inout bindings,
         tree.nodes[patterns[0]].value,
-        variant.payloadType
+        variant.payloadType,
+        subjectRoot
       );
     } else {
       addValueBinding(
@@ -239,10 +241,15 @@ export function addMatchArmValueBindings(
     if (fieldChildren.length == 1) {
       let visiting = Array<String>();
       if (typeHasCleanup(modules, moduleIndex, fieldType, visiting)) {
+        let fieldBorrowRoot = "";
+        if (borrowedMatch) {
+          fieldBorrowRoot = subjectRoot.copyBytes(0, subjectRoot.byteLength);
+        }
         addMatchBorrowedValueBinding(
           inout bindings,
           tree.nodes[fieldChildren[0]].value,
-          fieldType
+          fieldType,
+          fieldBorrowRoot
         );
       } else {
         addValueBinding(

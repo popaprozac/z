@@ -2156,14 +2156,17 @@ The remaining inventory is deliberately split: expected tier boundaries move
 from that fallback to coded diagnostics, while malformed, lost, or mismatched
 IR guards stay visible compiler errors.
 
-The same audit found two issues that must not be disguised as `Z1000`. A
-borrowed cleanup-bearing match payload can currently reach native lowering
-across `await` even though Stage 0 rejects it as `Z0704`; the native resolver
-must gain that suspension-safety parity. Separately, native `check` validates IR
-construction but can still accept a non-tail main-executor suspension that the
-C emitter rejects. The next parity slice should close the borrowed-match rule
-and decide whether `check` performs a no-write emission validation or whether
-that tail constraint moves fully into typed lowering evidence.
+The same audit found two issues that could not be disguised as `Z1000`, and the
+next parity slice closed both. Native flow bindings now retain the owner of a
+lexical `match (in value)` loan, so statement and expression matches reject
+`await` with the same source-mapped `Z0704` as Stage 0. Ordinary async
+parameter borrows remain suspension-safe, consuming matches remain owned, and
+async-generator frames retain their deliberate persistent-match exception.
+The graph-aware lowerability preflight also resolves direct
+`await on thread.main operation()` targets before IR construction. When the
+target suspends but the placed call is not the worker closure's tail return,
+both native emission and the standalone native `check` command now report a
+source-mapped `Z0700` instead of exposing a C-emitter-only hard stop.
 
 ## Not tested yet
 

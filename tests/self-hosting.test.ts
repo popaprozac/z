@@ -3335,10 +3335,6 @@ test("returns scalar, owned, and typed-error values through native thread.main p
         "self-host-emit-thread-main-nested-if-suspension-invalid.zs",
         /requires every suspension.*directly inside its supported statement sequence/,
       ],
-      [
-        "self-host-emit-thread-main-match-payload-invalid.zs",
-        /requires a consuming match for cleanup-bearing suspended subject/,
-      ],
     ] as const) {
       const input = resolve(projectRoot, "tests/fixtures", fixture);
       const emission = spawnSync(
@@ -3349,6 +3345,52 @@ test("returns scalar, owned, and typed-error values through native thread.main p
       assert.equal(emission.status, 1);
       assert.match(emission.stderr, diagnostic);
     }
+
+    for (const [fixture, line] of [
+      ["self-host-emit-thread-main-match-payload-invalid.zs", 16],
+      ["self-host-borrowed-match-scalar-suspension-invalid.zs", 11],
+      ["self-host-borrowed-match-expression-suspension-invalid.zs", 11],
+    ] as const) {
+      const input = resolve(projectRoot, "tests/fixtures", fixture);
+      const stage0Diagnostic = diagnostics(
+        readFileSync(input, "utf8"),
+        input,
+      )[0];
+      assert.equal(stage0Diagnostic?.code, "Z0704");
+      assert.match(
+        stage0Diagnostic?.message ?? "",
+        /cannot await while borrowed storage "(?:route|mode)" is live/,
+      );
+      const resolution = spawnSync(
+        process.execPath,
+        [cli, "self-host-resolve", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(resolution.status, 1);
+      assert.match(
+        resolution.stderr,
+        new RegExp(`:${line}:7: error\\[Z0704\\]: cannot await while borrowed storage \\"(?:route|mode)\\" is live`),
+      );
+    }
+
+    const generatorBorrowInput = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-async-generator-borrowed-match.zs",
+    );
+    assert.doesNotThrow(() => check(
+      readFileSync(generatorBorrowInput, "utf8"),
+      generatorBorrowInput,
+    ));
+    const generatorBorrowResolution = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", generatorBorrowInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      generatorBorrowResolution.status,
+      0,
+      generatorBorrowResolution.stderr,
+    );
 
     const nonTailInput = resolve(
       projectRoot,
@@ -3362,7 +3404,7 @@ test("returns scalar, owned, and typed-error values through native thread.main p
     assert.equal(nonTail.status, 1);
     assert.match(
       nonTail.stderr,
-      /suspending thread\.main calls must be the worker closure's tail return/,
+      /:11:23: error\[Z0700\]: a suspending thread\.main call must be the worker closure's tail return in the current native compiler tier/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -3842,6 +3884,23 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 1 Z modules/);
+
+  const nonTailChecking = spawnSync(
+    executable,
+    [
+      "check",
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-emit-thread-main-nontail-suspension-invalid.zs",
+      ),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(nonTailChecking.status, 1);
+  assert.match(
+    nonTailChecking.stderr,
+    /:11:23: error\[Z0700\]: a suspending thread\.main call must be the worker closure's tail return in the current native compiler tier/,
+  );
 
   const nativeTests = spawnSync(
     executable,

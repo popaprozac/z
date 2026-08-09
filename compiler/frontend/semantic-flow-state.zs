@@ -16,6 +16,7 @@ export struct NativeValueBinding {
   mutableBinding: boolean;
   borrowedBinding: boolean;
   matchBorrowedBinding: boolean;
+  suspensionBorrowRoot: String;
   initialization: NativeInitializationState;
   ownership: NativeOwnershipState;
   outputParameter: boolean;
@@ -32,6 +33,10 @@ export function copyValueBindings(
       mutableBinding: binding.mutableBinding,
       borrowedBinding: binding.borrowedBinding,
       matchBorrowedBinding: binding.matchBorrowedBinding,
+      suspensionBorrowRoot: binding.suspensionBorrowRoot.copyBytes(
+        0,
+        binding.suspensionBorrowRoot.byteLength
+      ),
       initialization: binding.initialization,
       ownership: binding.ownership,
       outputParameter: binding.outputParameter,
@@ -51,6 +56,7 @@ export function addValueBinding(
     mutableBinding: false,
     borrowedBinding: false,
     matchBorrowedBinding: false,
+    suspensionBorrowRoot: "",
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -68,6 +74,7 @@ export function addMutableValueBinding(
     mutableBinding: true,
     borrowedBinding: false,
     matchBorrowedBinding: false,
+    suspensionBorrowRoot: "",
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -86,6 +93,7 @@ export function addUninitializedMutableValueBinding(
     mutableBinding: true,
     borrowedBinding: outputParameter,
     matchBorrowedBinding: false,
+    suspensionBorrowRoot: "",
     initialization: NativeInitializationState.uninitialized,
     ownership: NativeOwnershipState.available,
     outputParameter,
@@ -104,6 +112,7 @@ export function addBorrowedValueBinding(
     mutableBinding,
     borrowedBinding: true,
     matchBorrowedBinding: false,
+    suspensionBorrowRoot: "",
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -113,7 +122,8 @@ export function addBorrowedValueBinding(
 export function addMatchBorrowedValueBinding(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
-  in typeName: String
+  in typeName: String,
+  in suspensionBorrowRoot: String
 ): void {
   bindings.push(NativeValueBinding({
     name: name.copyBytes(0, name.byteLength),
@@ -121,6 +131,10 @@ export function addMatchBorrowedValueBinding(
     mutableBinding: false,
     borrowedBinding: true,
     matchBorrowedBinding: true,
+    suspensionBorrowRoot: suspensionBorrowRoot.copyBytes(
+      0,
+      suspensionBorrowRoot.byteLength
+    ),
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
     outputParameter: false,
@@ -177,6 +191,22 @@ export function valueBindingIsMatchBorrowed(
   return false;
 }
 
+export function activeSuspensionBorrowRoot(
+  in bindings: Array<NativeValueBinding>
+): String {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].suspensionBorrowRoot.byteLength > 0) {
+      return bindings[index].suspensionBorrowRoot.copyBytes(
+        0,
+        bindings[index].suspensionBorrowRoot.byteLength
+      );
+    }
+  }
+  return "";
+}
+
 export function valueBindingInitialization(
   in bindings: Array<NativeValueBinding>,
   in name: String
@@ -200,6 +230,10 @@ function replaceBindingInitialization(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
     initialization,
     ownership: bindings[index].ownership,
     outputParameter: bindings[index].outputParameter,
@@ -244,6 +278,10 @@ function replaceBindingOwnership(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
     initialization: bindings[index].initialization,
     ownership,
     outputParameter: bindings[index].outputParameter,
@@ -279,6 +317,34 @@ export function borrowValueBindingInPlace(
         mutableBinding: false,
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+          0,
+          bindings[index].suspensionBorrowRoot.byteLength
+        ),
+        initialization: bindings[index].initialization,
+        ownership: bindings[index].ownership,
+        outputParameter: bindings[index].outputParameter,
+      });
+      return;
+    }
+  }
+}
+
+export function borrowMatchValueBindingInPlace(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      bindings[index] = NativeValueBinding({
+        name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+        typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+        mutableBinding: false,
+        borrowedBinding: true,
+        matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        suspensionBorrowRoot: name.copyBytes(0, name.byteLength),
         initialization: bindings[index].initialization,
         ownership: bindings[index].ownership,
         outputParameter: bindings[index].outputParameter,
@@ -302,6 +368,10 @@ export function borrowClosureBindingInPlace(
         mutableBinding: bindings[index].mutableBinding,
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+          0,
+          bindings[index].suspensionBorrowRoot.byteLength
+        ),
         initialization: bindings[index].initialization,
         ownership: bindings[index].ownership,
         outputParameter: bindings[index].outputParameter,

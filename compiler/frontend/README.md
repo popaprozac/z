@@ -229,11 +229,16 @@ boundaries must migrate from that fallback to stable diagnostics; malformed or
 lost lowered IR stays an internal compiler error. This DX work does not
 substitute for fail-closed behavior.
 
-Two nearby findings remain explicitly separate from lowerability: native
-semantic resolution still needs Stage-0 `Z0704` parity for a borrowed match
-payload held across `await`, and native `check` can currently stop after IR
-construction before a non-tail main-executor suspension reaches its C-emission
-constraint. These are safety/check-command parity work, not `Z1000` cases.
+Two nearby findings remain explicitly separate from ordinary `Z1000`
+representation gaps, and both now fail at their proper boundary. Native flow
+state carries lexical match-loan provenance and reports Stage-0-compatible
+`Z0704` before a borrowed match owner crosses `await`; plain async parameter
+borrows, consuming matches, and persistent async-generator frames keep their
+intentional exceptions. The lowerability pass is also graph-aware: it resolves
+direct main-executor callees, detects whether they suspend, and reports a
+source-mapped `Z0700` when a suspending placed call is not the worker closure's
+tail return. The standalone native `check` command therefore agrees with native
+emission without running a no-write C-emission pass.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported

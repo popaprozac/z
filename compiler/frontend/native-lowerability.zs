@@ -12,6 +12,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
+  ModuleGraph,
   ModuleResolveError,
   ModuleResolveErrorKind,
   codedModuleResolutionError,
@@ -157,10 +158,161 @@ function stableOptionalChainSource(
   return stableOptionalChainSource(tree, receiver);
 }
 
+function expressionTreeContainsSuspension(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
+  ) return true;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
+  for (const statement of tree.nodes[index].statements) {
+    if (statementContainsSuspension(arena, statement)) return true;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsSuspension(arena, tree, child)) return true;
+  }
+  return false;
+}
+
+function statementContainsSuspension(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (
+    arena.nodes[index].kind == StatementKind.asyncScopeStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
+  ) return true;
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsSuspension(arena, tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsSuspension(arena, tree, root)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsSuspension(arena, child)) return true;
+  }
+  return false;
+}
+
+function functionContainsSuspension(in declaration: FunctionDeclaration): boolean {
+  for (const root of declaration.body.roots) {
+    if (statementContainsSuspension(declaration.body, root)) return true;
+  }
+  return false;
+}
+
+function parsedModuleIndexForGraphModule(
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  graphModuleIndex: usize
+): usize {
+  if (graphModuleIndex >= graph.modules.length) return modules.length;
+  const path = graph.modules[graphModuleIndex].path.copyBytes(
+    0,
+    graph.modules[graphModuleIndex].path.byteLength
+  );
+  let index: usize = 0;
+  while (index < modules.length) {
+    if (modules[index].path == path) return index;
+    index = index + 1;
+  }
+  return modules.length;
+}
+
+function placedCallTargetSuspends(
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  callIndex: usize
+): boolean {
+  if (moduleIndex >= graph.modules.length) return false;
+  for (const resolution of graph.modules[moduleIndex].semanticEvidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[callIndex].offset
+      || resolution.line != tree.nodes[callIndex].line
+      || resolution.column != tree.nodes[callIndex].column
+    ) continue;
+    const targetModule = parsedModuleIndexForGraphModule(
+      modules,
+      graph,
+      resolution.targetModuleIndex
+    );
+    if (targetModule >= modules.length) return false;
+    let targetName = resolution.targetName.copyBytes(
+      0,
+      resolution.targetName.byteLength
+    );
+    if (
+      resolution.targetModuleIndex < graph.modules.length
+      && resolution.targetSymbolIndex
+        < graph.modules[resolution.targetModuleIndex].symbols.length
+    ) {
+      targetName = graph.modules[resolution.targetModuleIndex]
+        .symbols[resolution.targetSymbolIndex]
+        .name.copyBytes(
+          0,
+          graph.modules[resolution.targetModuleIndex]
+            .symbols[resolution.targetSymbolIndex].name.byteLength
+        );
+    }
+    for (const declaration of modules[targetModule].program.functions) {
+      if (declaration.name == targetName) {
+        return functionContainsSuspension(declaration);
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+function expressionIsTailPlacement(
+  in tree: ExpressionTree,
+  current: usize,
+  placement: usize
+): boolean {
+  if (current == placement) return true;
+  if (
+    tree.nodes[current].kind == ExpressionKind.tryExpression
+    && tree.nodes[current].children.length == 1
+  ) {
+    const child = tree.nodes[current].children[0];
+    return expressionIsTailPlacement(
+      tree,
+      child,
+      placement
+    );
+  }
+  return false;
+}
+
 function validateNativeExpressionTree(
   in path: String,
-  in tree: ExpressionTree
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in tree: ExpressionTree,
+  tailPosition: boolean
 ): void throws ModuleResolveError {
+  const treeRoot = tree.root;
   let index: usize = 0;
   while (index < tree.nodes.length) {
     const node = view tree.nodes[index];
@@ -186,6 +338,37 @@ function validateNativeExpressionTree(
         node.column,
         6
       );
+    }
+    if (
+      node.kind == ExpressionKind.executorPlacementExpression
+      && node.value != "spawn"
+      && node.labels.length > 2
+      && node.labels[2] == "call"
+      && node.children.length > 0
+    ) {
+      const callIndex = node.children[node.children.length - 1];
+      if (
+        placedCallTargetSuspends(
+          modules,
+          graph,
+          moduleIndex,
+          tree,
+          callIndex
+        )
+        && (
+          !tailPosition
+          || !expressionIsTailPlacement(tree, treeRoot, index)
+        )
+      ) {
+        throw loweringBoundary(
+          path,
+          "Z0700",
+          "a suspending thread.main call must be the worker closure's tail return in the current native compiler tier",
+          node.line,
+          node.column,
+          5
+        );
+      }
     }
     if (
       node.kind == ExpressionKind.forExpression
@@ -258,10 +441,21 @@ function validateNativeExpressionTree(
 
 function validateNativeExpression(
   in path: String,
-  in expression: ExpressionSyntax
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in expression: ExpressionSyntax,
+  tailPosition: boolean
 ): void throws ModuleResolveError {
   match (in expression.tree) {
-    some(tree) => try validateNativeExpressionTree(path, tree);
+    some(tree) => try validateNativeExpressionTree(
+      path,
+      moduleIndex,
+      modules,
+      graph,
+      tree,
+      tailPosition
+    );
     none => throw loweringBoundary(
       path,
       "Z1000",
@@ -275,6 +469,9 @@ function validateNativeExpression(
 
 function validateNativeBody(
   in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
   in body: StatementArena,
   asynchronous: boolean
 ): void throws ModuleResolveError {
@@ -284,11 +481,25 @@ function validateNativeBody(
       none => {}
     }
     match (in statement.expression) {
-      some(expression) => try validateNativeExpression(path, expression);
+      some(expression) => try validateNativeExpression(
+        path,
+        moduleIndex,
+        modules,
+        graph,
+        expression,
+        statement.kind == StatementKind.returnStatement
+      );
       none => {}
     }
     match (in statement.secondExpression) {
-      some(expression) => try validateNativeExpression(path, expression);
+      some(expression) => try validateNativeExpression(
+        path,
+        moduleIndex,
+        modules,
+        graph,
+        expression,
+        false
+      );
       none => {}
     }
     if (statement.kind == StatementKind.yieldStatement) {
@@ -378,6 +589,9 @@ function validateNativeBody(
 
 function validateNativeFunction(
   in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
   in declaration: FunctionDeclaration,
   in owner: String
 ): void throws ModuleResolveError {
@@ -450,7 +664,14 @@ function validateNativeFunction(
     none => {}
   }
   const asynchronous = declaration.asynchronous;
-  try validateNativeBody(path, declaration.body, asynchronous);
+  try validateNativeBody(
+    path,
+    moduleIndex,
+    modules,
+    graph,
+    declaration.body,
+    asynchronous
+  );
 }
 
 function aggregateKindName(in aggregate: AggregateDeclaration): String {
@@ -461,6 +682,9 @@ function aggregateKindName(in aggregate: AggregateDeclaration): String {
 
 function validateNativeAggregate(
   in path: String,
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
   in aggregate: AggregateDeclaration
 ): void throws ModuleResolveError {
   if (aggregate.typeParameters.length > 0) {
@@ -487,21 +711,45 @@ function validateNativeAggregate(
   }
   for (const field of aggregate.fields) {
     try validateNativeType(path, field.type);
-    try validateNativeBody(path, field.defaultStatements, false);
+    try validateNativeBody(
+      path,
+      moduleIndex,
+      modules,
+      graph,
+      field.defaultStatements,
+      false
+    );
   }
   for (const method of aggregate.methods) {
-    try validateNativeFunction(path, method, aggregate.name);
+    try validateNativeFunction(
+      path,
+      moduleIndex,
+      modules,
+      graph,
+      method,
+      aggregate.name
+    );
   }
   match (in aggregate.deinitializer) {
-    some(deinitializer) => try validateNativeBody(path, deinitializer.body, false);
+    some(deinitializer) => try validateNativeBody(
+      path,
+      moduleIndex,
+      modules,
+      graph,
+      deinitializer.body,
+      false
+    );
     none => {}
   }
 }
 
 export function validateNativeLowerability(
-  in modules: Array<ParsedModule>
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph
 ): void throws ModuleResolveError {
-  for (const module of modules) {
+  let moduleIndex: usize = 0;
+  while (moduleIndex < modules.length) {
+    const module = view modules[moduleIndex];
     if (module.program.traits.length > 0) {
       const declaration = view module.program.traits[0];
       throw loweringBoundary(
@@ -525,14 +773,27 @@ export function validateNativeLowerability(
       );
     }
     for (const aggregate of module.program.aggregates) {
-      try validateNativeAggregate(module.path, aggregate);
+      try validateNativeAggregate(
+        module.path,
+        moduleIndex,
+        modules,
+        graph,
+        aggregate
+      );
     }
     for (const declaration of module.program.constants) {
       match (in declaration.typeAnnotation) {
         some(type) => try validateNativeType(module.path, type);
         none => {}
       }
-      try validateNativeExpression(module.path, declaration.initializer);
+      try validateNativeExpression(
+        module.path,
+        moduleIndex,
+        modules,
+        graph,
+        declaration.initializer,
+        false
+      );
     }
     for (const declaration of module.program.enums) {
       for (const variant of declaration.variants) {
@@ -543,7 +804,15 @@ export function validateNativeLowerability(
       }
     }
     for (const declaration of module.program.functions) {
-      try validateNativeFunction(module.path, declaration, "");
+      try validateNativeFunction(
+        module.path,
+        moduleIndex,
+        modules,
+        graph,
+        declaration,
+        ""
+      );
     }
+    moduleIndex = moduleIndex + 1;
   }
 }

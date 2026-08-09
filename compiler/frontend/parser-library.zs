@@ -104,7 +104,7 @@ function stage1Emit(in entryPath: String, in batch: String): String {
       return `error\n${message}`;
     }
   };
-  const lowerabilityOutcome = attempt validateNativeLowerability(parsed);
+  const lowerabilityOutcome = attempt validateNativeLowerability(parsed, graph);
   match (lowerabilityOutcome) {
     success => {}
     failure(error) => {

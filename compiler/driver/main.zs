@@ -230,7 +230,7 @@ function loadProject(in entryPath: String): NativeProject throws String {
       throw message;
     }
   };
-  const lowerabilityOutcome = attempt validateNativeLowerability(modules);
+  const lowerabilityOutcome = attempt validateNativeLowerability(modules, graph);
   match (lowerabilityOutcome) {
     success => {}
     failure(error) => {
