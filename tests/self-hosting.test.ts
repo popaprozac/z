@@ -1261,6 +1261,27 @@ test("emits and runs the first program directly from the native Z AST", () => {
     optionEmission.stdout,
     /discardResource\(void\).*?Z___z_Option_Resource held __attribute__\(\(unused\)\) = resource\(0\);.*?Z___z_Option_Resource_deinit\(&held\);/s,
   );
+  assert.match(
+    optionEmission.stdout,
+    /Z___z_Option_i32 scalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_some, \.payload\.some = 42\};/,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /Z___z_Option_i32 noScalar = \(Z___z_Option_i32\)\{\.tag = Z___z_Option_i32Tag_none\};/,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /Z___z_Option_Note storedNote = .*?_z_stage1_live_note = false, note/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /Z___z_Option_User storedUser = .*?\.payload\.some = Z_User_retain\(user\)/s,
+  );
+  assert.match(
+    optionEmission.stdout,
+    /userId\(const Z___z_Option_User \*option\).*?\(\*option\)\.payload\.some.*?return _z_stage1_match_payload_/s,
+  );
+  assert.doesNotMatch(optionEmission.stdout, /Option\.(?:some|none)/);
   const optionExecutable = resolve(directory, "option");
   const optionCompilation = spawnSync(
     "clang",
@@ -3952,7 +3973,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
 
   const noNativeTests = spawnSync(
     executable,
-    ["test", resolve(projectRoot, "examples/language/modules/main.zs")],
+    ["test", resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs")],
     { encoding: "utf8" },
   );
   assert.equal(noNativeTests.status, 1);

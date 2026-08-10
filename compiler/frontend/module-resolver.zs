@@ -2710,13 +2710,43 @@ function inferExpressionNodeType(
             || generic.base == "Map"
             || generic.base == "Set"
           )
-        ) return "usize";
+        ) {
+          recordExpressionResolution(
+            modules,
+            moduleIndex,
+            tree,
+            index,
+            "usize",
+            inout evidence
+          );
+          return "usize";
+        }
       }
       none => {}
     }
     if (receiverValueType == "String") {
-      if (memberName == "byteLength") return "usize";
-      if (memberName == "isEmpty") return "boolean";
+      if (memberName == "byteLength") {
+        recordExpressionResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          "usize",
+          inout evidence
+        );
+        return "usize";
+      }
+      if (memberName == "isEmpty") {
+        recordExpressionResolution(
+          modules,
+          moduleIndex,
+          tree,
+          index,
+          "boolean",
+          inout evidence
+        );
+        return "boolean";
+      }
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
@@ -3557,6 +3587,86 @@ function inferExpressionNodeType(
         enumReceiverIndex
       );
       const variantName = identifierLookupName(tree.nodes[calleeIndex].value);
+      if (enumType == "Option" && variantName == "some") {
+        if (children.length != 2) {
+          throw matchError(
+            module,
+            tree,
+            calleeIndex,
+            "Option.some requires exactly one value"
+          );
+        }
+        const payloadIndex = children[1];
+        let expectedPayload = "";
+        let optionType = "";
+        const contextualOption = contextualExpectedType(
+          bindings,
+          tree,
+          index
+        );
+        match (genericTypeShape(contextualOption)) {
+          some(generic) => {
+            if (generic.base == "Option" && generic.arguments.length == 1) {
+              optionType = contextualOption.copyBytes(
+                0,
+                contextualOption.byteLength
+              );
+              expectedPayload = generic.arguments[0].copyBytes(
+                0,
+                generic.arguments[0].byteLength
+              );
+            }
+          }
+          none => {}
+        }
+        const payloadType = try inferExpressionNodeTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          payloadIndex,
+          expectedPayload,
+          inout bindings,
+          inout evidence
+        );
+        try requireSettledExpressionType(
+          module,
+          tree,
+          payloadIndex,
+          payloadType
+        );
+        if (expectedPayload.byteLength > 0) {
+          try requireExpressionType(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            payloadIndex,
+            expectedPayload,
+            payloadType
+          );
+        } else {
+          expectedPayload = payloadType.copyBytes(0, payloadType.byteLength);
+        }
+        try consumeOwnedExpressionNode(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          payloadIndex,
+          expectedPayload,
+          false,
+          inout bindings
+        );
+        if (optionType.byteLength > 0) return optionType;
+        let optionArguments = Array<String>();
+        optionArguments.push(expectedPayload.copyBytes(
+          0,
+          expectedPayload.byteLength
+        ));
+        return parameterizedTypeName("Option", optionArguments);
+      }
       match (matchShape(modules, moduleIndex, enumType)) {
         some(shape) => {
           const variantIndex = matchVariantIndex(shape, variantName);

@@ -154,6 +154,7 @@ export enum LoweredExpressionKind {
   fsLockUnlock,
   moveValue,
   copyValue,
+  retainValue,
   viewProjection,
   borrowedTemporary,
   unaryOperation,
@@ -533,6 +534,21 @@ function intrinsicOptionPayloadName(in name: String): Option<String> {
   const prefix = "__z_Option_";
   if (!stringStartsWith(name, prefix)) return Option<String>.none;
   return Option.some(name.copyBytes(prefix.byteLength, name.byteLength));
+}
+
+function optionPayloadTypeName(in name: String): Option<String> {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base == "Option" && generic.arguments.length == 1) {
+        return Option.some(generic.arguments[0].copyBytes(
+          0,
+          generic.arguments[0].byteLength
+        ));
+      }
+    }
+    none => {}
+  }
+  return intrinsicOptionPayloadName(name);
 }
 
 function sourceTypeIsOption(in name: String): boolean {
@@ -2945,6 +2961,48 @@ function wrapImplicitOwnedTransfer(
     move children,
     Array<String>()
   );
+}
+
+function expressionBorrowsStoredReference(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  const kind = tree.nodes[index].kind;
+  return kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.argumentBindingExpression
+    || kind == ExpressionKind.argumentReferenceExpression
+    || kind == ExpressionKind.memberExpression;
+}
+
+function wrapOptionPayloadStorage(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in tree: ExpressionTree,
+  input: usize,
+  in payloadTypeName: String,
+  value: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  const payloadType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    payloadTypeName
+  );
+  if (
+    payloadType.kind == LoweredTypeKind.classType
+    && expressionBorrowsStoredReference(tree, input)
+  ) {
+    let children = Array<usize>();
+    children.push(value);
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.retainValue,
+      payloadType.name,
+      move children,
+      Array<String>()
+    );
+  }
+  return wrapImplicitOwnedTransfer(tree, input, value, inout output);
 }
 
 function resolvedCallTarget(
@@ -6499,9 +6557,18 @@ function lowerExpression(
                       payloadInput,
                       inout output
                     );
-                    payload = wrapImplicitOwnedTransfer(
+                    const payloadTypeName = match (
+                      optionPayloadTypeName(intrinsicName)
+                    ) {
+                      some(name) => name;
+                      none => throw `native Option lowering lost the payload type for ${intrinsicName}`;
+                    };
+                    payload = try wrapOptionPayloadStorage(
+                      program,
+                      importedTypes,
                       tree,
                       payloadInput,
+                      payloadTypeName,
                       payload,
                       inout output
                     );
@@ -7754,9 +7821,12 @@ function lowerExpressionExpected(
                 payloadIndex,
                 inout output
               );
-              payload = wrapImplicitOwnedTransfer(
+              payload = try wrapOptionPayloadStorage(
+                program,
+                importedTypes,
                 tree,
                 payloadIndex,
+                generic.arguments[0],
                 payload,
                 inout output
               );
@@ -7902,7 +7972,15 @@ function lowerOptionalFieldExpression(
     payloadTypeName,
     inout output
   );
-  payload = wrapImplicitOwnedTransfer(tree, index, payload, inout output);
+  payload = try wrapOptionPayloadStorage(
+    program,
+    importedTypes,
+    tree,
+    index,
+    payloadTypeName,
+    payload,
+    inout output
+  );
   let children = Array<usize>();
   children.push(payload);
   let labels = Array<String>();
@@ -8822,6 +8900,40 @@ function lowerMatchTree(
     tree,
     root
   );
+  let consuming = tree.nodes[root].value != "in";
+  if (
+    consuming
+    && tree.nodes[subjectInput].kind == ExpressionKind.identifierExpression
+  ) {
+    const subjectName = tree.nodes[subjectInput].value.copyBytes(
+      0,
+      tree.nodes[subjectInput].value.byteLength
+    );
+    for (const functionDeclaration of program.functions) {
+      if (functionDeclaration.name != ownerName) continue;
+      for (const parameter of functionDeclaration.parameters) {
+        if (
+          parameter.name == subjectName
+          && parameter.mode != ParameterMode.value
+        ) consuming = false;
+      }
+    }
+    for (const aggregate of program.aggregates) {
+      for (const method of aggregate.methods) {
+        if (method.name != ownerName) continue;
+        if (
+          subjectName == "this"
+          && method.receiverMode != ReceiverMode.move
+        ) consuming = false;
+        for (const parameter of method.parameters) {
+          if (
+            parameter.name == subjectName
+            && parameter.mode != ParameterMode.value
+          ) consuming = false;
+        }
+      }
+    }
+  }
   let armStatements = Array<usize>();
   let armPosition: usize = 1;
   while (armPosition < tree.nodes[root].children.length) {
@@ -8925,7 +9037,7 @@ function lowerMatchTree(
       emittedPayloadBinding
     );
     const matchBindingNeedsCleanup = match (in payloadType) {
-      some(type) => tree.nodes[root].value != "in"
+      some(type) => consuming
         && moduleTypeNeedsCleanup(program, importedTypes, type)
         && !payloadTransfersOut;
       none => false;
@@ -8968,7 +9080,7 @@ function lowerMatchTree(
     cleanups: Array<LoweredCleanup>(),
     liveFlag: "",
     labels,
-    matchConsumesSubject: tree.nodes[root].value != "in",
+    matchConsumesSubject: consuming,
     matchBindingNeedsCleanup: false,
   }));
   return outputIndex;
@@ -11442,13 +11554,51 @@ function lowerStatementCore(
           none => throw "native lowering cannot lower an opaque expression";
         }
       } else {
-        loweredValue = try lowerExpressionSyntax(
-          program,
-          importedTypes,
-          evidence,
-          source,
-          inout expressions
-        );
+        let expectedTypeName = "";
+        if (arena.nodes[index].kind == StatementKind.variableStatement) {
+          match (in arena.nodes[index].typeAnnotation) {
+            some(annotation) => expectedTypeName = annotation.name.copyBytes(
+              0,
+              annotation.name.byteLength
+            );
+            none => {
+              for (const binding of evidence.bindingResolutions) {
+                if (
+                  binding.offset == arena.nodes[index].nameOffset
+                  && binding.name == arena.nodes[index].name
+                ) expectedTypeName = binding.typeName.copyBytes(
+                  0,
+                  binding.typeName.byteLength
+                );
+              }
+            }
+          }
+        }
+        if (expectedTypeName.byteLength > 0) {
+          match (in source.tree) {
+            some(tree) => {
+              const root = tree.root;
+              loweredValue = try lowerExpressionExpected(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                root,
+                expectedTypeName,
+                inout expressions
+              );
+            }
+            none => throw "native lowering cannot lower an opaque expression";
+          }
+        } else {
+          loweredValue = try lowerExpressionSyntax(
+            program,
+            importedTypes,
+            evidence,
+            source,
+            inout expressions
+          );
+        }
         if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
           markMutableStorage(inout expressions, loweredValue);
         }

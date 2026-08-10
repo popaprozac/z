@@ -647,11 +647,13 @@ function appendClassAndOnceRuntime(
       output.append(";\n");
     }
     output.append("  return _z_stage1_instance;\n}\n\n");
-    output.append("static inline __attribute__((unused)) void Z_");
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(aggregate.name);
+    output.append(" *Z_");
     output.append(aggregate.name);
     output.append("_retain(Z_");
     output.append(aggregate.name);
-    output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n}\n\n");
+    output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n  return value;\n}\n\n");
     if (aggregate.executorBound) {
       output.append("static void Z_");
       output.append(aggregate.name);
@@ -1311,6 +1313,18 @@ function appendExpression(
     }
     output.append("z_string_copy(");
     const operand = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, operand);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.retainValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed retain expression";
+    }
+    const operand = declaration.expressions[index].children[0];
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_retain(");
     try appendExpression(inout output, declaration, operand);
     output.append(")");
     return;

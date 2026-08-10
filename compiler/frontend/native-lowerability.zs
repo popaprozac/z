@@ -475,6 +475,47 @@ function resolvedExpressionType(
       && resolution.column == tree.nodes[index].column
     ) return resolution.typeName.copyBytes(0, resolution.typeName.byteLength);
   }
+  const nodeKind = tree.nodes[index].kind;
+  const nodeValue = tree.nodes[index].value.copyBytes(
+    0,
+    tree.nodes[index].value.byteLength
+  );
+  const nodeOffset = tree.nodes[index].offset;
+  if (nodeKind == ExpressionKind.identifierExpression) {
+    return resolvedLocalBindingType(
+      graph,
+      moduleIndex,
+      nodeValue,
+      nodeOffset
+    );
+  }
+  if (
+    nodeKind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    if (nodeValue == "byteLength") return "usize";
+    if (nodeValue == "isEmpty") return "boolean";
+    const receiver = tree.nodes[index].children[0];
+    const receiverType = resolvedExpressionType(
+      graph,
+      moduleIndex,
+      tree,
+      receiver
+    );
+    match (genericTypeShape(receiverType)) {
+      some(generic) => {
+        if (
+          nodeValue == "length"
+          && (
+            generic.base == "Array"
+            || generic.base == "Map"
+            || generic.base == "Set"
+          )
+        ) return "usize";
+      }
+      none => {}
+    }
+  }
   return "";
 }
 

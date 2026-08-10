@@ -736,8 +736,15 @@ tagged result available to `match`. Cleanup-bearing values on either side obey
 the active-variant rule: an uninspected result destroys its stored payload,
 while a consuming match transfers that payload into one arm-local owner and
 cleans it after the arm value is evaluated. Contextually inferred Option
-constructors and broader expression composition remain intrinsic pressure
-points. Direct `return try call()` already relays an ABI-identical result after
+construction now uses the destination or payload evidence instead of requiring
+an explicit `Option<T>` receiver. `Option.some(value)` infers `T` for an
+unannotated local, contextual `Option.none` emits the same monomorph, a
+cleanup-bearing value struct transfers its owner, and an existing ARC class
+reference is retained so the source binding remains usable. Matching an `in`
+parameter borrows its active payload even when the source uses ordinary
+`match (value)` spelling; the emitted arm never destroys borrowed storage.
+Broader expression composition remains an intrinsic pressure point. Direct
+`return try call()` already relays an ABI-identical result after
 evaluating it into a temporary and cleaning surrounding owners. A typed local
 initialized through `try` uses an explicit lowering control-flow node: failure
 is rebuilt in the enclosing Result only after the inner error payload is
