@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 3) return 10;
+  if (module.version != 4) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -16,7 +16,15 @@ function inspect(in path: String): i32 throws String {
   if (module.availability.length != 1) return 16;
   if (module.namespaces.length != 1) return 17;
   if (module.namespaces[0] != "math") return 18;
-  if (module.types.length != 0) return 34;
+  if (module.types.length != 1) return 34;
+  if (module.types[0].kind != "record") return 35;
+  if (module.types[0].exportName != "WirePoint") return 36;
+  if (module.types[0].layout != "struct") return 37;
+  if (module.types[0].fieldCount != 2) return 38;
+  if (module.fields.length != 2) return 39;
+  if (module.fields[0].name != "x") return 82;
+  if (module.fields[0].typeName != "int") return 83;
+  if (module.fields[1].name != "y") return 84;
   if (module.functions[0].name != "measureπ") return 19;
   if (module.functions[0].qualifiedName != "math.measureπ") return 20;
   if (module.overloads[0].nativeName != "math::measure_pi") return 21;
@@ -56,7 +64,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 3) return 40;
+  if (module.version != 4) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -64,6 +72,7 @@ function inspectClang(in path: String): i32 throws String {
   if (module.types[0].exportName != "ZForeignStatus") return 69;
   if (module.types[0].nativeName != "ZForeignStatus") return 70;
   if (module.types[0].underlyingType != "i32") return 71;
+  if (module.fields.length != 0) return 81;
   if (module.functions.length != 5) return 43;
   if (module.constants.length != 5) return 60;
   if (module.constants[0].name != "Z_FOREIGN_ENUM_OK") return 61;

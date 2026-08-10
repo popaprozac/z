@@ -162,9 +162,10 @@ Z sema and native backends
 ```
 
 The first adapter seam is now executable. The real Clang header producer can
-frame functions, nominal enum types, and typed native constants as a versioned
-`ZFDCL` raw-declaration stream, carrying enum identity/underlying type,
-constant identity/type, function names, namespaces, overloads, native type
+frame functions, nominal enum types, typed native constants, and simple record
+layouts/fields as a versioned `ZFDCL` raw-declaration stream. Version 4 carries
+enum identity/underlying type, constant identity/type, record identity/layout
+and field order/types, function names, namespaces, overloads, native type
 spellings, parameters, source locations, executor affinity, and availability
 into an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
@@ -185,11 +186,10 @@ hashes Clang's complete preprocessed header view plus the contract; a hit skips
 AST production, while a direct or transitive header change regenerates the
 stream. Decoding untrusted declarations is still not equivalent to validated
 FIIR. The versioned stream projects only declaration categories this native
-tier can represent, so unrelated record/object declarations do not poison a
-scalar or enum import. Function records retain their exact native type
-spellings; a missing adapter/contract, a `.zd` declaration that depends on an
-omitted type category, or any unsupported contract fact still rejects the
-import during normalization.
+tier can represent, so unrelated declarations do not poison a supported import.
+Function records retain their exact native type spellings; a missing
+adapter/contract, a `.zd` declaration that depends on an omitted type category,
+or any unsupported contract fact still rejects the import during normalization.
 
 The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
 the existing `declare module`, inferred scalar `export function`, and decimal
@@ -201,18 +201,22 @@ type, and explicit success literals. Any parameter/result fact outside this
 tier is a source-located error; it is never discarded for forward
 compatibility.
 
-This first protocol tier deliberately fails closed for native types, constants,
+Plain C structs containing only scalar fields form the first record tier. Their
+existing `.zd` `in`, `inout`, and `out` parameter capabilities are checked
+against const or mutable native pointers, become ordinary imported struct types,
+and lower to direct C construction, field access, and address-taking calls. The
+protocol still fails closed for unions, nested records, pointer/resource fields,
 Objective-C declarations, interfaces, and protocols. It is producer-facing
-data, not serialized FIIR: `.zd` facts still need to be read and normalized in
-Z before semantic analysis may trust the result. The first normalized scalar
-and integer-status callables now attach to ordinary native module symbols:
+data, not serialized FIIR: `.zd` facts still need to be read and normalized in Z
+before semantic analysis may trust the result. The normalized scalar,
+integer-status, and simple-record callables attach to ordinary native module symbols:
 selective aliases and namespace members share Z's arity, type, and throwing
 effect checker, while an imported function missing from the checked contract
 fails closed. The normalized in-memory FIIR remains a separate,
 version-independent compiler model.
 
-That same first tier now reaches native lowering. Imported headers are emitted
-once, infallible scalar calls retain their native target directly, and
+That same tier now reaches native lowering. Imported headers are emitted once,
+infallible scalar/record calls retain their native target directly, and
 integer-status calls route through a generated C11 adapter that calls the
 native function once and constructs `Result<void, E>` from the normalized
 success literals. The executable fixture strict-compiles and runs both
@@ -231,8 +235,8 @@ selective and namespace calls without exposing producer records to lowering.
 4. expand block/callback adapters with threading and callback-to-async
    synthesis;
 5. add cross-process locking and eviction to the implemented target-aware
-   foreign artifact cache, then add records for native types, constants,
-   callbacks, Objective-C declarations, interfaces, and protocols without
+   foreign artifact cache, then add richer records, callbacks, Objective-C
+   declarations, interfaces, and protocols without
    weakening its fail-closed boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal,
    symbolic scalar, nominally preserved enum-backed integer statuses, and

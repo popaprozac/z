@@ -108,16 +108,17 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 3 covers nominal enum
-  evidence and typed native constants plus foreign functions, overloads,
-  parameters, source locations, executor affinity, and availability. The
-  producer projects that supported tier out of a richer header instead of
-  letting unrelated records poison scalar/enum imports; native type spellings
-  remain on function declarations, so a `.zd` contract that actually uses an
-  unsupported record boundary still fails closed during normalization. Stage
-  0's real Clang producer exposes the matching stream operation, and the
-  bootstrap suite crosses a mixed record/scalar/enum header through the real
-  producer, Z decoder, normalizer, and native driver.
+  `ZFDCL` stream into owned flat Z declarations. Version 4 covers nominal enum
+  evidence, typed native constants, simple record layouts and fields, plus
+  foreign functions, overloads, parameters, source locations, executor
+  affinity, and availability. The producer projects that supported tier out of
+  a richer header instead of letting unrelated declarations poison supported
+  imports; native type spellings remain on function declarations, so a `.zd`
+  contract that uses an unsupported union, nested record, pointer field, or
+  object boundary still fails closed during normalization. Stage 0's real
+  Clang producer exposes the matching stream operation, and the bootstrap suite
+  crosses mixed headers through the real producer, Z decoder, normalizer, and
+  native driver.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies
@@ -125,8 +126,9 @@ recursive path.
   supported ABI scalars to Z types, requires symbolic constants to exist with
   the exact scalar or nominal enum return identity, preserves enum-backed
   errors as source-nameable nominal types through `Result` while retaining
-  their verified C representation, and rejects every unimplemented fact at its
-  `.zd` source location.
+  their verified C representation. Plain C structs with scalar fields also
+  cross through existing `in`, `inout`, and `out` record-pointer declarations;
+  every richer unimplemented fact rejects at its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;
@@ -306,22 +308,23 @@ byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
-verified. For its first function-only tier, it discovers an adjacent `.zd`,
+verified. For its first function/record tier, it discovers an adjacent `.zd`,
 prefers the packaged `z-foreign-adapter` beside its own executable and otherwise
 searches `PATH`, decodes the real
-Clang-produced `ZFDCL` artifact, and normalizes inferred scalar and decimal
-integer-status contracts before native semantic analysis. Selective and
-namespace calls then lower through the ordinary graph: scalar calls remain
-direct, while status calls use a generated C11 wrapper that invokes the native
-function once and constructs `Result<void, E>` from the checked success set.
+Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
+integer-status, and plain scalar-field record-pointer contracts before native
+semantic analysis. Selective and namespace calls then lower through the
+ordinary graph: scalar and record calls remain direct, while status calls use a
+generated C11 wrapper that invokes the native function once and constructs
+`Result<void, E>` from the checked success set.
 Producer artifacts live in `.z-cache/foreign` under an identity derived from
 the importing module, header, contract, include paths, and target. The adapter
 stores a SHA-256 metadata key over Clang's preprocessed header view and the
 contract, so unchanged checks reuse the declaration stream while transitive
 header changes regenerate it. Missing contracts/adapters and contracts that
-require unsupported records or facts fail at the source import. Exact
+require unsupported unions, richer records, or facts fail at the source import. Exact
 status-literal range checks,
-richer declaration records/facts, foreign-cache locking, and eviction remain;
+richer declaration facts, foreign-cache locking, and eviction remain;
 raw decoding alone is never a trusted foreign import.
 Swift targets, broader target selection, custom profiles, polished
 diagnostics, fixed-array-to-Slice lowering, general console formatting, and

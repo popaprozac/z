@@ -766,7 +766,10 @@ export function appendProjectCompileArguments(
   in config: NativeProjectConfig,
   inout arguments: Array<String>
 ): void throws String {
+  arguments.push("-I");
+  arguments.push(copy config.directory);
   for (const directory of config.includeDirectories) {
+    if (directory == config.directory) continue;
     arguments.push("-I");
     arguments.push(copy directory);
   }

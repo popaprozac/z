@@ -3,7 +3,7 @@ import type {
   ForeignModuleDeclarations,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 3;
+const protocolVersion = 4;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -47,18 +47,17 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 3 carries nominal enum evidence so the Z-owned contract normalizer
- * can verify enum-backed status facts without flattening their identity into
- * an integer. Richer declarations remain outside this protocol tier, but do
- * not poison an otherwise representable header: their native spellings remain
- * visible on function records and normalization fails closed if a .zd contract
- * actually attempts to use one of those unsupported boundary types.
+ * Version 4 adds C record layout and field spellings to the nominal enum and
+ * typed-constant tier. Richer declarations remain outside this protocol tier,
+ * but do not poison an otherwise representable header: their native spellings
+ * remain visible on function records and normalization fails closed if a .zd
+ * contract actually attempts to use one of those unsupported boundary types.
  */
 export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
 ): string {
   const namedTypes = [...module.namedTypes.values()].filter(
-    (type) => type.kind === "enum",
+    (type) => type.kind === "enum" || type.kind === "record",
   );
 
   const records = [
@@ -73,8 +72,8 @@ export function encodeForeignFunctionDeclarationStream(
   ];
   for (let typeIndex = 0; typeIndex < namedTypes.length; typeIndex += 1) {
     const type = namedTypes[typeIndex];
-    if (type.kind !== "enum") throw new Error("unreachable non-enum foreign type");
     const source = type.metadata.source;
+    const fields = type.kind === "record" ? type.fields : [];
     records.push([
       "T",
       hexNumber(typeIndex),
@@ -83,12 +82,29 @@ export function encodeForeignFunctionDeclarationStream(
       text(type.qualifiedName),
       text(type.typeName),
       text(type.cName),
-      text(type.underlying),
+      text(type.kind === "enum" ? type.underlying : ""),
+      text(type.kind === "record" ? type.layout : ""),
       optionalText(source?.fileName),
       hexNumber(source?.line ?? 0),
       hexNumber(source?.column ?? 0),
       hexNumber(source?.length ?? 0),
+      hexNumber(fields.length),
     ].join(""));
+    for (let fieldIndex = 0; fieldIndex < fields.length; fieldIndex += 1) {
+      const field = fields[fieldIndex];
+      const fieldSource = field.metadata.source;
+      records.push([
+        "D",
+        hexNumber(typeIndex),
+        hexNumber(fieldIndex),
+        text(field.name),
+        text(field.typeName),
+        optionalText(fieldSource?.fileName),
+        hexNumber(fieldSource?.line ?? 0),
+        hexNumber(fieldSource?.column ?? 0),
+        hexNumber(fieldSource?.length ?? 0),
+      ].join(""));
+    }
   }
   const constants = [...module.constants.values()];
   for (let constantIndex = 0; constantIndex < constants.length; constantIndex += 1) {

@@ -63,6 +63,7 @@ export enum LoweredTypeKind {
   taskType,
   enumType,
   foreignEnumType,
+  foreignStructType,
 }
 
 export struct LoweredType {
@@ -166,6 +167,7 @@ export enum LoweredExpressionKind {
   methodCall,
   fieldValue,
   structValue,
+  foreignStructValue,
   classValue,
   mutexValue,
   mutexWithLock,
@@ -3820,6 +3822,8 @@ function importedStructTarget(
     if (
       (
         importedTypes[importedIndex].kind == LoweredTypeKind.structType
+        || importedTypes[importedIndex].kind
+          == LoweredTypeKind.foreignStructType
         || importedTypes[importedIndex].kind == LoweredTypeKind.classType
       )
       && (
@@ -3832,6 +3836,22 @@ function importedStructTarget(
     ));
   }
   return Option<String>.none;
+}
+
+function importedStructIsForeign(
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): boolean {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind == LoweredTypeKind.foreignStructType
+      && (
+        imported.localName == name
+        || imported.targetName == name
+      )
+    ) return true;
+  }
+  return false;
 }
 
 function uniquelyResolvedFieldTypeName(
@@ -6686,8 +6706,26 @@ function lowerExpression(
         }
       }
     }
+    let constructorTypeName = "";
+    if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
+      constructorTypeName = tree.nodes[calleeInput].value.copyBytes(
+        0,
+        tree.nodes[calleeInput].value.byteLength
+      );
+    } else if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const constructorReceiver = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[constructorReceiver].kind
+          == ExpressionKind.identifierExpression
+      ) {
+        constructorTypeName = `${tree.nodes[constructorReceiver].value}.${tree.nodes[calleeInput].value}`;
+      }
+    }
     if (
-      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+      constructorTypeName.byteLength > 0
       && (
         tree.nodes[index].children.length == 1
         || tree.nodes[index].children.length == 2
@@ -6695,22 +6733,24 @@ function lowerExpression(
     ) {
       let constructionName = "";
       let localAggregate = Option<usize>.none;
-      match (structIndex(program, tree.nodes[calleeInput].value)) {
-        some(aggregateIndex) => {
-          localAggregate = Option.some(aggregateIndex);
+      if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
+        match (structIndex(program, constructorTypeName)) {
+          some(aggregateIndex) => {
+            localAggregate = Option.some(aggregateIndex);
+          }
+          none => {}
         }
-        none => {}
       }
       match (importedStructTarget(
         importedTypes,
-        tree.nodes[calleeInput].value
+        constructorTypeName
       )) {
         some(name) => constructionName = move name;
         none => match (in localAggregate) {
           some(_) => {
-            constructionName = tree.nodes[calleeInput].value.copyBytes(
+            constructionName = constructorTypeName.copyBytes(
               0,
-              tree.nodes[calleeInput].value.byteLength
+              constructorTypeName.byteLength
             );
           }
           none => {}
@@ -7012,7 +7052,9 @@ function lowerExpression(
         }
         return pushExpression(
           inout output,
-          LoweredExpressionKind.structValue,
+          importedStructIsForeign(importedTypes, constructionName)
+            ? LoweredExpressionKind.foreignStructValue
+            : LoweredExpressionKind.structValue,
           constructionName,
           children,
           labels
@@ -14263,21 +14305,43 @@ function loweredEnumCopy(
   return Option<LoweredEnum>.none;
 }
 
+function loweredForeignFieldType(in name: String): LoweredType throws String {
+  if (name == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
+  if (name == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
+  if (name == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });
+  if (name == "i32") return LoweredType({ kind: LoweredTypeKind.i32Type, name: "" });
+  if (name == "i64") return LoweredType({ kind: LoweredTypeKind.i64Type, name: "" });
+  if (name == "u8") return LoweredType({ kind: LoweredTypeKind.u8Type, name: "" });
+  if (name == "u16") return LoweredType({ kind: LoweredTypeKind.u16Type, name: "" });
+  if (name == "u32") return LoweredType({ kind: LoweredTypeKind.u32Type, name: "" });
+  if (name == "u64") return LoweredType({ kind: LoweredTypeKind.u64Type, name: "" });
+  if (name == "isize") return LoweredType({ kind: LoweredTypeKind.isizeType, name: "" });
+  if (name == "usize") return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
+  if (name == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
+  if (name == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
+  throw `native imported record field has unsupported type ${name}`;
+}
+
 function importedTypesForModule(
   in graph: ModuleGraph,
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
   moduleIndex: usize
-): Array<LoweredImportedType> {
+): Array<LoweredImportedType> throws String {
   let types = Array<LoweredImportedType>();
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (
-      symbol.kind == ModuleSymbolKind.enumSymbol
+      (
+        symbol.kind == ModuleSymbolKind.enumSymbol
+        || symbol.kind == ModuleSymbolKind.structSymbol
+      )
       && symbol.foreignHeader.byteLength > 0
     ) {
       match (in symbol.typeSignature) {
         some(signature) => {
           if (
+            symbol.kind == ModuleSymbolKind.enumSymbol
+            &&
             signature.foreignNativeName.byteLength > 0
             && signature.foreignUnderlyingType.byteLength > 0
           ) {
@@ -14299,6 +14363,35 @@ function importedTypesForModule(
                 0,
                 signature.foreignUnderlyingType.byteLength
               ),
+            }));
+          } else if (
+            symbol.kind == ModuleSymbolKind.structSymbol
+            && signature.foreignNativeName.byteLength > 0
+          ) {
+            let fields = Array<LoweredField>();
+            for (const field of signature.fields) {
+              const fieldType = try loweredForeignFieldType(field.typeName);
+              fields.push(LoweredField({
+                name: field.name.copyBytes(0, field.name.byteLength),
+                type: fieldType,
+                optionalField: false,
+              }));
+            }
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              kind: LoweredTypeKind.foreignStructType,
+              executorBound: false,
+              threadShareable: false,
+              workerDestructible: true,
+              needsDeinit: false,
+              fields,
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: "",
             }));
           }
         }
@@ -15138,7 +15231,7 @@ function lowerModulesIncludingTests(
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
-    let importedTypes = importedTypesForModule(
+    let importedTypes = try importedTypesForModule(
       graph,
       structs,
       enums,

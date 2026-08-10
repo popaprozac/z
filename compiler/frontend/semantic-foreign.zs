@@ -95,7 +95,10 @@ function foreignFunctionSignature(
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
   for (const parameter of contract.parameters) {
-    parameterModes.push("value");
+    parameterModes.push(parameter.capability.copyBytes(
+      0,
+      parameter.capability.byteLength
+    ));
     parameterTypes.push(
       localForeignTypeName(types, namespace, parameter.typeName)
     );
@@ -287,8 +290,22 @@ function attachNamespaceConstants(
 }
 
 function foreignTypeSignature(
-  in type: NativeForeignTypeContract
+  in type: NativeForeignTypeContract,
+  in types: Array<NativeForeignTypeContract>,
+  in namespace: String
 ): ModuleTypeSignature {
+  let fields = Array<ModuleFieldSignature>();
+  for (const field of type.fields) {
+    fields.push(ModuleFieldSignature({
+      name: field.name.copyBytes(0, field.name.byteLength),
+      typeName: localForeignTypeName(types, namespace, field.typeName),
+      executorAffinity: "",
+      visibility: "public",
+      readonlyField: false,
+      hasDefault: false,
+      optionalField: false,
+    }));
+  }
   return ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
@@ -296,7 +313,7 @@ function foreignTypeSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     executorAffinity: "",
     implementedTraits: Array<String>(),
-    fields: Array<ModuleFieldSignature>(),
+    fields,
     methods: Array<ModuleMethodSignature>(),
     variants: Array<ModuleVariantSignature>(),
     customDeinit: false,
@@ -353,7 +370,9 @@ function attachForeignTypes(
     }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name,
-      kind: ModuleSymbolKind.enumSymbol,
+      kind: type.kind == "enum"
+        ? ModuleSymbolKind.enumSymbol
+        : ModuleSymbolKind.structSymbol,
       exported: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
@@ -361,7 +380,7 @@ function attachForeignTypes(
       valueType: "",
       functionSignature: Option<ModuleFunctionSignature>.none,
       typeSignature: Option<ModuleTypeSignature>.some(
-        foreignTypeSignature(type)
+        foreignTypeSignature(type, contracts.types, namespace)
       ),
       foreignHeader: contracts.moduleSpecifier.copyBytes(
         0,
@@ -408,12 +427,15 @@ function attachSelectiveType(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
   in contracts: NativeForeignContractSet,
+  in namespace: String,
   in localName: String,
   typeIndex: usize
 ): void {
   const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
   modules[moduleIndex].symbols[symbolIndex].kind =
-    ModuleSymbolKind.enumSymbol;
+    contracts.types[typeIndex].kind == "enum"
+      ? ModuleSymbolKind.enumSymbol
+      : ModuleSymbolKind.structSymbol;
   modules[moduleIndex].symbols[symbolIndex].importedName =
     contracts.types[typeIndex].nativeName.copyBytes(
       0,
@@ -422,7 +444,11 @@ function attachSelectiveType(
   modules[moduleIndex].symbols[symbolIndex].valueType = "";
   modules[moduleIndex].symbols[symbolIndex].typeSignature =
     Option<ModuleTypeSignature>.some(
-      foreignTypeSignature(contracts.types[typeIndex])
+      foreignTypeSignature(
+        contracts.types[typeIndex],
+        contracts.types,
+        namespace
+      )
     );
   modules[moduleIndex].symbols[symbolIndex].foreignHeader =
     contracts.moduleSpecifier.copyBytes(
@@ -508,6 +534,7 @@ function attachModuleContract(
                 moduleIndex,
                 inout modules,
                 binding.contracts,
+                namespace,
                 localName,
                 index
               );

@@ -4098,7 +4098,43 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
       }],
     ]),
     nativeTypes: new Map(),
-    namedTypes: new Map(),
+    namedTypes: new Map([
+      ["WirePoint", {
+        kind: "record",
+        exportName: "WirePoint",
+        typeName: "WirePoint",
+        cName: "WirePoint",
+        layout: "struct",
+        fields: [
+          {
+            name: "x",
+            typeName: "int",
+            metadata: {
+              source: null,
+              availability: [],
+              executorAffinity: null,
+            },
+          },
+          {
+            name: "y",
+            typeName: "int",
+            metadata: {
+              source: null,
+              availability: [],
+              executorAffinity: null,
+            },
+          },
+        ],
+        resource: null,
+        namespacePath: [],
+        qualifiedName: "WirePoint",
+        metadata: {
+          source: null,
+          availability: [],
+          executorAffinity: null,
+        },
+      }],
+    ]),
     constants: new Map(),
     objectTypes: new Map(),
     interfaces: new Map(),
@@ -4108,11 +4144,14 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000003\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000004\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
-      namedTypes: new Map([["unsupported", {} as never]]),
+      namedTypes: new Map([
+        ...declarations.namedTypes,
+        ["unsupported", {} as never],
+      ]),
       objectTypes: new Map([["unsupported", {} as never]]),
       interfaces: new Map([["unsupported", {} as never]]),
       protocols: new Map([["unsupported", {} as never]]),
@@ -4534,14 +4573,25 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   const geometryTypeRecords = geometryDeclarations
     .split("\n")
     .filter((record) => record.startsWith("T"));
-  assert.equal(geometryTypeRecords.length, 1);
-  assert.match(geometryTypeRecords[0], /ZDirection/);
+  assert.equal(
+    geometryTypeRecords.filter((record) => /ZDirection/.test(record)).length,
+    1,
+  );
+  assert.equal(
+    geometryTypeRecords.filter((record) => /ZPoint/.test(record)).length,
+    1,
+  );
+  assert.ok(
+    geometryDeclarations
+      .split("\n")
+      .some((record) => record.startsWith("D") && /x/.test(record)),
+  );
 
   const truncatedPath = resolve(directory, "truncated.zfdcl");
   writeFileSync(truncatedPath, encoded.slice(0, -2));
   const truncated = spawnSync(executable, [truncatedPath], { encoding: "utf8" });
   assert.equal(truncated.status, 3, truncated.stderr);
-}, 30_000);
+}, 60_000);
 
 test("compiles a multi-module Z application through the standalone native driver", () => {
   const driverSource = resolve(projectRoot, "compiler/driver/main.zs");
@@ -6094,6 +6144,61 @@ test("compiles a multi-module Z application through the standalone native driver
     /compiled 1 Z modules/,
   );
   assert.ok(statSync(cachedHeaderOnlyApplication).mtimeMs > 0);
+
+  const recordProject = resolve(directory, "foreign-record-project");
+  mkdirSync(recordProject);
+  const recordSource = resolve(recordProject, "main.zs");
+  writeFileSync(
+    recordSource,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-record-input.zs",
+      ),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(recordProject, "geometry.h"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/geometry.h"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(recordProject, "geometry.h.zd"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/geometry.h.zd"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(recordProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "foreign-record-project",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const recordRun = spawnSync(
+    driver,
+    ["run", recordSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(recordRun.status, 21, recordRun.stderr);
+  assert.match(recordRun.stdout, /compiled 1 Z modules/);
+  const emittedRecordSource = readFileSync(
+    resolve(recordProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(emittedRecordSource, /ZPoint point = \(ZPoint\)/);
+  assert.match(emittedRecordSource, /z_offset\(&\(point\), 3, 4\)/);
+  assert.match(emittedRecordSource, /z_read\(&\(point\)\)/);
+  assert.match(emittedRecordSource, /z_reset\(&\(point\)\)/);
 
   const foreignApplication = resolve(directory, "foreign-application-native");
   const foreignBuild = spawnSync(

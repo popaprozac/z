@@ -36,6 +36,20 @@ export struct RawForeignType {
   typeName: String;
   nativeName: String;
   underlyingType: String;
+  layout: String;
+  fieldStart: usize;
+  fieldCount: usize;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+}
+
+export struct RawForeignField {
+  typeIndex: usize;
+  fieldIndex: usize;
+  name: String;
+  typeName: String;
   sourceFile: Option<String>;
   sourceLine: usize;
   sourceColumn: usize;
@@ -89,6 +103,7 @@ export struct RawForeignModuleDeclarations {
   cPlusPlus: boolean;
   namespaces: Array<String>;
   types: Array<RawForeignType>;
+  fields: Array<RawForeignField>;
   constants: Array<RawForeignConstant>;
   functions: Array<RawForeignFunction>;
   overloads: Array<RawForeignOverload>;
@@ -110,6 +125,7 @@ function emptyRawForeignModule(): RawForeignModuleDeclarations {
     cPlusPlus: false,
     namespaces: Array<String>(),
     types: Array<RawForeignType>(),
+    fields: Array<RawForeignField>(),
     constants: Array<RawForeignConstant>(),
     functions: Array<RawForeignFunction>(),
     overloads: Array<RawForeignOverload>(),
@@ -256,7 +272,7 @@ function appendType(
     throw "foreign declaration stream contains an out-of-order type";
   }
   const kind = try readText(inout cursor);
-  if (kind != "enum") {
+  if (kind != "enum" && kind != "record") {
     throw "foreign declaration stream contains an unsupported named type";
   }
   const exportName = try readText(inout cursor);
@@ -264,10 +280,22 @@ function appendType(
   const typeName = try readText(inout cursor);
   const nativeName = try readText(inout cursor);
   const underlyingType = try readText(inout cursor);
+  const layout = try readText(inout cursor);
   const sourceFile = try readOptionalText(inout cursor);
   const sourceLine = try readHexUsize(inout cursor);
   const sourceColumn = try readHexUsize(inout cursor);
   const sourceLength = try readHexUsize(inout cursor);
+  const fieldCount = try readHexUsize(inout cursor);
+  if (
+    (kind == "enum" && (layout.byteLength > 0 || fieldCount > 0))
+    || (
+      kind == "record"
+      && layout != "struct"
+      && layout != "union"
+    )
+  ) {
+    throw "foreign declaration stream contains invalid named-type details";
+  }
   module.types.push(RawForeignType({
     typeIndex,
     kind,
@@ -276,6 +304,46 @@ function appendType(
     typeName,
     nativeName,
     underlyingType,
+    layout,
+    fieldStart: module.fields.length,
+    fieldCount,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendField(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const typeIndex = try readHexUsize(inout cursor);
+  const fieldIndex = try readHexUsize(inout cursor);
+  if (typeIndex >= module.types.length) {
+    throw "foreign declaration stream references an unknown field owner";
+  }
+  const owner = view module.types[typeIndex];
+  if (
+    owner.kind != "record"
+    || typeIndex + 1 != module.types.length
+    || fieldIndex >= owner.fieldCount
+    || owner.fieldStart + fieldIndex != module.fields.length
+  ) {
+    throw "foreign declaration stream contains an out-of-order field";
+  }
+  const name = try readText(inout cursor);
+  const typeName = try readText(inout cursor);
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  module.fields.push(RawForeignField({
+    typeIndex,
+    fieldIndex,
+    name,
+    typeName,
     sourceFile,
     sourceLine,
     sourceColumn,
@@ -479,6 +547,22 @@ function appendAvailability(
 function validateCompletedModule(
   in module: RawForeignModuleDeclarations
 ): void throws String {
+  for (const declaration of module.types) {
+    if (declaration.fieldStart + declaration.fieldCount > module.fields.length) {
+      throw "foreign declaration stream ended before all record fields";
+    }
+    let fieldIndex: usize = 0;
+    while (fieldIndex < declaration.fieldCount) {
+      const field = view module.fields[declaration.fieldStart + fieldIndex];
+      if (
+        field.typeIndex != declaration.typeIndex
+        || field.fieldIndex != fieldIndex
+      ) {
+        throw "foreign declaration stream contains mismatched record fields";
+      }
+      fieldIndex = fieldIndex + 1;
+    }
+  }
   for (const declaration of module.functions) {
     if (
       declaration.overloadStart + declaration.overloadCount
@@ -510,7 +594,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 3) {
+  if (module.version != 4) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);
@@ -526,6 +610,8 @@ export function decodeRawForeignDeclarations(
     cursor.offset = cursor.offset + 1;
     if (tag == 84) {
       try appendType(inout cursor, inout module);
+    } else if (tag == 68) {
+      try appendField(inout cursor, inout module);
     } else if (tag == 67) {
       try appendConstant(inout cursor, inout module);
     } else if (tag == 70) {

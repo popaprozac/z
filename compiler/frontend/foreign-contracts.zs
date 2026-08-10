@@ -6,6 +6,7 @@ import {
   TokenKind,
   tokenize,
 } from "./lexer.zs";
+import { TextBuffer } from "std/text";
 
 // First native .zd slice: inferred scalar and integer-status functions.
 //
@@ -38,6 +39,7 @@ export struct RawForeignContractSet {
 
 export struct NativeForeignParameterContract {
   name: String;
+  capability: String;
   typeName: String;
 }
 
@@ -51,9 +53,17 @@ export struct NativeForeignFunctionContract {
 }
 
 export struct NativeForeignTypeContract {
+  kind: String;
   name: String;
   nativeName: String;
   underlyingType: String;
+  layout: String;
+  fields: Array<NativeForeignFieldContract>;
+}
+
+export struct NativeForeignFieldContract {
+  name: String;
+  typeName: String;
 }
 
 export struct NativeForeignConstantContract {
@@ -455,6 +465,75 @@ function foreignEnumTypeIndex(
   return Option<usize>.none;
 }
 
+struct RawRecordPointer {
+  typeIndex: usize;
+  mutablePointer: boolean;
+}
+
+function recordPointerSpelling(
+  in name: String,
+  constant: boolean,
+  tagged: boolean
+): String {
+  let output = TextBuffer();
+  if (constant) output.append("const ");
+  if (tagged) output.append("struct ");
+  output.append(name);
+  output.append(" *");
+  return output.finish();
+}
+
+function rawRecordPointer(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<RawRecordPointer> {
+  let index: usize = 0;
+  while (index < declarations.types.length) {
+    if (declarations.types[index].kind != "record") {
+      index = index + 1;
+      continue;
+    }
+    const nativeName = view declarations.types[index].nativeName;
+    const exportName = view declarations.types[index].exportName;
+    const mutableNative = recordPointerSpelling(nativeName, false, false);
+    const mutableExport = recordPointerSpelling(exportName, false, false);
+    const mutableTagged = recordPointerSpelling(nativeName, false, true);
+    if (
+      nativeType == mutableNative
+      || nativeType == mutableExport
+      || nativeType == mutableTagged
+    ) return Option.some(RawRecordPointer({
+      typeIndex: index,
+      mutablePointer: true,
+    }));
+    const constNative = recordPointerSpelling(nativeName, true, false);
+    const constExport = recordPointerSpelling(exportName, true, false);
+    const constTagged = recordPointerSpelling(nativeName, true, true);
+    if (
+      nativeType == constNative
+      || nativeType == constExport
+      || nativeType == constTagged
+    ) return Option.some(RawRecordPointer({
+      typeIndex: index,
+      mutablePointer: false,
+    }));
+    index = index + 1;
+  }
+  return Option<RawRecordPointer>.none;
+}
+
+function normalizedForeignTypeIndex(
+  in types: Array<NativeForeignTypeContract>,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < types.length) {
+    if (types[index].name == name) return Option<usize>.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function statusScalarTypeName(
   in declarations: RawForeignModuleDeclarations,
   in nativeType: String
@@ -506,7 +585,32 @@ export function normalizeForeignContracts(
   }
   let types = Array<NativeForeignTypeContract>();
   for (const declaration of declarations.types) {
+    let fields = Array<NativeForeignFieldContract>();
+    if (declaration.kind == "record") {
+      if (declaration.layout != "struct") continue;
+      let compatible = true;
+      let fieldIndex: usize = 0;
+      while (fieldIndex < declaration.fieldCount) {
+        const rawField = view declarations.fields[
+          declaration.fieldStart + fieldIndex
+        ];
+        const fieldType = attempt scalarTypeName(rawField.typeName);
+        match (fieldType) {
+          success(typeName) => fields.push(NativeForeignFieldContract({
+            name: rawField.name.copyBytes(0, rawField.name.byteLength),
+            typeName,
+          }));
+          failure(_) => {
+            compatible = false;
+            break;
+          }
+        }
+        fieldIndex = fieldIndex + 1;
+      }
+      if (!compatible) continue;
+    }
     types.push(NativeForeignTypeContract({
+      kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
       name: declaration.exportName.copyBytes(
         0,
         declaration.exportName.byteLength
@@ -519,6 +623,11 @@ export function normalizeForeignContracts(
         0,
         declaration.underlyingType.byteLength
       ),
+      layout: declaration.layout.copyBytes(
+        0,
+        declaration.layout.byteLength
+      ),
+      fields,
     }));
   }
   let constants = Array<NativeForeignConstantContract>();
@@ -576,11 +685,8 @@ export function normalizeForeignContracts(
       const rawParameterIndex = declarations.overloads[
         overloadIndex
       ].parameterStart + parameterIndex;
-      if (contract.parameters[parameterIndex].capability != "value") {
-        throw `native Z declaration scalar parameter "${contract.parameters[parameterIndex].name}" requires value capability`;
-      }
       if (contract.parameters[parameterIndex].nullable) {
-        throw `native Z declaration scalar parameter "${contract.parameters[parameterIndex].name}" cannot be nullable`;
+        throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" cannot be nullable in this tier`;
       }
       match (in declarations.parameters[rawParameterIndex].name) {
         some(nativeName) => {
@@ -590,23 +696,67 @@ export function normalizeForeignContracts(
         }
         none => {}
       }
-      const typeName = match (foreignEnumTypeIndex(
-        declarations,
-        declarations.parameters[rawParameterIndex].nativeType
-      )) {
-        some(typeIndex) => declarations.types[typeIndex].exportName.copyBytes(
-          0,
-          declarations.types[typeIndex].exportName.byteLength
-        );
-        none => try scalarTypeName(
+      const capability = view contract.parameters[parameterIndex].capability;
+      let typeName = "";
+      if (capability == "value") {
+        match (foreignEnumTypeIndex(
+          declarations,
           declarations.parameters[rawParameterIndex].nativeType
+        )) {
+          some(typeIndex) => {
+            typeName = declarations.types[typeIndex].exportName.copyBytes(
+              0,
+              declarations.types[typeIndex].exportName.byteLength
+            );
+          }
+          none => {
+            typeName = try scalarTypeName(
+              declarations.parameters[rawParameterIndex].nativeType
+            );
+          }
+        }
+      } else {
+        let pointerTypeIndex = declarations.types.length;
+        let mutablePointer = false;
+        match (rawRecordPointer(
+          declarations,
+          declarations.parameters[rawParameterIndex].nativeType
+        )) {
+          some(value) => {
+            pointerTypeIndex = value.typeIndex;
+            mutablePointer = value.mutablePointer;
+          }
+          none => throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a C record pointer`;
+        }
+        if (
+          capability != "in"
+          && capability != "inout"
+          && capability != "out"
+        ) {
+          throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" has unsupported capability ${capability}`;
+        }
+        if (capability != "in" && !mutablePointer) {
+          throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a mutable C record pointer`;
+        }
+        typeName = declarations.types[pointerTypeIndex].exportName.copyBytes(
+          0,
+          declarations.types[pointerTypeIndex].exportName.byteLength
         );
-      };
+        match (normalizedForeignTypeIndex(types, typeName)) {
+          some(typeIndex) => {
+            if (types[typeIndex].kind != "record") {
+              throw "native Z declaration record pointer resolved to a non-record type";
+            }
+          }
+          none => throw `native Z declaration record parameter "${contract.parameters[parameterIndex].name}" requires a scalar-field struct layout`;
+        }
+      }
       parameters.push(NativeForeignParameterContract({
         name: contract.parameters[parameterIndex].name.copyBytes(
           0,
           contract.parameters[parameterIndex].name.byteLength
         ),
+        capability: capability.copyBytes(0, capability.byteLength),
         typeName,
       }));
       parameterIndex = parameterIndex + 1;

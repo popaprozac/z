@@ -1467,6 +1467,25 @@ driver now mirrors Stage 0 by comparing the resolved header identities before
 rebinding the checked contract to the source import spelling; basename equality
 alone is not trusted when two include roots could contain different headers.
 
+The same geometry pressure test then supplied the first native record boundary.
+`ZFDCL` version 4 carries `ZPoint`'s native struct identity, ordered scalar
+fields, and layout evidence. The Z-owned normalizer accepts the existing `.zd`
+`in`, `inout`, and `out` capabilities only when the corresponding C parameter is
+a compatible const or writable record pointer. Native semantic analysis exposes
+the record and its fields, while lowering emits the header's `ZPoint` directly:
+construction is a C compound literal and calls pass `&point` with no wrapper or
+heap allocation. The fixture mutates, reads, resets, and reads the same value,
+then inspects the generated C to keep that zero-wrapper claim executable.
+
+This tier is deliberately smaller than Stage 0's record model. Only plain C
+structs whose fields all map to supported scalars cross; unions, nested records,
+pointer/resource fields, and by-value ownership facts still fail closed. Running
+the fixture through the standalone command also exposed a driver parity gap:
+quoted headers in the project directory were visible to Stage 0 but not from
+the native cache directory. Native project compilation now includes the owning
+project directory automatically, without requiring a redundant
+`includeDirectories` entry.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

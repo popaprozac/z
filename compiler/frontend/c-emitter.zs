@@ -56,6 +56,9 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
   if (
     type.kind == LoweredTypeKind.onceType
@@ -1980,14 +1983,22 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     return;
   }
-  if (declaration.expressions[index].kind == LoweredExpressionKind.structValue) {
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.structValue
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.foreignStructValue
+  ) {
     if (
       declaration.expressions[index].children.length
       != declaration.expressions[index].labels.length
     ) {
       throw "native C emission received a malformed struct value";
     }
-    output.append("(Z_");
+    output.append("(");
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.structValue
+    ) output.append("Z_");
     output.append(declaration.expressions[index].value);
     output.append("){");
     let field: usize = 0;
