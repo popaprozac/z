@@ -61,6 +61,7 @@ export type ForeignNamedType = (
     readonly exportName: string;
     readonly typeName: string;
     readonly cName: string;
+    readonly canonicalNativeName: string;
     readonly layout: "struct" | "union";
     readonly fields: readonly ForeignField[];
     /**

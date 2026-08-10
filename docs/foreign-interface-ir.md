@@ -164,8 +164,10 @@ Z sema and native backends
 The first adapter seam is now executable. The real Clang header producer can
 frame functions, scalar typedefs, nominal enum types, typed native constants,
 and record layouts/fields as a versioned `ZFDCL` raw-declaration stream. Version
-5 carries scalar alias/underlying identity, enum identity/underlying type,
-constant identity/type, record identity/layout and field order/types, function names, namespaces, overloads, native type
+6 carries scalar alias/underlying identity, enum identity/underlying type,
+constant identity/type, record identity/layout, canonical C record identity
+across typedef aliases, field order/types, function names, namespaces,
+overloads, native type
 spellings, parameters, source locations, executor affinity, and availability
 into an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
@@ -206,9 +208,16 @@ fields form the first record tier. They cross by value in parameters/results, wh
 `.zd` `in`, `inout`, and `out` parameter capabilities are checked against const
 or mutable native pointers. Both forms become ordinary imported struct types
 and lower to direct C construction, field access, native calls, and—where
-required—address taking. The protocol still fails closed for unions,
-pointer/resource fields, Objective-C declarations, interfaces, and
-protocols. Scalar typedef evidence verifies parameters/results and then lowers
+required—address taking. The ownership-bearing record tier admits
+pointer-bearing records only after an adjacent contract classifies the
+canonical C record with `move` and a verified `deinit` function. Every producer
+must say `owned` or `borrowed`; borrowed records are local non-escaping views
+until runtime lifetime provenance is modeled. Parameters retain Z's semantic
+`in`/`move` capability independently from the C ABI's by-value/pointer mode,
+preventing a borrow from changing the native signature. The protocol still
+fails closed for unions, Objective-C declarations, interfaces, protocols, and
+unclassified resource records. Scalar typedef evidence verifies
+parameters/results and then lowers
 to the underlying Z scalar because C typedefs are not nominal. The stream is
 producer-facing data, not serialized FIIR: `.zd` facts still
 need to be read and normalized in Z before semantic analysis may trust the
@@ -243,8 +252,9 @@ selective and namespace calls without exposing producer records to lowering.
    declarations, interfaces, and protocols without
    weakening its fail-closed boundary;
 6. expand the implemented `.zd` reader and contract normalizer from decimal,
-   symbolic scalar, nominally preserved enum-backed integer statuses, and
-   ordinary enum parameters/constants through ownership, pointer, buffer,
-   callback, executor, and native-value facts, then extend the validated
+   symbolic scalar, nominally preserved enum-backed integer statuses, ordinary
+   enum parameters/constants, and the first ownership-bearing record facts
+   through general pointer, buffer, callback, executor, and native-value facts,
+   then extend the validated
    in-memory FIIR already consumed by native sema and scalar/status lowering
    into richer emission rather than teaching any layer about wire records.

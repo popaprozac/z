@@ -23,6 +23,7 @@ import {
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
+import { stringStartsWith } from "./semantic-type-shapes.zs";
 
 // Trusted native callable facts are attached only after raw declarations and
 // .zd contracts have been normalized. The resolver never consumes ZFDCL wire
@@ -81,6 +82,11 @@ function localForeignTypeName(
   in namespace: String,
   in typeName: String
 ): String {
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    const localized = localForeignTypeName(types, namespace, target);
+    return `view ${localized}`;
+  }
   for (const type of types) {
     if (type.name == typeName) return `${namespace}.${type.name}`;
   }
@@ -95,7 +101,8 @@ function foreignFunctionSignature(
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
   for (const parameter of contract.parameters) {
-    parameterModes.push(parameter.capability.copyBytes(
+    if (parameter.capability == "move") parameterModes.push("value");
+    else parameterModes.push(parameter.capability.copyBytes(
       0,
       parameter.capability.byteLength
     ));
@@ -192,6 +199,11 @@ function attachSelectiveFunction(
       0,
       contracts.moduleSpecifier.byteLength
     );
+  for (const parameter of contracts.functions[contractIndex].parameters) {
+    modules[moduleIndex].symbols[symbolIndex].foreignParameterAbiModes.push(
+      parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength)
+    );
+  }
   for (const successValue of contracts.functions[contractIndex].successValues) {
     modules[moduleIndex].symbols[symbolIndex].foreignSuccessValues.push(
       successValue.copyBytes(0, successValue.byteLength)
@@ -212,10 +224,17 @@ function attachNamespaceFunctions(
     const name = `${namespace}.${contract.name}`;
     const symbolIndex = modules[moduleIndex].symbols.length;
     let successValues = Array<String>();
+    let abiModes = Array<String>();
     for (const successValue of contract.successValues) {
       successValues.push(
         successValue.copyBytes(0, successValue.byteLength)
       );
+    }
+    for (const parameter of contract.parameters) {
+      abiModes.push(parameter.abiMode.copyBytes(
+        0,
+        parameter.abiMode.byteLength
+      ));
     }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name: name.copyBytes(0, name.byteLength),
@@ -237,6 +256,7 @@ function attachNamespaceFunctions(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: successValues,
+      foreignParameterAbiModes: abiModes,
       offset,
       line,
       column,
@@ -280,6 +300,7 @@ function attachNamespaceConstants(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
+      foreignParameterAbiModes: Array<String>(),
       offset,
       line,
       column,
@@ -317,8 +338,8 @@ function foreignTypeSignature(
     fields,
     methods: Array<ModuleMethodSignature>(),
     variants: Array<ModuleVariantSignature>(),
-    customDeinit: false,
-    customConstructor: false,
+    customDeinit: type.resourceRelease.byteLength > 0,
+    customConstructor: type.resourceRelease.byteLength > 0,
     constructorSignature: Option<ModuleFunctionSignature>.none,
     foreignNativeName: type.nativeName.copyBytes(
       0,
@@ -327,6 +348,10 @@ function foreignTypeSignature(
     foreignUnderlyingType: type.underlyingType.copyBytes(
       0,
       type.underlyingType.byteLength
+    ),
+    foreignResourceRelease: type.resourceRelease.copyBytes(
+      0,
+      type.resourceRelease.byteLength
     ),
   });
 }
@@ -359,6 +384,7 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
+      foreignParameterAbiModes: Array<String>(),
       offset,
       line,
       column,
@@ -388,6 +414,7 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
+      foreignParameterAbiModes: Array<String>(),
       offset,
       line,
       column,

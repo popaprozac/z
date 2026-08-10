@@ -4104,6 +4104,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         exportName: "WirePoint",
         typeName: "WirePoint",
         cName: "WirePoint",
+        canonicalNativeName: "WirePoint",
         layout: "struct",
         fields: [
           {
@@ -4144,7 +4145,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000005\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000006\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -4765,7 +4766,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(unsupportedNativeContractInspection.status, 1);
   assert.match(
     unsupportedNativeContractInspection.stderr,
-    /unsupported-native-contract\.zd:2:\d+: error: function result facts are not implemented/,
+    /native function "z_foreign_add" declares owned but its result is not a classified C value resource/,
   );
   const incompleteNativeStatusContract = resolve(
     directory,
@@ -6214,6 +6215,146 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(emittedRecordSource, /z_read\(&\(point\)\)/);
   assert.match(emittedRecordSource, /z_reset\(&\(point\)\)/);
 
+  const resourceProject = resolve(directory, "foreign-resource-project");
+  mkdirSync(resourceProject);
+  const resourceSource = resolve(resourceProject, "main.zs");
+  writeFileSync(
+    resourceSource,
+    readFileSync(
+      resolve(
+        projectRoot,
+        "tests/fixtures/self-host-foreign-resource-input.zs",
+      ),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(resourceProject, "value-resource.h"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/value-resource.h"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(resourceProject, "value-resource.h.zd"),
+    readFileSync(
+      resolve(projectRoot, "tests/fixtures/value-resource.h.zd"),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    resolve(resourceProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "foreign-resource-project",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const resourceRun = spawnSync(
+    driver,
+    ["run", resourceSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(resourceRun.status, 124, resourceRun.stderr);
+  const emittedResourceSource = readFileSync(
+    resolve(resourceProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(
+    emittedResourceSource,
+    /void Z_ZImage_deinit\(ZImage const \*self\).*z_image_drop\(\*self\)/s,
+  );
+  assert.match(
+    emittedResourceSource,
+    /void Z_ZTexture2D_deinit\(ZTexture2D const \*self\).*z_texture_drop\(\*self\)/s,
+  );
+  assert.match(emittedResourceSource, /z_image_width\(image\)/);
+  assert.match(emittedResourceSource, /z_image_drop\(copied\)/);
+  assert.doesNotMatch(emittedResourceSource, /z_texture_drop\(systemTexture\)/);
+
+  writeFileSync(
+    resourceSource,
+    `import native from "value-resource.h";
+
+function leak(): native.ZTexture2D {
+  const texture = native.z_texture_default();
+  return texture;
+}
+
+function main(): i32 {
+  return 0;
+}
+`,
+  );
+  const borrowedEscapeCheck = spawnSync(
+    driver,
+    ["check", resourceSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedEscapeCheck.status, 1);
+  assert.match(
+    borrowedEscapeCheck.stderr,
+    /a borrowed native resource cannot be returned from Z code/,
+  );
+
+  writeFileSync(
+    resourceSource,
+    `import native from "value-resource.h";
+
+struct Theme {
+  texture: native.ZTexture2D;
+}
+
+function main(): i32 {
+  const texture = native.z_texture_default();
+  const theme = Theme({ texture });
+  return native.z_texture_width(theme.texture);
+}
+`,
+  );
+  const borrowedStorageCheck = spawnSync(
+    driver,
+    ["check", resourceSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedStorageCheck.status, 1);
+  assert.match(
+    borrowedStorageCheck.stderr,
+    /a borrowed native resource cannot escape into owned storage or an owned value result/,
+  );
+
+  writeFileSync(
+    resourceSource,
+    `import native from "value-resource.h";
+
+function main(): i32 {
+  const image = native.z_image_make(1);
+  native.z_image_drop(move image);
+  return native.z_image_width(image);
+}
+`,
+  );
+  const resourceUseAfterMove = spawnSync(
+    driver,
+    ["check", resourceSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(resourceUseAfterMove.status, 1);
+  assert.match(resourceUseAfterMove.stderr, /use of moved value "image"/);
+
   writeFileSync(
     resolve(recordProject, "geometry.h"),
     `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
@@ -7006,7 +7147,7 @@ function main(): i32 {
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 90_000);
+}, 150_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");

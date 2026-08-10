@@ -218,6 +218,7 @@ export function programTypeSignature(
         constructorSignature,
         foreignNativeName: "",
         foreignUnderlyingType: "",
+        foreignResourceRelease: "",
       }));
     }
   }
@@ -249,6 +250,7 @@ export function programTypeSignature(
         constructorSignature: Option<ModuleFunctionSignature>.none,
         foreignNativeName: "",
         foreignUnderlyingType: "",
+        foreignResourceRelease: "",
       }));
     }
   }
@@ -293,6 +295,7 @@ export function programTypeSignature(
         constructorSignature: Option<ModuleFunctionSignature>.none,
         foreignNativeName: "",
         foreignUnderlyingType: "",
+        foreignResourceRelease: "",
       }));
     }
   }

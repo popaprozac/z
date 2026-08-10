@@ -6,7 +6,10 @@ import {
   typeSymbolLocation,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
-import { typeHasCleanup } from "./semantic-type-ownership.zs";
+import {
+  typeHasCleanup,
+  typeIsBorrowedForeignResource,
+} from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
   genericTypeShape,
@@ -200,6 +203,18 @@ export function requireExpressionType(
   }
   if (stringStartsWith(actual, "view ")) {
     const target = actual.copyBytes(5, actual.byteLength);
+    if (
+      typeIsBorrowedForeignResource(modules, moduleIndex, actual)
+      && equivalentTypes(modules, moduleIndex, expected, target)
+    ) {
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a borrowed native resource cannot escape into owned storage or an owned value result",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
     let visiting = Array<String>();
     if (
       equivalentTypes(modules, moduleIndex, expected, target)

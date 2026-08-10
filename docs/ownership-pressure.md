@@ -1511,6 +1511,25 @@ the native cache directory. Native project compilation now includes the owning
 project directory automatically, without requiring a redundant
 `includeDirectories` entry.
 
+The next native interop slice crossed ownership-bearing C records without
+flattening them into Z storage or wrapping their ABI. `ZFDCL` version 6 adds
+canonical C record identity, so a contract written against an original typedef
+governs function signatures that use an alias of the same Clang record. The
+Z-owned `.zd` normalizer verifies `move; deinit release;`, proves that the
+release consumes the same record by value and returns `void`, and refuses an
+unclassified resource record.
+
+Producer ownership is equally explicit. An `owned;` result becomes a unique Z
+owner with deterministic cleanup; a `borrowed;` result becomes a non-escaping
+`view` and cannot be returned, captured, or stored in an owned field. A
+resource parameter spelled `in value` is still a Z borrow, but its lowering
+evidence records `inValue` when C receives the record by value. This keeps the
+source capability and native ABI orthogonal: the caller retains its owner, the
+C call remains direct, and no accidental address-taking changes the signature.
+The executable fixture covers construction, mutation through a pointer, owned
+copying, explicit move-to-release, implicit scope cleanup, alias identity,
+borrowed observation, borrowed escape rejection, and use-after-move.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

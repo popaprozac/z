@@ -108,10 +108,11 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 5 covers scalar
+  `ZFDCL` stream into owned flat Z declarations. Version 6 covers scalar
   typedef evidence, nominal enums, typed native constants, record layouts and
-  fields, plus foreign functions, overloads, parameters, source locations,
-  executor affinity, and availability. The producer projects that supported tier out of
+  fields, canonical C record identity across typedef aliases, plus foreign
+  functions, overloads, parameters, source locations, executor affinity, and
+  availability. The producer projects that supported tier out of
   a richer header instead of letting unrelated declarations poison supported
   imports; native type spellings remain on function declarations, so a `.zd`
   contract that uses an unsupported union, pointer/resource field, or
@@ -129,8 +130,12 @@ recursive path.
   their verified C representation. Plain recursively copyable C structs with
   representable scalar or record fields also cross by value in
   parameters/results and through existing `in`, `inout`, and `out`
-  record-pointer declarations; every richer
-  unimplemented fact rejects at its `.zd` source location.
+  record-pointer declarations. Classified move-only C records add verified
+  `deinit` operations, explicit `owned` producers, and non-escaping `borrowed`
+  producers. Parameter semantics retain Z's `in`/`move` distinction while a
+  separate ABI mode records whether C receives the record by value or through
+  a pointer. Every richer unimplemented fact rejects at its `.zd` source
+  location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;

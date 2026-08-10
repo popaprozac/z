@@ -339,6 +339,11 @@ export struct LoweredForeignFunction {
   successValues: Array<String>;
 }
 
+export struct LoweredForeignResource {
+  nativeName: String;
+  releaseName: String;
+}
+
 export struct LoweredConstant {
   name: String;
   type: LoweredType;
@@ -349,6 +354,7 @@ export struct LoweredConstant {
 export struct LoweredProgram {
   foreignHeaders: Array<String>;
   foreignFunctions: Array<LoweredForeignFunction>;
+  foreignResources: Array<LoweredForeignResource>;
   constants: Array<LoweredConstant>;
   arrays: Array<LoweredArray>;
   maps: Array<LoweredMap>;
@@ -356,6 +362,34 @@ export struct LoweredProgram {
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
+}
+
+function collectForeignResources(
+  in importedTypes: Array<LoweredImportedType>,
+  inout resources: Array<LoweredForeignResource>
+): void throws String {
+  for (const imported of importedTypes) {
+    if (imported.resourceRelease.byteLength == 0) continue;
+    let present = false;
+    for (const resource of resources) {
+      if (resource.nativeName != imported.targetName) continue;
+      if (resource.releaseName != imported.resourceRelease) {
+        throw `native resource ${imported.targetName} has conflicting cleanup functions`;
+      }
+      present = true;
+    }
+    if (present) continue;
+    resources.push(LoweredForeignResource({
+      nativeName: imported.targetName.copyBytes(
+        0,
+        imported.targetName.byteLength
+      ),
+      releaseName: imported.resourceRelease.copyBytes(
+        0,
+        imported.resourceRelease.byteLength
+      ),
+    }));
+  }
 }
 
 struct LoweredImportedType {
@@ -366,6 +400,7 @@ struct LoweredImportedType {
   threadShareable: boolean;
   workerDestructible: boolean;
   needsDeinit: boolean;
+  resourceRelease: String;
   fields: Array<LoweredField>;
   variants: Array<LoweredVariant>;
   payloadBearing: boolean;
@@ -14374,6 +14409,7 @@ function importedTypesForModule(
               threadShareable: false,
               workerDestructible: false,
               needsDeinit: false,
+              resourceRelease: "",
               fields: Array<LoweredField>(),
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
@@ -14407,8 +14443,12 @@ function importedTypesForModule(
               kind: LoweredTypeKind.foreignStructType,
               executorBound: false,
               threadShareable: false,
-              workerDestructible: true,
-              needsDeinit: false,
+              workerDestructible: signature.foreignResourceRelease.byteLength == 0,
+              needsDeinit: signature.foreignResourceRelease.byteLength > 0,
+              resourceRelease: signature.foreignResourceRelease.copyBytes(
+                0,
+                signature.foreignResourceRelease.byteLength
+              ),
               fields,
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
@@ -14467,6 +14507,7 @@ function importedTypesForModule(
               targetName
             ),
             needsDeinit,
+            resourceRelease: "",
             fields,
             variants: Array<LoweredVariant>(),
             payloadBearing: false,
@@ -14499,6 +14540,7 @@ function importedTypesForModule(
             threadShareable: false,
             workerDestructible: !declaration.needsDeinit,
             needsDeinit: declaration.needsDeinit,
+            resourceRelease: "",
             fields: Array<LoweredField>(),
             variants,
             payloadBearing: declaration.payloadBearing,
@@ -14549,6 +14591,7 @@ function importedTypesForModule(
                 symbol.name
               ),
               needsDeinit,
+              resourceRelease: "",
               fields,
               variants: Array<LoweredVariant>(),
               payloadBearing: false,
@@ -14572,6 +14615,7 @@ function importedTypesForModule(
               threadShareable: false,
               workerDestructible: !declaration.needsDeinit,
               needsDeinit: declaration.needsDeinit,
+              resourceRelease: "",
               fields: Array<LoweredField>(),
               variants,
               payloadBearing: declaration.payloadBearing,
@@ -14741,6 +14785,7 @@ function appendLoweredProgram(
       threadShareable: false,
       workerDestructible: false,
       needsDeinit: false,
+      resourceRelease: "",
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
@@ -14780,6 +14825,7 @@ function appendLoweredProgram(
       threadShareable: false,
       workerDestructible: false,
       needsDeinit: false,
+      resourceRelease: "",
       fields: Array<LoweredField>(),
       variants: Array<LoweredVariant>(),
       payloadBearing: false,
@@ -14872,6 +14918,7 @@ function appendLoweredProgram(
       threadShareable: false,
       workerDestructible: !needsDeinit,
       needsDeinit,
+      resourceRelease: "",
       fields: Array<LoweredField>(),
       variants: importedVariants,
       payloadBearing,
@@ -15016,6 +15063,7 @@ function appendLoweredProgram(
             emittedName
           ),
           needsDeinit,
+          resourceRelease: "",
           fields,
           variants: Array<LoweredVariant>(),
           payloadBearing: false,
@@ -15154,6 +15202,7 @@ function lowerProgramUnchecked(
   let sets = Array<LoweredSet>();
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
+  let foreignResources = Array<LoweredForeignResource>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -15179,6 +15228,7 @@ function lowerProgramUnchecked(
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
+    foreignResources,
     constants,
     arrays,
     maps,
@@ -15245,6 +15295,7 @@ function lowerModulesIncludingTests(
   let sets = Array<LoweredSet>();
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
+  let foreignResources = Array<LoweredForeignResource>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
     parsed,
     includeTests
@@ -15258,6 +15309,7 @@ function lowerModulesIncludingTests(
       enums,
       moduleIndex
     );
+    try collectForeignResources(importedTypes, inout foreignResources);
     try collectForeignLowering(
       parsed[moduleIndex].program,
       importedTypes,
@@ -15298,6 +15350,7 @@ function lowerModulesIncludingTests(
   return LoweredProgram({
     foreignHeaders,
     foreignFunctions,
+    foreignResources,
     constants,
     arrays,
     maps,

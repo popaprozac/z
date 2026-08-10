@@ -152,6 +152,7 @@ export struct ModuleSymbol {
   typeSignature: Option<ModuleTypeSignature>;
   foreignHeader: String;
   foreignSuccessValues: Array<String>;
+  foreignParameterAbiModes: Array<String>;
   offset: usize;
   line: usize;
   column: usize;
@@ -200,6 +201,7 @@ export struct ModuleTypeSignature {
   constructorSignature: Option<ModuleFunctionSignature>;
   foreignNativeName: String;
   foreignUnderlyingType: String;
+  foreignResourceRelease: String;
 }
 
 export struct ModuleFunctionSignature {

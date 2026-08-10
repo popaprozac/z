@@ -168,6 +168,8 @@ import {
   typeContainsForeignValueStorage,
   typeHasCleanup,
   typeHasCustomConstructor,
+  typeIsBorrowedForeignResource,
+  typeIsForeignResource,
   typeMovesOnOwnedUse,
   typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
@@ -3448,6 +3450,19 @@ function inferExpressionNodeType(
         );
       }
       const captureType = valueBindingType(bindings, capture);
+      if (typeIsBorrowedForeignResource(
+        modules,
+        moduleIndex,
+        captureType
+      )) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `borrowed native resource "${capture}" cannot escape into a closure`,
+          node.line,
+          node.column
+        );
+      }
       if (value == "move") {
         if (
           !stringStartsWith(captureType, "Mutex<")
@@ -3740,6 +3755,15 @@ function inferExpressionNodeType(
     match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
       some(location) => {
         const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+        if (typeIsForeignResource(modules, moduleIndex, constructionType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `native value resource "${constructionType}" cannot be constructed with a Z struct literal`,
+            node.line,
+            node.column
+          );
+        }
         if (
           constructionKind == ModuleSymbolKind.structSymbol
           && children.length == 1
@@ -5006,6 +5030,26 @@ function inferStatement(
       none => {}
     }
     let stored = inferred.copyBytes(0, inferred.byteLength);
+    const borrowedForeignResource = typeIsBorrowedForeignResource(
+      modules,
+      moduleIndex,
+      inferred
+    );
+    if (
+      borrowedForeignResource
+      && (
+        arena.nodes[index].mutableBinding
+        || contextualExpected.byteLength > 0
+      )
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a borrowed native resource must be bound directly to an inferred const local",
+        arena.nodes[index].line,
+        arena.nodes[index].column
+      );
+    }
     match (in arena.nodes[index].typeAnnotation) {
       some(type) => {
         match (in arena.nodes[index].expression) {
@@ -5082,6 +5126,13 @@ function inferStatement(
           false
         );
       }
+    } else if (borrowedForeignResource) {
+      addBorrowedValueBinding(
+        inout bindings,
+        arena.nodes[index].name,
+        stored,
+        false
+      );
     } else {
       addValueBinding(inout bindings, arena.nodes[index].name, stored);
     }
@@ -5477,6 +5528,18 @@ function inferStatement(
           inout bindings,
           inout evidence
         );
+        if (
+          kind == StatementKind.returnStatement
+          && typeIsBorrowedForeignResource(modules, moduleIndex, actual)
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "a borrowed native resource cannot be returned from Z code",
+            arena.nodes[index].line,
+            arena.nodes[index].column
+          );
+        }
         if (
           (kind == StatementKind.returnStatement && expectedReturn.byteLength > 0)
           || (kind == StatementKind.selectStatement && contextualExpected.byteLength > 0)

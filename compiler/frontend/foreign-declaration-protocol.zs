@@ -35,6 +35,7 @@ export struct RawForeignType {
   qualifiedName: String;
   typeName: String;
   nativeName: String;
+  canonicalNativeName: Option<String>;
   underlyingType: String;
   layout: String;
   fieldStart: usize;
@@ -279,6 +280,7 @@ function appendType(
   const qualifiedName = try readText(inout cursor);
   const typeName = try readText(inout cursor);
   const nativeName = try readText(inout cursor);
+  const canonicalNativeName = try readOptionalText(inout cursor);
   const underlyingType = try readText(inout cursor);
   const layout = try readText(inout cursor);
   const sourceFile = try readOptionalText(inout cursor);
@@ -306,6 +308,7 @@ function appendType(
     qualifiedName,
     typeName,
     nativeName,
+    canonicalNativeName,
     underlyingType,
     layout,
     fieldStart: module.fields.length,
@@ -597,7 +600,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 5) {
+  if (module.version != 6) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

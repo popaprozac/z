@@ -9,7 +9,8 @@ import {
 } from "./lexer.zs";
 import { TextBuffer } from "std/text";
 
-// Native .zd slice: inferred scalar/simple-record and integer-status functions.
+// Native .zd slice: inferred scalar/record, value-resource, and integer-status
+// functions.
 //
 // The model is intentionally separate from raw producer declarations. A
 // contract must match Clang evidence before it can produce these normalized
@@ -29,18 +30,29 @@ export struct RawForeignFunctionContract {
   returnKind: String;
   returnNullable: boolean;
   successValues: Array<String>;
+  resultOwnership: String;
+  line: usize;
+  column: usize;
+}
+
+export struct RawForeignTypeContract {
+  name: String;
+  movable: boolean;
+  release: String;
   line: usize;
   column: usize;
 }
 
 export struct RawForeignContractSet {
   moduleSpecifier: String;
+  types: Array<RawForeignTypeContract>;
   functions: Array<RawForeignFunctionContract>;
 }
 
 export struct NativeForeignParameterContract {
   name: String;
   capability: String;
+  abiMode: String;
   typeName: String;
 }
 
@@ -59,6 +71,7 @@ export struct NativeForeignTypeContract {
   nativeName: String;
   underlyingType: String;
   layout: String;
+  resourceRelease: String;
   fields: Array<NativeForeignFieldContract>;
 }
 
@@ -295,6 +308,7 @@ function parseFunction(
   let returnKind = "inferred";
   let returnNullable = false;
   let successValues = Array<String>();
+  let resultOwnership = "";
   if (atText(cursor, "void")) {
     returnKind = "status";
     cursor.index = cursor.index + 1;
@@ -327,13 +341,40 @@ function parseFunction(
     }
   } else {
     returnNullable = try parseInferredType(inout cursor);
-    if (!atText(cursor, ";")) {
-      throw contractError(
-        cursor,
-        "function result facts are not implemented in the first native Z declaration slice"
-      );
+    if (atText(cursor, "{")) {
+      cursor.index = cursor.index + 1;
+      while (!atText(cursor, "}")) {
+        const fact = try expectIdentifier(
+          inout cursor,
+          "`owned` or `borrowed` as a native resource result fact"
+        );
+        if (fact != "owned" && fact != "borrowed") {
+          throw contractError(
+            cursor,
+            `native resource result fact must be "owned" or "borrowed", found "${fact}"`
+          );
+        }
+        if (resultOwnership.byteLength > 0) {
+          throw contractError(
+            cursor,
+            `foreign function "${name}" cannot declare more than one result ownership fact`
+          );
+        }
+        resultOwnership = move fact;
+        try expectText(inout cursor, ";");
+      }
+      try expectText(inout cursor, "}");
+      if (resultOwnership.byteLength == 0) {
+        throw contractErrorAt(
+          cursor,
+          line,
+          column,
+          "a native resource result block requires `owned;` or `borrowed;`"
+        );
+      }
+    } else {
+      try expectText(inout cursor, ";");
     }
-    cursor.index = cursor.index + 1;
   }
   return RawForeignFunctionContract({
     name,
@@ -341,6 +382,69 @@ function parseFunction(
     returnKind,
     returnNullable,
     successValues,
+    resultOwnership,
+    line,
+    column,
+  });
+}
+
+function parseType(
+  inout cursor: ForeignContractCursor
+): RawForeignTypeContract throws String {
+  try expectText(inout cursor, "export");
+  try expectText(inout cursor, "type");
+  const line = cursor.tokens[cursor.index].line;
+  const column = cursor.tokens[cursor.index].column;
+  const name = try parseQualifiedName(inout cursor);
+  try expectText(inout cursor, "{");
+  let movable = false;
+  let release = "";
+  while (!atText(cursor, "}")) {
+    const fact = cursor.tokens[cursor.index].text.copyBytes(
+      0,
+      cursor.tokens[cursor.index].text.byteLength
+    );
+    cursor.index = cursor.index + 1;
+    if (fact == "move") {
+      if (movable) {
+        throw contractError(
+          cursor,
+          `foreign type "${name}" cannot declare move more than once`
+        );
+      }
+      movable = true;
+      try expectText(inout cursor, ";");
+      continue;
+    }
+    if (fact == "deinit") {
+      if (release.byteLength > 0) {
+        throw contractError(
+          cursor,
+          `foreign type "${name}" cannot declare deinit more than once`
+        );
+      }
+      release = try parseQualifiedName(inout cursor);
+      try expectText(inout cursor, ";");
+      continue;
+    }
+    throw contractError(
+      cursor,
+      `C value resource "${name}" must use \`move;\` and \`deinit <release function>;\`, found "${fact}"`
+    );
+  }
+  try expectText(inout cursor, "}");
+  if (!movable || release.byteLength == 0) {
+    throw contractErrorAt(
+      cursor,
+      line,
+      column,
+      `C value resource "${name}" must declare \`move;\` and \`deinit <release function>;\``
+    );
+  }
+  return RawForeignTypeContract({
+    name,
+    movable,
+    release,
     line,
     column,
   });
@@ -373,6 +477,7 @@ export function parseForeignContracts(
   );
   cursor.index = cursor.index + 1;
   try expectText(inout cursor, "{");
+  let types = Array<RawForeignTypeContract>();
   let functions = Array<RawForeignFunctionContract>();
   while (!atText(cursor, "}")) {
     if (!atText(cursor, "export")) {
@@ -381,17 +486,24 @@ export function parseForeignContracts(
         "the first native Z declaration slice requires an exported function"
       );
     }
-    if (
-      cursor.index + 1 >= cursor.tokens.length
-      || cursor.tokens[cursor.index + 1].text != "function"
-    ) {
+    if (cursor.index + 1 >= cursor.tokens.length) {
       throw contractError(
         cursor,
-        "native Z declaration types are not implemented yet"
+        "expected an exported native declaration"
       );
     }
-    const declaration = try parseFunction(inout cursor);
-    functions.push(declaration);
+    if (cursor.tokens[cursor.index + 1].text == "type") {
+      const declaration = try parseType(inout cursor);
+      types.push(declaration);
+    } else if (cursor.tokens[cursor.index + 1].text == "function") {
+      const declaration = try parseFunction(inout cursor);
+      functions.push(declaration);
+    } else {
+      throw contractError(
+        cursor,
+        "the native Z declaration slice requires an exported type or function"
+      );
+    }
   }
   try expectText(inout cursor, "}");
   if (cursor.tokens[cursor.index].kind != TokenKind.eof) {
@@ -399,6 +511,7 @@ export function parseForeignContracts(
   }
   return RawForeignContractSet({
     moduleSpecifier,
+    types,
     functions,
   });
 }
@@ -681,6 +794,7 @@ function isIntegerTypeName(in typeName: String): boolean {
 
 function normalizedForeignType(
   in declaration: RawForeignType,
+  in resourceRelease: String,
   fields: Array<NativeForeignFieldContract>
 ): NativeForeignTypeContract {
   return NativeForeignTypeContract({
@@ -701,8 +815,101 @@ function normalizedForeignType(
       0,
       declaration.layout.byteLength
     ),
+    resourceRelease: resourceRelease.copyBytes(
+      0,
+      resourceRelease.byteLength
+    ),
     fields,
   });
+}
+
+function rawForeignCanonicalRecordName(in declaration: RawForeignType): String {
+  match (in declaration.canonicalNativeName) {
+    some(name) => return name.copyBytes(0, name.byteLength);
+    none => return declaration.nativeName.copyBytes(
+      0,
+      declaration.nativeName.byteLength
+    );
+  }
+}
+
+function resourceContractIndex(
+  in contracts: RawForeignContractSet,
+  in declaration: RawForeignType
+): Option<usize> throws String {
+  if (declaration.kind != "record") return Option<usize>.none;
+  const canonicalName = rawForeignCanonicalRecordName(declaration);
+  let found = contracts.types.length;
+  let index: usize = 0;
+  while (index < contracts.types.length) {
+    const name = view contracts.types[index].name;
+    if (
+      name == declaration.exportName
+      || name == declaration.qualifiedName
+      || name == declaration.nativeName
+      || name == canonicalName
+    ) {
+      if (found < contracts.types.length && found != index) {
+        throw `foreign aliases for canonical C record "${canonicalName}" declare conflicting resource facts`;
+      }
+      found = index;
+    }
+    index = index + 1;
+  }
+  if (found < contracts.types.length) return Option.some(found);
+  return Option<usize>.none;
+}
+
+function resourceReleaseForType(
+  in contracts: RawForeignContractSet,
+  in declaration: RawForeignType
+): String throws String {
+  const contractIndex = try resourceContractIndex(contracts, declaration);
+  match (contractIndex) {
+    some(index) => return contracts.types[index].release.copyBytes(
+      0,
+      contracts.types[index].release.byteLength
+    );
+    none => return "";
+  }
+}
+
+function appendRepresentableForeignField(
+  in declarations: RawForeignModuleDeclarations,
+  in types: Array<NativeForeignTypeContract>,
+  in rawFieldName: String,
+  in rawFieldType: String,
+  inout fields: Array<NativeForeignFieldContract>
+): boolean {
+  const fieldType = attempt scalarTypeName(rawFieldType);
+  match (fieldType) {
+    success(typeName) => {
+      fields.push(NativeForeignFieldContract({
+        name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
+        typeName,
+      }));
+      return true;
+    }
+    failure(_) => {}
+  }
+  let nestedTypeIndex = declarations.types.length;
+  match (foreignRecordTypeIndex(declarations, rawFieldType)) {
+    some(typeIndex) => nestedTypeIndex = typeIndex;
+    none => {}
+  }
+  if (nestedTypeIndex >= declarations.types.length) return false;
+  const nestedName = view declarations.types[nestedTypeIndex].exportName;
+  match (normalizedForeignTypeIndex(types, nestedName)) {
+    some(typeIndex) => {
+      if (types[typeIndex].kind != "record") return false;
+      fields.push(NativeForeignFieldContract({
+        name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
+        typeName: nestedName.copyBytes(0, nestedName.byteLength),
+      }));
+      return true;
+    }
+    none => return false;
+  }
 }
 
 function findRawFunction(
@@ -715,6 +922,103 @@ function findRawFunction(
     index = index + 1;
   }
   throw `Z declaration names unknown foreign function "${name}"`;
+}
+
+function validateResourceContracts(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations,
+  in types: Array<NativeForeignTypeContract>
+): void throws String {
+  let contractIndex: usize = 0;
+  while (contractIndex < contracts.types.length) {
+    let declarationIndex = declarations.types.length;
+    let index: usize = 0;
+    while (index < declarations.types.length) {
+      const matchingContract = try resourceContractIndex(
+        contracts,
+        declarations.types[index]
+      );
+      match (matchingContract) {
+        some(found) => {
+          if (found == contractIndex) {
+            declarationIndex = index;
+            break;
+          }
+        }
+        none => {}
+      }
+      index = index + 1;
+    }
+    if (declarationIndex >= declarations.types.length) {
+      throw `declaration names unknown foreign value type "${contracts.types[contractIndex].name}"`;
+    }
+    const declaration = view declarations.types[declarationIndex];
+    if (declaration.layout != "struct") {
+      throw `native value-resource contract "${contracts.types[contractIndex].name}" requires a C struct`;
+    }
+    let normalized = false;
+    for (const type of types) {
+      if (
+        type.resourceRelease == contracts.types[contractIndex].release
+        && rawForeignCanonicalRecordName(declaration)
+          == rawForeignCanonicalRecordNameByNativeName(
+            declarations,
+            type.nativeName
+          )
+      ) normalized = true;
+    }
+    if (!normalized) {
+      throw `native value-resource contract "${contracts.types[contractIndex].name}" could not preserve its C struct layout`;
+    }
+    const releaseIndex = try findRawFunction(
+      declarations,
+      contracts.types[contractIndex].release
+    );
+    if (declarations.functions[releaseIndex].overloadCount != 1) {
+      throw `native value-resource deinit "${contracts.types[contractIndex].release}" requires exactly one C overload`;
+    }
+    const overload = view declarations.overloads[
+      declarations.functions[releaseIndex].overloadStart
+    ];
+    if (overload.parameterCount != 1 || overload.returnNativeType != "void") {
+      throw `native value-resource deinit "${contracts.types[contractIndex].release}" must take one record value and return void`;
+    }
+    const parameter = view declarations.parameters[overload.parameterStart];
+    let parameterRecord = declarations.types.length;
+    match (foreignRecordTypeIndex(declarations, parameter.nativeType)) {
+      some(typeIndex) => parameterRecord = typeIndex;
+      none => match (in parameter.canonicalNativeType) {
+        some(canonical) => match (foreignRecordTypeIndex(
+          declarations,
+          canonical
+        )) {
+          some(typeIndex) => parameterRecord = typeIndex;
+          none => {}
+        }
+        none => {}
+      }
+    }
+    if (
+      parameterRecord >= declarations.types.length
+      || rawForeignCanonicalRecordName(declarations.types[parameterRecord])
+        != rawForeignCanonicalRecordName(declaration)
+    ) {
+      throw `native value-resource deinit "${contracts.types[contractIndex].release}" consumes a different C record`;
+    }
+    contractIndex = contractIndex + 1;
+  }
+}
+
+function rawForeignCanonicalRecordNameByNativeName(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeName: String
+): String {
+  for (const declaration of declarations.types) {
+    if (declaration.nativeName == nativeName) {
+      return rawForeignCanonicalRecordName(declaration);
+    }
+  }
+  return nativeName.copyBytes(0, nativeName.byteLength);
 }
 
 export function normalizeForeignContracts(
@@ -730,6 +1034,7 @@ export function normalizeForeignContracts(
     if (declaration.kind != "enum") continue;
     types.push(normalizedForeignType(
       declaration,
+      "",
       Array<NativeForeignFieldContract>()
     ));
   }
@@ -745,6 +1050,10 @@ export function normalizeForeignContracts(
         some(_) => continue;
         none => {}
       }
+      const resourceRelease = try resourceReleaseForType(
+        contracts,
+        declaration
+      );
       let fields = Array<NativeForeignFieldContract>();
       let compatible = true;
       let fieldIndex: usize = 0;
@@ -752,59 +1061,31 @@ export function normalizeForeignContracts(
         const rawField = view declarations.fields[
           declaration.fieldStart + fieldIndex
         ];
-        const fieldType = attempt scalarTypeName(rawField.typeName);
-        match (fieldType) {
-          success(typeName) => fields.push(NativeForeignFieldContract({
-            name: rawField.name.copyBytes(0, rawField.name.byteLength),
-            typeName,
-          }));
-          failure(_) => {
-            let nestedTypeIndex = declarations.types.length;
-            match (foreignRecordTypeIndex(
-              declarations,
-              rawField.typeName
-            )) {
-              some(typeIndex) => nestedTypeIndex = typeIndex;
-              none => {}
-            }
-            if (nestedTypeIndex >= declarations.types.length) {
-              compatible = false;
-              break;
-            }
-            const nestedName = view declarations.types[
-              nestedTypeIndex
-            ].exportName;
-            match (normalizedForeignTypeIndex(types, nestedName)) {
-              some(typeIndex) => {
-                if (types[typeIndex].kind != "record") {
-                  compatible = false;
-                  break;
-                }
-                fields.push(NativeForeignFieldContract({
-                  name: rawField.name.copyBytes(
-                    0,
-                    rawField.name.byteLength
-                  ),
-                  typeName: nestedName.copyBytes(
-                    0,
-                    nestedName.byteLength
-                  ),
-                }));
-              }
-              none => {
-                compatible = false;
-                break;
-              }
-            }
+        const represented = appendRepresentableForeignField(
+          declarations,
+          types,
+          rawField.name,
+          rawField.typeName,
+          inout fields
+        );
+        if (!represented) {
+          if (resourceRelease.byteLength == 0) {
+            compatible = false;
+            break;
           }
         }
         fieldIndex = fieldIndex + 1;
       }
       if (!compatible) continue;
-      types.push(normalizedForeignType(declaration, fields));
+      types.push(normalizedForeignType(
+        declaration,
+        resourceRelease,
+        fields
+      ));
       recordAdded = true;
     }
   }
+  try validateResourceContracts(contracts, declarations, types);
   let constants = Array<NativeForeignConstantContract>();
   for (const declaration of declarations.constants) {
     let typeName = "";
@@ -872,6 +1153,7 @@ export function normalizeForeignContracts(
         none => {}
       }
       const capability = view contract.parameters[parameterIndex].capability;
+      let abiMode = capability.copyBytes(0, capability.byteLength);
       let typeName = "";
       if (capability == "value") {
         typeName = try foreignValueTypeName(
@@ -880,33 +1162,82 @@ export function normalizeForeignContracts(
           declarations.parameters[rawParameterIndex].nativeType,
           declarations.parameters[rawParameterIndex].canonicalNativeType
         );
+        match (normalizedForeignTypeIndex(types, typeName)) {
+          some(typeIndex) => {
+            if (types[typeIndex].resourceRelease.byteLength > 0) {
+              throw `native value-resource parameter "${contract.parameters[parameterIndex].name}" requires explicit in, inout, out, or move capability`;
+            }
+          }
+          none => {}
+        }
       } else {
-        let pointerTypeIndex = declarations.types.length;
-        let mutablePointer = false;
-        match (rawRecordPointer(
+        let valueTypeIndex = declarations.types.length;
+        match (foreignRecordTypeIndex(
           declarations,
           declarations.parameters[rawParameterIndex].nativeType
         )) {
-          some(value) => {
-            pointerTypeIndex = value.typeIndex;
-            mutablePointer = value.mutablePointer;
+          some(typeIndex) => valueTypeIndex = typeIndex;
+          none => match (
+            in declarations.parameters[rawParameterIndex].canonicalNativeType
+          ) {
+            some(canonical) => match (foreignRecordTypeIndex(
+              declarations,
+              canonical
+            )) {
+              some(typeIndex) => valueTypeIndex = typeIndex;
+              none => {}
+            }
+            none => {}
           }
-          none => throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a C record pointer`;
         }
-        if (
-          capability != "in"
-          && capability != "inout"
-          && capability != "out"
-        ) {
-          throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" has unsupported capability ${capability}`;
+        if (valueTypeIndex < declarations.types.length) {
+          typeName = declarations.types[valueTypeIndex].exportName.copyBytes(
+            0,
+            declarations.types[valueTypeIndex].exportName.byteLength
+          );
+          let resource = false;
+          match (normalizedForeignTypeIndex(types, typeName)) {
+            some(typeIndex) => {
+              resource = types[typeIndex].resourceRelease.byteLength > 0;
+            }
+            none => {}
+          }
+          if (!resource || (capability != "in" && capability != "move")) {
+            let expectedShape = "value-resource capability";
+            if (capability == "inout" || capability == "out") {
+              expectedShape = "pointer";
+            }
+            throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a matching C record ${expectedShape}`;
+          }
+          if (capability == "in") abiMode = "inValue";
+        } else {
+          let pointerTypeIndex = declarations.types.length;
+          let mutablePointer = false;
+          match (rawRecordPointer(
+            declarations,
+            declarations.parameters[rawParameterIndex].nativeType
+          )) {
+            some(value) => {
+              pointerTypeIndex = value.typeIndex;
+              mutablePointer = value.mutablePointer;
+            }
+            none => throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a C record pointer or classified value resource`;
+          }
+          if (
+            capability != "in"
+            && capability != "inout"
+            && capability != "out"
+          ) {
+            throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" has unsupported capability ${capability}`;
+          }
+          if (capability != "in" && !mutablePointer) {
+            throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a mutable C record pointer`;
+          }
+          typeName = declarations.types[pointerTypeIndex].exportName.copyBytes(
+            0,
+            declarations.types[pointerTypeIndex].exportName.byteLength
+          );
         }
-        if (capability != "in" && !mutablePointer) {
-          throw `native Z declaration ${capability} parameter "${contract.parameters[parameterIndex].name}" requires a mutable C record pointer`;
-        }
-        typeName = declarations.types[pointerTypeIndex].exportName.copyBytes(
-          0,
-          declarations.types[pointerTypeIndex].exportName.byteLength
-        );
         match (normalizedForeignTypeIndex(types, typeName)) {
           some(typeIndex) => {
             if (types[typeIndex].kind != "record") {
@@ -922,6 +1253,7 @@ export function normalizeForeignContracts(
           contract.parameters[parameterIndex].name.byteLength
         ),
         capability: capability.copyBytes(0, capability.byteLength),
+        abiMode,
         typeName,
       }));
       parameterIndex = parameterIndex + 1;
@@ -1008,6 +1340,29 @@ export function normalizeForeignContracts(
             )
           );
         }
+      }
+    } else {
+      let resourceRelease = "";
+      match (normalizedForeignTypeIndex(types, nativeReturnType)) {
+        some(typeIndex) => {
+          resourceRelease = types[typeIndex].resourceRelease.copyBytes(
+            0,
+            types[typeIndex].resourceRelease.byteLength
+          );
+        }
+        none => {}
+      }
+      if (resourceRelease.byteLength > 0) {
+        if (contract.resultOwnership.byteLength == 0) {
+          throw `native value-resource producer "${contract.name}" must declare owned or borrowed result ownership`;
+        }
+        if (contract.resultOwnership == "borrowed") {
+          returnType = `view ${nativeReturnType}`;
+        } else if (contract.resultOwnership != "owned") {
+          throw `native value-resource producer "${contract.name}" has unsupported result ownership ${contract.resultOwnership}`;
+        }
+      } else if (contract.resultOwnership.byteLength > 0) {
+        throw `native function "${contract.name}" declares ${contract.resultOwnership} but its result is not a classified C value resource`;
       }
     }
     functions.push(NativeForeignFunctionContract({

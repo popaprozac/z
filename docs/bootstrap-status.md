@@ -1044,8 +1044,9 @@ Continue focused self-hosting work in this order:
    Automatic first-tier foreign discovery now invokes `z-foreign-adapter`,
    loads the adjacent `.zd`, and rejects missing or unsupported evidence at the
    import rather than claiming its resolver received facts that were never
-   produced. Version 5 of the raw-declaration protocol crosses scalar typedef
-   evidence, nominal enums, typed native constants, record layouts/fields, function
+   produced. Version 6 of the raw-declaration protocol crosses scalar typedef
+   evidence, nominal enums, typed native constants, record layouts/fields,
+   canonical C record identity across typedef aliases, function
    names, namespaces, overloads, parameter type spellings, source locations,
    executor affinity, and availability into owned Z storage. It is intentionally producer-facing
    rather than trusted FIIR. Unrelated declarations outside this tier are
@@ -1055,8 +1056,12 @@ Continue focused self-hosting work in this order:
    adapter command writes it and the native driver validates it. The first
    native `.zd` tiers normalize inferred scalar; decimal, symbolic scalar, or
    nominally enum-backed integer-status; and recursively copyable record value or
-   pointer declarations against that evidence, feed them into native sema, and emit
-   executable direct scalar/status/record calls. Project-local
+   pointer declarations against that evidence. The first ownership-bearing
+   record tier verifies `move` plus `deinit`, requires producers to declare
+   `owned` or non-escaping `borrowed`, preserves unique moves through native
+   sema, and emits deterministic release calls without wrapping the C ABI.
+   These contracts feed native sema and emit executable direct
+   scalar/status/record calls. Project-local
    target-aware artifacts now
    reuse preprocessor-validated hits and invalidate on transitive header
    changes; ordinary foreign enum parameters/constants now retain verified

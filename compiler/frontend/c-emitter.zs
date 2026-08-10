@@ -7288,6 +7288,11 @@ function loweredTypeNeedsDeinit(
   if (type.kind == LoweredTypeKind.enumType) {
     return loweredEnumNeedsDeinit(program, type.name);
   }
+  if (type.kind == LoweredTypeKind.foreignStructType) {
+    for (const resource of program.foreignResources) {
+      if (resource.nativeName == type.name) return true;
+    }
+  }
   return false;
 }
 
@@ -9067,6 +9072,15 @@ function emitLoweredC(
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
   try appendTypeDefinitions(inout output, program);
+  for (const resource of program.foreignResources) {
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(resource.nativeName);
+    output.append("_deinit(");
+    output.append(resource.nativeName);
+    output.append(" const *self) {\n  ");
+    output.append(resource.releaseName);
+    output.append("(*self);\n}\n\n");
+  }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit && !aggregate.referenceType) {
       output.append("static __attribute__((unused)) void Z_");

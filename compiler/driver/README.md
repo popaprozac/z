@@ -86,8 +86,9 @@ The adapter metadata additionally hashes Clang's preprocessed header view, so a
 cache hit skips the AST producer while changes in transitive headers invalidate
 the evidence. A missing contract, missing adapter, malformed producer stream,
 unsupported declaration category, or unimplemented contract fact fails at the
-boundary. Version 5 of the producer stream carries scalar typedef evidence,
-nominal enums, typed native constants, and record layouts/fields. Symbolic scalar and
+boundary. Version 6 of the producer stream carries scalar typedef evidence,
+nominal enums, typed native constants, record layouts/fields, and canonical C
+record identity across typedef aliases. Symbolic scalar and
 enum-backed status facts are verified against Clang evidence and lower as the
 header symbol rather than a magic integer. Enum-backed errors retain their
 nominal imported type through native sema, `Result<void, E>`, matching, and C
@@ -96,9 +97,15 @@ type. Ordinary enum parameters and producer-proven constants retain that
 identity across namespace or selective imports and lower to their verified C
 spellings. Plain recursively copyable C structs cross by value in
 parameters/results and through existing `.zd` `in`, `inout`, and `out` pointer
-contracts with direct native construction, field access, and calls. C++,
-Objective-C, Swift, unions, pointer/resource records, callbacks, and richer `.zd` facts remain with
-Stage 0 until their raw records and normalized FIIR cross together.
+contracts with direct native construction, field access, and calls. The first
+ownership-bearing record tier also accepts `export type T { move; deinit
+release; }`, verifies the release signature against canonical Clang identity,
+and requires resource producers to declare `owned;` or non-escaping
+`borrowed;`. Z semantic borrows remain distinct from the C ABI mode, so
+`in resource` can lower as a direct by-value call while preserving the caller's
+owner. C++, Objective-C, Swift, unions, callbacks, borrowed runtime provenance,
+and richer `.zd` facts remain with Stage 0 until their raw records and
+normalized FIIR cross together.
 Foreign-cache locking and cache eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require

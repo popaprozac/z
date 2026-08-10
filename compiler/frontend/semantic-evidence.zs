@@ -351,6 +351,21 @@ export function recordForeignCallFacts(
           successValue.copyBytes(0, successValue.byteLength)
         );
       }
+      if (
+        symbol.foreignParameterAbiModes.length
+          == evidence.callResolutions[resolutionIndex].parameterModes.length
+      ) {
+        let parameterIndex: usize = 0;
+        while (parameterIndex < symbol.foreignParameterAbiModes.length) {
+          evidence.callResolutions[resolutionIndex].parameterModes[
+            parameterIndex
+          ] = symbol.foreignParameterAbiModes[parameterIndex].copyBytes(
+            0,
+            symbol.foreignParameterAbiModes[parameterIndex].byteLength
+          );
+          parameterIndex = parameterIndex + 1;
+        }
+      }
       return;
     }
     resolutionIndex = resolutionIndex + 1;

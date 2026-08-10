@@ -119,7 +119,7 @@ export type Stage1ModuleCallResolution = {
   readonly receiverMode: string;
   readonly typeParameters: readonly string[];
   readonly typeArguments: readonly string[];
-  readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
+  readonly parameterModes: readonly ("value" | "in" | "inout" | "out" | "inValue" | "move")[];
   readonly parameterTypes: readonly string[];
   readonly returnType: string;
   readonly errorType: string | null;
@@ -442,7 +442,7 @@ export function decodeStage1ModuleGraphStream(
       }
       const parameterModes = encodedParameters.filter((_, index) => index % 2 === 0)
         .map((field) => Buffer.from(field, "hex").toString("utf8"));
-      if (!parameterModes.every(isStage1ParameterMode)) {
+      if (!parameterModes.every(isStage1CallParameterMode)) {
         throw new Error(`malformed stage-1 call resolution parameter mode: ${line}`);
       }
       (module.callResolutions as Stage1ModuleCallResolution[]).push({
@@ -882,6 +882,12 @@ export function decodeStage1ModuleGraphStream(
 
 function isStage1ParameterMode(value: string): value is "value" | "in" | "inout" | "out" {
   return value === "value" || value === "in" || value === "inout" || value === "out";
+}
+
+function isStage1CallParameterMode(
+  value: string,
+): value is "value" | "in" | "inout" | "out" | "inValue" | "move" {
+  return isStage1ParameterMode(value) || value === "inValue" || value === "move";
 }
 
 function isStage1ModuleSymbolKind(value: string): value is Stage1ModuleSymbolKind {

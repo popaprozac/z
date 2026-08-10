@@ -1055,6 +1055,7 @@ function collectNamedTypes(
           qualifiedName: seed.qualifiedName,
           typeName: seed.typeName,
           cName: seed.cName,
+          canonicalNativeName: seed.canonicalRecordName ?? seed.cName,
           layout: seed.layout ?? "struct",
           fields: supportedFields,
           resource: seed.resourceRelease ? { release: seed.resourceRelease } : null,

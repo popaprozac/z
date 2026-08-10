@@ -479,3 +479,37 @@ export function typeHasCustomConstructor(
   }
   return false;
 }
+
+export function typeIsForeignResource(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  let actual = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(actual, "view ")) {
+    actual = actual.copyBytes(5, actual.byteLength);
+  }
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => return signature.foreignResourceRelease.byteLength > 0;
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
+export function typeIsBorrowedForeignResource(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  return stringStartsWith(typeName, "view ")
+    && typeIsForeignResource(modules, moduleIndex, typeName);
+}

@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 5) return 10;
+  if (module.version != 6) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -21,6 +21,12 @@ function inspect(in path: String): i32 throws String {
   if (module.types[0].exportName != "WirePoint") return 36;
   if (module.types[0].layout != "struct") return 37;
   if (module.types[0].fieldCount != 2) return 38;
+  match (in module.types[0].canonicalNativeName) {
+    some(name) => {
+      if (name != "WirePoint") return 85;
+    }
+    none => return 86;
+  }
   if (module.fields.length != 2) return 39;
   if (module.fields[0].name != "x") return 82;
   if (module.fields[0].typeName != "int") return 83;
@@ -64,7 +70,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 5) return 40;
+  if (module.version != 6) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;

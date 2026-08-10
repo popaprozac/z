@@ -1343,7 +1343,7 @@ export function resolveWithNativeFrontendLibrary(
         readonly resolution: {
           typeParameters: string[];
           typeArguments: string[];
-          parameterModes: ("value" | "in" | "inout" | "out")[];
+          parameterModes: ("value" | "in" | "inout" | "out" | "inValue" | "move")[];
           parameterTypes: string[];
         };
         readonly typeCount: number;
@@ -1427,7 +1427,7 @@ export function resolveWithNativeFrontendLibrary(
           ),
           typeParameters: new Array<string>(typeCount),
           typeArguments: new Array<string>(typeCount),
-          parameterModes: new Array<"value" | "in" | "inout" | "out">(parameterCount),
+          parameterModes: new Array<"value" | "in" | "inout" | "out" | "inValue" | "move">(parameterCount),
           parameterTypes: new Array<string>(parameterCount),
           returnType: nativeString(
             field(14, "return-type pointer"),
@@ -1512,7 +1512,7 @@ export function resolveWithNativeFrontendLibrary(
           if (
             itemIndex >= expectation.parameterCount
             || itemIndex in expectation.resolution.parameterModes
-            || !isNativeParameterMode(first)
+            || !isNativeCallParameterMode(first)
           ) {
             throw new Error("the native frontend returned an invalid call parameter");
           }
@@ -1848,6 +1848,12 @@ function isNativeParameterMode(
   value: string,
 ): value is "value" | "in" | "inout" | "out" {
   return value === "value" || value === "in" || value === "inout" || value === "out";
+}
+
+function isNativeCallParameterMode(
+  value: string,
+): value is "value" | "in" | "inout" | "out" | "inValue" | "move" {
+  return isNativeParameterMode(value) || value === "inValue" || value === "move";
 }
 
 function nativeUsize(value: number | bigint, description: string): number {
