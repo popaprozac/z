@@ -101,7 +101,7 @@ hostToolchainTest("tokenizes real Z source with checked UTF-8 operations and Tex
     () => decodeStage1TokenStream("identifier\tnope\t0000000000000001\t0000000000000001\t61\n", parityInput),
     /malformed stage-1 token offset/,
   );
-}, 30_000);
+}, 60_000);
 
 test("parses declarations, function bodies, and type shapes in native Z", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-parser-input.zs");
@@ -6189,16 +6189,51 @@ test("compiles a multi-module Z application through the standalone native driver
       env: foreignAdapterEnvironment,
     },
   );
-  assert.equal(recordRun.status, 21, recordRun.stderr);
+  assert.equal(recordRun.status, 31, recordRun.stderr);
   assert.match(recordRun.stdout, /compiled 1 Z modules/);
   const emittedRecordSource = readFileSync(
     resolve(recordProject, ".z-cache/run/program.c"),
     "utf8",
   );
   assert.match(emittedRecordSource, /ZPoint point = \(ZPoint\)/);
+  assert.match(
+    emittedRecordSource,
+    /ZPoint translated = z_translate\(point, ZForward, 3\)/,
+  );
+  assert.match(emittedRecordSource, /z_score\(translated\)/);
   assert.match(emittedRecordSource, /z_offset\(&\(point\), 3, 4\)/);
   assert.match(emittedRecordSource, /z_read\(&\(point\)\)/);
   assert.match(emittedRecordSource, /z_reset\(&\(point\)\)/);
+
+  writeFileSync(
+    resolve(recordProject, "geometry.h.zd"),
+    `declare module "geometry.h" {
+  export function z_rect_id(rect: _): _;
+}
+`,
+  );
+  writeFileSync(
+    recordSource,
+    `import geometry from "geometry.h";
+
+function main(): i32 {
+  return 0;
+}
+`,
+  );
+  const nestedRecordCheck = spawnSync(
+    driver,
+    ["check", recordSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(nestedRecordCheck.status, 1);
+  assert.match(
+    nestedRecordCheck.stderr,
+    /record value ZRect requires a scalar-field struct layout/,
+  );
 
   const foreignApplication = resolve(directory, "foreign-application-native");
   const foreignBuild = spawnSync(

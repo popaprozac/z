@@ -1477,6 +1477,16 @@ construction is a C compound literal and calls pass `&point` with no wrapper or
 heap allocation. The fixture mutates, reads, resets, and reads the same value,
 then inspects the generated C to keep that zero-wrapper claim executable.
 
+The following slice carried the same record by value. `z_translate` receives
+and returns `ZPoint` directly, including an enum argument and a scalar typedef
+whose canonical Clang spelling is used for verification; `z_score` receives the
+returned record directly. Generated C remains the handwritten ABI shape:
+`const ZPoint translated = z_translate(point, ZForward, 3);`. Because `ZPoint`
+is cleanup-free and recursively copyable, the original `point` remains usable
+under Z's ordinary by-value copy rule. A paired negative contract attempts to
+pass nested `ZRect` by value and must fail during normalization rather than
+flattening or guessing its layout.
+
 This tier is deliberately smaller than Stage 0's record model. Only plain C
 structs whose fields all map to supported scalars cross; unions, nested records,
 pointer/resource fields, and by-value ownership facts still fail closed. Running

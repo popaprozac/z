@@ -201,15 +201,17 @@ type, and explicit success literals. Any parameter/result fact outside this
 tier is a source-located error; it is never discarded for forward
 compatibility.
 
-Plain C structs containing only scalar fields form the first record tier. Their
-existing `.zd` `in`, `inout`, and `out` parameter capabilities are checked
-against const or mutable native pointers, become ordinary imported struct types,
-and lower to direct C construction, field access, and address-taking calls. The
-protocol still fails closed for unions, nested records, pointer/resource fields,
-Objective-C declarations, interfaces, and protocols. It is producer-facing
-data, not serialized FIIR: `.zd` facts still need to be read and normalized in Z
-before semantic analysis may trust the result. The normalized scalar,
-integer-status, and simple-record callables attach to ordinary native module symbols:
+Plain C structs containing only directly representable scalar fields form the
+first record tier. They cross by value in parameters/results, while existing
+`.zd` `in`, `inout`, and `out` parameter capabilities are checked against const
+or mutable native pointers. Both forms become ordinary imported struct types
+and lower to direct C construction, field access, native calls, and—where
+required—address taking. The protocol still fails closed for unions, nested
+records, pointer/resource fields, Objective-C declarations, interfaces, and
+protocols. It is producer-facing data, not serialized FIIR: `.zd` facts still
+need to be read and normalized in Z before semantic analysis may trust the
+result. The normalized scalar, integer-status, and simple-record callables
+attach to ordinary native module symbols:
 selective aliases and namespace members share Z's arity, type, and throwing
 effect checker, while an imported function missing from the checked contract
 fails closed. The normalized in-memory FIIR remains a separate,

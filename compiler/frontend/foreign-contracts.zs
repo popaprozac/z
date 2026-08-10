@@ -8,7 +8,7 @@ import {
 } from "./lexer.zs";
 import { TextBuffer } from "std/text";
 
-// First native .zd slice: inferred scalar and integer-status functions.
+// Native .zd slice: inferred scalar/simple-record and integer-status functions.
 //
 // The model is intentionally separate from raw producer declarations. A
 // contract must match Clang evidence before it can produce these normalized
@@ -465,6 +465,40 @@ function foreignEnumTypeIndex(
   return Option<usize>.none;
 }
 
+function recordValueSpelling(in name: String, tagged: boolean): String {
+  if (!tagged) return name.copyBytes(0, name.byteLength);
+  let output = TextBuffer();
+  output.append("struct ");
+  output.append(name);
+  return output.finish();
+}
+
+function foreignRecordTypeIndex(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < declarations.types.length) {
+    if (declarations.types[index].kind != "record") {
+      index = index + 1;
+      continue;
+    }
+    const nativeName = view declarations.types[index].nativeName;
+    const exportName = view declarations.types[index].exportName;
+    const taggedNative = recordValueSpelling(nativeName, true);
+    const taggedExport = recordValueSpelling(exportName, true);
+    if (
+      nativeType == nativeName
+      || nativeType == exportName
+      || nativeType == declarations.types[index].qualifiedName
+      || nativeType == taggedNative
+      || nativeType == taggedExport
+    ) return Option<usize>.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 struct RawRecordPointer {
   typeIndex: usize;
   mutablePointer: boolean;
@@ -532,6 +566,73 @@ function normalizedForeignTypeIndex(
     index = index + 1;
   }
   return Option<usize>.none;
+}
+
+function scalarTypeNameWithCanonical(
+  in nativeType: String,
+  in canonicalNativeType: Option<String>
+): String throws String {
+  const direct = attempt scalarTypeName(nativeType);
+  match (direct) {
+    success(typeName) => return typeName;
+    failure(_) => {}
+  }
+  match (in canonicalNativeType) {
+    some(typeName) => return try scalarTypeName(typeName);
+    none => return try scalarTypeName(nativeType);
+  }
+}
+
+function foreignValueTypeName(
+  in declarations: RawForeignModuleDeclarations,
+  in types: Array<NativeForeignTypeContract>,
+  in nativeType: String,
+  in canonicalNativeType: Option<String>
+): String throws String {
+  match (foreignEnumTypeIndex(declarations, nativeType)) {
+    some(typeIndex) => return declarations.types[
+      typeIndex
+    ].exportName.copyBytes(
+      0,
+      declarations.types[typeIndex].exportName.byteLength
+    );
+    none => {}
+  }
+  let recordTypeIndex = declarations.types.length;
+  match (foreignRecordTypeIndex(declarations, nativeType)) {
+    some(typeIndex) => recordTypeIndex = typeIndex;
+    none => match (in canonicalNativeType) {
+      some(typeName) => match (foreignRecordTypeIndex(
+        declarations,
+        typeName
+      )) {
+        some(typeIndex) => recordTypeIndex = typeIndex;
+        none => {}
+      }
+      none => {}
+    }
+  }
+  if (recordTypeIndex < declarations.types.length) {
+    const typeName = declarations.types[
+      recordTypeIndex
+    ].exportName.copyBytes(
+      0,
+      declarations.types[recordTypeIndex].exportName.byteLength
+    );
+    match (normalizedForeignTypeIndex(types, typeName)) {
+      some(typeIndex) => {
+        if (types[typeIndex].kind != "record") {
+          throw "native Z declaration record value resolved to a non-record type";
+        }
+        return typeName;
+      }
+      none => throw `native Z declaration record value ${typeName} requires a scalar-field struct layout`;
+    }
+  }
+  return try scalarTypeNameWithCanonical(
+    nativeType,
+    canonicalNativeType
+  );
 }
 
 function statusScalarTypeName(
@@ -699,22 +800,12 @@ export function normalizeForeignContracts(
       const capability = view contract.parameters[parameterIndex].capability;
       let typeName = "";
       if (capability == "value") {
-        match (foreignEnumTypeIndex(
+        typeName = try foreignValueTypeName(
           declarations,
-          declarations.parameters[rawParameterIndex].nativeType
-        )) {
-          some(typeIndex) => {
-            typeName = declarations.types[typeIndex].exportName.copyBytes(
-              0,
-              declarations.types[typeIndex].exportName.byteLength
-            );
-          }
-          none => {
-            typeName = try scalarTypeName(
-              declarations.parameters[rawParameterIndex].nativeType
-            );
-          }
-        }
+          types,
+          declarations.parameters[rawParameterIndex].nativeType,
+          declarations.parameters[rawParameterIndex].canonicalNativeType
+        );
       } else {
         let pointerTypeIndex = declarations.types.length;
         let mutablePointer = false;
@@ -768,8 +859,11 @@ export function normalizeForeignContracts(
         declarations.overloads[overloadIndex].returnNativeType
       );
     } else {
-      nativeReturnType = try scalarTypeName(
-        declarations.overloads[overloadIndex].returnNativeType
+      nativeReturnType = try foreignValueTypeName(
+        declarations,
+        types,
+        declarations.overloads[overloadIndex].returnNativeType,
+        declarations.overloads[overloadIndex].returnCanonicalNativeType
       );
     }
     let returnType = nativeReturnType.copyBytes(

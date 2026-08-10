@@ -117,9 +117,10 @@ function foreignFunctionSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
-    returnType: contract.returnType.copyBytes(
-      0,
-      contract.returnType.byteLength
+    returnType: localForeignTypeName(
+      types,
+      namespace,
+      contract.returnType
     ),
     errorType,
   });

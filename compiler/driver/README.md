@@ -94,11 +94,11 @@ nominal imported type through native sema, `Result<void, E>`, matching, and C
 emission; explicit integer construction uses the producer-verified underlying
 type. Ordinary enum parameters and producer-proven constants retain that
 identity across namespace or selective imports and lower to their verified C
-spellings. Plain scalar-field C structs cross existing `.zd` `in`, `inout`, and
-`out` pointer contracts with direct native construction, field access, and
-calls. C++, Objective-C, Swift, unions, nested/resource records, callbacks, and
-richer `.zd` facts remain with Stage 0 until their raw records and normalized
-FIIR cross together.
+spellings. Plain scalar-field C structs cross by value in parameters/results
+and through existing `.zd` `in`, `inout`, and `out` pointer contracts with
+direct native construction, field access, and calls. C++, Objective-C, Swift,
+unions, nested/resource records, callbacks, and richer `.zd` facts remain with
+Stage 0 until their raw records and normalized FIIR cross together.
 Foreign-cache locking and cache eviction remain toolchain hardening.
 
 `check` accepts an export-only entry module. `emit`, `build`, and `run` require

@@ -126,9 +126,10 @@ recursive path.
   supported ABI scalars to Z types, requires symbolic constants to exist with
   the exact scalar or nominal enum return identity, preserves enum-backed
   errors as source-nameable nominal types through `Result` while retaining
-  their verified C representation. Plain C structs with scalar fields also
-  cross through existing `in`, `inout`, and `out` record-pointer declarations;
-  every richer unimplemented fact rejects at its `.zd` source location.
+  their verified C representation. Plain C structs with directly representable
+  scalar fields also cross by value in parameters/results and through existing
+  `in`, `inout`, and `out` record-pointer declarations; every richer
+  unimplemented fact rejects at its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;
@@ -312,8 +313,8 @@ verified. For its first function/record tier, it discovers an adjacent `.zd`,
 prefers the packaged `z-foreign-adapter` beside its own executable and otherwise
 searches `PATH`, decodes the real
 Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
-integer-status, and plain scalar-field record-pointer contracts before native
-semantic analysis. Selective and namespace calls then lower through the
+integer-status, and plain scalar-field record value/pointer contracts before
+native semantic analysis. Selective and namespace calls then lower through the
 ordinary graph: scalar and record calls remain direct, while status calls use a
 generated C11 wrapper that invokes the native function once and constructs
 `Result<void, E>` from the checked success set.
