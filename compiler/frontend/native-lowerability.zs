@@ -1040,6 +1040,49 @@ function validateNativeBody(
   asynchronous: boolean
 ): void throws ModuleResolveError {
   for (const statement of body.nodes) {
+    if (statement.kind == StatementKind.variableStatement) {
+      let explicitType = false;
+      match (in statement.typeAnnotation) {
+        some(_) => explicitType = true;
+        none => {}
+      }
+      if (!explicitType && moduleIndex < graph.modules.length) {
+        let bindingType = "";
+        for (const binding of graph.modules[moduleIndex]
+          .semanticEvidence.bindingResolutions) {
+          if (
+            binding.offset == statement.nameOffset
+            && binding.name == statement.name
+          ) {
+            bindingType = binding.typeName.copyBytes(
+              0,
+              binding.typeName.byteLength
+            );
+          }
+        }
+        if (typeIsFunctionValue(bindingType)) {
+          match (in statement.expression) {
+            some(expression) => match (in expression.tree) {
+              some(tree) => {
+                const root = tree.root;
+                if (tree.nodes[root].kind == ExpressionKind.closureExpression) {
+                  throw loweringBoundary(
+                    path,
+                    "Z1000",
+                    `inferred first-class closure local "${statement.name}" has no native representation yet`,
+                    tree.nodes[root].line,
+                    tree.nodes[root].column,
+                    1
+                  );
+                }
+              }
+              none => {}
+            }
+            none => {}
+          }
+        }
+      }
+    }
     match (in statement.typeAnnotation) {
       some(type) => try validateNativeType(path, type);
       none => {}

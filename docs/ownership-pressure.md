@@ -2223,6 +2223,11 @@ integer conversion requires the operand's source type before native lowering
 can choose a direct cast or checked helper. A missing source type now reports
 `Z1000` across the conversion operand instead of reaching that lowerer
 assertion; the existing resolved scalar conversion chain remains executable.
+Closures remain supported language values, and native lowering already owns
+their inline `thread.spawn` and `Mutex.withLock` contexts. Storing an inferred
+closure as a first-class local still requires a native function-value and
+environment representation; Stage 1 now reports that boundary at the root
+closure expression instead of trying to lower the internal function type.
 
 ## Not tested yet
 

@@ -5120,6 +5120,22 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'function-value type "(value: i32) => i32" has no native representation yet',
     },
     {
+      name: "inferred-closure-local",
+      source: [
+        "function main(): i32 {",
+        "  const offset = 2;",
+        "  const add = (value: i32): i32 => value + offset;",
+        "  return add(40) - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 3,
+      column: 15,
+      marker: "^",
+      code: "Z1000",
+      summary: 'inferred first-class closure local "add" has no native representation yet',
+    },
+    {
       name: "fixed-array",
       source: [
         "function sum(values: i32[3]): i32 { return values[0]; }",
@@ -5483,6 +5499,8 @@ test("compiles a multi-module Z application through the standalone native driver
     "tests/fixtures/self-host-emit-control-flow.zs",
     "tests/fixtures/self-host-emit-thread-main-if.zs",
     "tests/fixtures/self-host-emit-enum.zs",
+    "tests/fixtures/self-host-emit-thread-task.zs",
+    "tests/fixtures/self-host-emit-mutex-field.zs",
   ]) {
     const positive = spawnSync(
       driver,
