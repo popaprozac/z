@@ -184,8 +184,12 @@ header, contract, include directories, and target settings. Adapter metadata
 hashes Clang's complete preprocessed header view plus the contract; a hit skips
 AST production, while a direct or transitive header change regenerates the
 stream. Decoding untrusted declarations is still not equivalent to validated
-FIIR: a missing adapter/contract, unsupported raw declaration category, or
-unsupported contract fact rejects the import.
+FIIR. The versioned stream projects only declaration categories this native
+tier can represent, so unrelated record/object declarations do not poison a
+scalar or enum import. Function records retain their exact native type
+spellings; a missing adapter/contract, a `.zd` declaration that depends on an
+omitted type category, or any unsupported contract fact still rejects the
+import during normalization.
 
 The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
 the existing `declare module`, inferred scalar `export function`, and decimal

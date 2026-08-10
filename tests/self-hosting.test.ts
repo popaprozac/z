@@ -4109,12 +4109,15 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
   assert.match(encoded, /^ZFDCL0000000000000003\nM/);
-  assert.throws(
-    () => encodeForeignFunctionDeclarationStream({
+  assert.equal(
+    encodeForeignFunctionDeclarationStream({
       ...declarations,
       namedTypes: new Map([["unsupported", {} as never]]),
+      objectTypes: new Map([["unsupported", {} as never]]),
+      interfaces: new Map([["unsupported", {} as never]]),
+      protocols: new Map([["unsupported", {} as never]]),
     }),
-    /supports function modules with typed constants and nominal enums/,
+    encoded,
   );
 
   const directory = mkdtempSync("/tmp/z-self-host-foreign-declarations-");
@@ -4518,17 +4521,21 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(mismatchedEnumStatusContract.status, 3);
 
-  assert.throws(
-    () => resolveForeignFunctionDeclarationStreams(
-      [{
-        ...foreignImport,
-        header: "geometry.h",
-      }],
-      fixture,
-      [resolve(projectRoot, "tests/fixtures")],
-    ),
-    /supports function modules with typed constants and nominal enums/,
+  const geometryStream = resolveForeignFunctionDeclarationStreams(
+    [{
+      ...foreignImport,
+      header: "geometry.h",
+    }],
+    fixture,
+    [resolve(projectRoot, "tests/fixtures")],
   );
+  const geometryDeclarations = geometryStream.get("native");
+  assert.ok(geometryDeclarations);
+  const geometryTypeRecords = geometryDeclarations
+    .split("\n")
+    .filter((record) => record.startsWith("T"));
+  assert.equal(geometryTypeRecords.length, 1);
+  assert.match(geometryTypeRecords[0], /ZDirection/);
 
   const truncatedPath = resolve(directory, "truncated.zfdcl");
   writeFileSync(truncatedPath, encoded.slice(0, -2));
@@ -5705,11 +5712,15 @@ test("compiles a multi-module Z application through the standalone native driver
         "tests/fixtures/self-host-foreign-call-input.zs",
       ),
       "utf8",
+    ).replaceAll(
+      '"foreign-functions-only.h"',
+      '"./foreign-functions-only.h"',
     ),
   );
   writeFileSync(
     foreignProjectHeader,
     '#include "foreign-dependency.h"\n'
+      + "typedef struct ZForeignUnusedRecord { Z_FOREIGN_INT value; } ZForeignUnusedRecord;\n"
       + readFileSync(
         resolve(projectRoot, "tests/fixtures/foreign-functions-only.h"),
         "utf8",
@@ -5776,7 +5787,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(missingForeignAdapter.status, 1);
   assert.match(
     missingForeignAdapter.stderr,
-    /:1:1: error: could not launch z-foreign-adapter for "foreign-functions-only\.h":/,
+    /:1:1: error: could not launch z-foreign-adapter for "\.\/foreign-functions-only\.h":/,
   );
   const foreignProjectCheck = spawnSync(
     driver,

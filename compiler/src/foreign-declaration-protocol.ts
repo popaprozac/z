@@ -46,27 +46,20 @@ function availabilityRecord(
 }
 
 /**
- * Versioned bootstrap wire format for producer-facing foreign function
- * declarations. Version 3 additionally carries nominal enum evidence so the
- * Z-owned contract normalizer can verify enum-backed status facts without
- * flattening their identity into an integer. It still fails closed on richer
- * native types and Objective-C declarations that this stream tier cannot
- * represent.
+ * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 3 carries nominal enum evidence so the Z-owned contract normalizer
+ * can verify enum-backed status facts without flattening their identity into
+ * an integer. Richer declarations remain outside this protocol tier, but do
+ * not poison an otherwise representable header: their native spellings remain
+ * visible on function records and normalization fails closed if a .zd contract
+ * actually attempts to use one of those unsupported boundary types.
  */
 export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
 ): string {
-  const namedTypes = [...module.namedTypes.values()];
-  if (
-    namedTypes.some((type) => type.kind !== "enum")
-    || module.objectTypes.size !== 0
-    || module.interfaces.size !== 0
-    || module.protocols.size !== 0
-  ) {
-    throw new Error(
-      "foreign declaration stream tier 3 supports function modules with typed constants and nominal enums",
-    );
-  }
+  const namedTypes = [...module.namedTypes.values()].filter(
+    (type) => type.kind === "enum",
+  );
 
   const records = [
     `ZFDCL${hexNumber(protocolVersion)}`,

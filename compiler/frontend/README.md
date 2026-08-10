@@ -110,12 +110,14 @@ recursive path.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
   `ZFDCL` stream into owned flat Z declarations. Version 3 covers nominal enum
   evidence and typed native constants plus foreign functions, overloads,
-  parameters, source locations, executor affinity, and availability, and
-  rejects incomplete or unsupported records rather than treating them as
-  checked FIIR. Stage 0's real Clang producer exposes the matching stream
-  operation; a C header with scalar macros and a typedef enum crosses the
-  complete producer/decoder boundary in the bootstrap suite, while a record
-  header fails closed.
+  parameters, source locations, executor affinity, and availability. The
+  producer projects that supported tier out of a richer header instead of
+  letting unrelated records poison scalar/enum imports; native type spellings
+  remain on function declarations, so a `.zd` contract that actually uses an
+  unsupported record boundary still fails closed during normalization. Stage
+  0's real Clang producer exposes the matching stream operation, and the
+  bootstrap suite crosses a mixed record/scalar/enum header through the real
+  producer, Z decoder, normalizer, and native driver.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies
@@ -316,8 +318,9 @@ Producer artifacts live in `.z-cache/foreign` under an identity derived from
 the importing module, header, contract, include paths, and target. The adapter
 stores a SHA-256 metadata key over Clang's preprocessed header view and the
 contract, so unchanged checks reuse the declaration stream while transitive
-header changes regenerate it. Missing contracts/adapters and unsupported
-records or facts fail at the source import. Exact status-literal range checks,
+header changes regenerate it. Missing contracts/adapters and contracts that
+require unsupported records or facts fail at the source import. Exact
+status-literal range checks,
 richer declaration records/facts, foreign-cache locking, and eviction remain;
 raw decoding alone is never a trusted foreign import.
 Swift targets, broader target selection, custom profiles, polished

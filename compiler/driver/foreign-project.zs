@@ -102,6 +102,37 @@ function existingForeignContract(
   return Option<String>.none;
 }
 
+function resolvedForeignHeader(
+  in modulePath: String,
+  in header: String,
+  in config: NativeProjectConfig
+): String {
+  if (isAbsolutePath(header)) return normalizedModulePath(header);
+  const sourceDirectory = directoryName(modulePath);
+  const sourceCandidate = normalizedModulePath(
+    `${sourceDirectory}/${header}`
+  );
+  if (fs.exists(sourceCandidate)) return sourceCandidate;
+  for (const includeDirectory of config.includeDirectories) {
+    const candidate = normalizedModulePath(
+      `${includeDirectory}/${header}`
+    );
+    if (fs.exists(candidate)) return candidate;
+  }
+  return sourceCandidate;
+}
+
+function resolvedDeclaredHeader(
+  in contractPath: String,
+  in moduleSpecifier: String
+): String {
+  if (isAbsolutePath(moduleSpecifier)) {
+    return normalizedModulePath(moduleSpecifier);
+  }
+  const contractDirectory = directoryName(contractPath);
+  return normalizedModulePath(`${contractDirectory}/${moduleSpecifier}`);
+}
+
 struct CacheHash {
   first: u8;
   second: u8;
@@ -269,7 +300,26 @@ export function loadForeignModuleContract(
   const declarationSource = try fs.readText(artifactPath);
   const producerCacheKey = try fs.readText(`${artifactPath}.meta`);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
-  const contracts = try parseForeignContracts(contractSource, contractPath);
+  let contracts = try parseForeignContracts(copy contractSource, contractPath);
+  const declaredHeader = resolvedDeclaredHeader(
+    contractPath,
+    contracts.moduleSpecifier
+  );
+  const importedHeader = resolvedForeignHeader(modulePath, header, config);
+  const exactSpecifier = contracts.moduleSpecifier == header;
+  if (
+    declaredHeader != importedHeader
+    && (!exactSpecifier || fs.exists(declaredHeader))
+  ) {
+    throw sourceDiagnostic(
+      contractPath,
+      1,
+      1,
+      `Z declaration module "${contracts.moduleSpecifier}" does not match imported header "${header}"; resolved "${declaredHeader}" instead of "${importedHeader}"`,
+      contractSource
+    );
+  }
+  contracts.moduleSpecifier = header.copyBytes(0, header.byteLength);
   const normalized = try normalizeForeignContracts(
     contracts,
     declarations,

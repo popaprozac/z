@@ -1451,6 +1451,22 @@ write an explicit checked enum construction. The module graph exports the
 constant target spelling with expression evidence so aliases do not rely on
 source-name guesses.
 
+The first attempt to use that enum evidence from the ordinary geometry fixture
+found that the producer still rejected the whole header merely because it also
+contained C records. That was stricter than the trust boundary required: the
+wire tier needs to prove only what it represents, while the normalizer must
+reject any contract that depends on evidence outside that tier. The producer
+now projects nominal enums, constants, and raw function spellings out of a
+richer header. An unrelated record no longer poisons a checked scalar/enum
+import, but a record-bearing function still reaches normalization with its
+exact native spelling and fails there until record contracts cross the native
+frontend. The end-to-end driver fixture deliberately includes an unused record
+to keep this distinction executable. It also imports that header through a
+relative path while the adjacent contract declares its basename. The native
+driver now mirrors Stage 0 by comparing the resolved header identities before
+rebinding the checked contract to the source import spelling; basename equality
+alone is not trusted when two include roots could contain different headers.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z
