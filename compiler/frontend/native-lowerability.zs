@@ -745,6 +745,20 @@ function validateNativeExpressionTree(
         subject.byteLength
       );
     }
+    if (node.kind == ExpressionKind.ifExpression) {
+      let boundaryIndex = index;
+      if (tree.nodes[treeRoot].kind == ExpressionKind.ifExpression) {
+        boundaryIndex = treeRoot;
+      }
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        "value-producing if expressions are not executable in the native compiler yet",
+        tree.nodes[boundaryIndex].line,
+        tree.nodes[boundaryIndex].column,
+        2
+      );
+    }
     if (node.kind == ExpressionKind.matchObjectFieldExpression) {
       let length = node.value.byteLength;
       if (length == 0) length = 1;

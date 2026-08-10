@@ -5235,6 +5235,21 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: "value-producing for expressions are not executable in the native compiler yet",
     },
     {
+      name: "if-expression",
+      source: [
+        "function main(): i32 {",
+        "  const selected = if (true) { select 42; } else { select 0; };",
+        "  return selected - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 2,
+      column: 20,
+      marker: "^^",
+      code: "Z1000",
+      summary: "value-producing if expressions are not executable in the native compiler yet",
+    },
+    {
       name: "set-element-representation",
       source: [
         'import { Set } from "std/collections";',
@@ -5447,6 +5462,18 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(nativeStructSpread.status, 0, nativeStructSpread.stderr);
+
+  for (const positiveControl of [
+    "tests/fixtures/self-host-emit-control-flow.zs",
+    "tests/fixtures/self-host-emit-thread-main-if.zs",
+  ]) {
+    const positive = spawnSync(
+      driver,
+      ["check", resolve(projectRoot, positiveControl)],
+      { encoding: "utf8" },
+    );
+    assert.equal(positive.status, 0, `${positiveControl}\n${positive.stderr}`);
+  }
 
   const backendIceInput = resolve(
     projectRoot,

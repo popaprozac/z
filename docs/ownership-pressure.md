@@ -2208,6 +2208,10 @@ overridden cleanup-bearing field still belongs to the consumed source and must
 be destroyed exactly once. Until native lowering emits that partial cleanup,
 the capability keyword receives source-mapped `Z1000`; no-override moves and
 cleanup-free overrides remain executable.
+Value-producing `if` expressions are another intentional language feature whose
+native lowering is not complete. Stage 1 now reports `Z1000` at the expression's
+`if` token instead of falling through to a lowering assertion; ordinary `if`
+statements and ternary expressions remain executable native controls.
 
 ## Not tested yet
 
