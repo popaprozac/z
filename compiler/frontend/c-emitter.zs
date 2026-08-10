@@ -7326,7 +7326,10 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.foreignHandleType
   ) {
     for (const resource of program.foreignResources) {
-      if (resource.storageName == type.name) return true;
+      if (
+        resource.storageName == type.name
+        && resource.releaseName.byteLength > 0
+      ) return true;
     }
   }
   return false;
@@ -9159,6 +9162,7 @@ function emitLoweredC(
     }
   }
   for (const resource of program.foreignResources) {
+    if (resource.releaseName.byteLength == 0) continue;
     output.append("static inline __attribute__((unused)) void Z_");
     output.append(resource.storageName);
     output.append("_deinit(");

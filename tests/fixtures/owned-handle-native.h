@@ -8,6 +8,7 @@ typedef struct ZOwnedHandle {
 } ZOwnedHandle;
 
 static int z_owned_handle_closed_count = 0;
+static ZOwnedHandle z_owned_handle_default_value = { 41 };
 
 static inline ZOwnedHandle *z_owned_handle_open(int value) {
   if (value < 0) return NULL;
@@ -26,6 +27,10 @@ static inline int z_owned_handle_create(int status, ZOwnedHandle **output) {
 
 static inline int z_owned_handle_read(ZOwnedHandle *handle) {
   return handle == NULL ? -1 : handle->value;
+}
+
+static inline ZOwnedHandle *z_owned_handle_default(void) {
+  return &z_owned_handle_default_value;
 }
 
 static inline void z_owned_handle_close(ZOwnedHandle *handle) {

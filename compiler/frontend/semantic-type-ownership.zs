@@ -496,7 +496,8 @@ export function typeIsForeignResource(
           location.symbolIndex
         ].typeSignature
       ) {
-        some(signature) => return signature.foreignResourceRelease.byteLength > 0;
+        some(signature) => return signature.foreignKind == "handle"
+          || signature.foreignResourceRelease.byteLength > 0;
         none => {}
       }
     }
@@ -510,6 +511,9 @@ export function typeIsBorrowedForeignResource(
   moduleIndex: usize,
   in typeName: String
 ): boolean {
-  return stringStartsWith(typeName, "view ")
-    && typeIsForeignResource(modules, moduleIndex, typeName);
+  if (!stringStartsWith(typeName, "view ")) return false;
+  let target = typeName.copyBytes(5, typeName.byteLength);
+  const nullableTarget = nullableTargetType(target);
+  if (nullableTarget.byteLength > 0) target = move nullableTarget;
+  return typeIsForeignResource(modules, moduleIndex, target);
 }

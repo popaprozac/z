@@ -3691,6 +3691,14 @@ function inferExpressionNodeType(
             `Option.fromNullable expects T | null, found ${actual}`
           );
         }
+        if (typeIsBorrowedForeignResource(modules, moduleIndex, actual)) {
+          throw matchError(
+            module,
+            tree,
+            payloadIndex,
+            "Option.fromNullable cannot lift a borrowed native resource into owned Option storage"
+          );
+        }
         try consumeOwnedExpressionNode(
           module,
           modules,

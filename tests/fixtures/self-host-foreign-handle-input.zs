@@ -21,6 +21,12 @@ function closeExplicitly(): i32 {
   return 1;
 }
 
+function inspectDefault(): i32 {
+  const handle = native.z_owned_handle_default();
+  if (handle == null) return -1;
+  return native.z_owned_handle_read(in handle) + 1;
+}
+
 function propagateProducedFailure(): void throws i32 {
   let handle;
   try native.z_owned_handle_create(7, out handle);
@@ -45,6 +51,8 @@ function main(): i32 {
   if (native.z_owned_handle_closed() != 2) return 4;
   if (openAsOption() != 42) return 5;
   if (native.z_owned_handle_closed() != 3) return 6;
+  if (inspectDefault() != 42) return 13;
+  if (native.z_owned_handle_closed() != 3) return 14;
 
   const produced = attempt propagateProducedFailure();
   const producedStatus = match (produced) {

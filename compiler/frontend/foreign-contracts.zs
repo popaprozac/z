@@ -9,8 +9,8 @@ import {
 } from "./lexer.zs";
 import { TextBuffer } from "std/text";
 
-// Native .zd slice: inferred scalar/record, value-resource, and integer-status
-// functions.
+// Native .zd slice: inferred scalar/record, value-resource, opaque-handle, and
+// integer-status functions.
 //
 // The model is intentionally separate from raw producer declarations. A
 // contract must match Clang evidence before it can produce these normalized
@@ -1278,6 +1278,56 @@ function collectOwnedHandleTypes(
   }
 }
 
+function appendBorrowedHandleType(
+  in nativeType: String,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  if (pointerStarCount(nativeType) != 1) return;
+  match (normalizedHandleTypeIndex(types, nativeType)) {
+    some(_) => return;
+    none => {}
+  }
+  const name = try opaqueHandleName(nativeType);
+  let replaceIndex = types.length;
+  let typeIndex: usize = 0;
+  while (typeIndex < types.length) {
+    if (types[typeIndex].name == name && types[typeIndex].kind == "record") {
+      replaceIndex = typeIndex;
+      break;
+    }
+    typeIndex = typeIndex + 1;
+  }
+  const handle = NativeForeignTypeContract({
+    kind: "handle",
+    name: name.copyBytes(0, name.byteLength),
+    nativeName: nativeType.copyBytes(0, nativeType.byteLength),
+    underlyingType: "",
+    layout: "opaque",
+    resourceRelease: "",
+    fields: Array<NativeForeignFieldContract>(),
+  });
+  if (replaceIndex < types.length) types[replaceIndex] = move handle;
+  else types.push(move handle);
+}
+
+function collectBorrowedHandleTypes(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  for (const contract of contracts.functions) {
+    if (contract.resultOwnership != "borrowed") continue;
+    const functionIndex = try findRawFunction(declarations, contract.name);
+    if (declarations.functions[functionIndex].overloadCount != 1) {
+      throw `native Z declaration handle tier requires exactly one overload for "${contract.name}"`;
+    }
+    const overload = view declarations.overloads[
+      declarations.functions[functionIndex].overloadStart
+    ];
+    try appendBorrowedHandleType(overload.returnNativeType, inout types);
+  }
+}
+
 function normalizedHandleParameter(
   in parameter: RawForeignContractParameter,
   in nativeType: String,
@@ -1386,6 +1436,7 @@ export function normalizeForeignContracts(
   }
   try validateResourceContracts(contracts, declarations, types);
   try collectOwnedHandleTypes(contracts, declarations, inout types);
+  try collectBorrowedHandleTypes(contracts, declarations, inout types);
   let constants = Array<NativeForeignConstantContract>();
   for (const declaration of declarations.constants) {
     let typeName = "";
@@ -1572,6 +1623,7 @@ export function normalizeForeignContracts(
       parameterIndex = parameterIndex + 1;
     }
     let nativeReturnType = "";
+    let borrowedHandleResult = false;
     if (contract.returnKind == "status") {
       nativeReturnType = try statusScalarTypeName(
         declarations,
@@ -1587,15 +1639,25 @@ export function normalizeForeignContracts(
         throw `native handle producer "${contract.name}" does not return the pointer governed by deinit ${contract.resultRelease}`;
       }
     } else {
-      if (contract.returnNullable) {
-        throw `native Z declaration scalar result "${contract.name}" cannot be nullable`;
+      if (contract.resultOwnership == "borrowed") {
+        nativeReturnType = handleSourceTypeName(
+          types,
+          declarations.overloads[overloadIndex].returnNativeType,
+          contract.returnNullable
+        );
+        borrowedHandleResult = nativeReturnType.byteLength > 0;
       }
-      nativeReturnType = try foreignValueTypeName(
-        declarations,
-        types,
-        declarations.overloads[overloadIndex].returnNativeType,
-        declarations.overloads[overloadIndex].returnCanonicalNativeType
-      );
+      if (!borrowedHandleResult) {
+        if (contract.returnNullable) {
+          throw `native Z declaration scalar result "${contract.name}" cannot be nullable`;
+        }
+        nativeReturnType = try foreignValueTypeName(
+          declarations,
+          types,
+          declarations.overloads[overloadIndex].returnNativeType,
+          declarations.overloads[overloadIndex].returnCanonicalNativeType
+        );
+      }
     }
     let returnType = nativeReturnType.copyBytes(
       0,
@@ -1666,6 +1728,8 @@ export function normalizeForeignContracts(
           );
         }
       }
+    } else if (borrowedHandleResult) {
+      returnType = `view ${nativeReturnType}`;
     } else if (contract.resultRelease.byteLength == 0) {
       let resourceRelease = "";
       match (normalizedForeignTypeIndex(types, nativeReturnType)) {

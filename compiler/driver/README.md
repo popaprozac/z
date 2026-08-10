@@ -108,8 +108,10 @@ nullable `out T**` outputs whose blocks declare `deinit release;`; it verifies
 the release signature, keeps `in` and `move` as direct pointer ABI calls,
 zero-initializes output storage, destroys partially produced values before a
 typed status propagates, narrows explicit null guards, and lowers
-`Option.fromNullable` without repeating the native producer call. C++,
-Objective-C, Swift, unions, callbacks, borrowed runtime provenance, and richer
+`Option.fromNullable` without repeating the native producer call. A
+`borrowed;` pointer result becomes a nullable local view:
+it receives no cleanup and cannot escape or become owned `Option` storage. C++,
+Objective-C, Swift, unions, callbacks, owner-tied borrowed provenance, and richer
 `.zd` facts remain with Stage 0 until their raw records and
 normalized FIIR cross together.
 Foreign-cache locking and cache eviction remain toolchain hardening.

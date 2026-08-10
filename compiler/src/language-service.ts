@@ -1415,7 +1415,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       .sort((left, right) => left.offset - right.offset)
       .at(-1);
     const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
-    const borrowedResource = String(type).startsWith("__z_borrowed:");
+    const borrowedResource = String(type).startsWith("__z_borrowed:")
+      || context.semanticInfo.foreignTypes.get(String(type))?.ownership === "borrowed";
     const provenance = owner
       ? `  // view of ${owner}`
       : borrowedResource ? "  // borrowed native resource; non-escaping" : "";

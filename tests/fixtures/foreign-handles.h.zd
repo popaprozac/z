@@ -6,6 +6,9 @@ declare module "foreign-handles.h" {
       deinit;
     }
   }
+  export function z_test_default(): _ | null {
+    borrowed;
+  }
   export function z_test_create(out handle: _ | null {
     deinit z_test_created_close;
   }): _;

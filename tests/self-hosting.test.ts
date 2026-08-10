@@ -6439,6 +6439,139 @@ function main(): i32 {
 
   writeFileSync(
     handleSource,
+    `import native from "owned-handle-native.h";
+
+function exposeDefault(): native.ZOwnedHandle | null {
+  return native.z_owned_handle_default();
+}
+
+function main(): i32 {
+  return 0;
+}
+`,
+  );
+  const borrowedHandleReturn = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedHandleReturn.status, 1);
+  assert.match(
+    borrowedHandleReturn.stderr,
+    /a borrowed native resource cannot be returned from Z code/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+struct StoredHandle {
+  handle: native.ZOwnedHandle;
+}
+
+function main(): i32 {
+  const handle = native.z_owned_handle_default();
+  if (handle == null) return 1;
+  const stored = StoredHandle({ handle });
+  return native.z_owned_handle_read(in stored.handle);
+}
+`,
+  );
+  const borrowedHandleStorage = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedHandleStorage.status, 1);
+  assert.match(
+    borrowedHandleStorage.stderr,
+    /a borrowed native resource cannot escape into owned storage or an owned value result/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const handle = native.z_owned_handle_default();
+  if (handle == null) return 1;
+  const inspect = (): i32 => native.z_owned_handle_read(in handle);
+  return inspect();
+}
+`,
+  );
+  const borrowedHandleCapture = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedHandleCapture.status, 1);
+  assert.match(
+    borrowedHandleCapture.stderr,
+    /borrowed native resource "handle" cannot escape into a closure/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const handle = native.z_owned_handle_default();
+  if (handle == null) return 1;
+  native.z_owned_handle_close(move handle);
+  return 0;
+}
+`,
+  );
+  const borrowedHandleConsume = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedHandleConsume.status, 1);
+  assert.match(
+    borrowedHandleConsume.stderr,
+    /cannot move a view because it does not own the referenced value/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const invalid = Option.fromNullable(native.z_owned_handle_default());
+  return 0;
+}
+`,
+  );
+  const borrowedNullableLift = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedNullableLift.status, 1);
+  assert.match(
+    borrowedNullableLift.stderr,
+    /Option\.fromNullable cannot lift a borrowed native resource into owned Option storage/,
+  );
+
+  writeFileSync(
+    handleSource,
     `function main(): i32 {
   const invalid = Option.fromNullable(42);
   return 0;
@@ -6457,6 +6590,48 @@ function main(): i32 {
   assert.match(
     invalidNullableLift.stderr,
     /Option\.fromNullable expects T \| null, found i32/,
+  );
+
+  writeFileSync(
+    resolve(handleProject, "owned-handle-native.h.zd"),
+    `declare module "owned-handle-native.h" {
+  export function z_owned_handle_default(): _ | null {
+    borrowed;
+  }
+}
+`,
+  );
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const handle = native.z_owned_handle_default();
+  if (handle == null) return 1;
+  return 0;
+}
+`,
+  );
+  const borrowedOnlyHandle = spawnSync(
+    driver,
+    ["run", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(borrowedOnlyHandle.status, 0, borrowedOnlyHandle.stderr);
+  const borrowedOnlySource = readFileSync(
+    resolve(handleProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(
+    borrowedOnlySource,
+    /typedef ZOwnedHandle \* Z_Handle_native_ZOwnedHandle;/,
+  );
+  assert.doesNotMatch(
+    borrowedOnlySource,
+    /Z_Z_Handle_native_ZOwnedHandle_deinit/,
   );
 
   writeFileSync(

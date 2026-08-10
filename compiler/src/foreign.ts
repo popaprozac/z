@@ -2119,7 +2119,7 @@ function mapForeignType(
     const ownership = note?.ownership;
     const nullable = note?.nullable ?? nullabilityFromClang(cName);
     const validOwnership = position === "return"
-      ? ownership === "owned"
+      ? ownership === "owned" || ownership === "borrowed"
       : ownership === "borrowed" || ownership === "consuming";
     if (!validOwnership || nullable === null || (ownership === "owned" && !note?.release)) {
       return { kind: "unsupported", cName };

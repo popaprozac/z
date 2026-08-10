@@ -1544,6 +1544,17 @@ flow state without exporting the inferred declaration type; semantic evidence
 now records that type at the original `let` binding rather than asking lowering
 to reconstruct it from a later call.
 
+The paired borrowed-pointer tier deliberately introduced no lifetime syntax.
+A producer returning one exact header-derived pointer may declare `borrowed;`.
+Z represents the result as a nullable, lexical view: a null guard
+narrows it for direct `in` observation, but it cannot be returned, stored,
+captured, consumed, or lifted into owned `Option` storage, and generated C never
+calls the release operation for it. This closes accidental cleanup and escape
+without pretending Z knows whether a library global, runtime, or input owner
+actually governs the pointer. Requiring an unrelated owned producer would not
+prove that lifetime, so borrowed-only library singleton APIs remain usable;
+owner-tied escape awaits an explicit provenance contract.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

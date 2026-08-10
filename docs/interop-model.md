@@ -391,6 +391,9 @@ declare module "vendor.h" {
   }
   export function vendor_close(move handle: _): _;
   export function vendor_use(in handle: _): _;
+  export function vendor_default(): _ | null {
+    borrowed;
+  }
   export function vendor_optional(in handle: _ | null): _;
   export function vendor_position(out x: _, out y: _): _;
   export function vendor_create(
@@ -420,7 +423,11 @@ resolved relative to the declaration file, so one canonical header contract
 works whether importing Z code reaches the header through a local,
 parent-relative, or project-relative spelling. `.zd` facts conflict-check with
 built-in toolchain facts. General explicit ABI types remain a later
-declaration-file slice. Three narrow semantic refinements are available now:
+declaration-file slice. A `borrowed;` result with one exact header-derived
+opaque pointer identity becomes a nullable lexical view: it receives no
+cleanup, may be narrowed and passed to `in`, and cannot escape into owned
+storage. Naming an input or runtime as its longer-lived owner remains a later
+provenance tier. Three narrow semantic refinements are available now:
 `parameter: null` exposes only the null value of an otherwise unsupported
 native pointer parameter, while `view cstring | null` classifies a native
 character-pointer result as nullable borrowed NUL-terminated text tied to the

@@ -9549,6 +9549,14 @@ function inferExpressionInner(
               }
               const argument = expression.arguments[0];
               const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
+              rejectBorrowedNativeResourceEscape(
+                actual,
+                argument,
+                locals,
+                fileName,
+                state,
+                "lifted into Option storage",
+              );
               const object = foreignObject(actual, state);
               const pointer = foreignPointer(actual, state);
               const optionPointer = parsePointerTypeName(option.target);
@@ -12066,6 +12074,7 @@ function isBorrowedBinding(type: ValueType): boolean {
 }
 
 function isBorrowedNativeResource(type: ValueType, state: AnalysisState): boolean {
+  if (foreignPointer(type, state)?.ownership === "borrowed") return true;
   if (!isBorrowedBinding(type)) return false;
   const foreign = state.foreignNamedTypes.get(String(underlyingType(type)));
   return foreign?.kind === "record" && Boolean(foreign.resource);

@@ -3140,6 +3140,80 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(generated, /ZTestHandle \* const handle = z_test_open\(\);/);
   assert.match(generated, /if \(_z_live_handle_0 && handle != NULL\) z_test_close\(handle\);/);
 
+  const borrowedSource = `
+    import handles from "tests/fixtures/foreign-handles.h";
+    function main(): i32 {
+      const handle = handles.z_test_default();
+      if (handle == null) return 1;
+      return handles.z_test_use(handle);
+    }
+  `;
+  const borrowedGenerated = compileToC(
+    borrowedSource,
+    resolve(projectRoot, "foreign-borrowed-handle.zs"),
+  );
+  assert.match(borrowedGenerated, /ZTestHandle \* const handle = z_test_default\(\);/);
+  assert.doesNotMatch(borrowedGenerated, /z_test_close\(handle\)/);
+  const borrowedBindingOffset = borrowedSource.indexOf("handle =") + 2;
+  assert.match(
+    hover(
+      borrowedSource,
+      resolve(projectRoot, "foreign-borrowed-handle.zs"),
+      borrowedBindingOffset,
+    )?.contents.value ?? "",
+    /borrowed native resource; non-escaping/,
+  );
+
+  assert.throws(
+    () => compileToC(
+      `import handles from "tests/fixtures/foreign-handles.h";
+       function expose(): handles.ZTestHandle | null {
+         return handles.z_test_default();
+       }
+       function main(): i32 { return 0; }`,
+      resolve(projectRoot, "foreign-borrowed-return.zs"),
+    ),
+    /a borrowed native resource cannot be returned from a function/,
+  );
+  assert.throws(
+    () => compileToC(
+      `import handles from "tests/fixtures/foreign-handles.h";
+       struct StoredHandle { handle: handles.ZTestHandle; }
+       function main(): i32 {
+         const handle = handles.z_test_default();
+         if (handle == null) return 1;
+         const stored = StoredHandle({ handle });
+         return handles.z_test_use(stored.handle);
+       }`,
+      resolve(projectRoot, "foreign-borrowed-storage.zs"),
+    ),
+    /a borrowed native resource cannot be stored in a struct field/,
+  );
+  assert.throws(
+    () => compileToC(
+      `import handles from "tests/fixtures/foreign-handles.h";
+       function main(): i32 {
+         const handle = handles.z_test_default();
+         if (handle == null) return 1;
+         const inspect = (): i32 => handles.z_test_use(handle);
+         return inspect();
+       }`,
+      resolve(projectRoot, "foreign-borrowed-capture.zs"),
+    ),
+    /borrowed native resource "handle" cannot be captured/,
+  );
+  assert.throws(
+    () => compileToC(
+      `import handles from "tests/fixtures/foreign-handles.h";
+       function main(): i32 {
+         const invalid = Option.fromNullable(handles.z_test_default());
+         return 0;
+       }`,
+      resolve(projectRoot, "foreign-borrowed-option.zs"),
+    ),
+    /a borrowed native resource cannot be lifted into Option storage/,
+  );
+
   const outputSource = `
     import handles from "tests/fixtures/foreign-handles.h";
     function main(): i32 {

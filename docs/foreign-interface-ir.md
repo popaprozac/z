@@ -226,7 +226,11 @@ publishes one source-nameable handle type reused by later `in` and `move`
 parameters. Native lowering keeps the ABI direct, initializes empty output
 storage to null, cleans any produced owner before a failed status propagates,
 and can move the nullable owner into `Option.fromNullable` with a single
-producer evaluation.
+producer evaluation. An exact header-derived pointer result may instead
+declare `borrowed;`; native sema exposes it as a nullable, non-escaping view,
+emits the direct pointer return without cleanup, and rejects storage,
+capture, return, consumption, and owned `Option` lifting. Naming an input owner
+or runtime lifetime remains a later provenance tier.
 
 Scalar typedef evidence verifies
 parameters/results and then lowers

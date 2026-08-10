@@ -138,8 +138,10 @@ recursive path.
   tier: a direct nullable result or nullable `out T**` block names its release
   with `deinit`, subsequent `in`/`move` parameters reuse the source-nameable
   handle identity, and the normalizer proves the release consumes exactly that
-  pointer type and returns `void`. Every richer unimplemented fact rejects at
-  its `.zd` source location.
+  pointer type and returns `void`. A header-derived pointer result may instead
+  declare `borrowed;`; it becomes a nullable non-escaping view that may
+  be null-checked and passed to `in` without receiving cleanup. Every richer
+  unimplemented fact rejects at its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;
@@ -326,8 +328,9 @@ Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
 integer-status, and recursively copyable record value/pointer contracts before
 native semantic analysis. The same path now normalizes owned nullable pointer
 results and status-gated `out T**` handles, including deterministic failure
-cleanup, nullable flow narrowing, `Option.fromNullable`, and explicit `move`
-to the declared release function. Selective and namespace calls then lower through the
+cleanup, nullable flow narrowing, `Option.fromNullable`, explicit `move` to the
+declared release function, and conservative non-escaping borrowed pointer
+results. Selective and namespace calls then lower through the
 ordinary graph: scalar and record calls remain direct, while status calls use a
 generated C11 wrapper that invokes the native function once and constructs
 `Result<void, E>` from the checked success set.

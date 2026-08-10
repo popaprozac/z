@@ -379,7 +379,10 @@ function collectForeignResources(
   inout resources: Array<LoweredForeignResource>
 ): void throws String {
   for (const imported of importedTypes) {
-    if (imported.resourceRelease.byteLength == 0) continue;
+    if (
+      imported.resourceRelease.byteLength == 0
+      && imported.kind != LoweredTypeKind.foreignHandleType
+    ) continue;
     let present = false;
     for (const resource of resources) {
       if (resource.storageName != imported.targetName) continue;
@@ -14524,7 +14527,7 @@ function importedTypesForModule(
               executorBound: false,
               threadShareable: false,
               workerDestructible: false,
-              needsDeinit: true,
+              needsDeinit: signature.foreignResourceRelease.byteLength > 0,
               resourceRelease: signature.foreignResourceRelease.copyBytes(
                 0,
                 signature.foreignResourceRelease.byteLength
