@@ -66,6 +66,23 @@ function typeIsFunctionValue(in name: String): boolean {
   return stringContains(name, "=>");
 }
 
+function typeIsArenaInModule(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in name: String
+): boolean {
+  if (name == "Arena") return true;
+  if (moduleIndex >= graph.modules.length) return false;
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    if (
+      symbol.kind == ModuleSymbolKind.importedSymbol
+      && symbol.name == name
+      && symbol.importedName == "Arena"
+    ) return true;
+  }
+  return false;
+}
+
 function typeIsFixedArray(in name: String): boolean {
   let open: usize = 0;
   while (open + 2 < name.byteLength) {
@@ -251,6 +268,8 @@ function validateNativeCollectionTypeName(
 
 function validateNativeType(
   in path: String,
+  moduleIndex: usize,
+  in graph: ModuleGraph,
   in type: TypeReference
 ): void throws ModuleResolveError {
   const typeLength = type.name.byteLength;
@@ -263,6 +282,16 @@ function validateNativeType(
     typeColumn,
     typeLength
   );
+  if (typeIsArenaInModule(graph, moduleIndex, type.name)) {
+    throw loweringBoundary(
+      path,
+      "Z1000",
+      "Arena has no native representation or runtime yet",
+      type.line,
+      type.column,
+      type.name.byteLength
+    );
+  }
   if (typeIsFunctionValue(type.name)) {
     throw loweringBoundary(
       path,
@@ -638,7 +667,7 @@ function validateNativeExpressionTree(
   while (index < tree.nodes.length) {
     const node = view tree.nodes[index];
     for (const type of node.typeReferences) {
-      try validateNativeType(path, type);
+      try validateNativeType(path, moduleIndex, graph, type);
     }
     if (node.kind == ExpressionKind.arrayExpression) {
       throw loweringBoundary(
@@ -848,6 +877,19 @@ function validateNativeExpressionTree(
         index
       );
       const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.identifierExpression
+        && typeIsArenaInModule(graph, moduleIndex, callee.value)
+      ) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          "Arena has no native representation or runtime yet",
+          callee.line,
+          callee.column,
+          callee.value.byteLength
+        );
+      }
       if (
         callee.kind == ExpressionKind.identifierExpression
         && isIntegerTypeName(callee.value)
@@ -1084,7 +1126,7 @@ function validateNativeBody(
       }
     }
     match (in statement.typeAnnotation) {
-      some(type) => try validateNativeType(path, type);
+      some(type) => try validateNativeType(path, moduleIndex, graph, type);
       none => {}
     }
     match (in statement.expression) {
@@ -1291,11 +1333,11 @@ function validateNativeFunction(
     }
   }
   for (const parameter of declaration.parameters) {
-    try validateNativeType(path, parameter.type);
+    try validateNativeType(path, moduleIndex, graph, parameter.type);
   }
-  try validateNativeType(path, declaration.returnType);
+  try validateNativeType(path, moduleIndex, graph, declaration.returnType);
   match (in declaration.errorType) {
-    some(error) => try validateNativeType(path, error);
+    some(error) => try validateNativeType(path, moduleIndex, graph, error);
     none => {}
   }
   const asynchronous = declaration.asynchronous;
@@ -1345,7 +1387,7 @@ function validateNativeAggregate(
     none => {}
   }
   for (const field of aggregate.fields) {
-    try validateNativeType(path, field.type);
+    try validateNativeType(path, moduleIndex, graph, field.type);
     try validateNativeBody(
       path,
       moduleIndex,
@@ -1443,7 +1485,12 @@ export function validateNativeLowerability(
     }
     for (const declaration of module.program.constants) {
       match (in declaration.typeAnnotation) {
-        some(type) => try validateNativeType(module.path, type);
+        some(type) => try validateNativeType(
+          module.path,
+          moduleIndex,
+          graph,
+          type
+        );
         none => {}
       }
       try validateNativeExpression(
@@ -1458,7 +1505,12 @@ export function validateNativeLowerability(
     for (const declaration of module.program.enums) {
       for (const variant of declaration.variants) {
         match (in variant.payload) {
-          some(payload) => try validateNativeType(module.path, payload);
+          some(payload) => try validateNativeType(
+            module.path,
+            moduleIndex,
+            graph,
+            payload
+          );
           none => {}
         }
       }

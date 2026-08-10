@@ -2228,6 +2228,11 @@ their inline `thread.spawn` and `Mutex.withLock` contexts. Storing an inferred
 closure as a first-class local still requires a native function-value and
 environment representation; Stage 1 now reports that boundary at the root
 closure expression instead of trying to lower the internal function type.
+The Stage 0 region model and runtime make `Arena` a real, exercised Z feature,
+but Stage 1 does not yet define its storage, allocation, or reverse-cleanup
+representation. Direct and aliased `std/memory` type uses now share one
+source-mapped `Z1000` boundary, as does construction; native `Array`,
+`TextBuffer`, and `Mutex` representations remain independent positives.
 
 ## Not tested yet
 

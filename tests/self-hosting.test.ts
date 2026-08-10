@@ -5136,6 +5136,38 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'inferred first-class closure local "add" has no native representation yet',
     },
     {
+      name: "arena-construction",
+      source: [
+        'import { Arena } from "std/memory";',
+        "",
+        "function main(): i32 {",
+        "  let scratch = Arena({ initialCapacity: 65536 });",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 4,
+      column: 17,
+      marker: "^^^^^",
+      code: "Z1000",
+      summary: "Arena has no native representation or runtime yet",
+    },
+    {
+      name: "arena-aliased-type",
+      source: [
+        'import { Arena as Region } from "std/memory";',
+        "",
+        "function discard(arena: Region): void {}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      line: 3,
+      column: 25,
+      marker: "^^^^^^",
+      code: "Z1000",
+      summary: "Arena has no native representation or runtime yet",
+    },
+    {
       name: "fixed-array",
       source: [
         "function sum(values: i32[3]): i32 { return values[0]; }",
