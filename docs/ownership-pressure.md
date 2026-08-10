@@ -2212,6 +2212,12 @@ Value-producing `if` expressions are another intentional language feature whose
 native lowering is not complete. Stage 1 now reports `Z1000` at the expression's
 `if` token instead of falling through to a lowering assertion; ordinary `if`
 statements and ternary expressions remain executable native controls.
+Stage 0 also exposes checked, wrapping, and saturating integer arithmetic, but
+the current native IR only lowers the checked operators and the three wrapping
+methods. `saturatingAdd`, `saturatingSubtract`, and `saturatingMultiply` now
+report `Z1000` at the integer method token; this exact-name and integer-receiver
+classification leaves user-defined methods and the executable wrapping tier
+unchanged.
 
 ## Not tested yet
 

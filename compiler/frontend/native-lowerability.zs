@@ -11,7 +11,10 @@ import {
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
-import { genericTypeShape } from "./semantic-type-shapes.zs";
+import {
+  genericTypeShape,
+  isIntegerTypeName,
+} from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import { typeSymbolLocation } from "./semantic-type-identities.zs";
 import {
@@ -825,6 +828,49 @@ function validateNativeExpressionTree(
         index
       );
       const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.memberExpression
+        && callee.children.length == 1
+        && (
+          callee.value == "saturatingAdd"
+          || callee.value == "saturatingSubtract"
+          || callee.value == "saturatingMultiply"
+        )
+      ) {
+        const receiver = callee.children[0];
+        let receiverType = resolvedExpressionType(
+          graph,
+          moduleIndex,
+          tree,
+          receiver
+        );
+        if (
+          receiverType.byteLength == 0
+          && tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+        ) {
+          const receiverName = tree.nodes[receiver].value.copyBytes(
+            0,
+            tree.nodes[receiver].value.byteLength
+          );
+          const receiverOffset = tree.nodes[receiver].offset;
+          receiverType = resolvedLocalBindingType(
+            graph,
+            moduleIndex,
+            receiverName,
+            receiverOffset
+          );
+        }
+        if (isIntegerTypeName(receiverType)) {
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            `saturating integer method "${callee.value}" is not executable in the native compiler yet; wrappingAdd, wrappingSubtract, and wrappingMultiply are supported`,
+            callee.line,
+            callee.column,
+            callee.value.byteLength
+          );
+        }
+      }
       if (
         callee.kind == ExpressionKind.memberExpression
         && callee.value == "spawn"

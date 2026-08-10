@@ -5250,6 +5250,22 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: "value-producing if expressions are not executable in the native compiler yet",
     },
     {
+      name: "saturating-integer-method",
+      source: [
+        "function main(): i32 {",
+        "  const maximum: u8 = 255;",
+        "  const saturated = maximum.saturatingAdd(1);",
+        "  return i32(saturated) - 255;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 3,
+      column: 29,
+      marker: "^^^^^^^^^^^^^",
+      code: "Z1000",
+      summary: 'saturating integer method "saturatingAdd" is not executable in the native compiler yet; wrappingAdd, wrappingSubtract, and wrappingMultiply are supported',
+    },
+    {
       name: "set-element-representation",
       source: [
         'import { Set } from "std/collections";',
