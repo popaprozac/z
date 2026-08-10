@@ -1566,6 +1566,17 @@ non-ownership. The view may cross a Z helper boundary derived from the same
 ordinary parent/child C APIs a safe path without pretending a library-global
 borrow has provenance that the contract cannot prove.
 
+SQLite then exposed the complementary lifetime hazard: an owner may remain
+live while an ordinary native operation invalidates storage borrowed from it.
+The `.zd` fact `invalidates owner;` now records that semantic effect separately
+from ABI access. Stage 0 ends lexical view loans at last use, while the native
+frontend proves the same conflict conservatively through lexical view scope.
+Both reject invalidation with a live child and emit the original direct call
+after the view ends. Z Notes now declares `sqlite3_column_text` as borrowed from
+its statement and `sqlite3_step` as invalidating that statement; copying the
+text into owned `String` storage keeps the existing loop valid without unsafe
+code or wrapper allocation.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

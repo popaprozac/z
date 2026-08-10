@@ -15111,6 +15111,33 @@ function checkForeignCall(
     for (let source = expected; source < args.length; source += 1) plan.push({ kind: "argument", source });
     state.foreignCallArgumentPlans.set(location.offset, plan);
   }
+  for (const nativeIndex of target.invalidatesParameters) {
+    const source = visibleParameters.findIndex((parameter) => parameter.nativeIndex === nativeIndex);
+    const argument = source >= 0 ? args[source] : null;
+    const rootName = argument?.kind === "argumentReference"
+      ? argument.name
+      : argument
+        ? storageRoot(argument)?.name ?? null
+        : null;
+    if (!argument || !rootName || !locals.has(rootName)) {
+      throw new DiagnosticError(
+        fileName,
+        argument?.location ?? location,
+        `native invalidation through ${JSON.stringify(target.name)} requires a named owner binding`,
+        {
+          code: "Z0206",
+          helps: ["bind the native owner before calling an operation that invalidates its views"],
+        },
+      );
+    }
+    rejectOwnerMutationWhileViewed(
+      rootName,
+      argument.location,
+      fileName,
+      state,
+      `call ${JSON.stringify(target.name)} because it can invalidate views derived from`,
+    );
+  }
   if (target.returnType.kind === "pointer" && target.returnType.stringView) {
     const origins = visibleParameters
       .map(({ parameter }, source) => ({ parameter, source }))

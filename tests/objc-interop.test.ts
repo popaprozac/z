@@ -622,6 +622,14 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
     diagnostics(prematureFinalize, persistence)[0]?.message ?? "",
     /cannot move "queryStatement" while view "titleBytes" is live/,
   );
+  const prematureStep = persistenceSource.replace(
+    "      const bodyBytes = sqlite.sqlite3_column_text(queryStatement, 2);",
+    "      sqlite.sqlite3_step(in queryStatement);\n      const bodyBytes = sqlite.sqlite3_column_text(queryStatement, 2);",
+  );
+  assert.match(
+    diagnostics(prematureStep, persistence)[0]?.message ?? "",
+    /cannot call "sqlite3_step" because it can invalidate views derived from "queryStatement" while view "titleBytes" is live/,
+  );
 
   const declarationFile = resolve(projectRoot, "examples/applications/z-notes/sqlite3.h.zd");
   const declarationSource = readFileSync(declarationFile, "utf8");
@@ -639,6 +647,11 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   assert.match(hover(declarationSource, declarationFile, nullOnlyOffset)?.contents.value ?? "", /only the native null pointer is exposed/);
   const textViewOffset = declarationSource.indexOf("view cstring") + 2;
   assert.match(hover(declarationSource, declarationFile, textViewOffset)?.contents.value ?? "", /borrowed native text tied to the input owner/);
+  const invalidatesOffset = declarationSource.indexOf("invalidates pStmt") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, invalidatesOffset)?.contents.value ?? "",
+    /invalidates pStmt.*may invalidate every outstanding view/,
+  );
   const fixedKeywordOffset = declarationSource.indexOf("fixed SQLITE_TRANSIENT") + 1;
   assert.match(hover(declarationSource, declarationFile, fixedKeywordOffset)?.contents.value ?? "", /compiler supplies this header-defined value/);
   const fixedValueOffset = declarationSource.indexOf("SQLITE_TRANSIENT") + 2;

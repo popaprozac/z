@@ -325,6 +325,8 @@ export type ForeignFunctionOverload = {
   readonly cName: string;
   readonly returnType: ForeignType;
   readonly returnBorrowedFromParameter: number | null;
+  /** Native parameter indices whose calls invalidate outstanding views of those owners. */
+  readonly invalidatesParameters: readonly number[];
   readonly status: {
     readonly success: readonly (number | string)[];
     readonly result: "void";

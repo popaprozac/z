@@ -20,6 +20,9 @@ declare module "owned-handle-native.h" {
     borrowed from handle;
   }
   export function z_owned_child_read(in child: _): _;
+  export function z_owned_handle_advance(in handle: _): _ {
+    invalidates handle;
+  }
   export function z_owned_handle_close(move handle: _): _;
   export function z_owned_handle_closed(): _;
 }

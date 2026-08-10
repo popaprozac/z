@@ -119,7 +119,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
-  "owned", "borrowed",
+  "owned", "borrowed", "invalidates",
   "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
 ] as const;
 
@@ -2705,6 +2705,25 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       });
     }
   }
+  const invalidatedOwnerPrefix = /\binvalidates\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (invalidatedOwnerPrefix !== undefined) {
+    const parameters = new Map<string, ForeignType>();
+    for (const signature of ownerSignatures) {
+      for (const parameter of signature.parameters) {
+        if (parameter.name) parameters.set(parameter.name, parameter.type);
+      }
+    }
+    for (const [name, type] of parameters) {
+      if (!name.toLowerCase().startsWith(invalidatedOwnerPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `${foreignTypeName(type)} native owner whose outstanding views are invalidated`,
+        insertText: `${name};`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
   const activeCallbackName = [...before.matchAll(/\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g)].at(-1)?.[1];
   const activeCallbacks = activeCallbackName
     ? ownerSignatures.flatMap((signature) => signature.parameters
@@ -3397,6 +3416,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
     if (contract.resultBorrowedFromLocation?.offset === word.start && contract.resultBorrowedFrom) {
       return markdownHover(
         `${contract.resultBorrowedFrom}: owner  // lifetime source for this borrowed native result`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    const invalidation = contract.invalidates.find((candidate) => (
+      candidate.location.offset === word.start || candidate.parameterLocation.offset === word.start
+    ));
+    if (invalidation) {
+      return markdownHover(
+        `invalidates ${invalidation.parameter}  // this native call may invalidate every outstanding view derived from the owner`,
         source,
         word.start,
         word.end,

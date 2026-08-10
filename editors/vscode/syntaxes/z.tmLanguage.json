@@ -154,6 +154,13 @@
           "2": { "name": "variable.parameter.z" }
         }
       }, {
+        "name": "meta.declaration.view-invalidation.foreign.z",
+        "match": "\\b(invalidates)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.lifecycle.z" },
+          "2": { "name": "variable.parameter.z" }
+        }
+      }, {
         "name": "meta.declaration.callback-cardinality.foreign.z",
         "match": "\\b(invoked)\\s+(once|repeatedly)(?=\\s*;)",
         "captures": {

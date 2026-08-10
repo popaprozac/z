@@ -143,6 +143,7 @@ export function collectionMethodSignature(
       parameterModes: Array<String>(),
       parameterTypes: Array<String>(),
       viewParameter: Option<usize>.none,
+      invalidatesParameters: Array<usize>(),
       returnType: "void",
       errorType: "",
     }));
@@ -167,6 +168,7 @@ export function collectionMethodSignature(
       parameterModes,
       parameterTypes,
       viewParameter: Option<usize>.none,
+      invalidatesParameters: Array<usize>(),
       returnType: ownerType.copyBytes(0, ownerType.byteLength),
       errorType: "",
     }));
@@ -215,6 +217,7 @@ export function collectionMethodSignature(
       parameterModes,
       parameterTypes,
       viewParameter: Option<usize>.none,
+      invalidatesParameters: Array<usize>(),
       returnType,
       errorType: "",
     }));
@@ -250,6 +253,7 @@ export function collectionMethodSignature(
         parameterModes,
         parameterTypes,
         viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
         returnType,
         errorType: "",
       }));
@@ -359,6 +363,7 @@ export function collectionMethodSignature(
       parameterModes,
       parameterTypes,
       viewParameter: Option<usize>.none,
+      invalidatesParameters: Array<usize>(),
       returnType,
       errorType,
     }));
@@ -374,6 +379,7 @@ export function collectionMethodSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
     returnType,
     errorType,
   }));

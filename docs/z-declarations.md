@@ -119,6 +119,10 @@ declare module "vendor.h" {
     borrowed from image;
   }
 
+  export function vendor_image_advance(in image: _): _ {
+    invalidates image;
+  }
+
   export function vendor_setopt(
     in owner: _,
     option: VENDOR_WRITE,
@@ -209,6 +213,7 @@ still use the Stage-0 compiler.
 | `owned;` in a function result block | Return a new unique C value-resource owner | The return must be a record classified by `export type`; Z schedules its named cleanup |
 | `borrowed;` in a function result block | Return runtime-owned C resource storage without cleanup | C value resources and exact header-derived opaque pointer identities become lexical non-escaping views: no fields, collections, enum payloads, captures, returns, consuming calls, or owned `Option` lifting |
 | `borrowed from owner;` in a function result block | Return a non-owning C pointer whose lifetime is tied to one input handle | `owner` must name a non-null immutable `in` pointer parameter. Z may preserve the result as `view T` or `Option<view T>` while preventing the owner from moving or dying first |
+| `invalidates owner;` in a function contract block | Declare that the native call may invalidate outstanding views derived from one input handle | `owner` must name a non-null immutable `in` pointer parameter. The call is rejected while any such view is live; the native ABI remains the original `T *`, not `T **` |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
 | `success N;` | Treat numeric status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value |

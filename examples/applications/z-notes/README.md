@@ -23,7 +23,8 @@ The application currently combines:
 - Z-defined `NSTableViewDataSource` and `NSTableViewDelegate` conformance,
   lowered through an Objective-C adapter owned by `objc.Binding`;
 - direct `sqlite3.h` import with adjacent owned-output, null-only parameter,
-  borrowed-text, fixed-sentinel, and typed native-status `.zd` contracts;
+  owner-tied borrowed-text, view-invalidation, fixed-sentinel, and typed
+  native-status `.zd` contracts;
 - explicit `target.link.libraries` configuration for `sqlite3`.
 
 The application uses `std/objc` target/action for an interactive Add Note

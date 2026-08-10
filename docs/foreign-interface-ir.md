@@ -233,7 +233,11 @@ capture, return, consumption, and owned `Option` lifting. `borrowed from owner;`
 additionally records the native parameter index that supplies provenance. The
 ordinary semantic model carries that index as a view source, allowing `view T`
 and `Option<view T>` forwarding while retaining the owner's lexical loan.
-Runtime lifetime names remain a later provenance tier.
+Normalized functions may also carry native parameter indices from
+`invalidates owner;`. Semantic analysis checks those indices against the same
+owner/view loan graph before the direct call; code generation emits no wrapper
+or runtime invalidation check. Runtime lifetime names remain a later provenance
+tier.
 
 Scalar typedef evidence verifies
 parameters/results and then lowers

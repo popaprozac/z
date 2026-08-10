@@ -255,6 +255,28 @@ function normalizeOverload(
         );
       }
     }
+    const invalidatesParameters = functionNotes?.invalidates ?? [];
+    for (const invalidatedParameter of invalidatesParameters) {
+      const owner = parameters[invalidatedParameter]?.type;
+      if (
+        !Number.isInteger(invalidatedParameter)
+        || invalidatedParameter < 0
+        || invalidatedParameter >= parameters.length
+      ) {
+        throw contractError(
+          fileName,
+          location,
+          `invalidation on ${JSON.stringify(declaration.name)} names an invalid owner parameter`,
+        );
+      }
+      if (owner?.kind !== "pointer" || owner.ownership !== "borrowed" || owner.nullable) {
+        throw contractError(
+          fileName,
+          location,
+          `invalidated owner parameter ${invalidatedParameter + 1} of ${JSON.stringify(declaration.name)} must be a non-null borrowed C pointer`,
+        );
+      }
+    }
     const returnOwnership = functionNotes?.return?.ownership;
     if (
       (returnOwnership === "owned" || returnOwnership === "borrowed")
@@ -293,6 +315,7 @@ function normalizeOverload(
       cName: declaration.nativeName,
       returnType,
       returnBorrowedFromParameter,
+      invalidatesParameters,
       status: functionNotes?.status ?? null,
       parameters,
       connection: null,
@@ -330,6 +353,15 @@ function validateNoteTargets(
       }
       if (note.parameters?.[indexText]?.thread) {
         throw contractError(fileName, location, `native thread contracts currently apply only to owned producer results, not parameter ${JSON.stringify(indexText)} of ${JSON.stringify(name)}`);
+      }
+    }
+    for (const index of note.invalidates ?? []) {
+      if (
+        !Number.isInteger(index)
+        || index < 0
+        || declaration.overloads.some((overload) => index >= overload.parameters.length)
+      ) {
+        throw contractError(fileName, location, `API notes for ${JSON.stringify(name)} invalidate missing parameter ${index}`);
       }
     }
   }

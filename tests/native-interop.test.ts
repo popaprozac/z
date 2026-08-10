@@ -3431,6 +3431,31 @@ test("ties borrowed C pointer views to an explicit native owner", () => {
     /requires `Option<view T>` so its owner provenance remains visible/,
   );
 
+  const invalidatedView = `
+    import native from "tests/fixtures/owned-handle-native.h";
+    function main(): i32 {
+      const owner = native.z_owned_handle_open(42);
+      if (owner == null) return 1;
+      const child = native.z_owned_handle_child(in owner);
+      native.z_owned_handle_advance(in owner);
+      if (child == null) return 2;
+      return native.z_owned_child_read(in child);
+    }
+  `;
+  const invalidationDiagnostic = diagnostics(invalidatedView, fileName)[0];
+  assert.equal(invalidationDiagnostic.code, "Z0205");
+  assert.match(
+    invalidationDiagnostic.message,
+    /cannot call "z_owned_handle_advance" because it can invalidate views derived from "owner" while view "child" is live/,
+  );
+
+  const copiedBeforeInvalidation = invalidatedView.replace(
+    "native.z_owned_handle_advance(in owner);\n      if (child == null) return 2;\n      return native.z_owned_child_read(in child);",
+    "if (child == null) return 2;\n      const observed = native.z_owned_child_read(in child);\n      native.z_owned_handle_advance(in owner);\n      return observed;",
+  );
+  assert.deepEqual(diagnostics(copiedBeforeInvalidation, fileName), []);
+  assert.match(compileToC(copiedBeforeInvalidation, fileName), /z_owned_handle_advance\(owner\)/);
+
   const declarationFile = resolve(projectRoot, "tests/fixtures/owned-handle-native.h.zd");
   const declarationSource = readFileSync(declarationFile, "utf8");
   const borrowedOffset = declarationSource.indexOf("borrowed from handle") + 2;
@@ -3457,6 +3482,20 @@ test("ties borrowed C pointer views to an explicit native owner", () => {
       .find((item) => item.label === "handle")?.insertText,
     "handle;",
   );
+  const invalidatesOffset = declarationSource.indexOf("invalidates handle") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, invalidatesOffset)?.contents.value ?? "",
+    /invalidates handle.*may invalidate every outstanding view/,
+  );
+  const invalidatesCompletionSource = declarationSource.replace("invalidates handle;", "invalidates han");
+  const invalidatesCompletionOffset = invalidatesCompletionSource.indexOf("invalidates han") + "invalidates han".length;
+  assert.equal(
+    completions(invalidatesCompletionSource, declarationFile, invalidatesCompletionOffset)
+      .find((item) => item.label === "handle")?.insertText,
+    "handle;",
+  );
+  const grammar = readFileSync(resolve(projectRoot, "editors/vscode/syntaxes/z.tmLanguage.json"), "utf8");
+  assert.match(grammar, /\\b\(invalidates\)\\\\s\+\(\[A-Za-z_\]/);
 });
 
 test("projects native integer statuses into typed throws and preserves out cleanup", () => {
@@ -3561,6 +3600,42 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
     /owner "handle" must be non-null/,
   );
 
+  const unknownInvalidatedOwner = `
+    declare module "contract.h" {
+      export function advance(in handle: _): _ {
+        invalidates missing;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(unknownInvalidatedOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /names unknown owner parameter "missing"/,
+  );
+
+  const mutableInvalidatedOwner = `
+    declare module "contract.h" {
+      export function advance(inout handle: _): _ {
+        invalidates handle;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(mutableInvalidatedOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /invalidated owner "handle" must be an immutable `in` parameter/,
+  );
+
+  const nullableInvalidatedOwner = `
+    declare module "contract.h" {
+      export function advance(in handle: _ | null): _ {
+        invalidates handle;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(nullableInvalidatedOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /invalidated owner "handle" must be non-null/,
+  );
+
   const malformed = `
     declare module "contract.h" {
       export function known(): invented;
@@ -3579,7 +3654,7 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   `;
   const executableDiagnostic = diagnostics(executableContract, "/tmp/contract.h.zd")[0];
   assert.equal(executableDiagnostic.code, "Z0801");
-  assert.match(executableDiagnostic.message, /expected "async", "project", "deinit", "owned", "borrowed", "thread", "callback", or "success" in foreign function contract/);
+  assert.match(executableDiagnostic.message, /expected "async", "project", "deinit", "owned", "borrowed", "invalidates", "thread", "callback", or "success" in foreign function contract/);
 
   const threadWithoutOwner = `
     declare module "contract.h" {
@@ -3679,7 +3754,7 @@ test("merges API-note sources without allowing safety contracts to conflict", ()
     },
     {
       name: "overlay",
-      notes: { functions: { open: { return: { nullable: false } } } },
+      notes: { functions: { open: { return: { nullable: false }, invalidates: [0] } } },
     },
   ]);
   assert.deepEqual(merged.functions?.open.return, {
@@ -3687,6 +3762,7 @@ test("merges API-note sources without allowing safety contracts to conflict", ()
     release: "close",
     nullable: false,
   });
+  assert.deepEqual(merged.functions?.open.invalidates, [0]);
   assert.throws(
     () => mergeApiNotes([
       { name: "base", notes: { functions: { use: { parameters: { "0": { ownership: "borrowed" } } } } } },
@@ -3694,6 +3770,16 @@ test("merges API-note sources without allowing safety contracts to conflict", ()
     ]),
     (error) => error instanceof ApiNoteConflictError
       && error.path === "functions.use.parameters.0.ownership"
+      && error.firstSource === "base"
+      && error.secondSource === "overlay",
+  );
+  assert.throws(
+    () => mergeApiNotes([
+      { name: "base", notes: { functions: { use: { invalidates: [0] } } } },
+      { name: "overlay", notes: { functions: { use: { invalidates: [1] } } } },
+    ]),
+    (error) => error instanceof ApiNoteConflictError
+      && error.path === "functions.use.invalidates"
       && error.firstSource === "base"
       && error.secondSource === "overlay",
   );

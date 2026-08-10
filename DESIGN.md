@@ -2417,6 +2417,14 @@ non-null immutable native-handle input and cannot move or die while the child
 view is live. Runtime-global lifetime identities and general lifetime
 parameters remain deferred.
 
+Keeping an owner alive is not sufficient when another native call can mutate
+its referent and invalidate borrowed children. A `.zd` function may declare
+`invalidates owner;` for one non-null immutable native-handle input. The call
+conflicts with every live view derived from that owner and becomes legal after
+their last use. This remains an ordinary direct C call. It is intentionally not
+spelled `inout`, because `inout` describes writable caller storage at the ABI
+boundary while invalidation describes a semantic effect of a `T *` callee.
+
 Once a contract establishes an owned opaque C pointer and its release operation,
 the native typedef is also a source-nameable Z type. The import namespace keeps
 the header identity visible: an owned non-null `sqlite3 *` is written

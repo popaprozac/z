@@ -33,6 +33,7 @@ export struct RawForeignFunctionContract {
   successValues: Array<String>;
   resultOwnership: String;
   resultBorrowedFrom: String;
+  invalidates: Array<String>;
   resultRelease: String;
   line: usize;
   column: usize;
@@ -67,6 +68,7 @@ export struct NativeForeignFunctionContract {
   successValues: Array<String>;
   parameters: Array<NativeForeignParameterContract>;
   borrowedFromParameter: Option<usize>;
+  invalidatesParameters: Array<usize>;
 }
 
 export struct NativeForeignTypeContract {
@@ -335,6 +337,7 @@ function parseFunction(
   let successValues = Array<String>();
   let resultOwnership = "";
   let resultBorrowedFrom = "";
+  let invalidates = Array<String>();
   let resultRelease = "";
   if (atText(cursor, "void")) {
     returnKind = "status";
@@ -346,10 +349,22 @@ function parseFunction(
     }
     try expectText(inout cursor, "{");
     while (!atText(cursor, "}")) {
+      if (atText(cursor, "invalidates")) {
+        cursor.index = cursor.index + 1;
+        const owner = try parseQualifiedName(inout cursor);
+        for (const existing of invalidates) {
+          if (existing == owner) {
+            throw contractError(cursor, `foreign function "${name}" cannot invalidate parameter "${owner}" more than once`);
+          }
+        }
+        invalidates.push(owner);
+        try expectText(inout cursor, ";");
+        continue;
+      }
       if (!atText(cursor, "success")) {
         throw contractError(
           cursor,
-          "only success values are implemented in the first native status tier"
+          "only success and invalidates facts are implemented in the first native status tier"
         );
       }
       cursor.index = cursor.index + 1;
@@ -387,10 +402,21 @@ function parseFunction(
           try expectText(inout cursor, ";");
           continue;
         }
+        if (fact == "invalidates") {
+          const owner = try parseQualifiedName(inout cursor);
+          for (const existing of invalidates) {
+            if (existing == owner) {
+              throw contractError(cursor, `foreign function "${name}" cannot invalidate parameter "${owner}" more than once`);
+            }
+          }
+          invalidates.push(owner);
+          try expectText(inout cursor, ";");
+          continue;
+        }
         if (fact != "owned" && fact != "borrowed") {
           throw contractError(
             cursor,
-            `native resource result fact must be "owned", "borrowed", or "deinit", found "${fact}"`
+            `native result fact must be "owned", "borrowed", "invalidates", or "deinit", found "${fact}"`
           );
         }
         if (resultOwnership.byteLength > 0) {
@@ -410,6 +436,7 @@ function parseFunction(
       if (
         resultOwnership.byteLength == 0
         && resultRelease.byteLength == 0
+        && invalidates.length == 0
       ) {
         throw contractErrorAt(
           cursor,
@@ -468,6 +495,41 @@ function parseFunction(
       );
     }
   }
+  for (const invalidatedOwner of invalidates) {
+    let ownerIndex = parameters.length;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < parameters.length) {
+      if (parameters[parameterIndex].name == invalidatedOwner) {
+        ownerIndex = parameterIndex;
+        break;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (ownerIndex == parameters.length) {
+      throw contractErrorAt(
+        cursor,
+        line,
+        column,
+        `invalidation on "${name}" names unknown owner parameter "${invalidatedOwner}"`
+      );
+    }
+    if (parameters[ownerIndex].capability != "in") {
+      throw contractErrorAt(
+        cursor,
+        parameters[ownerIndex].line,
+        parameters[ownerIndex].column,
+        `invalidated owner "${invalidatedOwner}" must be an immutable in parameter`
+      );
+    }
+    if (parameters[ownerIndex].nullable) {
+      throw contractErrorAt(
+        cursor,
+        parameters[ownerIndex].line,
+        parameters[ownerIndex].column,
+        `invalidated owner "${invalidatedOwner}" must be non-null`
+      );
+    }
+  }
   return RawForeignFunctionContract({
     name,
     parameters,
@@ -476,6 +538,7 @@ function parseFunction(
     successValues,
     resultOwnership,
     resultBorrowedFrom,
+    invalidates,
     resultRelease,
     line,
     column,
@@ -1668,6 +1731,7 @@ export function normalizeForeignContracts(
     let nativeReturnType = "";
     let borrowedHandleResult = false;
     let borrowedFromParameter = Option<usize>.none;
+    let invalidatesParameters = Array<usize>();
     if (contract.resultBorrowedFrom.byteLength > 0) {
       let ownerIndex: usize = 0;
       while (
@@ -1686,6 +1750,25 @@ export function normalizeForeignContracts(
         throw `borrowed result owner "${contract.resultBorrowedFrom}" must be a non-null opaque C handle`;
       }
       borrowedFromParameter = Option.some(ownerIndex);
+    }
+    for (const invalidatedOwner of contract.invalidates) {
+      let ownerIndex: usize = 0;
+      while (
+        ownerIndex < contract.parameters.length
+        && contract.parameters[ownerIndex].name != invalidatedOwner
+      ) {
+        ownerIndex = ownerIndex + 1;
+      }
+      if (ownerIndex == contract.parameters.length) {
+        throw `invalidation on "${contract.name}" names unknown owner parameter "${invalidatedOwner}"`;
+      }
+      if (
+        parameters[ownerIndex].capability != "in"
+        || parameters[ownerIndex].abiMode != "inValue"
+      ) {
+        throw `invalidated owner "${invalidatedOwner}" must be a non-null opaque C handle`;
+      }
+      invalidatesParameters.push(ownerIndex);
     }
     if (contract.returnKind == "status") {
       nativeReturnType = try statusScalarTypeName(
@@ -1828,6 +1911,7 @@ export function normalizeForeignContracts(
       successValues,
       parameters,
       borrowedFromParameter,
+      invalidatesParameters,
     }));
   }
   return NativeForeignContractSet({

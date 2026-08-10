@@ -22,7 +22,9 @@ declare module "sqlite3.h" {
     success 0;
   }
 
-  export function sqlite3_step(in pStmt: _): _;
+  export function sqlite3_step(in pStmt: _): _ {
+    invalidates pStmt;
+  }
   export function sqlite3_finalize(move pStmt: _): _;
   export function sqlite3_bind_int64(in pStmt: _, i: _, iValue: _): void throws _ {
     success 0;
@@ -39,5 +41,7 @@ declare module "sqlite3.h" {
     success 0;
   }
   export function sqlite3_column_int64(in pStmt: _, iCol: _): _;
-  export function sqlite3_column_text(in pStmt: _, iCol: _): view cstring | null;
+  export function sqlite3_column_text(in pStmt: _, iCol: _): view cstring | null {
+    borrowed from pStmt;
+  }
 }

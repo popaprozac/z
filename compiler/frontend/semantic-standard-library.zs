@@ -23,6 +23,7 @@ function standardSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
     returnType: returnType.copyBytes(0, returnType.byteLength),
     errorType: errorType.copyBytes(0, errorType.byteLength),
   });

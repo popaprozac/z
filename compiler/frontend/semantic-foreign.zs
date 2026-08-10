@@ -125,6 +125,10 @@ function foreignFunctionSignature(
     }
     none => {}
   }
+  let invalidatesParameters = Array<usize>();
+  for (const parameter of contract.invalidatesParameters) {
+    invalidatesParameters.push(parameter);
+  }
   return ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
@@ -133,6 +137,7 @@ function foreignFunctionSignature(
     parameterModes,
     parameterTypes,
     viewParameter: contract.borrowedFromParameter,
+    invalidatesParameters,
     returnType: localForeignTypeName(
       types,
       namespace,

@@ -214,6 +214,8 @@ export struct ModuleFunctionSignature {
   parameterTypes: Array<String>;
   // A foreign view result borrows from this parameter when present.
   viewParameter: Option<usize>;
+  // Foreign calls may invalidate outstanding views derived from these inputs.
+  invalidatesParameters: Array<usize>;
   returnType: String;
   errorType: String;
 }

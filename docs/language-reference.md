@@ -2519,6 +2519,14 @@ NUL-terminated native text tied to the function's single borrowed pointer
 input. It must be checked for null before `String.from` makes an owned copy;
 the owner cannot be consumed while the view remains live.
 
+Some native operations keep the owner alive while invalidating storage exposed
+by earlier views. A `.zd` function fact such as `invalidates statement;` makes
+that effect explicit. The call is rejected until every view derived from
+`statement` reaches its last use. Copying borrowed text with `String.from`
+creates independent owned storage and therefore ends the loan normally. This
+is not `inout`: the C ABI may still receive the same `sqlite3 *` value rather
+than writable pointer-slot storage.
+
 A declaration parameter may also use `{ fixed NATIVE_CONSTANT; }`. The
 parameter remains part of the header-verified native ABI but is omitted from Z
 calls; code generation inserts the named header constant. This is intended for

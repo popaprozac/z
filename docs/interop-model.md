@@ -433,7 +433,12 @@ storage. `borrowed from owner;` adds explicit provenance for a child pointer:
 the named owner must be a non-null immutable `in` handle, the result may be
 forwarded as `view T` or `Option<view T>`, and the owner cannot move or die
 while that view remains live. Runtime-global lifetime names remain a later
-provenance tier. Three other narrow semantic refinements are available now:
+provenance tier. A function fact `invalidates owner;` describes native referent
+mutation that may end those child lifetimes without replacing the `T *` pointer
+slot. Z rejects the call while an owner-tied view is live and permits it after
+the view's last use; this is deliberately distinct from `inout`, whose native
+boundary authorizes writable caller storage such as `T *` or `T **`. Three
+other narrow semantic refinements are available now:
 `parameter: null` exposes only the null value of an otherwise unsupported
 native pointer parameter, while `view cstring | null` classifies a native
 character-pointer result as nullable borrowed NUL-terminated text tied to the

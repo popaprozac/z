@@ -58,6 +58,11 @@ export type ForeignFunctionContract = {
   readonly resultOwnershipLocation: SourceLocation | null;
   readonly resultBorrowedFrom: string | null;
   readonly resultBorrowedFromLocation: SourceLocation | null;
+  readonly invalidates: readonly {
+    readonly parameter: string;
+    readonly location: SourceLocation;
+    readonly parameterLocation: SourceLocation;
+  }[];
   readonly location: SourceLocation;
   readonly nameLocation: SourceLocation;
   readonly returnLocation: SourceLocation;
@@ -584,6 +589,11 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     let resultOwnershipLocation: SourceLocation | null = null;
     let resultBorrowedFrom: string | null = null;
     let resultBorrowedFromLocation: SourceLocation | null = null;
+    const invalidates: {
+      parameter: string;
+      location: SourceLocation;
+      parameterLocation: SourceLocation;
+    }[] = [];
     let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
     const buffers: ForeignBufferContract[] = [];
@@ -840,6 +850,20 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           expectText(";");
           continue;
         }
+        if (at("invalidates")) {
+          const invalidatesToken = take();
+          const parameter = expectIdentifier("an owner parameter name after `invalidates`");
+          if (invalidates.some((candidate) => candidate.parameter === parameter.text)) {
+            fail(parameter, `foreign function ${JSON.stringify(name)} cannot invalidate parameter ${JSON.stringify(parameter.text)} more than once`);
+          }
+          invalidates.push({
+            parameter: parameter.text,
+            location: invalidatesToken.location,
+            parameterLocation: parameter.location,
+          });
+          expectText(";");
+          continue;
+        }
         if (at("failure")) {
           fail(
             contract,
@@ -847,7 +871,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           );
         }
         if (!at("deinit")) {
-          fail(contract, `expected "async", "project", "deinit", "owned", "borrowed", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
+          fail(contract, `expected "async", "project", "deinit", "owned", "borrowed", "invalidates", "thread", "callback", or "success" in foreign function contract, found ${JSON.stringify(contract.text)}`);
         }
         if (release) fail(contract, `foreign function ${JSON.stringify(name)} cannot declare more than one deinit contract`);
         take();
@@ -907,6 +931,36 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         );
       }
     }
+    for (const invalidation of invalidates) {
+      const owner = parameters.find((parameter) => parameter.name === invalidation.parameter);
+      if (!owner) {
+        throw new DiagnosticError(
+          fileName,
+          invalidation.parameterLocation,
+          `invalidation on ${JSON.stringify(name)} names unknown owner parameter ${JSON.stringify(invalidation.parameter)}`,
+          { code: "Z0801" },
+        );
+      }
+      if (owner.mode !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          invalidation.parameterLocation,
+          `invalidated owner ${JSON.stringify(invalidation.parameter)} must be an immutable \`in\` parameter`,
+          {
+            code: "Z0801",
+            notes: ["invalidation describes native referent state without changing the pointer-slot ABI"],
+          },
+        );
+      }
+      if (owner.nullable || owner.nullOnly) {
+        throw new DiagnosticError(
+          fileName,
+          invalidation.parameterLocation,
+          `invalidated owner ${JSON.stringify(invalidation.parameter)} must be non-null`,
+          { code: "Z0801" },
+        );
+      }
+    }
     functions.push({
       name,
       parameters,
@@ -921,6 +975,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       resultOwnershipLocation,
       resultBorrowedFrom,
       resultBorrowedFromLocation,
+      invalidates,
       location: start.location,
       nameLocation: parsedName.location,
       returnLocation: returnType.location,
@@ -971,6 +1026,7 @@ export function foreignDeclarationApiNotes(
   const functions: Record<string, {
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
+    invalidates?: number[];
     status?: StatusNote;
     buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
@@ -1266,6 +1322,11 @@ export function foreignDeclarationApiNotes(
           ? { thread: contract.thread }
           : {}),
       },
+      ...(contract.invalidates.length
+        ? { invalidates: contract.invalidates.map((invalidation) => (
+          contract.parameters.findIndex((parameter) => parameter.name === invalidation.parameter)
+        )) }
+        : {}),
       ...(Object.keys(parameters).length ? { parameters } : {}),
       ...(buffers.length ? { buffers } : {}),
       ...(

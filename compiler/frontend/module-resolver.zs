@@ -75,6 +75,7 @@ import {
   copyBindingFlowStates,
   copyValueBindings,
   expressionViewOrigin,
+  liveViewBindingForOwner,
   setExpressionViewOrigin,
   mergeBindingFlowStates,
   setValueBindingInitialization,
@@ -1809,6 +1810,40 @@ function inferSignatureCallType(
       argumentTypes[parameterIndex]
     );
     parameterIndex = parameterIndex + 1;
+  }
+  for (const invalidatedParameter of signature.invalidatesParameters) {
+    if (invalidatedParameter >= argumentNodes.length) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `native invalidation through ${functionName} has no matching owner argument`,
+        tree.nodes[callIndex].line,
+        tree.nodes[callIndex].column
+      );
+    }
+    const owner = expressionStorageRootName(
+      tree,
+      argumentNodes[invalidatedParameter]
+    );
+    if (owner.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `native invalidation through ${functionName} requires a named owner binding`,
+        tree.nodes[argumentNodes[invalidatedParameter]].line,
+        tree.nodes[argumentNodes[invalidatedParameter]].column
+      );
+    }
+    const liveView = liveViewBindingForOwner(bindings, owner);
+    if (liveView.byteLength > 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `cannot call "${functionName}" because it can invalidate views derived from "${owner}" while view "${liveView}" is live`,
+        tree.nodes[argumentNodes[invalidatedParameter]].line,
+        tree.nodes[argumentNodes[invalidatedParameter]].column
+      );
+    }
   }
   parameterIndex = 0;
   while (parameterIndex < argumentTypes.length) {

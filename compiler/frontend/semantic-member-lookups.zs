@@ -376,6 +376,10 @@ export function rebaseModuleFunctionSignature(
       signature.errorType
     );
   }
+  let invalidatesParameters = Array<usize>();
+  for (const parameter of signature.invalidatesParameters) {
+    invalidatesParameters.push(parameter);
+  }
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
@@ -384,6 +388,7 @@ export function rebaseModuleFunctionSignature(
     parameterModes,
     parameterTypes,
     viewParameter: signature.viewParameter,
+    invalidatesParameters,
     returnType: rebaseTypeName(
       modules,
       fromModuleIndex,
@@ -629,6 +634,10 @@ export function methodCallableSignature(
   for (const typeName of method.signature.parameterTypes) {
     parameterTypes.push(typeName.copyBytes(0, typeName.byteLength));
   }
+  let invalidatesParameters = Array<usize>();
+  for (const parameter of method.signature.invalidatesParameters) {
+    invalidatesParameters.push(parameter);
+  }
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
     executorAffinity: method.signature.executorAffinity.copyBytes(0, method.signature.executorAffinity.byteLength),
@@ -637,6 +646,7 @@ export function methodCallableSignature(
     parameterModes,
     parameterTypes,
     viewParameter: method.signature.viewParameter,
+    invalidatesParameters,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),
     errorType: method.signature.errorType.copyBytes(0, method.signature.errorType.byteLength),
   });

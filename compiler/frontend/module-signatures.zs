@@ -84,6 +84,7 @@ function functionDeclarationSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
     returnType: declaration.returnType.name.copyBytes(
       0,
       declaration.returnType.name.byteLength
@@ -115,6 +116,7 @@ function constructorDeclarationSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
     returnType: ownerName.copyBytes(0, ownerName.byteLength),
     errorType,
   });

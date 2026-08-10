@@ -98,6 +98,7 @@ export type ApiNotes = {
   readonly functions?: Readonly<Record<string, {
     readonly return?: PointerNote;
     readonly parameters?: Readonly<Record<string, PointerNote>>;
+    readonly invalidates?: readonly number[];
     readonly status?: StatusNote;
     readonly buffers?: readonly ByteBufferProjectionNote[];
     readonly executorAffinity?: "main";
@@ -126,6 +127,7 @@ export function mergeApiNotes(
   const merged: Record<string, {
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
+    invalidates?: number[];
     status?: StatusNote;
     buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
@@ -172,6 +174,16 @@ export function mergeApiNotes(
         }
         if (!target.status) {
           target.status = note.status;
+          owners.set(path, source.name);
+        }
+      }
+      if (note.invalidates) {
+        const path = `functions.${functionName}.invalidates`;
+        if (target.invalidates && JSON.stringify(target.invalidates) !== JSON.stringify(note.invalidates)) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.invalidates) {
+          target.invalidates = [...note.invalidates];
           owners.set(path, source.name);
         }
       }
@@ -395,8 +407,14 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
     const functions = requireRecord(root.functions, source, "functions");
     for (const [name, rawFunction] of Object.entries(functions)) {
       const functionNote = requireRecord(rawFunction, source, `functions.${name}`);
-      requireKeys(functionNote, ["return", "parameters", "status", "executorAffinity"], source, `functions.${name}`);
+      requireKeys(functionNote, ["return", "parameters", "invalidates", "status", "executorAffinity"], source, `functions.${name}`);
       requireEnum(functionNote.executorAffinity, ["main"], source, `functions.${name}.executorAffinity`);
+      if (functionNote.invalidates !== undefined) {
+        if (!Array.isArray(functionNote.invalidates)
+          || functionNote.invalidates.some((item) => !Number.isInteger(item) || item < 0)) {
+          throw new Error(`invalid API notes ${JSON.stringify(source)}: functions.${name}.invalidates must be an array of non-negative parameter indices`);
+        }
+      }
       if (functionNote.return !== undefined) validatePointerNote(functionNote.return, source, `functions.${name}.return`);
       if (functionNote.status !== undefined) validateStatusNote(functionNote.status, source, `functions.${name}.status`);
       if (functionNote.parameters !== undefined) {

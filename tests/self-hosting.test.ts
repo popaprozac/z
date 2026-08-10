@@ -6449,6 +6449,62 @@ function main(): i32 {
     `import native from "owned-handle-native.h";
 
 function main(): i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return 1;
+  const child = Option.fromNullable(native.z_owned_handle_child(in owner));
+  native.z_owned_handle_advance(in owner);
+  return match (in child) {
+    some(value) => native.z_owned_child_read(in value);
+    none => -1;
+  };
+}
+`,
+  );
+  const invalidationWithLiveChild = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidationWithLiveChild.status, 1);
+  assert.match(
+    invalidationWithLiveChild.stderr,
+    /cannot call "z_owned_handle_advance" because it can invalidate views derived from "owner" while view "child" is live/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return 1;
+  {
+    const child = native.z_owned_handle_child(in owner);
+    if (child == null) return 2;
+    if (native.z_owned_child_read(in child) != 43) return 3;
+  }
+  return native.z_owned_handle_advance(in owner) - 43;
+}
+`,
+  );
+  const invalidationAfterViewScope = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidationAfterViewScope.status, 0, invalidationAfterViewScope.stderr);
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
   const handle = native.z_owned_handle_open(42);
   if (handle == null) return 1;
   native.z_owned_handle_close(move handle);

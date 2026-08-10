@@ -48,6 +48,13 @@ static inline int z_owned_child_read(ZOwnedChild *child) {
   return child == NULL ? -1 : child->value;
 }
 
+static inline int z_owned_handle_advance(ZOwnedHandle *handle) {
+  if (handle == NULL) return -1;
+  handle->value += 1;
+  z_owned_handle_default_child.value = handle->value + 1;
+  return handle->value;
+}
+
 static inline void z_owned_handle_close(ZOwnedHandle *handle) {
   if (handle == NULL) return;
   z_owned_handle_closed_count += 1;

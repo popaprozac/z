@@ -378,6 +378,7 @@ export function nativeFunctionSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
     returnType,
     errorType,
   }));
