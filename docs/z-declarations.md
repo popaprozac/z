@@ -170,23 +170,23 @@ spelling does not silently pass through.
 ### Native self-hosting status
 
 The production Stage-0 compiler supports the complete current shape documented
-below. The self-hosted compiler now parses `declare module`, inferred scalar
-`export function` declarations, and decimal integer-status contracts such as
-`void throws _ { success 0; }`. It validates them against Clang-produced
-declarations and preserves the exact mapped native integer type as the Z error
-type. Symbolic constants, enum statuses, and exact literal range checks remain
-in Stage 0. Other facts still fail closed in the native compiler while they are
+below. The self-hosted compiler parses `declare module`, inferred scalar,
+status, plain-record, value-resource, opaque-handle, owner-tied pointer, and
+borrowed `view cstring` function contracts. It validates them against
+Clang-produced declarations, including exact integer/enum status identity,
+record layout, pointer lifecycle signatures, character-pointer text results,
+and `invalidates owner;` effects. Other facts still fail closed while they are
 ported; this is a bootstrap implementation boundary, not a restriction of the
 `.zd` language.
 
-The normalized scalar/status tier also reaches native semantic analysis and C
-emission. Selective aliases and namespace calls use the same signature/effect
+These normalized tiers also reach native semantic analysis and C emission.
+Selective aliases and namespace calls use the same signature/effect
 checker as ordinary Z functions, and a selected native function absent from the
-checked contract is rejected. Infallible scalar calls remain direct; decimal
-status calls use a generated C11 adapter that invokes the native function once
-and constructs `Result<void, E>`. The standalone native driver now discovers
-the adjacent contract and invokes `z-foreign-adapter` automatically for this
-first function-only tier. A locally bootstrapped `z` prefers the packaged
+checked contract is rejected. Infallible calls and borrowed text views remain
+direct; status calls use a generated C11 adapter that invokes the native
+function once and constructs `Result<void, E>`. The standalone native driver
+discovers the adjacent contract and invokes `z-foreign-adapter` automatically.
+A locally bootstrapped `z` prefers the packaged
 adapter beside its own executable, then falls back to `PATH`. Broader contracts
 still use the Stage-0 compiler.
 

@@ -15138,7 +15138,11 @@ function checkForeignCall(
       `call ${JSON.stringify(target.name)} because it can invalidate views derived from`,
     );
   }
-  if (target.returnType.kind === "pointer" && target.returnType.stringView) {
+  if (
+    target.returnType.kind === "pointer"
+    && target.returnType.stringView
+    && target.returnBorrowedFromParameter === null
+  ) {
     const origins = visibleParameters
       .map(({ parameter }, source) => ({ parameter, source }))
       .filter(({ parameter }) => parameter.type.kind === "pointer" && parameter.type.ownership === "borrowed");
@@ -15149,8 +15153,10 @@ function checkForeignCall(
       });
     }
     const argument = args[origins[0].source];
-    const root = storageRoot(argument);
-    if (!root || !locals.has(root.name)) {
+    const rootName = argument.kind === "argumentReference"
+      ? argument.name
+      : storageRoot(argument)?.name ?? null;
+    if (!rootName || !locals.has(rootName)) {
       throw new DiagnosticError(fileName, argument.location, "a borrowed native text result requires a named owner binding", {
         code: "Z0206",
         helps: ["bind the native owner before requesting its text view"],
@@ -15158,7 +15164,7 @@ function checkForeignCall(
     }
     state.viewCallOrigins.set(
       location.offset,
-      viewOriginForRoot(root.name, argument.location, state),
+      viewOriginForRoot(rootName, argument.location, state),
     );
   }
   if (target.returnBorrowedFromParameter !== null) {

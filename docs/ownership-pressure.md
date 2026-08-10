@@ -1577,6 +1577,17 @@ its statement and `sqlite3_step` as invalidating that statement; copying the
 text into owned `String` storage keeps the existing loop valid without unsafe
 code or wrapper allocation.
 
+The next native parity slice made that SQLite contract representable without
+borrowing Stage 0's type evidence. The Z-owned `.zd` parser now recognizes
+`view cstring | null`, and its normalizer proves that Clang reported exactly one
+character-pointer return before publishing the borrowed text type. Explicit
+`borrowed from owner;` provenance flows through the existing native loan graph,
+so a later `invalidates owner;` call rejects a live text view just as it rejects
+a live opaque child pointer. A standalone native-driver fixture executes the
+direct call, preserves `const char * const` local storage, and rejects both a
+non-character native result mislabeled as text and invalidation before the view
+scope ends. No wrapper, copy, retain, or runtime validity check was added.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

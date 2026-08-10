@@ -19,6 +19,9 @@ declare module "owned-handle-native.h" {
   export function z_owned_handle_child(in handle: _): _ | null {
     borrowed from handle;
   }
+  export function z_owned_handle_label(in handle: _): view cstring | null {
+    borrowed from handle;
+  }
   export function z_owned_child_read(in child: _): _;
   export function z_owned_handle_advance(in handle: _): _ {
     invalidates handle;

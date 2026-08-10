@@ -3380,6 +3380,8 @@ test("ties borrowed C pointer views to an explicit native owner", () => {
     function main(): i32 {
       const owner = native.z_owned_handle_open(42);
       if (owner == null) return 1;
+      const label = native.z_owned_handle_label(in owner);
+      if (label == null) return -2;
       const selected = child(in owner);
       return match (in selected) {
         some(value) => native.z_owned_child_read(value);
@@ -3389,6 +3391,7 @@ test("ties borrowed C pointer views to an explicit native owner", () => {
   `;
   const generated = compileToC(source, fileName);
   assert.match(generated, /return z_owned_handle_child\(owner\);/);
+  assert.match(generated, /const char \* const label = z_owned_handle_label\(owner\);/);
   assert.match(generated, /selected = child\(owner\);/);
   assert.match(generated, /z_owned_child_read\(value\)/);
   assert.match(generated, /z_owned_handle_close\(owner\)/);

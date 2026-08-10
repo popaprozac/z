@@ -44,6 +44,11 @@ static inline ZOwnedChild *z_owned_handle_child(ZOwnedHandle *handle) {
   return &z_owned_handle_default_child;
 }
 
+static inline const char *z_owned_handle_label(ZOwnedHandle *handle) {
+  if (handle == NULL) return NULL;
+  return handle->value == 42 ? "answer" : "value";
+}
+
 static inline int z_owned_child_read(ZOwnedChild *child) {
   return child == NULL ? -1 : child->value;
 }

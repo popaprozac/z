@@ -190,6 +190,31 @@ function parseInferredType(
   return true;
 }
 
+function parseReturnType(
+  inout cursor: ForeignContractCursor,
+  inout returnKind: String
+): boolean throws String {
+  if (!atText(cursor, "view")) {
+    return try parseInferredType(inout cursor);
+  }
+  cursor.index = cursor.index + 1;
+  const target = try expectIdentifier(
+    inout cursor,
+    "`cstring` after `view`"
+  );
+  if (target != "cstring") {
+    throw contractError(
+      cursor,
+      "foreign borrowed text results currently require `view cstring`"
+    );
+  }
+  returnKind = "view-cstring";
+  if (!atText(cursor, "|")) return false;
+  cursor.index = cursor.index + 1;
+  try expectText(inout cursor, "null");
+  return true;
+}
+
 function parseParameter(
   inout cursor: ForeignContractCursor
 ): RawForeignContractParameter throws String {
@@ -382,7 +407,7 @@ function parseFunction(
       );
     }
   } else {
-    returnNullable = try parseInferredType(inout cursor);
+    returnNullable = try parseReturnType(inout cursor, inout returnKind);
     if (atText(cursor, "{")) {
       cursor.index = cursor.index + 1;
       while (!atText(cursor, "}")) {
@@ -715,6 +740,26 @@ function scalarTypeName(in nativeType: String): String throws String {
   ) return "u64";
   if (nativeType == "_Bool" || nativeType == "bool") return "boolean";
   throw `native Z declaration scalar tier does not support "${nativeType}"`;
+}
+
+function isCharacterPointer(in nativeType: String): boolean {
+  return nativeType == "char *"
+    || nativeType == "const char *"
+    || nativeType == "signed char *"
+    || nativeType == "const signed char *"
+    || nativeType == "unsigned char *"
+    || nativeType == "const unsigned char *";
+}
+
+function isCharacterPointerReturn(
+  in nativeType: String,
+  in canonicalNativeType: Option<String>
+): boolean {
+  if (isCharacterPointer(nativeType)) return true;
+  return match (in canonicalNativeType) {
+    some(typeName) => isCharacterPointer(typeName);
+    none => false;
+  };
 }
 
 function foreignEnumTypeIndex(
@@ -1751,6 +1796,32 @@ export function normalizeForeignContracts(
       }
       borrowedFromParameter = Option.some(ownerIndex);
     }
+    if (
+      contract.returnKind == "view-cstring"
+      && contract.resultBorrowedFrom.byteLength == 0
+    ) {
+      let inferredOwner = contract.parameters.length;
+      let inferredCount: usize = 0;
+      let candidateIndex: usize = 0;
+      while (candidateIndex < contract.parameters.length) {
+        const rawParameter = view declarations.parameters[
+          declarations.overloads[overloadIndex].parameterStart + candidateIndex
+        ];
+        if (
+          contract.parameters[candidateIndex].capability == "in"
+          && !contract.parameters[candidateIndex].nullable
+          && pointerStarCount(rawParameter.nativeType) == 1
+        ) {
+          inferredOwner = candidateIndex;
+          inferredCount = inferredCount + 1;
+        }
+        candidateIndex = candidateIndex + 1;
+      }
+      if (inferredCount != 1) {
+        throw `borrowed text result from "${contract.name}" requires exactly one immutable pointer owner or an explicit borrowed from fact`;
+      }
+      borrowedFromParameter = Option.some(inferredOwner);
+    }
     for (const invalidatedOwner of contract.invalidates) {
       let ownerIndex: usize = 0;
       while (
@@ -1775,6 +1846,23 @@ export function normalizeForeignContracts(
         declarations,
         declarations.overloads[overloadIndex].returnNativeType
       );
+    } else if (contract.returnKind == "view-cstring") {
+      if (!isCharacterPointerReturn(
+        declarations.overloads[overloadIndex].returnNativeType,
+        declarations.overloads[overloadIndex].returnCanonicalNativeType
+      )) {
+        throw `native borrowed text producer "${contract.name}" must return a character pointer`;
+      }
+      if (
+        contract.resultOwnership.byteLength > 0
+        && contract.resultOwnership != "borrowed"
+      ) {
+        throw `native borrowed text producer "${contract.name}" cannot declare ${contract.resultOwnership} ownership`;
+      }
+      if (contract.resultRelease.byteLength > 0) {
+        throw `native borrowed text producer "${contract.name}" cannot declare a deinitializer`;
+      }
+      nativeReturnType = "cstring";
     } else if (contract.resultRelease.byteLength > 0) {
       nativeReturnType = handleSourceTypeName(
         types,
@@ -1874,6 +1962,9 @@ export function normalizeForeignContracts(
           );
         }
       }
+    } else if (contract.returnKind == "view-cstring") {
+      returnType = "view cstring";
+      if (contract.returnNullable) returnType = `${returnType} | null`;
     } else if (borrowedHandleResult) {
       returnType = `view ${nativeReturnType}`;
     } else if (contract.resultRelease.byteLength == 0) {

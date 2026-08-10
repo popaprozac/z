@@ -6411,8 +6411,39 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
+    /const char \* const label = z_owned_handle_label\(owner\)/,
+  );
+  assert.match(
+    emittedHandleSource,
     /if \(self == NULL \|\| \*self == NULL\) return;\s+z_owned_handle_close\(\*self\)/,
   );
+
+  const handleContractPath = resolve(
+    handleProject,
+    "owned-handle-native.h.zd",
+  );
+  const handleContractSource = readFileSync(handleContractPath, "utf8");
+  writeFileSync(
+    handleContractPath,
+    handleContractSource.replace(
+      "export function z_owned_handle_read(in handle: _): _;",
+      "export function z_owned_handle_read(in handle: _): view cstring;",
+    ),
+  );
+  const mismatchedTextView = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(mismatchedTextView.status, 1);
+  assert.match(
+    mismatchedTextView.stderr,
+    /native borrowed text producer "z_owned_handle_read" must return a character pointer/,
+  );
+  writeFileSync(handleContractPath, handleContractSource);
 
   writeFileSync(
     handleSource,
@@ -6499,6 +6530,34 @@ function main(): i32 {
     },
   );
   assert.equal(invalidationAfterViewScope.status, 0, invalidationAfterViewScope.stderr);
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return 1;
+  const label = native.z_owned_handle_label(in owner);
+  native.z_owned_handle_advance(in owner);
+  if (label == null) return 2;
+  return native.z_owned_handle_read(in owner);
+}
+`,
+  );
+  const invalidationWithLiveText = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidationWithLiveText.status, 1);
+  assert.match(
+    invalidationWithLiveText.stderr,
+    /cannot call "z_owned_handle_advance" because it can invalidate views derived from "owner" while view "label" is live/,
+  );
 
   writeFileSync(
     handleSource,

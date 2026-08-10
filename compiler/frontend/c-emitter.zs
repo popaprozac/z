@@ -2463,6 +2463,10 @@ function appendLocalStatementStorage(
     some(storageType) => storageType.kind == LoweredTypeKind.classType;
     none => false;
   };
+  const cstringStorage = match (in declaration.statements[index].type) {
+    some(storageType) => storageType.kind == LoweredTypeKind.cstringType;
+    none => false;
+  };
   match (in declaration.statements[index].expression) {
     some(initializer) => try appendBorrowedTemporaryInitializers(
       inout output,
@@ -2480,7 +2484,7 @@ function appendLocalStatementStorage(
   } else if (
     !declaration.statements[index].mutableBinding
     && hasInitializer
-    && classStorage
+    && (classStorage || cstringStorage)
   ) {
     output.append(type);
     output.append(" const ");

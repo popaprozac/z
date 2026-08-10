@@ -193,15 +193,18 @@ Function records retain their exact native type spellings; a missing
 adapter/contract, a `.zd` declaration that depends on an omitted type category,
 or any unsupported contract fact still rejects the import during normalization.
 
-The first contract layer has now crossed as well. A Z-owned `.zd` parser reads
-the existing `declare module`, inferred scalar `export function`, and decimal
-integer-status `void throws _ { success N; }` grammar. It checks module
-identity, function identity, parameter names/counts, capabilities, nullability,
-and supported ABI scalar mappings against the raw declarations. Its normalized
-callable contracts carry Z type names, an optional exact native integer error
-type, and explicit success literals. Any parameter/result fact outside this
-tier is a source-located error; it is never discarded for forward
-compatibility.
+The contract layer has crossed as well. A Z-owned `.zd` parser reads the
+implemented scalar/status, record-resource, opaque-handle, owner-tied pointer,
+borrowed-text, and invalidation grammar. It checks module and function identity,
+parameter names/counts, capabilities, nullability, supported ABI mappings, and
+lifecycle/provenance facts against the raw declarations. `view cstring` accepts
+only a header-proven character-pointer result, retains nullable spelling, and
+requires either one unambiguous immutable pointer input or an explicit
+`borrowed from owner;` fact. That owner feeds the same loan used by child
+pointers and `invalidates owner;`.
+Normalized callables carry source-level Z types plus exact native status and
+ownership evidence. Any fact outside the native tier is an error; it is never
+discarded for forward compatibility.
 
 Plain recursively copyable C structs containing representable scalar or record
 fields form the first record tier. They cross by value in parameters/results, while existing
