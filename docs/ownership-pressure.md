@@ -2196,7 +2196,9 @@ Native template lowering had a similar evidence-dependent leak: Stage 0
 correctly accepts a much broader set of Z values, while the fixed-point runtime
 currently has formatters only for owned/viewed `String`, `boolean`, `i32`,
 `u8`, and `usize`. Other resolved interpolation types now report source-mapped
-`Z1000` at the embedded value. Expanding the native formatter set remains
+`Z1000` at the embedded value. Interpolations whose Stage 1 expression-type
+evidence is still incomplete now fail at that same source boundary instead of
+reaching a native lowering assertion. Expanding the native formatter set remains
 implementation work rather than a change to Z's string-interpolation semantics.
 The spread audit also exposed why contextual keywords must remain contextual in
 lowerability. `copy ...source` performs field-wise copying and must not be

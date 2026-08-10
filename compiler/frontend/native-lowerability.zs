@@ -648,9 +648,20 @@ function validateNativeExpressionTree(
           tree,
           child
         );
+        if (interpolationType.byteLength == 0) {
+          let length = tree.nodes[child].value.byteLength;
+          if (length == 0) length = 1;
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            "the native compiler cannot yet prove this template interpolation's type",
+            tree.nodes[child].line,
+            tree.nodes[child].column,
+            length
+          );
+        }
         if (
-          interpolationType.byteLength > 0
-          && !nativeTemplateInterpolationTypeSupported(interpolationType)
+          !nativeTemplateInterpolationTypeSupported(interpolationType)
         ) {
           let length = tree.nodes[child].value.byteLength;
           if (length == 0) length = 1;

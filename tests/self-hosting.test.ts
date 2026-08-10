@@ -5352,6 +5352,25 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'template interpolation of "isize" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize',
     },
     {
+      name: "template-unresolved-evidence",
+      source: [
+        'import console from "std/console";',
+        'import { thread } from "std/thread";',
+        "async function main(): i32 {",
+        "  const worker = thread.spawn((): i32 => 42);",
+        "  const revision = await worker;",
+        "  console.log(`revision=${revision}`);",
+        "  return revision - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 6,
+      column: 27,
+      marker: "^^^^^^^^",
+      code: "Z1000",
+      summary: "the native compiler cannot yet prove this template interpolation's type",
+    },
+    {
       name: "move-spread-cleanup-override",
       source: [
         "struct Bundle {",
@@ -9695,6 +9714,6 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   assert.equal(boundary.status, 1, boundary.stdout);
   assert.match(
     boundary.stderr,
-    /cannot clean an overridden ownership-bearing field "replaced" yet/,
+    /error\[Z1000\]: move struct spread cannot override cleanup-bearing field "replaced" in the native compiler yet/,
   );
 }, 90_000);
