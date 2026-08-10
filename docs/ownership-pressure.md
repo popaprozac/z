@@ -2198,6 +2198,14 @@ currently has formatters only for owned/viewed `String`, `boolean`, `i32`,
 `u8`, and `usize`. Other resolved interpolation types now report source-mapped
 `Z1000` at the embedded value. Expanding the native formatter set remains
 implementation work rather than a change to Z's string-interpolation semantics.
+The spread audit also exposed why contextual keywords must remain contextual in
+lowerability. `copy ...source` performs field-wise copying and must not be
+classified as standalone `copy value`; its existing native positive remains.
+For `move ...source`, retained fields transfer into the destination, while an
+overridden cleanup-bearing field still belongs to the consumed source and must
+be destroyed exactly once. Until native lowering emits that partial cleanup,
+the capability keyword receives source-mapped `Z1000`; no-override moves and
+cleanup-free overrides remain executable.
 
 ## Not tested yet
 

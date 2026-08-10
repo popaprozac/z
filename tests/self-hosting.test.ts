@@ -5351,6 +5351,26 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: 'template interpolation of "isize" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize',
     },
+    {
+      name: "move-spread-cleanup-override",
+      source: [
+        "struct Bundle {",
+        "  kept: i32;",
+        "  replaced: String;",
+        "}",
+        "function main(): i32 {",
+        '  const source = Bundle({ kept: 42, replaced: "old" });',
+        '  const spread = Bundle({ move ...source, replaced: "new" });',
+        "  return spread.kept - 42;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 7,
+      column: 27,
+      marker: "^^^^",
+      code: "Z1000",
+      summary: 'move struct spread cannot override cleanup-bearing field "replaced" in the native compiler yet',
+    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);
@@ -5398,6 +5418,16 @@ test("compiles a multi-module Z application through the standalone native driver
       assert.equal(existsSync(output), false);
     }
   }
+
+  const nativeStructSpread = spawnSync(
+    driver,
+    [
+      "check",
+      resolve(projectRoot, "tests/fixtures/self-host-emit-struct-spread.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeStructSpread.status, 0, nativeStructSpread.stderr);
 
   const backendIceInput = resolve(
     projectRoot,

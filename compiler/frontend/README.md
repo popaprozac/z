@@ -264,6 +264,12 @@ fixed-point emitter accepts its implemented owned/viewed `String`, `boolean`,
 `i32`, `u8`, and `usize` parts, while another valid Z interpolation type
 reports `Z1000` at the embedded expression rather than surfacing a lowerer
 exception.
+Struct-spread capability syntax is deliberately classified separately from
+standalone `copy value`: implemented `copy ...source`, no-override move, and
+cleanup-free move overrides continue to lower. A move spread that replaces a
+cleanup-bearing field reports `Z1000` at `move` until the native lowering tier
+can destroy the displaced field without losing the consumed source's exact-once
+cleanup state.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
