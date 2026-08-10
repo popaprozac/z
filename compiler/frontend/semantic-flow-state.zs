@@ -240,6 +240,27 @@ function replaceBindingInitialization(
   });
 }
 
+function replaceBindingType(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  in typeName: String
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
+    initialization: bindings[index].initialization,
+    ownership: bindings[index].ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
 export function setValueBindingInitialization(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
@@ -252,6 +273,20 @@ export function setValueBindingInitialization(
       replaceBindingInitialization(inout bindings, index, initialization);
       return;
     }
+  }
+}
+
+export function setValueBindingType(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name != name) continue;
+    replaceBindingType(inout bindings, index, typeName);
+    return;
   }
 }
 
@@ -403,6 +438,7 @@ export function copyBindingFlowStates(
 ): void {
   let index: usize = 0;
   while (index < target.length && index < source.length) {
+    replaceBindingType(inout target, index, source[index].typeName);
     replaceBindingInitialization(inout target, index, source[index].initialization);
     replaceBindingOwnership(inout target, index, source[index].ownership);
     index = index + 1;
@@ -416,6 +452,9 @@ export function mergeBindingFlowStates(
 ): void {
   let index: usize = 0;
   while (index < target.length && index < left.length && index < right.length) {
+    if (left[index].typeName == right[index].typeName) {
+      replaceBindingType(inout target, index, left[index].typeName);
+    }
     replaceBindingInitialization(
       inout target,
       index,

@@ -1530,6 +1530,20 @@ The executable fixture covers construction, mutation through a pointer, owned
 copying, explicit move-to-release, implicit scope cleanup, alias identity,
 borrowed observation, borrowed escape rejection, and use-after-move.
 
+The following native slice crossed opaque pointer owners without pretending
+they were record values. A `.zd` `deinit` fact on a direct nullable result or
+nullable `out T**` establishes one unique handle type and verifies the exact
+`release(T *) -> void` contract. The generated C retains the native pointer ABI,
+uses a collision-safe internal typedef only for Z storage identity, initializes
+unfilled outputs to null, and destroys a partially produced handle before a
+typed status error propagates. The pressure fixture exercises direct null
+narrowing, implicit scope cleanup, explicit `move` into release,
+`Option.fromNullable`, successful output, failure with a produced handle, and
+failure without one. It also exposed that native `out` inference had updated
+flow state without exporting the inferred declaration type; semantic evidence
+now records that type at the original `let` binding rather than asking lowering
+to reconstruct it from a later call.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

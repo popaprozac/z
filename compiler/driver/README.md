@@ -103,8 +103,14 @@ release; }`, verifies the release signature against canonical Clang identity,
 and requires resource producers to declare `owned;` or non-escaping
 `borrowed;`. Z semantic borrows remain distinct from the C ABI mode, so
 `in resource` can lower as a direct by-value call while preserving the caller's
-owner. C++, Objective-C, Swift, unions, callbacks, borrowed runtime provenance,
-and richer `.zd` facts remain with Stage 0 until their raw records and
+owner. The owned pointer tier also accepts direct `T * | null` producers and
+nullable `out T**` outputs whose blocks declare `deinit release;`; it verifies
+the release signature, keeps `in` and `move` as direct pointer ABI calls,
+zero-initializes output storage, destroys partially produced values before a
+typed status propagates, narrows explicit null guards, and lowers
+`Option.fromNullable` without repeating the native producer call. C++,
+Objective-C, Swift, unions, callbacks, borrowed runtime provenance, and richer
+`.zd` facts remain with Stage 0 until their raw records and
 normalized FIIR cross together.
 Foreign-cache locking and cache eviction remain toolchain hardening.
 

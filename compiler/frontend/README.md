@@ -134,8 +134,12 @@ recursive path.
   `deinit` operations, explicit `owned` producers, and non-escaping `borrowed`
   producers. Parameter semantics retain Z's `in`/`move` distinction while a
   separate ABI mode records whether C receives the record by value or through
-  a pointer. Every richer unimplemented fact rejects at its `.zd` source
-  location.
+  a pointer. Opaque owned pointer handles now form a second ownership-bearing
+  tier: a direct nullable result or nullable `out T**` block names its release
+  with `deinit`, subsequent `in`/`move` parameters reuse the source-nameable
+  handle identity, and the normalizer proves the release consumes exactly that
+  pointer type and returns `void`. Every richer unimplemented fact rejects at
+  its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then
   use the same arity, scalar type, and throwing-effect checker as Z functions;
@@ -320,7 +324,10 @@ prefers the packaged `z-foreign-adapter` beside its own executable and otherwise
 searches `PATH`, decodes the real
 Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
 integer-status, and recursively copyable record value/pointer contracts before
-native semantic analysis. Selective and namespace calls then lower through the
+native semantic analysis. The same path now normalizes owned nullable pointer
+results and status-gated `out T**` handles, including deterministic failure
+cleanup, nullable flow narrowing, `Option.fromNullable`, and explicit `move`
+to the declared release function. Selective and namespace calls then lower through the
 ordinary graph: scalar and record calls remain direct, while status calls use a
 generated C11 wrapper that invokes the native function once and constructs
 `Result<void, E>` from the checked success set.

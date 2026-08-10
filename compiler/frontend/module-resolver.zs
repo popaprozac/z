@@ -76,6 +76,7 @@ import {
   mergeBindingFlowStates,
   setValueBindingInitialization,
   setValueBindingOwnership,
+  setValueBindingType,
   valueBindingInitialization,
   valueBindingIsBorrowed,
   valueBindingIsMatchBorrowed,
@@ -155,6 +156,7 @@ import {
   isTypeSymbolKind,
   nativeFunctionDisplayType,
   nativeFunctionSignature,
+  nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
   stringStartsWith,
@@ -1404,6 +1406,44 @@ function inferExpressionNodeTypeExpected(
   return inferred;
 }
 
+function recordInferredOutBinding(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in name: String,
+  useOffset: usize,
+  in typeName: String,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let declaration = arena.nodes.length;
+  let declarationOffset: usize = 0;
+  let nodeIndex: usize = 0;
+  while (nodeIndex < arena.nodes.length) {
+    const node = view arena.nodes[nodeIndex];
+    if (
+      node.kind == StatementKind.variableStatement
+      && node.name == name
+      && node.nameOffset <= useOffset
+      && (declaration == arena.nodes.length || node.nameOffset >= declarationOffset)
+    ) {
+      declaration = nodeIndex;
+      declarationOffset = node.nameOffset;
+    }
+    nodeIndex = nodeIndex + 1;
+  }
+  if (declaration >= arena.nodes.length) return;
+  for (const node of arena.nodes) {
+    if (node.nameOffset != arena.nodes[declaration].nameOffset) continue;
+    for (const resolution of evidence.bindingResolutions) {
+      if (resolution.offset == node.nameOffset) return;
+    }
+    recordBindingResolution(modules, moduleIndex, node.nameOffset,
+      node.nameLine, node.nameColumn, name, node.mutableBinding,
+      typeName, inout evidence);
+    return;
+  }
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -1589,7 +1629,27 @@ function inferSignatureCallType(
           );
         }
       }
-      argumentTypes.push(valueBindingType(bindings, bindingName));
+      let bindingType = valueBindingType(bindings, bindingName);
+      if (mode == "out" && bindingType.byteLength == 0) {
+        bindingType = settledContextualType(
+          signature.parameterTypes[argumentIndex],
+          signature.typeParameters,
+          substitutions
+        );
+        if (bindingType.byteLength > 0) {
+          setValueBindingType(inout bindings, bindingName, bindingType);
+          recordInferredOutBinding(
+            modules,
+            moduleIndex,
+            arena,
+            bindingName,
+            tree.nodes[bindingIndex].offset,
+            bindingType,
+            inout evidence
+          );
+        }
+      }
+      argumentTypes.push(move bindingType);
     } else {
       if (access.byteLength > 0 && !(mode == "in" && access == "in")) {
         const expectation = mode == "in" ? "an immutable borrow" : "an owned value parameter";
@@ -3602,6 +3662,47 @@ function inferExpressionNodeType(
         enumReceiverIndex
       );
       const variantName = identifierLookupName(tree.nodes[calleeIndex].value);
+      if (enumType == "Option" && variantName == "fromNullable") {
+        if (children.length != 2) {
+          throw matchError(
+            module,
+            tree,
+            calleeIndex,
+            "Option.fromNullable requires exactly one nullable value"
+          );
+        }
+        const payloadIndex = children[1];
+        const actual = try inferExpressionNodeType(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          payloadIndex,
+          inout bindings,
+          inout evidence
+        );
+        const payloadType = nullableTargetType(actual);
+        if (payloadType.byteLength == 0) {
+          throw matchError(
+            module,
+            tree,
+            payloadIndex,
+            `Option.fromNullable expects T | null, found ${actual}`
+          );
+        }
+        try consumeOwnedExpressionNode(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          payloadIndex,
+          actual,
+          false,
+          inout bindings
+        );
+        return `Option<${payloadType}>`;
+      }
       if (enumType == "Option" && variantName == "some") {
         if (children.length != 2) {
           throw matchError(
@@ -5640,6 +5741,49 @@ function inferStatement(
   if (kind == StatementKind.ifStatement) {
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
+    match (in arena.nodes[index].expression) {
+      some(condition) => match (in condition.tree) {
+        some(tree) => {
+          const root = tree.root;
+          if (
+            tree.nodes[root].kind == ExpressionKind.binaryExpression
+            && tree.nodes[root].children.length == 2
+            && (
+              tree.nodes[root].value == "=="
+              || tree.nodes[root].value == "!="
+            )
+          ) {
+            const left = tree.nodes[root].children[0];
+            const right = tree.nodes[root].children[1];
+            let bindingNode = tree.nodes.length;
+            if (
+              tree.nodes[left].kind == ExpressionKind.identifierExpression
+              && tree.nodes[right].kind == ExpressionKind.nullExpression
+            ) bindingNode = left;
+            else if (
+              tree.nodes[right].kind == ExpressionKind.identifierExpression
+              && tree.nodes[left].kind == ExpressionKind.nullExpression
+            ) bindingNode = right;
+            if (bindingNode < tree.nodes.length) {
+              const bindingName = identifierLookupName(
+                tree.nodes[bindingNode].value
+              );
+              const currentType = valueBindingType(bindings, bindingName);
+              const target = nullableTargetType(currentType);
+              if (target.byteLength > 0) {
+                if (tree.nodes[root].value == "==") {
+                  setValueBindingType(inout elseBindings, bindingName, target);
+                } else {
+                  setValueBindingType(inout thenBindings, bindingName, target);
+                }
+              }
+            }
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
     let thenContinues = true;
     let elseContinues = true;
     if (statementChildren.length > 0) {

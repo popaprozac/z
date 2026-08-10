@@ -31,7 +31,11 @@ import {
   ModuleSemanticEvidence,
   ModuleSymbolKind,
 } from "./semantic-model.zs";
-import { genericTypeShape } from "./semantic-type-shapes.zs";
+import {
+  genericTypeShape,
+  nullableTargetType,
+} from "./semantic-type-shapes.zs";
+import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 
 export enum LoweredTypeKind {
@@ -64,6 +68,7 @@ export enum LoweredTypeKind {
   enumType,
   foreignEnumType,
   foreignStructType,
+  foreignHandleType,
 }
 
 export struct LoweredType {
@@ -140,6 +145,7 @@ export enum LoweredExpressionKind {
   integerValue,
   stringValue,
   booleanValue,
+  nullValue,
   checkedAddInteger,
   checkedSubtractInteger,
   checkedMultiplyInteger,
@@ -163,6 +169,7 @@ export enum LoweredExpressionKind {
   conditionalValue,
   optionalFieldValue,
   optionalCallValue,
+  optionFromNullable,
   directCall,
   methodCall,
   fieldValue,
@@ -336,12 +343,15 @@ export struct LoweredForeignFunction {
   resultType: String;
   errorType: LoweredType;
   parameterTypes: Array<LoweredType>;
+  parameterModes: Array<String>;
   successValues: Array<String>;
 }
 
 export struct LoweredForeignResource {
-  nativeName: String;
+  storageName: String;
+  nativeTypeName: String;
   releaseName: String;
+  handle: boolean;
 }
 
 export struct LoweredConstant {
@@ -372,7 +382,7 @@ function collectForeignResources(
     if (imported.resourceRelease.byteLength == 0) continue;
     let present = false;
     for (const resource of resources) {
-      if (resource.nativeName != imported.targetName) continue;
+      if (resource.storageName != imported.targetName) continue;
       if (resource.releaseName != imported.resourceRelease) {
         throw `native resource ${imported.targetName} has conflicting cleanup functions`;
       }
@@ -380,21 +390,44 @@ function collectForeignResources(
     }
     if (present) continue;
     resources.push(LoweredForeignResource({
-      nativeName: imported.targetName.copyBytes(
+      storageName: imported.targetName.copyBytes(
         0,
         imported.targetName.byteLength
+      ),
+      nativeTypeName: imported.nativeTypeName.copyBytes(
+        0,
+        imported.nativeTypeName.byteLength
       ),
       releaseName: imported.resourceRelease.copyBytes(
         0,
         imported.resourceRelease.byteLength
       ),
+      handle: imported.kind == LoweredTypeKind.foreignHandleType,
     }));
   }
+}
+
+function safeForeignHandleName(in name: String): String {
+  let output = TextBuffer();
+  output.append("Z_Handle_");
+  let index: usize = 0;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    const identifier = (byte >= 48 && byte <= 57)
+      || (byte >= 65 && byte <= 90)
+      || (byte >= 97 && byte <= 122)
+      || byte == 95;
+    if (identifier) output.appendAscii(byte);
+    else output.appendAscii(95);
+    index = index + 1;
+  }
+  return output.finish();
 }
 
 struct LoweredImportedType {
   localName: String;
   targetName: String;
+  nativeTypeName: String;
   kind: LoweredTypeKind;
   executorBound: boolean;
   threadShareable: boolean;
@@ -805,6 +838,10 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  const nullableTarget = nullableTargetType(name);
+  if (nullableTarget.byteLength > 0) {
+    return try lowerModuleTypeName(program, importedTypes, nullableTarget);
+  }
   if (stringStartsWith(name, "view ")) {
     const targetName = name.copyBytes(5, name.byteLength);
     return try lowerModuleTypeName(
@@ -3220,6 +3257,13 @@ function collectForeignLowering(
         successValue.copyBytes(0, successValue.byteLength)
       );
     }
+    let parameterModes = Array<String>();
+    for (const parameterMode of resolution.parameterModes) {
+      parameterModes.push(parameterMode.copyBytes(
+        0,
+        parameterMode.byteLength
+      ));
+    }
     functions.push(LoweredForeignFunction({
       header: resolution.foreignHeader.copyBytes(
         0,
@@ -3236,6 +3280,7 @@ function collectForeignLowering(
       ),
       errorType,
       parameterTypes,
+      parameterModes,
       successValues,
     }));
   }
@@ -3859,6 +3904,8 @@ function importedStructTarget(
         importedTypes[importedIndex].kind == LoweredTypeKind.structType
         || importedTypes[importedIndex].kind
           == LoweredTypeKind.foreignStructType
+        || importedTypes[importedIndex].kind
+          == LoweredTypeKind.foreignHandleType
         || importedTypes[importedIndex].kind == LoweredTypeKind.classType
       )
       && (
@@ -4890,6 +4937,15 @@ function lowerExpression(
       inout output,
       LoweredExpressionKind.booleanValue,
       tree.nodes[index].value,
+      Array<usize>(),
+      Array<String>()
+    );
+  }
+  if (tree.nodes[index].kind == ExpressionKind.nullExpression) {
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.nullValue,
+      "",
       Array<usize>(),
       Array<String>()
     );
@@ -7884,6 +7940,36 @@ function lowerExpressionExpected(
             && tree.nodes[callee].children.length == 1
           ) {
             const receiver = tree.nodes[callee].children[0];
+            if (
+              tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+              && tree.nodes[receiver].value == "Option"
+              && tree.nodes[callee].value == "fromNullable"
+            ) {
+              const payloadIndex = tree.nodes[index].children[1];
+              let payload = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                payloadIndex,
+                inout output
+              );
+              payload = wrapImplicitOwnedTransfer(
+                tree,
+                payloadIndex,
+                payload,
+                inout output
+              );
+              let children = Array<usize>();
+              children.push(payload);
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.optionFromNullable,
+                declaration.name,
+                children,
+                Array<String>()
+              );
+            }
             if (
               tree.nodes[receiver].kind == ExpressionKind.identifierExpression
               && tree.nodes[receiver].value == "Option"
@@ -14404,6 +14490,10 @@ function importedTypesForModule(
                 0,
                 signature.foreignNativeName.byteLength
               ),
+              nativeTypeName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
               kind: LoweredTypeKind.foreignEnumType,
               executorBound: false,
               threadShareable: false,
@@ -14417,6 +14507,32 @@ function importedTypesForModule(
                 0,
                 signature.foreignUnderlyingType.byteLength
               ),
+            }));
+          } else if (
+            symbol.kind == ModuleSymbolKind.structSymbol
+            && signature.foreignKind == "handle"
+            && signature.foreignNativeName.byteLength > 0
+          ) {
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: safeForeignHandleName(symbol.name),
+              nativeTypeName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              kind: LoweredTypeKind.foreignHandleType,
+              executorBound: false,
+              threadShareable: false,
+              workerDestructible: false,
+              needsDeinit: true,
+              resourceRelease: signature.foreignResourceRelease.copyBytes(
+                0,
+                signature.foreignResourceRelease.byteLength
+              ),
+              fields: Array<LoweredField>(),
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: "",
             }));
           } else if (
             symbol.kind == ModuleSymbolKind.structSymbol
@@ -14437,6 +14553,10 @@ function importedTypesForModule(
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              nativeTypeName: signature.foreignNativeName.copyBytes(
                 0,
                 signature.foreignNativeName.byteLength
               ),
@@ -14494,6 +14614,7 @@ function importedTypesForModule(
           types.push(LoweredImportedType({
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName: targetName.copyBytes(0, targetName.byteLength),
+            nativeTypeName: "",
             kind: referenceType
               ? LoweredTypeKind.classType
               : LoweredTypeKind.structType,
@@ -14535,6 +14656,7 @@ function importedTypesForModule(
           types.push(LoweredImportedType({
             localName: symbol.name.copyBytes(0, symbol.name.byteLength),
             targetName,
+            nativeTypeName: "",
             kind: LoweredTypeKind.enumType,
             executorBound: false,
             threadShareable: false,
@@ -14575,6 +14697,7 @@ function importedTypesForModule(
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              nativeTypeName: "",
               kind: loweredStructIsReference(structs, symbol.name)
                 ? LoweredTypeKind.classType
                 : LoweredTypeKind.structType,
@@ -14610,6 +14733,7 @@ function importedTypesForModule(
             types.push(LoweredImportedType({
               localName: symbol.name.copyBytes(0, symbol.name.byteLength),
               targetName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              nativeTypeName: "",
               kind: LoweredTypeKind.enumType,
               executorBound: false,
               threadShareable: false,
@@ -14780,6 +14904,7 @@ function appendLoweredProgram(
         declaration.name.byteLength
       ),
       targetName,
+      nativeTypeName: "",
       kind: LoweredTypeKind.enumType,
       executorBound: false,
       threadShareable: false,
@@ -14818,6 +14943,7 @@ function appendLoweredProgram(
     importedTypes.push(LoweredImportedType({
       localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
       targetName,
+      nativeTypeName: "",
       kind: aggregate.kind == DeclarationKind.classDeclaration
         ? LoweredTypeKind.classType
         : LoweredTypeKind.structType,
@@ -14913,6 +15039,7 @@ function appendLoweredProgram(
         declaration.name.byteLength
       ),
       targetName: emittedName,
+      nativeTypeName: "",
       kind: LoweredTypeKind.enumType,
       executorBound: false,
       threadShareable: false,
@@ -15047,6 +15174,7 @@ function appendLoweredProgram(
         importedTypes.push(LoweredImportedType({
           localName: aggregate.name.copyBytes(0, aggregate.name.byteLength),
           targetName: emittedName.copyBytes(0, emittedName.byteLength),
+          nativeTypeName: "",
           kind: aggregate.kind == DeclarationKind.classDeclaration
             ? LoweredTypeKind.classType
             : LoweredTypeKind.structType,

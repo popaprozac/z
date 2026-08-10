@@ -6355,6 +6355,143 @@ function main(): i32 {
   assert.equal(resourceUseAfterMove.status, 1);
   assert.match(resourceUseAfterMove.stderr, /use of moved value "image"/);
 
+  const handleProject = resolve(directory, "foreign-handle-project");
+  mkdirSync(handleProject);
+  const handleSource = resolve(handleProject, "main.zs");
+  for (const fixtureName of [
+    "self-host-foreign-handle-input.zs",
+    "owned-handle-native.h",
+    "owned-handle-native.h.zd",
+  ]) {
+    const targetName = fixtureName == "self-host-foreign-handle-input.zs"
+      ? "main.zs"
+      : fixtureName;
+    writeFileSync(
+      resolve(handleProject, targetName),
+      readFileSync(resolve(projectRoot, "tests/fixtures", fixtureName), "utf8"),
+    );
+  }
+  writeFileSync(
+    resolve(handleProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "foreign-handle-project",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const handleRun = spawnSync(
+    driver,
+    ["run", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(handleRun.status, 0, handleRun.stderr);
+  const emittedHandleSource = readFileSync(
+    resolve(handleProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(
+    emittedHandleSource,
+    /typedef ZOwnedHandle \* Z_Handle_native_ZOwnedHandle;/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /Z___z_Option_Z_Handle_native_ZOwnedHandle_from_nullable/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /Z_Handle_native_ZOwnedHandle handle = NULL;/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /z_owned_handle_create\(parameter_0, parameter_1\)/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /if \(self == NULL \|\| \*self == NULL\) return;\s+z_owned_handle_close\(\*self\)/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const handle = native.z_owned_handle_open(42);
+  if (handle == null) return 1;
+  native.z_owned_handle_close(move handle);
+  return native.z_owned_handle_read(in handle);
+}
+`,
+  );
+  const handleUseAfterMove = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(handleUseAfterMove.status, 1);
+  assert.match(handleUseAfterMove.stderr, /use of moved value "handle"/);
+
+  writeFileSync(
+    handleSource,
+    `function main(): i32 {
+  const invalid = Option.fromNullable(42);
+  return 0;
+}
+`,
+  );
+  const invalidNullableLift = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidNullableLift.status, 1);
+  assert.match(
+    invalidNullableLift.stderr,
+    /Option\.fromNullable expects T \| null, found i32/,
+  );
+
+  writeFileSync(
+    resolve(handleProject, "owned-handle-native.h.zd"),
+    `declare module "owned-handle-native.h" {
+  export function z_owned_handle_open(value: _): _ | null {
+    deinit z_owned_handle_read;
+  }
+}
+`,
+  );
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
+  const handle = native.z_owned_handle_open(42);
+  return 0;
+}
+`,
+  );
+  const invalidHandleRelease = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidHandleRelease.status, 1);
+  assert.match(
+    invalidHandleRelease.stderr,
+    /API notes for "z_owned_handle_open" require "z_owned_handle_read" to consume exactly one ZOwnedHandle \*/,
+  );
+
   writeFileSync(
     resolve(recordProject, "geometry.h"),
     `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}

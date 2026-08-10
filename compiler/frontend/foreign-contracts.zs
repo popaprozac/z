@@ -20,6 +20,7 @@ export struct RawForeignContractParameter {
   name: String;
   capability: String;
   nullable: boolean;
+  release: String;
   line: usize;
   column: usize;
 }
@@ -31,6 +32,7 @@ export struct RawForeignFunctionContract {
   returnNullable: boolean;
   successValues: Array<String>;
   resultOwnership: String;
+  resultRelease: String;
   line: usize;
   column: usize;
 }
@@ -206,16 +208,37 @@ function parseParameter(
   const name = try expectIdentifier(inout cursor, "a native parameter name");
   try expectText(inout cursor, ":");
   const nullable = try parseInferredType(inout cursor);
+  let release = "";
   if (atText(cursor, "{")) {
-    throw contractError(
-      cursor,
-      "parameter facts are not implemented in the first native Z declaration slice"
-    );
+    cursor.index = cursor.index + 1;
+    while (!atText(cursor, "}")) {
+      const fact = cursor.tokens[cursor.index].text.copyBytes(
+        0,
+        cursor.tokens[cursor.index].text.byteLength
+      );
+      cursor.index = cursor.index + 1;
+      if (fact != "deinit") {
+        throw contractError(
+          cursor,
+          `native output fact must be "deinit", found "${fact}"`
+        );
+      }
+      if (release.byteLength > 0) {
+        throw contractError(
+          cursor,
+          `foreign parameter "${name}" cannot declare deinit more than once`
+        );
+      }
+      release = try parseQualifiedName(inout cursor);
+      try expectText(inout cursor, ";");
+    }
+    try expectText(inout cursor, "}");
   }
   return RawForeignContractParameter({
     name,
     capability,
     nullable,
+    release,
     line,
     column,
   });
@@ -309,6 +332,7 @@ function parseFunction(
   let returnNullable = false;
   let successValues = Array<String>();
   let resultOwnership = "";
+  let resultRelease = "";
   if (atText(cursor, "void")) {
     returnKind = "status";
     cursor.index = cursor.index + 1;
@@ -344,14 +368,26 @@ function parseFunction(
     if (atText(cursor, "{")) {
       cursor.index = cursor.index + 1;
       while (!atText(cursor, "}")) {
-        const fact = try expectIdentifier(
-          inout cursor,
-          "`owned` or `borrowed` as a native resource result fact"
+        const fact = cursor.tokens[cursor.index].text.copyBytes(
+          0,
+          cursor.tokens[cursor.index].text.byteLength
         );
+        cursor.index = cursor.index + 1;
+        if (fact == "deinit") {
+          if (resultRelease.byteLength > 0) {
+            throw contractError(
+              cursor,
+              `foreign function "${name}" cannot declare deinit more than once`
+            );
+          }
+          resultRelease = try parseQualifiedName(inout cursor);
+          try expectText(inout cursor, ";");
+          continue;
+        }
         if (fact != "owned" && fact != "borrowed") {
           throw contractError(
             cursor,
-            `native resource result fact must be "owned" or "borrowed", found "${fact}"`
+            `native resource result fact must be "owned", "borrowed", or "deinit", found "${fact}"`
           );
         }
         if (resultOwnership.byteLength > 0) {
@@ -364,12 +400,26 @@ function parseFunction(
         try expectText(inout cursor, ";");
       }
       try expectText(inout cursor, "}");
-      if (resultOwnership.byteLength == 0) {
+      if (
+        resultOwnership.byteLength == 0
+        && resultRelease.byteLength == 0
+      ) {
         throw contractErrorAt(
           cursor,
           line,
           column,
-          "a native resource result block requires `owned;` or `borrowed;`"
+          "a native resource result block requires `owned;`, `borrowed;`, or `deinit <release>;`"
+        );
+      }
+      if (
+        resultOwnership.byteLength > 0
+        && resultRelease.byteLength > 0
+      ) {
+        throw contractErrorAt(
+          cursor,
+          line,
+          column,
+          `foreign function "${name}" cannot combine value-resource ownership with pointer deinit ownership`
         );
       }
     } else {
@@ -383,6 +433,7 @@ function parseFunction(
     returnNullable,
     successValues,
     resultOwnership,
+    resultRelease,
     line,
     column,
   });
@@ -1021,6 +1072,254 @@ function rawForeignCanonicalRecordNameByNativeName(
   return nativeName.copyBytes(0, nativeName.byteLength);
 }
 
+function pointerStarCount(in nativeType: String): usize {
+  let count: usize = 0;
+  let index: usize = 0;
+  while (index < nativeType.byteLength) {
+    if (nativeType.byteAt(index) == 42) count = count + 1;
+    index = index + 1;
+  }
+  return count;
+}
+
+function removeTrailingPointer(in nativeType: String): String throws String {
+  let end = nativeType.byteLength;
+  while (end > 0 && nativeType.byteAt(end - 1) == 32) {
+    end = end - 1;
+  }
+  if (end == 0 || nativeType.byteAt(end - 1) != 42) {
+    throw `native handle type ${nativeType} is not a pointer`;
+  }
+  end = end - 1;
+  while (end > 0 && nativeType.byteAt(end - 1) == 32) {
+    end = end - 1;
+  }
+  return nativeType.copyBytes(0, end);
+}
+
+function opaqueHandleName(in pointerType: String): String throws String {
+  let end = pointerType.byteLength;
+  while (end > 0 && pointerType.byteAt(end - 1) == 32) {
+    end = end - 1;
+  }
+  if (end == 0 || pointerType.byteAt(end - 1) != 42) {
+    throw `native handle type ${pointerType} is not a pointer`;
+  }
+  end = end - 1;
+  while (end > 0 && pointerType.byteAt(end - 1) == 32) {
+    end = end - 1;
+  }
+  const wordEnd = end;
+  while (end > 0) {
+    const byte = pointerType.byteAt(end - 1);
+    const identifier = (byte >= 48 && byte <= 57)
+      || (byte >= 65 && byte <= 90)
+      || (byte >= 97 && byte <= 122)
+      || byte == 95;
+    if (!identifier) break;
+    end = end - 1;
+  }
+  if (end == wordEnd) {
+    throw `native handle type ${pointerType} has no source-nameable pointee`;
+  }
+  return pointerType.copyBytes(end, wordEnd);
+}
+
+function normalizedHandleTypeIndex(
+  in types: Array<NativeForeignTypeContract>,
+  in nativeType: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < types.length) {
+    if (
+      types[index].kind == "handle"
+      && types[index].nativeName == nativeType
+    ) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function handleSourceTypeName(
+  in types: Array<NativeForeignTypeContract>,
+  in nativeType: String,
+  nullable: boolean
+): String {
+  match (normalizedHandleTypeIndex(types, nativeType)) {
+    some(index) => {
+      const name = types[index].name.copyBytes(
+        0,
+        types[index].name.byteLength
+      );
+      if (nullable) return `${name} | null`;
+      return name;
+    }
+    none => return "";
+  }
+}
+
+function validateHandleRelease(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String,
+  in release: String
+): void throws String {
+  const releaseIndex = try findRawFunction(declarations, release);
+  if (declarations.functions[releaseIndex].overloadCount != 1) {
+    throw `native handle deinit "${release}" requires exactly one C overload`;
+  }
+  const overload = view declarations.overloads[
+    declarations.functions[releaseIndex].overloadStart
+  ];
+  if (overload.parameterCount != 1 || overload.returnNativeType != "void") {
+    throw `native handle deinit "${release}" must take one pointer value and return void`;
+  }
+  const parameter = view declarations.parameters[overload.parameterStart];
+  let matches = parameter.nativeType == nativeType;
+  match (in parameter.canonicalNativeType) {
+    some(canonical) => {
+      if (canonical == nativeType) matches = true;
+    }
+    none => {}
+  }
+  if (!matches) {
+    throw `native handle deinit "${release}" consumes ${parameter.nativeType}, expected ${nativeType}`;
+  }
+}
+
+function appendOwnedHandleType(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String,
+  in release: String,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  if (pointerStarCount(nativeType) != 1) {
+    throw `owned native handle ${nativeType} requires exactly one pointer indirection`;
+  }
+  match (normalizedHandleTypeIndex(types, nativeType)) {
+    some(index) => {
+      if (types[index].resourceRelease != release) {
+        throw `native handle ${nativeType} has conflicting cleanup functions`;
+      }
+      return;
+    }
+    none => {}
+  }
+  try validateHandleRelease(declarations, nativeType, release);
+  const name = try opaqueHandleName(nativeType);
+  let replaceIndex = types.length;
+  let typeIndex: usize = 0;
+  while (typeIndex < types.length) {
+    if (types[typeIndex].name == name && types[typeIndex].kind == "record") {
+      replaceIndex = typeIndex;
+      break;
+    }
+    typeIndex = typeIndex + 1;
+  }
+  const handle = NativeForeignTypeContract({
+    kind: "handle",
+    name: name.copyBytes(0, name.byteLength),
+    nativeName: nativeType.copyBytes(0, nativeType.byteLength),
+    underlyingType: "",
+    layout: "opaque",
+    resourceRelease: release.copyBytes(0, release.byteLength),
+    fields: Array<NativeForeignFieldContract>(),
+  });
+  if (replaceIndex < types.length) types[replaceIndex] = move handle;
+  else types.push(move handle);
+}
+
+function collectOwnedHandleTypes(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  for (const contract of contracts.functions) {
+    const functionIndex = try findRawFunction(declarations, contract.name);
+    if (declarations.functions[functionIndex].overloadCount != 1) {
+      throw `native Z declaration handle tier requires exactly one overload for "${contract.name}"`;
+    }
+    const overload = view declarations.overloads[
+      declarations.functions[functionIndex].overloadStart
+    ];
+    if (contract.resultRelease.byteLength > 0) {
+      try appendOwnedHandleType(
+        declarations,
+        overload.returnNativeType,
+        contract.resultRelease,
+        inout types
+      );
+    }
+    let parameterIndex: usize = 0;
+    while (parameterIndex < contract.parameters.length) {
+      const parameter = view contract.parameters[parameterIndex];
+      if (parameter.release.byteLength > 0) {
+        if (parameter.capability != "out") {
+          throw `owned native handle output "${parameter.name}" requires the out capability`;
+        }
+        if (parameterIndex >= overload.parameterCount) {
+          throw `owned native handle output "${parameter.name}" has no matching C parameter`;
+        }
+        const raw = view declarations.parameters[
+          overload.parameterStart + parameterIndex
+        ];
+        if (pointerStarCount(raw.nativeType) != 2) {
+          throw `owned native handle output "${parameter.name}" requires a C pointer-to-pointer`;
+        }
+        const producedType = try removeTrailingPointer(raw.nativeType);
+        try appendOwnedHandleType(
+          declarations,
+          producedType,
+          parameter.release,
+          inout types
+        );
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+  }
+}
+
+function normalizedHandleParameter(
+  in parameter: RawForeignContractParameter,
+  in nativeType: String,
+  in types: Array<NativeForeignTypeContract>
+): Option<NativeForeignParameterContract> throws String {
+  let handleNativeType = nativeType.copyBytes(0, nativeType.byteLength);
+  if (parameter.release.byteLength > 0) {
+    handleNativeType = try removeTrailingPointer(nativeType);
+  }
+  const typeName = handleSourceTypeName(
+    types,
+    handleNativeType,
+    parameter.nullable
+  );
+  if (typeName.byteLength == 0) {
+    return Option<NativeForeignParameterContract>.none;
+  }
+  let abiMode = parameter.capability.copyBytes(
+    0,
+    parameter.capability.byteLength
+  );
+  if (parameter.release.byteLength > 0) {
+    if (parameter.capability != "out") {
+      throw `owned native handle output "${parameter.name}" requires the out capability`;
+    }
+  } else {
+    if (parameter.capability != "in" && parameter.capability != "move") {
+      throw `native handle parameter "${parameter.name}" requires in or move capability`;
+    }
+    if (parameter.capability == "in") abiMode = "inValue";
+  }
+  return Option.some(NativeForeignParameterContract({
+    name: parameter.name.copyBytes(0, parameter.name.byteLength),
+    capability: parameter.capability.copyBytes(
+      0,
+      parameter.capability.byteLength
+    ),
+    abiMode,
+    typeName,
+  }));
+}
+
 export function normalizeForeignContracts(
   contracts: RawForeignContractSet,
   in declarations: RawForeignModuleDeclarations,
@@ -1086,6 +1385,7 @@ export function normalizeForeignContracts(
     }
   }
   try validateResourceContracts(contracts, declarations, types);
+  try collectOwnedHandleTypes(contracts, declarations, inout types);
   let constants = Array<NativeForeignConstantContract>();
   for (const declaration of declarations.constants) {
     let typeName = "";
@@ -1132,18 +1432,12 @@ export function normalizeForeignContracts(
     ) {
       throw `Z declaration for "${contract.name}" has ${contract.parameters.length} parameters but Clang reports ${declarations.overloads[overloadIndex].parameterCount}`;
     }
-    if (contract.returnNullable) {
-      throw `native Z declaration scalar result "${contract.name}" cannot be nullable`;
-    }
     let parameters = Array<NativeForeignParameterContract>();
     let parameterIndex: usize = 0;
     while (parameterIndex < contract.parameters.length) {
       const rawParameterIndex = declarations.overloads[
         overloadIndex
       ].parameterStart + parameterIndex;
-      if (contract.parameters[parameterIndex].nullable) {
-        throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" cannot be nullable in this tier`;
-      }
       match (in declarations.parameters[rawParameterIndex].name) {
         some(nativeName) => {
           if (nativeName != contract.parameters[parameterIndex].name) {
@@ -1151,6 +1445,25 @@ export function normalizeForeignContracts(
           }
         }
         none => {}
+      }
+      const handleParameter = try normalizedHandleParameter(
+        contract.parameters[parameterIndex],
+        declarations.parameters[rawParameterIndex].nativeType,
+        types
+      );
+      match (handleParameter) {
+        some(parameter) => {
+          parameters.push(move parameter);
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        none => {}
+      }
+      if (contract.parameters[parameterIndex].nullable) {
+        throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" cannot be nullable in this tier`;
+      }
+      if (contract.parameters[parameterIndex].release.byteLength > 0) {
+        throw `native Z declaration parameter "${contract.parameters[parameterIndex].name}" declares deinit but does not produce a supported opaque handle`;
       }
       const capability = view contract.parameters[parameterIndex].capability;
       let abiMode = capability.copyBytes(0, capability.byteLength);
@@ -1264,7 +1577,19 @@ export function normalizeForeignContracts(
         declarations,
         declarations.overloads[overloadIndex].returnNativeType
       );
+    } else if (contract.resultRelease.byteLength > 0) {
+      nativeReturnType = handleSourceTypeName(
+        types,
+        declarations.overloads[overloadIndex].returnNativeType,
+        contract.returnNullable
+      );
+      if (nativeReturnType.byteLength == 0) {
+        throw `native handle producer "${contract.name}" does not return the pointer governed by deinit ${contract.resultRelease}`;
+      }
     } else {
+      if (contract.returnNullable) {
+        throw `native Z declaration scalar result "${contract.name}" cannot be nullable`;
+      }
       nativeReturnType = try foreignValueTypeName(
         declarations,
         types,
@@ -1341,7 +1666,7 @@ export function normalizeForeignContracts(
           );
         }
       }
-    } else {
+    } else if (contract.resultRelease.byteLength == 0) {
       let resourceRelease = "";
       match (normalizedForeignTypeIndex(types, nativeReturnType)) {
         some(typeIndex) => {

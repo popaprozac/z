@@ -23,7 +23,10 @@ import {
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
-import { stringStartsWith } from "./semantic-type-shapes.zs";
+import {
+  nullableTargetType,
+  stringStartsWith,
+} from "./semantic-type-shapes.zs";
 
 // Trusted native callable facts are attached only after raw declarations and
 // .zd contracts have been normalized. The resolver never consumes ZFDCL wire
@@ -82,6 +85,11 @@ function localForeignTypeName(
   in namespace: String,
   in typeName: String
 ): String {
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) {
+    const localized = localForeignTypeName(types, namespace, nullableTarget);
+    return `${localized} | null`;
+  }
   if (stringStartsWith(typeName, "view ")) {
     const target = typeName.copyBytes(5, typeName.byteLength);
     const localized = localForeignTypeName(types, namespace, target);
@@ -341,6 +349,7 @@ function foreignTypeSignature(
     customDeinit: type.resourceRelease.byteLength > 0,
     customConstructor: type.resourceRelease.byteLength > 0,
     constructorSignature: Option<ModuleFunctionSignature>.none,
+    foreignKind: type.kind.copyBytes(0, type.kind.byteLength),
     foreignNativeName: type.nativeName.copyBytes(
       0,
       type.nativeName.byteLength

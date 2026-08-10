@@ -1,0 +1,18 @@
+declare module "owned-handle-native.h" {
+  export function z_owned_handle_open(value: _): _ | null {
+    deinit z_owned_handle_close;
+  }
+
+  export function z_owned_handle_create(
+    status: _,
+    out output: _ | null {
+      deinit z_owned_handle_close;
+    }
+  ): void throws _ {
+    success 0;
+  }
+
+  export function z_owned_handle_read(in handle: _): _;
+  export function z_owned_handle_close(move handle: _): _;
+  export function z_owned_handle_closed(): _;
+}

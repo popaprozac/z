@@ -216,7 +216,19 @@ until runtime lifetime provenance is modeled. Parameters retain Z's semantic
 `in`/`move` capability independently from the C ABI's by-value/pointer mode,
 preventing a borrow from changing the native signature. The protocol still
 fails closed for unions, Objective-C declarations, interfaces, protocols, and
-unclassified resource records. Scalar typedef evidence verifies
+unclassified resource records.
+
+Opaque pointer ownership is represented separately from record layout. A
+nullable inferred result may declare `deinit release;`, and a nullable `out`
+parameter may carry the same block fact. The normalizer proves the producer is
+exactly `T *` (or `T **` for the output), proves `release(T *) -> void`, and
+publishes one source-nameable handle type reused by later `in` and `move`
+parameters. Native lowering keeps the ABI direct, initializes empty output
+storage to null, cleans any produced owner before a failed status propagates,
+and can move the nullable owner into `Option.fromNullable` with a single
+producer evaluation.
+
+Scalar typedef evidence verifies
 parameters/results and then lowers
 to the underlying Z scalar because C typedefs are not nominal. The stream is
 producer-facing data, not serialized FIIR: `.zd` facts still

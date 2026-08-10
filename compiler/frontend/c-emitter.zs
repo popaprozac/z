@@ -59,6 +59,9 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.foreignStructType) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
+  if (type.kind == LoweredTypeKind.foreignHandleType) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
   if (
     type.kind == LoweredTypeKind.onceType
@@ -881,6 +884,10 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.nullValue) {
+    output.append("NULL");
+    return;
+  }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.parameterValue
   ) {
@@ -1440,6 +1447,25 @@ function appendExpression(
     output.append("){.tag = Z_");
     output.append(declaration.expressions[index].value);
     output.append("Tag_none})");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.optionFromNullable
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed Option.fromNullable expression";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_from_nullable(");
+    const nullableValue = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      nullableValue
+    );
+    output.append(")");
     return;
   }
   if (
@@ -2482,7 +2508,14 @@ function appendLocalStatementStorage(
       output.append(" = ");
       try appendExpression(inout output, declaration, expression);
     }
-    none => {}
+    none => match (in declaration.statements[index].type) {
+      some(storageType) => {
+        if (storageType.kind == LoweredTypeKind.foreignHandleType) {
+          output.append(" = NULL");
+        }
+      }
+      none => {}
+    }
   }
   output.append(";\n");
   match (in declaration.statements[index].expression) {
@@ -7288,9 +7321,12 @@ function loweredTypeNeedsDeinit(
   if (type.kind == LoweredTypeKind.enumType) {
     return loweredEnumNeedsDeinit(program, type.name);
   }
-  if (type.kind == LoweredTypeKind.foreignStructType) {
+  if (
+    type.kind == LoweredTypeKind.foreignStructType
+    || type.kind == LoweredTypeKind.foreignHandleType
+  ) {
     for (const resource of program.foreignResources) {
-      if (resource.nativeName == type.name) return true;
+      if (resource.storageName == type.name) return true;
     }
   }
   return false;
@@ -9071,13 +9107,65 @@ function emitLoweredC(
   output.append("  return result;\n");
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
+  for (const resource of program.foreignResources) {
+    if (!resource.handle) continue;
+    output.append("typedef ");
+    output.append(resource.nativeTypeName);
+    output.append(" ");
+    output.append(resource.storageName);
+    output.append(";\n");
+  }
+  if (program.foreignResources.length > 0) output.append("\n");
   try appendTypeDefinitions(inout output, program);
+  for (const declaration of program.enums) {
+    let nullablePayload = Option<LoweredType>.none;
+    let hasNone = false;
+    for (const variant of declaration.variants) {
+      if (variant.name == "none") hasNone = true;
+      if (variant.name != "some") continue;
+      match (in variant.payload) {
+        some(type) => {
+          if (type.kind == LoweredTypeKind.foreignHandleType) {
+            nullablePayload = Option.some(LoweredType({
+              kind: type.kind,
+              name: type.name.copyBytes(0, type.name.byteLength),
+            }));
+          }
+        }
+        none => {}
+      }
+    }
+    match (in nullablePayload) {
+      some(payload) => {
+        if (!hasNone) continue;
+        const payloadType = try cType(payload);
+        output.append("static inline __attribute__((unused)) Z_");
+        output.append(declaration.name);
+        output.append(" Z_");
+        output.append(declaration.name);
+        output.append("_from_nullable(");
+        output.append(payloadType);
+        output.append(" value) {\n  if (value == NULL) return (Z_");
+        output.append(declaration.name);
+        output.append("){ .tag = Z_");
+        output.append(declaration.name);
+        output.append("Tag_none };\n  return (Z_");
+        output.append(declaration.name);
+        output.append("){ .tag = Z_");
+        output.append(declaration.name);
+        output.append("Tag_some, .payload.some = value };\n}\n\n");
+      }
+      none => {}
+    }
+  }
   for (const resource of program.foreignResources) {
     output.append("static inline __attribute__((unused)) void Z_");
-    output.append(resource.nativeName);
+    output.append(resource.storageName);
     output.append("_deinit(");
-    output.append(resource.nativeName);
-    output.append(" const *self) {\n  ");
+    output.append(resource.storageName);
+    output.append(" const *self) {\n");
+    if (resource.handle) output.append("  if (self == NULL || *self == NULL) return;\n");
+    output.append("  ");
     output.append(resource.releaseName);
     output.append("(*self);\n}\n\n");
   }
@@ -9116,6 +9204,14 @@ function emitLoweredC(
         foreign.parameterTypes[parameterIndex]
       );
       output.append(parameterType);
+      if (
+        parameterIndex < foreign.parameterModes.length
+        && (
+          foreign.parameterModes[parameterIndex] == "in"
+          || foreign.parameterModes[parameterIndex] == "inout"
+          || foreign.parameterModes[parameterIndex] == "out"
+        )
+      ) output.append(" *");
       output.append(" parameter_");
       output.append(`${parameterIndex}`);
       parameterIndex = parameterIndex + 1;
