@@ -5482,6 +5482,7 @@ test("compiles a multi-module Z application through the standalone native driver
   for (const positiveControl of [
     "tests/fixtures/self-host-emit-control-flow.zs",
     "tests/fixtures/self-host-emit-thread-main-if.zs",
+    "tests/fixtures/self-host-emit-enum.zs",
   ]) {
     const positive = spawnSync(
       driver,
@@ -9420,6 +9421,32 @@ test("defers unavailable foreign ABI semantics without inventing native diagnost
     assert.equal(authoritativeExpressions, observedExpressions, fileName);
   }
 }, 30_000);
+
+test("classifies unresolved foreign integer conversion evidence before native lowering", () => {
+  const input = resolve(
+    projectRoot,
+    "examples/interop/c/foreign-enum-conversion.zs",
+  );
+  const stage0 = spawnSync(process.execPath, [cli, "check", input], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0.status, 0, stage0.stderr);
+
+  const native = spawnSync(process.execPath, [cli, "self-host-emit", input], {
+    encoding: "utf8",
+  });
+  assert.equal(native.status, 1, native.stdout);
+  assert.ok(
+    native.stderr.includes(
+      `${input}:4:25: error[Z1000]: the native compiler cannot yet prove this integer conversion operand's type`,
+    ),
+    native.stderr,
+  );
+  assert.match(
+    native.stderr,
+    /\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^\^ the native compiler cannot yet prove this integer conversion operand's type/,
+  );
+});
 
 test("preserves nominal identities inside linked generic monomorphs", () => {
   const directory = mkdtempSync("/tmp/z-native-generic-identities-");

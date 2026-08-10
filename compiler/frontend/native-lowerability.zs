@@ -333,6 +333,26 @@ function stableOptionalChainSource(
   return stableOptionalChainSource(tree, receiver);
 }
 
+function expressionSourceLength(
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  const node = view tree.nodes[index];
+  if (node.kind == ExpressionKind.identifierExpression) {
+    return node.value.byteLength;
+  }
+  if (
+    node.kind == ExpressionKind.memberExpression
+    && node.children.length == 1
+  ) {
+    return expressionSourceLength(tree, node.children[0])
+      + 1
+      + node.value.byteLength;
+  }
+  if (node.value.byteLength > 0) return node.value.byteLength;
+  return 1;
+}
+
 function expressionTreeContainsSuspension(
   in arena: StatementArena,
   in tree: ExpressionTree,
@@ -828,6 +848,39 @@ function validateNativeExpressionTree(
         index
       );
       const callee = view tree.nodes[node.children[0]];
+      if (
+        callee.kind == ExpressionKind.identifierExpression
+        && isIntegerTypeName(callee.value)
+        && node.children.length == 2
+      ) {
+        const source = node.children[1];
+        const sourceType = resolvedExpressionType(
+          graph,
+          moduleIndex,
+          tree,
+          source
+        );
+        if (sourceType.byteLength == 0) {
+          let sourceStart = source;
+          while (
+            tree.nodes[sourceStart].kind == ExpressionKind.memberExpression
+            && tree.nodes[sourceStart].children.length == 1
+          ) {
+            sourceStart = tree.nodes[sourceStart].children[0];
+          }
+          const sourceLine = tree.nodes[sourceStart].line;
+          const sourceColumn = tree.nodes[sourceStart].column;
+          const sourceLength = expressionSourceLength(tree, source);
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            "the native compiler cannot yet prove this integer conversion operand's type",
+            sourceLine,
+            sourceColumn,
+            sourceLength
+          );
+        }
+      }
       if (
         callee.kind == ExpressionKind.memberExpression
         && callee.children.length == 1

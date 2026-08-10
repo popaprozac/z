@@ -2218,6 +2218,11 @@ methods. `saturatingAdd`, `saturatingSubtract`, and `saturatingMultiply` now
 report `Z1000` at the integer method token; this exact-name and integer-receiver
 classification leaves user-defined methods and the executable wrapping tier
 unchanged.
+Imported integer-like values exposed one more evidence boundary: explicit
+integer conversion requires the operand's source type before native lowering
+can choose a direct cast or checked helper. A missing source type now reports
+`Z1000` across the conversion operand instead of reaching that lowerer
+assertion; the existing resolved scalar conversion chain remains executable.
 
 ## Not tested yet
 
