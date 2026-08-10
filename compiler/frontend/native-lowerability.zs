@@ -88,6 +88,15 @@ function typeUsesGeneric(in name: String, in base: String): boolean {
   return stringContains(name, `${base}<`);
 }
 
+function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
+  return name == "String"
+    || name == "view String"
+    || name == "boolean"
+    || name == "i32"
+    || name == "u8"
+    || name == "usize";
+}
+
 function validateNativeCollectionTypeName(
   in path: String,
   in name: String,
@@ -536,6 +545,34 @@ function validateNativeExpressionTree(
         node.column,
         6
       );
+    }
+    if (node.kind == ExpressionKind.templateExpression) {
+      for (const child of node.children) {
+        if (tree.nodes[child].kind == ExpressionKind.templateTextExpression) {
+          continue;
+        }
+        const interpolationType = resolvedExpressionType(
+          graph,
+          moduleIndex,
+          tree,
+          child
+        );
+        if (
+          interpolationType.byteLength > 0
+          && !nativeTemplateInterpolationTypeSupported(interpolationType)
+        ) {
+          let length = tree.nodes[child].value.byteLength;
+          if (length == 0) length = 1;
+          throw loweringBoundary(
+            path,
+            "Z1000",
+            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize`,
+            tree.nodes[child].line,
+            tree.nodes[child].column,
+            length
+          );
+        }
+      }
     }
     if (
       node.kind == ExpressionKind.unaryExpression

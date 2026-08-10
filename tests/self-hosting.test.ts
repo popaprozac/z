@@ -5334,6 +5334,23 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: 'ownership-bearing thread.spawn capture "payload" of type "Payload" is not executable in the native compiler yet',
     },
+    {
+      name: "template-scalar-representation",
+      source: [
+        'import { console } from "std";',
+        "function main(): i32 {",
+        "  const value: isize = 42;",
+        "  console.log(`value ${value}`);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      line: 4,
+      column: 24,
+      marker: "^^^^^",
+      code: "Z1000",
+      summary: 'template interpolation of "isize" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize',
+    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);

@@ -2192,6 +2192,12 @@ blanket-rejecting ownership. A move closure can still transfer an owned
 local struct or enum whose graph recursively needs cleanup now reports `Z1000`
 at the captured identifier before the current worker-context lowering would
 lose its destruction obligations.
+Native template lowering had a similar evidence-dependent leak: Stage 0
+correctly accepts a much broader set of Z values, while the fixed-point runtime
+currently has formatters only for owned/viewed `String`, `boolean`, `i32`,
+`u8`, and `usize`. Other resolved interpolation types now report source-mapped
+`Z1000` at the embedded value. Expanding the native formatter set remains
+implementation work rather than a change to Z's string-interpolation semantics.
 
 ## Not tested yet
 

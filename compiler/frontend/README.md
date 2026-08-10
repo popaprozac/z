@@ -259,6 +259,11 @@ Expression-bodied `thread.spawn` closures now identify inferred local captures
 before lowering as well. Direct owned `String` transfer and shareable ARC class
 retention remain executable; recursively ownership-bearing value captures stop
 at their source use until native worker-context destruction supports them.
+Template interpolation now follows the same evidence-first boundary: the
+fixed-point emitter accepts its implemented owned/viewed `String`, `boolean`,
+`i32`, `u8`, and `usize` parts, while another valid Z interpolation type
+reports `Z1000` at the embedded expression rather than surfacing a lowerer
+exception.
 
 The first standalone-driver fixture advances one layer beyond the compiler
 library's bootstrap entry point. Native semantic evidence recognizes imported
