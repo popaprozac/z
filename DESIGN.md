@@ -2410,8 +2410,12 @@ enters the ordinary move/cleanup system; a consuming parameter moves it, while
 a borrowed parameter guarantees the callee does not retain it. Nullable handles
 must be narrowed before a non-null borrow or consume, and generated cleanup is
 conditional on both ownership liveness and non-nullness. Borrowed returns remain
-unsupported until their lifetime can be tied to static storage or an input
-owner.
+rejected unless their lifetime is conservatively non-escaping or explicitly
+tied to an input owner. A `.zd` result declared `borrowed from owner;` may remain
+visible as `view T` or lift into `Option<view T>`; the named owner must be one
+non-null immutable native-handle input and cannot move or die while the child
+view is live. Runtime-global lifetime identities and general lifetime
+parameters remain deferred.
 
 Once a contract establishes an owned opaque C pointer and its release operation,
 the native typedef is also a source-nameable Z type. The import namespace keeps

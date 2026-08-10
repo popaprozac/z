@@ -229,8 +229,11 @@ and can move the nullable owner into `Option.fromNullable` with a single
 producer evaluation. An exact header-derived pointer result may instead
 declare `borrowed;`; native sema exposes it as a nullable, non-escaping view,
 emits the direct pointer return without cleanup, and rejects storage,
-capture, return, consumption, and owned `Option` lifting. Naming an input owner
-or runtime lifetime remains a later provenance tier.
+capture, return, consumption, and owned `Option` lifting. `borrowed from owner;`
+additionally records the native parameter index that supplies provenance. The
+ordinary semantic model carries that index as a view source, allowing `view T`
+and `Option<view T>` forwarding while retaining the owner's lexical loan.
+Runtime lifetime names remain a later provenance tier.
 
 Scalar typedef evidence verifies
 parameters/results and then lowers

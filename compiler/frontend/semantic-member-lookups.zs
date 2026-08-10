@@ -383,6 +383,7 @@ export function rebaseModuleFunctionSignature(
     typeParameterConstraints,
     parameterModes,
     parameterTypes,
+    viewParameter: signature.viewParameter,
     returnType: rebaseTypeName(
       modules,
       fromModuleIndex,
@@ -635,6 +636,7 @@ export function methodCallableSignature(
     typeParameterConstraints,
     parameterModes,
     parameterTypes,
+    viewParameter: method.signature.viewParameter,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),
     errorType: method.signature.errorType.copyBytes(0, method.signature.errorType.byteLength),
   });

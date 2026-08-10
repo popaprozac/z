@@ -32,6 +32,7 @@ export struct RawForeignFunctionContract {
   returnNullable: boolean;
   successValues: Array<String>;
   resultOwnership: String;
+  resultBorrowedFrom: String;
   resultRelease: String;
   line: usize;
   column: usize;
@@ -65,6 +66,7 @@ export struct NativeForeignFunctionContract {
   errorType: Option<String>;
   successValues: Array<String>;
   parameters: Array<NativeForeignParameterContract>;
+  borrowedFromParameter: Option<usize>;
 }
 
 export struct NativeForeignTypeContract {
@@ -332,6 +334,7 @@ function parseFunction(
   let returnNullable = false;
   let successValues = Array<String>();
   let resultOwnership = "";
+  let resultBorrowedFrom = "";
   let resultRelease = "";
   if (atText(cursor, "void")) {
     returnKind = "status";
@@ -397,6 +400,10 @@ function parseFunction(
           );
         }
         resultOwnership = move fact;
+        if (resultOwnership == "borrowed" && atText(cursor, "from")) {
+          cursor.index = cursor.index + 1;
+          resultBorrowedFrom = try parseQualifiedName(inout cursor);
+        }
         try expectText(inout cursor, ";");
       }
       try expectText(inout cursor, "}");
@@ -426,6 +433,41 @@ function parseFunction(
       try expectText(inout cursor, ";");
     }
   }
+  if (resultBorrowedFrom.byteLength > 0) {
+    let ownerIndex = parameters.length;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < parameters.length) {
+      if (parameters[parameterIndex].name == resultBorrowedFrom) {
+        ownerIndex = parameterIndex;
+        break;
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (ownerIndex == parameters.length) {
+      throw contractErrorAt(
+        cursor,
+        line,
+        column,
+        `borrowed result from "${name}" names unknown owner parameter "${resultBorrowedFrom}"`
+      );
+    }
+    if (parameters[ownerIndex].capability != "in") {
+      throw contractErrorAt(
+        cursor,
+        parameters[ownerIndex].line,
+        parameters[ownerIndex].column,
+        `borrowed result owner "${resultBorrowedFrom}" must be an immutable in parameter`
+      );
+    }
+    if (parameters[ownerIndex].nullable) {
+      throw contractErrorAt(
+        cursor,
+        parameters[ownerIndex].line,
+        parameters[ownerIndex].column,
+        `borrowed result owner "${resultBorrowedFrom}" must be non-null`
+      );
+    }
+  }
   return RawForeignFunctionContract({
     name,
     parameters,
@@ -433,6 +475,7 @@ function parseFunction(
     returnNullable,
     successValues,
     resultOwnership,
+    resultBorrowedFrom,
     resultRelease,
     line,
     column,
@@ -1624,6 +1667,26 @@ export function normalizeForeignContracts(
     }
     let nativeReturnType = "";
     let borrowedHandleResult = false;
+    let borrowedFromParameter = Option<usize>.none;
+    if (contract.resultBorrowedFrom.byteLength > 0) {
+      let ownerIndex: usize = 0;
+      while (
+        ownerIndex < contract.parameters.length
+        && contract.parameters[ownerIndex].name != contract.resultBorrowedFrom
+      ) {
+        ownerIndex = ownerIndex + 1;
+      }
+      if (ownerIndex == contract.parameters.length) {
+        throw `borrowed result from "${contract.name}" names unknown owner parameter "${contract.resultBorrowedFrom}"`;
+      }
+      if (
+        parameters[ownerIndex].capability != "in"
+        || parameters[ownerIndex].abiMode != "inValue"
+      ) {
+        throw `borrowed result owner "${contract.resultBorrowedFrom}" must be a non-null opaque C handle`;
+      }
+      borrowedFromParameter = Option.some(ownerIndex);
+    }
     if (contract.returnKind == "status") {
       nativeReturnType = try statusScalarTypeName(
         declarations,
@@ -1764,6 +1827,7 @@ export function normalizeForeignContracts(
       errorType,
       successValues,
       parameters,
+      borrowedFromParameter,
     }));
   }
   return NativeForeignContractSet({

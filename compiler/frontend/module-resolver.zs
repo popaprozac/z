@@ -68,11 +68,14 @@ import {
   addMutableValueBinding,
   addUninitializedMutableValueBinding,
   addValueBinding,
+  addViewValueBinding,
   borrowClosureBindingInPlace,
   borrowMatchValueBindingInPlace,
   borrowValueBindingInPlace,
   copyBindingFlowStates,
   copyValueBindings,
+  expressionViewOrigin,
+  setExpressionViewOrigin,
   mergeBindingFlowStates,
   setValueBindingInitialization,
   setValueBindingOwnership,
@@ -1402,7 +1405,18 @@ function inferExpressionNodeTypeExpected(
     inout expressionBindings,
     inout evidence
   );
+  const viewOwner = expressionViewOrigin(
+    expressionBindings,
+    tree.nodes[index].offset
+  );
   copyBindingFlowStates(inout bindings, expressionBindings);
+  if (viewOwner.byteLength > 0) {
+    setExpressionViewOrigin(
+      inout bindings,
+      tree.nodes[index].offset,
+      viewOwner
+    );
+  }
   return inferred;
 }
 
@@ -1814,6 +1828,38 @@ function inferSignatureCallType(
       );
     }
     parameterIndex = parameterIndex + 1;
+  }
+  match (in signature.viewParameter) {
+    some(viewParameter) => {
+      if (viewParameter >= argumentNodes.length) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `borrowed result from ${functionName} has no matching owner argument`,
+          tree.nodes[callIndex].line,
+          tree.nodes[callIndex].column
+        );
+      }
+      const owner = expressionStorageRootName(
+        tree,
+        argumentNodes[viewParameter]
+      );
+      if (owner.byteLength == 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `owner-tied borrowed result from ${functionName} requires a named owner binding`,
+          tree.nodes[argumentNodes[viewParameter]].line,
+          tree.nodes[argumentNodes[viewParameter]].column
+        );
+      }
+      setExpressionViewOrigin(
+        inout bindings,
+        tree.nodes[callIndex].offset,
+        owner
+      );
+    }
+    none => {}
   }
   let returnType = substituteGenericType(signature.returnType, substitutions);
   let errorType = "";
@@ -3682,6 +3728,10 @@ function inferExpressionNodeType(
           inout bindings,
           inout evidence
         );
+        const viewOwner = expressionViewOrigin(
+          bindings,
+          tree.nodes[payloadIndex].offset
+        );
         const payloadType = nullableTargetType(actual);
         if (payloadType.byteLength == 0) {
           throw matchError(
@@ -3691,7 +3741,10 @@ function inferExpressionNodeType(
             `Option.fromNullable expects T | null, found ${actual}`
           );
         }
-        if (typeIsBorrowedForeignResource(modules, moduleIndex, actual)) {
+        if (
+          typeIsBorrowedForeignResource(modules, moduleIndex, actual)
+          && viewOwner.byteLength == 0
+        ) {
           throw matchError(
             module,
             tree,
@@ -3709,6 +3762,13 @@ function inferExpressionNodeType(
           false,
           inout bindings
         );
+        if (viewOwner.byteLength > 0) {
+          setExpressionViewOrigin(
+            inout bindings,
+            tree.nodes[index].offset,
+            viewOwner
+          );
+        }
         return `Option<${payloadType}>`;
       }
       if (enumType == "Option" && variantName == "some") {
@@ -5078,7 +5138,18 @@ function inferExpressionTypeExpected(
         inferred,
         inout evidence
       );
+      const viewOwner = expressionViewOrigin(
+        expressionBindings,
+        tree.nodes[root].offset
+      );
       copyBindingFlowStates(inout bindings, expressionBindings);
+      if (viewOwner.byteLength > 0) {
+        setExpressionViewOrigin(
+          inout bindings,
+          tree.nodes[root].offset,
+          viewOwner
+        );
+      }
       select inferred;
     }
     none => "";
@@ -5139,16 +5210,29 @@ function inferStatement(
       none => {}
     }
     let stored = inferred.copyBytes(0, inferred.byteLength);
+    let viewOwner = "";
+    match (in arena.nodes[index].expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          viewOwner = expressionViewOrigin(
+            bindings,
+            tree.nodes[tree.root].offset
+          );
+        }
+        none => {}
+      }
+      none => {}
+    }
     const borrowedForeignResource = typeIsBorrowedForeignResource(
       modules,
       moduleIndex,
       inferred
     );
     if (
-      borrowedForeignResource
+      (borrowedForeignResource || viewOwner.byteLength > 0)
       && (
         arena.nodes[index].mutableBinding
-        || contextualExpected.byteLength > 0
+        || (borrowedForeignResource && contextualExpected.byteLength > 0)
       )
     ) {
       throw resolutionError(
@@ -5235,6 +5319,13 @@ function inferStatement(
           false
         );
       }
+    } else if (viewOwner.byteLength > 0) {
+      addViewValueBinding(
+        inout bindings,
+        arena.nodes[index].name,
+        stored,
+        viewOwner
+      );
     } else if (borrowedForeignResource) {
       addBorrowedValueBinding(
         inout bindings,

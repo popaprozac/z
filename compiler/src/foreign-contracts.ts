@@ -179,24 +179,31 @@ function normalizeOverload(
         location,
       );
     }
-    const parameters = declaration.parameters.map((parameter, index) => ({
-      name: parameter.name,
-      type: callbackContexts.has(index)
-        ? mapper.mapCallbackContext(parameter.type.canonicalNativeName ?? parameter.type.nativeName, callbackContexts.get(index)!)
-        : callbackReleases.has(index)
-          ? mapper.mapCallbackRelease(
-            parameter.type.canonicalNativeName ?? parameter.type.nativeName,
-            callbackReleases.get(index)!.callbackParameter,
-            callbackReleases.get(index)!.releaseContextParameter,
-          )
-          : mapper.mapType(
-            parameter.type,
-            functionNotes?.parameters?.[String(index)],
-            "parameter",
-            pointerTypes,
-            namedTypes,
-          ),
-    }));
+    const borrowedFromParameter = functionNotes?.return?.borrowedFromParameter ?? null;
+    const parameters = declaration.parameters.map((parameter, index) => {
+      const parameterNote = functionNotes?.parameters?.[String(index)];
+      const mappedParameterNote = index === borrowedFromParameter && parameterNote
+        ? { ...parameterNote, access: undefined }
+        : parameterNote;
+      return {
+        name: parameter.name,
+        type: callbackContexts.has(index)
+          ? mapper.mapCallbackContext(parameter.type.canonicalNativeName ?? parameter.type.nativeName, callbackContexts.get(index)!)
+          : callbackReleases.has(index)
+            ? mapper.mapCallbackRelease(
+              parameter.type.canonicalNativeName ?? parameter.type.nativeName,
+              callbackReleases.get(index)!.callbackParameter,
+              callbackReleases.get(index)!.releaseContextParameter,
+            )
+            : mapper.mapType(
+              parameter.type,
+              mappedParameterNote,
+              "parameter",
+              pointerTypes,
+              namedTypes,
+            ),
+      };
+    });
     for (let index = 0; index < parameters.length; index += 1) {
       const type = parameters[index].type;
       if (type.kind !== "callback" || !type.context) continue;
@@ -219,6 +226,35 @@ function normalizeOverload(
       pointerTypes,
       namedTypes,
     );
+    const returnBorrowedFromParameter = functionNotes?.return?.borrowedFromParameter ?? null;
+    if (returnBorrowedFromParameter !== null) {
+      const owner = parameters[returnBorrowedFromParameter]?.type;
+      if (
+        !Number.isInteger(returnBorrowedFromParameter)
+        || returnBorrowedFromParameter < 0
+        || returnBorrowedFromParameter >= parameters.length
+      ) {
+        throw contractError(
+          fileName,
+          location,
+          `borrowed result on ${JSON.stringify(declaration.name)} names an invalid owner parameter`,
+        );
+      }
+      if (returnType.kind !== "pointer" || returnType.ownership !== "borrowed") {
+        throw contractError(
+          fileName,
+          location,
+          `borrowed result from a parameter on ${JSON.stringify(declaration.name)} requires an exact borrowed C pointer return`,
+        );
+      }
+      if (owner?.kind !== "pointer" || owner.ownership !== "borrowed" || owner.nullable) {
+        throw contractError(
+          fileName,
+          location,
+          `borrowed result owner parameter ${returnBorrowedFromParameter + 1} of ${JSON.stringify(declaration.name)} must be a non-null borrowed C pointer`,
+        );
+      }
+    }
     const returnOwnership = functionNotes?.return?.ownership;
     if (
       (returnOwnership === "owned" || returnOwnership === "borrowed")
@@ -256,6 +292,7 @@ function normalizeOverload(
       name: declaration.name,
       cName: declaration.nativeName,
       returnType,
+      returnBorrowedFromParameter,
       status: functionNotes?.status ?? null,
       parameters,
       connection: null,

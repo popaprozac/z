@@ -324,6 +324,7 @@ export type ForeignFunctionOverload = {
   readonly name: string;
   readonly cName: string;
   readonly returnType: ForeignType;
+  readonly returnBorrowedFromParameter: number | null;
   readonly status: {
     readonly success: readonly (number | string)[];
     readonly result: "void";

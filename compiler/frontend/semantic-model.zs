@@ -212,6 +212,8 @@ export struct ModuleFunctionSignature {
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   parameterModes: Array<String>;
   parameterTypes: Array<String>;
+  // A foreign view result borrows from this parameter when present.
+  viewParameter: Option<usize>;
   returnType: String;
   errorType: String;
 }

@@ -1555,6 +1555,17 @@ actually governs the pointer. Requiring an unrelated owned producer would not
 prove that lifetime, so borrowed-only library singleton APIs remain usable;
 owner-tied escape awaits an explicit provenance contract.
 
+The next pointer tier supplied that missing owner provenance without adding
+general lifetime parameters. A `.zd` result may declare `borrowed from owner;`
+when `owner` is one non-null immutable `in` handle. The child remains a direct
+C pointer at runtime, but semantic analysis records a lexical loan against the
+owner. Nullable children lift into `Option<view native.Child>` rather than
+`Option<native.Child>`: `Option` expresses presence, while `view` expresses
+non-ownership. The view may cross a Z helper boundary derived from the same
+`in` owner; moving the owner while the result is live is rejected. This gives
+ordinary parent/child C APIs a safe path without pretending a library-global
+borrow has provenance that the contract cannot prove.
+
 This composition pressure exposed one real ownership rule rather than a
 bootstrap exception. Constructing a cleanup-bearing `ModuleSource` directly in
 the borrowed `parseModule` argument did not provide a named lifetime, so Z

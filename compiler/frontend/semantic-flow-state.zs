@@ -16,6 +16,7 @@ export struct NativeValueBinding {
   mutableBinding: boolean;
   borrowedBinding: boolean;
   matchBorrowedBinding: boolean;
+  viewOwner: String = "";
   suspensionBorrowRoot: String;
   initialization: NativeInitializationState;
   ownership: NativeOwnershipState;
@@ -33,6 +34,7 @@ export function copyValueBindings(
       mutableBinding: binding.mutableBinding,
       borrowedBinding: binding.borrowedBinding,
       matchBorrowedBinding: binding.matchBorrowedBinding,
+      viewOwner: binding.viewOwner.copyBytes(0, binding.viewOwner.byteLength),
       suspensionBorrowRoot: binding.suspensionBorrowRoot.copyBytes(
         0,
         binding.suspensionBorrowRoot.byteLength
@@ -141,6 +143,66 @@ export function addMatchBorrowedValueBinding(
   }));
 }
 
+export function addViewValueBinding(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in typeName: String,
+  in owner: String
+): void {
+  bindings.push(NativeValueBinding({
+    name: name.copyBytes(0, name.byteLength),
+    typeName: typeName.copyBytes(0, typeName.byteLength),
+    mutableBinding: false,
+    borrowedBinding: true,
+    matchBorrowedBinding: false,
+    viewOwner: owner.copyBytes(0, owner.byteLength),
+    suspensionBorrowRoot: "",
+    initialization: NativeInitializationState.initialized,
+    ownership: NativeOwnershipState.available,
+    outputParameter: false,
+  }));
+}
+
+function expressionViewOriginBindingName(offset: usize): String {
+  return `__z_native_view_origin_${offset}`;
+}
+
+export function setExpressionViewOrigin(
+  inout bindings: Array<NativeValueBinding>,
+  offset: usize,
+  in owner: String
+): void {
+  const bindingName = expressionViewOriginBindingName(offset);
+  addValueBinding(
+    inout bindings,
+    bindingName,
+    owner
+  );
+}
+
+export function expressionViewOrigin(
+  in bindings: Array<NativeValueBinding>,
+  offset: usize
+): String {
+  const bindingName = expressionViewOriginBindingName(offset);
+  return valueBindingType(bindings, bindingName);
+}
+
+export function liveViewBindingForOwner(
+  in bindings: Array<NativeValueBinding>,
+  in owner: String
+): String {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (
+      bindings[index].viewOwner == owner
+      && bindings[index].ownership == NativeOwnershipState.available
+    ) return bindings[index].name.copyBytes(0, bindings[index].name.byteLength);
+  }
+  return "";
+}
+
 export function valueBindingType(
   in bindings: Array<NativeValueBinding>,
   in name: String
@@ -230,6 +292,10 @@ function replaceBindingInitialization(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    viewOwner: bindings[index].viewOwner.copyBytes(
+      0,
+      bindings[index].viewOwner.byteLength
+    ),
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -251,6 +317,10 @@ function replaceBindingType(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    viewOwner: bindings[index].viewOwner.copyBytes(
+      0,
+      bindings[index].viewOwner.byteLength
+    ),
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -313,6 +383,10 @@ function replaceBindingOwnership(
     mutableBinding: bindings[index].mutableBinding,
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    viewOwner: bindings[index].viewOwner.copyBytes(
+      0,
+      bindings[index].viewOwner.byteLength
+    ),
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -352,6 +426,10 @@ export function borrowValueBindingInPlace(
         mutableBinding: false,
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        viewOwner: bindings[index].viewOwner.copyBytes(
+          0,
+          bindings[index].viewOwner.byteLength
+        ),
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength
@@ -379,6 +457,10 @@ export function borrowMatchValueBindingInPlace(
         mutableBinding: false,
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        viewOwner: bindings[index].viewOwner.copyBytes(
+          0,
+          bindings[index].viewOwner.byteLength
+        ),
         suspensionBorrowRoot: name.copyBytes(0, name.byteLength),
         initialization: bindings[index].initialization,
         ownership: bindings[index].ownership,
@@ -403,6 +485,10 @@ export function borrowClosureBindingInPlace(
         mutableBinding: bindings[index].mutableBinding,
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+        viewOwner: bindings[index].viewOwner.copyBytes(
+          0,
+          bindings[index].viewOwner.byteLength
+        ),
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength

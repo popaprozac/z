@@ -83,6 +83,7 @@ function functionDeclarationSignature(
     typeParameterConstraints,
     parameterModes,
     parameterTypes,
+    viewParameter: Option<usize>.none,
     returnType: declaration.returnType.name.copyBytes(
       0,
       declaration.returnType.name.byteLength
@@ -113,6 +114,7 @@ function constructorDeclarationSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
+    viewParameter: Option<usize>.none,
     returnType: ownerName.copyBytes(0, ownerName.byteLength),
     errorType,
   });

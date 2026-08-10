@@ -2640,6 +2640,10 @@ function generateFunctionTypeParameters(
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
       return `${type} ${name}`;
     }
+    if (parsePointerTypeName(parameter.type)) {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type}${name}`;
+    }
     const aggregate = structs.get(parameter.type);
     if (foreignNamedTypes.get(parameter.type)?.kind === "object") {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
@@ -3928,6 +3932,10 @@ function generateClassConstructorSignature(
       }
       const aggregate = structs.get(parameter.type.name);
       if (parseSliceType(parameter.type.name)) return `${type} ${cBindingName(parameter.name)}`;
+      if (parsePointerTypeName(parameter.type.name)) {
+        if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
+        return `${type}${cBindingName(parameter.name)}`;
+      }
       if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
         if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${cBindingName(parameter.name)}`;
       } else if (aggregate?.kind === "class") {
@@ -4787,6 +4795,10 @@ function generateFunctionSignature(
     if (parameter.type.name === "TaskScope" || parameter.type.name === "TaskControl") {
       if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
       return `${type} ${name}`;
+    }
+    if (parsePointerTypeName(parameter.type.name)) {
+      if (parameter.mode === "inout" || parameter.mode === "out") return `${type} *${name}`;
+      return `${type}${name}`;
     }
     const aggregate = structs.get(parameter.type.name);
     if (foreignNamedTypes.get(parameter.type.name)?.kind === "object") {
@@ -6863,7 +6875,13 @@ function generateStoredValue(name: string, context: GenerationContext): string {
   if (generatorStorage) return generatorStorage;
   const emittedName = cBindingName(name);
   const type = context.localTypes.get(name);
+  const declaredParameter = context.owner.parameters.find((parameter) => parameter.name === name);
+  if (
+    declaredParameter?.mode === "in"
+    && parsePointerTypeName(declaredParameter.type.name)
+  ) return emittedName;
   if (type && parseSliceType(type)) return emittedName;
+  if (type && storedPointerType(type) && context.parameterModes.get(name) === "in") return emittedName;
   if (type && context.structs.get(type)?.kind === "class" && context.parameterModes.get(name) === "in") return emittedName;
   const mode = context.parameterModes.get(name);
   return mode === "in" || mode === "inout" || mode === "out" ? `(*${emittedName})` : emittedName;
@@ -8067,6 +8085,15 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
       if (parseSliceType(context.localTypes.get(expression.name) ?? "")) return cBindingName(expression.name);
+      if (
+        expression.access === "in"
+        && (
+          parsePointerTypeName(
+            context.owner.parameters.find((parameter) => parameter.name === expression.name)?.type.name ?? "",
+          )
+          || storedPointerType(context.localTypes.get(expression.name) ?? "")
+        )
+      ) return cBindingName(expression.name);
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return cBindingName(expression.name);
       return `&(${generateStoredValue(expression.name, context)})`;
     case "unary": {
@@ -8924,10 +8951,16 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
+  const foreignIn = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in";
   if (nativeIn && expression.kind === "argumentReference") return value;
   if (nativeIn && parseViewType(inferExpressionType(expression, context))) return value;
+  if (
+    (nativeIn || foreignIn)
+    && storedPointerType(inferExpressionType(expression, context))
+    && (expression.kind !== "argumentReference" || expression.access === "in")
+  ) return value;
   const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
-  return context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in"
+  return foreignIn
     || (nativeIn && !classIn)
     ? `&(${value})`
     : value;
@@ -10230,7 +10263,12 @@ function mapType(
     return mapType(name.slice("__z_borrowed:".length), structs, enums, foreignNamedTypes);
   }
   const view = parseViewType(name);
-  if (view) return `const ${mapType(view.target, structs, enums, foreignNamedTypes)} *`;
+  if (view) {
+    if (parsePointerTypeName(view.target)) {
+      return mapType(view.target, structs, enums, foreignNamedTypes);
+    }
+    return `const ${mapType(view.target, structs, enums, foreignNamedTypes)} *`;
+  }
   const functionType = parseFunctionType(name);
   if (functionType) return functionTypeCName(functionType);
   if (parseWeakType(name)) return "Z_Weak";
@@ -10261,6 +10299,21 @@ function mapType(
   }
   if (name.includes(".")) return name.slice(name.lastIndexOf(".") + 1);
   throw new Error(`unsupported bootstrap type ${JSON.stringify(name)}`);
+}
+
+function storedPointerType(name: string): ReturnType<typeof parsePointerTypeName> {
+  let actual = name;
+  while (
+    actual.startsWith("__z_borrowed:")
+    || actual.startsWith("__z_mutable:")
+    || actual.startsWith("__z_moved:")
+    || actual.startsWith("__z_maybe_moved:")
+  ) {
+    actual = actual.slice(actual.indexOf(":") + 1);
+  }
+  const view = parseViewType(actual);
+  if (view) actual = view.target;
+  return parsePointerTypeName(actual);
 }
 
 function requiresNativeMove(

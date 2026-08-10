@@ -1212,6 +1212,7 @@ function collectCxxValueCallables(
             name: member.name,
             cName: `${ownerCName}::${member.name}`,
             returnType,
+            returnBorrowedFromParameter: null,
             status: null,
             parameters,
             variadic: false,
@@ -1256,6 +1257,7 @@ function collectCxxValueCallables(
       name: member.name,
       cName: constructor ? ownerCName : member.storageClass === "static" ? `${ownerCName}::${member.name}` : member.name,
       returnType,
+      returnBorrowedFromParameter: null,
       status: null,
       parameters,
       variadic: member.variadic === true,
@@ -2107,7 +2109,10 @@ function mapForeignType(
       };
       return scalarPointer;
     }
-    if (pointee?.kind === "record" && note?.access) {
+    const knownHandleIdentity = [...types.values()].some((candidate) => (
+      candidate.identity === normalized
+    ));
+    if (pointee?.kind === "record" && note?.access && !knownHandleIdentity) {
       const access = note?.access;
       const nullable = note?.nullable ?? nullabilityFromClang(cName);
       const constPointee = pointeeSpelling.split(/\s+/).includes("const");

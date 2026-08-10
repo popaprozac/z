@@ -115,6 +115,10 @@ declare module "vendor.h" {
     borrowed;
   }
 
+  export function vendor_image_metadata(in image: _): _ | null {
+    borrowed from image;
+  }
+
   export function vendor_setopt(
     in owner: _,
     option: VENDOR_WRITE,
@@ -204,6 +208,7 @@ still use the Stage-0 compiler.
 | `deinit release;` | Associate owned storage with its exact cleanup operation | Meaning depends on whether it appears on a result, output, callback, or type |
 | `owned;` in a function result block | Return a new unique C value-resource owner | The return must be a record classified by `export type`; Z schedules its named cleanup |
 | `borrowed;` in a function result block | Return runtime-owned C resource storage without cleanup | C value resources and exact header-derived opaque pointer identities become lexical non-escaping views: no fields, collections, enum payloads, captures, returns, consuming calls, or owned `Option` lifting |
+| `borrowed from owner;` in a function result block | Return a non-owning C pointer whose lifetime is tied to one input handle | `owner` must name a non-null immutable `in` pointer parameter. Z may preserve the result as `view T` or `Option<view T>` while preventing the owner from moving or dying first |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
 | `success N;` | Treat numeric status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value |
@@ -371,6 +376,7 @@ These are semantic mappings, not textual rewrites:
 | C `T **` output | `out value: _` plus optional `deinit` | Definitely initialized owned result |
 | C opaque returned handle | Return `_ \| null { deinit close; }` | Nullable owned handle with deterministic cleanup |
 | C borrowed opaque handle | Return `_ \| null { borrowed; }` | Exact header-derived pointer identity as a nullable local view; null-check and pass to `in`, but do not store, capture, return, consume, or lift into owned `Option` storage |
+| C child pointer borrowed from a handle | Return `_ \| null { borrowed from owner; }` | Owner-provenanced nullable view; it may be forwarded as `Option<view T>`, while the owner remains immovable and live for every use |
 | C record carrying resource identity | `export type T { move; deinit release; }` plus `owned;`/`borrowed;` producer results and `in`/`inout`/`move` parameters | Exact native by-value ABI, unique-owner checking, reverse-order cleanup, and conservative borrowed non-escape |
 | C integer or integer-backed enum status | `void throws _ { success N; }` or `success CONSTANT;` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
 | C variadic function selected by an enum option | Repeated contracts with `option: ENUM_MEMBER` and explicit trailing types | Closed, type-checked Z overloads that still lower to the original C call |

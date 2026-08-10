@@ -377,6 +377,7 @@ export function nativeFunctionSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
+    viewParameter: Option<usize>.none,
     returnType,
     errorType,
   }));

@@ -6419,6 +6419,36 @@ function main(): i32 {
     `import native from "owned-handle-native.h";
 
 function main(): i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return 1;
+  const child = Option.fromNullable(native.z_owned_handle_child(in owner));
+  native.z_owned_handle_close(move owner);
+  return match (in child) {
+    some(value) => native.z_owned_child_read(in value);
+    none => -1;
+  };
+}
+`,
+  );
+  const ownerMoveWithLiveChild = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(ownerMoveWithLiveChild.status, 1);
+  assert.match(
+    ownerMoveWithLiveChild.stderr,
+    /cannot move "owner" while view "child" is live/,
+  );
+
+  writeFileSync(
+    handleSource,
+    `import native from "owned-handle-native.h";
+
+function main(): i32 {
   const handle = native.z_owned_handle_open(42);
   if (handle == null) return 1;
   native.z_owned_handle_close(move handle);

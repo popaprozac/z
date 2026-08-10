@@ -2,6 +2,7 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
+  liveViewBindingForOwner,
   setValueBindingOwnership,
   valueBindingInitialization,
   valueBindingIsBorrowed,
@@ -151,6 +152,16 @@ export function consumeOwnedExpressionNode(
   }
   const root = expressionStorageRootName(tree, index);
   if (root.byteLength == 0) return;
+  const liveView = liveViewBindingForOwner(bindings, root);
+  if (liveView.byteLength > 0) {
+    throw moduleResolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `cannot move "${root}" while view "${liveView}" is live`,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
   if (valueBindingIsBorrowed(bindings, root)) {
     const message = valueBindingIsMatchBorrowed(bindings, root)
       ? `cannot move borrowed match binding "${root}"`

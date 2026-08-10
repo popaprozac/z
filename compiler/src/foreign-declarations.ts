@@ -56,6 +56,8 @@ export type ForeignFunctionContract = {
   readonly release: string | null;
   readonly resultOwnership: "owned" | "borrowed" | null;
   readonly resultOwnershipLocation: SourceLocation | null;
+  readonly resultBorrowedFrom: string | null;
+  readonly resultBorrowedFromLocation: SourceLocation | null;
   readonly location: SourceLocation;
   readonly nameLocation: SourceLocation;
   readonly returnLocation: SourceLocation;
@@ -580,6 +582,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     let releaseLocation: SourceLocation | null = null;
     let resultOwnership: "owned" | "borrowed" | null = null;
     let resultOwnershipLocation: SourceLocation | null = null;
+    let resultBorrowedFrom: string | null = null;
+    let resultBorrowedFromLocation: SourceLocation | null = null;
     let threadContract = emptyThreadContract();
     const callbacks: ForeignCallbackContract[] = [];
     const buffers: ForeignBufferContract[] = [];
@@ -827,6 +831,12 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           }
           resultOwnership = take().text as "owned" | "borrowed";
           resultOwnershipLocation = contract.location;
+          if (resultOwnership === "borrowed" && at("from")) {
+            take();
+            const owner = expectIdentifier("an owner parameter name after `borrowed from`");
+            resultBorrowedFrom = owner.text;
+            resultBorrowedFromLocation = owner.location;
+          }
           expectText(";");
           continue;
         }
@@ -867,6 +877,36 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (release && resultOwnership) {
       fail(start, `foreign function ${JSON.stringify(name)} cannot combine pointer deinit ownership with ${resultOwnership} value-resource ownership`);
     }
+    if (resultBorrowedFrom) {
+      const owner = parameters.find((parameter) => parameter.name === resultBorrowedFrom);
+      if (!owner) {
+        throw new DiagnosticError(
+          fileName,
+          resultBorrowedFromLocation!,
+          `borrowed result from ${JSON.stringify(name)} names unknown owner parameter ${JSON.stringify(resultBorrowedFrom)}`,
+          { code: "Z0801" },
+        );
+      }
+      if (owner.mode !== "in") {
+        throw new DiagnosticError(
+          fileName,
+          resultBorrowedFromLocation!,
+          `borrowed result owner ${JSON.stringify(resultBorrowedFrom)} must be an immutable \`in\` parameter`,
+          {
+            code: "Z0801",
+            notes: ["the owner must remain stable for the full lifetime of the returned view"],
+          },
+        );
+      }
+      if (owner.nullable || owner.nullOnly) {
+        throw new DiagnosticError(
+          fileName,
+          resultBorrowedFromLocation!,
+          `borrowed result owner ${JSON.stringify(resultBorrowedFrom)} must be non-null`,
+          { code: "Z0801" },
+        );
+      }
+    }
     functions.push({
       name,
       parameters,
@@ -879,6 +919,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       release,
       resultOwnership,
       resultOwnershipLocation,
+      resultBorrowedFrom,
+      resultBorrowedFromLocation,
       location: start.location,
       nameLocation: parsedName.location,
       returnLocation: returnType.location,
@@ -1217,6 +1259,9 @@ export function foreignDeclarationApiNotes(
         ...(contract.returnSemanticType === "view-cstring" ? { ownership: "borrowed" as const, semanticType: "view-cstring" as const } : {}),
         ...(contract.release ? { ownership: "owned" as const, release: contract.release } : {}),
         ...(contract.resultOwnership ? { ownership: contract.resultOwnership } : {}),
+        ...(contract.resultBorrowedFrom
+          ? { borrowedFromParameter: contract.parameters.findIndex((parameter) => parameter.name === contract.resultBorrowedFrom) }
+          : {}),
         ...(contract.thread.transfer || contract.thread.share || contract.thread.deinit
           ? { thread: contract.thread }
           : {}),

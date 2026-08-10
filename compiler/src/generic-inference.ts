@@ -144,8 +144,16 @@ export function inferGenericCalls(
           continue;
         }
         if (actual && actual !== expected) {
-          viable = false;
-          break;
+          const expectedPointer = parsePointerTypeName(expected);
+          const actualPointer = parsePointerTypeName(actual);
+          const compatibleBorrow = expectedPointer?.ownership === "borrowed"
+            && !expectedPointer.nullable
+            && actualPointer?.identity === expectedPointer.identity
+            && !actualPointer.nullable;
+          if (!compatibleBorrow) {
+            viable = false;
+            break;
+          }
         }
         score += actual === expected ? 8 : 1;
       }
@@ -1289,13 +1297,28 @@ export function inferGenericCalls(
               if (args.length !== 1) {
                 throw new DiagnosticError(fileName, expression.location, `Option.fromNullable expects 1 argument, received ${args.length}`);
               }
-              const pointer = args[0].type ? parsePointerTypeName(args[0].type) : null;
+              const sourceArgument = expression.arguments[0];
+              const foreignReturn = sourceArgument.kind === "call"
+                && sourceArgument.callee.kind === "member"
+                ? foreignMember(sourceArgument.callee)?.overloads.find((overload) => (
+                  overload.returnType.kind === "pointer"
+                ))?.returnType ?? null
+                : null;
+              const pointer = args[0].type
+                ? parsePointerTypeName(args[0].type)
+                : foreignReturn?.kind === "pointer"
+                  ? foreignReturn
+                  : null;
               const inferredTarget = args[0].type && isNullableObjCTypeName(args[0].type)
                 ? publicObjCTypeName(args[0].type)
                 : pointer?.nullable
-                  ? pointerTypeName(pointer.identity, pointer.ownership, false)
+                  ? pointer.ownership === "borrowed"
+                    ? viewTypeName(pointerTypeName(pointer.identity, pointer.ownership, false))
+                    : pointerTypeName(pointer.identity, pointer.ownership, false)
                   : null;
-              const target = qualifier?.arguments[0] ?? inferredTarget;
+              const target = qualifier?.arguments[0]
+                ?? (contextualOption?.base === "Option" ? contextualOption.arguments[0] : null)
+                ?? inferredTarget;
               if (!target) {
                 throw new DiagnosticError(
                   fileName,

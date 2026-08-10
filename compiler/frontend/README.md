@@ -140,7 +140,9 @@ recursive path.
   handle identity, and the normalizer proves the release consumes exactly that
   pointer type and returns `void`. A header-derived pointer result may instead
   declare `borrowed;`; it becomes a nullable non-escaping view that may
-  be null-checked and passed to `in` without receiving cleanup. Every richer
+  be null-checked and passed to `in` without receiving cleanup. A result may
+  instead declare `borrowed from owner;` to retain the parameter index of one
+  non-null immutable input handle as explicit view provenance. Every richer
   unimplemented fact rejects at its `.zd` source location.
 - `semantic-foreign.zs` attaches only those normalized callable contracts to
   ordinary native module symbols. Selective aliases and namespace members then

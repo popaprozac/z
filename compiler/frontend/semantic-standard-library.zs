@@ -22,6 +22,7 @@ function standardSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
+    viewParameter: Option<usize>.none,
     returnType: returnType.copyBytes(0, returnType.byteLength),
     errorType: errorType.copyBytes(0, errorType.byteLength),
   });

@@ -394,6 +394,9 @@ declare module "vendor.h" {
   export function vendor_default(): _ | null {
     borrowed;
   }
+  export function vendor_child(in owner: _): _ | null {
+    borrowed from owner;
+  }
   export function vendor_optional(in handle: _ | null): _;
   export function vendor_position(out x: _, out y: _): _;
   export function vendor_create(
@@ -426,8 +429,11 @@ built-in toolchain facts. General explicit ABI types remain a later
 declaration-file slice. A `borrowed;` result with one exact header-derived
 opaque pointer identity becomes a nullable lexical view: it receives no
 cleanup, may be narrowed and passed to `in`, and cannot escape into owned
-storage. Naming an input or runtime as its longer-lived owner remains a later
-provenance tier. Three narrow semantic refinements are available now:
+storage. `borrowed from owner;` adds explicit provenance for a child pointer:
+the named owner must be a non-null immutable `in` handle, the result may be
+forwarded as `view T` or `Option<view T>`, and the owner cannot move or die
+while that view remains live. Runtime-global lifetime names remain a later
+provenance tier. Three other narrow semantic refinements are available now:
 `parameter: null` exposes only the null value of an otherwise unsupported
 native pointer parameter, while `view cstring | null` classifies a native
 character-pointer result as nullable borrowed NUL-terminated text tied to the

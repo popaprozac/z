@@ -2441,8 +2441,16 @@ matching are unified. `Option.fromNullable(reference)` explicitly converts the
 native nullable form into `Option<T>` for `some`/`none` matching. Objective-C
 references and `.zd`-declared C handles use `nil` or `NULL` as the `none` niche
 and remain one pointer with no wrapper allocation; general options use the
-ordinary tagged enum layout. An
-imported Objective-C block parameter accepts a contextual Z closure. Escaping
+ordinary tagged enum layout.
+
+An owner-tied `.zd` child pointer instead lifts to
+`Option<view native.Child>`. `Option` still means present or absent; `view`
+independently records that the present child is borrowed from its named native
+owner. The owner must remain live and cannot move while that optional view is
+in use. In contrast, `Option<native.Child>` contains an owned or ordinary value
+according to the capabilities of `native.Child` itself.
+
+An imported Objective-C block parameter accepts a contextual Z closure. Escaping
 blocks require `move`; the generated ARC adapter keeps the owned closure
 environment alive for exactly as long as the native block. When `.zd` marks the
 block `thread any`, the adapter also retains and enters the active Z runtime

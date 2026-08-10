@@ -33,32 +33,51 @@ export function collectForeignHandleTypeAliases(
   const canonicalBySourceName = new Map<string, string>();
   const displayByCanonicalName = new Map<string, string>();
   for (const module of modules.values()) {
-    const byIdentity = new Map<string, { nullable: string | null; nonnull: string | null }>();
+    const byIdentity = new Map<string, {
+      ownedNullable: string | null;
+      ownedNonnull: string | null;
+      borrowedNullable: string | null;
+      borrowedNonnull: string | null;
+    }>();
     for (const pointer of module.types.values()) {
-      if (pointer.ownership !== "owned" || !pointer.release) continue;
+      if (pointer.ownership === "owned" && !pointer.release) continue;
+      if (pointer.ownership !== "owned" && pointer.ownership !== "borrowed") continue;
       const name = opaqueHandleName(pointer.cName);
       if (!name) continue;
-      const pair = byIdentity.get(pointer.identity) ?? { nullable: null, nonnull: null };
-      if (pointer.nullable) pair.nullable = pointer.typeName;
-      else pair.nonnull = pointer.typeName;
+      const pair = byIdentity.get(pointer.identity) ?? {
+        ownedNullable: null,
+        ownedNonnull: null,
+        borrowedNullable: null,
+        borrowedNonnull: null,
+      };
+      if (pointer.ownership === "owned") {
+        if (pointer.nullable) pair.ownedNullable = pointer.typeName;
+        else pair.ownedNonnull = pointer.typeName;
+      } else if (pointer.nullable) pair.borrowedNullable = pointer.typeName;
+      else pair.borrowedNonnull = pointer.typeName;
       byIdentity.set(pointer.identity, pair);
     }
     for (const [identity, pair] of byIdentity) {
       const pointer = [...module.types.values()].find((candidate) => (
-        candidate.identity === identity && candidate.ownership === "owned"
+        candidate.identity === identity
+        && (candidate.ownership === "owned" || candidate.ownership === "borrowed")
       ));
       if (!pointer) continue;
       const name = opaqueHandleName(pointer.cName);
       if (!name) continue;
       const sourceName = `${module.declaration.moduleName}.${name}`;
-      if (pair.nonnull) {
-        canonicalBySourceName.set(sourceName, pair.nonnull);
-        displayByCanonicalName.set(pair.nonnull, sourceName);
+      const nonnull = pair.ownedNonnull ?? pair.borrowedNonnull;
+      const nullable = pair.ownedNullable ?? pair.borrowedNullable;
+      if (nonnull) {
+        canonicalBySourceName.set(sourceName, nonnull);
+        displayByCanonicalName.set(nonnull, sourceName);
       }
-      if (pair.nullable) {
-        canonicalBySourceName.set(nullableObjCTypeName(sourceName), pair.nullable);
-        displayByCanonicalName.set(pair.nullable, `${sourceName} | null`);
+      if (nullable) {
+        canonicalBySourceName.set(nullableObjCTypeName(sourceName), nullable);
+        displayByCanonicalName.set(nullable, `${sourceName} | null`);
       }
+      if (pair.borrowedNonnull) displayByCanonicalName.set(pair.borrowedNonnull, sourceName);
+      if (pair.borrowedNullable) displayByCanonicalName.set(pair.borrowedNullable, `${sourceName} | null`);
     }
   }
   return { canonicalBySourceName, displayByCanonicalName };

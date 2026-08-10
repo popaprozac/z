@@ -1573,12 +1573,15 @@ export function analyze(
         });
       }
       if (structs.get(returnedView.target)?.kind !== "struct") {
-        throw new DiagnosticError(fileName, declaration.returnType.location, "the first parameter-view tier requires a concrete Z struct target", {
-          code: "Z0206",
-        });
+        const foreignViewTarget = foreignPointer(returnedView.target, state);
+        if (!foreignViewTarget || foreignViewTarget.ownership !== "borrowed") {
+          throw new DiagnosticError(fileName, declaration.returnType.location, "the first parameter-view tier requires a concrete Z struct or borrowed native handle target", {
+            code: "Z0206",
+          });
+        }
       }
       const sources = parameterViewSourceIndices(declaration);
-      if (sources.length === 0) {
+      if (sources.length === 0 && !foreignPointer(returnedView.target, state)) {
         throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view requires at least one direct return from an immutable `in` parameter", {
           code: "Z0206",
           helps: ["return the borrowed parameter itself, one of its fields, or one of its indexed elements"],
@@ -3723,7 +3726,9 @@ function analyzeStatement(
       const view = parseViewType(String(variableType));
       const optionalView = parseOptionalViewType(String(variableType));
       const foreignStringView = foreignPointer(variableType, state)?.stringView === true;
-      if (view || optionalView || foreignStringView) {
+      const ownerTiedForeignView = isBorrowedNativeResource(variableType, state)
+        && state.viewCallOrigins.has(statement.initializer.location.offset);
+      if (view || optionalView || foreignStringView || ownerTiedForeignView) {
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
         }
@@ -4301,6 +4306,8 @@ function analyzeStatement(
         const directProjection = statement.expression.kind === "identifier"
           || statement.expression.kind === "member"
           || statement.expression.kind === "index";
+        let actual: ValueType | null = null;
+        let callOrigin = state.viewCallOrigins.get(statement.expression.location.offset);
         if (state.activeReceiver) {
           if (
             !root
@@ -4316,20 +4323,29 @@ function analyzeStatement(
             });
           }
         } else {
+          if (!directProjection) {
+            actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+            callOrigin = state.viewCallOrigins.get(statement.expression.location.offset);
+          }
+          const parameterOrigin = callOrigin && callOrigin.sources.every((source) => (
+            owner.parameters.some((parameter) => parameter.name === source.owner && parameter.mode === "in")
+          ));
           const parameter = root
             ? owner.parameters.find((candidate) => candidate.name === root.name)
             : null;
-          if (!root || !parameter || parameter.mode !== "in" || !directProjection) {
+          if ((!root || !parameter || parameter.mode !== "in" || !directProjection) && !parameterOrigin) {
             throw new DiagnosticError(fileName, statement.expression.location, "a parameter-provenanced view must return an immutable input, one of its fields, or one of its indexed elements", {
               code: "Z0206",
               notes: ["local storage and forwarded view bindings cannot escape their owner"],
-              helps: ["derive the result directly from an `in` parameter"],
+              helps: ["derive the result directly from an `in` parameter or an owner-tied foreign view"],
             });
           }
         }
-        const actual = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+        actual ??= inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
         requireAssignable(view.target, actual, statement.expression, fileName, structs, enums, state);
-        state.viewReturnExpressions.add(statement.expression.location.offset);
+        if (directProjection && !callOrigin) {
+          state.viewReturnExpressions.add(statement.expression.location.offset);
+        }
         requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
       }
@@ -9549,17 +9565,32 @@ function inferExpressionInner(
               }
               const argument = expression.arguments[0];
               const actual = inferExpression(argument, locals, globals, structs, enums, fileName, state);
-              rejectBorrowedNativeResourceEscape(
-                actual,
-                argument,
-                locals,
-                fileName,
-                state,
-                "lifted into Option storage",
-              );
+              const borrowedViewOrigin = state.viewCallOrigins.get(argument.location.offset);
+              if (!borrowedViewOrigin) {
+                rejectBorrowedNativeResourceEscape(
+                  actual,
+                  argument,
+                  locals,
+                  fileName,
+                  state,
+                  "lifted into Option storage",
+                );
+              }
               const object = foreignObject(actual, state);
               const pointer = foreignPointer(actual, state);
-              const optionPointer = parsePointerTypeName(option.target);
+              const optionView = parseViewType(option.target);
+              const optionPointer = parsePointerTypeName(optionView?.target ?? option.target);
+              if (borrowedViewOrigin && !optionView) {
+                throw new DiagnosticError(
+                  fileName,
+                  argument.location,
+                  "an owner-tied borrowed native resource requires `Option<view T>` so its owner provenance remains visible",
+                  {
+                    code: "Z0206",
+                    helps: ["write `Option<view native.Type>` or omit the annotation and let Z infer it"],
+                  },
+                );
+              }
               const contextualNull = actual === "null";
               const compatibleObject = object?.nullable && publicObjCTypeName(object.typeName) === option.target;
               const compatiblePointer = pointer?.nullable
@@ -9581,6 +9612,9 @@ function inferExpressionInner(
                 );
               }
               state.optionFromNullable.add(expression.location.offset);
+              if (borrowedViewOrigin && optionView && compatiblePointer) {
+                state.viewCallOrigins.set(expression.location.offset, borrowedViewOrigin);
+              }
               return enumDeclaration.name;
             }
             const declaredVariant = enumDeclaration.variants.find((candidate) => candidate.name === expression.callee.property);
@@ -11596,12 +11630,24 @@ function parameterViewSourceIndices(
   const sources = new Set<number>();
   const record = (expression: Expression | null): void => {
     if (!expression) return;
-    const root = storageRoot(expression);
-    if (!root) return;
-    const index = declaration.parameters.findIndex((parameter) => (
-      parameter.name === root.name && parameter.mode === "in"
-    ));
-    if (index >= 0) sources.add(index);
+    const rootName = expression.kind === "argumentReference"
+      ? expression.name
+      : storageRoot(expression)?.name ?? null;
+    if (rootName) {
+      const index = declaration.parameters.findIndex((parameter) => (
+        parameter.name === rootName && parameter.mode === "in"
+      ));
+      if (index >= 0) sources.add(index);
+    }
+    if (expression.kind === "call") {
+      expression.arguments.forEach(record);
+    } else if (
+      expression.kind === "try"
+      || expression.kind === "attempt"
+      || expression.kind === "await"
+    ) {
+      record(expression.expression);
+    }
   };
   const visit = (statement: Statement): void => {
     switch (statement.kind) {
@@ -12250,7 +12296,8 @@ function narrowedConditionLocals(
 function foreignPointer(type: ValueType, state: AnalysisState): ForeignPointerType | null {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never") return null;
-  return state.foreignTypes.get(actual) ?? null;
+  const view = parseViewType(String(actual));
+  return state.foreignTypes.get(view?.target ?? actual) ?? null;
 }
 
 function foreignObject(type: ValueType, state: AnalysisState): ForeignObjectType | null {
@@ -14529,6 +14576,42 @@ function checkForeignCall(
         }
         continue;
       }
+      if (parameter?.type.kind === "pointer") {
+        if (argument.access !== "in" || parameter.type.ownership !== "borrowed") {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `C function ${JSON.stringify(target.name)} expects a borrowed \`in\` handle argument`,
+          );
+        }
+        const stored = locals.get(argument.name);
+        if (!stored) {
+          throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+        }
+        if (initializationState(stored) !== "initialized") {
+          throw new DiagnosticError(fileName, argument.location, `in argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+        }
+        if (ownershipState(stored) !== "available") {
+          throw movedValueError(
+            fileName,
+            { name: argument.name, location: argument.location },
+            state,
+            ownershipState(stored) === "maybeMoved",
+          );
+        }
+        const actualPointer = foreignPointer(stored, state);
+        if (!actualPointer || actualPointer.identity !== parameter.type.identity || actualPointer.nullable) {
+          throw new DiagnosticError(
+            fileName,
+            argument.location,
+            `C function ${JSON.stringify(target.name)} expects ${describePointer(parameter.type)}, found ${describeValueType(stored, state)}`,
+          );
+        }
+        state.foreignArgumentAccesses.set(argument.location.offset, "in");
+        state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
+        state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
+        continue;
+      }
       if (parameter?.type.kind === "unsupported") {
         throw new DiagnosticError(fileName, argument.location, `${argument.access} requires a checked native capability contract`, {
           code: "Z0823",
@@ -15051,6 +15134,32 @@ function checkForeignCall(
       viewOriginForRoot(root.name, argument.location, state),
     );
   }
+  if (target.returnBorrowedFromParameter !== null) {
+    const ownerSource = visibleParameters.findIndex(({ nativeIndex }) => (
+      nativeIndex === target.returnBorrowedFromParameter
+    ));
+    const argument = ownerSource >= 0 ? args[ownerSource] : null;
+    const rootName = argument?.kind === "argumentReference"
+      ? argument.name
+      : argument
+        ? storageRoot(argument)?.name ?? null
+        : null;
+    if (!argument || !rootName || !locals.has(rootName)) {
+      throw new DiagnosticError(
+        fileName,
+        argument?.location ?? location,
+        `owner-tied borrowed result from ${JSON.stringify(target.name)} requires a named owner binding`,
+        {
+          code: "Z0206",
+          helps: ["bind the native owner before requesting its borrowed child"],
+        },
+      );
+    }
+    state.viewCallOrigins.set(
+      location.offset,
+      viewOriginForRoot(rootName, argument.location, state),
+    );
+  }
   let result = target.returnType.kind === "z"
     ? target.returnType.name
     : target.returnType.kind === "swiftString"
@@ -15463,16 +15572,23 @@ function validateOptionalViewReturn(
   fileName: string,
   state: AnalysisState,
 ): void {
-  const variant = optionalViewReturnVariant(expression, expected);
-  if (!variant) {
-    throw new DiagnosticError(fileName, expression.location, "an optional view method must return Option.some(this projection) or Option.none directly", {
-      code: "Z0206",
-      notes: ["forwarding optional view storage could detach its provenance from the receiver"],
-      helps: ["return a direct field or indexed element with Option.some(...), or return Option.none"],
-    });
-  }
   const actual = inferDirectValue(expression, owner, locals, globals, structs, enums, fileName, state);
   requireAssignable(expected, actual, expression, fileName, structs, enums, state);
+  const origin = state.viewCallOrigins.get(expression.location.offset);
+  if (
+    origin
+    && origin.sources.every((source) => owner.parameters.some((parameter) => (
+      parameter.name === source.owner && parameter.mode === "in"
+    )))
+  ) return;
+  const variant = optionalViewReturnVariant(expression, expected);
+  if (!variant) {
+    throw new DiagnosticError(fileName, expression.location, "an optional view return must preserve direct owner provenance", {
+      code: "Z0206",
+      notes: ["forwarding optional view storage could detach its provenance from the receiver or input owner"],
+      helps: ["return Option.some(this projection), Option.none, or an owner-tied foreign view derived directly from an `in` parameter"],
+    });
+  }
 }
 
 function optionalViewReturnVariant(expression: Expression, expected: string): "some" | "none" | null {

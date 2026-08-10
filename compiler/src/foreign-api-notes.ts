@@ -19,6 +19,7 @@ export type PointerNote = {
   readonly release?: string;
   readonly nullOnly?: boolean;
   readonly semanticType?: "view-cstring";
+  readonly borrowedFromParameter?: number;
   readonly fixed?: string;
   readonly thread?: {
     readonly transfer?: boolean;

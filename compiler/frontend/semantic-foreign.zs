@@ -132,6 +132,7 @@ function foreignFunctionSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
+    viewParameter: contract.borrowedFromParameter,
     returnType: localForeignTypeName(
       types,
       namespace,

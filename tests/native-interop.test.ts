@@ -3368,6 +3368,97 @@ test("discovers owned-handle contracts from adjacent Z declaration files", () =>
   assert.match(handleCompletion?.detail ?? "", /owned opaque native handle ZTestHandle \*; deinit z_test_close/);
 });
 
+test("ties borrowed C pointer views to an explicit native owner", () => {
+  const fileName = resolve(projectRoot, "owner-tied-borrowed-handle.zs");
+  const source = `
+    import native from "tests/fixtures/owned-handle-native.h";
+
+    function child(in owner: native.ZOwnedHandle): Option<view native.ZOwnedChild> {
+      return Option.fromNullable(native.z_owned_handle_child(in owner));
+    }
+
+    function main(): i32 {
+      const owner = native.z_owned_handle_open(42);
+      if (owner == null) return 1;
+      const selected = child(in owner);
+      return match (in selected) {
+        some(value) => native.z_owned_child_read(value);
+        none => -1;
+      };
+    }
+  `;
+  const generated = compileToC(source, fileName);
+  assert.match(generated, /return z_owned_handle_child\(owner\);/);
+  assert.match(generated, /selected = child\(owner\);/);
+  assert.match(generated, /z_owned_child_read\(value\)/);
+  assert.match(generated, /z_owned_handle_close\(owner\)/);
+
+  const childOffset = source.indexOf("selected =") + 2;
+  assert.match(
+    hover(source, fileName, childOffset)?.contents.value ?? "",
+    /selected: Option<view native\.ZOwnedChild>/,
+  );
+
+  const movedOwner = `
+    import native from "tests/fixtures/owned-handle-native.h";
+    function main(): i32 {
+      const owner = native.z_owned_handle_open(42);
+      if (owner == null) return 1;
+      const child = native.z_owned_handle_child(owner);
+      native.z_owned_handle_close(move owner);
+      if (child == null) return 2;
+      return native.z_owned_child_read(child);
+    }
+  `;
+  assert.match(
+    diagnostics(movedOwner, fileName)[0]?.message ?? "",
+    /cannot (?:move|consume).*owner.*view "child" is live/i,
+  );
+
+  const erasedBorrow = `
+    import native from "tests/fixtures/owned-handle-native.h";
+    function main(): i32 {
+      const owner = native.z_owned_handle_open(42);
+      if (owner == null) return 1;
+      const child: Option<native.ZOwnedChild> = Option.fromNullable(
+        native.z_owned_handle_child(in owner)
+      );
+      return 0;
+    }
+  `;
+  assert.match(
+    diagnostics(erasedBorrow, fileName)[0]?.message ?? "",
+    /requires `Option<view T>` so its owner provenance remains visible/,
+  );
+
+  const declarationFile = resolve(projectRoot, "tests/fixtures/owned-handle-native.h.zd");
+  const declarationSource = readFileSync(declarationFile, "utf8");
+  const borrowedOffset = declarationSource.indexOf("borrowed from handle") + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, borrowedOffset)?.contents.value ?? "",
+    /borrowed from handle.*input owner is live/,
+  );
+  const ownerOffset = declarationSource.indexOf("handle;", borrowedOffset) + 2;
+  assert.match(
+    hover(declarationSource, declarationFile, ownerOffset)?.contents.value ?? "",
+    /handle: owner.*lifetime source/,
+  );
+  const fromCompletionSource = declarationSource.replace("borrowed from handle;", "borrowed fr");
+  const fromCompletionOffset = fromCompletionSource.indexOf("borrowed fr") + "borrowed fr".length;
+  assert.equal(
+    completions(fromCompletionSource, declarationFile, fromCompletionOffset)
+      .find((item) => item.label === "from")?.insertText,
+    "from ",
+  );
+  const ownerCompletionSource = declarationSource.replace("borrowed from handle;", "borrowed from han");
+  const ownerCompletionOffset = ownerCompletionSource.indexOf("borrowed from han") + "borrowed from han".length;
+  assert.equal(
+    completions(ownerCompletionSource, declarationFile, ownerCompletionOffset)
+      .find((item) => item.label === "handle")?.insertText,
+    "handle;",
+  );
+});
+
 test("projects native integer statuses into typed throws and preserves out cleanup", () => {
   const example = resolve(projectRoot, "tests/fixtures/status-api.zs");
   const source = readFileSync(example, "utf8");
@@ -3434,6 +3525,42 @@ test("projects native integer statuses into typed throws and preserves out clean
 });
 
 test("diagnoses malformed and mismatched Z declaration contracts", () => {
+  const unknownBorrowOwner = `
+    declare module "contract.h" {
+      export function child(in handle: _): _ | null {
+        borrowed from missing;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(unknownBorrowOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /names unknown owner parameter "missing"/,
+  );
+
+  const mutableBorrowOwner = `
+    declare module "contract.h" {
+      export function child(inout handle: _): _ | null {
+        borrowed from handle;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(mutableBorrowOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /owner "handle" must be an immutable `in` parameter/,
+  );
+
+  const nullableBorrowOwner = `
+    declare module "contract.h" {
+      export function child(in handle: _ | null): _ | null {
+        borrowed from handle;
+      }
+    }
+  `;
+  assert.match(
+    diagnostics(nullableBorrowOwner, "/tmp/contract.h.zd")[0]?.message ?? "",
+    /owner "handle" must be non-null/,
+  );
+
   const malformed = `
     declare module "contract.h" {
       export function known(): invented;

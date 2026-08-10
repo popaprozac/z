@@ -2676,6 +2676,35 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   const ownerSignatures = ownerName && module
     ? foreignDeclarationNativeSignatures(module, ownerName)
     : [];
+  const borrowedFactPrefix = /\bborrowed\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (borrowedFactPrefix !== undefined && "from".startsWith(borrowedFactPrefix)) {
+    contextual.push({
+      label: "from",
+      kind: completionKinds.keyword,
+      detail: "tie this borrowed native result to one immutable input owner",
+      insertText: "from ",
+      sortText: "0-from",
+    });
+  }
+  const borrowedOwnerPrefix = /\bborrowed\s+from\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (borrowedOwnerPrefix !== undefined) {
+    const parameters = new Map<string, ForeignType>();
+    for (const signature of ownerSignatures) {
+      for (const parameter of signature.parameters) {
+        if (parameter.name) parameters.set(parameter.name, parameter.type);
+      }
+    }
+    for (const [name, type] of parameters) {
+      if (!name.toLowerCase().startsWith(borrowedOwnerPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: `${foreignTypeName(type)} native owner parameter`,
+        insertText: `${name};`,
+        sortText: `0-${name}`,
+      });
+    }
+  }
   const activeCallbackName = [...before.matchAll(/\bcallback\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{/g)].at(-1)?.[1];
   const activeCallbacks = activeCallbackName
     ? ownerSignatures.flatMap((signature) => signature.parameters
@@ -3357,7 +3386,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       return markdownHover(
         contract.resultOwnership === "owned"
           ? "owned  // caller receives unique native value-resource ownership and deterministic cleanup"
-          : "borrowed  // native runtime retains ownership; this result is lexical and non-escaping",
+          : contract.resultBorrowedFrom
+            ? `borrowed from ${contract.resultBorrowedFrom}  // non-owning result remains valid only while this input owner is live`
+            : "borrowed  // native runtime retains ownership; this result is lexical and non-escaping",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (contract.resultBorrowedFromLocation?.offset === word.start && contract.resultBorrowedFrom) {
+      return markdownHover(
+        `${contract.resultBorrowedFrom}: owner  // lifetime source for this borrowed native result`,
         source,
         word.start,
         word.end,
