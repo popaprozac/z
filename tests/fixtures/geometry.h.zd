@@ -4,4 +4,5 @@ declare module "geometry.h" {
   export function z_read(in point: _): _;
   export function z_translate(point: _, direction: _, amount: _): _;
   export function z_score(point: _): _;
+  export function z_rect_id(rect: _): _;
 }

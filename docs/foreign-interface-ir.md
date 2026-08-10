@@ -162,10 +162,10 @@ Z sema and native backends
 ```
 
 The first adapter seam is now executable. The real Clang header producer can
-frame functions, nominal enum types, typed native constants, and simple record
-layouts/fields as a versioned `ZFDCL` raw-declaration stream. Version 4 carries
-enum identity/underlying type, constant identity/type, record identity/layout
-and field order/types, function names, namespaces, overloads, native type
+frame functions, scalar typedefs, nominal enum types, typed native constants,
+and record layouts/fields as a versioned `ZFDCL` raw-declaration stream. Version
+5 carries scalar alias/underlying identity, enum identity/underlying type,
+constant identity/type, record identity/layout and field order/types, function names, namespaces, overloads, native type
 spellings, parameters, source locations, executor affinity, and availability
 into an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
@@ -201,14 +201,16 @@ type, and explicit success literals. Any parameter/result fact outside this
 tier is a source-located error; it is never discarded for forward
 compatibility.
 
-Plain C structs containing only directly representable scalar fields form the
-first record tier. They cross by value in parameters/results, while existing
+Plain recursively copyable C structs containing representable scalar or record
+fields form the first record tier. They cross by value in parameters/results, while existing
 `.zd` `in`, `inout`, and `out` parameter capabilities are checked against const
 or mutable native pointers. Both forms become ordinary imported struct types
 and lower to direct C construction, field access, native calls, and—where
-required—address taking. The protocol still fails closed for unions, nested
-records, pointer/resource fields, Objective-C declarations, interfaces, and
-protocols. It is producer-facing data, not serialized FIIR: `.zd` facts still
+required—address taking. The protocol still fails closed for unions,
+pointer/resource fields, Objective-C declarations, interfaces, and
+protocols. Scalar typedef evidence verifies parameters/results and then lowers
+to the underlying Z scalar because C typedefs are not nominal. The stream is
+producer-facing data, not serialized FIIR: `.zd` facts still
 need to be read and normalized in Z before semantic analysis may trust the
 result. The normalized scalar, integer-status, and simple-record callables
 attach to ordinary native module symbols:

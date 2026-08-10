@@ -1484,12 +1484,27 @@ returned record directly. Generated C remains the handwritten ABI shape:
 `const ZPoint translated = z_translate(point, ZForward, 3);`. Because `ZPoint`
 is cleanup-free and recursively copyable, the original `point` remains usable
 under Z's ordinary by-value copy rule. A paired negative contract attempts to
-pass nested `ZRect` by value and must fail during normalization rather than
-flattening or guessing its layout.
+pass a union by value and must fail during normalization rather than flattening
+or guessing its layout.
 
-This tier is deliberately smaller than Stage 0's record model. Only plain C
-structs whose fields all map to supported scalars cross; unions, nested records,
-pointer/resource fields, and by-value ownership facts still fail closed. Running
+The next composition step required no new field-canonical wire record: the
+existing producer had already mapped `ZExtent` fields to `u16` and retained
+nested field identities such as `geometry.ZPoint`. The normalizer now resolves
+records to a fixed point, admitting a record only after every nested record is
+already proven recursively copyable. `ZRect` therefore contains native
+`ZPoint` and `ZSize` fields and lowers as one direct compound literal and
+by-value call. Unions and pointer/resource fields remain outside the tier.
+
+Function return aliases exposed the evidence that was genuinely absent.
+Clang's function AST retains `ZIdentifier` but does not provide a desugared
+return signature, so `ZFDCL` version 5 now carries scalar typedef declarations
+and their verified underlying types. The Z normalizer resolves `ZIdentifier`
+to `u64`, while the emitted ABI continues to call the header declaration
+directly. C typedefs are flattened rather than invented as nominal Z types.
+
+This tier is deliberately smaller than Stage 0's record model. Only plain,
+recursively copyable C structs cross; unions, pointer/resource fields, and
+by-value ownership facts still fail closed. Running
 the fixture through the standalone command also exposed a driver parity gap:
 quoted headers in the project directory were visible to Stage 0 but not from
 the native cache directory. Native project compilation now includes the owning

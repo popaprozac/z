@@ -272,7 +272,7 @@ function appendType(
     throw "foreign declaration stream contains an out-of-order type";
   }
   const kind = try readText(inout cursor);
-  if (kind != "enum" && kind != "record") {
+  if (kind != "enum" && kind != "record" && kind != "scalar") {
     throw "foreign declaration stream contains an unsupported named type";
   }
   const exportName = try readText(inout cursor);
@@ -287,7 +287,10 @@ function appendType(
   const sourceLength = try readHexUsize(inout cursor);
   const fieldCount = try readHexUsize(inout cursor);
   if (
-    (kind == "enum" && (layout.byteLength > 0 || fieldCount > 0))
+    (
+      (kind == "enum" || kind == "scalar")
+      && (layout.byteLength > 0 || fieldCount > 0)
+    )
     || (
       kind == "record"
       && layout != "struct"
@@ -594,7 +597,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 4) {
+  if (module.version != 5) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

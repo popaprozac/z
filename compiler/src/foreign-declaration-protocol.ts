@@ -3,7 +3,7 @@ import type {
   ForeignModuleDeclarations,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 4;
+const protocolVersion = 5;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -47,8 +47,8 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 4 adds C record layout and field spellings to the nominal enum and
- * typed-constant tier. Richer declarations remain outside this protocol tier,
+ * Version 5 adds scalar typedef evidence to the enum, constant, and record
+ * tier. Richer declarations remain outside this protocol tier,
  * but do not poison an otherwise representable header: their native spellings
  * remain visible on function records and normalization fails closed if a .zd
  * contract actually attempts to use one of those unsupported boundary types.
@@ -57,7 +57,11 @@ export function encodeForeignFunctionDeclarationStream(
   module: ForeignModuleDeclarations,
 ): string {
   const namedTypes = [...module.namedTypes.values()].filter(
-    (type) => type.kind === "enum" || type.kind === "record",
+    (type) => (
+      type.kind === "enum"
+      || type.kind === "record"
+      || type.kind === "scalar"
+    ),
   );
 
   const records = [
@@ -82,7 +86,11 @@ export function encodeForeignFunctionDeclarationStream(
       text(type.qualifiedName),
       text(type.typeName),
       text(type.cName),
-      text(type.kind === "enum" ? type.underlying : ""),
+      text(
+        type.kind === "enum" || type.kind === "scalar"
+          ? type.underlying
+          : "",
+      ),
       text(type.kind === "record" ? type.layout : ""),
       optionalText(source?.fileName),
       hexNumber(source?.line ?? 0),

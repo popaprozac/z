@@ -461,6 +461,7 @@ function readHeader(
       };
     });
     const cSignature = node.type.qualType;
+    const canonicalCSignature = node.type.desugaredQualType;
     const cName = cPlusPlus && namespaces.length > 0 ? `${namespaces.join("::")}::${node.name}` : node.name;
     const namespacePath = cPlusPlus
       ? swiftCxxNamespace ? namespaces.slice(1) : namespaces
@@ -469,7 +470,20 @@ function readHeader(
     const overload = {
       name: node.name,
       nativeName: cName,
-      returnType: { nativeName: qualifyNativeTypeSpelling(returnTypeOf(cSignature), namespaces, imported.byCName) },
+      returnType: {
+        nativeName: qualifyNativeTypeSpelling(
+          returnTypeOf(cSignature),
+          namespaces,
+          imported.byCName,
+        ),
+        canonicalNativeName: canonicalCSignature
+          ? qualifyNativeTypeSpelling(
+              returnTypeOf(canonicalCSignature),
+              namespaces,
+              imported.byCName,
+            )
+          : undefined,
+      },
       parameters,
       variadic: node.variadic === true,
       nativeSignature: cSignature,

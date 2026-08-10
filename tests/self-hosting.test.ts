@@ -4144,7 +4144,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000004\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000005\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -4579,6 +4579,12 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   assert.equal(
     geometryTypeRecords.filter((record) => /ZPoint/.test(record)).length,
+    1,
+  );
+  assert.equal(
+    geometryTypeRecords.filter(
+      (record) => /scalar/.test(record) && /ZIdentifier/.test(record),
+    ).length,
     1,
   );
   assert.ok(
@@ -6201,14 +6207,30 @@ test("compiles a multi-module Z application through the standalone native driver
     /ZPoint translated = z_translate\(point, ZForward, 3\)/,
   );
   assert.match(emittedRecordSource, /z_score\(translated\)/);
+  assert.match(emittedRecordSource, /ZSize\)\{\.width = 640, \.height = 480\}/);
+  assert.match(emittedRecordSource, /ZRect rect = \(ZRect\)/);
+  assert.match(emittedRecordSource, /z_rect_id\(rect\)/);
   assert.match(emittedRecordSource, /z_offset\(&\(point\), 3, 4\)/);
   assert.match(emittedRecordSource, /z_read\(&\(point\)\)/);
   assert.match(emittedRecordSource, /z_reset\(&\(point\)\)/);
 
   writeFileSync(
+    resolve(recordProject, "geometry.h"),
+    `${readFileSync(resolve(projectRoot, "tests/fixtures/geometry.h"), "utf8")}
+typedef union ZBits {
+  int integer;
+  float decimal;
+} ZBits;
+
+static inline int z_bits_integer(ZBits bits) {
+  return bits.integer;
+}
+`,
+  );
+  writeFileSync(
     resolve(recordProject, "geometry.h.zd"),
     `declare module "geometry.h" {
-  export function z_rect_id(rect: _): _;
+  export function z_bits_integer(bits: _): _;
 }
 `,
   );
@@ -6221,7 +6243,7 @@ function main(): i32 {
 }
 `,
   );
-  const nestedRecordCheck = spawnSync(
+  const unsupportedUnionCheck = spawnSync(
     driver,
     ["check", recordSource],
     {
@@ -6229,10 +6251,10 @@ function main(): i32 {
       env: foreignAdapterEnvironment,
     },
   );
-  assert.equal(nestedRecordCheck.status, 1);
+  assert.equal(unsupportedUnionCheck.status, 1);
   assert.match(
-    nestedRecordCheck.stderr,
-    /record value ZRect requires a scalar-field struct layout/,
+    unsupportedUnionCheck.stderr,
+    /record value ZBits requires a scalar-field struct layout/,
   );
 
   const foreignApplication = resolve(directory, "foreign-application-native");

@@ -14305,7 +14305,10 @@ function loweredEnumCopy(
   return Option<LoweredEnum>.none;
 }
 
-function loweredForeignFieldType(in name: String): LoweredType throws String {
+function loweredForeignFieldType(
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): LoweredType throws String {
   if (name == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (name == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
   if (name == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });
@@ -14319,6 +14322,21 @@ function loweredForeignFieldType(in name: String): LoweredType throws String {
   if (name == "usize") return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
   if (name == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
   if (name == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
+  for (const imported of importedTypes) {
+    if (
+      imported.kind == LoweredTypeKind.foreignStructType
+      && (
+        imported.localName == name
+        || imported.targetName == name
+      )
+    ) return LoweredType({
+      kind: LoweredTypeKind.foreignStructType,
+      name: imported.targetName.copyBytes(
+        0,
+        imported.targetName.byteLength
+      ),
+    });
+  }
   throw `native imported record field has unsupported type ${name}`;
 }
 
@@ -14370,7 +14388,10 @@ function importedTypesForModule(
           ) {
             let fields = Array<LoweredField>();
             for (const field of signature.fields) {
-              const fieldType = try loweredForeignFieldType(field.typeName);
+              const fieldType = try loweredForeignFieldType(
+                types,
+                field.typeName
+              );
               fields.push(LoweredField({
                 name: field.name.copyBytes(0, field.name.byteLength),
                 type: fieldType,

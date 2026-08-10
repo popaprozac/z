@@ -1,5 +1,6 @@
 import {
   RawForeignModuleDeclarations,
+  RawForeignType,
 } from "./foreign-declaration-protocol.zs";
 import {
   Token,
@@ -491,6 +492,7 @@ function foreignRecordTypeIndex(
       nativeType == nativeName
       || nativeType == exportName
       || nativeType == declarations.types[index].qualifiedName
+      || nativeType == declarations.types[index].typeName
       || nativeType == taggedNative
       || nativeType == taggedExport
     ) return Option<usize>.some(index);
@@ -569,6 +571,7 @@ function normalizedForeignTypeIndex(
 }
 
 function scalarTypeNameWithCanonical(
+  in declarations: RawForeignModuleDeclarations,
   in nativeType: String,
   in canonicalNativeType: Option<String>
 ): String throws String {
@@ -576,6 +579,17 @@ function scalarTypeNameWithCanonical(
   match (direct) {
     success(typeName) => return typeName;
     failure(_) => {}
+  }
+  for (const declaration of declarations.types) {
+    if (
+      declaration.kind == "scalar"
+      && (
+        nativeType == declaration.nativeName
+        || nativeType == declaration.exportName
+        || nativeType == declaration.qualifiedName
+        || nativeType == declaration.typeName
+      )
+    ) return try scalarTypeName(declaration.underlyingType);
   }
   match (in canonicalNativeType) {
     some(typeName) => return try scalarTypeName(typeName);
@@ -630,6 +644,7 @@ function foreignValueTypeName(
     }
   }
   return try scalarTypeNameWithCanonical(
+    declarations,
     nativeType,
     canonicalNativeType
   );
@@ -664,6 +679,32 @@ function isIntegerTypeName(in typeName: String): boolean {
     || typeName == "u64";
 }
 
+function normalizedForeignType(
+  in declaration: RawForeignType,
+  fields: Array<NativeForeignFieldContract>
+): NativeForeignTypeContract {
+  return NativeForeignTypeContract({
+    kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
+    name: declaration.exportName.copyBytes(
+      0,
+      declaration.exportName.byteLength
+    ),
+    nativeName: declaration.nativeName.copyBytes(
+      0,
+      declaration.nativeName.byteLength
+    ),
+    underlyingType: declaration.underlyingType.copyBytes(
+      0,
+      declaration.underlyingType.byteLength
+    ),
+    layout: declaration.layout.copyBytes(
+      0,
+      declaration.layout.byteLength
+    ),
+    fields,
+  });
+}
+
 function findRawFunction(
   in declarations: RawForeignModuleDeclarations,
   in name: String
@@ -686,9 +727,25 @@ export function normalizeForeignContracts(
   }
   let types = Array<NativeForeignTypeContract>();
   for (const declaration of declarations.types) {
-    let fields = Array<NativeForeignFieldContract>();
-    if (declaration.kind == "record") {
-      if (declaration.layout != "struct") continue;
+    if (declaration.kind != "enum") continue;
+    types.push(normalizedForeignType(
+      declaration,
+      Array<NativeForeignFieldContract>()
+    ));
+  }
+  let recordAdded = true;
+  while (recordAdded) {
+    recordAdded = false;
+    for (const declaration of declarations.types) {
+      if (
+        declaration.kind != "record"
+        || declaration.layout != "struct"
+      ) continue;
+      match (normalizedForeignTypeIndex(types, declaration.exportName)) {
+        some(_) => continue;
+        none => {}
+      }
+      let fields = Array<NativeForeignFieldContract>();
       let compatible = true;
       let fieldIndex: usize = 0;
       while (fieldIndex < declaration.fieldCount) {
@@ -702,34 +759,51 @@ export function normalizeForeignContracts(
             typeName,
           }));
           failure(_) => {
-            compatible = false;
-            break;
+            let nestedTypeIndex = declarations.types.length;
+            match (foreignRecordTypeIndex(
+              declarations,
+              rawField.typeName
+            )) {
+              some(typeIndex) => nestedTypeIndex = typeIndex;
+              none => {}
+            }
+            if (nestedTypeIndex >= declarations.types.length) {
+              compatible = false;
+              break;
+            }
+            const nestedName = view declarations.types[
+              nestedTypeIndex
+            ].exportName;
+            match (normalizedForeignTypeIndex(types, nestedName)) {
+              some(typeIndex) => {
+                if (types[typeIndex].kind != "record") {
+                  compatible = false;
+                  break;
+                }
+                fields.push(NativeForeignFieldContract({
+                  name: rawField.name.copyBytes(
+                    0,
+                    rawField.name.byteLength
+                  ),
+                  typeName: nestedName.copyBytes(
+                    0,
+                    nestedName.byteLength
+                  ),
+                }));
+              }
+              none => {
+                compatible = false;
+                break;
+              }
+            }
           }
         }
         fieldIndex = fieldIndex + 1;
       }
       if (!compatible) continue;
+      types.push(normalizedForeignType(declaration, fields));
+      recordAdded = true;
     }
-    types.push(NativeForeignTypeContract({
-      kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
-      name: declaration.exportName.copyBytes(
-        0,
-        declaration.exportName.byteLength
-      ),
-      nativeName: declaration.nativeName.copyBytes(
-        0,
-        declaration.nativeName.byteLength
-      ),
-      underlyingType: declaration.underlyingType.copyBytes(
-        0,
-        declaration.underlyingType.byteLength
-      ),
-      layout: declaration.layout.copyBytes(
-        0,
-        declaration.layout.byteLength
-      ),
-      fields,
-    }));
   }
   let constants = Array<NativeForeignConstantContract>();
   for (const declaration of declarations.constants) {
