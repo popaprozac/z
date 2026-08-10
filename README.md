@@ -72,6 +72,36 @@ The wager is not that familiar syntax makes systems semantics disappear. It is
 that explicit ownership and native boundaries can be made readable without
 requiring lifetime syntax throughout ordinary application code.
 
+## Influences and acknowledgements
+
+Z is deliberately a synthesis, not a claim to have invented ownership,
+TypeScript-shaped native code, ARC, structured concurrency, or header-first
+interop. Its most important influences include TypeScript and JavaScript for
+surface familiarity; BorrowScript and Rust for readable ownership and borrowing;
+Hylo for mutable value semantics, access capabilities, and projections; Swift
+and Objective-C for the value/reference split, ARC, `Weak<T>`, `deinit`, typed
+errors, and executor isolation; Nim for C-family interop and ARC/ORC experience;
+and Zig for explicit-cost systems design, inline tests, and compile-time
+experimentation.
+
+[BorrowScript](https://github.com/alshdavid-public/BorrowScript) deserves
+particular credit as clear prior art for combining TypeScript-inspired syntax
+with a borrow checker. Its public design includes readable ownership operators
+such as `move` and `copy`. Z has a different type system, capability vocabulary,
+memory model, interop architecture, and concurrency model, but the shared thesis
+and overlapping surface should be acknowledged directly.
+
+Z also draws on the broader ML-family lineage of algebraic data types and
+pattern matching, C++ RAII, structured-concurrency work across several
+ecosystems, Clang/Swift API metadata, and Zen-C's exploration of direct header
+imports and raw native escape hatches. Ante's work on blending borrowing with
+reference counting and shape-stable mutation informs a future research spike;
+it is not an implemented Z guarantee.
+
+See [Influences and lineage](docs/influences.md) for a feature-by-feature account,
+deliberate divergences, links to upstream work, and the distinction between
+design influence and source-code provenance.
+
 ## Current shape
 
 | Area | Current implemented slice |
@@ -222,6 +252,7 @@ Each document has one job:
 | [Examples](docs/examples.md) | Curated runnable programs by language area |
 | [Language reference](docs/language-reference.md) | Accepted source semantics |
 | [Design charter](DESIGN.md) | Rationale, tradeoffs, intended direction, open questions |
+| [Influences and lineage](docs/influences.md) | Feature ancestry, explicit acknowledgements, and deliberate divergences |
 | [Bootstrap status](docs/bootstrap-status.md) | Exact Stage-0 and fixed-point native implementation coverage |
 | [Async model](docs/async-model.md) | Structured concurrency semantics and lowering phases |
 | [Interop model](docs/interop-model.md) | Native boundary contracts and cost model |

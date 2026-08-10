@@ -33,6 +33,25 @@ modules. Adjacent `.zd` declarations supply ownership, lifetime, nullability,
 callback, native-status error projection, and async semantics that are absent
 from the header itself.
 
+## Design lineage
+
+Z is designed in conversation with existing languages rather than in
+isolation. TypeScript supplies much of the surface vocabulary; BorrowScript is
+clear prior art for putting readable ownership operations into a
+TypeScript-shaped language; Rust, Hylo, Swift, Objective-C, Nim, Zig, C++, and
+the ML family supply major parts of the ownership, value-semantics, ARC,
+interop, error, pattern-matching, and explicit-cost design landscape. Zen-C
+informed the raw-native escape-hatch discussion. Ante's reference-counting and
+shape-stability experiments are relevant future research, not accepted Z
+semantics.
+
+These influences do not imply semantic compatibility. Z intentionally combines
+and changes ideas: it does not adopt JavaScript's runtime model, Rust's explicit
+lifetime surface, Hylo's complete mutable-value-semantics model, Swift's ABI or
+exception representation, Nim's object model, or Zig's syntax. The
+feature-by-feature acknowledgements and divergences are maintained in
+[`docs/influences.md`](docs/influences.md).
+
 ## Core semantics
 
 - TypeScript-inspired syntax does not imply JavaScript semantics.
