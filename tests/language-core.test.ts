@@ -225,6 +225,27 @@ test("initializes imported C union storage through out and confines scalar membe
     /native union "native\.ZNativeEvent" cannot be constructed as a Z struct/,
   );
 
+  const loopOutput = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      let event;
+      let running = true;
+      while (running) {
+        while (native.z_native_poll(out event)) {
+          const eventType = unsafe { select event.type; };
+          running = eventType != 42;
+        }
+      }
+      return 0;
+    }
+  `;
+  const loopArtifact = compileToNative(
+    loopOutput,
+    resolve(projectRoot, "native-union-loop-output.zs"),
+  );
+  assert.match(loopArtifact.source, /z_native_poll\(&\(event\)\)/);
+  assert.match(loopArtifact.source, /const int32_t eventType = \(event\)\.type;/);
+
   const eventOffset = source.indexOf("event;") + 1;
   assert.match(hover(source, example, eventOffset)?.contents.value ?? "", /event: native\.ZNativeEvent/);
   const memberSource = source.replace("event.type", "event.ty");

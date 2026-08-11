@@ -1146,7 +1146,24 @@ function appendRepresentableForeignField(
   in rawFieldType: String,
   inout fields: Array<NativeForeignFieldContract>
 ): boolean {
-  const fieldType = attempt scalarTypeName(rawFieldType);
+  match (foreignEnumTypeIndex(declarations, rawFieldType)) {
+    some(typeIndex) => {
+      fields.push(NativeForeignFieldContract({
+        name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
+        typeName: declarations.types[typeIndex].exportName.copyBytes(
+          0,
+          declarations.types[typeIndex].exportName.byteLength
+        ),
+      }));
+      return true;
+    }
+    none => {}
+  }
+  const fieldType = attempt scalarTypeNameWithCanonical(
+    declarations,
+    rawFieldType,
+    Option<String>.none
+  );
   match (fieldType) {
     success(typeName) => {
       fields.push(NativeForeignFieldContract({
@@ -1722,7 +1739,10 @@ export function normalizeForeignContracts(
     for (const declaration of declarations.types) {
       if (
         declaration.kind != "record"
-        || declaration.layout != "struct"
+        || (
+          declaration.layout != "struct"
+          && declaration.layout != "union"
+        )
       ) continue;
       match (normalizedForeignTypeIndex(types, declaration.exportName)) {
         some(_) => continue;
@@ -1746,7 +1766,7 @@ export function normalizeForeignContracts(
           rawField.typeName,
           inout fields
         );
-        if (!represented) {
+        if (!represented && declaration.layout == "struct") {
           if (resourceRelease.byteLength == 0) {
             compatible = false;
             break;
@@ -1952,6 +1972,9 @@ export function normalizeForeignContracts(
         );
         match (normalizedForeignTypeIndex(types, typeName)) {
           some(typeIndex) => {
+            if (types[typeIndex].layout == "union") {
+              throw `record value ${typeName} requires a scalar-field struct layout`;
+            }
             if (types[typeIndex].resourceRelease.byteLength > 0) {
               throw `native value-resource parameter "${contract.parameters[parameterIndex].name}" requires explicit in, inout, out, or move capability`;
             }
@@ -2166,6 +2189,14 @@ export function normalizeForeignContracts(
           declarations.overloads[overloadIndex].returnNativeType,
           declarations.overloads[overloadIndex].returnCanonicalNativeType
         );
+        match (normalizedForeignTypeIndex(types, nativeReturnType)) {
+          some(typeIndex) => {
+            if (types[typeIndex].layout == "union") {
+              throw `record value ${nativeReturnType} requires a scalar-field struct layout`;
+            }
+          }
+          none => {}
+        }
       }
     }
     let returnType = nativeReturnType.copyBytes(

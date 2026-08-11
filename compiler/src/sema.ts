@@ -2921,7 +2921,8 @@ function analyzeFunction(
   if (synchronousGenerator) {
     validateGeneratorBodyShape(declaration, fileName, state);
   }
-  const unresolvedOutBinding = state.inferredOutBindingLocations.entries().next().value as [string, SourceLocation] | undefined;
+  const unresolvedOutBinding = [...state.inferredOutBindingLocations.entries()]
+    .find(([, location]) => !state.bindingTypes.has(location.offset));
   if (unresolvedOutBinding) {
     throw new DiagnosticError(fileName, unresolvedOutBinding[1], `cannot infer type of uninitialized let ${JSON.stringify(unresolvedOutBinding[0])}`, {
       notes: ["an untyped uninitialized let is reserved for initialization by a typed out argument"],
@@ -12393,6 +12394,21 @@ function analyzeWhileLoop(
       fileName,
       state,
     );
+    // An untyped `let` may acquire its storage type from an `out` argument in
+    // the loop condition. Loop fixed-point analysis revisits that condition,
+    // so retain the inferred storage type on the entry/header states while
+    // preserving their pre-condition initialization state.
+    for (const [name, entryType] of entry) {
+      if (underlyingType(entryType) !== "unknown") continue;
+      const conditionType = conditionLocals.get(name);
+      if (!conditionType || underlyingType(conditionType) === "unknown") continue;
+      const inferredEntryType = String(entryType).replace(
+        /unknown$/,
+        String(underlyingType(conditionType)),
+      );
+      entry.set(name, inferredEntryType);
+      header.set(name, inferredEntryType);
+    }
     if (conditionType !== "boolean") {
       requireAssignable(
         "boolean",
@@ -14459,7 +14475,6 @@ function checkForeignCall(
           stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.pointer.typeName}`;
           locals.set(argument.name, stored);
           state.bindingTypes.set(declarationLocation.offset, parameter.type.pointer.typeName);
-          state.inferredOutBindingLocations.delete(argument.name);
         }
         if (!isMutableBinding(stored)) {
           throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`);
@@ -14534,7 +14549,6 @@ function checkForeignCall(
           stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.typeName}`;
           locals.set(argument.name, stored);
           state.bindingTypes.set(declarationLocation.offset, parameter.type.typeName);
-          state.inferredOutBindingLocations.delete(argument.name);
         }
         if (argument.access !== "out" && initializationState(stored) !== "initialized") {
           throw new DiagnosticError(
@@ -14645,7 +14659,6 @@ function checkForeignCall(
         stored = `${uninitializedPrefix}${mutablePrefix}${parameter.type.record.typeName}`;
         locals.set(argument.name, stored);
         state.bindingTypes.set(declarationLocation.offset, parameter.type.record.typeName);
-        state.inferredOutBindingLocations.delete(argument.name);
       }
       if (argument.access !== "out" && initializationState(stored) === "uninitialized") {
         throw new DiagnosticError(fileName, argument.location, `${argument.access} argument ${JSON.stringify(argument.name)} must be initialized before the call`);

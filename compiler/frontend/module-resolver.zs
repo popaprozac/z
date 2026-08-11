@@ -123,6 +123,7 @@ import {
   aggregateFieldShape,
   callableMethodCallShape,
   hasKnownAggregate,
+  isForeignUnionType,
   isActiveTypeParameter,
   isKnownMatchVariant,
   matchShape,
@@ -2893,6 +2894,20 @@ function inferExpressionNodeType(
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
+        if (field.foreignUnion) {
+          if (
+            valueBindingType(bindings, "__z_native_unsafe_union_access")
+            != "true"
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `native union member "${memberName}" requires an unsafe boundary`,
+              node.line,
+              node.column
+            );
+          }
+        }
         try requireVisibleField(
           module,
           modules,
@@ -3143,6 +3158,40 @@ function inferExpressionNodeType(
       inout evidence
     );
     copyBindingFlowStates(inout bindings, blockBindings);
+    return result;
+  }
+  if (kind == ExpressionKind.unsafeExpression) {
+    const statements = copyIndices(node.statements);
+    if (
+      statements.length != 1
+      || arena.nodes[statements[0]].kind != StatementKind.selectStatement
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "the first native unsafe-expression tier requires exactly one `select value;`",
+        node.line,
+        node.column
+      );
+    }
+    let unsafeBindings = copyValueBindings(bindings);
+    addValueBinding(
+      inout unsafeBindings,
+      "__z_native_unsafe_union_access",
+      "true"
+    );
+    const expectedType = contextualExpectedType(bindings, tree, index);
+    const result = try inferMatchArmStatementType(
+      module,
+      modules,
+      moduleIndex,
+      arena,
+      tree,
+      statements[0],
+      expectedType,
+      inout unsafeBindings,
+      inout evidence
+    );
     return result;
   }
   if (kind == ExpressionKind.ifExpression && children.length == 3) {
@@ -3959,6 +4008,15 @@ function inferExpressionNodeType(
     match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
       some(location) => {
         const constructionKind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+        if (isForeignUnionType(modules, moduleIndex, constructionType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `native union "${constructionType}" cannot be constructed as a Z struct`,
+            node.line,
+            node.column
+          );
+        }
         if (typeIsForeignResource(modules, moduleIndex, constructionType)) {
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,

@@ -208,6 +208,7 @@ export struct ModuleTypeSignature {
   customConstructor: boolean;
   constructorSignature: Option<ModuleFunctionSignature>;
   foreignKind: String;
+  foreignLayout: String;
   foreignNativeName: String;
   foreignUnderlyingType: String;
   foreignResourceRelease: String;

@@ -110,7 +110,9 @@ test("compiles installed Raylib and SDL3 application pressure probes", () => {
     const generated = compileToNative(readFileSync(sdlExample, "utf8"), sdlExample).source;
     assert.match(generated, /SDL_CreateWindow\("Z \+ SDL3", 800, 450, 0ULL\)/);
     assert.match(generated, /SDL_GetMouseState\(&\(mouseX\), &\(mouseY\)\)/);
-    assert.match(generated, /SDL_HasEvent\(quitEvent\)/);
+    assert.match(generated, /SDL_Event event;/);
+    assert.match(generated, /SDL_PollEvent\(&\(event\)\)/);
+    assert.match(generated, /const uint32_t eventType = \(event\)\.type;/);
     assert.match(generated, /SDL_DestroyWindow\(window\)/);
   }
 });

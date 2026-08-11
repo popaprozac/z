@@ -45,8 +45,17 @@ function main(): i32 {
     // does not yet expose.
     const leftMouseButtonMask: u32 = 1;
     let running = true;
+    let event;
     while (running) {
-        events.SDL_PumpEvents();
+        while (events.SDL_PollEvent(out event)) {
+            const eventType = unsafe {
+                select event.type;
+            };
+            if (
+                eventType == quitEvent
+                || eventType == windowCloseRequested
+            ) running = false;
+        }
 
         let mouseX;
         let mouseY;
@@ -59,9 +68,8 @@ function main(): i32 {
         );
 
         if (
-            events.SDL_HasEvent(quitEvent)
-            || events.SDL_HasEvent(windowCloseRequested)
-            || (insideQuitButton && (mouseButtons & leftMouseButtonMask) != 0)
+            insideQuitButton
+            && (mouseButtons & leftMouseButtonMask) != 0
         ) {
             running = false;
         }

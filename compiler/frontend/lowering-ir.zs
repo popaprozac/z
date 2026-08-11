@@ -8282,6 +8282,40 @@ function lowerExpressionSyntax(
   };
 }
 
+function lowerUnsafeSelectedExpression(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in expression: ExpressionSyntax,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (
+        tree.nodes[root].kind != ExpressionKind.unsafeExpression
+        || tree.nodes[root].statements.length != 1
+      ) throw "native unsafe lowering requires exactly one selected value";
+      const statementIndex = tree.nodes[root].statements[0];
+      if (arena.nodes[statementIndex].kind != StatementKind.selectStatement) {
+        throw "native unsafe lowering requires exactly one selected value";
+      }
+      return match (in arena.nodes[statementIndex].expression) {
+        some(selected) => try lowerExpressionSyntax(
+          program,
+          importedTypes,
+          evidence,
+          selected,
+          inout output
+        );
+        none => throw "native unsafe lowering requires a selected value";
+      };
+    }
+    none => throw "native lowering cannot lower an opaque unsafe expression";
+  }
+}
+
 function loweredSourceEnum(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -11735,7 +11769,24 @@ function lowerStatementCore(
       const expressionStart = expressions.length;
       let directTryReturn = false;
       let loweredValue: usize = 0;
-      if (arena.nodes[index].kind == StatementKind.returnStatement) {
+      let loweredUnsafe = false;
+      match (in source.tree) {
+        some(tree) => {
+          if (tree.nodes[tree.root].kind == ExpressionKind.unsafeExpression) {
+            loweredValue = try lowerUnsafeSelectedExpression(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              source,
+              inout expressions
+            );
+            loweredUnsafe = true;
+          }
+        }
+        none => {}
+      }
+      if (!loweredUnsafe && arena.nodes[index].kind == StatementKind.returnStatement) {
         match (in source.tree) {
           some(tree) => {
             const root = tree.root;
@@ -11791,7 +11842,7 @@ function lowerStatementCore(
           }
           none => throw "native lowering cannot lower an opaque expression";
         }
-      } else {
+      } else if (!loweredUnsafe) {
         let expectedTypeName = "";
         if (arena.nodes[index].kind == StatementKind.variableStatement) {
           match (in arena.nodes[index].typeAnnotation) {

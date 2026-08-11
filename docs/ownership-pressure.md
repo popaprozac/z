@@ -337,13 +337,12 @@ tied to the raylib window/runtime lifetime.
 SDL3 proved that spill-backed Clang ingestion handles a 70.8 MB
 `SDL_render.h` AST and that `.zd` scalar `out f32` projections compose with
 owned window/renderer handles. It also exposed the union boundary:
-`SDL_Event`'s scalar `type` discriminator is imported, but nested record and
-pointer payload members are deliberately withheld. The current demo therefore
-uses `SDL_PumpEvents` plus `SDL_HasEvent`. That detects quit requests but does
-not dequeue ordinary events, so it is a temporary pressure probe rather than a
-reference SDL event loop. The intended follow-up is a checked
-`SDL_PollEvent(out event)` loop after nested union payloads receive a safe
-discriminated projection.
+`SDL_Event` now receives opaque ABI-preserving storage through a checked
+`SDL_PollEvent(out event)` contract, while an `unsafe` expression copies its
+scalar `type` discriminator after native initialization. The ordinary Z surface
+still cannot construct the union or read its members. Nested record and pointer
+payloads remain deliberately withheld until a reusable checked projection can
+state the discriminator, payload shape, and lifetime together.
 
 Together these probes establish a useful line:
 
@@ -354,7 +353,8 @@ Together these probes establish a useful line:
 | Scope-local unsupported pointer proof | `unsafe`, without raw-pointer syntax |
 | Contracted by-value resource record | Direct checked call, unique moves, deterministic cleanup |
 | Uncontracted by-value resource record | Precise rejection; `.zd` must classify type, parameters, and producer ownership |
-| Nested C-union payload | Withheld pending a checked discriminator contract |
+| C-union output storage and scalar discriminator | Checked `out`; local active-member proof in `unsafe` |
+| Nested C-union payload | Withheld pending a checked discriminated projection |
 
 The next resource checkpoint is lifetime provenance for library-owned records
 and branded ownership variants whose cleanup differs despite sharing one C
@@ -1485,7 +1485,11 @@ returned record directly. Generated C remains the handwritten ABI shape:
 is cleanup-free and recursively copyable, the original `point` remains usable
 under Z's ordinary by-value copy rule. A paired negative contract attempts to
 pass a union by value and must fail during normalization rather than flattening
-or guessing its layout.
+or guessing its layout. A later, orthogonal union tier admits only contracted
+writable pointers: it allocates the exact native union storage, lets C
+initialize it through `out`, and permits a supported scalar or enum member to
+be copied only inside a one-`select` `unsafe` expression. Ordinary construction,
+safe member access, by-value transport, and nested payloads remain rejected.
 
 The next composition step required no new field-canonical wire record: the
 existing producer had already mapped `ZExtent` fields to `u16` and retained
@@ -1503,8 +1507,9 @@ to `u64`, while the emitted ABI continues to call the header declaration
 directly. C typedefs are flattened rather than invented as nominal Z types.
 
 This tier is deliberately smaller than Stage 0's record model. Only plain,
-recursively copyable C structs cross; unions, pointer/resource fields, and
-by-value ownership facts still fail closed. Running
+recursively copyable C structs cross by value; unions remain confined to the
+opaque contracted-output tier, while pointer/resource fields and by-value
+ownership facts still fail closed. Running
 the fixture through the standalone command also exposed a driver parity gap:
 quoted headers in the project directory were visible to Stage 0 but not from
 the native cache directory. Native project compilation now includes the owning

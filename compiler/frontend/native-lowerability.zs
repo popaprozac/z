@@ -720,11 +720,14 @@ function validateNativeExpressionTree(
         1
       );
     }
-    if (node.kind == ExpressionKind.unsafeExpression) {
+    if (
+      node.kind == ExpressionKind.unsafeExpression
+      && index != treeRoot
+    ) {
       throw loweringBoundary(
         path,
         "Z1000",
-        "unsafe expressions are not executable in the native compiler yet",
+        "nested unsafe expressions are not executable in the native compiler yet; bind the selected value first",
         node.line,
         node.column,
         6

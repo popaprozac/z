@@ -5,7 +5,9 @@ window with a hoverable quit button. It exercises:
 
 - a large real-world header whose Clang AST exceeds 64 MiB;
 - directly imported C functions, constants, and nominal enums;
-- explicit enum-to-integer conversion for SDL event queries;
+- explicit enum-to-integer conversion for SDL event discriminants;
+- opaque `SDL_Event` union storage initialized through checked `out`;
+- a scalar union-discriminant read confined to an `unsafe` expression;
 - nullable owned `SDL_Window*` and `SDL_Renderer*` values with `.zd` cleanup;
 - inferred `f32` storage initialized through checked scalar `out` pointers; and
 - deterministic reverse-order cleanup through Z ownership and `deinit`.
@@ -18,13 +20,12 @@ parameters initialize one scalar each.
 `SDLRuntime` calls `SDL_Quit()` last. On every exit after initialization, Z
 first destroys the renderer, then the window, then the runtime guard.
 
-The current loop is intentionally a temporary event probe. It pumps SDL and
-queries quit-event presence with `SDL_HasEvent`, but it does not dequeue
-ordinary events. The conventional `SDL_PollEvent(out event)` loop is blocked
-because `SDL_Event` is an ABI union and the current importer exposes its scalar
-`type` discriminator while withholding nested record and pointer payload
-members. This example therefore proves the checked window, renderer, scalar
-output, enum-conversion, and cleanup paths—not complete SDL event handling.
+The event loop uses the conventional `SDL_PollEvent(out event)` shape. Z gives
+the compiler-sized `SDL_Event` storage a nominal opaque type and permits SDL to
+initialize it, but ordinary safe Z still cannot construct the union or inspect
+arbitrary members. The scalar `type` discriminator is read in a narrow
+`unsafe { select event.type; }` expression. Z does not infer an active union
+member or expose SDL's nested payload records in this tier.
 
 On macOS, install SDL3 with Homebrew and run the project target:
 

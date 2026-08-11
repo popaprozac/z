@@ -43,6 +43,7 @@ export struct NativeFieldShape {
   visibility: String;
   readonlyField: boolean;
   optionalField: boolean;
+  foreignUnion: boolean;
 }
 
 export struct NativeAggregateConstructionShape {
@@ -243,6 +244,11 @@ export function aggregateFieldShape(
                 visibility: field.visibility.copyBytes(0, field.visibility.byteLength),
                 readonlyField: field.readonlyField,
                 optionalField: field.optionalField,
+                foreignUnion: signature.foreignKind == "union"
+                  || (
+                    signature.foreignKind == "record"
+                    && signature.foreignLayout == "union"
+                  ),
               }));
             }
           }
@@ -661,6 +667,31 @@ export function hasKnownAggregate(
     some(location) => {
       const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
       return kind == ModuleSymbolKind.structSymbol || kind == ModuleSymbolKind.classSymbol;
+    }
+    none => {}
+  }
+  return false;
+}
+
+export function isForeignUnionType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => return signature.foreignKind == "union"
+          || (
+            signature.foreignKind == "record"
+            && signature.foreignLayout == "union"
+          );
+        none => {}
+      }
     }
     none => {}
   }

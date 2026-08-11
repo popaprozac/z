@@ -229,9 +229,11 @@ canonical C record with `move` and a verified `deinit` function. Every producer
 must say `owned` or `borrowed`; borrowed records are local non-escaping views
 until runtime lifetime provenance is modeled. Parameters retain Z's semantic
 `in`/`move` capability independently from the C ABI's by-value/pointer mode,
-preventing a borrow from changing the native signature. The protocol still
-fails closed for unions, Objective-C declarations, interfaces, protocols, and
-unclassified resource records.
+preventing a borrow from changing the native signature. Contracted writable
+union pointers may initialize opaque ABI-preserving storage and expose only
+producer-proven scalar or enum fields for a local unsafe active-member read.
+By-value unions, nested union payloads, Objective-C declarations, interfaces,
+protocols, and unclassified resource records still fail closed.
 
 Opaque pointer ownership is represented separately from record layout. A
 nullable inferred result may declare `deinit release;`, and a nullable `out`

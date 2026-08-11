@@ -1,0 +1,3 @@
+declare module "SDL3/SDL_events.h" {
+  export function SDL_PollEvent(out event: _): _;
+}

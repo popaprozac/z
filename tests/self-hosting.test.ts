@@ -5337,21 +5337,6 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: "async scope is not executable in the native compiler yet",
     },
     {
-      name: "unsafe-expression",
-      source: [
-        "function main(): i32 {",
-        "  const value: i32 = unsafe { select 42; };",
-        "  return value - 42;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 2,
-      column: 22,
-      marker: "^^^^^^",
-      code: "Z1000",
-      summary: "unsafe expressions are not executable in the native compiler yet",
-    },
-    {
       name: "loop-expression",
       source: [
         "function main(): i32 {",
@@ -6256,6 +6241,95 @@ test("compiles a multi-module Z application through the standalone native driver
     /requires out <mutable binding> for parameter 1/,
   );
   writeFileSync(scalarPointerSource, scalarPointerProgramSource);
+
+  const unionProject = resolve(directory, "foreign-union-project");
+  mkdirSync(unionProject);
+  const unionSource = resolve(unionProject, "main.zs");
+  for (const fixtureName of [
+    "self-host-foreign-union-input.zs",
+    "native-union.h",
+    "native-union.h.zd",
+  ]) {
+    const targetName = fixtureName == "self-host-foreign-union-input.zs"
+      ? "main.zs"
+      : fixtureName;
+    writeFileSync(
+      resolve(unionProject, targetName),
+      readFileSync(resolve(projectRoot, "tests/fixtures", fixtureName), "utf8"),
+    );
+  }
+  writeFileSync(
+    resolve(unionProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "foreign-union-project",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const unionRun = spawnSync(
+    driver,
+    ["run", unionSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(unionRun.status, 0, unionRun.stderr);
+  const emittedUnionSource = readFileSync(
+    resolve(unionProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(emittedUnionSource, /ZNativeEvent event;/);
+  assert.match(emittedUnionSource, /z_native_poll\(&\(event\)\)/);
+  assert.match(emittedUnionSource, /event\.type/);
+
+  const unionProgramSource = readFileSync(unionSource, "utf8");
+  writeFileSync(
+    unionSource,
+    unionProgramSource.replace(
+      "const eventType = unsafe {\n    select event.type;\n  };",
+      "const eventType = event.type;",
+    ),
+  );
+  const directUnionRead = spawnSync(
+    driver,
+    ["check", unionSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(directUnionRead.status, 1);
+  assert.match(
+    directUnionRead.stderr,
+    /native union member "type" requires an unsafe boundary/,
+  );
+
+  writeFileSync(
+    unionSource,
+    `import native from "native-union.h";
+
+function main(): i32 {
+  const event = native.ZNativeEvent({ type: 42 });
+  return 0;
+}
+`,
+  );
+  const unionConstruction = spawnSync(
+    driver,
+    ["check", unionSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(unionConstruction.status, 1);
+  assert.match(
+    unionConstruction.stderr,
+    /native union "native.ZNativeEvent" cannot be constructed as a Z struct/,
+  );
+  writeFileSync(unionSource, unionProgramSource);
 
   const recordProject = resolve(directory, "foreign-record-project");
   mkdirSync(recordProject);

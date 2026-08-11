@@ -395,7 +395,10 @@ function foreignTypeSignature(
     customDeinit: type.resourceRelease.byteLength > 0,
     customConstructor: type.resourceRelease.byteLength > 0,
     constructorSignature: Option<ModuleFunctionSignature>.none,
-    foreignKind: type.kind.copyBytes(0, type.kind.byteLength),
+    foreignKind: type.layout == "union"
+      ? "union"
+      : type.kind.copyBytes(0, type.kind.byteLength),
+    foreignLayout: type.layout.copyBytes(0, type.layout.byteLength),
     foreignNativeName: type.nativeName.copyBytes(
       0,
       type.nativeName.byteLength
