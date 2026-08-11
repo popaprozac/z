@@ -3843,6 +3843,59 @@ test("allocates and reversely cleans Arena values through the native frontend", 
     /^inspected \d+ compiler tokens with checksum \d+\n$/,
   );
 
+  const graphInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-arena-graph.zs",
+  );
+  const graphEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", graphInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(graphEmission.status, 0, graphEmission.stderr);
+  assert.match(
+    graphEmission.stdout,
+    /typedef struct Z_TokenSpan \{\n  Z_TokenCoordinate const \* first;\n  Z_TokenCoordinate const \* last;/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /const Z_TokenCoordinate \* const first = \(\*span\)\.first;/,
+  );
+  const namedDestructor = graphEmission.stdout.match(
+    /static __attribute__\(\(unused\)\) void Z_NamedTokenSpan_deinit\(Z_NamedTokenSpan \*self\) \{[^]*?\n\}/,
+  )?.[0] ?? "";
+  assert.notEqual(namedDestructor, "");
+  assert.match(namedDestructor, /Z_String_deinit\(&self->name\)/);
+  assert.doesNotMatch(namedDestructor, /self->span/);
+  assert.doesNotMatch(
+    graphEmission.stdout,
+    /Z_NamedTokenSpan_deinit\(&namedPending\)/,
+  );
+  const graphExecutable = resolve(directory, "arena-graph");
+  const graphCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      graphExecutable,
+    ],
+    { encoding: "utf8", input: graphEmission.stdout },
+  );
+  assert.equal(graphCompilation.status, 0, graphCompilation.stderr);
+  const graphExecution = spawnSync(
+    graphExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(graphExecution.status, 0, graphExecution.stderr);
+  assert.equal(graphExecution.stdout, "stored arena span 42\n");
+
   const invalidCases = [
     {
       name: "arena-live-reset",
@@ -3929,6 +3982,87 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "",
       ].join("\n"),
       expected: /Arena\.create cannot store Region/,
+    },
+    {
+      name: "arena-stored-view-wrong-region",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let source = Arena();",
+        "  let destination = Arena();",
+        "  const first = source.create(Item({ value: 20 }));",
+        "  const last = source.create(Item({ value: 22 }));",
+        "  const pending = Pair({ first, last });",
+        "  const stored = destination.create(pending);",
+        "  return stored.first.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /only in the Arena that owns every embedded view/,
+    },
+    {
+      name: "arena-stored-view-copy",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let arena = Arena();",
+        "  const first = arena.create(Item({ value: 20 }));",
+        "  const last = arena.create(Item({ value: 22 }));",
+        "  const pending = Pair({ first, last });",
+        "  const copied = pending;",
+        "  const stored = arena.create(pending);",
+        "  return stored.first.value + copied.last.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /view-bearing value "pending" cannot be copied/,
+    },
+    {
+      name: "arena-stored-view-class",
+      source: [
+        "struct Item { value: i32; }",
+        "class Holder { item: view Item; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /ARC class fields cannot store owner-tied views/,
+    },
+    {
+      name: "arena-stored-view-return",
+      source: [
+        "struct Item { value: i32; }",
+        "struct Holder { item: view Item; }",
+        "function leak(in holder: Holder): Holder { return holder; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /view values cannot be nested inside returned storage/,
+    },
+    {
+      name: "arena-stored-view-async",
+      source: [
+        "struct Item { value: i32; }",
+        "struct Holder { item: view Item; }",
+        "async function inspect(in holder: Holder): i32 { return holder.item.value; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /view-bearing value can only enter a synchronous immutable in parameter/,
+    },
+    {
+      name: "arena-stored-view-enum",
+      source: [
+        "struct Item { value: i32; }",
+        "struct Holder { item: view Item; }",
+        "enum MaybeHolder { some Holder, none, }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /view values cannot be stored in enum payloads/,
     },
   ] as const;
   for (const invalidCase of invalidCases) {

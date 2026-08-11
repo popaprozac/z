@@ -1113,6 +1113,51 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   const trivialResult = spawnSync(process.execPath, [cli, "run", trivialFile], { encoding: "utf8" });
   assert.equal(trivialResult.status, 0, trivialResult.stderr);
 
+  const storedProvenance = `
+    import { Arena } from "std/memory";
+    struct Coordinate { value: i32; }
+    struct Span { first: view Coordinate; last: view Coordinate; }
+    function total(in span: Span): i32 {
+      const first = span.first;
+      const last = span.last;
+      return first.value + last.value;
+    }
+    function main(): i32 {
+      let arena = Arena();
+      const first = arena.create(Coordinate({ value: 20 }));
+      const last = arena.create(Coordinate({ value: 22 }));
+      const pending = Span({ first, last });
+      const stored = arena.create(pending);
+      const answer = total(stored);
+      arena.reset();
+      return answer - 42;
+    }
+  `;
+  const storedDirectory = mkdtempSync("/tmp/z-arena-stored-provenance-");
+  const storedFile = resolve(storedDirectory, "main.zs");
+  writeFileSync(storedFile, storedProvenance);
+  const storedGenerated = compileToC(storedProvenance, storedFile);
+  assert.match(storedGenerated, /const Z_Coordinate \* first;/);
+  assert.match(storedGenerated, /z_arena_create_Span/);
+  const storedResult = spawnSync(process.execPath, [cli, "run", storedFile], { encoding: "utf8" });
+  assert.equal(storedResult.status, 0, storedResult.stderr);
+
+  const wrongRegion = storedProvenance.replace(
+    "const stored = arena.create(pending);",
+    "let other = Arena();\n      const stored = other.create(pending);",
+  );
+  const wrongRegionDiagnostic = diagnostics(wrongRegion, "arena-stored-wrong-region.zs")[0];
+  assert.equal(wrongRegionDiagnostic.code, "Z0206");
+  assert.match(wrongRegionDiagnostic.message, /only in the Arena that owns every embedded view/);
+
+  const copiedComposite = storedProvenance.replace(
+    "const stored = arena.create(pending);",
+    "const copied = pending;\n      const stored = arena.create(pending);",
+  );
+  const copiedCompositeDiagnostic = diagnostics(copiedComposite, "arena-stored-copy.zs")[0];
+  assert.equal(copiedCompositeDiagnostic.code, "Z0206");
+  assert.match(copiedCompositeDiagnostic.message, /must be bound directly from its producing expression/);
+
   const builtinViews = `
     import { Arena } from "std/memory";
     function main(): i32 {

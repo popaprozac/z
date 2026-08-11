@@ -246,6 +246,111 @@ export function typeMovesOnOwnedUse(
   return typeHasCleanup(modules, moduleIndex, typeName, visiting);
 }
 
+export function typeContainsStoredView(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  in visiting: Array<String>
+): boolean {
+  if (stringStartsWith(typeName, "view ")) return true;
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) {
+    return typeContainsStoredView(
+      modules,
+      moduleIndex,
+      nullableTarget,
+      visiting
+    );
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeContainsStoredView(
+      modules,
+      moduleIndex,
+      array.elementType,
+      visiting
+    );
+    none => {}
+  }
+  let arguments = Array<String>();
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        arguments.push(argument.copyBytes(0, argument.byteLength));
+        if (typeContainsStoredView(
+          modules,
+          moduleIndex,
+          argument,
+          visiting
+        )) return true;
+      }
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
+      if (containsString(visiting, identity)) return false;
+      let nextVisiting = copyStrings(visiting);
+      nextVisiting.push(identity);
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => {
+          let substitutions = Array<NativeValueBinding>();
+          let typeIndex: usize = 0;
+          while (
+            typeIndex < signature.typeParameters.length
+            && typeIndex < arguments.length
+          ) {
+            const argument = rebaseTypeName(
+              modules,
+              moduleIndex,
+              location.moduleIndex,
+              arguments[typeIndex]
+            );
+            addValueBinding(
+              inout substitutions,
+              signature.typeParameters[typeIndex],
+              argument
+            );
+            typeIndex = typeIndex + 1;
+          }
+          for (const field of signature.fields) {
+            const fieldType = substituteGenericType(
+              field.typeName,
+              substitutions
+            );
+            if (typeContainsStoredView(
+              modules,
+              location.moduleIndex,
+              fieldType,
+              nextVisiting
+            )) return true;
+          }
+          for (const variant of signature.variants) {
+            if (variant.payloadType.byteLength == 0) continue;
+            const payloadType = substituteGenericType(
+              variant.payloadType,
+              substitutions
+            );
+            if (typeContainsStoredView(
+              modules,
+              location.moduleIndex,
+              payloadType,
+              nextVisiting
+            )) return true;
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 export function typeSupportsExplicitCopy(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

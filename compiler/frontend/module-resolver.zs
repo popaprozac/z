@@ -174,6 +174,7 @@ import {
 import {
   substituteGenericType,
   typeContainsForeignValueStorage,
+  typeContainsStoredView,
   typeHasCleanup,
   typeHasCustomConstructor,
   typeIsBorrowedForeignResource,
@@ -256,6 +257,23 @@ function contextualExpectedBindingName(offset: usize): String {
 
 function loopSelectTypeBindingName(): String {
   return "__z_native_loop_select_type";
+}
+
+function storedViewOwnerForExpression(
+  in bindings: Array<NativeValueBinding>,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const direct = expressionViewOrigin(bindings, tree.nodes[index].offset);
+  if (direct.byteLength > 0) return direct;
+  const root = expressionStorageRootName(tree, index);
+  if (root.byteLength == 0) return "";
+  const inherited = valueBindingViewOwner(bindings, root);
+  if (inherited.byteLength > 0) return inherited;
+  if (valueBindingIsBorrowed(bindings, root)) {
+    return root.copyBytes(0, root.byteLength);
+  }
+  return "";
 }
 
 function contextualExpectedType(
@@ -927,6 +945,7 @@ function inferContextualObjectExpressionNode(
     }
   }
   let childIndex: usize = hasSpread ? usize(1) : usize(0);
+  let storedViewOwner = "";
   while (childIndex < children.length && childIndex < tree.nodes[index].labels.length) {
     const fieldName = tree.nodes[index].labels[childIndex].copyBytes(
       0,
@@ -1069,6 +1088,39 @@ function inferContextualObjectExpressionNode(
           consumedFieldType,
           actual
         );
+        let viewVisiting = Array<String>();
+        if (typeContainsStoredView(
+          modules,
+          moduleIndex,
+          concreteFieldType,
+          viewVisiting
+        )) {
+          const fieldOwner = storedViewOwnerForExpression(
+            bindings,
+            tree,
+            children[childIndex]
+          );
+          if (fieldOwner.byteLength == 0) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `view-bearing field "${fieldName}" must be initialized directly from proven borrowed storage`,
+              tree.nodes[children[childIndex]].line,
+              tree.nodes[children[childIndex]].column
+            );
+          }
+          if (storedViewOwner.byteLength == 0) {
+            storedViewOwner = fieldOwner.copyBytes(0, fieldOwner.byteLength);
+          } else if (storedViewOwner != fieldOwner) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `view-bearing struct "${expectedType}" must borrow from exactly one owner`,
+              tree.nodes[index].line,
+              tree.nodes[index].column
+            );
+          }
+        }
         try consumeOwnedExpressionNode(
           module,
           modules,
@@ -1137,6 +1189,28 @@ function inferContextualObjectExpressionNode(
     construction.typeParameterConstraints,
     constraintSubstitutions
   );
+  let aggregateViewVisiting = Array<String>();
+  if (typeContainsStoredView(
+    modules,
+    moduleIndex,
+    expectedType,
+    aggregateViewVisiting
+  )) {
+    if (storedViewOwner.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `view-bearing struct "${expectedType}" requires proven stored provenance`,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    setExpressionViewOrigin(
+      inout bindings,
+      tree.nodes[index].offset,
+      storedViewOwner
+    );
+  }
   if (genericParameters.length == 0) {
     return expectedType.copyBytes(0, expectedType.byteLength);
   }
@@ -3064,6 +3138,36 @@ function inferExpressionNodeType(
             field.viewLifetime
           );
         }
+        let fieldViewVisiting = Array<String>();
+        if (
+          field.viewLifetime.byteLength == 0
+          && typeContainsStoredView(
+            modules,
+            moduleIndex,
+            field.typeName,
+            fieldViewVisiting
+          )
+        ) {
+          const receiverOwner = storedViewOwnerForExpression(
+            bindings,
+            tree,
+            children[0]
+          );
+          if (receiverOwner.byteLength == 0) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `view-bearing field "${memberName}" requires a named composite owner`,
+              tree.nodes[children[0]].line,
+              tree.nodes[children[0]].column
+            );
+          }
+          setExpressionViewOrigin(
+            inout bindings,
+            node.offset,
+            receiverOwner
+          );
+        }
         recordExpressionResolution(
           modules,
           moduleIndex,
@@ -4213,7 +4317,20 @@ function inferExpressionNodeType(
             inout bindings,
             inout evidence
           );
-          if (contextual.byteLength > 0) return contextual;
+          if (contextual.byteLength > 0) {
+            const storedViewOwner = expressionViewOrigin(
+              bindings,
+              tree.nodes[children[1]].offset
+            );
+            if (storedViewOwner.byteLength > 0) {
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                storedViewOwner
+              );
+            }
+            return contextual;
+          }
         }
       }
       none => {}
@@ -5003,16 +5120,47 @@ function inferExpressionNodeType(
             }
             none => {}
           }
-          try consumeOwnedExpressionNode(
-            module,
+          let storedViewVisiting = Array<String>();
+          if (typeContainsStoredView(
             modules,
             moduleIndex,
-            tree,
-            argument,
             actual,
-            false,
-            inout bindings
-          );
+            storedViewVisiting
+          )) {
+            const storedViewOwner = storedViewOwnerForExpression(
+              bindings,
+              tree,
+              argument
+            );
+            if (storedViewOwner != receiverRoot) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                "Arena.create can store a view-bearing value only in the Arena that owns every embedded view",
+                tree.nodes[argument].line,
+                tree.nodes[argument].column
+              );
+            }
+            const argumentRoot = expressionStorageRootName(tree, argument);
+            if (argumentRoot.byteLength > 0) {
+              setValueBindingOwnership(
+                inout bindings,
+                argumentRoot,
+                NativeOwnershipState.moved
+              );
+            }
+          } else {
+            try consumeOwnedExpressionNode(
+              module,
+              modules,
+              moduleIndex,
+              tree,
+              argument,
+              actual,
+              false,
+              inout bindings
+            );
+          }
           setExpressionViewOrigin(
             inout bindings,
             tree.nodes[index].offset,
@@ -5657,6 +5805,38 @@ function inferStatement(
             bindings,
             tree.nodes[tree.root].offset
           );
+          let storedViewVisiting = Array<String>();
+          if (
+            viewOwner.byteLength == 0
+            && typeContainsStoredView(
+              modules,
+              moduleIndex,
+              inferred,
+              storedViewVisiting
+            )
+          ) {
+            const expressionRoot = tree.root;
+            const sourceRoot = expressionStorageRootName(
+              tree,
+              expressionRoot
+            );
+            const sourceViewOwner = valueBindingViewOwner(
+              bindings,
+              sourceRoot
+            );
+            if (
+              sourceRoot.byteLength > 0
+              && sourceViewOwner.byteLength > 0
+            ) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `view-bearing value "${sourceRoot}" cannot be copied; store it directly in its owner Arena`,
+                tree.nodes[tree.root].line,
+                tree.nodes[tree.root].column
+              );
+            }
+          }
         }
         none => {}
       }

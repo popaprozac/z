@@ -405,7 +405,7 @@ text value.
 | Throwing generator handle | `Generator<Yield, Return, Error>` | Explicit storage spelling for a fallible generator; declarations normally use `Generator<...> throws Error` |
 | Async generator | `AsyncGenerator<Yield, Return?, Error?>` | Cold move-only async frame imported from `std/iteration`; `.next()` returns an awaited `Task` |
 | Function value | `(in value: T) => U throws E` | Closure/callback signature; parameter capabilities are part of the type |
-| Read-only projection | `view T` | Inferred non-storable borrow tied to owner storage, not a general reference type |
+| Read-only projection | `view T` | Inferred read-only borrow tied to owner storage, not a general reference type; fixed one-owner value composites may move only into their provenance Arena |
 | Native types | Imported nominal names and `T | null` | ABI-exact C, Objective-C, C++, or Swift-generated types; nullability is limited to nullable native references/handles |
 | User types | `struct`, `class`, `enum`, `trait` names | Nominal PascalCase declarations; structs/enums are values and classes have ARC identity |
 
@@ -1068,8 +1068,8 @@ rounding, precision-loss, infinity, and NaN policy is explicit.
 - `Map<K, V>` is owned associative storage imported from `std/collections`.
 - `Set<T>` is owned unique-value storage imported from `std/collections`.
 - `Slice<T>` is a non-owning contiguous view.
-- `view T` is a non-storable read-only projection returned from value-struct
-  storage and tied to the receiver's inferred lifetime.
+- `view T` is a read-only projection tied to its owner's inferred lifetime. It
+  remains local except for the fixed one-owner value-composite Arena rule.
 
 Indexing is bounds-checked in safe code. Owned elements are destroyed in reverse
 initialization order. Mutation that may reallocate requires exclusive mutable
@@ -1549,14 +1549,35 @@ cleanup-free values register none. Selective aliases such as
 `import { Arena as Region } from "std/memory";` preserve the same ownership and
 runtime behavior.
 
+A local value struct may retain multiple views from one proven owner and then
+move directly into that same Arena:
+
+```z
+struct Span {
+  first: view Coordinate;
+  last: view Coordinate;
+}
+
+const pending = Span({ first, last });
+const stored = scratch.create(pending);
+const answer = inspect(stored); // synchronous `in Span`
+```
+
+The composite must be an inferred `const`, cannot be copied, and cannot mix
+owners. Its `view` fields lower to borrowed pointers and are never destroyed;
+any ordinary owned fields still receive normal reverse cleanup. This permits
+fixed compiler-shaped relationships without exposing lifetime parameters.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
-stored, returned, captured by stored or escaping closures, passed as owned or
-mutable values, or held across `await`. A synchronous inline closure accepted
-through an `in` function parameter may read the view and ends its loan when the
-call returns. Direct class/reference-identity roots are excluded, although an
-arena-owned value struct may contain ARC fields. Allocation failure currently
-traps. Derived projections, mutable views, stored provenance, async regions,
-thread transfer, page reuse, and allocator parameters remain later tiers.
+returned, captured by stored or escaping closures, passed as owned or mutable
+values, or held across `await`. View-bearing composites additionally cannot
+enter classes, enums, or ordinary collections; their only owning destination is
+their provenance Arena. A synchronous inline closure accepted through an `in`
+function parameter may read the view and ends its loan when the call returns.
+Direct class/reference-identity roots are excluded, although an arena-owned
+value struct may contain ARC fields. Allocation failure currently traps.
+Mutable projections, container-held region graphs, async regions, thread
+transfer, page reuse, and allocator parameters remain later tiers.
 
 ## Generics and traits
 

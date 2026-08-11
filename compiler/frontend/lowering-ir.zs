@@ -83,6 +83,7 @@ export struct LoweredField {
   name: String;
   type: LoweredType;
   optionalField: boolean;
+  borrowedView: boolean;
 }
 
 export struct LoweredStruct {
@@ -2213,6 +2214,24 @@ function loweredThreadSpawnMovesBinding(
   return false;
 }
 
+function loweredMoveConsumesBinding(
+  in expressions: Array<LoweredExpression>,
+  in name: String
+): boolean {
+  for (const expression of expressions) {
+    if (
+      expression.kind != LoweredExpressionKind.moveValue
+      || expression.children.length != 1
+    ) continue;
+    const operand = expression.children[0];
+    if (
+      expressions[operand].kind == LoweredExpressionKind.localValue
+      && expressions[operand].value == name
+    ) return true;
+  }
+  return false;
+}
+
 function statementMovesName(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
@@ -2850,6 +2869,9 @@ function planCleanupSequence(
               program,
               evidence,
               arena,
+              bindingName
+            ) || loweredMoveConsumesBinding(
+              expressions,
               bindingName
             ) || loweredThreadSpawnMovesBinding(
               expressions,
@@ -8090,6 +8112,17 @@ function lowerExpression(
             }
             failure(_) => {}
           }
+        }
+      }
+      none => {}
+    }
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(resultType) => {
+        if (
+          stringStartsWith(resultType, "view ")
+          && !stringStartsWith(resultType, "view cstring")
+        ) {
+          labels.push("resultView");
         }
       }
       none => {}
@@ -13812,6 +13845,9 @@ function lowerFunction(
         evidence,
         declaration.body,
         parameterName
+      ) || loweredMoveConsumesBinding(
+        expressions,
+        parameterName
       ) || loweredThreadSpawnMovesBinding(
         expressions,
         parameterName,
@@ -14758,6 +14794,7 @@ function loweredStructFields(
           name: field.type.name.copyBytes(0, field.type.name.byteLength),
         }),
         optionalField: field.optionalField,
+        borrowedView: field.borrowedView,
       }));
     }
   }
@@ -14975,6 +15012,7 @@ function importedTypesForModule(
                 name: field.name.copyBytes(0, field.name.byteLength),
                 type: fieldType,
                 optionalField: false,
+                borrowedView: false,
               }));
             }
             types.push(LoweredImportedType({
@@ -15518,6 +15556,7 @@ function appendLoweredProgram(
         name: field.name.copyBytes(0, field.name.byteLength),
         type: move fieldType,
         optionalField: field.optionalField,
+        borrowedView: stringStartsWith(field.type.name, "view "),
       }));
     }
     let deinitializer = Option<LoweredFunction>.none;

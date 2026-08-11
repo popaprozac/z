@@ -1503,7 +1503,7 @@ export function analyze(
     const map = parseMapType(declaration.name);
     if (map) {
       validateCollectionKeyType("Map key", map.keyType, structs, enums, state, declaration.location, fileName);
-      if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+      if (map.valueType === "void" || containsStoredViewType(map.valueType, structs, enums) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
         throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
       }
       const nativeMapValue = state.foreignNamedTypes.get(map.valueType);
@@ -2174,8 +2174,28 @@ function analyzeStructDeclaration(
         helps: ["store the native value in a Z struct and move that struct synchronously, or use an owned native pointer contract"],
       });
     }
-    if (containsViewType(field.type.name)) {
-      throw new DiagnosticError(fileName, field.type.location, "view values cannot be stored in fields", { code: "Z0206" });
+    if (containsStoredViewType(field.type.name, structs, enums)) {
+      if (declaration.kind === "class") {
+        throw new DiagnosticError(fileName, field.type.location, "ARC class fields cannot store owner-tied views", {
+          code: "Z0206",
+          notes: ["shared identity could outlive or detach from the value owner that keeps the view valid"],
+          helps: ["store an owned snapshot, or use a local value struct whose provenance remains lexical"],
+        });
+      }
+      const directViewField = parseViewType(field.type.name) !== null;
+      const nestedValueStruct = structs.get(String(underlyingType(field.type.name)))?.kind === "struct";
+      if (!directViewField && !nestedValueStruct) {
+        throw new DiagnosticError(fileName, field.type.location, "Option, enum, array, and collection view values cannot be stored in fields in the first stored-provenance tier", {
+          code: "Z0206",
+          helps: ["keep Option, enum, array, and collection view storage local until those containers carry region provenance"],
+        });
+      }
+      if (field.defaultValue) {
+        throw new DiagnosticError(fileName, field.defaultValue.location, "a view-bearing field cannot have a default value", {
+          code: "Z0206",
+          notes: ["every stored view must be initialized from one proven owner at the construction site"],
+        });
+      }
     }
     if (containsSliceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "Slice values cannot be stored in struct or class fields");
@@ -2258,7 +2278,7 @@ function analyzeTraitDeclaration(
     }
     methods.add(method.name);
     validateFunctionSignature(method, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
-    if (containsViewType(method.returnType.name)) {
+    if (containsStoredViewType(method.returnType.name, structs, enums)) {
       throw new DiagnosticError(fileName, method.returnType.location, "trait requirements cannot expose receiver-tied views in the first view tier", { code: "Z0206" });
     }
   }
@@ -2507,7 +2527,7 @@ function analyzeEnumDeclaration(
         });
       }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
-      if (containsViewType(variant.payload.name) && !optionalViewPayload) {
+      if (containsStoredViewType(variant.payload.name, structs, enums) && !optionalViewPayload) {
         throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
       }
       if (containsSliceType(variant.payload.name)) {
@@ -2579,7 +2599,7 @@ function validateFunctionSignature(
         notes: ["async generators require a separate scheduling and cancellation contract"],
       });
     }
-    if (containsViewType(generator.elementType) || containsSliceType(generator.elementType)) {
+    if (containsStoredViewType(generator.elementType, structs, enums) || containsSliceType(generator.elementType)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "Generator<T> cannot yield borrowed storage in the first generator tier", {
         code: "Z0206",
         helps: ["yield an owned value or cleanup-free copy"],
@@ -2598,7 +2618,7 @@ function validateFunctionSignature(
           helps: ["pass an owned value parameter; borrowed generator inputs require an explicit lifetime contract"],
         });
       }
-      if (containsViewType(parameter.type.name) || containsSliceType(parameter.type.name)) {
+      if (containsStoredViewType(parameter.type.name, structs, enums) || containsSliceType(parameter.type.name)) {
         throw new DiagnosticError(fileName, parameter.location, "a cold generator cannot retain borrowed parameter storage", {
           code: "Z0206",
           helps: ["pass an owned value parameter"],
@@ -2631,7 +2651,7 @@ function validateFunctionSignature(
           : "a throwing async generator must carry its declared error capability",
       );
     }
-    if (containsViewType(asyncGenerator.elementType) || containsSliceType(asyncGenerator.elementType)) {
+    if (containsStoredViewType(asyncGenerator.elementType, structs, enums) || containsSliceType(asyncGenerator.elementType)) {
       throw new DiagnosticError(fileName, declaration.returnType.location, "AsyncGenerator<T> cannot yield borrowed storage", {
         code: "Z0206",
         helps: ["yield an owned value or cleanup-free copy"],
@@ -2640,7 +2660,7 @@ function validateFunctionSignature(
     for (const parameter of declaration.parameters) {
       if (
         parameter.mode !== "value"
-        || containsViewType(parameter.type.name)
+        || containsStoredViewType(parameter.type.name, structs, enums)
         || containsSliceType(parameter.type.name)
       ) {
         throw new DiagnosticError(fileName, parameter.location, "a cold async generator cannot retain borrowed parameter storage", {
@@ -2665,7 +2685,7 @@ function validateFunctionSignature(
       helps: ["return the native value directly until aggregate native async-result storage is implemented"],
     });
   }
-  if (containsViewType(declaration.returnType.name) && !parseReceiverViewReturnType(declaration.returnType.name)) {
+  if (containsStoredViewType(declaration.returnType.name, structs, enums) && !parseReceiverViewReturnType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "view values cannot be nested inside returned storage", { code: "Z0206" });
   }
   if (containsSliceType(declaration.returnType.name)) {
@@ -2691,8 +2711,17 @@ function validateFunctionSignature(
     if (declaration.async && parseGeneratorType(parameter.type.name)) {
       throw new DiagnosticError(fileName, parameter.location, "async task frames cannot store Generator<T> parameters yet", { code: "Z0704" });
     }
-    if (containsViewType(parameter.type.name)) {
-      throw new DiagnosticError(fileName, parameter.type.location, "view is a receiver-tied return capability, not a parameter type", { code: "Z0206" });
+    if (containsStoredViewType(parameter.type.name, structs, enums)) {
+      const directView = parseViewType(parameter.type.name);
+      if (directView || declaration.async || parameter.mode !== "in") {
+        throw new DiagnosticError(fileName, parameter.type.location, directView
+          ? "view is a receiver-tied return capability, not a parameter type"
+          : "a view-bearing value can only enter a synchronous immutable in parameter", {
+          code: "Z0206",
+          notes: directView ? undefined : ["the call borrows the complete composite and cannot store it or suspend"],
+          helps: directView ? undefined : ["use an `in` parameter on a synchronous function"],
+        });
+      }
     }
     if (parameter.mode === "out" && hasMoveOnlyForeignType(parameter.type.name, structs, enums, foreignNamedTypes)) {
       throw new DiagnosticError(fileName, parameter.location, `out parameter ${JSON.stringify(parameter.name)} cannot use move-only native storage in the first C++ ownership tier`, {
@@ -3590,7 +3619,7 @@ function analyzeStatement(
             helps: ["initialize the binding from a native constructor, owned return, or moved value"],
           });
         }
-        if (containsViewType(declaredTypeName)) {
+        if (containsStoredViewType(declaredTypeName, structs, enums)) {
           throw new DiagnosticError(fileName, declaredType.location, "view values cannot be declared as uninitialized storage", { code: "Z0206" });
         }
         if (containsSliceType(declaredTypeName)) {
@@ -3745,7 +3774,10 @@ function analyzeStatement(
       const foreignStringView = foreignPointer(variableType, state)?.stringView === true;
       const ownerTiedForeignView = isBorrowedNativeResource(variableType, state)
         && state.viewCallOrigins.has(statement.initializer.location.offset);
-      if (view || optionalView || foreignStringView || ownerTiedForeignView) {
+      const storedViewComposite = !view
+        && !optionalView
+        && containsStoredViewType(String(variableType), structs, enums);
+      if (view || optionalView || foreignStringView || ownerTiedForeignView || storedViewComposite) {
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
         }
@@ -4420,7 +4452,7 @@ function analyzeStatement(
         generator.elementType,
       );
       requireAssignable(generator.elementType, actual, statement.expression, fileName, structs, enums, state);
-      if (containsViewType(String(actual)) || containsSliceType(String(actual))) {
+      if (containsStoredViewType(String(actual), structs, enums) || containsSliceType(String(actual))) {
         throw new DiagnosticError(fileName, statement.expression.location, "a generator cannot yield borrowed storage in the first generator tier", {
           code: "Z0206",
           helps: ["yield an owned value or a cleanup-free copy"],
@@ -5058,7 +5090,7 @@ function inferClosureExpression(
         helps: [`declare ${JSON.stringify(capture.name)} with \`let\` if mutation is intended`],
       });
     }
-    if (containsViewType(type)) {
+    if (containsStoredViewType(type, structs, enums)) {
       if (!transientBorrow || expression.captureMode !== "borrow") {
         throw new DiagnosticError(fileName, capture.location, `view-bearing value ${JSON.stringify(capture.name)} can only be captured by a proven nonescaping closure`, {
           code: "Z0206",
@@ -8325,6 +8357,7 @@ function inferExpressionInner(
         }
       }
       const provided = new Set<string>();
+      const storedViewOrigins: ViewOrigin[] = [];
       for (const initializer of expression.fields) {
         if (provided.has(initializer.name)) {
           throw new DiagnosticError(fileName, initializer.location, `duplicate field initializer ${JSON.stringify(initializer.name)}`);
@@ -8343,6 +8376,16 @@ function inferExpressionInner(
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         rejectBorrowedNativeResourceEscape(actual, initializer.expression, locals, fileName, state, "stored in a struct field");
         requireAssignable(fieldType, actual, initializer.expression, fileName, structs, enums, state);
+        if (containsStoredViewType(fieldType, structs, enums)) {
+          const origin = storedViewOriginForExpression(initializer.expression, state);
+          if (!origin) {
+            throw new DiagnosticError(fileName, initializer.expression.location, `view-bearing field ${JSON.stringify(initializer.name)} must be initialized directly from proven borrowed storage`, {
+              code: "Z0206",
+              helps: ["bind the Arena view or owner-tied projection, then construct the local value struct directly"],
+            });
+          }
+          storedViewOrigins.push(origin);
+        }
         consumeOwnedValue(initializer.expression, fieldType, locals, structs, enums, fileName, state);
       }
       const expectedFields = declaration?.fields ?? (foreignDeclaration?.kind === "record" ? foreignDeclaration.fields : []);
@@ -8351,6 +8394,17 @@ function inferExpressionInner(
         : expectedFields.find((field) => !provided.has(field.name));
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
+      }
+      if (declaration?.kind === "struct" && containsStoredViewType(declaration.name, structs, enums)) {
+        const origin = mergeViewOrigins(storedViewOrigins);
+        if (origin.sources.length !== 1) {
+          throw new DiagnosticError(fileName, expression.location, `view-bearing struct ${JSON.stringify(declaration.name)} must borrow from exactly one owner`, {
+            code: "Z0206",
+            notes: ["the first stored-provenance tier does not mix regions inside one composite value"],
+            helps: ["construct every view field from the same Arena or immutable input owner"],
+          });
+        }
+        state.viewCallOrigins.set(expression.location.offset, origin);
       }
       if (aggregateResolution) state.observer?.onAggregateConstruction?.(aggregateResolution);
       if (foreignDeclaration?.kind === "record") state.foreignExpressionTypes.set(expression.location.offset, expression.typeName);
@@ -8858,6 +8912,18 @@ function inferExpressionInner(
           state,
           memberAffinity,
         );
+        if (containsStoredViewType(field.type.name, structs, enums)) {
+          const root = storageRoot(expression.object);
+          if (!root || !locals.has(root.name)) {
+            throw new DiagnosticError(fileName, expression.object.location, `view-bearing field ${JSON.stringify(field.name)} requires a named composite owner`, {
+              code: "Z0206",
+              helps: ["bind the containing value before projecting its stored view"],
+            });
+          }
+          const inherited = state.viewOrigins.get(root.name)
+            ?? directViewOrigin(root.name, expression.object.location);
+          state.viewCallOrigins.set(expression.location.offset, inherited);
+        }
         return field.type.name;
       }
       const method = declaration.methods.find((candidate) => candidate.name === expression.property);
@@ -8997,7 +9063,7 @@ function inferExpressionInner(
           }
           if (
             mutex.valueType === "void"
-            || containsViewType(mutex.valueType)
+            || containsStoredViewType(mutex.valueType, structs, enums)
             || containsSliceType(mutex.valueType)
             || parseOnceType(mutex.valueType)
             || parseOnceLifetimeType(mutex.valueType)
@@ -9074,7 +9140,7 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects no values");
           }
           validateCollectionKeyType("Map key", map.keyType, structs, enums, state, expression.callee.location, fileName);
-          if (map.valueType === "void" || containsViewType(map.valueType) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+          if (map.valueType === "void" || containsStoredViewType(map.valueType, structs, enums) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
           }
           if (
@@ -9139,6 +9205,12 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, `${aggregate.name} construction requires one object literal`);
           }
           inferContextualObjectExpression(expression.arguments[0], aggregate.name, locals, globals, structs, enums, fileName, state);
+          const storedViewOrigin = state.viewCallOrigins.get(
+            expression.arguments[0].location.offset,
+          );
+          if (storedViewOrigin) {
+            state.viewCallOrigins.set(expression.location.offset, storedViewOrigin);
+          }
           return aggregate.name;
         }
         const imported = globals.get(expression.callee.name);
@@ -9859,7 +9931,7 @@ function inferExpressionInner(
               helps: [`write \`(${parameter.name === "" ? "in value" : `in ${parameter.name}`})\` or \`(${parameter.name === "" ? "inout value" : `inout ${parameter.name}`})\``],
             });
           }
-          if (callback.returnType && containsViewType(callback.returnType.name)) {
+          if (callback.returnType && containsStoredViewType(callback.returnType.name, structs, enums)) {
             throw new DiagnosticError(fileName, callback.returnType.location, "a borrowed view cannot escape Mutex.withLock", {
               code: "Z0206",
               notes: ["the protected borrow ends before withLock returns"],
@@ -9896,7 +9968,7 @@ function inferExpressionInner(
           if (functionType.parameters[0]?.mode !== parameter.mode || functionType.parameters[0]?.type !== mutex.valueType) {
             throw new DiagnosticError(fileName, parameter.location, `Mutex.withLock expected ${parameter.mode} ${displayAssignableType(mutex.valueType, state)}, found ${displayFunctionType(functionTypeName(functionType.parameters, functionType.returnType, functionType.errorType), (part) => displayAssignableType(part, state))}`);
           }
-          if (containsViewType(functionType.returnType) || containsSliceType(functionType.returnType)) {
+          if (containsStoredViewType(functionType.returnType, structs, enums) || containsSliceType(functionType.returnType)) {
             throw new DiagnosticError(fileName, callback.returnType?.location ?? callback.location, "a borrowed value cannot escape Mutex.withLock", {
               code: "Z0206",
               notes: ["the protected borrow ends before withLock returns"],
@@ -10308,7 +10380,33 @@ function inferExpressionInner(
               helps: ["store the reference in a Z struct, or keep the class under ARC ownership"],
             });
           }
-          if (hasOwnershipType(actual, structs, enums, state)) {
+          if (containsStoredViewType(actual, structs, enums)) {
+            const origin = storedViewOriginForExpression(argument, state);
+            if (
+              !origin
+              || origin.sources.length !== 1
+              || origin.sources[0].owner !== root.name
+            ) {
+              throw new DiagnosticError(fileName, argument.location, "Arena.create can store a view-bearing value only in the Arena that owns every embedded view", {
+                code: "Z0206",
+                notes: ["moving the composite into another region would detach its stored pointers from their proven owner"],
+                helps: ["construct every view field from this Arena, then transfer the composite into the same Arena"],
+              });
+            }
+            if (hasOwnershipType(actual, structs, enums, state)) {
+              consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state, true);
+            } else if (argument.kind === "identifier") {
+              const storedComposite = locals.get(argument.name);
+              if (storedComposite) {
+                locals.set(
+                  argument.name,
+                  `${movedPrefix}${isMutableBinding(storedComposite) ? mutablePrefix : ""}${underlyingType(storedComposite)}`,
+                );
+                state.moveOrigins.set(argument.name, argument.location);
+              }
+            }
+            if (argument.kind === "identifier") unbindViewOrigin(argument.name, state);
+          } else if (hasOwnershipType(actual, structs, enums, state)) {
             consumeOwnedValue(argument, actual, locals, structs, enums, fileName, state);
           }
           state.arenaCreateCalls.set(expression.location.offset, actual);
@@ -11232,7 +11330,7 @@ function checkArguments(
         ],
       });
     }
-    if (argument.kind === "identifier" && containsViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")))) {
+    if (argument.kind === "identifier" && containsStoredViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")), structs, enums)) {
       if (parameter.mode !== "in" || target.async) {
         throw new DiagnosticError(fileName, argument.location, `view-bearing value ${JSON.stringify(argument.name)} can only enter a synchronous in parameter`, {
           code: "Z0206",
@@ -11737,6 +11835,16 @@ function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan 
 
 function directViewOrigin(owner: string, location: SourceLocation): ViewOrigin {
   return { sources: [{ owner, location }] };
+}
+
+function storedViewOriginForExpression(
+  expression: Expression,
+  state: AnalysisState,
+): ViewOrigin | null {
+  const direct = state.viewCallOrigins.get(expression.location.offset);
+  if (direct) return direct;
+  const root = storageRoot(expression);
+  return root ? state.viewOrigins.get(root.name) ?? null : null;
 }
 
 function viewOriginForRoot(
@@ -15536,7 +15644,7 @@ function validateType(
     validateType({ name: mutex.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
     if (
       mutex.valueType === "void"
-      || containsViewType(mutex.valueType)
+      || containsStoredViewType(mutex.valueType, structs, enums)
       || containsSliceType(mutex.valueType)
       || parseOnceType(mutex.valueType)
       || parseOnceLifetimeType(mutex.valueType)
@@ -15628,9 +15736,9 @@ function validateType(
   const functionType = parseFunctionType(type.name);
   if (functionType) {
     if (
-      functionType.parameters.some((parameter) => containsViewType(parameter.type))
-      || containsViewType(functionType.returnType)
-      || (functionType.errorType !== null && containsViewType(functionType.errorType))
+      functionType.parameters.some((parameter) => containsStoredViewType(parameter.type, structs, enums))
+      || containsStoredViewType(functionType.returnType, structs, enums)
+      || (functionType.errorType !== null && containsStoredViewType(functionType.errorType, structs, enums))
     ) {
       throw new DiagnosticError(fileName, type.location, "function values cannot store or return receiver-tied views", { code: "Z0206" });
     }
@@ -15846,6 +15954,33 @@ function containsViewType(name: string): boolean {
   if (slice) return containsViewType(slice.elementType);
   const array = parseFixedArrayType(name);
   return array ? containsViewType(array.elementType) : false;
+}
+
+function containsStoredViewType(
+  name: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+  visiting = new Set<string>(),
+): boolean {
+  const actual = String(underlyingType(name));
+  if (containsViewType(actual)) return true;
+  const generic = parseGenericType(actual);
+  if (generic?.arguments.some((argument) => (
+    containsStoredViewType(argument, structs, enums, visiting)
+  ))) return true;
+  if (visiting.has(actual)) return false;
+  const declaration = structs.get(actual);
+  const enumeration = enums.get(actual);
+  if (!declaration && !enumeration) return false;
+  const next = new Set(visiting).add(actual);
+  if (declaration?.fields.some((field) => (
+    containsStoredViewType(field.type.name, structs, enums, next)
+  ))) return true;
+  return enumeration?.variants.some((variant) => (
+    variant.payload
+      ? containsStoredViewType(variant.payload.name, structs, enums, next)
+      : false
+  )) ?? false;
 }
 
 function requireAssignable(

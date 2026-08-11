@@ -1,0 +1,36 @@
+import console from "std/console";
+import { Arena } from "std/memory";
+
+struct TokenCoordinate {
+  offset: usize;
+}
+
+struct TokenSpan {
+  first: view TokenCoordinate;
+  last: view TokenCoordinate;
+}
+
+struct NamedTokenSpan {
+  name: String;
+  span: view TokenSpan;
+}
+
+function spanLength(in span: TokenSpan): usize {
+  const first = span.first;
+  const last = span.last;
+  return last.offset - first.offset;
+}
+
+function main(): i32 {
+  let arena = Arena({ initialCapacity: 128 });
+  const first = arena.create(TokenCoordinate({ offset: 20 }));
+  const last = arena.create(TokenCoordinate({ offset: 62 }));
+  const pending = TokenSpan({ first, last });
+  const stored = arena.create(pending);
+  const namedPending = NamedTokenSpan({ name: "compiler", span: stored });
+  const named = arena.create(namedPending);
+  const length = spanLength(named.span);
+  console.log(`stored arena span ${length}`);
+  arena.reset();
+  return i32(length) - 42;
+}

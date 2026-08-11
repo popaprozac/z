@@ -63,10 +63,10 @@ awkward when several later statements need the selected document. The snapshot
 is semantically honest when the result must survive `Workspace.open`, but its
 copy would be accidental overhead for immediate read-only use.
 
-This evidence produced narrow owner-tied read-only views rather than general
+This evidence produced the initial narrow owner-tied read-only views rather than general
 lifetime parameters. Provenance may be one borrowed value-struct receiver or
 the conservative set of immutable value-struct parameters selected by direct
-return paths. A view is non-storable, may enter a synchronous `in T` call, and
+return paths. That first slice made a view non-storable; it could enter a synchronous `in T` call and
 may be read through an inline closure whose synchronous `in` destination proves
 nonescape. Stored, owned, and escaping captures remain rejected, and source
 owner mutation is rejected until the view's last use. `Option<view T>` currently
@@ -2427,13 +2427,29 @@ two-module probe. Fifty optimized executable runs measured 1.9 ms versus 2.0 ms
 for native- and Stage-0-emitted C respectively. The runtime difference is within
 process/filesystem noise and is recorded as parity, not a speedup claim.
 
-The more valuable negative result is the remaining nonescaping wall. A parser
-can use Arena views as local scratch, but it cannot yet store a dynamic set of
-those views in an `Array`, AST edge, field, or returned graph. Consequently this
-slice does not pretend to migrate the owned lexer token array or parser AST to a
-region. That requires explicit stored region provenance (and then evidence about
-shape-stable mutation and invalidation), which is the right next experiment
-before adding lifetime syntax or claiming whole-compiler allocation gains.
+The first follow-up closes the fixed-shape part of that wall without adding
+lifetime syntax. A local value struct may contain multiple views when all of
+them resolve to exactly one owner, may enter a synchronous immutable `in`
+parameter, and may transfer only into that same Arena. The compiler rejects
+mixed-region construction, implicit composite copies, normal collection/class/
+enum storage, returns, mutation, and suspension. Native lowering represents the
+borrowed fields as pointers and excludes them from cleanup while still
+destroying ordinary owned fields in the same struct.
+
+The differential `self-host-emit-arena-graph.zs` fixture stores two
+`view TokenCoordinate` edges in `TokenSpan`, stores that span in its owner
+Arena, then stores a cleanup-bearing `NamedTokenSpan` pointing at it. Stage 0
+and the fixed-point emitter produce the same result. The probe exposed two
+native-only ownership bugs before they reached compiler data structures:
+lowering initially copied borrowed fields into value locals, and an implicit
+Arena transfer left the source cleanup live. Both now lower as pointer borrows
+and consuming moves, while the containing `String` is destroyed exactly once.
+
+The remaining wall is dynamic provenance. A parser still cannot retain a set of
+Arena views in an `Array`, enum payload, class, or returned graph.
+Container-level region identity—and then evidence about shape-stable mutation
+and invalidation—is the next experiment before claiming whole-compiler
+allocation gains.
 
 ## Fixed and null-only native argument plans
 

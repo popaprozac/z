@@ -1,11 +1,13 @@
 import {
   AggregateDeclaration,
   ConstructorDeclaration,
+  DeclarationKind,
   EnumDeclaration,
   ExpressionKind,
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  ParameterMode,
   StatementArena,
   TraitDeclaration,
   TypeParameter,
@@ -40,6 +42,7 @@ import {
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
+import { typeContainsStoredView } from "./semantic-type-ownership.zs";
 
 struct NativeTypeArity {
   minimum: usize;
@@ -657,8 +660,62 @@ function validateFunctionTypes(
   );
   for (const parameter of declaration.parameters) {
     try validateTypeReference(module, modules, moduleIndex, bindings, parameter.type);
+    let parameterViewVisiting = Array<String>();
+    if (typeContainsStoredView(
+      modules,
+      moduleIndex,
+      parameter.type.name,
+      parameterViewVisiting
+    )) {
+      const directView = stringStartsWith(parameter.type.name, "view ");
+      if (
+        directView
+        || declaration.asynchronous
+        || parameter.mode != ParameterMode.input
+      ) {
+        const message = directView
+          ? "view is a receiver-tied return capability, not a parameter type"
+          : "a view-bearing value can only enter a synchronous immutable in parameter";
+        throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          message,
+          parameter.type.line,
+          parameter.type.column
+        );
+      }
+    }
   }
   try validateTypeReference(module, modules, moduleIndex, bindings, declaration.returnType);
+  let returnViewVisiting = Array<String>();
+  if (typeContainsStoredView(
+    modules,
+    moduleIndex,
+    declaration.returnType.name,
+    returnViewVisiting
+  )) {
+    let directReceiverView = stringStartsWith(
+      declaration.returnType.name,
+      "view "
+    );
+    match (genericTypeShape(declaration.returnType.name)) {
+      some(generic) => {
+        if (
+          generic.base == "Option"
+          && generic.arguments.length == 1
+          && stringStartsWith(generic.arguments[0], "view ")
+        ) directReceiverView = true;
+      }
+      none => {}
+    }
+    if (!directReceiverView) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "view values cannot be nested inside returned storage",
+      declaration.returnType.line,
+      declaration.returnType.column
+    );
+  }
   match (in declaration.errorType) {
     some(error) => try validateTypeReference(module, modules, moduleIndex, bindings, error);
     none => {}
@@ -675,6 +732,27 @@ function validateConstructorTypes(
 ): void throws ModuleResolveError {
   for (const parameter of declaration.parameters) {
     try validateTypeReference(module, modules, moduleIndex, typeBindings, parameter.type);
+    let parameterViewVisiting = Array<String>();
+    if (typeContainsStoredView(
+      modules,
+      moduleIndex,
+      parameter.type.name,
+      parameterViewVisiting
+    )) {
+      const directView = stringStartsWith(parameter.type.name, "view ");
+      if (directView || parameter.mode != ParameterMode.input) {
+        const message = directView
+          ? "view is a receiver-tied return capability, not a parameter type"
+          : "a view-bearing value can only enter a synchronous immutable in parameter";
+        throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          message,
+          parameter.type.line,
+          parameter.type.column
+        );
+      }
+    }
   }
   match (in declaration.errorType) {
     some(error) => try validateTypeReference(module, modules, moduleIndex, typeBindings, error);
@@ -702,6 +780,51 @@ function validateAggregateTypes(
   }
   for (const field of declaration.fields) {
     try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
+    let fieldViewVisiting = Array<String>();
+    if (typeContainsStoredView(
+      modules,
+      moduleIndex,
+      field.type.name,
+      fieldViewVisiting
+    )) {
+      if (declaration.kind == DeclarationKind.classDeclaration) {
+        throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "ARC class fields cannot store owner-tied views",
+          field.type.line,
+          field.type.column
+        );
+      }
+      if (!stringStartsWith(field.type.name, "view ")) {
+        let nestedValueStruct = false;
+        match (typeSymbolLocation(modules, moduleIndex, field.type.name)) {
+          some(location) => {
+            nestedValueStruct = modules[location.moduleIndex].symbols[
+              location.symbolIndex
+            ].kind == ModuleSymbolKind.structSymbol;
+          }
+          none => {}
+        }
+        if (!nestedValueStruct) throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "Option, enum, array, and collection view values cannot be stored in fields in the first stored-provenance tier",
+          field.type.line,
+          field.type.column
+        );
+      }
+      match (in field.defaultValue) {
+        some(_) => throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "a view-bearing field cannot have a default value",
+          field.line,
+          field.column
+        );
+        none => {}
+      }
+    }
   }
   match (in declaration.constructorDeclaration) {
     some(initializer) => try validateConstructorTypes(
@@ -737,6 +860,19 @@ function validateTraitTypes(
   let empty = Array<NativeTypeParameterBinding>();
   for (const method of declaration.methods) {
     try validateFunctionTypes(module, modules, moduleIndex, empty, method);
+    let returnViewVisiting = Array<String>();
+    if (typeContainsStoredView(
+      modules,
+      moduleIndex,
+      method.returnType.name,
+      returnViewVisiting
+    )) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "trait requirements cannot expose receiver-tied views in the first view tier",
+      method.returnType.line,
+      method.returnType.column
+    );
   }
 }
 
@@ -749,7 +885,22 @@ function validateEnumTypes(
   let empty = Array<NativeTypeParameterBinding>();
   for (const variant of declaration.variants) {
     match (in variant.payload) {
-      some(payload) => try validateTypeReference(module, modules, moduleIndex, empty, payload);
+      some(payload) => {
+        try validateTypeReference(module, modules, moduleIndex, empty, payload);
+        let payloadViewVisiting = Array<String>();
+        if (typeContainsStoredView(
+          modules,
+          moduleIndex,
+          payload.name,
+          payloadViewVisiting
+        )) throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "view values cannot be stored in enum payloads",
+          payload.line,
+          payload.column
+        );
+      }
       none => {}
     }
   }

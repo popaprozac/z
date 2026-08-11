@@ -679,6 +679,7 @@ function appendClassFinalizationBody(
   let cleanup = aggregate.fields.length;
   while (cleanup > 0) {
     cleanup = cleanup - 1;
+    if (aggregate.fields[cleanup].borrowedView) continue;
     if (!loweredTypeNeedsDeinit(program, aggregate.fields[cleanup].type)) {
       continue;
     }
@@ -2603,7 +2604,15 @@ function appendLocalStatementStorage(
     some(initializer) => declaration.expressions[initializer].kind
       == LoweredExpressionKind.viewProjection
       || declaration.expressions[initializer].kind
-        == LoweredExpressionKind.arenaCreate;
+        == LoweredExpressionKind.arenaCreate
+      || (
+        declaration.expressions[initializer].kind
+          == LoweredExpressionKind.fieldValue
+        && labelsContain(
+          declaration.expressions[initializer].labels,
+          "resultView"
+        )
+      );
     none => false;
   };
   const classStorage = match (in declaration.statements[index].type) {
@@ -7794,6 +7803,10 @@ function appendStructDefinition(
     const fieldType = try cType(field.type);
     output.append("  ");
     output.append(fieldType);
+    if (
+      field.borrowedView
+      && field.type.kind != LoweredTypeKind.cstringType
+    ) output.append(" const *");
     output.append(" ");
     output.append(field.name);
     output.append(";\n");
@@ -9904,6 +9917,7 @@ function emitLoweredC(
       let fieldIndex = aggregate.fields.length;
       while (fieldIndex > 0) {
         fieldIndex = fieldIndex - 1;
+        if (aggregate.fields[fieldIndex].borrowedView) continue;
         if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_");
           output.append(aggregate.fields[fieldIndex].type.name);

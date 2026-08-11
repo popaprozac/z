@@ -332,10 +332,28 @@ destruction invalidate the region and are rejected while a view has a later
 use. Cleanup runs newest-first before pages are released. Cleanup-free values
 avoid per-allocation destructor records; Z `deinit`, ARC-containing structs,
 owned native handles, and C++ RAII values are tracked. Arena views may enter a
-synchronous `in T` parameter or a proven nonescaping inline closure but cannot
-yet be stored, returned, captured by stored or escaping closures, mutably
-borrowed, or held across suspension. The tier is single-threaded and allocation
-failure traps.
+synchronous `in T` parameter or a proven nonescaping inline closure. A local
+value struct may also contain one or more `view` fields when every field has the
+same proven owner. That inferred-`const` composite cannot be copied and may be
+transferred only into the Arena that owns its embedded views:
+
+```z
+struct Span {
+  first: view Coordinate;
+  last: view Coordinate;
+}
+
+const pending = Span({ first, last });
+const stored = arena.create(pending);
+inspect(stored); // `in Span`
+```
+
+The Arena then owns both the composite's storage and the region that validates
+its internal pointers. Borrowed fields do not participate in destruction;
+ordinary owned fields still clean up newest-first with the containing value.
+View-bearing structs cannot enter classes, enums, ordinary collections,
+returns, stored or escaping closures, mutable borrows, or suspension. The tier
+is single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer
 arenas remain a separate future ownership shape.
@@ -350,9 +368,9 @@ Memory.free(move block); // consumes the owner
 
 Arbitrary raw pointers, untracked aliases, pointer arithmetic, and freeing
 foreign storage require an explicit `unsafe` boundary. Later arena work must
-decide how mutable/stored projections carry provenance, whether pages are
-reused, whether arenas can be sendable, and where allocator parameters belong
-on collections and APIs.
+decide how mutable and container-held projections carry provenance, whether
+pages are reused, whether arenas can be sendable, and where allocator
+parameters belong on collections and APIs.
 
 Native aggregate construction intentionally distinguishes values from identity:
 
