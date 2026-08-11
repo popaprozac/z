@@ -126,6 +126,14 @@ export struct ModuleCallResolution {
   errorType: String;
   foreignHeader: String;
   foreignSuccessValues: Array<String>;
+  foreignArguments: Array<ModuleForeignArgument>;
+}
+
+export struct ModuleForeignArgument {
+  kind: String;
+  source: usize;
+  value: String;
+  mode: String;
 }
 
 export enum ModuleSymbolKind {
@@ -152,7 +160,7 @@ export struct ModuleSymbol {
   typeSignature: Option<ModuleTypeSignature>;
   foreignHeader: String;
   foreignSuccessValues: Array<String>;
-  foreignParameterAbiModes: Array<String>;
+  foreignArguments: Array<ModuleForeignArgument>;
   offset: usize;
   line: usize;
   column: usize;

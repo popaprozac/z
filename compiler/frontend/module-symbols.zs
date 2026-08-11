@@ -16,6 +16,7 @@ import {
   programTypeSignature,
 } from "./module-signatures.zs";
 import {
+  ModuleForeignArgument,
   ModuleFunctionSignature,
   ModuleResolveError,
   ModuleResolveErrorKind,
@@ -141,7 +142,7 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     typeSignature: programTypeSignature(module.program, declaration),
     foreignHeader: "",
     foreignSuccessValues: Array<String>(),
-    foreignParameterAbiModes: Array<String>(),
+    foreignArguments: Array<ModuleForeignArgument>(),
     offset: declaration.offset,
     line: declaration.line,
     column: declaration.column,
@@ -169,7 +170,7 @@ function importedSymbol(
     typeSignature: Option<ModuleTypeSignature>.none,
     foreignHeader: "",
     foreignSuccessValues: Array<String>(),
-    foreignParameterAbiModes: Array<String>(),
+    foreignArguments: Array<ModuleForeignArgument>(),
     offset,
     line,
     column,

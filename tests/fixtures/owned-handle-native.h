@@ -11,6 +11,8 @@ typedef struct ZOwnedChild {
   int value;
 } ZOwnedChild;
 
+#define Z_OWNED_HANDLE_POLICY 9
+
 static int z_owned_handle_closed_count = 0;
 static ZOwnedHandle z_owned_handle_default_value = { 41 };
 static ZOwnedChild z_owned_handle_default_child = { 43 };
@@ -32,6 +34,29 @@ static inline int z_owned_handle_create(int status, ZOwnedHandle **output) {
 
 static inline int z_owned_handle_read(ZOwnedHandle *handle) {
   return handle == NULL ? -1 : handle->value;
+}
+
+static inline int z_owned_handle_read_with_policy(
+  ZOwnedHandle *handle,
+  int policy
+) {
+  if (handle == NULL || policy != Z_OWNED_HANDLE_POLICY) return -1;
+  return handle->value + policy;
+}
+
+static inline int z_owned_handle_apply_policy(
+  ZOwnedHandle *handle,
+  int policy
+) {
+  if (handle == NULL || policy != Z_OWNED_HANDLE_POLICY) return -1;
+  return 0;
+}
+
+static inline int z_owned_handle_has_null_tail(
+  ZOwnedHandle *handle,
+  const void *tail
+) {
+  return handle != NULL && tail == NULL ? 1 : 0;
 }
 
 static inline ZOwnedHandle *z_owned_handle_default(void) {

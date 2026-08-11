@@ -202,6 +202,13 @@ only a header-proven character-pointer result, retains nullable spelling, and
 requires either one unambiguous immutable pointer input or an explicit
 `borrowed from owner;` fact. That owner feeds the same loan used by child
 pointers and `invalidates owner;`.
+Null-only parameters are admitted only at pointer positions and remain a
+visible `null` argument in Z. Fixed parameters name a producer-proven constant
+whose exact or canonical scalar type matches the Clang parameter; they are
+removed from the source signature but retained in an ordered FIIR argument
+plan. Direct calls and generated status adapters consume that same plan, so a
+hidden constant is reinserted at its original ABI position rather than inferred
+from source arity.
 Normalized callables carry source-level Z types plus exact native status and
 ownership evidence. Any fact outside the native tier is an error; it is never
 discarded for forward compatibility.

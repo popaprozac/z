@@ -28,6 +28,7 @@ import {
 } from "./module-symbols.zs";
 import {
   ModuleGraph,
+  ModuleForeignArgument,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
 } from "./semantic-model.zs";
@@ -344,6 +345,7 @@ export struct LoweredForeignFunction {
   errorType: LoweredType;
   parameterTypes: Array<LoweredType>;
   parameterModes: Array<String>;
+  arguments: Array<ModuleForeignArgument>;
   successValues: Array<String>;
 }
 
@@ -3182,6 +3184,33 @@ function resolvedForeignCallTarget(
   return Option<String>.none;
 }
 
+function resolvedForeignArguments(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Array<ModuleForeignArgument> {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+      || resolution.kind != "foreign"
+      || resolution.foreignSuccessValues.length > 0
+    ) continue;
+    let arguments = Array<ModuleForeignArgument>();
+    for (const argument of resolution.foreignArguments) {
+      arguments.push(ModuleForeignArgument({
+        kind: argument.kind.copyBytes(0, argument.kind.byteLength),
+        source: argument.source,
+        value: argument.value.copyBytes(0, argument.value.byteLength),
+        mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+      }));
+    }
+    return arguments;
+  }
+  return Array<ModuleForeignArgument>();
+}
+
 function containsString(in values: Array<String>, in value: String): boolean {
   for (const candidate of values) {
     if (candidate == value) return true;
@@ -3267,6 +3296,15 @@ function collectForeignLowering(
         parameterMode.byteLength
       ));
     }
+    let arguments = Array<ModuleForeignArgument>();
+    for (const argument of resolution.foreignArguments) {
+      arguments.push(ModuleForeignArgument({
+        kind: argument.kind.copyBytes(0, argument.kind.byteLength),
+        source: argument.source,
+        value: argument.value.copyBytes(0, argument.value.byteLength),
+        mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+      }));
+    }
     functions.push(LoweredForeignFunction({
       header: resolution.foreignHeader.copyBytes(
         0,
@@ -3284,6 +3322,7 @@ function collectForeignLowering(
       errorType,
       parameterTypes,
       parameterModes,
+      arguments,
       successValues,
     }));
   }
@@ -7444,6 +7483,39 @@ function lowerExpression(
       }
       children.push(value);
       argument = argument + 1;
+    }
+    const foreignArguments = resolvedForeignArguments(
+      evidence,
+      tree,
+      index
+    );
+    if (foreignArguments.length > 0) {
+      let nativeChildren = Array<usize>();
+      let nativeLabels = Array<String>();
+      nativeChildren.push(children[0]);
+      for (const nativeArgument of foreignArguments) {
+        if (nativeArgument.kind == "fixed") {
+          nativeChildren.push(pushExpression(
+            inout output,
+            LoweredExpressionKind.localValue,
+            nativeArgument.value,
+            Array<usize>(),
+            Array<String>()
+          ));
+          nativeLabels.push("value");
+          continue;
+        }
+        if (nativeArgument.source + 1 >= children.length) {
+          throw "native foreign argument plan references a missing source argument";
+        }
+        nativeChildren.push(children[nativeArgument.source + 1]);
+        nativeLabels.push(nativeArgument.mode.copyBytes(
+          0,
+          nativeArgument.mode.byteLength
+        ));
+      }
+      children = move nativeChildren;
+      callLabels = move nativeLabels;
     }
     return pushExpression(
       inout output,

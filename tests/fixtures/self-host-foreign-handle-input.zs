@@ -45,6 +45,14 @@ function inspectLabel(): i32 {
   return native.z_owned_handle_read(in owner);
 }
 
+function inspectFixedAndNullOnly(): i32 throws i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return -1;
+  if (native.z_owned_handle_read_with_policy(in owner) != 51) return -2;
+  try native.z_owned_handle_apply_policy(in owner);
+  return native.z_owned_handle_has_null_tail(in owner, null);
+}
+
 function propagateProducedFailure(): void throws i32 {
   let handle;
   try native.z_owned_handle_create(7, out handle);
@@ -76,13 +84,21 @@ function main(): i32 {
   if (inspectLabel() != 42) return 17;
   if (native.z_owned_handle_closed() != 5) return 18;
 
+  const fixed = attempt inspectFixedAndNullOnly();
+  const fixedValue = match (fixed) {
+    success(value) => value;
+    failure(status) => status;
+  };
+  if (fixedValue != 1) return 19;
+  if (native.z_owned_handle_closed() != 6) return 20;
+
   const produced = attempt propagateProducedFailure();
   const producedStatus = match (produced) {
     success => 0;
     failure(status) => status;
   };
   if (producedStatus != 7) return 7;
-  if (native.z_owned_handle_closed() != 6) return 8;
+  if (native.z_owned_handle_closed() != 7) return 8;
 
   const empty = attempt propagateEmptyFailure();
   const emptyStatus = match (empty) {
@@ -90,7 +106,7 @@ function main(): i32 {
     failure(status) => status;
   };
   if (emptyStatus != -2) return 9;
-  if (native.z_owned_handle_closed() != 6) return 10;
+  if (native.z_owned_handle_closed() != 7) return 10;
 
   const opened = attempt openThroughOut();
   const openedValue = match (opened) {
@@ -98,6 +114,6 @@ function main(): i32 {
     failure(status) => status;
   };
   if (openedValue != 42) return 11;
-  if (native.z_owned_handle_closed() != 7) return 12;
+  if (native.z_owned_handle_closed() != 8) return 12;
   return 0;
 }

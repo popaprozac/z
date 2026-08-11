@@ -13,6 +13,20 @@ declare module "owned-handle-native.h" {
   }
 
   export function z_owned_handle_read(in handle: _): _;
+  export function z_owned_handle_read_with_policy(
+    in handle: _,
+    policy: _ { fixed Z_OWNED_HANDLE_POLICY; }
+  ): _;
+  export function z_owned_handle_apply_policy(
+    in handle: _,
+    policy: _ { fixed Z_OWNED_HANDLE_POLICY; }
+  ): void throws _ {
+    success 0;
+  }
+  export function z_owned_handle_has_null_tail(
+    in handle: _,
+    tail: null
+  ): _;
   export function z_owned_handle_default(): _ | null {
     borrowed;
   }

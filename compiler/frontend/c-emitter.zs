@@ -9230,12 +9230,26 @@ function emitLoweredC(
     output.append(" status = ");
     output.append(foreign.nativeName);
     output.append("(");
-    parameterIndex = 0;
-    while (parameterIndex < foreign.parameterTypes.length) {
-      if (parameterIndex > 0) output.append(", ");
-      output.append("parameter_");
-      output.append(`${parameterIndex}`);
-      parameterIndex = parameterIndex + 1;
+    if (foreign.arguments.length > 0) {
+      let argumentIndex: usize = 0;
+      while (argumentIndex < foreign.arguments.length) {
+        if (argumentIndex > 0) output.append(", ");
+        if (foreign.arguments[argumentIndex].kind == "fixed") {
+          output.append(foreign.arguments[argumentIndex].value);
+        } else {
+          output.append("parameter_");
+          output.append(`${foreign.arguments[argumentIndex].source}`);
+        }
+        argumentIndex = argumentIndex + 1;
+      }
+    } else {
+      parameterIndex = 0;
+      while (parameterIndex < foreign.parameterTypes.length) {
+        if (parameterIndex > 0) output.append(", ");
+        output.append("parameter_");
+        output.append(`${parameterIndex}`);
+        parameterIndex = parameterIndex + 1;
+      }
     }
     output.append(");\n  if (");
     let successIndex: usize = 0;

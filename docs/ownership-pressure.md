@@ -2378,6 +2378,25 @@ representation. Direct and aliased `std/memory` type uses now share one
 source-mapped `Z1000` boundary, as does construction; native `Array`,
 `TextBuffer`, and `Mutex` representations remain independent positives.
 
+## Fixed and null-only native argument plans
+
+The native `.zd` implementation now handles two SQLite-shaped ABI positions
+without weakening the Z call surface. A `tail: null` parameter is accepted only
+when Clang proves a pointer position and remains visible as a literal `null`
+argument. A parameter block containing `fixed CONSTANT;` must name a
+producer-proven constant compatible with the exact or canonical native
+parameter type; that parameter is omitted from the Z signature.
+
+The important implementation result is an ordered foreign-argument plan, not a
+special case in C text generation. Semantic evidence records every original ABI
+slot as either a source-argument index or a verified fixed constant. Direct
+calls and status-to-`Result` adapters consume the same plan, preserving native
+order while ownership modes remain indexed by the smaller safe signature. A
+fixed-point fixture executes direct fixed, status-wrapped fixed, and null-only
+calls, inspects the emitted C, and rejects unknown constants and null-only
+scalar parameters. This closes the corresponding Z Notes/SQLite bootstrap gap
+without introducing a raw pointer or a caller-overridable lifetime policy.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

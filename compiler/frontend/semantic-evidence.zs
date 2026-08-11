@@ -12,6 +12,7 @@ import {
   ModuleBindingResolution,
   ModuleCallResolution,
   ModuleExpressionResolution,
+  ModuleForeignArgument,
   ModuleFunctionSignature,
   ModuleSemanticEvidence,
   ModuleSymbol,
@@ -325,6 +326,7 @@ export function recordCallResolution(
     errorType: errorType.copyBytes(0, errorType.byteLength),
     foreignHeader: "",
     foreignSuccessValues: Array<String>(),
+    foreignArguments: Array<ModuleForeignArgument>(),
   }));
 }
 
@@ -351,19 +353,23 @@ export function recordForeignCallFacts(
           successValue.copyBytes(0, successValue.byteLength)
         );
       }
-      if (
-        symbol.foreignParameterAbiModes.length
-          == evidence.callResolutions[resolutionIndex].parameterModes.length
-      ) {
-        let parameterIndex: usize = 0;
-        while (parameterIndex < symbol.foreignParameterAbiModes.length) {
+      for (const argument of symbol.foreignArguments) {
+        evidence.callResolutions[resolutionIndex].foreignArguments.push(
+          ModuleForeignArgument({
+            kind: argument.kind.copyBytes(0, argument.kind.byteLength),
+            source: argument.source,
+            value: argument.value.copyBytes(0, argument.value.byteLength),
+            mode: argument.mode.copyBytes(0, argument.mode.byteLength),
+          })
+        );
+        if (
+          argument.kind == "argument"
+          && argument.source
+            < evidence.callResolutions[resolutionIndex].parameterModes.length
+        ) {
           evidence.callResolutions[resolutionIndex].parameterModes[
-            parameterIndex
-          ] = symbol.foreignParameterAbiModes[parameterIndex].copyBytes(
-            0,
-            symbol.foreignParameterAbiModes[parameterIndex].byteLength
-          );
-          parameterIndex = parameterIndex + 1;
+            argument.source
+          ] = argument.mode.copyBytes(0, argument.mode.byteLength);
         }
       }
       return;

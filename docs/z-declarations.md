@@ -171,11 +171,12 @@ spelling does not silently pass through.
 
 The production Stage-0 compiler supports the complete current shape documented
 below. The self-hosted compiler parses `declare module`, inferred scalar,
-status, plain-record, value-resource, opaque-handle, owner-tied pointer, and
-borrowed `view cstring` function contracts. It validates them against
+status, plain-record, value-resource, opaque-handle, owner-tied pointer,
+borrowed `view cstring`, null-only, and fixed-parameter function contracts. It validates them against
 Clang-produced declarations, including exact integer/enum status identity,
 record layout, pointer lifecycle signatures, character-pointer text results,
-and `invalidates owner;` effects. Other facts still fail closed while they are
+`invalidates owner;` effects, pointer-only null positions, and the exact type
+identity of compiler-supplied header constants. Other facts still fail closed while they are
 ported; this is a bootstrap implementation boundary, not a restriction of the
 `.zd` language.
 
@@ -183,8 +184,10 @@ These normalized tiers also reach native semantic analysis and C emission.
 Selective aliases and namespace calls use the same signature/effect
 checker as ordinary Z functions, and a selected native function absent from the
 checked contract is rejected. Infallible calls and borrowed text views remain
-direct; status calls use a generated C11 adapter that invokes the native
-function once and constructs `Result<void, E>`. The standalone native driver
+direct. Null-only positions require a literal `null` and lower to `NULL`; fixed
+positions disappear from the Z signature and are reinserted in their original
+ABI order. Status calls use a generated C11 adapter that invokes the native
+function once with that same argument plan and constructs `Result<void, E>`. The standalone native driver
 discovers the adjacent contract and invokes `z-foreign-adapter` automatically.
 A locally bootstrapped `z` prefers the packaged
 adapter beside its own executable, then falls back to `PATH`. Broader contracts
@@ -203,7 +206,7 @@ still use the Stage-0 compiler.
 | `export function name(...): _ on thread.main` | Isolate a native function or Objective-C method | Calls require proven main-executor context; the native ABI is unchanged |
 | `_` | Infer the ABI type from the header | Never means dynamic or untyped |
 | `_ \| null` | Expose a header pointer/reference as nullable | Requires a compatible native pointer/reference representation |
-| `null` parameter type | Caller never supplies the native pointer; Z emits null | Used only for a value parameter that is intentionally hidden |
+| `null` parameter type | Caller must supply literal `null`; no other value inhabits the parameter type | Requires a native pointer and emits `NULL` without introducing a raw pointer type |
 | `in name: _` | Read-only, call-scoped borrow | Typically `const T *`, `const T &`, or a call-only callback |
 | `inout name: _` | Exclusive mutable borrow | Typically `T *` or `T &`; caller spells `inout value` |
 | `out name: _` | Callee initializes caller storage | Typically an output pointer such as `T *`/`T **`; unreadable until initialized |

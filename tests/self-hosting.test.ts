@@ -6411,6 +6411,18 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
+    /z_owned_handle_read_with_policy\(owner, Z_OWNED_HANDLE_POLICY\)/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /z_owned_handle_apply_policy\(parameter_0, Z_OWNED_HANDLE_POLICY\)/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /z_owned_handle_has_null_tail\(owner, NULL\)/,
+  );
+  assert.match(
+    emittedHandleSource,
     /const char \* const label = z_owned_handle_label\(owner\)/,
   );
   assert.match(
@@ -6423,6 +6435,49 @@ function main(): i32 {
     "owned-handle-native.h.zd",
   );
   const handleContractSource = readFileSync(handleContractPath, "utf8");
+  writeFileSync(
+    handleContractPath,
+    handleContractSource.replace(
+      "fixed Z_OWNED_HANDLE_POLICY;",
+      "fixed Z_OWNED_HANDLE_UNKNOWN;",
+    ),
+  );
+  const unknownFixedParameter = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(unknownFixedParameter.status, 1);
+  assert.match(
+    unknownFixedParameter.stderr,
+    /unknown foreign constant "Z_OWNED_HANDLE_UNKNOWN"/,
+  );
+
+  writeFileSync(
+    handleContractPath,
+    handleContractSource.replace(
+      "policy: _ { fixed Z_OWNED_HANDLE_POLICY; }",
+      "policy: null",
+    ),
+  );
+  const scalarNullOnlyParameter = spawnSync(
+    driver,
+    ["check", handleSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(scalarNullOnlyParameter.status, 1);
+  assert.match(
+    scalarNullOnlyParameter.stderr,
+    /null-only foreign parameter "policy" requires a C pointer parameter/,
+  );
+  writeFileSync(handleContractPath, handleContractSource);
+
   writeFileSync(
     handleContractPath,
     handleContractSource.replace(

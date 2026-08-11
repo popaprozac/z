@@ -20,6 +20,8 @@ export struct RawForeignContractParameter {
   name: String;
   capability: String;
   nullable: boolean;
+  nullOnly: boolean;
+  fixedValue: String;
   release: String;
   line: usize;
   column: usize;
@@ -58,6 +60,8 @@ export struct NativeForeignParameterContract {
   capability: String;
   abiMode: String;
   typeName: String;
+  nullOnly: boolean;
+  fixedValue: String;
 }
 
 export struct NativeForeignFunctionContract {
@@ -236,7 +240,16 @@ function parseParameter(
   const column = cursor.tokens[cursor.index].column;
   const name = try expectIdentifier(inout cursor, "a native parameter name");
   try expectText(inout cursor, ":");
-  const nullable = try parseInferredType(inout cursor);
+  let nullOnly = false;
+  let nullable = false;
+  if (atText(cursor, "null")) {
+    nullOnly = true;
+    nullable = true;
+    cursor.index = cursor.index + 1;
+  } else {
+    nullable = try parseInferredType(inout cursor);
+  }
+  let fixedValue = "";
   let release = "";
   if (atText(cursor, "{")) {
     cursor.index = cursor.index + 1;
@@ -246,10 +259,24 @@ function parseParameter(
         cursor.tokens[cursor.index].text.byteLength
       );
       cursor.index = cursor.index + 1;
+      if (fact == "fixed") {
+        if (fixedValue.byteLength > 0) {
+          throw contractError(
+            cursor,
+            `foreign parameter "${name}" cannot declare fixed more than once`
+          );
+        }
+        fixedValue = try expectIdentifier(
+          inout cursor,
+          "a native constant after `fixed`"
+        );
+        try expectText(inout cursor, ";");
+        continue;
+      }
       if (fact != "deinit") {
         throw contractError(
           cursor,
-          `native output fact must be "deinit", found "${fact}"`
+          `native parameter fact must be "fixed" or "deinit", found "${fact}"`
         );
       }
       if (release.byteLength > 0) {
@@ -263,10 +290,46 @@ function parseParameter(
     }
     try expectText(inout cursor, "}");
   }
+  if (nullOnly && capability != "value") {
+    throw contractErrorAt(
+      cursor,
+      line,
+      column,
+      `null-only foreign parameter "${name}" cannot declare a capability`
+    );
+  }
+  if (nullOnly && release.byteLength > 0) {
+    throw contractErrorAt(
+      cursor,
+      line,
+      column,
+      `null-only foreign parameter "${name}" cannot declare deinit`
+    );
+  }
+  if (fixedValue.byteLength > 0) {
+    if (capability != "value" || nullOnly || nullable) {
+      throw contractErrorAt(
+        cursor,
+        line,
+        column,
+        `fixed foreign parameter "${name}" cannot declare a capability or nullable type`
+      );
+    }
+    if (release.byteLength > 0) {
+      throw contractErrorAt(
+        cursor,
+        line,
+        column,
+        `fixed foreign parameter "${name}" cannot declare deinit`
+      );
+    }
+  }
   return RawForeignContractParameter({
     name,
     capability,
     nullable,
+    nullOnly,
+    fixedValue,
     release,
     line,
     column,
@@ -1518,7 +1581,46 @@ function normalizedHandleParameter(
     ),
     abiMode,
     typeName,
+    nullOnly: false,
+    fixedValue: "",
   }));
+}
+
+function fixedConstantMatchesParameter(
+  in declarations: RawForeignModuleDeclarations,
+  constantIndex: usize,
+  parameterIndex: usize
+): boolean {
+  const constantType = view declarations.constants[constantIndex].typeName;
+  const parameter = view declarations.parameters[parameterIndex];
+  if (constantType == parameter.nativeType) return true;
+  match (in parameter.canonicalNativeType) {
+    some(typeName) => {
+      if (constantType == typeName) return true;
+    }
+    none => {}
+  }
+  const constantScalar = attempt scalarTypeNameWithCanonical(
+    declarations,
+    constantType,
+    Option<String>.none
+  );
+  const parameterScalar = attempt scalarTypeNameWithCanonical(
+    declarations,
+    parameter.nativeType,
+    parameter.canonicalNativeType
+  );
+  let constantName = "";
+  match (constantScalar) {
+    success(name) => constantName = move name;
+    failure(_) => return false;
+  }
+  let parameterName = "";
+  match (parameterScalar) {
+    success(name) => parameterName = move name;
+    failure(_) => return false;
+  }
+  return constantName == parameterName;
 }
 
 export function normalizeForeignContracts(
@@ -1648,6 +1750,58 @@ export function normalizeForeignContracts(
         }
         none => {}
       }
+      if (contract.parameters[parameterIndex].nullOnly) {
+        if (
+          pointerStarCount(
+            declarations.parameters[rawParameterIndex].nativeType
+          ) == 0
+        ) {
+          throw `null-only foreign parameter "${contract.parameters[parameterIndex].name}" requires a C pointer parameter`;
+        }
+        parameters.push(NativeForeignParameterContract({
+          name: contract.parameters[parameterIndex].name.copyBytes(
+            0,
+            contract.parameters[parameterIndex].name.byteLength
+          ),
+          capability: "value",
+          abiMode: "value",
+          typeName: "null",
+          nullOnly: true,
+          fixedValue: "",
+        }));
+        parameterIndex = parameterIndex + 1;
+        continue;
+      }
+      if (contract.parameters[parameterIndex].fixedValue.byteLength > 0) {
+        const constantIndex = try findRawConstant(
+          declarations,
+          contract.parameters[parameterIndex].fixedValue
+        );
+        if (!fixedConstantMatchesParameter(
+          declarations,
+          constantIndex,
+          rawParameterIndex
+        )) {
+          throw `fixed foreign constant "${contract.parameters[parameterIndex].fixedValue}" has type ${declarations.constants[constantIndex].typeName}, expected ${declarations.parameters[rawParameterIndex].nativeType} for parameter "${contract.parameters[parameterIndex].name}"`;
+        }
+        parameters.push(NativeForeignParameterContract({
+          name: contract.parameters[parameterIndex].name.copyBytes(
+            0,
+            contract.parameters[parameterIndex].name.byteLength
+          ),
+          capability: "value",
+          abiMode: "value",
+          typeName: "",
+          nullOnly: false,
+          fixedValue: declarations.constants[constantIndex]
+            .nativeName.copyBytes(
+              0,
+              declarations.constants[constantIndex].nativeName.byteLength
+            ),
+        }));
+        parameterIndex = parameterIndex + 1;
+        continue;
+      }
       const handleParameter = try normalizedHandleParameter(
         contract.parameters[parameterIndex],
         declarations.parameters[rawParameterIndex].nativeType,
@@ -1770,6 +1924,8 @@ export function normalizeForeignContracts(
         capability: capability.copyBytes(0, capability.byteLength),
         abiMode,
         typeName,
+        nullOnly: false,
+        fixedValue: "",
       }));
       parameterIndex = parameterIndex + 1;
     }

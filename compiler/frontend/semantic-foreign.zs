@@ -10,6 +10,7 @@ import {
   moduleSymbolIndex,
 } from "./module-symbols.zs";
 import {
+  ModuleForeignArgument,
   ModuleFunctionSignature,
   ModuleFieldSignature,
   ModuleMethodSignature,
@@ -108,7 +109,14 @@ function foreignFunctionSignature(
 ): ModuleFunctionSignature {
   let parameterModes = Array<String>();
   let parameterTypes = Array<String>();
+  let nativeToVisible = Array<usize>();
+  let visibleIndex: usize = 0;
   for (const parameter of contract.parameters) {
+    if (parameter.fixedValue.byteLength > 0) {
+      nativeToVisible.push(contract.parameters.length);
+      continue;
+    }
+    nativeToVisible.push(visibleIndex);
     if (parameter.capability == "move") parameterModes.push("value");
     else parameterModes.push(parameter.capability.copyBytes(
       0,
@@ -117,6 +125,7 @@ function foreignFunctionSignature(
     parameterTypes.push(
       localForeignTypeName(types, namespace, parameter.typeName)
     );
+    visibleIndex = visibleIndex + 1;
   }
   let errorType = "";
   match (in contract.errorType) {
@@ -127,7 +136,18 @@ function foreignFunctionSignature(
   }
   let invalidatesParameters = Array<usize>();
   for (const parameter of contract.invalidatesParameters) {
-    invalidatesParameters.push(parameter);
+    if (parameter < nativeToVisible.length) {
+      invalidatesParameters.push(nativeToVisible[parameter]);
+    }
+  }
+  let viewParameter = Option<usize>.none;
+  match (in contract.borrowedFromParameter) {
+    some(parameter) => {
+      if (parameter < nativeToVisible.length) {
+        viewParameter = Option.some(nativeToVisible[parameter]);
+      }
+    }
+    none => {}
   }
   return ModuleFunctionSignature({
     asynchronous: false,
@@ -136,7 +156,7 @@ function foreignFunctionSignature(
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,
     parameterTypes,
-    viewParameter: contract.borrowedFromParameter,
+    viewParameter,
     invalidatesParameters,
     returnType: localForeignTypeName(
       types,
@@ -145,6 +165,35 @@ function foreignFunctionSignature(
     ),
     errorType,
   });
+}
+
+function foreignArgumentPlan(
+  in contract: NativeForeignFunctionContract
+): Array<ModuleForeignArgument> {
+  let arguments = Array<ModuleForeignArgument>();
+  let source: usize = 0;
+  for (const parameter of contract.parameters) {
+    if (parameter.fixedValue.byteLength > 0) {
+      arguments.push(ModuleForeignArgument({
+        kind: "fixed",
+        source: 0,
+        value: parameter.fixedValue.copyBytes(
+          0,
+          parameter.fixedValue.byteLength
+        ),
+        mode: "value",
+      }));
+      continue;
+    }
+    arguments.push(ModuleForeignArgument({
+      kind: "argument",
+      source,
+      value: "",
+      mode: parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength),
+    }));
+    source = source + 1;
+  }
+  return arguments;
 }
 
 function missingContract(
@@ -213,11 +262,8 @@ function attachSelectiveFunction(
       0,
       contracts.moduleSpecifier.byteLength
     );
-  for (const parameter of contracts.functions[contractIndex].parameters) {
-    modules[moduleIndex].symbols[symbolIndex].foreignParameterAbiModes.push(
-      parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength)
-    );
-  }
+  modules[moduleIndex].symbols[symbolIndex].foreignArguments =
+    foreignArgumentPlan(contracts.functions[contractIndex]);
   for (const successValue of contracts.functions[contractIndex].successValues) {
     modules[moduleIndex].symbols[symbolIndex].foreignSuccessValues.push(
       successValue.copyBytes(0, successValue.byteLength)
@@ -238,17 +284,11 @@ function attachNamespaceFunctions(
     const name = `${namespace}.${contract.name}`;
     const symbolIndex = modules[moduleIndex].symbols.length;
     let successValues = Array<String>();
-    let abiModes = Array<String>();
+    const foreignArguments = foreignArgumentPlan(contract);
     for (const successValue of contract.successValues) {
       successValues.push(
         successValue.copyBytes(0, successValue.byteLength)
       );
-    }
-    for (const parameter of contract.parameters) {
-      abiModes.push(parameter.abiMode.copyBytes(
-        0,
-        parameter.abiMode.byteLength
-      ));
     }
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name: name.copyBytes(0, name.byteLength),
@@ -270,7 +310,7 @@ function attachNamespaceFunctions(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: successValues,
-      foreignParameterAbiModes: abiModes,
+      foreignArguments,
       offset,
       line,
       column,
@@ -314,7 +354,7 @@ function attachNamespaceConstants(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
-      foreignParameterAbiModes: Array<String>(),
+      foreignArguments: Array<ModuleForeignArgument>(),
       offset,
       line,
       column,
@@ -399,7 +439,7 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
-      foreignParameterAbiModes: Array<String>(),
+      foreignArguments: Array<ModuleForeignArgument>(),
       offset,
       line,
       column,
@@ -429,7 +469,7 @@ function attachForeignTypes(
         contracts.moduleSpecifier.byteLength
       ),
       foreignSuccessValues: Array<String>(),
-      foreignParameterAbiModes: Array<String>(),
+      foreignArguments: Array<ModuleForeignArgument>(),
       offset,
       line,
       column,
