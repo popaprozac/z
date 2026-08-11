@@ -9,6 +9,7 @@ export type SelfHostDifferentialCase = {
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
   { entry: "tests/fixtures/self-host-emit-input.zs" },
   { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
+  { entry: "tests/fixtures/self-host-emit-arena.zs" },
   { entry: "tests/fixtures/self-host-emit-map.zs" },
   { entry: "tests/fixtures/self-host-emit-set.zs" },
   { entry: "tests/fixtures/self-host-emit-option.zs" },
@@ -49,6 +50,7 @@ const focusedNegative = { kind: "focused-negative" } as const;
 export const selfHostEmitFixtureClassifications: Readonly<
   Record<string, SelfHostEmitFixtureClassification>
 > = {
+  "self-host-emit-arena.zs": differential,
   "self-host-emit-cleanup-flow.zs": focusedPositive,
   "self-host-emit-cleanup.zs": focusedPositive,
   "self-host-emit-control-flow.zs": differential,

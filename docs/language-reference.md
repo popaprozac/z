@@ -1542,6 +1542,13 @@ The options object is optional. `initialCapacity` reserves the first page size
 and remains a performance hint: the arena is still growable and uses the same
 safety and cleanup rules after it adds more pages.
 
+Stage 0 and the fixed-point native frontend implement the same first-tier
+contract. Native lowering uses aligned stable pages plus type-specific create
+helpers; cleanup-bearing values register one reverse-order cleanup record while
+cleanup-free values register none. Selective aliases such as
+`import { Arena as Region } from "std/memory";` preserve the same ownership and
+runtime behavior.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
 stored, returned, captured by stored or escaping closures, passed as owned or
 mutable values, or held across `await`. A synchronous inline closure accepted

@@ -48,6 +48,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f32Type) return "float";
   if (type.kind == LoweredTypeKind.f64Type) return "double";
   if (type.kind == LoweredTypeKind.fsLockType) return "Z_FsLock";
+  if (type.kind == LoweredTypeKind.arenaType) return "Z_Arena";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.cstringType) return "const char *";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
@@ -370,6 +371,7 @@ function loweredTypeForIdentity(
   if (identity == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
   if (identity == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
   if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
+  if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
   for (const declaration of program.arrays) {
     if (declaration.name == identity) return LoweredType({
@@ -404,6 +406,112 @@ function loweredTypeForIdentity(
     });
   }
   throw `native C emission cannot resolve intrinsic type identity ${identity}`;
+}
+
+function arenaTypeSymbol(in identity: String): String {
+  let output = TextBuffer();
+  output.append(`${identity.byteLength}_`);
+  let index: usize = 0;
+  while (index < identity.byteLength) {
+    const byte = identity.byteAt(index);
+    if (
+      (byte >= 48 && byte <= 57)
+      || (byte >= 65 && byte <= 90)
+      || (byte >= 97 && byte <= 122)
+      || byte == 95
+    ) output.appendAscii(byte);
+    else output.append(`_${byte}_`);
+    index = index + 1;
+  }
+  return output.finish();
+}
+
+function collectArenaValueTypes(
+  in program: LoweredProgram,
+  in expressions: Array<LoweredExpression>,
+  inout values: Array<LoweredType>
+): void throws String {
+  for (const expression of expressions) {
+    if (expression.kind != LoweredExpressionKind.arenaCreate) continue;
+    const type = try loweredTypeForIdentity(program, expression.value);
+    let present = false;
+    for (const candidate of values) {
+      if (candidate.kind == type.kind && candidate.name == type.name) {
+        present = true;
+      }
+    }
+    if (!present) values.push(type);
+  }
+}
+
+function programArenaValueTypes(
+  in program: LoweredProgram
+): Array<LoweredType> throws String {
+  let values = Array<LoweredType>();
+  for (const declaration of program.functions) {
+    try collectArenaValueTypes(
+      program,
+      declaration.expressions,
+      inout values
+    );
+  }
+  for (const aggregate of program.structs) {
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => try collectArenaValueTypes(
+        program,
+        deinitializer.expressions,
+        inout values
+      );
+      none => {}
+    }
+  }
+  return values;
+}
+
+function expressionsUseArena(
+  in expressions: Array<LoweredExpression>
+): boolean {
+  for (const expression of expressions) {
+    if (
+      expression.kind == LoweredExpressionKind.arenaNew
+      || expression.kind == LoweredExpressionKind.arenaCreate
+      || expression.kind == LoweredExpressionKind.arenaReset
+    ) return true;
+  }
+  return false;
+}
+
+function programUsesArena(in program: LoweredProgram): boolean {
+  for (const constant of program.constants) {
+    if (constant.type.kind == LoweredTypeKind.arenaType) return true;
+  }
+  for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      if (field.type.kind == LoweredTypeKind.arenaType) return true;
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => {
+        if (expressionsUseArena(deinitializer.expressions)) return true;
+      }
+      none => {}
+    }
+  }
+  for (const declaration of program.functions) {
+    if (declaration.returnType.kind == LoweredTypeKind.arenaType) return true;
+    for (const parameter of declaration.parameters) {
+      if (parameter.type.kind == LoweredTypeKind.arenaType) return true;
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => {
+          if (type.kind == LoweredTypeKind.arenaType) return true;
+        }
+        none => {}
+      }
+    }
+    if (expressionsUseArena(declaration.expressions)) return true;
+  }
+  return false;
 }
 
 function mutexValueType(
@@ -1820,6 +1928,43 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arenaNew) {
+    if (declaration.expressions[index].children.length > 1) {
+      throw "native C emission received malformed Arena construction";
+    }
+    output.append("z_stage1_arena_new(");
+    if (declaration.expressions[index].children.length == 1) {
+      const capacity = declaration.expressions[index].children[0];
+      try appendExpression(inout output, declaration, capacity);
+    } else output.append("0");
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arenaCreate) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed Arena.create";
+    }
+    output.append("z_stage1_arena_create_");
+    output.append(arenaTypeSymbol(declaration.expressions[index].value));
+    output.append("(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), ");
+    const value = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, value);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.arenaReset) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed Arena.reset";
+    }
+    output.append("z_stage1_arena_reset(&(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("))");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.mutexValue) {
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received malformed Mutex construction";
@@ -2456,7 +2601,9 @@ function appendLocalStatementStorage(
   };
   const viewStorage = match (in declaration.statements[index].expression) {
     some(initializer) => declaration.expressions[initializer].kind
-      == LoweredExpressionKind.viewProjection;
+      == LoweredExpressionKind.viewProjection
+      || declaration.expressions[initializer].kind
+        == LoweredExpressionKind.arenaCreate;
     none => false;
   };
   const classStorage = match (in declaration.statements[index].type) {
@@ -7426,6 +7573,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.arenaType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -8125,6 +8273,168 @@ function appendSetRuntime(
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("  return true;\n}\n\n");
+  }
+}
+
+function appendArenaRuntime(inout output: TextBuffer): void {
+  output.append("typedef void (*Z_ArenaCleanupFunction)(void *value);\n\n");
+  output.append("typedef struct Z_ArenaPage {\n");
+  output.append("  struct Z_ArenaPage *next;\n");
+  output.append("  size_t used;\n");
+  output.append("  size_t capacity;\n");
+  output.append("  max_align_t alignment;\n");
+  output.append("  unsigned char data[];\n");
+  output.append("} Z_ArenaPage;\n\n");
+  output.append("typedef struct Z_ArenaCleanup {\n");
+  output.append("  struct Z_ArenaCleanup *next;\n");
+  output.append("  void *value;\n");
+  output.append("  Z_ArenaCleanupFunction function;\n");
+  output.append("} Z_ArenaCleanup;\n\n");
+  output.append("typedef struct Z_Arena {\n");
+  output.append("  Z_ArenaPage *pages;\n");
+  output.append("  Z_ArenaCleanup *cleanups;\n");
+  output.append("  size_t initial_capacity;\n");
+  output.append("} Z_Arena;\n\n");
+  output.append("static inline __attribute__((unused)) Z_Arena z_stage1_arena_new(size_t initial_capacity) {\n");
+  output.append("  return (Z_Arena){ NULL, NULL, initial_capacity };\n");
+  output.append("}\n\n");
+  output.append("static __attribute__((unused)) void *z_stage1_arena_allocate(Z_Arena *arena, size_t size, size_t alignment) {\n");
+  output.append("  if (arena == NULL || alignment == 0 || (alignment & (alignment - 1)) != 0) abort();\n");
+  output.append("  if (size == 0) size = 1;\n");
+  output.append("  Z_ArenaPage *page = arena->pages;\n");
+  output.append("  if (page != NULL) {\n");
+  output.append("    if (page->used <= SIZE_MAX - (alignment - 1)) {\n");
+  output.append("      const size_t aligned = (page->used + alignment - 1) & ~(alignment - 1);\n");
+  output.append("      if (aligned <= page->capacity && size <= page->capacity - aligned) {\n");
+  output.append("        void *result = page->data + aligned;\n");
+  output.append("        page->used = aligned + size;\n");
+  output.append("        return result;\n");
+  output.append("      }\n");
+  output.append("    }\n");
+  output.append("  }\n");
+  output.append("  size_t capacity = page == NULL && arena->initial_capacity > 0 ? arena->initial_capacity : 4096;\n");
+  output.append("  if (capacity < size) capacity = size;\n");
+  output.append("  if (capacity <= SIZE_MAX - (alignment - 1)) capacity += alignment - 1;\n");
+  output.append("  else abort();\n");
+  output.append("  if (capacity > SIZE_MAX - sizeof(Z_ArenaPage)) abort();\n");
+  output.append("  Z_ArenaPage *created = (Z_ArenaPage *)malloc(sizeof(Z_ArenaPage) + capacity);\n");
+  output.append("  if (created == NULL) abort();\n");
+  output.append("  created->next = arena->pages;\n");
+  output.append("  created->used = 0;\n");
+  output.append("  created->capacity = capacity;\n");
+  output.append("  arena->pages = created;\n");
+  output.append("  return z_stage1_arena_allocate(arena, size, alignment);\n");
+  output.append("}\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_arena_register_cleanup(Z_Arena *arena, void *value, Z_ArenaCleanupFunction function) {\n");
+  output.append("  Z_ArenaCleanup *cleanup = (Z_ArenaCleanup *)z_stage1_arena_allocate(arena, sizeof(Z_ArenaCleanup), _Alignof(Z_ArenaCleanup));\n");
+  output.append("  cleanup->next = arena->cleanups;\n");
+  output.append("  cleanup->value = value;\n");
+  output.append("  cleanup->function = function;\n");
+  output.append("  arena->cleanups = cleanup;\n");
+  output.append("}\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_arena_reset(Z_Arena *arena) {\n");
+  output.append("  if (arena == NULL) return;\n");
+  output.append("  Z_ArenaCleanup *cleanup = arena->cleanups;\n");
+  output.append("  while (cleanup != NULL) {\n");
+  output.append("    Z_ArenaCleanup *next = cleanup->next;\n");
+  output.append("    cleanup->function(cleanup->value);\n");
+  output.append("    cleanup = next;\n");
+  output.append("  }\n");
+  output.append("  Z_ArenaPage *page = arena->pages;\n");
+  output.append("  while (page != NULL) {\n");
+  output.append("    Z_ArenaPage *next = page->next;\n");
+  output.append("    free(page);\n");
+  output.append("    page = next;\n");
+  output.append("  }\n");
+  output.append("  arena->pages = NULL;\n");
+  output.append("  arena->cleanups = NULL;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void Z_Arena_deinit(Z_Arena *arena) {\n");
+  output.append("  z_stage1_arena_reset(arena);\n");
+  output.append("}\n\n");
+}
+
+function appendArenaValueCleanup(
+  inout output: TextBuffer,
+  in type: LoweredType
+): void throws String {
+  if (type.kind == LoweredTypeKind.classType) {
+    output.append("  Z_");
+    output.append(type.name);
+    output.append("_release(*((Z_");
+    output.append(type.name);
+    output.append(" **)value));\n");
+    return;
+  }
+  output.append("  Z_");
+  output.append(type.name);
+  output.append("_deinit((");
+  const nativeType = try cType(type);
+  output.append(nativeType);
+  output.append(" *)value);\n");
+}
+
+function arenaValueIdentity(in type: LoweredType): String throws String {
+  if (type.kind == LoweredTypeKind.booleanType) return "boolean";
+  if (type.kind == LoweredTypeKind.i8Type) return "i8";
+  if (type.kind == LoweredTypeKind.i16Type) return "i16";
+  if (type.kind == LoweredTypeKind.i32Type) return "i32";
+  if (type.kind == LoweredTypeKind.i64Type) return "i64";
+  if (type.kind == LoweredTypeKind.u8Type) return "u8";
+  if (type.kind == LoweredTypeKind.u16Type) return "u16";
+  if (type.kind == LoweredTypeKind.u32Type) return "u32";
+  if (type.kind == LoweredTypeKind.u64Type) return "u64";
+  if (type.kind == LoweredTypeKind.isizeType) return "isize";
+  if (type.kind == LoweredTypeKind.usizeType) return "usize";
+  if (type.kind == LoweredTypeKind.f32Type) return "f32";
+  if (type.kind == LoweredTypeKind.f64Type) return "f64";
+  if (type.kind == LoweredTypeKind.stringType) return "String";
+  if (type.name.byteLength > 0) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
+  throw "native C emission cannot form an Arena value identity";
+}
+
+function appendArenaCreateHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  const valueTypes = try programArenaValueTypes(program);
+  for (const type of valueTypes) {
+    const nativeType = try cType(type);
+    const identity = try arenaValueIdentity(type);
+    const symbol = arenaTypeSymbol(identity);
+    if (loweredTypeNeedsDeinit(program, type)) {
+      output.append("static __attribute__((unused)) void z_stage1_arena_cleanup_");
+      output.append(symbol);
+      output.append("(void *value) {\n");
+      try appendArenaValueCleanup(inout output, type);
+      output.append("}\n\n");
+    }
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(nativeType);
+    output.append(" *z_stage1_arena_create_");
+    output.append(symbol);
+    output.append("(Z_Arena *arena, ");
+    output.append(nativeType);
+    output.append(" value) {\n");
+    output.append("  ");
+    output.append(nativeType);
+    output.append(" *stored = (");
+    output.append(nativeType);
+    output.append(" *)z_stage1_arena_allocate(arena, sizeof(");
+    output.append(nativeType);
+    output.append("), _Alignof(");
+    output.append(nativeType);
+    output.append("));\n");
+    output.append("  *stored = value;\n");
+    if (loweredTypeNeedsDeinit(program, type)) {
+      output.append("  z_stage1_arena_register_cleanup(arena, stored, z_stage1_arena_cleanup_");
+      output.append(symbol);
+      output.append(");\n");
+    }
+    output.append("  return stored;\n");
+    output.append("}\n\n");
   }
 }
 
@@ -8858,6 +9168,7 @@ function emitLoweredC(
   const usesOnce = onceTypeNames.length > 0;
   const taskTypeNames = programTaskTypeNames(program);
   const usesThreads = taskTypeNames.length > 0;
+  const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
   if (
     usesRealPath
@@ -8868,7 +9179,7 @@ function emitLoweredC(
   ) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
-  output.append("#include <stdbool.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n");
   for (const header of program.foreignHeaders) {
     output.append("#include \"");
@@ -9222,6 +9533,7 @@ function emitLoweredC(
   output.append("  return result;\n");
   output.append("}\n\n");
   output.append("typedef struct Z_FsLock {\n  intptr_t native;\n} Z_FsLock;\n\n");
+  if (usesArena) appendArenaRuntime(inout output);
   for (const resource of program.foreignResources) {
     if (!resource.handle) continue;
     output.append("typedef ");
@@ -9457,6 +9769,7 @@ function emitLoweredC(
     output.append(declaration.name);
     output.append(" *self);\n");
   }
+  if (usesArena) try appendArenaCreateHelpers(inout output, program);
   for (const declaration of program.functions) {
     try appendFunctionSignature(
       inout output,
@@ -9594,9 +9907,18 @@ function emitLoweredC(
         if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_");
           output.append(aggregate.fields[fieldIndex].type.name);
-          output.append("_deinit(&self->");
-          output.append(aggregate.fields[fieldIndex].name);
-          output.append(");\n");
+          if (
+            aggregate.fields[fieldIndex].type.kind
+              == LoweredTypeKind.classType
+          ) {
+            output.append("_release(self->");
+            output.append(aggregate.fields[fieldIndex].name);
+            output.append(");\n");
+          } else {
+            output.append("_deinit(&self->");
+            output.append(aggregate.fields[fieldIndex].name);
+            output.append(");\n");
+          }
         }
       }
       output.append("}\n\n");

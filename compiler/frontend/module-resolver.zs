@@ -87,6 +87,7 @@ import {
   valueBindingIsMutable,
   valueBindingOwnership,
   valueBindingType,
+  valueBindingViewOwner,
 } from "./semantic-flow-state.zs";
 import {
   NativeForeignModuleContract,
@@ -4328,6 +4329,62 @@ function inferExpressionNodeType(
           node.column
         );
       }
+      if (importedStandardType(
+        module,
+        base,
+        "std/memory",
+        "Arena"
+      )) {
+        const arguments = callArgumentNodes(children);
+        if (arguments.length > 1) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "Arena() expects no arguments or one options object",
+            node.line,
+            node.column
+          );
+        }
+        if (arguments.length == 1) {
+          const options = arguments[0];
+          if (
+            tree.nodes[options].kind != ExpressionKind.objectExpression
+            || tree.nodes[options].children.length != 1
+            || tree.nodes[options].labels.length != 1
+            || tree.nodes[options].labels[0] != "initialCapacity"
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "Arena options require exactly initialCapacity",
+              tree.nodes[options].line,
+              tree.nodes[options].column
+            );
+          }
+          const capacity = tree.nodes[options].children[0];
+          const actual = try inferExpressionNodeTypeExpected(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            capacity,
+            "usize",
+            inout bindings,
+            inout evidence
+          );
+          try requireExpressionType(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            capacity,
+            "usize",
+            actual
+          );
+        }
+        return copiedString(base);
+      }
       let mutexBindingName = base.copyBytes(0, base.byteLength);
       match (genericTypeShape(callee)) {
         some(generic) => mutexBindingName = generic.base.copyBytes(
@@ -4800,6 +4857,169 @@ function inferExpressionNodeType(
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        if (
+          ownerType == "Arena"
+          || importedStandardType(
+            module,
+            ownerType,
+            "std/memory",
+            "Arena"
+          )
+        ) {
+          if (
+            valueBindingType(bindings, "__z_native_async_context")
+              == "true"
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "Arena access cannot cross suspension in the first region tier",
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+          if (optionalMethodCall) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "optional call cannot invoke Arena methods",
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+          const receiverRoot = expressionStorageRootName(
+            tree,
+            receiverIndex
+          );
+          if (receiverRoot.byteLength == 0) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "Arena methods require named storage",
+              tree.nodes[receiverIndex].line,
+              tree.nodes[receiverIndex].column
+            );
+          }
+          if (!valueBindingIsMutable(bindings, receiverRoot)) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `Arena.${methodName} requires addressable let storage`,
+              tree.nodes[receiverIndex].line,
+              tree.nodes[receiverIndex].column
+            );
+          }
+          const argumentNodes = callArgumentNodes(children);
+          if (methodName == "reset") {
+            if (argumentNodes.length != 0) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `"reset" expects 0 arguments, received ${argumentNodes.length}`,
+                node.line,
+                node.column
+              );
+            }
+            const liveView = liveViewBindingForOwner(
+              bindings,
+              receiverRoot
+            );
+            if (liveView.byteLength > 0) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `cannot reset Arena "${receiverRoot}" while view "${liveView}" is live`,
+                tree.nodes[receiverIndex].line,
+                tree.nodes[receiverIndex].column
+              );
+            }
+            return "void";
+          }
+          if (methodName != "create") {
+            throw resolutionError(
+              ModuleResolveErrorKind.unknownMember,
+              module.path,
+              `Arena has no method "${methodName}"`,
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+          if (argumentNodes.length != 1) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `"create" expects 1 argument, received ${argumentNodes.length}`,
+              node.line,
+              node.column
+            );
+          }
+          const argument = argumentNodes[0];
+          const actual = try inferExpressionNodeType(
+            module,
+            modules,
+            moduleIndex,
+            arena,
+            tree,
+            argument,
+            inout bindings,
+            inout evidence
+          );
+          try requireSettledExpressionType(module, tree, argument, actual);
+          if (
+            actual == "void"
+            || actual == "Arena"
+            || importedStandardType(
+              module,
+              actual,
+              "std/memory",
+              "Arena"
+            )
+            || stringStartsWith(actual, "view ")
+            || stringStartsWith(actual, "Slice<")
+            || stringStartsWith(actual, "Task<")
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              `Arena.create cannot store ${actual}`,
+              tree.nodes[argument].line,
+              tree.nodes[argument].column
+            );
+          }
+          match (typeSymbolLocation(modules, moduleIndex, actual)) {
+            some(location) => {
+              if (
+                modules[location.moduleIndex].symbols[location.symbolIndex].kind
+                  == ModuleSymbolKind.classSymbol
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "Arena.create does not directly root reference-identity objects in the first tier",
+                  tree.nodes[argument].line,
+                  tree.nodes[argument].column
+                );
+              }
+            }
+            none => {}
+          }
+          try consumeOwnedExpressionNode(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            argument,
+            actual,
+            false,
+            inout bindings
+          );
+          setExpressionViewOrigin(
+            inout bindings,
+            tree.nodes[index].offset,
+            receiverRoot
+          );
+          return `view ${actual}`;
+        }
         match (genericTypeShape(ownerType)) {
           some(mutex) => {
             if (mutex.base == "Mutex" && mutex.arguments.length == 1) {
@@ -5964,6 +6184,7 @@ function inferStatement(
           || (kind == StatementKind.selectStatement && contextualExpected.byteLength > 0)
         ) {
           let acceptsBorrowedView = false;
+          let returningView = false;
           if (
             kind == StatementKind.returnStatement
             && stringStartsWith(contextualExpected, "view ")
@@ -5972,12 +6193,29 @@ function inferStatement(
               5,
               contextualExpected.byteLength
             );
-            if (equivalentTypes(modules, moduleIndex, target, actual)) {
+            let actualTarget = actual.copyBytes(0, actual.byteLength);
+            if (stringStartsWith(actualTarget, "view ")) {
+              actualTarget = actualTarget.copyBytes(5, actualTarget.byteLength);
+            }
+            if (equivalentTypes(modules, moduleIndex, target, actualTarget)) {
+              returningView = true;
               match (in expression.tree) {
                 some(tree) => {
                   const root = tree.root;
                   const expressionKind = tree.nodes[root].kind;
                   const owner = expressionStorageRootName(tree, root);
+                  const callOwner = expressionViewOrigin(
+                    bindings,
+                    tree.nodes[root].offset
+                  );
+                  const ownerViewOwner = valueBindingViewOwner(
+                    bindings,
+                    owner
+                  );
+                  const callOwnerViewOwner = valueBindingViewOwner(
+                    bindings,
+                    callOwner
+                  );
                   if (
                     (
                       expressionKind == ExpressionKind.identifierExpression
@@ -5985,12 +6223,30 @@ function inferStatement(
                       || expressionKind == ExpressionKind.indexExpression
                     )
                     && valueBindingIsBorrowed(bindings, owner)
+                    && !valueBindingIsMutable(bindings, owner)
                     && !valueBindingIsMatchBorrowed(bindings, owner)
+                    && ownerViewOwner.byteLength == 0
+                  ) acceptsBorrowedView = true;
+                  else if (
+                    callOwner.byteLength > 0
+                    && valueBindingIsBorrowed(bindings, callOwner)
+                    && !valueBindingIsMutable(bindings, callOwner)
+                    && !valueBindingIsMatchBorrowed(bindings, callOwner)
+                    && callOwnerViewOwner.byteLength == 0
                   ) acceptsBorrowedView = true;
                 }
                 none => {}
               }
             }
+          }
+          if (returningView && !acceptsBorrowedView) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "a parameter-provenanced view must return an immutable input, one of its fields, or one of its indexed elements",
+              arena.nodes[index].line,
+              arena.nodes[index].column
+            );
           }
           if (!acceptsBorrowedView) {
             try requireExpressionSyntaxType(
@@ -6284,6 +6540,60 @@ function inferStatement(
   return nestedContinues;
 }
 
+function expressionUsesBinding(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): boolean {
+  if (
+    (
+      tree.nodes[index].kind == ExpressionKind.identifierExpression
+      || tree.nodes[index].kind == ExpressionKind.argumentBindingExpression
+      || tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    )
+    && identifierLookupName(tree.nodes[index].value) == name
+  ) return true;
+  for (const child of tree.nodes[index].children) {
+    if (expressionUsesBinding(arena, tree, child, name)) return true;
+  }
+  for (const statement of tree.nodes[index].statements) {
+    if (statementUsesBinding(arena, statement, name)) return true;
+  }
+  return false;
+}
+
+function statementUsesBinding(
+  in arena: StatementArena,
+  index: usize,
+  in name: String
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionUsesBinding(arena, tree, root, name)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionUsesBinding(arena, tree, root, name)) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (statementUsesBinding(arena, child, name)) return true;
+  }
+  return false;
+}
+
 function inferStatementSequence(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -6294,7 +6604,32 @@ function inferStatementSequence(
   inout evidence: ModuleSemanticEvidence,
   in expectedReturn: String
 ): boolean throws ModuleResolveError {
-  for (const index of indices) {
+  let position: usize = 0;
+  while (position < indices.length) {
+    let bindingIndex: usize = 0;
+    while (bindingIndex < bindings.length) {
+      if (
+        bindings[bindingIndex].viewOwner.byteLength > 0
+        && bindings[bindingIndex].ownership
+          == NativeOwnershipState.available
+      ) {
+        let usedLater = false;
+        let remaining = position;
+        while (remaining < indices.length && !usedLater) {
+          usedLater = statementUsesBinding(
+            arena,
+            indices[remaining],
+            bindings[bindingIndex].name
+          );
+          remaining = remaining + 1;
+        }
+        if (!usedLater) {
+          bindings[bindingIndex].ownership = NativeOwnershipState.moved;
+        }
+      }
+      bindingIndex = bindingIndex + 1;
+    }
+    const index = indices[position];
     const continues = try inferStatement(
       module,
       modules,
@@ -6306,6 +6641,7 @@ function inferStatementSequence(
       expectedReturn
     );
     if (!continues) return false;
+    position = position + 1;
   }
   return true;
 }

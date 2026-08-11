@@ -241,6 +241,23 @@ export function valueBindingIsBorrowed(
   return false;
 }
 
+export function valueBindingViewOwner(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): String {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      return bindings[index].viewOwner.copyBytes(
+        0,
+        bindings[index].viewOwner.byteLength
+      );
+    }
+  }
+  return "";
+}
+
 export function valueBindingIsMatchBorrowed(
   in bindings: Array<NativeValueBinding>,
   in name: String

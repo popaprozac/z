@@ -33,6 +33,18 @@ Run its focused grammar checks with:
 bun run z run examples/applications/source-inspector/lexer-smoke.zs
 ```
 
+[`arena-smoke.zs`](arena-smoke.zs) runs that production lexer over its own
+source while placing short-lived token-coordinate records in `std/memory`
+`Arena` storage. It is a compiler-shaped region pressure test: records remain
+address-stable across page growth, their views stay inside the synchronous scan,
+and one `reset()` releases the batch after its last use. The records are
+cleanup-free, so the generated runtime does not allocate per-record destructor
+metadata. Run it from the repository root:
+
+```sh
+bun run z run examples/applications/source-inspector/arena-smoke.zs
+```
+
 [`token-stream.zs`](token-stream.zs) is the first stage-1 bridge. It emits a stable
 tab-separated token stream with fixed-width hexadecimal locations and
 hexadecimal token text. It buffers the complete stream and performs one native

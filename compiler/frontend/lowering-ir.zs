@@ -56,6 +56,7 @@ export enum LoweredTypeKind {
   f32Type,
   f64Type,
   fsLockType,
+  arenaType,
   stringType,
   cstringType,
   arrayType,
@@ -180,6 +181,9 @@ export enum LoweredExpressionKind {
   classValue,
   mutexValue,
   mutexWithLock,
+  arenaNew,
+  arenaCreate,
+  arenaReset,
   onceEmpty,
   onceInitialize,
   onceGet,
@@ -519,6 +523,7 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
+  if (type.kind == LoweredTypeKind.arenaType) return "Arena";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   if (type.kind == LoweredTypeKind.cstringType) return "cstring";
   if (type.kind == LoweredTypeKind.mutexType) {
@@ -569,6 +574,22 @@ function intrinsicMutexName(in valueType: LoweredType): String {
 function intrinsicTaskName(in resultType: LoweredType): String {
   const identity = loweredTypeIdentity(resultType);
   return `Task_${identity}`;
+}
+
+function importedArenaBinding(in program: Program, in name: String): boolean {
+  if (name == "Arena") return true;
+  for (const declaration of program.imports) {
+    if (declaration.header != "std/memory" || !declaration.selective) {
+      continue;
+    }
+    for (const binding of declaration.bindings) {
+      if (
+        binding.localName == name
+        && binding.importedName == "Arena"
+      ) return true;
+    }
+  }
+  return false;
 }
 
 function taskStorageType(
@@ -685,6 +706,12 @@ function lowerTypeName(
     return LoweredType({
       kind: LoweredTypeKind.fsLockType,
       name: "FsLock",
+    });
+  }
+  if (importedArenaBinding(program, name)) {
+    return LoweredType({
+      kind: LoweredTypeKind.arenaType,
+      name: "Arena",
     });
   }
   if (name == "String" || name == "TextBuffer") {
@@ -1172,6 +1199,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.arenaType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1347,6 +1375,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.arenaType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -5636,6 +5665,53 @@ function lowerExpression(
     }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
+    ) {
+      let arenaBindingName = tree.nodes[calleeInput].value.copyBytes(
+        0,
+        tree.nodes[calleeInput].value.byteLength
+      );
+      match (genericTypeShape(arenaBindingName)) {
+        some(generic) => arenaBindingName = generic.base.copyBytes(
+          0,
+          generic.base.byteLength
+        );
+        none => {}
+      }
+      if (importedArenaBinding(program, arenaBindingName)) {
+        let arenaChildren = Array<usize>();
+        if (tree.nodes[index].children.length == 2) {
+          const options = tree.nodes[index].children[1];
+          if (
+            tree.nodes[options].kind != ExpressionKind.objectExpression
+            || tree.nodes[options].children.length != 1
+            || tree.nodes[options].labels.length != 1
+            || tree.nodes[options].labels[0] != "initialCapacity"
+          ) throw "native Arena construction requires exactly initialCapacity";
+          const capacityInput = tree.nodes[options].children[0];
+          const capacity = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            capacityInput,
+            "usize",
+            inout output
+          );
+          arenaChildren.push(capacity);
+        } else if (tree.nodes[index].children.length != 1) {
+          throw "native Arena construction expects no arguments or one options object";
+        }
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.arenaNew,
+          "Arena",
+          arenaChildren,
+          Array<String>()
+        );
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
     ) {
       let bindingName = tree.nodes[calleeInput].value.copyBytes(
@@ -5760,6 +5836,84 @@ function lowerExpression(
         some(name) => name;
         none => "";
       };
+      if (importedArenaBinding(program, receiverTypeName)) {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        let arenaChildren = Array<usize>();
+        arenaChildren.push(receiver);
+        if (tree.nodes[calleeInput].value == "reset") {
+          if (tree.nodes[index].children.length != 1) {
+            throw "Arena.reset takes no arguments";
+          }
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.arenaReset,
+            "Arena",
+            arenaChildren,
+            Array<String>()
+          );
+        }
+        if (tree.nodes[calleeInput].value == "create") {
+          if (tree.nodes[index].children.length != 2) {
+            throw "Arena.create takes one value";
+          }
+          const valueInput = tree.nodes[index].children[1];
+          const resultTypeName = match (
+            evidenceResolvedExpressionTypeName(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              index
+            )
+          ) {
+            some(name) => name;
+            none => throw "native Arena.create could not resolve its result type";
+          };
+          if (!stringStartsWith(resultTypeName, "view ")) {
+            throw `native Arena.create expected a view result, found ${resultTypeName}`;
+          }
+          const valueTypeName = resultTypeName.copyBytes(
+            5,
+            resultTypeName.byteLength
+          );
+          const valueType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            valueTypeName
+          );
+          let value = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            valueInput,
+            valueTypeName,
+            inout output
+          );
+          value = wrapImplicitOwnedTransfer(
+            tree,
+            valueInput,
+            value,
+            inout output
+          );
+          arenaChildren.push(value);
+          const valueIdentity = loweredTypeIdentity(valueType);
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.arenaCreate,
+            valueIdentity,
+            arenaChildren,
+            Array<String>()
+          );
+        }
+      }
       match (genericTypeShape(receiverTypeName)) {
         some(generic) => {
           if (
@@ -7758,41 +7912,63 @@ function lowerExpression(
       || tree.nodes[index].value == "isEmpty"
     ) {
       let labels = Array<String>();
-      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
-        some(receiverTypeName) => {
-          if (stringStartsWith(receiverTypeName, "view ")) {
-            labels.push("view");
-          }
-        }
-        none => {}
-      }
-      const receiver = try lowerExpression(
+      // Some synthesized async trees do not retain receiver evidence here.
+      // Keep their established String lowering, but never shadow a resolved
+      // aggregate field that happens to use the same name.
+      let stringProperty = true;
+      match (evidenceResolvedExpressionTypeName(
         program,
         importedTypes,
         evidence,
         tree,
-        receiverInput,
-        inout output
-      );
-      let children = Array<usize>();
-      children.push(receiver);
-      if (tree.nodes[index].value == "byteLength") {
-        return pushExpression(
-          inout output,
-          LoweredExpressionKind.stringLength,
-          "",
-          children,
-          labels
-        );
+        receiverInput
+      )) {
+        some(receiverTypeName) => {
+          let receiverValueTypeName = receiverTypeName.copyBytes(
+            0,
+            receiverTypeName.byteLength
+          );
+          if (stringStartsWith(receiverValueTypeName, "view ")) {
+            labels.push("view");
+            receiverValueTypeName = receiverValueTypeName.copyBytes(
+              5,
+              receiverValueTypeName.byteLength
+            );
+          }
+          stringProperty = receiverValueTypeName == "String"
+            || receiverValueTypeName == "TextBuffer";
+        }
+        none => {}
       }
-      if (tree.nodes[index].value == "isEmpty") {
-        return pushExpression(
-          inout output,
-          LoweredExpressionKind.stringIsEmpty,
-          "",
-          children,
-          labels
+      if (stringProperty) {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
         );
+        let children = Array<usize>();
+        children.push(receiver);
+        if (tree.nodes[index].value == "byteLength") {
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.stringLength,
+            "",
+            children,
+            labels
+          );
+        }
+        if (tree.nodes[index].value == "isEmpty") {
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.stringIsEmpty,
+            "",
+            children,
+            labels
+          );
+        }
       }
     }
     if (tree.nodes[receiverInput].kind == ExpressionKind.identifierExpression) {

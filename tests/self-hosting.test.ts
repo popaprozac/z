@@ -3696,6 +3696,286 @@ test("lowers filesystem lock ownership through the native frontend", () => {
   assert.equal(execution.status, 0, execution.stderr);
 });
 
+test("allocates and reversely cleans Arena values through the native frontend", () => {
+  const input = resolve(
+    projectRoot,
+    "examples/language/ownership/arena.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /typedef struct Z_Arena/);
+  assert.match(emission.stdout, /z_stage1_arena_create_\d+_ParsedRecord/);
+  assert.match(emission.stdout, /z_stage1_arena_register_cleanup/);
+  assert.match(emission.stdout, /z_stage1_arena_reset\(&\(scratch\)\)/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-arena-");
+  const executable = resolve(directory, "arena");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(
+    execution.stdout,
+    [
+      "record 20 came from line 1",
+      "record 22 came from line 8",
+      "released record 22",
+      "released record 20",
+      "record 42 came from line 12",
+      "released record 42",
+      "",
+    ].join("\n"),
+  );
+
+  const managedInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-arena.zs",
+  );
+  const managedParity = spawnSync(
+    process.execPath,
+    [cli, "check", managedInput, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(managedParity.status, 0, managedParity.stderr);
+  const managedEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", managedInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(managedEmission.status, 0, managedEmission.stderr);
+  assert.match(managedEmission.stdout, /Z_Arena scratch = z_stage1_arena_new/);
+  assert.match(
+    managedEmission.stdout,
+    /z_stage1_arena_create_\d+_ScratchBatch/,
+  );
+  assert.match(managedEmission.stdout, /Z_ScratchBatch_deinit/);
+  assert.doesNotMatch(managedEmission.stdout, /Z___z_Array_i32_deinit\(&values\)/);
+  assert.match(
+    managedEmission.stdout,
+    /void finish\(Z_Arena region\) \{\n  Z_Arena_deinit\(&region\);/,
+  );
+  assert.match(managedEmission.stdout, /finish\(scratch\);/);
+  assert.doesNotMatch(managedEmission.stdout, /Z_Arena_deinit\(&scratch\)/);
+
+  const managedExecutable = resolve(directory, "managed-arena");
+  const managedCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      managedExecutable,
+    ],
+    { encoding: "utf8", input: managedEmission.stdout },
+  );
+  assert.equal(managedCompilation.status, 0, managedCompilation.stderr);
+  const managedExecution = spawnSync(
+    managedExecutable,
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(managedExecution.status, 0, managedExecution.stderr);
+  assert.equal(
+    managedExecution.stdout,
+    "compiler scratch: 42\n"
+      + "released compiler scratch\n"
+      + "released identity 7\n",
+  );
+
+  const pressureInput = resolve(
+    projectRoot,
+    "examples/applications/source-inspector/arena-smoke.zs",
+  );
+  const pressureEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", pressureInput],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(pressureEmission.status, 0, pressureEmission.stderr);
+  assert.match(
+    pressureEmission.stdout,
+    /z_stage1_arena_create_\d+_TokenCoordinate/,
+  );
+  const coordinateHelper = pressureEmission.stdout.match(
+    /static inline[^\n]*const Z_TokenCoordinate \*z_stage1_arena_create_\d+_TokenCoordinate\([^]*?\n}\n/,
+  )?.[0] ?? "";
+  assert.notEqual(coordinateHelper, "");
+  assert.doesNotMatch(coordinateHelper, /z_stage1_arena_register_cleanup/);
+
+  const pressureExecutable = resolve(directory, "arena-source-inspector");
+  const pressureCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      pressureExecutable,
+    ],
+    { encoding: "utf8", input: pressureEmission.stdout },
+  );
+  assert.equal(pressureCompilation.status, 0, pressureCompilation.stderr);
+  const pressureExecution = spawnSync(
+    pressureExecutable,
+    [],
+    { encoding: "utf8", cwd: projectRoot },
+  );
+  assert.equal(pressureExecution.status, 0, pressureExecution.stderr);
+  assert.match(
+    pressureExecution.stdout,
+    /^inspected \d+ compiler tokens with checksum \d+\n$/,
+  );
+
+  const invalidCases = [
+    {
+      name: "arena-live-reset",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "function main(): i32 {",
+        "  let arena = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  arena.reset();",
+        "  return item.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /cannot reset Arena "arena" while view "item" is live/,
+    },
+    {
+      name: "arena-immutable",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "function main(): i32 {",
+        "  const arena = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  return item.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /Arena\.create requires addressable let storage/,
+    },
+    {
+      name: "arena-async",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "async function main(): i32 {",
+        "  let arena = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  return item.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /Arena access cannot cross suspension/,
+    },
+    {
+      name: "arena-class-root",
+      source: [
+        'import { Arena } from "std/memory";',
+        "class Session { id: i32; }",
+        "function main(): i32 {",
+        "  let arena = Arena();",
+        "  const session = arena.create(new Session({ id: 42 }));",
+        "  return session.id;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /Arena\.create does not directly root reference-identity objects/,
+    },
+    {
+      name: "arena-local-view-return",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "function leak(): view Item {",
+        "  let arena = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  return item;",
+        "}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /parameter-provenanced view must return an immutable input/,
+    },
+    {
+      name: "arena-nested-region",
+      source: [
+        'import { Arena as Region } from "std/memory";',
+        "function main(): i32 {",
+        "  let outer = Region();",
+        "  let inner = Region();",
+        "  const nested = outer.create(inner);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /Arena\.create cannot store Region/,
+    },
+  ] as const;
+  for (const invalidCase of invalidCases) {
+    const invalidInput = resolve(directory, `${invalidCase.name}.zs`);
+    writeFileSync(invalidInput, invalidCase.source);
+    const invalidEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalidEmission.status, 1);
+    assert.match(invalidEmission.stderr, invalidCase.expected);
+  }
+
+  const importedClassModule = resolve(directory, "arena-session.zs");
+  writeFileSync(
+    importedClassModule,
+    "export class Session { id: i32; }\n",
+  );
+  const importedClassRoot = resolve(directory, "arena-imported-class.zs");
+  writeFileSync(
+    importedClassRoot,
+    [
+      'import { Arena } from "std/memory";',
+      'import { Session } from "./arena-session.zs";',
+      "function main(): i32 {",
+      "  let arena = Arena();",
+      "  const session = arena.create(new Session({ id: 42 }));",
+      "  return session.id;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const importedClassEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", importedClassRoot],
+    { encoding: "utf8" },
+  );
+  assert.equal(importedClassEmission.status, 1);
+  assert.match(
+    importedClassEmission.stderr,
+    /Arena\.create does not directly root reference-identity objects/,
+  );
+
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("emits and runs a standalone native Z driver with arguments and checked file I/O", () => {
   const input = resolve(
     projectRoot,
@@ -5241,38 +5521,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^",
       code: "Z1000",
       summary: 'inferred first-class closure local "add" has no native representation yet',
-    },
-    {
-      name: "arena-construction",
-      source: [
-        'import { Arena } from "std/memory";',
-        "",
-        "function main(): i32 {",
-        "  let scratch = Arena({ initialCapacity: 65536 });",
-        "  return 0;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 4,
-      column: 17,
-      marker: "^^^^^",
-      code: "Z1000",
-      summary: "Arena has no native representation or runtime yet",
-    },
-    {
-      name: "arena-aliased-type",
-      source: [
-        'import { Arena as Region } from "std/memory";',
-        "",
-        "function discard(arena: Region): void {}",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 25,
-      marker: "^^^^^^",
-      code: "Z1000",
-      summary: "Arena has no native representation or runtime yet",
     },
     {
       name: "fixed-array",

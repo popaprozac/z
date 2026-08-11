@@ -225,6 +225,25 @@ export function collectionMethodSignature(
       errorType: "",
     }));
   }
+  if (ownerType == "Arena") {
+    let parameterModes = Array<String>();
+    let parameterTypes = Array<String>();
+    if (methodName == "reset") {
+      return Option.some(ModuleFunctionSignature({
+        asynchronous: false,
+        executorAffinity: "",
+        typeParameters: Array<String>(),
+        typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+        parameterModes,
+        parameterTypes,
+        viewParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+        returnType: "void",
+        errorType: "",
+      }));
+    }
+  }
   const generic = match (genericTypeShape(ownerType)) {
     some(generic) => generic;
     none => return Option<ModuleFunctionSignature>.none;

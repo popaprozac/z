@@ -56,7 +56,7 @@ Status meanings:
 | `Iterator<T>` | Implemented synchronous tier | Explicit `std/iteration` import; generic nominal conformance, `next(inout this): Option<T>`, explicit mutable loans for stored value iterators, unique temporary iterator storage, owned element transfer and cleanup, native-parser parity, and editor support; consuming, mutable-element, move-only foreign-element, and async iterators remain |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded child-task borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
 | Owner-tied `view T` | Implemented narrow tier | `const value = view owner.field/index` local projections; direct field/index results and niche-backed `Option<view T>` lookups from synchronous value-struct methods; and synchronous module-function returns projected from immutable `in` value owners. Multi-source returns conservatively loan every possible input while still lowering to one pointer. Views remain inferred const, read-only, non-storable, and support ordinary by-value loads when `T` is cleanup-free and copyable—including contextual `match`/`if` arms—plus synchronous `in T` forwarding and proven nonescaping inline capture. Read-only `view Array<T>` indexing/length/iteration and `view String` inspection/comparison/interpolation preserve the pointer representation through both frontends; no mutation through a view or class owners |
-| `std/memory` `Arena` | Implemented narrow tier | Stable region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, shared-loan reset exclusion and proven nonescaping inline capture; synchronous and single-threaded |
+| `std/memory` `Arena` | Implemented narrow tier in both frontends | Stable paged region allocation, inferred owner-tied views, reverse `deinit`/ARC/native RAII cleanup, shared-loan reset exclusion, aliased imports, and proven nonescaping inline capture. The fixed-point native emitter owns the C representation and cleanup helpers; regions remain synchronous and single-threaded |
 | General returned/stored borrows | Planned | Direct immutable parameter provenance is implemented; optional parameter-view containers, class alias safety, retained views, stored provenance, and general lifetime relationships remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
@@ -304,6 +304,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    library preparation, in-process native frontend work, protocol decoding, and
    the stage-0 parity parse independently. This pressure also closed canonical
    `TextBuffer`/`Arena` type identity through intermediate source modules.
+   Native `Arena` lowering now goes beyond that identity proof: direct and
+   aliased construction, stable pages, cleanup-free and cleanup-bearing
+   `create`, reverse cleanup, reset reuse, and scope cleanup execute through the
+   fixed-point C emitter. Source Inspector's Arena pressure path runs the
+   production lexer over its own source and batches temporary token-coordinate
+   records without per-record destructor metadata. The current nonescaping-view
+   tier intentionally cannot retain those record views in the parser's owned
+   arrays or AST graph; stored region provenance remains a later prerequisite
+   for arena-backed compiler trees.
    The reusable lexer, parser, protocol, and in-process library now live under
    `compiler/frontend`; Source Inspector remains their readable application
    client and standalone bridge pressure test. The first native module resolver

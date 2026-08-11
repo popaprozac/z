@@ -2390,11 +2390,50 @@ their inline `thread.spawn` and `Mutex.withLock` contexts. Storing an inferred
 closure as a first-class local still requires a native function-value and
 environment representation; Stage 1 now reports that boundary at the root
 closure expression instead of trying to lower the internal function type.
-The Stage 0 region model and runtime make `Arena` a real, exercised Z feature,
-but Stage 1 does not yet define its storage, allocation, or reverse-cleanup
-representation. Direct and aliased `std/memory` type uses now share one
-source-mapped `Z1000` boundary, as does construction; native `Array`,
-`TextBuffer`, and `Mutex` representations remain independent positives.
+## Native Arena pressure exposes the next region boundary
+
+The fixed-point native compiler now owns the first `Arena` representation rather
+than treating regions as a Stage-0-only feature. Direct and selectively aliased
+`std/memory` imports lower to aligned stable pages. `create` transfers owned
+values into type-specific helpers, cleanup-free values carry no destructor
+record, cleanup-bearing values register reverse-order cleanup, `reset` frees the
+batch and permits reuse, and scope exit performs the same cleanup. Native
+semantic rejection covers immutable Arena storage, reset while a view has a
+later use, async access, and direct class roots. The last-use scan that permits a
+valid reset uses the same view-owner state as the existing loan checker rather
+than introducing an Arena-only escape rule.
+
+A differential managed-value fixture moves an aliased region into an owned
+parameter after storing a struct with `String`, `Array`, and ARC-class fields.
+That composition exposed a native struct-cleanup bug which emitted a nonexistent
+class `deinit` call; value-struct fields now release ARC identity through the
+same retain/release path as class and enum fields. The fixture verifies one
+region cleanup, one container cleanup, and one final ARC release.
+
+The executable pressure path is compiler-shaped: Source Inspector tokenizes
+`compiler/frontend/lexer.zs` with the production Z lexer, creates 5,753
+short-lived token-coordinate records in a 4 KiB region, reads each through its
+inferred view, and resets the complete batch. This forced multiple native pages
+and verified that cleanup-free records do not receive per-value cleanup
+metadata. It also exposed a composability bug outside Arena: native lowering
+treated every member named `byteLength` as the String intrinsic even when the
+receiver was `view TokenCoordinate`. Intrinsic member lowering is now gated by
+the resolved `String`/`TextBuffer` receiver type, and the probe deliberately
+keeps the colliding field name as regression coverage.
+
+On the August 2026 macOS ARM64 development machine, ten warm-cache emission runs
+measured a 101.8 ms native median versus 124.4 ms through Stage 0 for this
+two-module probe. Fifty optimized executable runs measured 1.9 ms versus 2.0 ms
+for native- and Stage-0-emitted C respectively. The runtime difference is within
+process/filesystem noise and is recorded as parity, not a speedup claim.
+
+The more valuable negative result is the remaining nonescaping wall. A parser
+can use Arena views as local scratch, but it cannot yet store a dynamic set of
+those views in an `Array`, AST edge, field, or returned graph. Consequently this
+slice does not pretend to migrate the owned lexer token array or parser AST to a
+region. That requires explicit stored region provenance (and then evidence about
+shape-stable mutation and invalidation), which is the right next experiment
+before adding lifetime syntax or claiming whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans
 
