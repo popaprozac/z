@@ -5,9 +5,9 @@ window with a hoverable quit button. It exercises:
 
 - a large real-world header whose Clang AST exceeds 64 MiB;
 - directly imported C functions, constants, and nominal enums;
-- explicit enum-to-integer conversion for SDL event discriminants;
 - opaque `SDL_Event` union storage initialized through checked `out`;
-- a scalar union-discriminant read confined to an `unsafe` expression;
+- checked `.zd` discrimination of selected native union variants;
+- borrowed, allocation-free `match (in event)` payload projection;
 - nullable owned `SDL_Window*` and `SDL_Renderer*` values with `.zd` cleanup;
 - inferred `f32` storage initialized through checked scalar `out` pointers; and
 - deterministic reverse-order cleanup through Z ownership and `deinit`.
@@ -20,12 +20,13 @@ parameters initialize one scalar each.
 `SDLRuntime` calls `SDL_Quit()` last. On every exit after initialization, Z
 first destroys the renderer, then the window, then the runtime guard.
 
-The event loop uses the conventional `SDL_PollEvent(out event)` shape. Z gives
-the compiler-sized `SDL_Event` storage a nominal opaque type and permits SDL to
-initialize it, but ordinary safe Z still cannot construct the union or inspect
-arbitrary members. The scalar `type` discriminator is read in a narrow
-`unsafe { select event.type; }` expression. Z does not infer an active union
-member or expose SDL's nested payload records in this tier.
+The event loop uses the conventional `SDL_PollEvent(out event)` shape. Its
+adjacent declaration identifies the `type` discriminator, maps the quit and
+window-close tags, and names the active `window` member. Z then lowers
+`match (in event)` directly to a C `switch`; `windowEvent` is a non-escaping
+view into the native union, with no wrapper allocation or payload copy. The
+`other(type)` fallback preserves SDL's open-ended event space. Arbitrary or
+pointer-bearing union members remain unavailable in safe Z until contracted.
 
 On macOS, install SDL3 with Homebrew and run the project target:
 

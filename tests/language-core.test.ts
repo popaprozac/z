@@ -189,13 +189,14 @@ test("borrows and explicitly mutates imported C records through safe pointer mod
   );
 });
 
-test("initializes imported C union storage through out and confines scalar member assertions", () => {
+test("initializes imported C union storage and checks discriminated borrowed matching", () => {
   const example = resolve(projectRoot, "examples/interop/c/native-union.zs");
   const source = readFileSync(example, "utf8");
   const artifact = compileToNative(source, example);
   assert.match(artifact.source, /ZNativeEvent event;/);
   assert.match(artifact.source, /z_native_poll\(&\(event\)\)/);
-  assert.match(artifact.source, /const int32_t eventType = \(event\)\.type;/);
+  assert.match(artifact.source, /switch \(_z_native_match_\d+->type\)/);
+  assert.match(artifact.source, /const ZNativeValueEvent \* const value = &\(_z_native_match_\d+->value\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -246,11 +247,74 @@ test("initializes imported C union storage through out and confines scalar membe
   assert.match(loopArtifact.source, /z_native_poll\(&\(event\)\)/);
   assert.match(loopArtifact.source, /const int32_t eventType = \(event\)\.type;/);
 
+  const discriminated = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      let event;
+      if (!native.z_native_poll(out event)) return 1;
+      const observed = match (in event) {
+        idle => 0;
+        value(value) => value.value;
+        other(type) => type;
+      };
+      return observed - 42;
+    }
+  `;
+  const discriminatedFile = resolve(projectRoot, "native-union-discriminated.zs");
+  const discriminatedArtifact = compileToNative(discriminated, discriminatedFile);
+  assert.match(discriminatedArtifact.source, /switch \(_z_native_match_\d+->type\)/);
+  assert.match(discriminatedArtifact.source, /case Z_NATIVE_EVENT_VALUE:/);
+  assert.match(discriminatedArtifact.source, /case Z_NATIVE_EVENT_RESET:/);
+  assert.match(discriminatedArtifact.source, /const ZNativeValueEvent \* const value = &\(_z_native_match_\d+->value\)/);
+
+  assert.throws(
+    () => compileToNative(
+      discriminated.replace("match (in event)", "match (event)"),
+      resolve(projectRoot, "native-union-consuming-match.zs"),
+    ),
+    /native discriminated union must be borrowed with `match \(in value\)`/,
+  );
+
+  const overwriteWhileBorrowed = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      let event;
+      native.z_native_poll(out event);
+      match (in event) {
+        idle => return 0;
+        value(value) => {
+          native.z_native_poll(out event);
+          return value.value;
+        }
+        other(type) => return type;
+      }
+    }
+  `;
+  assert.throws(
+    () => compileToNative(overwriteWhileBorrowed, resolve(projectRoot, "native-union-overwrite-borrowed.zs")),
+    /out argument "event" requires a mutable let binding/,
+  );
+
   const eventOffset = source.indexOf("event;") + 1;
   assert.match(hover(source, example, eventOffset)?.contents.value ?? "", /event: native\.ZNativeEvent/);
-  const memberSource = source.replace("event.type", "event.ty");
-  const memberOffset = memberSource.indexOf("event.ty") + "event.ty".length;
-  assert.ok(completions(memberSource, example, memberOffset).some((item) => item.label === "type"));
+  const valueVariantOffset = source.indexOf("value(value)") + 1;
+  assert.match(
+    hover(source, example, valueVariantOffset)?.contents.value ?? "",
+    /native\.ZNativeEvent\.value\(view native\.ZNativeValueEvent\)/,
+  );
+  const valueBindingOffset = source.indexOf("value) =>") + 1;
+  assert.match(
+    hover(source, example, valueBindingOffset)?.contents.value ?? "",
+    /value: view native\.ZNativeValueEvent.*view of event/s,
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const variantPosition = positionForOffset(source, source.indexOf("value(value)"));
+  assert.ok(tokens.some((token) => token.line === variantPosition.line
+    && token.character === variantPosition.character
+    && semanticTokenTypes[token.type] === "enumMember"));
+  const memberSource = source.replace("value.value", "value.va");
+  const memberOffset = memberSource.indexOf("value.va") + "value.va".length;
+  assert.ok(completions(memberSource, example, memberOffset).some((item) => item.label === "value"));
 });
 
 test("projects scalar C pointers through in, inout, and out capabilities", () => {

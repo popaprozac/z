@@ -2330,12 +2330,16 @@ not add raw-pointer syntax or infer ownership, mutation, initialization,
 cleanup, or threading facts.
 
 Imported C unions are a separate narrow case. A checked `.zd` `out Union*`
-contract may initialize ABI-preserving union storage without `unsafe`, but
-Clang's layout does not prove which member the native API activated. After
-validating the API's discriminator, an unsafe block may read and select a
-supported scalar or enum member. Pointer and nested-record members remain
-unavailable in this tier, and imported unions cannot be constructed as Z
-struct literals.
+contract may initialize ABI-preserving union storage without `unsafe`. A
+`discriminant tag { ... }` type contract may additionally map producer-proven
+constants to payloadless variants or recursively pointer-free struct members.
+Such values are inspected with `match (in value)`: payload bindings are
+non-escaping `view NativeStruct` values, the fallback binds the raw tag, and
+lowering is one native switch with no wrapper allocation. Without a reusable
+discriminant contract, Clang's layout still does not prove which member is
+active; after validating the API's tag, `unsafe` may read a supported scalar or
+enum member. Pointer-bearing members and imported-union construction remain
+unavailable in this tier.
 
 An unsafe expression must finish with `select value;`. `select` supplies the
 local expression result; `return` continues to exit the enclosing function.

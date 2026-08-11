@@ -6282,17 +6282,20 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(emittedUnionSource, /ZNativeEvent event;/);
   assert.match(emittedUnionSource, /z_native_poll\(&\(event\)\)/);
-  assert.match(emittedUnionSource, /event\.type/);
+  assert.match(emittedUnionSource, /switch \(_z_stage1_native_match_\d+->type\)/);
+  assert.match(emittedUnionSource, /case Z_NATIVE_EVENT_VALUE:/);
+  assert.match(emittedUnionSource, /&\(_z_stage1_native_match_\d+->value\)/);
+  assert.doesNotMatch(emittedUnionSource, /event\.payload/);
 
   const unionProgramSource = readFileSync(unionSource, "utf8");
   writeFileSync(
     unionSource,
     unionProgramSource.replace(
-      "const eventType = unsafe {\n    select event.type;\n  };",
-      "const eventType = event.type;",
+      "const eventType = match (in event) {",
+      "const eventType = match (event) {",
     ),
   );
-  const directUnionRead = spawnSync(
+  const consumingUnionMatch = spawnSync(
     driver,
     ["check", unionSource],
     {
@@ -6300,10 +6303,10 @@ test("compiles a multi-module Z application through the standalone native driver
       env: foreignAdapterEnvironment,
     },
   );
-  assert.equal(directUnionRead.status, 1);
+  assert.equal(consumingUnionMatch.status, 1);
   assert.match(
-    directUnionRead.stderr,
-    /native union member "type" requires an unsafe boundary/,
+    consumingUnionMatch.stderr,
+    /discriminated native union match requires match \(in value\)/,
   );
 
   writeFileSync(

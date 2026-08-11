@@ -368,6 +368,19 @@ export type ObjCBindingPlan = {
 
 export type ThreadTransferKind = "copy" | "move" | "share" | "executorBound";
 
+export type ForeignUnionMatchPlan = {
+  readonly unionType: string;
+  readonly discriminantMember: string;
+  readonly discriminantType: string;
+  readonly variants: readonly {
+    readonly name: string;
+    readonly member: string | null;
+    readonly payloadType: string | null;
+    readonly values: readonly string[];
+  }[];
+  readonly fallback: string;
+};
+
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
   readonly deploymentTarget: DeploymentTarget | null;
@@ -436,6 +449,7 @@ export type SemanticInfo = {
   readonly expressionTypes: ReadonlyMap<number, string>;
   readonly bindingTypes: ReadonlyMap<number, string>;
   readonly borrowedMatches: ReadonlySet<number>;
+  readonly foreignUnionMatches: ReadonlyMap<number, ForeignUnionMatchPlan>;
   readonly constructorFieldInitializations: ReadonlySet<number>;
   readonly closures: ReadonlyMap<number, ClosureInfo>;
   readonly consoleCalls: ReadonlySet<number>;
@@ -587,6 +601,7 @@ type AnalysisState = {
   readonly bindingTypes: Map<number, string>;
   readonly resolvedFields: Map<number, StructDeclaration["fields"][number]>;
   readonly borrowedMatches: Set<number>;
+  readonly foreignUnionMatches: Map<number, ForeignUnionMatchPlan>;
   readonly constructorFieldInitializations: Set<number>;
   readonly closures: Map<number, ClosureInfo>;
   readonly consoleCalls: Set<number>;
@@ -958,6 +973,7 @@ export function analyze(
     bindingTypes: new Map(),
     resolvedFields: new Map(),
     borrowedMatches: new Set(),
+    foreignUnionMatches: new Map(),
     constructorFieldInitializations: new Set(),
     closures: new Map(),
     consoleCalls: new Set(),
@@ -4592,12 +4608,20 @@ function analyzeStatement(
       return;
     case "match": {
       const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
-      const declaration = enums.get(subjectType);
+      const foreignUnion = foreignUnionMatchDeclaration(subjectType, statement.location, state);
+      const declaration = enums.get(subjectType) ?? foreignUnion?.declaration;
       if (!declaration) {
         throw new DiagnosticError(fileName, statement.expression.location, `match requires an enum value, found ${subjectType}`);
       }
       const candidateRoot = storageRoot(statement.expression);
       const candidateRootType = candidateRoot ? locals.get(candidateRoot.name) : null;
+      if (foreignUnion && statement.mode !== "in") {
+        throw new DiagnosticError(fileName, statement.expression.location, "a native discriminated union must be borrowed with `match (in value)`", {
+          code: "Z0230",
+          notes: ["variant payloads are non-escaping views into the active native union member"],
+        });
+      }
+      if (foreignUnion) state.foreignUnionMatches.set(statement.location.offset, foreignUnion.plan);
       const optionalView = parseOptionalViewType(subjectType);
       const optionalViewOrigin = candidateRoot ? state.viewOrigins.get(candidateRoot.name) : null;
       if (optionalView && (statement.mode !== "in" || !candidateRoot || !optionalViewOrigin)) {
@@ -4624,7 +4648,9 @@ function analyzeStatement(
       for (const arm of statement.arms) {
         const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
-        const variant = resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
+        const variant = foreignUnion
+          ? declaredVariant
+          : resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
         if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
         covered.add(variant.name);
         const hasPattern = Boolean(arm.binding || arm.objectBindings);
@@ -4634,6 +4660,12 @@ function analyzeStatement(
         if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
         const resolvedObjectFields = new Map<string, StructDeclaration["fields"][number]>();
         if (arm.objectBindings) {
+          if (foreignUnion) {
+            throw new DiagnosticError(fileName, arm.location, "native union payload destructuring is deferred beyond the first discriminated-union tier", {
+              code: "Z0801",
+              helps: ["bind the payload view, then access its fields inside the arm"],
+            });
+          }
           const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
           if (!payloadDeclaration) {
             throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
@@ -4675,16 +4707,20 @@ function analyzeStatement(
           ? state.borrowOrigins.get(borrowedRoot.name)
           : null;
         const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
+        const foreignPayloadOrigin: ViewOrigin | null = foreignUnion && candidateRoot
+          ? { sources: [{ owner: candidateRoot.name, location: statement.location }] }
+          : null;
+        const patternViewOrigin = optionalViewOrigin ?? foreignPayloadOrigin;
         if (borrowedRoot) {
           state.borrowOrigins.set(borrowedRoot.name, { location: statement.location, kind: "match" });
         }
         if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
-        if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
-          bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
+        if (patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
+          bindViewOrigin(arm.binding, patternViewOrigin, fileName, state);
           if (arm.bindingLocation) {
             state.viewBindingOwners.set(
               arm.bindingLocation.offset,
-              viewOriginOwnerLabel(optionalViewOrigin),
+              viewOriginOwnerLabel(patternViewOrigin),
             );
           }
         }
@@ -4702,7 +4738,7 @@ function analyzeStatement(
         }
         try {
           const transientViews = new Set(
-            optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
+            patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
               ? [arm.binding]
               : [],
           );
@@ -5920,12 +5956,20 @@ function inferMatchExpression(
   expected: ValueType | null = null,
 ): ValueType {
   const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state);
-  const declaration = enums.get(subjectType);
+  const foreignUnion = foreignUnionMatchDeclaration(subjectType, expression.location, state);
+  const declaration = enums.get(subjectType) ?? foreignUnion?.declaration;
   if (!declaration) {
     throw new DiagnosticError(fileName, expression.expression.location, `match requires an enum value, found ${subjectType}`);
   }
   const candidateRoot = storageRoot(expression.expression);
   const candidateRootType = candidateRoot ? locals.get(candidateRoot.name) : null;
+  if (foreignUnion && expression.mode !== "in") {
+    throw new DiagnosticError(fileName, expression.expression.location, "a native discriminated union must be borrowed with `match (in value)`", {
+      code: "Z0230",
+      notes: ["variant payloads are non-escaping views into the active native union member"],
+    });
+  }
+  if (foreignUnion) state.foreignUnionMatches.set(expression.location.offset, foreignUnion.plan);
   const optionalView = parseOptionalViewType(subjectType);
   const optionalViewOrigin = candidateRoot ? state.viewOrigins.get(candidateRoot.name) : null;
   if (optionalView && (expression.mode !== "in" || !candidateRoot || !optionalViewOrigin)) {
@@ -5954,7 +5998,9 @@ function inferMatchExpression(
   for (const arm of expression.arms) {
     const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
     if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
-    const variant = resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
+    const variant = foreignUnion
+      ? declaredVariant
+      : resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
     if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
     covered.add(variant.name);
     const hasPattern = Boolean(arm.binding || arm.objectBindings);
@@ -5964,6 +6010,12 @@ function inferMatchExpression(
     if (arm.binding && arm.bindingLocation) validateUserName(arm.binding, arm.bindingLocation, fileName);
     const resolvedObjectFields = new Map<string, StructDeclaration["fields"][number]>();
     if (arm.objectBindings) {
+      if (foreignUnion) {
+        throw new DiagnosticError(fileName, arm.location, "native union payload destructuring is deferred beyond the first discriminated-union tier", {
+          code: "Z0801",
+          helps: ["bind the payload view, then access its fields inside the arm"],
+        });
+      }
       const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
       if (!payloadDeclaration) throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
       const seen = new Set<string>();
@@ -6003,16 +6055,20 @@ function inferMatchExpression(
       ? state.borrowOrigins.get(borrowedRoot.name)
       : null;
     const previousPatternViews = new Map(patternNames.map((name) => [name, state.viewOrigins.get(name)]));
+    const foreignPayloadOrigin: ViewOrigin | null = foreignUnion && candidateRoot
+      ? { sources: [{ owner: candidateRoot.name, location: expression.location }] }
+      : null;
+    const patternViewOrigin = optionalViewOrigin ?? foreignPayloadOrigin;
     if (borrowedRoot) {
       state.borrowOrigins.set(borrowedRoot.name, { location: expression.location, kind: "match" });
     }
     if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
-    if (optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
-      bindViewOrigin(arm.binding, optionalViewOrigin, fileName, state);
+    if (patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
+      bindViewOrigin(arm.binding, patternViewOrigin, fileName, state);
       if (arm.bindingLocation) {
         state.viewBindingOwners.set(
           arm.bindingLocation.offset,
-          viewOriginOwnerLabel(optionalViewOrigin),
+          viewOriginOwnerLabel(patternViewOrigin),
         );
       }
     }
@@ -6031,7 +6087,7 @@ function inferMatchExpression(
     let armType: ValueType = "never";
     try {
       const transientViews = new Set(
-        optionalViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
+        patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
           ? [arm.binding]
           : [],
       );
@@ -7233,6 +7289,58 @@ function resolveSemanticField(
   state.resolvedFields.set(location.offset, resolved);
   state.observer?.onFieldResolution?.(resolution);
   return resolved;
+}
+
+function foreignUnionMatchDeclaration(
+  subjectType: ValueType,
+  location: SourceLocation,
+  state: AnalysisState,
+): { readonly declaration: EnumDeclaration; readonly plan: ForeignUnionMatchPlan } | null {
+  const unionType = String(underlyingType(subjectType));
+  const native = state.foreignNamedTypes.get(unionType);
+  if (native?.kind !== "record" || native.layout !== "union" || !native.discriminant) return null;
+  const discriminantField = native.fields.find((field) => field.name === native.discriminant!.member);
+  if (!discriminantField) return null;
+  const variants: ForeignUnionMatchPlan["variants"][number][] = native.discriminant.variants.map((variant) => {
+    const payloadField = variant.member
+      ? native.fields.find((field) => field.name === variant.member)
+      : null;
+    return {
+      name: variant.name,
+      member: variant.member,
+      payloadType: payloadField ? viewTypeName(payloadField.typeName) : null,
+      values: variant.values,
+    };
+  });
+  const plan: ForeignUnionMatchPlan = {
+    unionType,
+    discriminantMember: native.discriminant.member,
+    discriminantType: discriminantField.typeName,
+    variants,
+    fallback: native.discriminant.fallback,
+  };
+  return {
+    plan,
+    declaration: {
+      kind: "enum",
+      name: unionType,
+      variants: [
+        ...variants.map((variant) => ({
+          name: variant.name,
+          payload: variant.payloadType
+            ? { name: variant.payloadType, location }
+            : null,
+          location,
+        })),
+        {
+          name: plan.fallback,
+          payload: { name: plan.discriminantType, location },
+          location,
+        },
+      ],
+      location,
+    },
+  };
 }
 
 function resolveSemanticEnumVariant(

@@ -1,3 +1,18 @@
 declare module "SDL3/SDL_events.h" {
+  export type SDL_Event {
+    discriminant type {
+      variant quit {
+        when SDL_EVENT_QUIT;
+      }
+
+      variant windowClose {
+        member window;
+        when SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+      }
+
+      fallback other;
+    }
+  }
+
   export function SDL_PollEvent(out event: _): _;
 }

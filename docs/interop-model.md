@@ -310,12 +310,15 @@ nesting, async functions, suspension, generators, and closure construction. It a
 rejects unsupported by-value layouts rather than exposing generated C names.
 
 Imported C unions have ABI-preserving native storage and may be initialized
-through a checked `.zd` `out Union*` contract. Reading a member is still a local
-proof obligation because a C union carries no active-member tag. After checking
-the native API's discriminator, `unsafe` may copy a supported scalar or enum
-member into ordinary Z code. Pointer and nested-record members remain excluded
-until a reusable checked projection describes their lifetime and active-member
-rules.
+through a checked `.zd` `out Union*` contract. A reusable `discriminant` type
+contract can map header constants to payloadless variants or recursively
+pointer-free struct members. `match (in event)` then emits a direct native
+switch and binds non-escaping views into the active member without allocation
+or payload copying. A required fallback preserves unlisted tag values. Where
+no such contract exists, reading a member remains a local proof obligation:
+after checking the native API's discriminator, `unsafe` may copy a supported
+scalar or enum member. Pointer-bearing members remain excluded until a reusable
+contract can state their lifetime.
 
 The expression form uses Z's ordinary value-block rule: `select` supplies the
 unsafe expression's value, while `return` still exits the enclosing function.

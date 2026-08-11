@@ -17,6 +17,7 @@ import type {
   ForeignNamedType,
   ForeignObjCInterface,
   ForeignObjCMethod,
+  ForeignUnionDiscriminant,
 } from "./foreign-ir.ts";
 import type { ForeignThreadContract } from "./foreign-ir.ts";
 import { callbackParameterSpellings, callbackReturnSpelling, normalizeCallbackContextType } from "./foreign-type-spelling.ts";
@@ -154,6 +155,22 @@ export type ForeignValueContract = {
   readonly threadLocations: ForeignThreadContractLocations;
   readonly executorAffinity: "main" | null;
   readonly executorAffinityLocation: SourceLocation | null;
+  readonly discriminant: ForeignUnionDiscriminantContract | null;
+};
+
+export type ForeignUnionDiscriminantContract = ForeignUnionDiscriminant & {
+  readonly location: SourceLocation;
+  readonly memberLocation: SourceLocation;
+  readonly fallbackLocation: SourceLocation;
+  readonly variants: readonly {
+    readonly name: string;
+    readonly member: string | null;
+    readonly values: readonly string[];
+    readonly location: SourceLocation;
+    readonly nameLocation: SourceLocation;
+    readonly memberLocation: SourceLocation | null;
+    readonly valueLocations: readonly SourceLocation[];
+  }[];
 };
 
 export function parseForeignDeclarationContracts(source: string, fileName: string): ForeignDeclarationContracts {
@@ -464,6 +481,76 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     if (executor.text !== "main") fail(executor, "foreign declaration affinity currently requires `on thread.main`");
     return { affinity: "main", location: on.location };
   };
+  const parseUnionDiscriminant = (): ForeignUnionDiscriminantContract => {
+    const start = expectText("discriminant");
+    const member = expectIdentifier("a native union discriminator member");
+    expectText("{");
+    const variants: ForeignUnionDiscriminantContract["variants"][number][] = [];
+    const names = new Set<string>();
+    const values = new Set<string>();
+    let fallback: Token | null = null;
+    while (!at("}")) {
+      if (at("fallback")) {
+        const keyword = take();
+        if (fallback) fail(keyword, "a discriminated union cannot declare more than one fallback variant");
+        fallback = expectIdentifier("a Z-visible fallback variant name");
+        if (names.has(fallback.text)) fail(fallback, `duplicate discriminated-union variant ${JSON.stringify(fallback.text)}`);
+        names.add(fallback.text);
+        expectText(";");
+        continue;
+      }
+      const variantKeyword = expectText("variant");
+      const name = expectIdentifier("a Z-visible discriminated-union variant name");
+      if (names.has(name.text)) fail(name, `duplicate discriminated-union variant ${JSON.stringify(name.text)}`);
+      names.add(name.text);
+      expectText("{");
+      let nativeMember: Token | null = null;
+      const whenValues: Token[] = [];
+      while (!at("}")) {
+        if (at("member")) {
+          const fact = take();
+          if (nativeMember) fail(fact, `discriminated-union variant ${JSON.stringify(name.text)} cannot declare more than one native member`);
+          nativeMember = expectIdentifier("a native union member after `member`");
+          expectText(";");
+          continue;
+        }
+        if (at("when")) {
+          take();
+          const value = expectIdentifier("a header constant after `when`");
+          if (values.has(value.text)) fail(value, `native discriminator value ${JSON.stringify(value.text)} is already assigned to another variant`);
+          values.add(value.text);
+          whenValues.push(value);
+          expectText(";");
+          continue;
+        }
+        fail(peek(), `expected "member" or "when" in discriminated-union variant ${JSON.stringify(name.text)}, found ${JSON.stringify(peek().text)}`);
+      }
+      expectText("}");
+      if (whenValues.length === 0) {
+        fail(variantKeyword, `discriminated-union variant ${JSON.stringify(name.text)} requires at least one \`when HEADER_CONSTANT;\` fact`);
+      }
+      variants.push({
+        name: name.text,
+        member: nativeMember?.text ?? null,
+        values: whenValues.map((value) => value.text),
+        location: variantKeyword.location,
+        nameLocation: name.location,
+        memberLocation: nativeMember?.location ?? null,
+        valueLocations: whenValues.map((value) => value.location),
+      });
+    }
+    expectText("}");
+    if (variants.length === 0) fail(start, "a discriminated union requires at least one variant");
+    if (!fallback) fail(start, "a discriminated union requires `fallback <name>;` for every undeclared native tag");
+    return {
+      member: member.text,
+      variants,
+      fallback: fallback.text,
+      location: start.location,
+      memberLocation: member.location,
+      fallbackLocation: fallback.location,
+    };
+  };
 
   expectText("declare");
   expectText("module");
@@ -502,6 +589,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           threadLocations: emptyThread.locations,
           executorAffinity: executorAffinity.affinity,
           executorAffinityLocation: executorAffinity.location,
+          discriminant: null,
         });
         continue;
       }
@@ -511,7 +599,13 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       let deinitLocation: SourceLocation | null = null;
       let deinitFunction: string | null = null;
       let threadContract = emptyThreadContract();
+      let discriminant: ForeignUnionDiscriminantContract | null = null;
       while (!at("}")) {
+        if (at("discriminant")) {
+          if (discriminant) fail(peek(), `foreign type ${JSON.stringify(name)} cannot declare more than one discriminant contract`);
+          discriminant = parseUnionDiscriminant();
+          continue;
+        }
         if (at("thread")) {
           if (threadContract.locations.location) fail(peek(), `foreign type ${JSON.stringify(name)} cannot declare more than one thread contract`);
           threadContract = parseThreadContract(`foreign type ${JSON.stringify(name)}`);
@@ -519,7 +613,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         }
         const capability = take();
         if (!["copy", "move", "deinit"].includes(capability.text)) {
-          fail(capability, `expected "copy", "move", or "deinit" in foreign type contract, found ${JSON.stringify(capability.text)}`);
+          fail(capability, `expected "copy", "move", "deinit", "thread", or "discriminant" in foreign type contract, found ${JSON.stringify(capability.text)}`);
         }
         if (capability.text === "copy") {
           if (copyLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare copy more than once`);
@@ -536,14 +630,22 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       }
       expectText("}");
       const hasLifecycle = Boolean(copyLocation || moveLocation || deinitLocation || threadContract.locations.location);
+      if (discriminant && hasLifecycle) {
+        throw new DiagnosticError(
+          fileName,
+          discriminant.location,
+          `foreign discriminated union ${JSON.stringify(name)} cannot also declare value lifecycle facts in the first tier`,
+          { code: "Z0801" },
+        );
+      }
       if (hasLifecycle && !deinitLocation) {
         fail(start, `foreign value type ${JSON.stringify(name)} must declare deterministic deinit`);
       }
       if (hasLifecycle && !copyLocation && !moveLocation) {
         fail(start, `foreign value type ${JSON.stringify(name)} must declare copy or move`);
       }
-      if (!hasLifecycle && !executorAffinity) {
-        fail(start, `foreign type ${JSON.stringify(name)} must declare lifecycle facts or \`on thread.main\``);
+      if (!hasLifecycle && !executorAffinity && !discriminant) {
+        fail(start, `foreign type ${JSON.stringify(name)} must declare lifecycle facts, a discriminant contract, or \`on thread.main\``);
       }
       types.push({
         name,
@@ -560,6 +662,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         threadLocations: threadContract.locations,
         executorAffinity: executorAffinity?.affinity ?? null,
         executorAffinityLocation: executorAffinity?.location ?? null,
+        discriminant,
       });
       continue;
     }
@@ -1001,6 +1104,131 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   return { moduleSpecifier, functions, types };
 }
 
+function resolveContractNamedType(
+  typeName: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+): ForeignNamedType | null {
+  return namedTypes.get(typeName)
+    ?? [...namedTypes.values()].find((candidate) => (
+      candidate.typeName === typeName
+      || candidate.qualifiedName === typeName
+      || candidate.exportName === typeName
+      || candidate.cName === typeName
+    ))
+    ?? null;
+}
+
+function integerRepresentation(
+  typeName: string,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+): string | null {
+  if (/^(?:i|u)(?:8|16|32|64)$/.test(typeName) || typeName === "isize" || typeName === "usize") {
+    return typeName;
+  }
+  const named = resolveContractNamedType(typeName, namedTypes);
+  if (named?.kind === "enum" || named?.kind === "scalar") return named.underlying;
+  return null;
+}
+
+function validateUnionDiscriminantContract(
+  contract: ForeignValueContract,
+  namedType: ForeignNamedType | null,
+  constants: ReadonlyMap<string, ForeignConstant>,
+  namedTypes: ReadonlyMap<string, ForeignNamedType>,
+  fileName: string,
+): ForeignUnionDiscriminant {
+  const discriminant = contract.discriminant!;
+  if (namedType?.kind !== "record" || namedType.layout !== "union") {
+    throw new DiagnosticError(
+      fileName,
+      discriminant.location,
+      `discriminant contract for ${JSON.stringify(contract.name)} requires a native C union`,
+      { code: "Z0801" },
+    );
+  }
+  const tagField = namedType.fields.find((field) => field.name === discriminant.member);
+  if (!tagField) {
+    throw new DiagnosticError(
+      fileName,
+      discriminant.memberLocation,
+      `native union ${JSON.stringify(contract.name)} has no supported discriminator member ${JSON.stringify(discriminant.member)}`,
+      { code: "Z0801" },
+    );
+  }
+  const tagRepresentation = integerRepresentation(tagField.typeName, namedTypes);
+  if (!tagRepresentation) {
+    throw new DiagnosticError(
+      fileName,
+      discriminant.memberLocation,
+      `native union discriminator ${JSON.stringify(discriminant.member)} must be an integer scalar or nominal enum, found ${tagField.typeName}`,
+      { code: "Z0801" },
+    );
+  }
+  const tagNamed = resolveContractNamedType(tagField.typeName, namedTypes);
+  const normalizedVariants: ForeignUnionDiscriminant["variants"][number][] = [];
+  for (const variant of discriminant.variants) {
+    if (variant.member) {
+      const field = namedType.fields.find((candidate) => candidate.name === variant.member);
+      if (!field) {
+        throw new DiagnosticError(
+          fileName,
+          variant.memberLocation!,
+          `native union ${JSON.stringify(contract.name)} has no safely representable member ${JSON.stringify(variant.member)}`,
+          {
+            code: "Z0801",
+            notes: ["the first discriminated-union tier projects only recursively pointer-free struct payloads"],
+          },
+        );
+      }
+      const payload = resolveContractNamedType(field.typeName, namedTypes);
+      if (payload?.kind !== "record" || payload.layout !== "struct" || payload.resource) {
+        throw new DiagnosticError(
+          fileName,
+          variant.memberLocation!,
+          `discriminated-union member ${JSON.stringify(variant.member)} must contain a cleanup-free native struct payload`,
+          { code: "Z0801" },
+        );
+      }
+    }
+    const values = variant.values.map((value, index) => {
+      const constant = constants.get(value);
+      if (!constant) {
+        throw new DiagnosticError(
+          fileName,
+          variant.valueLocations[index],
+          `discriminated-union variant ${JSON.stringify(variant.name)} names unknown header constant ${JSON.stringify(value)}`,
+          { code: "Z0801" },
+        );
+      }
+      const constantNamed = resolveContractNamedType(constant.typeName, namedTypes);
+      const constantRepresentation = integerRepresentation(constant.typeName, namedTypes);
+      const exactNominalTag = tagNamed?.kind === "enum";
+      if (
+        !constantRepresentation
+        || (exactNominalTag && constant.typeName !== tagNamed.typeName)
+      ) {
+        throw new DiagnosticError(
+          fileName,
+          variant.valueLocations[index],
+          `header constant ${JSON.stringify(value)} of type ${constantNamed?.exportName ?? constant.typeName} is incompatible with discriminator member ${JSON.stringify(discriminant.member)} of type ${tagNamed?.exportName ?? tagField.typeName}`,
+          { code: "Z0801" },
+        );
+      }
+      return constant.cName;
+    });
+    normalizedVariants.push({
+      name: variant.name,
+      member: variant.member,
+      values,
+    });
+  }
+  return {
+    member: discriminant.member,
+    variants: normalizedVariants,
+    fallback: discriminant.fallback,
+  };
+}
+
 export function foreignDeclarationApiNotes(
   contracts: ForeignDeclarationContracts,
   declarations: ReadonlyMap<string, ForeignFunctionDeclaration>,
@@ -1032,7 +1260,10 @@ export function foreignDeclarationApiNotes(
     executorAffinity?: "main";
     projections?: FunctionProjectionNote[];
   }> = {};
-  const types: Record<string, { executorAffinity?: "main" }> = {};
+  const types: Record<string, {
+    executorAffinity?: "main";
+    discriminant?: ForeignUnionDiscriminant;
+  }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
     executorAffinity?: "main";
@@ -1043,7 +1274,6 @@ export function foreignDeclarationApiNotes(
     };
   }> = {};
   for (const contract of contracts.types) {
-    if (!contract.executorAffinity) continue;
     const namedType = namedTypes.get(contract.name);
     const interfaceType = interfaces.get(contract.name);
     if (!namedType && !interfaceType) {
@@ -1054,7 +1284,19 @@ export function foreignDeclarationApiNotes(
         { code: "Z0801" },
       );
     }
-    types[contract.name] = { executorAffinity: contract.executorAffinity };
+    const discriminant = contract.discriminant
+      ? validateUnionDiscriminantContract(
+          contract,
+          namedType ?? null,
+          constants,
+          namedTypes,
+          fileName,
+        )
+      : null;
+    types[contract.name] = {
+      ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
+      ...(discriminant ? { discriminant } : {}),
+    };
   }
   for (const contract of contracts.functions) {
     const declaration = declarations.get(contract.name);

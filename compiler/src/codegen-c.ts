@@ -29,6 +29,7 @@ import type {
   RawExpressionPlan,
   SemanticInfo,
   StructSpreadPlan,
+  ForeignUnionMatchPlan,
 } from "./sema.ts";
 import {
   parsePointerTypeName,
@@ -7384,7 +7385,98 @@ function generateLocalDeclaration(
   return `${mutable ? "" : "const "}${mapType(type, structs, enums, foreignNamedTypes)} ${name}`;
 }
 
+function generateForeignUnionMatch(
+  statement: Extract<Statement, { kind: "match" }>,
+  plan: ForeignUnionMatchPlan,
+  context: GenerationContext,
+): string {
+  const temporary = `_z_native_match_${context.matchCounter.value++}`;
+  const subject = generateExpression(statement.expression, context);
+  const storage = `const ${mapType(plan.unionType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} * const ${temporary} = &(${subject});`;
+  const arms = statement.arms.map((arm) => {
+    const variant = plan.variants.find((candidate) => candidate.name === arm.variantName) ?? null;
+    const payloadType = variant?.payloadType ?? (arm.variantName === plan.fallback ? plan.discriminantType : null);
+    const armTypes = new Map(context.localTypes);
+    if (payloadType && arm.binding) armTypes.set(arm.binding, payloadType);
+    const armContext: GenerationContext = {
+      ...context,
+      localTypes: armTypes,
+      parameterModes: new Map(context.parameterModes),
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
+    let binding = "";
+    if (payloadType && arm.binding) {
+      const payload = variant?.member
+        ? `&(${temporary}->${variant.member})`
+        : `${temporary}->${plan.discriminantMember}`;
+      binding = `\n    ${generateMatchBinding(payloadType, arm.binding, payload, false, context)}\n    (void)${cBindingName(arm.binding)};`;
+    }
+    const body = generateStatement(arm.body, armContext);
+    recordVariableType(arm.body, armContext);
+    const cleanup = statementTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    const lines = [body, cleanup, statementTerminates(arm.body) ? "" : "break;"]
+      .filter(Boolean)
+      .join("\n");
+    const labels = variant
+      ? variant.values.map((value) => `  case ${value}:`).join("\n")
+      : "  default:";
+    return `${labels} {${binding}\n${indent(lines, 4)}\n  }`;
+  }).join("\n");
+  return `${storage}\nswitch (${temporary}->${plan.discriminantMember}) {\n${arms}\n}`;
+}
+
+function generateForeignUnionMatchExpression(
+  expression: Extract<Expression, { kind: "matchExpression" }>,
+  plan: ForeignUnionMatchPlan,
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const temporary = `_z_native_match_${context.matchCounter.value++}`;
+  const subject = generateExpression(expression.expression, context);
+  const storage = `const ${mapType(plan.unionType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)} * const ${temporary} = &(${subject});`;
+  const arms = expression.arms.map((arm) => {
+    const variant = plan.variants.find((candidate) => candidate.name === arm.variantName) ?? null;
+    const payloadType = variant?.payloadType ?? (arm.variantName === plan.fallback ? plan.discriminantType : null);
+    const armTypes = new Map(context.localTypes);
+    if (payloadType && arm.binding) armTypes.set(arm.binding, payloadType);
+    const armContext: GenerationContext = {
+      ...context,
+      localTypes: armTypes,
+      parameterModes: new Map(context.parameterModes),
+      liveFlags: new Map(context.liveFlags),
+      cleanupScopes: [...context.cleanupScopes, []],
+    };
+    let binding = "";
+    if (payloadType && arm.binding) {
+      const payload = variant?.member
+        ? `&(${temporary}->${variant.member})`
+        : `${temporary}->${plan.discriminantMember}`;
+      binding = `\n    ${generateMatchBinding(payloadType, arm.binding, payload, false, context)}\n    (void)${cBindingName(arm.binding)};`;
+    }
+    const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
+    const cleanup = consumeTerminates || valueArmTerminates(arm.body)
+      ? ""
+      : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
+    const lines = [
+      body,
+      cleanup,
+      consumeTerminates || valueArmTerminates(arm.body) ? "" : "break;",
+    ].filter(Boolean).join("\n");
+    const labels = variant
+      ? variant.values.map((value) => `  case ${value}:`).join("\n")
+      : "  default:";
+    return `${labels} {${binding}\n${indent(lines, 4)}\n  }`;
+  }).join("\n");
+  return `${storage}\nswitch (${temporary}->${plan.discriminantMember}) {\n${arms}\n}`;
+}
+
 function generateMatch(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
+  const foreignUnion = context.semanticInfo.foreignUnionMatches.get(statement.location.offset);
+  if (foreignUnion) return generateForeignUnionMatch(statement, foreignUnion, context);
   const type = inferExpressionType(statement.expression, context);
   const declaration = context.enums.get(type)!;
   const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
@@ -7551,6 +7643,16 @@ function generateMatchExpression(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
+  const foreignUnion = context.semanticInfo.foreignUnionMatches.get(expression.location.offset);
+  if (foreignUnion) {
+    return generateForeignUnionMatchExpression(
+      expression,
+      foreignUnion,
+      context,
+      consumeValue,
+      consumeTerminates,
+    );
+  }
   const type = inferExpressionType(expression.expression, context);
   const declaration = context.enums.get(type)!;
   const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
@@ -10209,6 +10311,19 @@ function unsafeExpressionType(
 }
 
 function matchExpressionType(expression: Extract<Expression, { kind: "matchExpression" }>, context: GenerationContext): string {
+  const foreignUnion = context.semanticInfo.foreignUnionMatches.get(expression.location.offset);
+  if (foreignUnion) {
+    for (const arm of expression.arms) {
+      const variant = foreignUnion.variants.find((candidate) => candidate.name === arm.variantName) ?? null;
+      const payloadType = variant?.payloadType
+        ?? (arm.variantName === foreignUnion.fallback ? foreignUnion.discriminantType : null);
+      const armTypes = new Map(context.localTypes);
+      if (payloadType && arm.binding) armTypes.set(arm.binding, payloadType);
+      const type = valueArmType(arm.body, { ...context, localTypes: armTypes });
+      if (type) return type;
+    }
+    return "i32";
+  }
   const subjectType = inferExpressionType(expression.expression, context);
   const declaration = context.enums.get(subjectType)!;
   for (const arm of expression.arms) {

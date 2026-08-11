@@ -39,8 +39,6 @@ function main(): i32 {
 
     console.log("SDL3 window opened successfully");
 
-    const quitEvent = u32(events.SDL_EVENT_QUIT);
-    const windowCloseRequested = u32(events.SDL_EVENT_WINDOW_CLOSE_REQUESTED);
     // SDL_BUTTON_LMASK is a function-like C macro, which the checked importer
     // does not yet expose.
     const leftMouseButtonMask: u32 = 1;
@@ -48,13 +46,14 @@ function main(): i32 {
     let event;
     while (running) {
         while (events.SDL_PollEvent(out event)) {
-            const eventType = unsafe {
-                select event.type;
-            };
-            if (
-                eventType == quitEvent
-                || eventType == windowCloseRequested
-            ) running = false;
+            match (in event) {
+                quit => running = false;
+                windowClose(windowEvent) => {
+                    console.log(`SDL window ${windowEvent.windowID} requested close`);
+                    running = false;
+                }
+                other(type) => {}
+            }
         }
 
         let mouseX;

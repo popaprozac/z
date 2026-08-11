@@ -2671,6 +2671,105 @@ function appendTryStatement(
   }
 }
 
+function appendForeignUnionMatchStatement(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  index: usize,
+  depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.matchConsumesSubject) {
+    throw "native C emission cannot consume a discriminated native union";
+  }
+  const unionType = match (in statement.type) {
+    some(type) => try cType(type);
+    none => throw "native C emission lost the discriminated union type";
+  };
+  const temporary = `_z_stage1_native_match_${index}`;
+  appendIndent(inout output, depth);
+  output.append("const ");
+  output.append(unionType);
+  output.append(" * const ");
+  output.append(temporary);
+  output.append(" = &(");
+  match (in statement.expression) {
+    some(subject) => try appendExpression(
+      inout output,
+      declaration,
+      subject
+    );
+    none => throw "native C emission received a native union match without a subject";
+  }
+  output.append(");\n");
+  appendIndent(inout output, depth);
+  output.append("switch (");
+  output.append(temporary);
+  output.append("->");
+  output.append(statement.foreignMatchDiscriminant);
+  output.append(") {\n");
+  for (const armIndex of statement.children) {
+    const arm = view declaration.statements[armIndex];
+    if (arm.kind != LoweredStatementKind.matchArmStatement) {
+      throw "native C emission received a malformed native union match arm";
+    }
+    if (arm.foreignMatchFallback) {
+      appendIndent(inout output, depth + 1);
+      output.append("default: {\n");
+    } else {
+      if (arm.foreignMatchValues.length == 0) {
+        throw "native C emission received a native union variant without tag values";
+      }
+      for (const value of arm.foreignMatchValues) {
+        appendIndent(inout output, depth + 1);
+        output.append("case ");
+        output.append(value);
+        output.append(":\n");
+      }
+      appendIndent(inout output, depth + 1);
+      output.append("{\n");
+    }
+    match (in arm.type) {
+      some(type) => {
+        if (arm.labels.length != 1) {
+          throw "native C emission received a native union payload arm without one binding";
+        }
+        appendIndent(inout output, depth + 2);
+        output.append("const ");
+        const payloadType = try cType(type);
+        output.append(payloadType);
+        if (arm.foreignMatchMember.byteLength > 0) {
+          output.append(" * const ");
+        } else {
+          output.append(" ");
+        }
+        appendCBindingName(inout output, arm.labels[0]);
+        output.append(" = ");
+        if (arm.foreignMatchMember.byteLength > 0) output.append("&(");
+        output.append(temporary);
+        output.append("->");
+        if (arm.foreignMatchMember.byteLength > 0) {
+          output.append(arm.foreignMatchMember);
+          output.append(")");
+        } else {
+          output.append(statement.foreignMatchDiscriminant);
+        }
+        output.append(";\n");
+      }
+      none => {}
+    }
+    for (const child of arm.children) {
+      try appendStatement(inout output, declaration, child, depth + 2);
+    }
+    appendCleanups(inout output, arm.cleanups, depth + 2);
+    appendIndent(inout output, depth + 2);
+    output.append("break;\n");
+    appendIndent(inout output, depth + 1);
+    output.append("}\n");
+  }
+  appendIndent(inout output, depth);
+  output.append("}\n");
+}
+
 function appendStatement(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -2995,6 +3094,15 @@ function appendStatement(
     return;
   }
   if (declaration.statements[index].kind == LoweredStatementKind.matchStatement) {
+    if (declaration.statements[index].foreignMatchDiscriminant.byteLength > 0) {
+      try appendForeignUnionMatchStatement(
+        inout output,
+        declaration,
+        index,
+        depth
+      );
+      return;
+    }
     if (
       declaration.statements[index].matchConsumesSubject
       && declaration.statements[index].liveFlag.byteLength > 0

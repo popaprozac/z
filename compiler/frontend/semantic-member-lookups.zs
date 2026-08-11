@@ -26,11 +26,17 @@ export struct NativeMatchVariant {
   name: String;
   payloadType: String;
   payloadModuleIndex: usize;
+  foreignMember: String = "";
+  foreignValues: Array<String> = Array<String>();
+  foreignFallback: boolean = false;
 }
 
 export struct NativeMatchShape {
   name: String;
   variants: Array<NativeMatchVariant>;
+  foreignUnion: boolean = false;
+  foreignDiscriminantMember: String = "";
+  foreignDiscriminantType: String = "";
 }
 
 export struct NativeFieldShape {
@@ -126,6 +132,69 @@ export function matchShape(
   }
   match (inferredTypeSymbolLocation(modules, moduleIndex, subjectType)) {
     some(location) => {
+      match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+        some(signature) => {
+          if (signature.foreignDiscriminantMember.byteLength > 0) {
+            let variants = Array<NativeMatchVariant>();
+            for (const variant of signature.foreignUnionVariants) {
+              let payloadType = "";
+              if (variant.payloadType.byteLength > 0) {
+                payloadType = rebaseTypeName(
+                  modules,
+                  location.moduleIndex,
+                  moduleIndex,
+                  variant.payloadType
+                );
+              }
+              let values = Array<String>();
+              for (const value of variant.values) {
+                values.push(value.copyBytes(0, value.byteLength));
+              }
+              variants.push(NativeMatchVariant({
+                name: variant.name.copyBytes(0, variant.name.byteLength),
+                payloadType,
+                payloadModuleIndex: moduleIndex,
+                foreignMember: variant.member.copyBytes(0, variant.member.byteLength),
+                foreignValues: values,
+                foreignFallback: false,
+              }));
+            }
+            variants.push(NativeMatchVariant({
+              name: signature.foreignFallbackVariant.copyBytes(
+                0,
+                signature.foreignFallbackVariant.byteLength
+              ),
+              payloadType: rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                signature.foreignDiscriminantType
+              ),
+              payloadModuleIndex: moduleIndex,
+              foreignMember: "",
+              foreignValues: Array<String>(),
+              foreignFallback: true,
+            }));
+            return Option.some(NativeMatchShape({
+              name: subjectType.copyBytes(0, subjectType.byteLength),
+              variants,
+              foreignUnion: true,
+              foreignDiscriminantMember:
+                signature.foreignDiscriminantMember.copyBytes(
+                  0,
+                  signature.foreignDiscriminantMember.byteLength
+                ),
+              foreignDiscriminantType: rebaseTypeName(
+                modules,
+                location.moduleIndex,
+                moduleIndex,
+                signature.foreignDiscriminantType
+              ),
+            }));
+          }
+        }
+        none => {}
+      }
       if (
         modules[location.moduleIndex].symbols[location.symbolIndex].kind
         != ModuleSymbolKind.enumSymbol

@@ -26,6 +26,16 @@ export type ForeignDeclarationMetadata = {
   readonly executorAffinity: ForeignExecutorAffinity;
 };
 
+export type ForeignUnionDiscriminant = {
+  readonly member: string;
+  readonly variants: readonly {
+    readonly name: string;
+    readonly member: string | null;
+    readonly values: readonly string[];
+  }[];
+  readonly fallback: string;
+};
+
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void" | `__z_slice:${string}`; readonly cName: string }
   | { readonly kind: "nullPointer"; readonly cName: string }
@@ -64,6 +74,8 @@ export type ForeignNamedType = (
     readonly canonicalNativeName: string;
     readonly layout: "struct" | "union";
     readonly fields: readonly ForeignField[];
+    /** Checked borrowed match projection for a native discriminated union. */
+    readonly discriminant?: ForeignUnionDiscriminant;
     /**
      * A C record whose bytes carry unique native resource ownership. The
      * record keeps its native ABI/layout; Z adds move tracking and invokes the

@@ -11,6 +11,7 @@ import {
 } from "./module-symbols.zs";
 import {
   ModuleForeignArgument,
+  ModuleForeignUnionVariantSignature,
   ModuleFunctionSignature,
   ModuleFieldSignature,
   ModuleMethodSignature,
@@ -382,6 +383,49 @@ function foreignTypeSignature(
       optionalField: false,
     }));
   }
+  let variants = Array<ModuleVariantSignature>();
+  let foreignUnionVariants = Array<ModuleForeignUnionVariantSignature>();
+  let discriminantType = "";
+  if (type.discriminantMember.byteLength > 0) {
+    for (const field of type.fields) {
+      if (field.name == type.discriminantMember) {
+        discriminantType = localForeignTypeName(
+          types,
+          namespace,
+          field.typeName
+        );
+      }
+    }
+    for (const variant of type.variants) {
+      let payloadType = "";
+      if (variant.payloadType.byteLength > 0) {
+        const localized = localForeignTypeName(
+          types,
+          namespace,
+          variant.payloadType
+        );
+        payloadType = `view ${localized}`;
+      }
+      variants.push(ModuleVariantSignature({
+        name: variant.name.copyBytes(0, variant.name.byteLength),
+        payloadType: payloadType.copyBytes(0, payloadType.byteLength),
+      }));
+      let values = Array<String>();
+      for (const value of variant.values) {
+        values.push(value.copyBytes(0, value.byteLength));
+      }
+      foreignUnionVariants.push(ModuleForeignUnionVariantSignature({
+        name: variant.name.copyBytes(0, variant.name.byteLength),
+        member: variant.member.copyBytes(0, variant.member.byteLength),
+        payloadType: payloadType.copyBytes(0, payloadType.byteLength),
+        values,
+      }));
+    }
+    variants.push(ModuleVariantSignature({
+      name: type.fallback.copyBytes(0, type.fallback.byteLength),
+      payloadType: discriminantType.copyBytes(0, discriminantType.byteLength),
+    }));
+  }
   return ModuleTypeSignature({
     nativeCName: "",
     nativeCUnderlyingType: "",
@@ -391,7 +435,7 @@ function foreignTypeSignature(
     implementedTraits: Array<String>(),
     fields,
     methods: Array<ModuleMethodSignature>(),
-    variants: Array<ModuleVariantSignature>(),
+    variants,
     customDeinit: type.resourceRelease.byteLength > 0,
     customConstructor: type.resourceRelease.byteLength > 0,
     constructorSignature: Option<ModuleFunctionSignature>.none,
@@ -410,6 +454,16 @@ function foreignTypeSignature(
     foreignResourceRelease: type.resourceRelease.copyBytes(
       0,
       type.resourceRelease.byteLength
+    ),
+    foreignDiscriminantMember: type.discriminantMember.copyBytes(
+      0,
+      type.discriminantMember.byteLength
+    ),
+    foreignDiscriminantType: discriminantType,
+    foreignUnionVariants,
+    foreignFallbackVariant: type.fallback.copyBytes(
+      0,
+      type.fallback.byteLength
     ),
   });
 }

@@ -12,6 +12,7 @@ import {
   ModuleBindingResolution,
   ModuleCallResolution,
   ModuleExpressionResolution,
+  ModuleForeignUnionMatch,
   ModuleForeignArgument,
   ModuleFunctionSignature,
   ModuleSemanticEvidence,
@@ -27,6 +28,7 @@ export function emptySemanticEvidence(): ModuleSemanticEvidence {
     callResolutions: Array<ModuleCallResolution>(),
     bindingResolutions: Array<ModuleBindingResolution>(),
     expressionResolutions: Array<ModuleExpressionResolution>(),
+    foreignUnionMatches: Array<ModuleForeignUnionMatch>(),
   });
 }
 

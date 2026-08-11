@@ -338,11 +338,13 @@ SDL3 proved that spill-backed Clang ingestion handles a 70.8 MB
 `SDL_render.h` AST and that `.zd` scalar `out f32` projections compose with
 owned window/renderer handles. It also exposed the union boundary:
 `SDL_Event` now receives opaque ABI-preserving storage through a checked
-`SDL_PollEvent(out event)` contract, while an `unsafe` expression copies its
-scalar `type` discriminator after native initialization. The ordinary Z surface
-still cannot construct the union or read its members. Nested record and pointer
-payloads remain deliberately withheld until a reusable checked projection can
-state the discriminator, payload shape, and lifetime together.
+`SDL_PollEvent(out event)` contract. The follow-up discriminated-union slice
+made that contract reusable: `.zd` names the `type` tag, header constants, and
+the active pointer-free `window` payload. `match (in event)` now emits a direct
+C switch and binds a non-escaping view into `event.window`; the prior unsafe
+scalar read disappeared from the application unchanged at the ABI boundary.
+Pointer-bearing payloads remain withheld because neither Clang layout nor a tag
+proves their pointee lifetime.
 
 Together these probes establish a useful line:
 
@@ -353,8 +355,9 @@ Together these probes establish a useful line:
 | Scope-local unsupported pointer proof | `unsafe`, without raw-pointer syntax |
 | Contracted by-value resource record | Direct checked call, unique moves, deterministic cleanup |
 | Uncontracted by-value resource record | Precise rejection; `.zd` must classify type, parameters, and producer ownership |
-| C-union output storage and scalar discriminator | Checked `out`; local active-member proof in `unsafe` |
-| Nested C-union payload | Withheld pending a checked discriminated projection |
+| C-union output with a contracted tag | Checked `out`; allocation-free borrowed `match` with an open fallback |
+| Pointer-free C-union struct payload | Non-escaping `view NativeStruct` into the active member |
+| Pointer-bearing C-union payload | Withheld pending explicit pointee lifetime facts |
 
 The next resource checkpoint is lifetime provenance for library-owned records
 and branded ownership variants whose cleanup differs despite sharing one C
@@ -373,8 +376,9 @@ These probes did more than confirm already-designed paths:
   can be named;
 - SDL3 broke the former 64 MiB Clang-AST pipe assumption, motivated spill-backed
   importer output, proved scalar `in`/`inout`/`out` projections for floating
-  pointers, and left nested union payloads withheld rather than pretending a
-  partially understood `SDL_Event` is safe;
+  pointers, and forced a checked distinction between tag-only events,
+  pointer-free borrowed payloads, unknown fallback tags, and pointer-bearing
+  payloads that remain unavailable;
 - unsupported but locally provable pointer use motivated typed `unsafe`, while
   function-like macros and source-language-only native constructs motivated
   `raw`. Keeping those tiers distinct prevented either escape hatch from

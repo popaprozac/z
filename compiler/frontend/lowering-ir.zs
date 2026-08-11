@@ -29,6 +29,7 @@ import {
 import {
   ModuleGraph,
   ModuleForeignArgument,
+  ModuleForeignUnionMatch,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
 } from "./semantic-model.zs";
@@ -295,6 +296,10 @@ export struct LoweredStatement {
   labels: Array<String>;
   matchConsumesSubject: boolean;
   matchBindingNeedsCleanup: boolean;
+  foreignMatchDiscriminant: String = "";
+  foreignMatchMember: String = "";
+  foreignMatchValues: Array<String> = Array<String>();
+  foreignMatchFallback: boolean = false;
 }
 
 export struct LoweredCleanup {
@@ -8677,6 +8682,62 @@ function matchSubjectTypeName(
   return Option<String>.none;
 }
 
+function foreignUnionMatchEvidence(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  root: usize
+): Option<usize> {
+  let index: usize = 0;
+  while (index < evidence.foreignUnionMatches.length) {
+    const plan = view evidence.foreignUnionMatches[index];
+    if (
+      plan.offset == tree.nodes[root].offset
+      && plan.line == tree.nodes[root].line
+      && plan.column == tree.nodes[root].column
+    ) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function loweredForeignUnionMatchDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in plan: ModuleForeignUnionMatch
+): LoweredEnum throws String {
+  let variants = Array<LoweredVariant>();
+  let payloadBearing = false;
+  for (const variant of plan.variants) {
+    let payload = Option<LoweredType>.none;
+    if (variant.payloadType.byteLength > 0) {
+      const lowered = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        variant.payloadType
+      );
+      payload = Option.some(move lowered);
+      payloadBearing = true;
+    }
+    variants.push(LoweredVariant({
+      name: variant.name.copyBytes(0, variant.name.byteLength),
+      payload,
+    }));
+  }
+  const unionType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    plan.unionType
+  );
+  return LoweredEnum({
+    name: unionType.name.copyBytes(0, unionType.name.byteLength),
+    nativeCName: unionType.name.copyBytes(0, unionType.name.byteLength),
+    nativeCUnderlyingType: "",
+    variants,
+    payloadBearing,
+    needsDeinit: false,
+  });
+}
+
 function matchEnumDeclaration(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -9163,16 +9224,28 @@ function lowerMatchTree(
     subjectInput,
     inout expressions
   );
-  const declaration = try matchEnumDeclaration(
-    program,
-    importedTypes,
-    evidence,
-    arena,
-    ownerName,
-    tree,
-    root
-  );
+  const foreignPlan = foreignUnionMatchEvidence(evidence, tree, root);
+  const declaration = match (in foreignPlan) {
+    some(planIndex) => try loweredForeignUnionMatchDeclaration(
+      program,
+      importedTypes,
+      evidence.foreignUnionMatches[planIndex]
+    );
+    none => try matchEnumDeclaration(
+      program,
+      importedTypes,
+      evidence,
+      arena,
+      ownerName,
+      tree,
+      root
+    );
+  };
   let consuming = tree.nodes[root].value != "in";
+  match (in foreignPlan) {
+    some(_) => consuming = false;
+    none => {}
+  }
   if (
     consuming
     && tree.nodes[subjectInput].kind == ExpressionKind.identifierExpression
@@ -9315,6 +9388,26 @@ function lowerMatchTree(
       none => false;
     };
     const loweredArm = statements.length;
+    let foreignMember = "";
+    let foreignValues = Array<String>();
+    let foreignFallback = false;
+    match (in foreignPlan) {
+      some(planIndex) => {
+        const plan = view evidence.foreignUnionMatches[planIndex];
+        for (const variant of plan.variants) {
+          if (variant.name != tree.nodes[arm].value) continue;
+          foreignMember = variant.member.copyBytes(
+            0,
+            variant.member.byteLength
+          );
+          for (const value of variant.values) {
+            foreignValues.push(value.copyBytes(0, value.byteLength));
+          }
+          foreignFallback = variant.fallback;
+        }
+      }
+      none => {}
+    }
     statements.push(LoweredStatement({
       kind: LoweredStatementKind.matchArmStatement,
       mutableBinding: false,
@@ -9331,21 +9424,46 @@ function lowerMatchTree(
       labels,
       matchConsumesSubject: false,
       matchBindingNeedsCleanup,
+      foreignMatchMember: foreignMember,
+      foreignMatchValues: foreignValues,
+      foreignMatchFallback: foreignFallback,
     }));
     armStatements.push(loweredArm);
     armPosition = armPosition + 1;
   }
   let labels = Array<String>();
-  if (declaration.payloadBearing) labels.push("tagged");
+  match (in foreignPlan) {
+    some(_) => {}
+    none => {
+      if (declaration.payloadBearing) labels.push("tagged");
+    }
+  }
+  let matchType = LoweredType({
+    kind: LoweredTypeKind.enumType,
+    name: declaration.name.copyBytes(0, declaration.name.byteLength),
+  });
+  let foreignDiscriminant = "";
+  match (in foreignPlan) {
+    some(planIndex) => {
+      const plan = view evidence.foreignUnionMatches[planIndex];
+      matchType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        plan.unionType
+      );
+      foreignDiscriminant = plan.discriminantMember.copyBytes(
+        0,
+        plan.discriminantMember.byteLength
+      );
+    }
+    none => {}
+  }
   const outputIndex = statements.length;
   statements.push(LoweredStatement({
     kind: LoweredStatementKind.matchStatement,
     mutableBinding: false,
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
-    type: Option.some(LoweredType({
-      kind: LoweredTypeKind.enumType,
-      name: declaration.name.copyBytes(0, declaration.name.byteLength),
-    })),
+    type: Option.some(move matchType),
     expression: Option.some(subject),
     secondExpression: Option<usize>.none,
     children: armStatements,
@@ -9354,6 +9472,7 @@ function lowerMatchTree(
     labels,
     matchConsumesSubject: consuming,
     matchBindingNeedsCleanup: false,
+    foreignMatchDiscriminant: foreignDiscriminant,
   }));
   return outputIndex;
 }

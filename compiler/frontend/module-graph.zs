@@ -19,6 +19,7 @@ import {
   ModuleBindingResolution,
   ModuleCallResolution,
   ModuleExpressionResolution,
+  ModuleForeignUnionMatch,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSemanticEvidence,
@@ -155,6 +156,7 @@ export function buildResolvedModules(
         callResolutions: Array<ModuleCallResolution>(),
         bindingResolutions: Array<ModuleBindingResolution>(),
         expressionResolutions: Array<ModuleExpressionResolution>(),
+        foreignUnionMatches: Array<ModuleForeignUnionMatch>(),
       }),
     }));
     index = index + 1;

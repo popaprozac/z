@@ -45,8 +45,17 @@ export struct RawForeignTypeContract {
   name: String;
   movable: boolean;
   release: String;
+  discriminantMember: String;
+  variants: Array<RawForeignUnionVariant>;
+  fallback: String;
   line: usize;
   column: usize;
+}
+
+export struct RawForeignUnionVariant {
+  name: String;
+  member: String;
+  values: Array<String>;
 }
 
 export struct RawForeignContractSet {
@@ -83,6 +92,16 @@ export struct NativeForeignTypeContract {
   layout: String;
   resourceRelease: String;
   fields: Array<NativeForeignFieldContract>;
+  discriminantMember: String;
+  variants: Array<NativeForeignUnionVariant>;
+  fallback: String;
+}
+
+export struct NativeForeignUnionVariant {
+  name: String;
+  member: String;
+  payloadType: String;
+  values: Array<String>;
 }
 
 export struct NativeForeignFieldContract {
@@ -633,6 +652,148 @@ function parseFunction(
   });
 }
 
+function foreignUnionVariantNameExists(
+  in variants: Array<RawForeignUnionVariant>,
+  in name: String
+): boolean {
+  for (const variant of variants) {
+    if (variant.name == name) return true;
+  }
+  return false;
+}
+
+function foreignUnionValueExists(
+  in variants: Array<RawForeignUnionVariant>,
+  in value: String
+): boolean {
+  for (const variant of variants) {
+    for (const known of variant.values) {
+      if (known == value) return true;
+    }
+  }
+  return false;
+}
+
+function foreignStringArrayContains(
+  in values: Array<String>,
+  in value: String
+): boolean {
+  for (const known of values) {
+    if (known == value) return true;
+  }
+  return false;
+}
+
+function parseUnionDiscriminant(
+  inout cursor: ForeignContractCursor,
+  in typeName: String,
+  inout discriminantMember: String,
+  inout variants: Array<RawForeignUnionVariant>,
+  inout fallback: String
+): void throws String {
+  try expectText(inout cursor, "discriminant");
+  discriminantMember = try expectIdentifier(
+    inout cursor,
+    "a native union discriminator member"
+  );
+  try expectText(inout cursor, "{");
+  while (!atText(cursor, "}")) {
+    if (atText(cursor, "fallback")) {
+      cursor.index = cursor.index + 1;
+      if (fallback.byteLength > 0) {
+        throw contractError(
+          cursor,
+          `foreign discriminated union "${typeName}" cannot declare more than one fallback`
+        );
+      }
+      fallback = try expectIdentifier(
+        inout cursor,
+        "a Z-visible fallback variant name"
+      );
+      if (foreignUnionVariantNameExists(variants, fallback)) {
+        throw contractError(
+          cursor,
+          `duplicate discriminated-union variant "${fallback}"`
+        );
+      }
+      try expectText(inout cursor, ";");
+      continue;
+    }
+    try expectText(inout cursor, "variant");
+    const name = try expectIdentifier(
+      inout cursor,
+      "a Z-visible discriminated-union variant name"
+    );
+    if (
+      name == fallback
+      || foreignUnionVariantNameExists(variants, name)
+    ) {
+      throw contractError(
+        cursor,
+        `duplicate discriminated-union variant "${name}"`
+      );
+    }
+    try expectText(inout cursor, "{");
+    let member = "";
+    let values = Array<String>();
+    while (!atText(cursor, "}")) {
+      if (atText(cursor, "member")) {
+        cursor.index = cursor.index + 1;
+        if (member.byteLength > 0) {
+          throw contractError(
+            cursor,
+            `discriminated-union variant "${name}" cannot declare more than one native member`
+          );
+        }
+        member = try expectIdentifier(
+          inout cursor,
+          "a native union member after `member`"
+        );
+        try expectText(inout cursor, ";");
+        continue;
+      }
+      if (atText(cursor, "when")) {
+        cursor.index = cursor.index + 1;
+        const value = try expectIdentifier(
+          inout cursor,
+          "a header constant after `when`"
+        );
+        if (
+          foreignUnionValueExists(variants, value)
+          || foreignStringArrayContains(values, value)
+        ) {
+          throw contractError(
+            cursor,
+            `native discriminator value "${value}" is already assigned to another variant`
+          );
+        }
+        values.push(value);
+        try expectText(inout cursor, ";");
+        continue;
+      }
+      throw contractError(
+        cursor,
+        `expected "member" or "when" in discriminated-union variant "${name}"`
+      );
+    }
+    try expectText(inout cursor, "}");
+    if (values.length == 0) {
+      throw contractError(
+        cursor,
+        `discriminated-union variant "${name}" requires at least one when fact`
+      );
+    }
+    variants.push(RawForeignUnionVariant({ name, member, values }));
+  }
+  try expectText(inout cursor, "}");
+  if (variants.length == 0 || fallback.byteLength == 0) {
+    throw contractError(
+      cursor,
+      `foreign discriminated union "${typeName}" requires variants and one fallback`
+    );
+  }
+}
+
 function parseType(
   inout cursor: ForeignContractCursor
 ): RawForeignTypeContract throws String {
@@ -644,7 +805,26 @@ function parseType(
   try expectText(inout cursor, "{");
   let movable = false;
   let release = "";
+  let discriminantMember = "";
+  let variants = Array<RawForeignUnionVariant>();
+  let fallback = "";
   while (!atText(cursor, "}")) {
+    if (atText(cursor, "discriminant")) {
+      if (discriminantMember.byteLength > 0) {
+        throw contractError(
+          cursor,
+          `foreign type "${name}" cannot declare more than one discriminant contract`
+        );
+      }
+      try parseUnionDiscriminant(
+        inout cursor,
+        name,
+        inout discriminantMember,
+        inout variants,
+        inout fallback
+      );
+      continue;
+    }
     const fact = cursor.tokens[cursor.index].text.copyBytes(
       0,
       cursor.tokens[cursor.index].text.byteLength
@@ -678,7 +858,21 @@ function parseType(
     );
   }
   try expectText(inout cursor, "}");
-  if (!movable || release.byteLength == 0) {
+  if (
+    discriminantMember.byteLength > 0
+    && (movable || release.byteLength > 0)
+  ) {
+    throw contractErrorAt(
+      cursor,
+      line,
+      column,
+      `foreign discriminated union "${name}" cannot also declare value lifecycle facts in the first tier`
+    );
+  }
+  if (
+    discriminantMember.byteLength == 0
+    && (!movable || release.byteLength == 0)
+  ) {
     throw contractErrorAt(
       cursor,
       line,
@@ -690,6 +884,9 @@ function parseType(
     name,
     movable,
     release,
+    discriminantMember,
+    variants,
+    fallback,
     line,
     column,
   });
@@ -1085,6 +1282,9 @@ function normalizedForeignType(
       resourceRelease.byteLength
     ),
     fields,
+    discriminantMember: "",
+    variants: Array<NativeForeignUnionVariant>(),
+    fallback: "",
   });
 }
 
@@ -1107,6 +1307,10 @@ function resourceContractIndex(
   let found = contracts.types.length;
   let index: usize = 0;
   while (index < contracts.types.length) {
+    if (contracts.types[index].discriminantMember.byteLength > 0) {
+      index = index + 1;
+      continue;
+    }
     const name = view contracts.types[index].name;
     if (
       name == declaration.exportName
@@ -1213,6 +1417,10 @@ function validateResourceContracts(
 ): void throws String {
   let contractIndex: usize = 0;
   while (contractIndex < contracts.types.length) {
+    if (contracts.types[contractIndex].discriminantMember.byteLength > 0) {
+      contractIndex = contractIndex + 1;
+      continue;
+    }
     let declarationIndex = declarations.types.length;
     let index: usize = 0;
     while (index < declarations.types.length) {
@@ -1530,6 +1738,9 @@ function appendOwnedHandleType(
     layout: "opaque",
     resourceRelease: release.copyBytes(0, release.byteLength),
     fields: Array<NativeForeignFieldContract>(),
+    discriminantMember: "",
+    variants: Array<NativeForeignUnionVariant>(),
+    fallback: "",
   });
   if (replaceIndex < types.length) types[replaceIndex] = move handle;
   else types.push(move handle);
@@ -1612,6 +1823,9 @@ function appendBorrowedHandleType(
     layout: "opaque",
     resourceRelease: "",
     fields: Array<NativeForeignFieldContract>(),
+    discriminantMember: "",
+    variants: Array<NativeForeignUnionVariant>(),
+    fallback: "",
   });
   if (replaceIndex < types.length) types[replaceIndex] = move handle;
   else types.push(move handle);
@@ -1714,6 +1928,161 @@ function fixedConstantMatchesParameter(
     failure(_) => return false;
   }
   return constantName == parameterName;
+}
+
+function foreignTypeContractDeclarationIndex(
+  in declarations: RawForeignModuleDeclarations,
+  in name: String
+): usize throws String {
+  let index: usize = 0;
+  while (index < declarations.types.length) {
+    const declaration = view declarations.types[index];
+    if (
+      declaration.exportName == name
+      || declaration.qualifiedName == name
+      || declaration.nativeName == name
+      || rawForeignCanonicalRecordName(declaration) == name
+    ) return index;
+    index = index + 1;
+  }
+  throw `declaration names unknown foreign type "${name}"`;
+}
+
+function nativeForeignFieldIndex(
+  in fields: Array<NativeForeignFieldContract>,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < fields.length) {
+    if (fields[index].name == name) return Option<usize>.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function nativeForeignConstantIndex(
+  in constants: Array<NativeForeignConstantContract>,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < constants.length) {
+    if (constants[index].name == name) return Option<usize>.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function attachDiscriminatedUnionContracts(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations,
+  in constants: Array<NativeForeignConstantContract>,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  for (const contract of contracts.types) {
+    if (contract.discriminantMember.byteLength == 0) continue;
+    const declarationIndex = try foreignTypeContractDeclarationIndex(
+      declarations,
+      contract.name
+    );
+    const declaration = view declarations.types[declarationIndex];
+    if (declaration.kind != "record" || declaration.layout != "union") {
+      throw `discriminant contract for "${contract.name}" requires a native C union`;
+    }
+    const typeIndex = match (normalizedForeignTypeIndex(
+      types,
+      declaration.exportName
+    )) {
+      some(index) => index;
+      none => throw `foreign discriminated union "${contract.name}" could not preserve its native layout`;
+    };
+    const tagFieldIndex = match (nativeForeignFieldIndex(
+      types[typeIndex].fields,
+      contract.discriminantMember
+    )) {
+      some(index) => index;
+      none => throw `native union "${contract.name}" has no supported discriminator member "${contract.discriminantMember}"`;
+    };
+    const tagType = view types[typeIndex].fields[tagFieldIndex].typeName;
+    if (!isIntegerTypeName(tagType)) {
+      let nominalInteger = false;
+      for (const candidate of types) {
+        if (
+          candidate.name == tagType
+          && candidate.kind == "enum"
+          && isIntegerTypeName(candidate.underlyingType)
+        ) nominalInteger = true;
+      }
+      if (!nominalInteger) {
+        throw `native union discriminator "${contract.discriminantMember}" must be an integer scalar or nominal enum`;
+      }
+    }
+    let variants = Array<NativeForeignUnionVariant>();
+    for (const variant of contract.variants) {
+      let payloadType = "";
+      if (variant.member.byteLength > 0) {
+        const payloadFieldIndex = match (nativeForeignFieldIndex(
+          types[typeIndex].fields,
+          variant.member
+        )) {
+          some(index) => index;
+          none => throw `native union "${contract.name}" has no safely representable member "${variant.member}"`;
+        };
+        payloadType = types[typeIndex].fields[
+          payloadFieldIndex
+        ].typeName.copyBytes(
+          0,
+          types[typeIndex].fields[payloadFieldIndex].typeName.byteLength
+        );
+        const payloadIndex = match (normalizedForeignTypeIndex(
+          types,
+          payloadType
+        )) {
+          some(index) => index;
+          none => throw `discriminated-union member "${variant.member}" must contain a cleanup-free native struct payload`;
+        };
+        if (
+          types[payloadIndex].kind != "record"
+          || types[payloadIndex].layout != "struct"
+          || types[payloadIndex].resourceRelease.byteLength > 0
+        ) {
+          throw `discriminated-union member "${variant.member}" must contain a cleanup-free native struct payload`;
+        }
+      }
+      let values = Array<String>();
+      for (const value of variant.values) {
+        const constantIndex = match (nativeForeignConstantIndex(
+          constants,
+          value
+        )) {
+          some(index) => index;
+          none => throw `discriminated-union variant "${variant.name}" names unknown header constant "${value}"`;
+        };
+        const constantType = view constants[constantIndex].typeName;
+        if (!isIntegerTypeName(constantType) && constantType != tagType) {
+          throw `header constant "${value}" is incompatible with discriminator member "${contract.discriminantMember}"`;
+        }
+        values.push(constants[constantIndex].nativeName.copyBytes(
+          0,
+          constants[constantIndex].nativeName.byteLength
+        ));
+      }
+      variants.push(NativeForeignUnionVariant({
+        name: variant.name.copyBytes(0, variant.name.byteLength),
+        member: variant.member.copyBytes(0, variant.member.byteLength),
+        payloadType,
+        values,
+      }));
+    }
+    types[typeIndex].discriminantMember = contract.discriminantMember.copyBytes(
+      0,
+      contract.discriminantMember.byteLength
+    );
+    types[typeIndex].variants = move variants;
+    types[typeIndex].fallback = contract.fallback.copyBytes(
+      0,
+      contract.fallback.byteLength
+    );
+  }
 }
 
 export function normalizeForeignContracts(
@@ -1819,6 +2188,12 @@ export function normalizeForeignContracts(
       typeName,
     }));
   }
+  try attachDiscriminatedUnionContracts(
+    contracts,
+    declarations,
+    constants,
+    inout types
+  );
   let functions = Array<NativeForeignFunctionContract>();
   for (const contract of contracts.functions) {
     const functionIndex = try findRawFunction(declarations, contract.name);

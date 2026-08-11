@@ -41,6 +41,41 @@
           "2": { "name": "entity.name.type.z" }
         }
       }, {
+        "name": "meta.declaration.union-discriminant.foreign.z",
+        "match": "\\b(discriminant)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\{)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.discriminant.z" },
+          "2": { "name": "variable.other.member.discriminant.z" }
+        }
+      }, {
+        "name": "meta.declaration.union-variant.foreign.z",
+        "match": "\\b(variant)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\{)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.variant.z" },
+          "2": { "name": "constant.other.enum.variant.z" }
+        }
+      }, {
+        "name": "meta.declaration.union-member.foreign.z",
+        "match": "\\b(member)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.discriminant.z" },
+          "2": { "name": "variable.other.member.z" }
+        }
+      }, {
+        "name": "meta.declaration.union-tag.foreign.z",
+        "match": "\\b(when)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.discriminant.z" },
+          "2": { "name": "constant.other.native.z" }
+        }
+      }, {
+        "name": "meta.declaration.union-fallback.foreign.z",
+        "match": "\\b(fallback)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.discriminant.z" },
+          "2": { "name": "constant.other.enum.variant.z" }
+        }
+      }, {
         "name": "meta.declaration.type-capability.foreign.z",
         "match": "\\b(copy|move|deinit)\\b(?=\\s*;)",
         "captures": {

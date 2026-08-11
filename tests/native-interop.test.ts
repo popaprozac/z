@@ -112,7 +112,9 @@ test("compiles installed Raylib and SDL3 application pressure probes", () => {
     assert.match(generated, /SDL_GetMouseState\(&\(mouseX\), &\(mouseY\)\)/);
     assert.match(generated, /SDL_Event event;/);
     assert.match(generated, /SDL_PollEvent\(&\(event\)\)/);
-    assert.match(generated, /const uint32_t eventType = \(event\)\.type;/);
+    assert.match(generated, /switch \(_z_native_match_\d+->type\)/);
+    assert.match(generated, /case SDL_EVENT_QUIT:/);
+    assert.match(generated, /const SDL_WindowEvent \* const windowEvent = &\(_z_native_match_\d+->window\)/);
     assert.match(generated, /SDL_DestroyWindow\(window\)/);
   }
 });
@@ -3749,6 +3751,66 @@ test("diagnoses malformed and mismatched Z declaration contracts", () => {
   const incompleteEscape = diagnostics(callbackImport, callbackSource)[0];
   assert.equal(incompleteEscape.code, "Z0214");
   assert.match(incompleteEscape.message, /requires deinit and thread contracts/);
+});
+
+test("checks discriminated native union declarations against the imported ABI", () => {
+  const declarationFile = resolve(projectRoot, "tests/fixtures/native-union.h.zd");
+  const source = readFileSync(declarationFile, "utf8");
+  assert.deepEqual(diagnostics(source, declarationFile), []);
+
+  const discriminantOffset = source.indexOf("discriminant") + 2;
+  assert.match(
+    hover(source, declarationFile, discriminantOffset)?.contents.value ?? "",
+    /checked borrowed matching for native union ZNativeEvent/,
+  );
+  const variantOffset = source.indexOf("value {", source.indexOf("variant")) + 2;
+  assert.match(
+    hover(source, declarationFile, variantOffset)?.contents.value ?? "",
+    /value\(value\).*Z_NATIVE_EVENT_VALUE.*Z_NATIVE_EVENT_RESET/s,
+  );
+  const tagOffset = source.indexOf("Z_NATIVE_EVENT_VALUE") + 2;
+  assert.match(
+    hover(source, declarationFile, tagOffset)?.contents.value ?? "",
+    /selects value/,
+  );
+  const discriminantCompletionSource = source.replace("discriminant type", "discriminant ty");
+  const discriminantCompletionOffset = discriminantCompletionSource.indexOf("discriminant ty") + "discriminant ty".length;
+  assert.equal(
+    completions(discriminantCompletionSource, declarationFile, discriminantCompletionOffset)
+      .find((item) => item.label === "type")?.detail,
+    "type: i32; native union member",
+  );
+  const tagCompletionSource = source.replace("when Z_NATIVE_EVENT_VALUE", "when Z_NATIVE_EVENT_V");
+  const tagCompletionOffset = tagCompletionSource.indexOf("when Z_NATIVE_EVENT_V") + "when Z_NATIVE_EVENT_V".length;
+  assert.ok(
+    completions(tagCompletionSource, declarationFile, tagCompletionOffset)
+      .some((item) => item.label === "Z_NATIVE_EVENT_VALUE"),
+  );
+
+  assert.match(
+    diagnostics(source.replace("discriminant type", "discriminant missing"), declarationFile)[0]?.message ?? "",
+    /has no supported discriminator member "missing"/,
+  );
+  assert.match(
+    diagnostics(source.replace("member value", "member missing"), declarationFile)[0]?.message ?? "",
+    /has no safely representable member "missing"/,
+  );
+  assert.match(
+    diagnostics(source.replace("member value", "member opaque"), declarationFile)[0]?.message ?? "",
+    /has no safely representable member "opaque"/,
+  );
+  assert.match(
+    diagnostics(source.replace("Z_NATIVE_EVENT_VALUE", "Z_NATIVE_EVENT_UNKNOWN"), declarationFile)[0]?.message ?? "",
+    /names unknown header constant "Z_NATIVE_EVENT_UNKNOWN"/,
+  );
+  assert.match(
+    diagnostics(source.replace("      fallback other;\n", ""), declarationFile)[0]?.message ?? "",
+    /requires `fallback <name>;`/,
+  );
+  assert.match(
+    diagnostics(source.replace("    discriminant type {", "    move;\n    discriminant type {"), declarationFile)[0]?.message ?? "",
+    /cannot also declare value lifecycle facts/,
+  );
 });
 
 test("merges API-note sources without allowing safety contracts to conflict", () => {

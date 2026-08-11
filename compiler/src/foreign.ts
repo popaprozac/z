@@ -702,15 +702,21 @@ function applyForeignNamedTypeApiNotes(
   if (!notes.types || Object.keys(notes.types).length === 0) return namedTypes;
   return new Map([...namedTypes].map(([qualifiedName, declaration]) => {
     const note = notes.types?.[qualifiedName];
-    return [qualifiedName, note?.executorAffinity
-      ? {
-          ...declaration,
+    if (!note) return [qualifiedName, declaration];
+    return [qualifiedName, {
+      ...declaration,
+      ...(declaration.kind === "record" && note.discriminant
+        ? { discriminant: note.discriminant }
+        : {}),
+      ...(note.executorAffinity
+        ? {
           metadata: {
             ...declaration.metadata,
             executorAffinity: note.executorAffinity,
           },
         }
-      : declaration];
+        : {}),
+    }];
   }));
 }
 
@@ -1031,12 +1037,9 @@ function collectNamedTypes(
       const mapped = fields.map((field) => field.name && field.type?.qualType
         ? {
             name: field.name,
-            typeName: mapRecordFieldType(
-              field.type.qualType,
-              seed.namespacePath,
-              potential,
-              seed.layout !== "union",
-            ),
+            typeName: seed.layout === "union"
+              ? mapUnionFieldType(field.type.qualType, seed.namespacePath, potential)
+              : mapRecordFieldType(field.type.qualType, seed.namespacePath, potential),
             metadata: foreignDeclarationMetadata(field),
           }
         : null);
@@ -1705,6 +1708,29 @@ function mapRecordFieldType(
   const imported = resolvePotentialNamedType(cName, namespacePath, named);
   if (imported?.kind === "scalar") return imported.underlying!;
   if (imported?.kind === "enum" || (allowRecord && imported?.kind === "record")) return imported.typeName;
+  return "";
+}
+
+function mapUnionFieldType(
+  cName: string,
+  namespacePath: readonly string[],
+  named: ReadonlyMap<string, {
+    typeName: string;
+    kind: string;
+    namespacePath: readonly string[];
+    declaration?: ClangNode;
+    underlying?: ForeignScalarTypeName;
+  }>,
+): string {
+  const builtin = mapBuiltinType(cName);
+  if (builtin && builtin !== "void") return builtin;
+  const imported = resolvePotentialNamedType(cName, namespacePath, named);
+  if (imported?.kind === "scalar") return imported.underlying!;
+  if (imported?.kind === "enum") return imported.typeName;
+  if (
+    imported?.kind === "record"
+    && recordIsSupported(imported, named, new Set())
+  ) return imported.typeName;
   return "";
 }
 

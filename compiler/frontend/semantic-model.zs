@@ -81,6 +81,8 @@ export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
   bindingResolutions: Array<ModuleBindingResolution>;
   expressionResolutions: Array<ModuleExpressionResolution>;
+  foreignUnionMatches: Array<ModuleForeignUnionMatch> =
+    Array<ModuleForeignUnionMatch>();
 }
 
 export struct ModuleExpressionResolution {
@@ -181,6 +183,31 @@ export struct ModuleVariantSignature {
   payloadType: String;
 }
 
+export struct ModuleForeignUnionVariantSignature {
+  name: String;
+  member: String;
+  payloadType: String;
+  values: Array<String>;
+}
+
+export struct ModuleForeignUnionMatchVariant {
+  name: String;
+  member: String;
+  payloadType: String;
+  values: Array<String>;
+  fallback: boolean;
+}
+
+export struct ModuleForeignUnionMatch {
+  offset: usize;
+  line: usize;
+  column: usize;
+  unionType: String;
+  discriminantMember: String;
+  discriminantType: String;
+  variants: Array<ModuleForeignUnionMatchVariant>;
+}
+
 export struct ModuleMethodSignature {
   name: String;
   staticMethod: boolean;
@@ -212,6 +239,11 @@ export struct ModuleTypeSignature {
   foreignNativeName: String;
   foreignUnderlyingType: String;
   foreignResourceRelease: String;
+  foreignDiscriminantMember: String = "";
+  foreignDiscriminantType: String = "";
+  foreignUnionVariants: Array<ModuleForeignUnionVariantSignature> =
+    Array<ModuleForeignUnionVariantSignature>();
+  foreignFallbackVariant: String = "";
 }
 
 export struct ModuleFunctionSignature {

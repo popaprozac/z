@@ -121,6 +121,7 @@ const declarationKeywordTokens = [
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
   "owned", "borrowed", "invalidates",
   "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
+  "discriminant", "variant", "member", "when", "fallback",
 ] as const;
 
 export function diagnostics(source: string, fileName: string): ServiceDiagnostic[] {
@@ -2776,6 +2777,19 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
       }
     } else if (declaration?.kind === "record") {
       const existing = new Set([...lifecycleContext[0].matchAll(/\b(move|deinit)\b/g)].map((match) => match[1]));
+      if (
+        declaration.layout === "union"
+        && !/\bdiscriminant\b/.test(lifecycleContext[0])
+        && "discriminant".startsWith(lifecycleContext[2])
+      ) {
+        contextual.push({
+          label: "discriminant",
+          kind: completionKinds.keyword,
+          detail: `describe checked tag-to-member matching for native union ${declaration.cName}`,
+          insertText: "discriminant ",
+          sortText: "0-discriminant",
+        });
+      }
       for (const capability of ["move", "deinit"] as const) {
         if (existing.has(capability) || !capability.startsWith(lifecycleContext[2])) continue;
         contextual.push({
@@ -2788,6 +2802,39 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
           sortText: `0-${capability}`,
         });
       }
+    }
+  }
+
+  const activeTypeName = [...before.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\{/g)].at(-1)?.[1];
+  const activeType = activeTypeName ? module?.namedTypes.get(activeTypeName) : null;
+  const discriminantMemberPrefix = /\bdiscriminant\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  const unionMemberPrefix = /\bmember\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (activeType?.kind === "record" && activeType.layout === "union") {
+    const wanted = discriminantMemberPrefix ?? unionMemberPrefix;
+    if (wanted !== undefined) {
+      for (const field of activeType.fields) {
+        if (!field.name.toLowerCase().startsWith(wanted.toLowerCase())) continue;
+        contextual.push({
+          label: field.name,
+          kind: completionKinds.field,
+          detail: `${field.name}: ${field.typeName}; native union member`,
+          insertText: discriminantMemberPrefix !== undefined ? `${field.name} {` : `${field.name};`,
+          sortText: `0-${field.name}`,
+        });
+      }
+    }
+  }
+  const unionTagPrefix = /\bwhen\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (module && unionTagPrefix !== undefined) {
+    for (const constant of module.constants.values()) {
+      if (!constant.name.toLowerCase().startsWith(unionTagPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: constant.name,
+        kind: completionKinds.enumMember,
+        detail: `${foreignConstantDetail(constant)}; native union discriminator value`,
+        insertText: `${constant.name};`,
+        sortText: `0-${constant.name}`,
+      });
     }
   }
 
@@ -3236,6 +3283,64 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         word.start,
         word.end,
       );
+    }
+    if (declaration?.kind === "record" && contract.discriminant) {
+      const discriminant = contract.discriminant;
+      if (discriminant.location.offset === word.start) {
+        return markdownHover(
+          `discriminant ${discriminant.member}  // checked borrowed matching for native union ${declaration.cName}`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      if (discriminant.memberLocation.offset === word.start) {
+        const field = declaration.fields.find((candidate) => candidate.name === discriminant.member);
+        return markdownHover(
+          `${discriminant.member}: ${field?.typeName ?? "_"}  // native union tag member`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
+      for (const variant of discriminant.variants) {
+        if (variant.location.offset === word.start || variant.nameLocation.offset === word.start) {
+          const payload = variant.member ? `(${variant.member})` : "";
+          return markdownHover(
+            `${variant.name}${payload}  // Z match variant for ${variant.values.join(" | ")}`,
+            source,
+            word.start,
+            word.end,
+          );
+        }
+        if (variant.member && variant.memberLocation?.offset === word.start) {
+          const field = declaration.fields.find((candidate) => candidate.name === variant.member);
+          return markdownHover(
+            `${variant.member}: ${field?.typeName ?? "_"}  // borrowed active-union payload`,
+            source,
+            word.start,
+            word.end,
+          );
+        }
+        const valueIndex = variant.valueLocations.findIndex((location) => location.offset === word.start);
+        if (valueIndex >= 0) {
+          const constant = module.constants.get(variant.values[valueIndex]);
+          return markdownHover(
+            `${constant ? foreignConstantDetail(constant) : variant.values[valueIndex]}\n// selects ${variant.name}`,
+            source,
+            word.start,
+            word.end,
+          );
+        }
+      }
+      if (discriminant.fallbackLocation.offset === word.start) {
+        return markdownHover(
+          `${discriminant.fallback}(type: ${declaration.fields.find((field) => field.name === discriminant.member)?.typeName ?? "_"})  // every unlisted native tag`,
+          source,
+          word.start,
+          word.end,
+        );
+      }
     }
     if (!declaration || (declaration.kind !== "value" && declaration.kind !== "record")) continue;
     for (const [capability, location] of [
@@ -4139,7 +4244,10 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
         ? context.semanticInfo.expressionTypes.get(subject.location.offset)
         : null;
       const declaration = enumName ? context.program.enums.find((item) => item.name === enumName) : null;
-      if (enumName && declaration) {
+      const foreignUnion = matchLocation === undefined
+        ? null
+        : context.semanticInfo.foreignUnionMatches.get(matchLocation) ?? null;
+      if (enumName && (declaration || foreignUnion)) {
         for (const armValue of node.arms) {
           const arm = armValue as {
             readonly variantName: string;
@@ -4152,7 +4260,15 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             }[] | null;
             readonly location: SourceLocation;
           };
-          const variant = declaration.variants.find((item) => item.name === arm.variantName);
+          const declaredVariant = declaration?.variants.find((item) => item.name === arm.variantName);
+          const nativeVariant = foreignUnion?.variants.find((item) => item.name === arm.variantName);
+          const variant = declaredVariant
+            ? { payloadType: declaredVariant.payload?.name ?? null }
+            : nativeVariant
+              ? { payloadType: nativeVariant.payloadType }
+              : arm.variantName === foreignUnion?.fallback
+                ? { payloadType: foreignUnion.discriminantType }
+                : null;
           if (!variant) continue;
           collected.push({
             variantName: arm.variantName,
@@ -4161,11 +4277,15 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
             bindingOffset: arm.bindingLocation?.offset ?? null,
             bindingFileName: arm.bindingLocation?.fileName,
             enumName,
-            payloadType: variant.payload?.name ?? null,
-            borrowed: Boolean(borrowed && variant.payload && editorTypeHasCleanup(variant.payload.name, context.program)),
+            payloadType: variant.payloadType,
+            borrowed: Boolean(
+              borrowed
+              && variant.payloadType
+              && (foreignUnion || editorTypeHasCleanup(variant.payloadType, context.program)),
+            ),
           });
-          const payload = variant.payload
-            ? context.program.structs.find((item) => item.name === variant.payload!.name)
+          const payload = declaredVariant?.payload
+            ? context.program.structs.find((item) => item.name === declaredVariant.payload!.name)
             : null;
           for (const fieldBinding of arm.objectBindings ?? []) {
             const field = payload?.fields.find((item) => item.name === fieldBinding.fieldName);

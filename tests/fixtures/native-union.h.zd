@@ -1,3 +1,19 @@
 declare module "native-union.h" {
+  export type ZNativeEvent {
+    discriminant type {
+      variant idle {
+        when Z_NATIVE_EVENT_IDLE;
+      }
+
+      variant value {
+        member value;
+        when Z_NATIVE_EVENT_VALUE;
+        when Z_NATIVE_EVENT_RESET;
+      }
+
+      fallback other;
+    }
+  }
+
   export function z_native_poll(out event: _): _;
 }

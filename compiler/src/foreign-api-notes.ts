@@ -11,6 +11,7 @@ import type {
   ForeignNamedType,
   ForeignObjCInterface,
 } from "./foreign-ir.ts";
+import type { ForeignUnionDiscriminant } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -94,6 +95,7 @@ export type FunctionProjectionNote = {
 export type ApiNotes = {
   readonly types?: Readonly<Record<string, {
     readonly executorAffinity?: "main";
+    readonly discriminant?: ForeignUnionDiscriminant;
   }>>;
   readonly functions?: Readonly<Record<string, {
     readonly return?: PointerNote;
@@ -133,7 +135,10 @@ export function mergeApiNotes(
     executorAffinity?: "main";
     projections?: FunctionProjectionNote[];
   }> = {};
-  const types: Record<string, { executorAffinity?: "main" }> = {};
+  const types: Record<string, {
+    executorAffinity?: "main";
+    discriminant?: ForeignUnionDiscriminant;
+  }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
     executorAffinity?: "main";
@@ -154,6 +159,23 @@ export function mergeApiNotes(
         }
         target.executorAffinity = note.executorAffinity;
         owners.set(path, source.name);
+      }
+      if (note.discriminant) {
+        const path = `types.${typeName}.discriminant`;
+        if (
+          target.discriminant
+          && JSON.stringify(target.discriminant) !== JSON.stringify(note.discriminant)
+        ) {
+          throw new ApiNoteConflictError(
+            path,
+            owners.get(path) ?? "an earlier source",
+            source.name,
+          );
+        }
+        if (!target.discriminant) {
+          target.discriminant = note.discriminant;
+          owners.set(path, source.name);
+        }
       }
     }
     for (const [functionName, note] of Object.entries(source.notes.functions ?? {})) {
@@ -399,8 +421,11 @@ function parseApiNotes(value: unknown, source: string): ApiNotes {
     const types = requireRecord(root.types, source, "types");
     for (const [name, rawType] of Object.entries(types)) {
       const typeNote = requireRecord(rawType, source, `types.${name}`);
-      requireKeys(typeNote, ["executorAffinity"], source, `types.${name}`);
+      requireKeys(typeNote, ["executorAffinity", "discriminant"], source, `types.${name}`);
       requireEnum(typeNote.executorAffinity, ["main"], source, `types.${name}.executorAffinity`);
+      if (typeNote.discriminant !== undefined) {
+        throw new Error(`invalid API notes ${JSON.stringify(source)}: discriminated unions must be declared through a checked .zd file`);
+      }
     }
   }
   if (root.functions !== undefined) {

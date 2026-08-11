@@ -1,6 +1,7 @@
 import {
   NativeValueBinding,
   addMatchBorrowedValueBinding,
+  addViewValueBinding,
   addValueBinding,
 } from "./semantic-flow-state.zs";
 import {
@@ -15,6 +16,7 @@ import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
   isNumericTypeName,
+  stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
   ModuleSemanticEvidence,
@@ -147,7 +149,14 @@ export function addMatchArmValueBindings(
   const patterns = copyIndices(tree.nodes[armIndex].children);
   if (patternKind == "binding" && patterns.length == 1) {
     let visiting = Array<String>();
-    if (
+    if (stringStartsWith(variant.payloadType, "view ")) {
+      addViewValueBinding(
+        inout bindings,
+        tree.nodes[patterns[0]].value,
+        variant.payloadType,
+        subjectRoot
+      );
+    } else if (
       borrowedMatch
       && typeHasCleanup(modules, moduleIndex, variant.payloadType, visiting)
     ) {

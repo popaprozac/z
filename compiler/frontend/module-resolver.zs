@@ -182,6 +182,8 @@ import {
 } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
+  ModuleForeignUnionMatch,
+  ModuleForeignUnionMatchVariant,
   ModuleGraph,
   ModuleResolveError,
   ModuleResolveErrorKind,
@@ -1218,6 +1220,61 @@ function inferMatchExpressionNodeType(
     }
     return "";
   }
+  if (shape.foreignUnion) {
+    if (tree.nodes[index].value != "in") {
+      throw matchError(
+        module,
+        tree,
+        index,
+        "discriminated native union match requires match (in value)"
+      );
+    }
+    let recorded = false;
+    for (const existing of evidence.foreignUnionMatches) {
+      if (
+        existing.offset == tree.nodes[index].offset
+        && existing.line == tree.nodes[index].line
+        && existing.column == tree.nodes[index].column
+      ) recorded = true;
+    }
+    if (!recorded) {
+      let variants = Array<ModuleForeignUnionMatchVariant>();
+      for (const variant of shape.variants) {
+        let values = Array<String>();
+        for (const value of variant.foreignValues) {
+          values.push(value.copyBytes(0, value.byteLength));
+        }
+        variants.push(ModuleForeignUnionMatchVariant({
+          name: variant.name.copyBytes(0, variant.name.byteLength),
+          member: variant.foreignMember.copyBytes(
+            0,
+            variant.foreignMember.byteLength
+          ),
+          payloadType: variant.payloadType.copyBytes(
+            0,
+            variant.payloadType.byteLength
+          ),
+          values,
+          fallback: variant.foreignFallback,
+        }));
+      }
+      evidence.foreignUnionMatches.push(ModuleForeignUnionMatch({
+        offset: tree.nodes[index].offset,
+        line: tree.nodes[index].line,
+        column: tree.nodes[index].column,
+        unionType: subjectType.copyBytes(0, subjectType.byteLength),
+        discriminantMember: shape.foreignDiscriminantMember.copyBytes(
+          0,
+          shape.foreignDiscriminantMember.byteLength
+        ),
+        discriminantType: shape.foreignDiscriminantType.copyBytes(
+          0,
+          shape.foreignDiscriminantType.byteLength
+        ),
+        variants,
+      }));
+    }
+  }
   let covered = Array<String>();
   const expectedType = contextualExpectedType(bindings, tree, index);
   let resultType = "";
@@ -1238,6 +1295,18 @@ function inferMatchExpressionNodeType(
     }
     if (containsString(covered, variantName)) {
       throw matchError(module, tree, armIndex, `duplicate match arm ${variantName}`);
+    }
+    if (
+      shape.foreignUnion
+      && tree.nodes[armIndex].labels.length > 0
+      && tree.nodes[armIndex].labels[0] == "object"
+    ) {
+      throw matchError(
+        module,
+        tree,
+        armIndex,
+        "discriminated native union payloads require one direct view binding; destructure the view inside the arm"
+      );
     }
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);

@@ -207,6 +207,10 @@ still use the Stage-0 compiler.
 | `export function name(...)` | Refine an existing native function | Name, parameter count/order, and native types come from Clang |
 | `export function Type.method(...)` | Refine an existing Objective-C method | The class, selector base name, parameter names, and types must match Clang; static and instance methods share this declaration shape |
 | `export type Name { ... }` | Refine an existing C record resource or C++/generated value type | C resources use `move; deinit release;`; Clang proves C++ lifecycle operations |
+| `discriminant tag { ... }` in a C union type | Define the native tag member used for checked borrowed matching | The target must be an imported union and `tag` must be an integer scalar or nominal enum member |
+| `variant name { member payload; when CONSTANT; }` | Map one or more native tag constants to one Z match variant and active union member | Constants and the recursively pointer-free, cleanup-free struct member are verified against the header |
+| `variant name { when CONSTANT; }` | Map a tag-only native event to a payloadless Z match variant | No union member becomes readable in that arm |
+| `fallback other;` | Preserve every unlisted native tag | The fallback arm binds the raw discriminator scalar, so a contract may remain intentionally partial |
 | `export type Name on thread.main;` | Isolate an existing native type to the main executor | The type must exist in the imported header; values, construction, member access, destruction, and containing Z aggregates retain the affinity |
 | `export type Name on thread.main { ... }` | Combine executor isolation with native value lifecycle facts | Affinity is independent from copy/move/deinit capability |
 | `export function name(...): _ on thread.main` | Isolate a native function or Objective-C method | Calls require proven main-executor context; the native ABI is unchanged |
@@ -249,6 +253,64 @@ still use the Stage-0 compiler.
 | `thread { transfer; }` | One unique owner may cross to another native thread | Separate trusted fact from ordinary move construction |
 | `thread { share; }` | Native identity may be shared across native threads | Stronger than transfer and therefore cannot be combined with it |
 | `thread { ... deinit; }` | Destruction is permitted on the receiving thread | Required by the first unique native-owner `thread.spawn` tier |
+
+## Discriminated native unions
+
+C unions preserve layout but do not intrinsically record which member is
+active. When a library carries a separate integer tag in the union, `.zd` can
+turn that documented relationship into a checked, reusable match contract:
+
+```z
+declare module "SDL3/SDL_events.h" {
+  export type SDL_Event {
+    discriminant type {
+      variant quit {
+        when SDL_EVENT_QUIT;
+      }
+
+      variant windowClose {
+        member window;
+        when SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+      }
+
+      fallback other;
+    }
+  }
+
+  export function SDL_PollEvent(out event: _): _;
+}
+```
+
+The Z side must borrow stored union storage:
+
+```z
+let event;
+while (events.SDL_PollEvent(out event)) {
+  match (in event) {
+    quit => running = false;
+    windowClose(windowEvent) => {
+      console.log(`closing ${windowEvent.windowID}`);
+      running = false;
+    }
+    other(type) => {}
+  }
+}
+```
+
+Z emits a direct C switch over `event.type`. `windowEvent` is a lexical
+`view SDL_WindowEvent` implemented as a pointer to `event.window`; matching
+does not allocate or copy the payload. Calling another `out event` while that
+view is live is rejected. A payloadless variant exposes no member, and the
+fallback carries the raw tag so the contract does not need to enumerate a
+library's entire open-ended event space.
+
+The first tier accepts only recursively pointer-free, cleanup-free native
+struct payloads. Pointer-bearing members remain unavailable rather than
+receiving an invented lifetime. Object destructuring in the pattern is also
+deferred: bind the view and read its checked fields inside the arm. Stage 0 and
+the native self-hosting frontend both validate, type-check, and lower this
+tier. Diagnostics, hover, completion, and semantic highlighting use the same
+contracted variant and payload vocabulary.
 
 ## `deinit` by location
 
