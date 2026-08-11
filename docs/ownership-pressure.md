@@ -2397,6 +2397,25 @@ calls, inspects the emitted C, and rejects unknown constants and null-only
 scalar parameters. This closes the corresponding Z Notes/SQLite bootstrap gap
 without introducing a raw pointer or a caller-overridable lifetime policy.
 
+## Scalar pointer capabilities through the native compiler
+
+The native `.zd` normalizer now recognizes a supported scalar behind one C
+pointer indirection. It strips native qualifiers only to identify the pointee,
+while retaining constness as checked evidence: `in` requires `const T *`, and
+`inout` or `out` requires `T *`. The normalized Z signature contains `T`, not a
+raw pointer. Existing semantic machinery therefore owns mutable-binding checks,
+definite initialization after `out`, and exact capability diagnostics; existing
+C lowering owns address-taking.
+
+A platform-independent fixture exercises `f32` through direct `out`, `inout`,
+and explicit `in` calls, plus a status-to-`Result` wrapper with two scalar
+outputs. It runs through the fixed-point native driver and asserts the emitted
+addresses. The real SDL application now passes native-frontend checking for
+`SDL_GetMouseState(out mouseX, out mouseY)` through the same path. Const-output
+contracts and call-site capability mismatches fail before lowering. This also
+exposed and closed a Stage-0 double-address bug for explicit `in value` at a C
+scalar-pointer boundary.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

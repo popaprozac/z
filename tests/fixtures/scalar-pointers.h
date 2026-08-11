@@ -9,6 +9,11 @@ static inline uint32_t z_mouse_state(float *x, float *y) {
   return 3;
 }
 
+static inline int z_mouse_state_checked(float *x, float *y) {
+  (void)z_mouse_state(x, y);
+  return 0;
+}
+
 static inline void z_increment_float(float *value) {
   *value += 1.0f;
 }

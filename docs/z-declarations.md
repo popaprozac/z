@@ -171,12 +171,15 @@ spelling does not silently pass through.
 
 The production Stage-0 compiler supports the complete current shape documented
 below. The self-hosted compiler parses `declare module`, inferred scalar,
-status, plain-record, value-resource, opaque-handle, owner-tied pointer,
-borrowed `view cstring`, null-only, and fixed-parameter function contracts. It validates them against
+status, scalar-pointer, plain-record, value-resource, opaque-handle,
+owner-tied pointer, borrowed `view cstring`, null-only, and fixed-parameter
+function contracts. It validates them against
 Clang-produced declarations, including exact integer/enum status identity,
 record layout, pointer lifecycle signatures, character-pointer text results,
 `invalidates owner;` effects, pointer-only null positions, and the exact type
-identity of compiler-supplied header constants. Other facts still fail closed while they are
+identity of compiler-supplied header constants. Scalar pointer capabilities
+additionally prove const pointees for `in` and mutable pointees for `inout` or
+`out`. Other facts still fail closed while they are
 ported; this is a bootstrap implementation boundary, not a restriction of the
 `.zd` language.
 
@@ -184,10 +187,13 @@ These normalized tiers also reach native semantic analysis and C emission.
 Selective aliases and namespace calls use the same signature/effect
 checker as ordinary Z functions, and a selected native function absent from the
 checked contract is rejected. Infallible calls and borrowed text views remain
-direct. Null-only positions require a literal `null` and lower to `NULL`; fixed
+direct. Scalar capability calls take the stored value's address, and `out`
+participates in ordinary definite initialization. Null-only positions require
+a literal `null` and lower to `NULL`; fixed
 positions disappear from the Z signature and are reinserted in their original
 ABI order. Status calls use a generated C11 adapter that invokes the native
-function once with that same argument plan and constructs `Result<void, E>`. The standalone native driver
+function once with that same argument plan and constructs `Result<void, E>`.
+The standalone native driver
 discovers the adjacent contract and invokes `z-foreign-adapter` automatically.
 A locally bootstrapped `z` prefers the packaged
 adapter beside its own executable, then falls back to `PATH`. Broader contracts

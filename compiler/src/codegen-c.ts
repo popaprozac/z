@@ -8953,6 +8953,7 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
   const foreignIn = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in";
   if (nativeIn && expression.kind === "argumentReference") return value;
+  if (foreignIn && expression.kind === "argumentReference") return value;
   if (nativeIn && parseViewType(inferExpressionType(expression, context))) return value;
   if (
     (nativeIn || foreignIn)

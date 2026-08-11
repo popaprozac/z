@@ -6152,6 +6152,111 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.ok(statSync(cachedHeaderOnlyApplication).mtimeMs > 0);
 
+  const scalarPointerProject = resolve(
+    directory,
+    "foreign-scalar-pointer-project",
+  );
+  mkdirSync(scalarPointerProject);
+  const scalarPointerSource = resolve(scalarPointerProject, "main.zs");
+  for (const fixtureName of [
+    "self-host-foreign-scalar-pointers-input.zs",
+    "scalar-pointers.h",
+    "scalar-pointers.h.zd",
+  ]) {
+    const targetName = fixtureName == "self-host-foreign-scalar-pointers-input.zs"
+      ? "main.zs"
+      : fixtureName;
+    writeFileSync(
+      resolve(scalarPointerProject, targetName),
+      readFileSync(resolve(projectRoot, "tests/fixtures", fixtureName), "utf8"),
+    );
+  }
+  writeFileSync(
+    resolve(scalarPointerProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "foreign-scalar-pointer-project",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const scalarPointerRun = spawnSync(
+    driver,
+    ["run", scalarPointerSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(scalarPointerRun.status, 0, scalarPointerRun.stderr);
+  const emittedScalarPointerSource = readFileSync(
+    resolve(scalarPointerProject, ".z-cache/run/program.c"),
+    "utf8",
+  );
+  assert.match(
+    emittedScalarPointerSource,
+    /z_mouse_state\(&\(x\), &\(y\)\)/,
+  );
+  assert.match(
+    emittedScalarPointerSource,
+    /z_mouse_state_checked\(parameter_0, parameter_1\)/,
+  );
+  assert.match(
+    emittedScalarPointerSource,
+    /z_increment_float\(&\(x\)\)/,
+  );
+  assert.match(
+    emittedScalarPointerSource,
+    /z_read_float\(&\(x\)\)/,
+  );
+
+  const scalarPointerContractPath = resolve(
+    scalarPointerProject,
+    "scalar-pointers.h.zd",
+  );
+  const scalarPointerContractSource = readFileSync(
+    scalarPointerContractPath,
+    "utf8",
+  );
+  writeFileSync(
+    scalarPointerContractPath,
+    scalarPointerContractSource.replace("in value: _", "out value: _"),
+  );
+  const constScalarOutput = spawnSync(
+    driver,
+    ["check", scalarPointerSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(constScalarOutput.status, 1);
+  assert.match(
+    constScalarOutput.stderr,
+    /out scalar parameter "value" requires a mutable native pointer/,
+  );
+  writeFileSync(scalarPointerContractPath, scalarPointerContractSource);
+
+  const scalarPointerProgramSource = readFileSync(scalarPointerSource, "utf8");
+  writeFileSync(
+    scalarPointerSource,
+    scalarPointerProgramSource.replace("out x, out y", "inout x, out y"),
+  );
+  const scalarCapabilityMismatch = spawnSync(
+    driver,
+    ["check", scalarPointerSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(scalarCapabilityMismatch.status, 1);
+  assert.match(
+    scalarCapabilityMismatch.stderr,
+    /requires out <mutable binding> for parameter 1/,
+  );
+  writeFileSync(scalarPointerSource, scalarPointerProgramSource);
+
   const recordProject = resolve(directory, "foreign-record-project");
   mkdirSync(recordProject);
   const recordSource = resolve(recordProject, "main.zs");

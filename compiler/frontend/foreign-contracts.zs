@@ -1311,6 +1311,82 @@ function removeTrailingPointer(in nativeType: String): String throws String {
   return nativeType.copyBytes(0, end);
 }
 
+struct NativeScalarPointerShape {
+  typeName: String;
+  constant: boolean;
+}
+
+function scalarPointerShape(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String
+): Option<NativeScalarPointerShape> {
+  if (pointerStarCount(nativeType) != 1) {
+    return Option<NativeScalarPointerShape>.none;
+  }
+  const pointeeOutcome = attempt removeTrailingPointer(nativeType);
+  let pointee = "";
+  match (pointeeOutcome) {
+    success(value) => pointee = move value;
+    failure(_) => return Option<NativeScalarPointerShape>.none;
+  }
+  let stripped = TextBuffer();
+  let constant = false;
+  let wroteWord = false;
+  let index: usize = 0;
+  while (index < pointee.byteLength) {
+    while (index < pointee.byteLength && pointee.byteAt(index) == 32) {
+      index = index + 1;
+    }
+    if (index >= pointee.byteLength) break;
+    const start = index;
+    while (index < pointee.byteLength && pointee.byteAt(index) != 32) {
+      index = index + 1;
+    }
+    const word = pointee.copyBytes(start, index);
+    if (word == "const") {
+      constant = true;
+      continue;
+    }
+    if (
+      word == "volatile"
+      || word == "restrict"
+      || word == "_Atomic"
+    ) continue;
+    if (wroteWord) stripped.append(" ");
+    stripped.append(word);
+    wroteWord = true;
+  }
+  const strippedName = stripped.finish();
+  const scalar = attempt scalarTypeNameWithCanonical(
+    declarations,
+    strippedName,
+    Option<String>.none
+  );
+  match (scalar) {
+    success(typeName) => return Option.some(NativeScalarPointerShape({
+      typeName,
+      constant,
+    }));
+    failure(_) => return Option<NativeScalarPointerShape>.none;
+  }
+}
+
+function resolvedScalarPointerShape(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String,
+  in canonicalNativeType: Option<String>
+): Option<NativeScalarPointerShape> {
+  const direct = scalarPointerShape(declarations, nativeType);
+  match (direct) {
+    some(shape) => return Option.some(move shape);
+    none => {}
+  }
+  match (in canonicalNativeType) {
+    some(canonical) => return scalarPointerShape(declarations, canonical);
+    none => return Option<NativeScalarPointerShape>.none;
+  }
+}
+
 function opaqueHandleName(in pointerType: String): String throws String {
   let end = pointerType.byteLength;
   while (end > 0 && pointerType.byteAt(end - 1) == 32) {
@@ -1801,6 +1877,49 @@ export function normalizeForeignContracts(
         }));
         parameterIndex = parameterIndex + 1;
         continue;
+      }
+      const scalarPointer = resolvedScalarPointerShape(
+        declarations,
+        declarations.parameters[rawParameterIndex].nativeType,
+        declarations.parameters[rawParameterIndex].canonicalNativeType
+      );
+      match (scalarPointer) {
+        some(shape) => {
+          const capability = view contract.parameters[parameterIndex]
+            .capability;
+          if (
+            capability == "in"
+            || capability == "inout"
+            || capability == "out"
+          ) {
+            if (contract.parameters[parameterIndex].release.byteLength > 0) {
+              throw `scalar pointer parameter "${contract.parameters[parameterIndex].name}" cannot declare deinit`;
+            }
+            if (capability == "in" && !shape.constant) {
+              throw `in scalar parameter "${contract.parameters[parameterIndex].name}" requires a const native pointer, found ${declarations.parameters[rawParameterIndex].nativeType}`;
+            }
+            if (capability != "in" && shape.constant) {
+              throw `${capability} scalar parameter "${contract.parameters[parameterIndex].name}" requires a mutable native pointer, found ${declarations.parameters[rawParameterIndex].nativeType}`;
+            }
+            parameters.push(NativeForeignParameterContract({
+              name: contract.parameters[parameterIndex].name.copyBytes(
+                0,
+                contract.parameters[parameterIndex].name.byteLength
+              ),
+              capability: capability.copyBytes(0, capability.byteLength),
+              abiMode: capability.copyBytes(0, capability.byteLength),
+              typeName: shape.typeName.copyBytes(
+                0,
+                shape.typeName.byteLength
+              ),
+              nullOnly: false,
+              fixedValue: "",
+            }));
+            parameterIndex = parameterIndex + 1;
+            continue;
+          }
+        }
+        none => {}
       }
       const handleParameter = try normalizedHandleParameter(
         contract.parameters[parameterIndex],

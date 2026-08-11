@@ -194,8 +194,8 @@ adapter/contract, a `.zd` declaration that depends on an omitted type category,
 or any unsupported contract fact still rejects the import during normalization.
 
 The contract layer has crossed as well. A Z-owned `.zd` parser reads the
-implemented scalar/status, record-resource, opaque-handle, owner-tied pointer,
-borrowed-text, and invalidation grammar. It checks module and function identity,
+implemented scalar/status, scalar-pointer, record-resource, opaque-handle,
+owner-tied pointer, borrowed-text, and invalidation grammar. It checks module and function identity,
 parameter names/counts, capabilities, nullability, supported ABI mappings, and
 lifecycle/provenance facts against the raw declarations. `view cstring` accepts
 only a header-proven character-pointer result, retains nullable spelling, and
@@ -209,6 +209,11 @@ removed from the source signature but retained in an ordered FIIR argument
 plan. Direct calls and generated status adapters consume that same plan, so a
 hidden constant is reinserted at its original ABI position rather than inferred
 from source arity.
+Single-indirection pointers to supported scalar types reuse Z's existing
+capability model. `in` requires a const pointee, while `inout` and `out` require
+mutable native storage. FIIR publishes the pointee scalar as the Z parameter
+type; semantic analysis then applies ordinary mutability and definite-output
+rules, and C lowering takes the address without a wrapper.
 Normalized callables carry source-level Z types plus exact native status and
 ownership evidence. Any fact outside the native tier is an error; it is never
 discarded for forward compatibility.

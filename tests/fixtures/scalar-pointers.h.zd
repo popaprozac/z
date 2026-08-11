@@ -1,5 +1,11 @@
 declare module "scalar-pointers.h" {
   export function z_mouse_state(out x: _, out y: _): _;
+  export function z_mouse_state_checked(
+    out x: _,
+    out y: _
+  ): void throws _ {
+    success 0;
+  }
   export function z_increment_float(inout value: _): _;
   export function z_read_float(in value: _): _;
 }

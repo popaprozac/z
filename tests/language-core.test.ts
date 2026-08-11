@@ -242,6 +242,14 @@ test("projects scalar C pointers through in, inout, and out capabilities", () =>
   assert.match(generated, /z_increment_float\(&\(x\)\)/);
   assert.match(generated, /z_read_float\(&\(x\)\)/);
 
+  const explicitInSource = source.replace(
+    "native.z_read_float(x)",
+    "native.z_read_float(in x)",
+  );
+  const explicitInGenerated = compileToC(explicitInSource, example);
+  assert.match(explicitInGenerated, /z_read_float\(&\(x\)\)/);
+  assert.doesNotMatch(explicitInGenerated, /z_read_float\(&\(&\(x\)\)\)/);
+
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
 
