@@ -1,4 +1,14 @@
 declare module "SDL3/SDL_events.h" {
+  // SDL owns pointer-bearing event payload memory. Pumping or polling events
+  // may replace it, so projected views cannot cross either operation.
+  lifetime eventMemory;
+
+  export type SDL_TextInputEvent {
+    project text: view cstring | null {
+      borrowed from eventMemory;
+    }
+  }
+
   export type SDL_Event {
     discriminant type {
       variant quit {
@@ -10,9 +20,20 @@ declare module "SDL3/SDL_events.h" {
         when SDL_EVENT_WINDOW_CLOSE_REQUESTED;
       }
 
+      variant textInput {
+        member text;
+        when SDL_EVENT_TEXT_INPUT;
+      }
+
       fallback other;
     }
   }
 
-  export function SDL_PollEvent(out event: _): _;
+  export function SDL_PollEvent(out event: _): _ {
+    invalidates eventMemory;
+  }
+
+  export function SDL_PumpEvents(): _ {
+    invalidates eventMemory;
+  }
 }

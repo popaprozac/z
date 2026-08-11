@@ -195,13 +195,21 @@ or any unsupported contract fact still rejects the import during normalization.
 
 The contract layer has crossed as well. A Z-owned `.zd` parser reads the
 implemented scalar/status, scalar-pointer, record-resource, opaque-handle,
-owner-tied pointer, borrowed-text, and invalidation grammar. It checks module and function identity,
+owner-tied pointer, borrowed-text, named foreign-lifetime, type-field
+projection, and invalidation grammar. It checks module and function identity,
 parameter names/counts, capabilities, nullability, supported ABI mappings, and
 lifecycle/provenance facts against the raw declarations. `view cstring` accepts
 only a header-proven character-pointer result, retains nullable spelling, and
 requires either one unambiguous immutable pointer input or an explicit
 `borrowed from owner;` fact. That owner feeds the same loan used by child
 pointers and `invalidates owner;`.
+Pointer-bearing cleanup-free records may remain in FIIR as view-only native
+types. Their header-proven scalar/enum fields stay visible, while uncontracted
+pointer fields are hidden. A type fact
+`project field: view cstring [| null] { borrowed from lifetime; }` verifies that
+the named record field is a compatible `const char *` and attaches a declared,
+module-scoped foreign lifetime identity to the resulting view. No pointer type
+or lifetime parameter is added to ordinary Z.
 Null-only parameters are admitted only at pointer positions and remain a
 visible `null` argument in Z. Fixed parameters name a producer-proven constant
 whose exact or canonical scalar type matches the Clang parameter; they are
@@ -230,10 +238,13 @@ must say `owned` or `borrowed`; borrowed records are local non-escaping views
 until runtime lifetime provenance is modeled. Parameters retain Z's semantic
 `in`/`move` capability independently from the C ABI's by-value/pointer mode,
 preventing a borrow from changing the native signature. Contracted writable
-union pointers may initialize opaque ABI-preserving storage and expose only
-producer-proven scalar or enum fields for a local unsafe active-member read.
-By-value unions, nested union payloads, Objective-C declarations, interfaces,
-protocols, and unclassified resource records still fail closed.
+union pointers may initialize opaque ABI-preserving storage. A checked
+discriminant contract exposes tag-only cases or cleanup-free active-member
+views; pointer-bearing payload records remain view-only and expose only safe
+fields plus reviewed lifetime-bound text projections. Without that contract,
+only producer-proven scalar or enum fields support a local unsafe active-member
+read. By-value unions, Objective-C declarations, interfaces, protocols, and
+unclassified resource records still fail closed.
 
 Opaque pointer ownership is represented separately from record layout. A
 nullable inferred result may declare `deinit release;`, and a nullable `out`
@@ -250,11 +261,13 @@ capture, return, consumption, and owned `Option` lifting. `borrowed from owner;`
 additionally records the native parameter index that supplies provenance. The
 ordinary semantic model carries that index as a view source, allowing `view T`
 and `Option<view T>` forwarding while retaining the owner's lexical loan.
-Normalized functions may also carry native parameter indices from
-`invalidates owner;`. Semantic analysis checks those indices against the same
+Normalized functions may carry native parameter indices from
+`invalidates owner;` or module-scoped identities from
+`invalidates lifetime;`. Semantic analysis checks both against the same
 owner/view loan graph before the direct call; code generation emits no wrapper
-or runtime invalidation check. Runtime lifetime names remain a later provenance
-tier.
+or runtime invalidation check. Clang proves field existence and pointer shape,
+but `borrowed from lifetime` and named invalidation are trusted behavioral
+facts supplied by the declaration author.
 
 Scalar typedef evidence verifies
 parameters/results and then lowers

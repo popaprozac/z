@@ -119,7 +119,7 @@ const primitiveTypeTokens = [
 const declarationKeywordTokens = [
   "declare", "module", "export", "function", "type", "copy", "in", "inout", "out", "move", "deinit",
   "async", "callback", "context", "thread", "caller", "any", "transfer", "share", "fixed", "throws", "success", "failure",
-  "owned", "borrowed", "invalidates",
+  "owned", "borrowed", "invalidates", "lifetime",
   "connection", "option", "owner", "project", "data", "length", "from", "return", "throw", "invoked", "once", "repeatedly",
   "discriminant", "variant", "member", "when", "fallback",
 ] as const;
@@ -2672,6 +2672,8 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
   }
   const module = foreignDeclarationNativeModule(source, fileName);
   const contextual: CompletionItem[] = [];
+  const lifetimeNames = [...source.matchAll(/\blifetime\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g)]
+    .map((match) => match[1]);
   const ownerName = [...before.matchAll(/\bexport\s+function\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\(/g)].at(-1)?.[1];
   const owner = ownerName ? module?.functions.get(ownerName) : null;
   const ownerSignatures = ownerName && module
@@ -2705,6 +2707,16 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         sortText: `0-${name}`,
       });
     }
+    for (const name of lifetimeNames) {
+      if (!name.toLowerCase().startsWith(borrowedOwnerPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: "foreign runtime lifetime identity",
+        insertText: `${name};`,
+        sortText: `0-${name}`,
+      });
+    }
   }
   const invalidatedOwnerPrefix = /\binvalidates\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (invalidatedOwnerPrefix !== undefined) {
@@ -2720,6 +2732,16 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
         label: name,
         kind: completionKinds.variable,
         detail: `${foreignTypeName(type)} native owner whose outstanding views are invalidated`,
+        insertText: `${name};`,
+        sortText: `0-${name}`,
+      });
+    }
+    for (const name of lifetimeNames) {
+      if (!name.toLowerCase().startsWith(invalidatedOwnerPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: name,
+        kind: completionKinds.variable,
+        detail: "foreign runtime lifetime invalidated by this call",
         insertText: `${name};`,
         sortText: `0-${name}`,
       });
@@ -2807,6 +2829,21 @@ function foreignDeclarationCompletions(source: string, fileName: string, offset:
 
   const activeTypeName = [...before.matchAll(/\bexport\s+type\s+([A-Za-z_][A-Za-z0-9_.]*)\s*\{/g)].at(-1)?.[1];
   const activeType = activeTypeName ? module?.namedTypes.get(activeTypeName) : null;
+  const fieldProjectionPrefix = /\bproject\s+([A-Za-z_]*)$/.exec(before)?.[1];
+  if (activeType?.kind === "record" && fieldProjectionPrefix !== undefined) {
+    for (const field of activeType.nativeFields) {
+      const normalized = field.cName.replace(/\s+/g, " ").trim();
+      if (!/^const (?:signed |unsigned )?char \*$/.test(normalized)
+        || !field.name.toLowerCase().startsWith(fieldProjectionPrefix.toLowerCase())) continue;
+      contextual.push({
+        label: field.name,
+        kind: completionKinds.field,
+        detail: `${field.name}: ${field.cName}; project as a native-lifetime-bound text view`,
+        insertText: `${field.name}: view cstring | null {\n  borrowed from ;\n}`,
+        sortText: `0-${field.name}`,
+      });
+    }
+  }
   const discriminantMemberPrefix = /\bdiscriminant\s+([A-Za-z_]*)$/.exec(before)?.[1];
   const unionMemberPrefix = /\bmember\s+([A-Za-z_]*)$/.exec(before)?.[1];
   if (activeType?.kind === "record" && activeType.layout === "union") {
@@ -3262,6 +3299,17 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
   const module = foreignDeclarationNativeModule(source, fileName);
   if (!module) return null;
 
+  for (const lifetime of contracts.lifetimes) {
+    if (lifetime.location.offset === word.start || lifetime.nameLocation.offset === word.start) {
+      return markdownHover(
+        `lifetime ${lifetime.name}  // compile-time identity for native-managed borrowed storage`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
+  }
+
   for (const contract of contracts.types) {
     const declaration = module.namedTypes.get(contract.name);
     const interfaceDeclaration = module.interfaces.get(contract.name);
@@ -3283,6 +3331,27 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
         word.start,
         word.end,
       );
+    }
+    if (declaration?.kind === "record") {
+      for (const projection of contract.fieldProjections) {
+        if (projection.location.offset === word.start || projection.nameLocation.offset === word.start) {
+          const nativeField = declaration.nativeFields.find((field) => field.name === projection.name);
+          return markdownHover(
+            `project ${projection.name}: ${projection.typeName}  // direct borrowed projection of ${nativeField?.cName ?? "native field"}`,
+            source,
+            word.start,
+            word.end,
+          );
+        }
+        if (projection.lifetimeLocation.offset === word.start) {
+          return markdownHover(
+            `borrowed from ${projection.lifetime}  // view ends before any call that invalidates this native lifetime`,
+            source,
+            word.start,
+            word.end,
+          );
+        }
+      }
     }
     if (declaration?.kind === "record" && contract.discriminant) {
       const discriminant = contract.discriminant;
@@ -3530,8 +3599,11 @@ function foreignDeclarationHover(source: string, fileName: string, offset: numbe
       candidate.location.offset === word.start || candidate.parameterLocation.offset === word.start
     ));
     if (invalidation) {
+      const lifetime = contracts.lifetimes.some((candidate) => candidate.name === invalidation.parameter);
       return markdownHover(
-        `invalidates ${invalidation.parameter}  // this native call may invalidate every outstanding view derived from the owner`,
+        lifetime
+          ? `invalidates ${invalidation.parameter}  // this native call ends every outstanding view tied to the foreign lifetime`
+          : `invalidates ${invalidation.parameter}  // this native call may invalidate every outstanding view derived from the owner`,
         source,
         word.start,
         word.end,
@@ -6102,6 +6174,9 @@ function foreignNamedTypeDetail(named: ForeignNamedType): string {
   }
   if (named.kind === "record" && named.resource) {
     return `${named.exportName}: ${named.cName}${executor}  // move-only native C resource; deinit ${named.resource.release}`;
+  }
+  if (named.kind === "record" && named.viewOnly) {
+    return `${named.exportName}: view ${named.cName}${executor}  // native record; pointer-bearing fields are hidden`;
   }
   if (named.kind !== "value") return `${named.exportName}: ${named.cName}${executor}`;
   const available = (["copy", "move", "deinit"] as const).filter((capability) => named.lifecycle[capability]);

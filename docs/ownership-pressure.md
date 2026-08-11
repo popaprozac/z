@@ -340,11 +340,14 @@ owned window/renderer handles. It also exposed the union boundary:
 `SDL_Event` now receives opaque ABI-preserving storage through a checked
 `SDL_PollEvent(out event)` contract. The follow-up discriminated-union slice
 made that contract reusable: `.zd` names the `type` tag, header constants, and
-the active pointer-free `window` payload. `match (in event)` now emits a direct
-C switch and binds a non-escaping view into `event.window`; the prior unsafe
-scalar read disappeared from the application unchanged at the ABI boundary.
-Pointer-bearing payloads remain withheld because neither Clang layout nor a tag
-proves their pointee lifetime.
+the active `window` payload. `match (in event)` now emits a direct C switch and
+binds a non-escaping view into `event.window`; the prior unsafe scalar read
+disappeared from the application unchanged at the ABI boundary. The follow-up
+pointer-bearing tier retains `SDL_TextInputEvent` as a view-only record, hides
+its uncontracted pointers, and projects its `const char *text` as a nullable
+borrowed view tied to the declared `eventMemory` lifetime. `SDL_PollEvent` and
+`SDL_PumpEvents` explicitly invalidate that identity, so another event pump is
+rejected while the text view remains live.
 
 Together these probes establish a useful line:
 
@@ -356,8 +359,8 @@ Together these probes establish a useful line:
 | Contracted by-value resource record | Direct checked call, unique moves, deterministic cleanup |
 | Uncontracted by-value resource record | Precise rejection; `.zd` must classify type, parameters, and producer ownership |
 | C-union output with a contracted tag | Checked `out`; allocation-free borrowed `match` with an open fallback |
-| Pointer-free C-union struct payload | Non-escaping `view NativeStruct` into the active member |
-| Pointer-bearing C-union payload | Withheld pending explicit pointee lifetime facts |
+| Cleanup-free C-union struct payload | Non-escaping `view NativeStruct` into the active member |
+| Pointer-bearing C-union payload | View-only native record; safe fields remain visible and a contracted `const char *` field may carry a named foreign lifetime |
 
 The next resource checkpoint is lifetime provenance for library-owned records
 and branded ownership variants whose cleanup differs despite sharing one C
@@ -377,8 +380,8 @@ These probes did more than confirm already-designed paths:
 - SDL3 broke the former 64 MiB Clang-AST pipe assumption, motivated spill-backed
   importer output, proved scalar `in`/`inout`/`out` projections for floating
   pointers, and forced a checked distinction between tag-only events,
-  pointer-free borrowed payloads, unknown fallback tags, and pointer-bearing
-  payloads that remain unavailable;
+  cleanup-free borrowed payloads, unknown fallback tags, and pointer-bearing
+  view-only payloads with explicitly projected, lifetime-bound text;
 - unsupported but locally provable pointer use motivated typed `unsafe`, while
   function-like macros and source-language-only native constructs motivated
   `raw`. Keeping those tiers distinct prevented either escape hatch from
@@ -1521,7 +1524,7 @@ project directory automatically, without requiring a redundant
 `includeDirectories` entry.
 
 The next native interop slice crossed ownership-bearing C records without
-flattening them into Z storage or wrapping their ABI. `ZFDCL` version 6 adds
+flattening them into Z storage or wrapping their ABI. `ZFDCL` version 6 added
 canonical C record identity, so a contract written against an original typedef
 governs function signatures that use an alias of the same Clang record. The
 Z-owned `.zd` normalizer verifies `move; deinit release;`, proves that the
@@ -1535,6 +1538,12 @@ resource parameter spelled `in value` is still a Z borrow, but its lowering
 evidence records `inValue` when C receives the record by value. This keeps the
 source capability and native ABI orthogonal: the caller retains its owner, the
 C call remains direct, and no accidental address-taking changes the signature.
+
+`ZFDCL` version 7 retains exact native spellings for every field of an
+otherwise-supported record. This does not expose raw pointers to safe Z: the
+native normalizer still withholds them. It gives the `.zd` checker enough ABI
+evidence to verify that a reviewed field projection names a real compatible
+`const char *` instead of trusting a second description of the record layout.
 The executable fixture covers construction, mutation through a pointer, owned
 copying, explicit move-to-release, implicit scope cleanup, alias identity,
 borrowed observation, borrowed escape rejection, and use-after-move.

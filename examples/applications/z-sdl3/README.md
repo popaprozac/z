@@ -8,6 +8,9 @@ window with a hoverable quit button. It exercises:
 - opaque `SDL_Event` union storage initialized through checked `out`;
 - checked `.zd` discrimination of selected native union variants;
 - borrowed, allocation-free `match (in event)` payload projection;
+- a pointer-bearing text-input payload retained as a view-only native record;
+- `.zd` `lifetime`, field `project`, `borrowed from`, and `invalidates` facts
+  that safely expose SDL-owned `const char *` text without copying;
 - nullable owned `SDL_Window*` and `SDL_Renderer*` values with `.zd` cleanup;
 - inferred `f32` storage initialized through checked scalar `out` pointers; and
 - deterministic reverse-order cleanup through Z ownership and `deinit`.
@@ -25,8 +28,13 @@ adjacent declaration identifies the `type` discriminator, maps the quit and
 window-close tags, and names the active `window` member. Z then lowers
 `match (in event)` directly to a C `switch`; `windowEvent` is a non-escaping
 view into the native union, with no wrapper allocation or payload copy. The
-`other(type)` fallback preserves SDL's open-ended event space. Arbitrary or
-pointer-bearing union members remain unavailable in safe Z until contracted.
+text-input member is pointer-bearing, so Z exposes it only as a view-only native
+record: scalar fields remain readable, raw pointer fields remain hidden, and
+the adjacent declaration projects `text` as `view cstring | null` tied to
+`eventMemory`. Polling or pumping again invalidates that lifetime and is
+rejected while a projected text view remains live. `String.from(text)` is the
+explicit owned-copy path when text must persist. The `other(type)` fallback
+preserves SDL's open-ended event space.
 
 On macOS, install SDL3 with Homebrew and run the project target:
 

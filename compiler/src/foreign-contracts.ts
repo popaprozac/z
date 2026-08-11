@@ -256,6 +256,7 @@ function normalizeOverload(
       }
     }
     const invalidatesParameters = functionNotes?.invalidates ?? [];
+    const invalidatesLifetimes = functionNotes?.invalidatesLifetimes ?? [];
     for (const invalidatedParameter of invalidatesParameters) {
       const owner = parameters[invalidatedParameter]?.type;
       if (
@@ -316,6 +317,7 @@ function normalizeOverload(
       returnType,
       returnBorrowedFromParameter,
       invalidatesParameters,
+      invalidatesLifetimes,
       status: functionNotes?.status ?? null,
       parameters,
       connection: null,

@@ -311,14 +311,17 @@ rejects unsupported by-value layouts rather than exposing generated C names.
 
 Imported C unions have ABI-preserving native storage and may be initialized
 through a checked `.zd` `out Union*` contract. A reusable `discriminant` type
-contract can map header constants to payloadless variants or recursively
-pointer-free struct members. `match (in event)` then emits a direct native
-switch and binds non-escaping views into the active member without allocation
-or payload copying. A required fallback preserves unlisted tag values. Where
-no such contract exists, reading a member remains a local proof obligation:
-after checking the native API's discriminator, `unsafe` may copy a supported
-scalar or enum member. Pointer-bearing members remain excluded until a reusable
-contract can state their lifetime.
+contract can map header constants to payloadless variants or cleanup-free
+struct members. `match (in event)` then emits a direct native switch and binds
+non-escaping views into the active member without allocation or payload
+copying. Pointer-bearing members are view-only: safe scalar/enum fields remain
+visible, while raw pointer fields are hidden. A `.zd` type-field `project` may
+expose a compatible `const char *` as `view cstring [| null]`, with
+`borrowed from lifetime;` provenance and explicit `invalidates lifetime;`
+effects on calls that replace the runtime-owned storage. A required fallback
+preserves unlisted tag values. Where no discriminant contract exists, reading
+a member remains a local proof obligation: after checking the native API's
+discriminator, `unsafe` may copy a supported scalar or enum member.
 
 The expression form uses Z's ordinary value-block rule: `select` supplies the
 unsafe expression's value, while `return` still exits the enclosing function.
@@ -435,8 +438,13 @@ cleanup, may be narrowed and passed to `in`, and cannot escape into owned
 storage. `borrowed from owner;` adds explicit provenance for a child pointer:
 the named owner must be a non-null immutable `in` handle, the result may be
 forwarded as `view T` or `Option<view T>`, and the owner cannot move or die
-while that view remains live. Runtime-global lifetime names remain a later
-provenance tier. A function fact `invalidates owner;` describes native referent
+while that view remains live. A module-level `lifetime name;` instead represents
+runtime-owned storage with no ordinary Z owner. A type-field projection can
+borrow a compatible native character pointer from that identity, and
+`invalidates name;` rejects replacement calls while the view remains live.
+These named lifetimes are compile-time declaration facts, not source-level
+lifetime parameters or runtime tokens. A function fact `invalidates owner;`
+describes native referent
 mutation that may end those child lifetimes without replacing the `T *` pointer
 slot. Z rejects the call while an owner-tied view is live and permits it after
 the view's last use; this is deliberately distinct from `inout`, whose native

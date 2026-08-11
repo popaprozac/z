@@ -3,7 +3,7 @@ import type {
   ForeignModuleDeclarations,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 6;
+const protocolVersion = 7;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -47,8 +47,11 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 6 adds canonical C-record identity so lifecycle facts on a canonical
- * typedef govern aliases that preserve the same native representation. Richer
+ * Version 7 retains every field of an otherwise-supported C record using its
+ * exact native type spelling. Safe normalization can therefore keep raw
+ * pointer fields hidden while a `.zd` contract ABI-checks a reviewed field
+ * projection. Version 6 added canonical C-record identity so lifecycle facts
+ * on a canonical typedef govern aliases that preserve the same native representation. Richer
  * declarations remain outside this protocol tier,
  * but do not poison an otherwise representable header: their native spellings
  * remain visible on function records and normalization fails closed if a .zd
@@ -78,7 +81,13 @@ export function encodeForeignFunctionDeclarationStream(
   for (let typeIndex = 0; typeIndex < namedTypes.length; typeIndex += 1) {
     const type = namedTypes[typeIndex];
     const source = type.metadata.source;
-    const fields = type.kind === "record" ? type.fields : [];
+    const fields = type.kind === "record"
+      ? type.nativeFields.map((field) => ({
+          name: field.name,
+          typeName: field.cName,
+          metadata: field.metadata,
+        }))
+      : [];
     records.push([
       "T",
       hexNumber(typeIndex),

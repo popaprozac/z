@@ -52,6 +52,10 @@ function main(): i32 {
                     console.log(`SDL window ${windowEvent.windowID} requested close`);
                     running = false;
                 }
+                textInput(input) => {
+                    const text = input.text;
+                    if (text != null) console.log(`SDL text input: ${text}`);
+                }
                 other(type) => {}
             }
         }

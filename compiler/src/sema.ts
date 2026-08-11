@@ -8167,6 +8167,13 @@ function inferExpressionInner(
           helps: ["initialize union storage through a checked native out parameter, then inspect a scalar member inside unsafe"],
         });
       }
+      if (foreignDeclaration?.kind === "record" && foreignDeclaration.viewOnly) {
+        throw new DiagnosticError(fileName, expression.location, `native record ${JSON.stringify(expression.typeName)} is view-only and cannot be constructed as a Z value`, {
+          code: "Z0823",
+          notes: ["the record contains native pointer fields that remain hidden from safe Z"],
+          helps: ["obtain the record as a borrowed payload from a checked native API, then copy any projected data that must outlive the borrow"],
+        });
+      }
       if (foreignDeclaration?.kind === "record" && foreignDeclaration.resource) {
         throw new DiagnosticError(fileName, expression.location, `native value resource ${JSON.stringify(expression.typeName)} cannot be constructed with a Z struct literal`, {
           code: "Z0823",
@@ -8796,8 +8803,31 @@ function inferExpressionInner(
             helps: ["validate the API discriminator, then read the scalar member inside `unsafe { ... }`"],
           });
         }
+        if (foreignRecord.viewOnly && !parseViewType(String(receiverType))) {
+          throw new DiagnosticError(fileName, expression.location, `native record ${JSON.stringify(foreignRecord.typeName)} can only be inspected through a view`, {
+            code: "Z0823",
+            notes: ["the record contains native pointer fields whose lifetime is not represented by an ordinary Z value"],
+          });
+        }
         const field = foreignRecord.fields.find((candidate) => candidate.name === expression.property);
         if (field) {
+          const projection = foreignRecord.fieldProjections.find((candidate) => candidate.name === expression.property);
+          if (projection) {
+            const root = storageRoot(expression.object);
+            if (!root || !locals.has(root.name)) {
+              throw new DiagnosticError(fileName, expression.object.location, `projected native field ${JSON.stringify(expression.property)} requires a named borrowed receiver`, {
+                code: "Z0206",
+                helps: ["bind the checked native payload before reading its projected field"],
+              });
+            }
+            state.viewCallOrigins.set(
+              expression.location.offset,
+              mergeViewOrigins([
+                viewOriginForRoot(root.name, expression.object.location, state),
+                directViewOrigin(projection.lifetime, expression.location),
+              ]),
+            );
+          }
           state.foreignExpressionTypes.set(expression.location.offset, field.typeName);
           return field.typeName;
         }
@@ -15257,6 +15287,15 @@ function checkForeignCall(
       fileName,
       state,
       `call ${JSON.stringify(target.name)} because it can invalidate views derived from`,
+    );
+  }
+  for (const lifetime of target.invalidatesLifetimes) {
+    rejectOwnerMutationWhileViewed(
+      lifetime,
+      location,
+      fileName,
+      state,
+      `call ${JSON.stringify(target.name)} because it invalidates native lifetime`,
     );
   }
   if (

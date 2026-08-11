@@ -4126,6 +4126,28 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
             },
           },
         ],
+        fieldProjections: [],
+        nativeFields: [
+          {
+            name: "x",
+            cName: "int",
+            metadata: {
+              source: null,
+              availability: [],
+              executorAffinity: null,
+            },
+          },
+          {
+            name: "y",
+            cName: "int",
+            metadata: {
+              source: null,
+              availability: [],
+              executorAffinity: null,
+            },
+          },
+        ],
+        viewOnly: false,
         resource: null,
         namespacePath: [],
         qualifiedName: "WirePoint",
@@ -4145,7 +4167,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000006\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000007\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -6284,7 +6306,13 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.match(emittedUnionSource, /z_native_poll\(&\(event\)\)/);
   assert.match(emittedUnionSource, /switch \(_z_stage1_native_match_\d+->type\)/);
   assert.match(emittedUnionSource, /case Z_NATIVE_EVENT_VALUE:/);
+  assert.match(emittedUnionSource, /case Z_NATIVE_EVENT_TEXT:/);
   assert.match(emittedUnionSource, /&\(_z_stage1_native_match_\d+->value\)/);
+  assert.match(
+    emittedUnionSource,
+    /const ZNativeTextEvent \* const _z_stage1_match_payload_\d+_\d+ = &\(_z_stage1_native_match_\d+->text\)/,
+  );
+  assert.match(emittedUnionSource, /_z_stage1_match_payload_\d+_\d+->text/);
   assert.doesNotMatch(emittedUnionSource, /event\.payload/);
 
   const unionProgramSource = readFileSync(unionSource, "utf8");
@@ -6331,6 +6359,65 @@ function main(): i32 {
   assert.match(
     unionConstruction.stderr,
     /native union "native.ZNativeEvent" cannot be constructed as a Z struct/,
+  );
+
+  writeFileSync(
+    unionSource,
+    `import native from "native-union.h";
+
+function main(): i32 {
+  const input = native.ZNativeTextEvent({ type: 44, sequence: 7 });
+  return input.sequence;
+}
+`,
+  );
+  const viewRecordConstruction = spawnSync(
+    driver,
+    ["check", unionSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(viewRecordConstruction.status, 1);
+  assert.match(
+    viewRecordConstruction.stderr,
+    /native record "native.ZNativeTextEvent" is view-only and cannot be constructed as a Z value/,
+  );
+
+  writeFileSync(
+    unionSource,
+    `import native from "native-union.h";
+
+function main(): i32 {
+  let event;
+  native.z_native_poll_text(out event);
+  return match (in event) {
+    idle => 0;
+    value(value) => value.value;
+    text(input) => {
+      const text = input.text;
+      native.z_native_pump();
+      if (text == null) return 1;
+      select input.sequence;
+    }
+    other(type) => type;
+  };
+}
+`,
+  );
+  const invalidatedUnionView = spawnSync(
+    driver,
+    ["check", unionSource],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(invalidatedUnionView.status, 1);
+  assert.match(
+    invalidatedUnionView.stderr,
+    /invalidates native lifetime .*eventMemory.*view "text" is live/,
   );
   writeFileSync(unionSource, unionProgramSource);
 

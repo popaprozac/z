@@ -571,14 +571,20 @@ function readHeader(
     fileName,
     declaration.location,
   );
+  const projectedPointerTypes = new Map(contracts.pointerTypes);
+  const projectedNamedTypes = applyForeignNamedTypeApiNotes(
+    produced.namedTypes,
+    notes,
+    projectedPointerTypes,
+  );
   return {
     declarations: produced,
     ir: {
       producer: produced.producer,
       functions: contracts.functions,
       functionAliases: contracts.functionAliases,
-      types: contracts.pointerTypes,
-      namedTypes: applyForeignNamedTypeApiNotes(produced.namedTypes, notes),
+      types: projectedPointerTypes,
+      namedTypes: projectedNamedTypes,
       namedTypeAliases: imported.namedTypeAliases,
       namespaces: new Set([...contracts.namespaces, ...imported.namespaces]),
       constants: produced.constants,
@@ -698,15 +704,59 @@ function applyObjCMethodApiNotes(
 function applyForeignNamedTypeApiNotes(
   namedTypes: ReadonlyMap<string, ForeignNamedType>,
   notes: ApiNotes,
+  pointerTypes: Map<string, ForeignPointerType>,
 ): ReadonlyMap<string, ForeignNamedType> {
   if (!notes.types || Object.keys(notes.types).length === 0) return namedTypes;
   return new Map([...namedTypes].map(([qualifiedName, declaration]) => {
     const note = notes.types?.[qualifiedName];
     if (!note) return [qualifiedName, declaration];
+    const fieldProjections = declaration.kind === "record"
+      ? (note.fieldProjections ?? []).map((projection) => {
+        const nativeField = declaration.nativeFields.find((field) => field.name === projection.nativeField)!;
+        const nullable = projection.typeName.endsWith(" | null");
+        const identity = `${declaration.cName}.${projection.nativeField}`;
+        const typeName = pointerTypeName(identity, "borrowed", nullable);
+        const pointer: ForeignPointerType = {
+          kind: "pointer",
+          typeName,
+          cName: nativeField.cName,
+          identity,
+          ownership: "borrowed",
+          nullable,
+          release: null,
+          thread: { transfer: false, share: false, deinit: false },
+          stringView: true,
+        };
+        pointerTypes.set(typeName, pointer);
+        const alternateTypeName = pointerTypeName(identity, "borrowed", !nullable);
+        pointerTypes.set(alternateTypeName, {
+          ...pointer,
+          typeName: alternateTypeName,
+          nullable: !nullable,
+        });
+        return { ...projection, typeName };
+      })
+      : [];
     return [qualifiedName, {
       ...declaration,
       ...(declaration.kind === "record" && note.discriminant
         ? { discriminant: note.discriminant }
+        : {}),
+      ...(declaration.kind === "record" && fieldProjections.length > 0
+        ? {
+          fieldProjections,
+          fields: [
+            ...declaration.fields.filter((field) => (
+              !fieldProjections.some((projection) => projection.name === field.name)
+            )),
+            ...fieldProjections.map((projection) => ({
+              name: projection.name,
+              typeName: projection.typeName,
+              metadata: declaration.metadata,
+            })),
+          ],
+          viewOnly: true,
+        }
         : {}),
       ...(note.executorAffinity
         ? {
@@ -1044,12 +1094,15 @@ function collectNamedTypes(
           }
         : null);
       const supportedFields = mapped.filter((field): field is ForeignField => Boolean(field?.typeName));
+      const viewOnly = seed.layout === "struct"
+        && !seed.resourceRelease
+        && supportedFields.length !== mapped.length;
       if (
         seed.resourceRelease
           ? seed.layout === "struct"
           : seed.layout === "union"
             ? supportedFields.length > 0
-            : recordIsSupported(seed, potential, new Set()) && supportedFields.length === mapped.length
+            : supportedFields.length > 0
       ) {
         named = {
           kind: "record",
@@ -1061,6 +1114,17 @@ function collectNamedTypes(
           canonicalNativeName: seed.canonicalRecordName ?? seed.cName,
           layout: seed.layout ?? "struct",
           fields: supportedFields,
+          fieldProjections: [],
+          nativeFields: fields.flatMap((field) => (
+            field.name && field.type?.qualType
+              ? [{
+                  name: field.name,
+                  cName: normalizeCType(field.type.qualType),
+                  metadata: foreignDeclarationMetadata(field),
+                }]
+              : []
+          )),
+          viewOnly,
           resource: seed.resourceRelease ? { release: seed.resourceRelease } : null,
           metadata,
         };
@@ -1217,6 +1281,7 @@ function collectCxxValueCallables(
             returnType,
             returnBorrowedFromParameter: null,
             invalidatesParameters: [],
+            invalidatesLifetimes: [],
             status: null,
             parameters,
             variadic: false,
@@ -1263,6 +1328,7 @@ function collectCxxValueCallables(
       returnType,
       returnBorrowedFromParameter: null,
       invalidatesParameters: [],
+      invalidatesLifetimes: [],
       status: null,
       parameters,
       variadic: member.variadic === true,
@@ -1729,7 +1795,6 @@ function mapUnionFieldType(
   if (imported?.kind === "enum") return imported.typeName;
   if (
     imported?.kind === "record"
-    && recordIsSupported(imported, named, new Set())
   ) return imported.typeName;
   return "";
 }
@@ -2082,6 +2147,9 @@ function mapForeignType(
           cName,
           reason: "unclassifiedValueResource",
         };
+    }
+    if (named.kind === "record" && named.viewOnly) {
+      return { kind: "unsupported", cName, reason: "byValueRecordWithPointers" };
     }
     return { kind: "named", type: named, cName };
   }

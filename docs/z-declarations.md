@@ -39,6 +39,28 @@ validation against the real header rather than checking grammar alone.
 
 ```z
 declare module "vendor.h" {
+  lifetime eventMemory;
+
+  export type VendorTextEvent {
+    project text: view cstring | null {
+      borrowed from eventMemory;
+    }
+  }
+
+  export type VendorEvent {
+    discriminant type {
+      variant textInput {
+        member text;
+        when VENDOR_EVENT_TEXT_INPUT;
+      }
+      fallback other;
+    }
+  }
+
+  export function vendor_poll(out event: _): _ {
+    invalidates eventMemory;
+  }
+
   export type NativeValue on thread.main {
     move;
     deinit;
@@ -172,12 +194,15 @@ spelling does not silently pass through.
 The production Stage-0 compiler supports the complete current shape documented
 below. The self-hosted compiler parses `declare module`, inferred scalar,
 status, scalar-pointer, plain-record, value-resource, opaque-handle,
-owner-tied pointer, borrowed `view cstring`, null-only, and fixed-parameter
-function contracts. It validates them against
+owner-tied pointer, borrowed `view cstring`, pointer-bearing view-only record,
+named foreign-lifetime, null-only, and fixed-parameter function contracts. It
+validates them against
 Clang-produced declarations, including exact integer/enum status identity,
 record layout, pointer lifecycle signatures, character-pointer text results,
-`invalidates owner;` effects, pointer-only null positions, and the exact type
-identity of compiler-supplied header constants. Scalar pointer capabilities
+`project field: view cstring` field identity, `borrowed from lifetime;`
+provenance, both owner and named-lifetime `invalidates` effects, pointer-only
+null positions, and the exact type identity of compiler-supplied header
+constants. Scalar pointer capabilities
 additionally prove const pointees for `in` and mutable pointees for `inout` or
 `out`. Other facts still fail closed while they are
 ported; this is a bootstrap implementation boundary, not a restriction of the
@@ -204,11 +229,12 @@ still use the Stage-0 compiler.
 | Form | Meaning in Z | Native evidence or lowering |
 | --- | --- | --- |
 | `declare module "header"` | Bind this contract to one imported header | Specifier and resolved header must match |
+| `lifetime name;` | Name runtime-owned native storage whose validity can span several values or calls | Compile-time-only `.zd` identity. It emits no storage and is not ordinary Z lifetime syntax |
 | `export function name(...)` | Refine an existing native function | Name, parameter count/order, and native types come from Clang |
 | `export function Type.method(...)` | Refine an existing Objective-C method | The class, selector base name, parameter names, and types must match Clang; static and instance methods share this declaration shape |
 | `export type Name { ... }` | Refine an existing C record resource or C++/generated value type | C resources use `move; deinit release;`; Clang proves C++ lifecycle operations |
 | `discriminant tag { ... }` in a C union type | Define the native tag member used for checked borrowed matching | The target must be an imported union and `tag` must be an integer scalar or nominal enum member |
-| `variant name { member payload; when CONSTANT; }` | Map one or more native tag constants to one Z match variant and active union member | Constants and the recursively pointer-free, cleanup-free struct member are verified against the header |
+| `variant name { member payload; when CONSTANT; }` | Map one or more native tag constants to one Z match variant and active union member | Constants and the cleanup-free struct member are verified against the header. A pointer-bearing member is exposed only as a view-only record: safe fields remain readable, raw pointers remain hidden, and only contracted projections are added |
 | `variant name { when CONSTANT; }` | Map a tag-only native event to a payloadless Z match variant | No union member becomes readable in that arm |
 | `fallback other;` | Preserve every unlisted native tag | The fallback arm binds the raw discriminator scalar, so a contract may remain intentionally partial |
 | `export type Name on thread.main;` | Isolate an existing native type to the main executor | The type must exist in the imported header; values, construction, member access, destruction, and containing Z aggregates retain the affinity |
@@ -226,7 +252,10 @@ still use the Stage-0 compiler.
 | `owned;` in a function result block | Return a new unique C value-resource owner | The return must be a record classified by `export type`; Z schedules its named cleanup |
 | `borrowed;` in a function result block | Return runtime-owned C resource storage without cleanup | C value resources and exact header-derived opaque pointer identities become lexical non-escaping views: no fields, collections, enum payloads, captures, returns, consuming calls, or owned `Option` lifting |
 | `borrowed from owner;` in a function result block | Return a non-owning C pointer whose lifetime is tied to one input handle | `owner` must name a non-null immutable `in` pointer parameter. Z may preserve the result as `view T` or `Option<view T>` while preventing the owner from moving or dying first |
+| `project field: view cstring { borrowed from lifetime; }` in an `export type` block | Expose one otherwise-hidden `const char *` record field as a non-null borrowed text view | Clang proves the field and pointer shape; the declaration names the native lifetime that keeps its bytes valid |
+| `project field: view cstring \| null { borrowed from lifetime; }` in an `export type` block | Expose one otherwise-hidden nullable `const char *` field | Access produces `view cstring | null`; null must be narrowed and persistence requires `String.from(view)` |
 | `invalidates owner;` in a function contract block | Declare that the native call may invalidate outstanding views derived from one input handle | `owner` must name a non-null immutable `in` pointer parameter. The call is rejected while any such view is live; the native ABI remains the original `T *`, not `T **` |
+| `invalidates lifetime;` in a function contract block | Declare that the call may replace runtime-owned storage represented by a declared foreign lifetime | The name must come from `lifetime name;`; the call is rejected while any projected view carrying that lifetime remains live, with no runtime check or ABI change |
 | `fixed CONSTANT;` | Hide one native ABI parameter and always pass a header constant | Z call omits that argument; generated native code inserts the constant in place |
 | `void throws _` | Project an integer or integer-backed native enum status into Z's error channel | Native return type remains ABI-exact and allocation-free; enum errors retain their imported enum type |
 | `success N;` | Treat numeric status `N` as successful `void` completion | Every other integer or enum status becomes the typed error value |
@@ -304,13 +333,76 @@ view is live is rejected. A payloadless variant exposes no member, and the
 fallback carries the raw tag so the contract does not need to enumerate a
 library's entire open-ended event space.
 
-The first tier accepts only recursively pointer-free, cleanup-free native
-struct payloads. Pointer-bearing members remain unavailable rather than
-receiving an invented lifetime. Object destructuring in the pattern is also
-deferred: bind the view and read its checked fields inside the arm. Stage 0 and
-the native self-hosting frontend both validate, type-check, and lower this
-tier. Diagnostics, hover, completion, and semantic highlighting use the same
-contracted variant and payload vocabulary.
+Pointer-bearing, cleanup-free payload structs are retained as **view-only
+native records**. Their scalar, enum, and recursively safe record fields remain
+readable through the borrowed match binding. Raw pointer fields are hidden:
+they cannot be constructed, copied, stored, returned, passed by value, or read
+in safe Z merely because Clang reported their layout.
+
+An adjacent declaration may expose the first supported pointer field shape—a
+native `const char *`—as a lifetime-bound text projection:
+
+```z
+declare module "SDL3/SDL_events.h" {
+  lifetime eventMemory;
+
+  export type SDL_TextInputEvent {
+    project text: view cstring | null {
+      borrowed from eventMemory;
+    }
+  }
+
+  export type SDL_Event {
+    discriminant type {
+      variant textInput {
+        member text;
+        when SDL_EVENT_TEXT_INPUT;
+      }
+      fallback other;
+    }
+  }
+
+  export function SDL_PollEvent(out event: _): _ {
+    invalidates eventMemory;
+  }
+
+  export function SDL_PumpEvents(): _ {
+    invalidates eventMemory;
+  }
+}
+```
+
+```z
+match (in event) {
+  textInput(input) => {
+    const text = input.text;
+    if (text != null) {
+      console.log(text);          // allocation-free borrowed read
+      const saved = String.from(text); // explicit owned copy for persistence
+    }
+  }
+  other(type) => {}
+}
+```
+
+`eventMemory` is a declaration-only identity for storage owned by SDL. It does
+not allocate memory, add a runtime token, or introduce lifetime parameters into
+ordinary Z. The compiler attaches that identity to `input.text` and rejects
+`SDL_PollEvent`, `SDL_PumpEvents`, storage, capture, return, or suspension while
+the projected view remains live. Once `String.from(text)` makes an owned copy,
+the original view may end and later invalidation cannot affect the copy.
+
+This field projection is distinct from the function/callback form
+`project bytes: Slice<u8> { data ...; length ...; }`. Both deliberately use
+`project` because they replace a lower-level native representation with one
+checked Z view, but the surrounding `export type`, function, or `callback`
+block determines which grammar applies.
+
+Object destructuring in union patterns remains deferred: bind the payload view
+and read its checked fields inside the arm. Stage 0 and the native self-hosting
+frontend both validate, type-check, and lower this tier. Diagnostics, hover,
+completion, and semantic highlighting use the same contracted variant,
+projection, and lifetime vocabulary.
 
 ## `deinit` by location
 
@@ -453,6 +545,7 @@ These are semantic mappings, not textual rewrites:
 | C opaque returned handle | Return `_ \| null { deinit close; }` | Nullable owned handle with deterministic cleanup |
 | C borrowed opaque handle | Return `_ \| null { borrowed; }` | Exact header-derived pointer identity as a nullable local view; null-check and pass to `in`, but do not store, capture, return, consume, or lift into owned `Option` storage |
 | C child pointer borrowed from a handle | Return `_ \| null { borrowed from owner; }` | Owner-provenanced nullable view; it may be forwarded as `Option<view T>`, while the owner remains immovable and live for every use |
+| Pointer-bearing discriminated-union payload | `lifetime storage;`, an `export type` field `project ... { borrowed from storage; }`, and `invalidates storage;` on replacing calls | View-only native payload: safe fields plus the contracted borrowed text projection are readable without allocation; raw pointers and by-value use remain unavailable |
 | C record carrying resource identity | `export type T { move; deinit release; }` plus `owned;`/`borrowed;` producer results and `in`/`inout`/`move` parameters | Exact native by-value ABI, unique-owner checking, reverse-order cleanup, and conservative borrowed non-escape |
 | C integer or integer-backed enum status | `void throws _ { success N; }` or `success CONSTANT;` | `try`/`attempt` and `Result<void, E>`; enum failures preserve their native enum type |
 | C variadic function selected by an enum option | Repeated contracts with `option: ENUM_MEMBER` and explicit trailing types | Closed, type-checked Z overloads that still lower to the original C call |
@@ -551,13 +644,19 @@ a diagnostic naming the relevant return channel.
 
 Clang remains the ABI authority. The compiler checks `.zd` grammar and validates
 ABI-visible claims—symbols, methods, parameter positions and names, callback
-shape, nullability, return types, and capability compatibility—against Clang's
+shape, record fields, native pointer shape, nullability, return types, and
+capability compatibility—against Clang's
 imported declaration graph. `.zd` can then narrow or classify that imported
 surface, but a project author can still lie about behavioral facts that no
 header expresses—for example, claiming that a vendor callback fires exactly
 once, that a record return is owned rather than borrowed, or that a native
-owner may be destroyed on another thread. Such a false
-contract is the foreign equivalent of an unsafe declaration.
+owner may be destroyed on another thread. Named lifetime relationships are in
+this trusted category too: Clang can prove that a projected field is really a
+compatible `const char *`, and the compiler can prove that every referenced
+lifetime is declared, but only the library contract can say when those bytes
+become invalid. A missing or false `invalidates lifetime;` fact can permit a
+use-after-free. Such a false contract is the foreign equivalent of an unsafe
+declaration.
 
 C record aliases are matched by canonical Clang identity. A resource contract
 on raylib's `Texture` therefore governs signatures spelled `Texture2D` or

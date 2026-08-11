@@ -14,6 +14,7 @@ import type {
   ForeignCallbackTypedef,
   ForeignBlockType,
   ForeignFunctionDeclaration,
+  ForeignFieldProjection,
   ForeignNamedType,
   ForeignObjCInterface,
   ForeignObjCMethod,
@@ -136,8 +137,22 @@ export type ForeignCallbackContract = {
 
 export type ForeignDeclarationContracts = {
   readonly moduleSpecifier: string;
+  readonly lifetimes: readonly {
+    readonly name: string;
+    readonly location: SourceLocation;
+    readonly nameLocation: SourceLocation;
+  }[];
   readonly functions: readonly ForeignFunctionContract[];
   readonly types: readonly ForeignValueContract[];
+};
+
+export type ForeignFieldProjectionContract = {
+  readonly name: string;
+  readonly typeName: "view cstring" | "view cstring | null";
+  readonly lifetime: string;
+  readonly location: SourceLocation;
+  readonly nameLocation: SourceLocation;
+  readonly lifetimeLocation: SourceLocation;
 };
 
 export type ForeignValueContract = {
@@ -156,6 +171,7 @@ export type ForeignValueContract = {
   readonly executorAffinity: "main" | null;
   readonly executorAffinityLocation: SourceLocation | null;
   readonly discriminant: ForeignUnionDiscriminantContract | null;
+  readonly fieldProjections: readonly ForeignFieldProjectionContract[];
 };
 
 export type ForeignUnionDiscriminantContract = ForeignUnionDiscriminant & {
@@ -560,8 +576,19 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   expectText("{");
   const functions: ForeignFunctionContract[] = [];
   const types: ForeignValueContract[] = [];
+  const lifetimes: { name: string; location: SourceLocation; nameLocation: SourceLocation }[] = [];
+  const lifetimeNames = new Set<string>();
   const typeNames = new Set<string>();
   while (!at("}")) {
+    if (at("lifetime")) {
+      const lifetime = take();
+      const name = expectIdentifier("a foreign lifetime identity");
+      if (lifetimeNames.has(name.text)) fail(name, `duplicate foreign lifetime ${JSON.stringify(name.text)}`);
+      lifetimeNames.add(name.text);
+      lifetimes.push({ name: name.text, location: lifetime.location, nameLocation: name.location });
+      expectText(";");
+      continue;
+    }
     expectText("export");
     if (at("type")) {
       const start = take();
@@ -590,6 +617,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
           executorAffinity: executorAffinity.affinity,
           executorAffinityLocation: executorAffinity.location,
           discriminant: null,
+          fieldProjections: [],
         });
         continue;
       }
@@ -600,7 +628,41 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       let deinitFunction: string | null = null;
       let threadContract = emptyThreadContract();
       let discriminant: ForeignUnionDiscriminantContract | null = null;
+      const fieldProjections: ForeignFieldProjectionContract[] = [];
       while (!at("}")) {
+        if (at("project")) {
+          const projection = take();
+          const projectionName = expectIdentifier("a Z-visible projected field name");
+          if (fieldProjections.some((candidate) => candidate.name === projectionName.text)) {
+            fail(projectionName, `foreign type ${JSON.stringify(name)} cannot project field ${JSON.stringify(projectionName.text)} more than once`);
+          }
+          expectText(":");
+          expectText("view");
+          const semanticType = expectIdentifier("`cstring` after `view`");
+          if (semanticType.text !== "cstring") fail(semanticType, "the first foreign field-projection tier supports only `view cstring`");
+          let nullable = false;
+          if (at("|")) {
+            take();
+            expectText("null");
+            nullable = true;
+          }
+          expectText("{");
+          expectText("borrowed");
+          expectText("from");
+          const lifetime = expectIdentifier("a declared foreign lifetime after `borrowed from`");
+          if (!lifetimeNames.has(lifetime.text)) fail(lifetime, `projected field names unknown foreign lifetime ${JSON.stringify(lifetime.text)}`);
+          expectText(";");
+          expectText("}");
+          fieldProjections.push({
+            name: projectionName.text,
+            typeName: nullable ? "view cstring | null" : "view cstring",
+            lifetime: lifetime.text,
+            location: projection.location,
+            nameLocation: projectionName.location,
+            lifetimeLocation: lifetime.location,
+          });
+          continue;
+        }
         if (at("discriminant")) {
           if (discriminant) fail(peek(), `foreign type ${JSON.stringify(name)} cannot declare more than one discriminant contract`);
           discriminant = parseUnionDiscriminant();
@@ -613,7 +675,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         }
         const capability = take();
         if (!["copy", "move", "deinit"].includes(capability.text)) {
-          fail(capability, `expected "copy", "move", "deinit", "thread", or "discriminant" in foreign type contract, found ${JSON.stringify(capability.text)}`);
+          fail(capability, `expected "copy", "move", "deinit", "thread", "project", or "discriminant" in foreign type contract, found ${JSON.stringify(capability.text)}`);
         }
         if (capability.text === "copy") {
           if (copyLocation) fail(capability, `foreign type ${JSON.stringify(name)} cannot declare copy more than once`);
@@ -644,8 +706,8 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
       if (hasLifecycle && !copyLocation && !moveLocation) {
         fail(start, `foreign value type ${JSON.stringify(name)} must declare copy or move`);
       }
-      if (!hasLifecycle && !executorAffinity && !discriminant) {
-        fail(start, `foreign type ${JSON.stringify(name)} must declare lifecycle facts, a discriminant contract, or \`on thread.main\``);
+      if (!hasLifecycle && !executorAffinity && !discriminant && fieldProjections.length === 0) {
+        fail(start, `foreign type ${JSON.stringify(name)} must declare lifecycle facts, projections, a discriminant contract, or \`on thread.main\``);
       }
       types.push({
         name,
@@ -663,6 +725,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
         executorAffinity: executorAffinity?.affinity ?? null,
         executorAffinityLocation: executorAffinity?.location ?? null,
         discriminant,
+        fieldProjections,
       });
       continue;
     }
@@ -1037,6 +1100,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
     for (const invalidation of invalidates) {
       const owner = parameters.find((parameter) => parameter.name === invalidation.parameter);
       if (!owner) {
+        if (lifetimeNames.has(invalidation.parameter)) continue;
         throw new DiagnosticError(
           fileName,
           invalidation.parameterLocation,
@@ -1101,7 +1165,7 @@ export function parseForeignDeclarationContracts(source: string, fileName: strin
   }
   expectText("}");
   if (peek().kind !== "eof") fail(peek(), `expected the end of the declaration file, found ${JSON.stringify(peek().text)}`);
-  return { moduleSpecifier, functions, types };
+  return { moduleSpecifier, lifetimes, functions, types };
 }
 
 function resolveContractNamedType(
@@ -1176,7 +1240,7 @@ function validateUnionDiscriminantContract(
           `native union ${JSON.stringify(contract.name)} has no safely representable member ${JSON.stringify(variant.member)}`,
           {
             code: "Z0801",
-            notes: ["the first discriminated-union tier projects only recursively pointer-free struct payloads"],
+            notes: ["the native member must resolve to a cleanup-free struct; pointer-bearing structs are exposed only as views"],
           },
         );
       }
@@ -1255,6 +1319,7 @@ export function foreignDeclarationApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     invalidates?: number[];
+    invalidatesLifetimes?: string[];
     status?: StatusNote;
     buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
@@ -1263,6 +1328,7 @@ export function foreignDeclarationApiNotes(
   const types: Record<string, {
     executorAffinity?: "main";
     discriminant?: ForeignUnionDiscriminant;
+    fieldProjections?: readonly ForeignFieldProjection[];
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
@@ -1293,9 +1359,50 @@ export function foreignDeclarationApiNotes(
           fileName,
         )
       : null;
+    const fieldProjections = contract.fieldProjections.map((projection) => {
+      if (namedType?.kind !== "record" || namedType.layout !== "struct") {
+        throw new DiagnosticError(
+          fileName,
+          projection.location,
+          `field projection for ${JSON.stringify(contract.name)} requires a native C struct`,
+          { code: "Z0801" },
+        );
+      }
+      const nativeField = namedType.nativeFields.find((field) => field.name === projection.name);
+      if (!nativeField) {
+        throw new DiagnosticError(
+          fileName,
+          projection.nameLocation,
+          `native struct ${JSON.stringify(contract.name)} has no field ${JSON.stringify(projection.name)}`,
+          { code: "Z0801" },
+        );
+      }
+      const normalizedNativeType = nativeField.cName
+        .replace(/\b(?:restrict|_Nonnull|_Nullable|_Null_unspecified)\b/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!/^const (?:signed |unsigned )?char \*$/.test(normalizedNativeType)) {
+        throw new DiagnosticError(
+          fileName,
+          projection.nameLocation,
+          `projected field ${JSON.stringify(projection.name)} must be a native const char *, found ${JSON.stringify(nativeField.cName)}`,
+          {
+            code: "Z0801",
+            notes: ["the first field-projection tier supports borrowed immutable C strings only"],
+          },
+        );
+      }
+      return {
+        name: projection.name,
+        nativeField: projection.name,
+        typeName: projection.typeName,
+        lifetime: `foreign:${contracts.moduleSpecifier}:${projection.lifetime}`,
+      } as const;
+    });
     types[contract.name] = {
       ...(contract.executorAffinity ? { executorAffinity: contract.executorAffinity } : {}),
       ...(discriminant ? { discriminant } : {}),
+      ...(fieldProjections.length > 0 ? { fieldProjections } : {}),
     };
   }
   for (const contract of contracts.functions) {
@@ -1567,7 +1674,16 @@ export function foreignDeclarationApiNotes(
       ...(contract.invalidates.length
         ? { invalidates: contract.invalidates.map((invalidation) => (
           contract.parameters.findIndex((parameter) => parameter.name === invalidation.parameter)
-        )) }
+        )).filter((index) => index >= 0) }
+        : {}),
+      ...(contract.invalidates.some((invalidation) => (
+        contract.parameters.every((parameter) => parameter.name !== invalidation.parameter)
+      ))
+        ? {
+          invalidatesLifetimes: contract.invalidates
+            .filter((invalidation) => contract.parameters.every((parameter) => parameter.name !== invalidation.parameter))
+            .map((invalidation) => `foreign:${contracts.moduleSpecifier}:${invalidation.parameter}`),
+        }
         : {}),
       ...(Object.keys(parameters).length ? { parameters } : {}),
       ...(buffers.length ? { buffers } : {}),

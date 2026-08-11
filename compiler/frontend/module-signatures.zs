@@ -85,6 +85,7 @@ function functionDeclarationSignature(
     parameterTypes,
     viewParameter: Option<usize>.none,
     invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
     returnType: declaration.returnType.name.copyBytes(
       0,
       declaration.returnType.name.byteLength
@@ -117,6 +118,7 @@ function constructorDeclarationSignature(
     parameterTypes,
     viewParameter: Option<usize>.none,
     invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
     returnType: ownerName.copyBytes(0, ownerName.byteLength),
     errorType,
   });
@@ -176,6 +178,7 @@ export function programTypeSignature(
           readonlyField: field.readonlyField,
           hasDefault,
           optionalField: field.optionalField,
+          viewLifetime: "",
         }));
       }
       let methods = Array<ModuleMethodSignature>();

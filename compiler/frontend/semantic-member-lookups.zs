@@ -50,6 +50,7 @@ export struct NativeFieldShape {
   readonlyField: boolean;
   optionalField: boolean;
   foreignUnion: boolean;
+  viewLifetime: String;
 }
 
 export struct NativeAggregateConstructionShape {
@@ -318,6 +319,10 @@ export function aggregateFieldShape(
                     signature.foreignKind == "record"
                     && signature.foreignLayout == "union"
                   ),
+                viewLifetime: field.viewLifetime.copyBytes(
+                  0,
+                  field.viewLifetime.byteLength
+                ),
               }));
             }
           }
@@ -455,6 +460,10 @@ export function rebaseModuleFunctionSignature(
   for (const parameter of signature.invalidatesParameters) {
     invalidatesParameters.push(parameter);
   }
+  let invalidatesLifetimes = Array<String>();
+  for (const lifetime of signature.invalidatesLifetimes) {
+    invalidatesLifetimes.push(lifetime.copyBytes(0, lifetime.byteLength));
+  }
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
@@ -464,6 +473,7 @@ export function rebaseModuleFunctionSignature(
     parameterTypes,
     viewParameter: signature.viewParameter,
     invalidatesParameters,
+    invalidatesLifetimes,
     returnType: rebaseTypeName(
       modules,
       fromModuleIndex,
@@ -713,6 +723,10 @@ export function methodCallableSignature(
   for (const parameter of method.signature.invalidatesParameters) {
     invalidatesParameters.push(parameter);
   }
+  let invalidatesLifetimes = Array<String>();
+  for (const lifetime of method.signature.invalidatesLifetimes) {
+    invalidatesLifetimes.push(lifetime.copyBytes(0, lifetime.byteLength));
+  }
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
     executorAffinity: method.signature.executorAffinity.copyBytes(0, method.signature.executorAffinity.byteLength),
@@ -722,6 +736,7 @@ export function methodCallableSignature(
     parameterTypes,
     viewParameter: method.signature.viewParameter,
     invalidatesParameters,
+    invalidatesLifetimes,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),
     errorType: method.signature.errorType.copyBytes(0, method.signature.errorType.byteLength),
   });

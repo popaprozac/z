@@ -14675,6 +14675,12 @@ function loweredForeignFieldType(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (name == "view cstring" || name == "view cstring | null") {
+    return LoweredType({
+      kind: LoweredTypeKind.cstringType,
+      name: "cstring",
+    });
+  }
   if (name == "boolean") return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
   if (name == "i8") return LoweredType({ kind: LoweredTypeKind.i8Type, name: "" });
   if (name == "i16") return LoweredType({ kind: LoweredTypeKind.i16Type, name: "" });

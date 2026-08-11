@@ -3758,6 +3758,22 @@ test("checks discriminated native union declarations against the imported ABI", 
   const source = readFileSync(declarationFile, "utf8");
   assert.deepEqual(diagnostics(source, declarationFile), []);
 
+  const lifetimeOffset = source.indexOf("eventMemory") + 2;
+  assert.match(
+    hover(source, declarationFile, lifetimeOffset)?.contents.value ?? "",
+    /compile-time identity for native-managed borrowed storage/,
+  );
+  const projectionOffset = source.indexOf("project text") + "project ".length + 1;
+  assert.match(
+    hover(source, declarationFile, projectionOffset)?.contents.value ?? "",
+    /project text: view cstring \| null.*const char \*/s,
+  );
+  const projectionLifetimeOffset = source.indexOf("eventMemory", source.indexOf("borrowed from")) + 2;
+  assert.match(
+    hover(source, declarationFile, projectionLifetimeOffset)?.contents.value ?? "",
+    /view ends before any call that invalidates this native lifetime/,
+  );
+
   const discriminantOffset = source.indexOf("discriminant") + 2;
   assert.match(
     hover(source, declarationFile, discriminantOffset)?.contents.value ?? "",
@@ -3785,6 +3801,18 @@ test("checks discriminated native union declarations against the imported ABI", 
   assert.ok(
     completions(tagCompletionSource, declarationFile, tagCompletionOffset)
       .some((item) => item.label === "Z_NATIVE_EVENT_VALUE"),
+  );
+  const lifetimeCompletionSource = source.replace("borrowed from eventMemory", "borrowed from eventM");
+  const lifetimeCompletionOffset = lifetimeCompletionSource.indexOf("borrowed from eventM") + "borrowed from eventM".length;
+  assert.ok(
+    completions(lifetimeCompletionSource, declarationFile, lifetimeCompletionOffset)
+      .some((item) => item.label === "eventMemory"),
+  );
+  const invalidationCompletionSource = source.replace("invalidates eventMemory", "invalidates eventM");
+  const invalidationCompletionOffset = invalidationCompletionSource.indexOf("invalidates eventM") + "invalidates eventM".length;
+  assert.ok(
+    completions(invalidationCompletionSource, declarationFile, invalidationCompletionOffset)
+      .some((item) => item.label === "eventMemory"),
   );
 
   assert.match(

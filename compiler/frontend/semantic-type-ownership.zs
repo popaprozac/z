@@ -506,6 +506,31 @@ export function typeIsForeignResource(
   return false;
 }
 
+export function typeIsForeignViewOnlyRecord(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  let actual = typeName.copyBytes(0, typeName.byteLength);
+  if (stringStartsWith(actual, "view ")) {
+    actual = actual.copyBytes(5, actual.byteLength);
+  }
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => return signature.foreignKind == "viewRecord";
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return false;
+}
+
 export function typeIsBorrowedForeignResource(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -1,4 +1,12 @@
 declare module "native-union.h" {
+  lifetime eventMemory;
+
+  export type ZNativeTextEvent {
+    project text: view cstring | null {
+      borrowed from eventMemory;
+    }
+  }
+
   export type ZNativeEvent {
     discriminant type {
       variant idle {
@@ -11,9 +19,24 @@ declare module "native-union.h" {
         when Z_NATIVE_EVENT_RESET;
       }
 
+      variant text {
+        member text;
+        when Z_NATIVE_EVENT_TEXT;
+      }
+
       fallback other;
     }
   }
 
-  export function z_native_poll(out event: _): _;
+  export function z_native_poll(out event: _): _ {
+    invalidates eventMemory;
+  }
+
+  export function z_native_poll_text(out event: _): _ {
+    invalidates eventMemory;
+  }
+
+  export function z_native_pump(): _ {
+    invalidates eventMemory;
+  }
 }

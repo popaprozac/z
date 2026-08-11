@@ -255,6 +255,7 @@ test("initializes imported C union storage and checks discriminated borrowed mat
       const observed = match (in event) {
         idle => 0;
         value(value) => value.value;
+        text(input) => input.sequence;
         other(type) => type;
       };
       return observed - 42;
@@ -266,6 +267,61 @@ test("initializes imported C union storage and checks discriminated borrowed mat
   assert.match(discriminatedArtifact.source, /case Z_NATIVE_EVENT_VALUE:/);
   assert.match(discriminatedArtifact.source, /case Z_NATIVE_EVENT_RESET:/);
   assert.match(discriminatedArtifact.source, /const ZNativeValueEvent \* const value = &\(_z_native_match_\d+->value\)/);
+
+  const pointerPayload = `
+    import native from "tests/fixtures/native-union.h";
+    import console from "std/console";
+    function main(): i32 {
+      let event;
+      if (!native.z_native_poll_text(out event)) return 1;
+      return match (in event) {
+        idle => 1;
+        value(value) => value.value;
+        text(input) => {
+          const text = input.text;
+          if (text == null) return 2;
+          console.log(text);
+          select input.sequence - 7;
+        }
+        other(type) => type;
+      };
+    }
+  `;
+  const pointerPayloadFile = resolve(projectRoot, "native-union-pointer-payload.zs");
+  const pointerPayloadArtifact = compileToNative(pointerPayload, pointerPayloadFile);
+  assert.match(pointerPayloadArtifact.source, /const ZNativeTextEvent \* const input = &\(_z_native_match_\d+->text\)/);
+  assert.match(pointerPayloadArtifact.source, /\(input\)->sequence/);
+  assert.match(pointerPayloadArtifact.source, /\(input\)->text/);
+
+  const invalidatedText = pointerPayload.replace(
+    "console.log(text);",
+    "native.z_native_pump();\n          console.log(text);",
+  );
+  assert.throws(
+    () => compileToNative(invalidatedText, resolve(projectRoot, "native-union-invalidated-text.zs")),
+    /invalidates native lifetime.*eventMemory|native lifetime.*eventMemory.*view/s,
+  );
+
+  const viewOnlyConstruction = `
+    import native from "tests/fixtures/native-union.h";
+    function main(): i32 {
+      const input = native.ZNativeTextEvent({ type: 44, sequence: 7 });
+      return input.sequence;
+    }
+  `;
+  assert.throws(
+    () => compileToNative(viewOnlyConstruction, resolve(projectRoot, "native-view-record-construction.zs")),
+    /native record "native\.ZNativeTextEvent" is view-only and cannot be constructed as a Z value/,
+  );
+
+  const hiddenPointer = pointerPayload.replace(
+    "select input.sequence - 7;",
+    "select input.opaque;",
+  );
+  assert.throws(
+    () => compileToNative(hiddenPointer, resolve(projectRoot, "native-union-hidden-pointer.zs")),
+    /record "native\.ZNativeTextEvent" has no field "opaque"/,
+  );
 
   assert.throws(
     () => compileToNative(
@@ -3417,6 +3473,10 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const asyncProjection = foreignDeclarationPatterns
     .find((pattern: { name: string }) => pattern.name === "meta.declaration.async-callback-projection.foreign.z");
   const asyncProjectionPattern = new RegExp(asyncProjection?.begin ?? "$^");
+  const lifetimeDeclaration = foreignDeclarationPatterns
+    .find((pattern: { name: string }) => pattern.name === "meta.declaration.lifetime.foreign.z");
+  const fieldProjection = foreignDeclarationPatterns
+    .find((pattern: { name: string }) => pattern.name === "meta.declaration.field-projection.foreign.z");
   assert.equal(exportPattern?.name, "keyword.control.export.z");
   assert.match("task fetch()", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("task on thread.main", new RegExp(taskPattern?.match ?? "$^"));
@@ -3428,6 +3488,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.doesNotMatch("const copy = value;", new RegExp(ownershipPattern?.match ?? "$^"));
   assert.match("async completion(value, error) {", asyncProjectionPattern);
   assert.doesNotMatch("thread.spawn(async move (): i32 => {", asyncProjectionPattern);
+  assert.match("lifetime eventMemory;", new RegExp(lifetimeDeclaration?.match ?? "$^"));
+  assert.match("project text: view cstring | null {", new RegExp(fieldProjection?.match ?? "$^"));
   assert.match(keywordPattern, /throw/);
   assert.match(keywordPattern, /attempt/);
   assert.match(keywordPattern, /on/);

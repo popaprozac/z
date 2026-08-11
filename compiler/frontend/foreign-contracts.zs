@@ -48,8 +48,15 @@ export struct RawForeignTypeContract {
   discriminantMember: String;
   variants: Array<RawForeignUnionVariant>;
   fallback: String;
+  fieldProjections: Array<RawForeignFieldProjection>;
   line: usize;
   column: usize;
+}
+
+export struct RawForeignFieldProjection {
+  name: String;
+  typeName: String;
+  lifetime: String;
 }
 
 export struct RawForeignUnionVariant {
@@ -60,6 +67,7 @@ export struct RawForeignUnionVariant {
 
 export struct RawForeignContractSet {
   moduleSpecifier: String;
+  lifetimes: Array<String>;
   types: Array<RawForeignTypeContract>;
   functions: Array<RawForeignFunctionContract>;
 }
@@ -82,6 +90,7 @@ export struct NativeForeignFunctionContract {
   parameters: Array<NativeForeignParameterContract>;
   borrowedFromParameter: Option<usize>;
   invalidatesParameters: Array<usize>;
+  invalidatesLifetimes: Array<String>;
 }
 
 export struct NativeForeignTypeContract {
@@ -92,6 +101,7 @@ export struct NativeForeignTypeContract {
   layout: String;
   resourceRelease: String;
   fields: Array<NativeForeignFieldContract>;
+  viewOnly: boolean;
   discriminantMember: String;
   variants: Array<NativeForeignUnionVariant>;
   fallback: String;
@@ -107,6 +117,7 @@ export struct NativeForeignUnionVariant {
 export struct NativeForeignFieldContract {
   name: String;
   typeName: String;
+  lifetime: String;
 }
 
 export struct NativeForeignConstantContract {
@@ -420,7 +431,8 @@ function findRawConstant(
 }
 
 function parseFunction(
-  inout cursor: ForeignContractCursor
+  inout cursor: ForeignContractCursor,
+  in lifetimes: Array<String>
 ): RawForeignFunctionContract throws String {
   try expectText(inout cursor, "export");
   try expectText(inout cursor, "function");
@@ -613,12 +625,22 @@ function parseFunction(
       parameterIndex = parameterIndex + 1;
     }
     if (ownerIndex == parameters.length) {
-      throw contractErrorAt(
-        cursor,
-        line,
-        column,
-        `invalidation on "${name}" names unknown owner parameter "${invalidatedOwner}"`
-      );
+      let knownLifetime = false;
+      for (const lifetime of lifetimes) {
+        if (lifetime == invalidatedOwner) {
+          knownLifetime = true;
+          break;
+        }
+      }
+      if (!knownLifetime) {
+        throw contractErrorAt(
+          cursor,
+          line,
+          column,
+          `invalidation on "${name}" names unknown owner parameter or foreign lifetime "${invalidatedOwner}"`
+        );
+      }
+      continue;
     }
     if (parameters[ownerIndex].capability != "in") {
       throw contractErrorAt(
@@ -808,7 +830,47 @@ function parseType(
   let discriminantMember = "";
   let variants = Array<RawForeignUnionVariant>();
   let fallback = "";
+  let fieldProjections = Array<RawForeignFieldProjection>();
   while (!atText(cursor, "}")) {
+    if (atText(cursor, "project")) {
+      cursor.index = cursor.index + 1;
+      const projectionName = try expectIdentifier(
+        inout cursor,
+        "a Z-visible projected field name"
+      );
+      for (const projection of fieldProjections) {
+        if (projection.name == projectionName) {
+          throw contractError(
+            cursor,
+            `foreign type "${name}" cannot project field "${projectionName}" more than once`
+          );
+        }
+      }
+      try expectText(inout cursor, ":");
+      try expectText(inout cursor, "view");
+      try expectText(inout cursor, "cstring");
+      let typeName = "view cstring";
+      if (atText(cursor, "|")) {
+        cursor.index = cursor.index + 1;
+        try expectText(inout cursor, "null");
+        typeName = "view cstring | null";
+      }
+      try expectText(inout cursor, "{");
+      try expectText(inout cursor, "borrowed");
+      try expectText(inout cursor, "from");
+      const lifetime = try expectIdentifier(
+        inout cursor,
+        "a foreign lifetime after borrowed from"
+      );
+      try expectText(inout cursor, ";");
+      try expectText(inout cursor, "}");
+      fieldProjections.push(RawForeignFieldProjection({
+        name: projectionName,
+        typeName,
+        lifetime,
+      }));
+      continue;
+    }
     if (atText(cursor, "discriminant")) {
       if (discriminantMember.byteLength > 0) {
         throw contractError(
@@ -871,6 +933,7 @@ function parseType(
   }
   if (
     discriminantMember.byteLength == 0
+    && fieldProjections.length == 0
     && (!movable || release.byteLength == 0)
   ) {
     throw contractErrorAt(
@@ -887,6 +950,7 @@ function parseType(
     discriminantMember,
     variants,
     fallback,
+    fieldProjections,
     line,
     column,
   });
@@ -919,9 +983,25 @@ export function parseForeignContracts(
   );
   cursor.index = cursor.index + 1;
   try expectText(inout cursor, "{");
+  let lifetimes = Array<String>();
   let types = Array<RawForeignTypeContract>();
   let functions = Array<RawForeignFunctionContract>();
   while (!atText(cursor, "}")) {
+    if (atText(cursor, "lifetime")) {
+      cursor.index = cursor.index + 1;
+      const lifetime = try expectIdentifier(
+        inout cursor,
+        "a foreign lifetime identity"
+      );
+      for (const existing of lifetimes) {
+        if (existing == lifetime) {
+          throw contractError(cursor, `duplicate foreign lifetime "${lifetime}"`);
+        }
+      }
+      lifetimes.push(lifetime);
+      try expectText(inout cursor, ";");
+      continue;
+    }
     if (!atText(cursor, "export")) {
       throw contractError(
         cursor,
@@ -938,7 +1018,7 @@ export function parseForeignContracts(
       const declaration = try parseType(inout cursor);
       types.push(declaration);
     } else if (cursor.tokens[cursor.index + 1].text == "function") {
-      const declaration = try parseFunction(inout cursor);
+      const declaration = try parseFunction(inout cursor, lifetimes);
       functions.push(declaration);
     } else {
       throw contractError(
@@ -953,6 +1033,7 @@ export function parseForeignContracts(
   }
   return RawForeignContractSet({
     moduleSpecifier,
+    lifetimes,
     types,
     functions,
   });
@@ -1213,6 +1294,9 @@ function foreignValueTypeName(
         if (types[typeIndex].kind != "record") {
           throw "native Z declaration record value resolved to a non-record type";
         }
+        if (types[typeIndex].viewOnly) {
+          throw `native Z declaration record value ${typeName} contains hidden pointer fields and is view-only`;
+        }
         return typeName;
       }
       none => throw `native Z declaration record value ${typeName} requires a scalar-field struct layout`;
@@ -1257,7 +1341,8 @@ function isIntegerTypeName(in typeName: String): boolean {
 function normalizedForeignType(
   in declaration: RawForeignType,
   in resourceRelease: String,
-  fields: Array<NativeForeignFieldContract>
+  fields: Array<NativeForeignFieldContract>,
+  viewOnly: boolean
 ): NativeForeignTypeContract {
   return NativeForeignTypeContract({
     kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
@@ -1282,6 +1367,7 @@ function normalizedForeignType(
       resourceRelease.byteLength
     ),
     fields,
+    viewOnly,
     discriminantMember: "",
     variants: Array<NativeForeignUnionVariant>(),
     fallback: "",
@@ -1307,7 +1393,10 @@ function resourceContractIndex(
   let found = contracts.types.length;
   let index: usize = 0;
   while (index < contracts.types.length) {
-    if (contracts.types[index].discriminantMember.byteLength > 0) {
+    if (
+      contracts.types[index].discriminantMember.byteLength > 0
+      || contracts.types[index].release.byteLength == 0
+    ) {
       index = index + 1;
       continue;
     }
@@ -1358,6 +1447,7 @@ function appendRepresentableForeignField(
           0,
           declarations.types[typeIndex].exportName.byteLength
         ),
+        lifetime: "",
       }));
       return true;
     }
@@ -1373,6 +1463,7 @@ function appendRepresentableForeignField(
       fields.push(NativeForeignFieldContract({
         name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
         typeName,
+        lifetime: "",
       }));
       return true;
     }
@@ -1391,6 +1482,7 @@ function appendRepresentableForeignField(
       fields.push(NativeForeignFieldContract({
         name: rawFieldName.copyBytes(0, rawFieldName.byteLength),
         typeName: nestedName.copyBytes(0, nestedName.byteLength),
+        lifetime: "",
       }));
       return true;
     }
@@ -1417,7 +1509,10 @@ function validateResourceContracts(
 ): void throws String {
   let contractIndex: usize = 0;
   while (contractIndex < contracts.types.length) {
-    if (contracts.types[contractIndex].discriminantMember.byteLength > 0) {
+    if (
+      contracts.types[contractIndex].discriminantMember.byteLength > 0
+      || contracts.types[contractIndex].release.byteLength == 0
+    ) {
       contractIndex = contractIndex + 1;
       continue;
     }
@@ -1738,6 +1833,7 @@ function appendOwnedHandleType(
     layout: "opaque",
     resourceRelease: release.copyBytes(0, release.byteLength),
     fields: Array<NativeForeignFieldContract>(),
+    viewOnly: false,
     discriminantMember: "",
     variants: Array<NativeForeignUnionVariant>(),
     fallback: "",
@@ -1823,6 +1919,7 @@ function appendBorrowedHandleType(
     layout: "opaque",
     resourceRelease: "",
     fields: Array<NativeForeignFieldContract>(),
+    viewOnly: false,
     discriminantMember: "",
     variants: Array<NativeForeignUnionVariant>(),
     fallback: "",
@@ -2085,6 +2182,73 @@ function attachDiscriminatedUnionContracts(
   }
 }
 
+function foreignLifetimeExists(
+  in contracts: RawForeignContractSet,
+  in name: String
+): boolean {
+  for (const lifetime of contracts.lifetimes) {
+    if (lifetime == name) return true;
+  }
+  return false;
+}
+
+function attachFieldProjectionContracts(
+  in contracts: RawForeignContractSet,
+  in declarations: RawForeignModuleDeclarations,
+  inout types: Array<NativeForeignTypeContract>
+): void throws String {
+  for (const contract of contracts.types) {
+    if (contract.fieldProjections.length == 0) continue;
+    const declarationIndex = try foreignTypeContractDeclarationIndex(
+      declarations,
+      contract.name
+    );
+    const declaration = view declarations.types[declarationIndex];
+    if (declaration.kind != "record" || declaration.layout != "struct") {
+      throw `field projection for "${contract.name}" requires a native C struct`;
+    }
+    const typeIndex = match (normalizedForeignTypeIndex(
+      types,
+      declaration.exportName
+    )) {
+      some(index) => index;
+      none => throw `field projection for "${contract.name}" requires a preserved native struct layout`;
+    };
+    for (const projection of contract.fieldProjections) {
+      if (!foreignLifetimeExists(contracts, projection.lifetime)) {
+        throw `projected field "${projection.name}" names unknown foreign lifetime "${projection.lifetime}"`;
+      }
+      let rawFieldIndex = declarations.fields.length;
+      let index: usize = 0;
+      while (index < declaration.fieldCount) {
+        const candidateIndex = declaration.fieldStart + index;
+        if (declarations.fields[candidateIndex].name == projection.name) {
+          rawFieldIndex = candidateIndex;
+          break;
+        }
+        index = index + 1;
+      }
+      if (rawFieldIndex >= declarations.fields.length) {
+        throw `native struct "${contract.name}" has no field "${projection.name}"`;
+      }
+      const nativeType = view declarations.fields[rawFieldIndex].typeName;
+      if (nativeType != "const char *" && nativeType != "char const *") {
+        throw `projected field "${projection.name}" must be a native const char *, found "${nativeType}"`;
+      }
+      match (nativeForeignFieldIndex(types[typeIndex].fields, projection.name)) {
+        some(_) => throw `projected field "${projection.name}" conflicts with an already representable native field`;
+        none => {}
+      }
+      types[typeIndex].fields.push(NativeForeignFieldContract({
+        name: projection.name.copyBytes(0, projection.name.byteLength),
+        typeName: projection.typeName.copyBytes(0, projection.typeName.byteLength),
+        lifetime: `foreign:${contracts.moduleSpecifier}:${projection.lifetime}`,
+      }));
+      types[typeIndex].viewOnly = true;
+    }
+  }
+}
+
 export function normalizeForeignContracts(
   contracts: RawForeignContractSet,
   in declarations: RawForeignModuleDeclarations,
@@ -2099,7 +2263,8 @@ export function normalizeForeignContracts(
     types.push(normalizedForeignType(
       declaration,
       "",
-      Array<NativeForeignFieldContract>()
+      Array<NativeForeignFieldContract>(),
+      false
     ));
   }
   let recordAdded = true;
@@ -2123,6 +2288,7 @@ export function normalizeForeignContracts(
       );
       let fields = Array<NativeForeignFieldContract>();
       let compatible = true;
+      let hiddenField = false;
       let fieldIndex: usize = 0;
       while (fieldIndex < declaration.fieldCount) {
         const rawField = view declarations.fields[
@@ -2137,8 +2303,7 @@ export function normalizeForeignContracts(
         );
         if (!represented && declaration.layout == "struct") {
           if (resourceRelease.byteLength == 0) {
-            compatible = false;
-            break;
+            hiddenField = true;
           }
         }
         fieldIndex = fieldIndex + 1;
@@ -2147,7 +2312,10 @@ export function normalizeForeignContracts(
       types.push(normalizedForeignType(
         declaration,
         resourceRelease,
-        fields
+        fields,
+        declaration.layout == "struct"
+          && resourceRelease.byteLength == 0
+          && hiddenField
       ));
       recordAdded = true;
     }
@@ -2155,6 +2323,7 @@ export function normalizeForeignContracts(
   try validateResourceContracts(contracts, declarations, types);
   try collectOwnedHandleTypes(contracts, declarations, inout types);
   try collectBorrowedHandleTypes(contracts, declarations, inout types);
+  try attachFieldProjectionContracts(contracts, declarations, inout types);
   let constants = Array<NativeForeignConstantContract>();
   for (const declaration of declarations.constants) {
     let typeName = "";
@@ -2450,6 +2619,7 @@ export function normalizeForeignContracts(
     let borrowedHandleResult = false;
     let borrowedFromParameter = Option<usize>.none;
     let invalidatesParameters = Array<usize>();
+    let invalidatesLifetimes = Array<String>();
     if (contract.resultBorrowedFrom.byteLength > 0) {
       let ownerIndex: usize = 0;
       while (
@@ -2504,7 +2674,13 @@ export function normalizeForeignContracts(
         ownerIndex = ownerIndex + 1;
       }
       if (ownerIndex == contract.parameters.length) {
-        throw `invalidation on "${contract.name}" names unknown owner parameter "${invalidatedOwner}"`;
+        if (!foreignLifetimeExists(contracts, invalidatedOwner)) {
+          throw `invalidation on "${contract.name}" names unknown owner parameter or foreign lifetime "${invalidatedOwner}"`;
+        }
+        invalidatesLifetimes.push(
+          `foreign:${contracts.moduleSpecifier}:${invalidatedOwner}`
+        );
+        continue;
       }
       if (
         parameters[ownerIndex].capability != "in"
@@ -2684,6 +2860,7 @@ export function normalizeForeignContracts(
       parameters,
       borrowedFromParameter,
       invalidatesParameters,
+      invalidatesLifetimes,
     }));
   }
   return NativeForeignContractSet({

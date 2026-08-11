@@ -11,7 +11,7 @@ import type {
   ForeignNamedType,
   ForeignObjCInterface,
 } from "./foreign-ir.ts";
-import type { ForeignUnionDiscriminant } from "./foreign-ir.ts";
+import type { ForeignFieldProjection, ForeignUnionDiscriminant } from "./foreign-ir.ts";
 
 export type PointerNote = {
   readonly ownership?: "owned" | "borrowed" | "consuming";
@@ -96,11 +96,13 @@ export type ApiNotes = {
   readonly types?: Readonly<Record<string, {
     readonly executorAffinity?: "main";
     readonly discriminant?: ForeignUnionDiscriminant;
+    readonly fieldProjections?: readonly ForeignFieldProjection[];
   }>>;
   readonly functions?: Readonly<Record<string, {
     readonly return?: PointerNote;
     readonly parameters?: Readonly<Record<string, PointerNote>>;
     readonly invalidates?: readonly number[];
+    readonly invalidatesLifetimes?: readonly string[];
     readonly status?: StatusNote;
     readonly buffers?: readonly ByteBufferProjectionNote[];
     readonly executorAffinity?: "main";
@@ -130,6 +132,7 @@ export function mergeApiNotes(
     return?: PointerNote;
     parameters?: Record<string, PointerNote>;
     invalidates?: number[];
+    invalidatesLifetimes?: string[];
     status?: StatusNote;
     buffers?: ByteBufferProjectionNote[];
     executorAffinity?: "main";
@@ -138,6 +141,7 @@ export function mergeApiNotes(
   const types: Record<string, {
     executorAffinity?: "main";
     discriminant?: ForeignUnionDiscriminant;
+    fieldProjections?: ForeignFieldProjection[];
   }> = {};
   const objcMethods: Record<string, {
     parameters?: Record<string, PointerNote>;
@@ -177,6 +181,19 @@ export function mergeApiNotes(
           owners.set(path, source.name);
         }
       }
+      if (note.fieldProjections) {
+        const path = `types.${typeName}.fieldProjections`;
+        if (
+          target.fieldProjections
+          && JSON.stringify(target.fieldProjections) !== JSON.stringify(note.fieldProjections)
+        ) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.fieldProjections) {
+          target.fieldProjections = [...note.fieldProjections];
+          owners.set(path, source.name);
+        }
+      }
     }
     for (const [functionName, note] of Object.entries(source.notes.functions ?? {})) {
       const target = merged[functionName] ??= {};
@@ -206,6 +223,19 @@ export function mergeApiNotes(
         }
         if (!target.invalidates) {
           target.invalidates = [...note.invalidates];
+          owners.set(path, source.name);
+        }
+      }
+      if (note.invalidatesLifetimes) {
+        const path = `functions.${functionName}.invalidatesLifetimes`;
+        if (
+          target.invalidatesLifetimes
+          && JSON.stringify(target.invalidatesLifetimes) !== JSON.stringify(note.invalidatesLifetimes)
+        ) {
+          throw new ApiNoteConflictError(path, owners.get(path) ?? "an earlier source", source.name);
+        }
+        if (!target.invalidatesLifetimes) {
+          target.invalidatesLifetimes = [...note.invalidatesLifetimes];
           owners.set(path, source.name);
         }
       }

@@ -141,6 +141,10 @@ function foreignFunctionSignature(
       invalidatesParameters.push(nativeToVisible[parameter]);
     }
   }
+  let invalidatesLifetimes = Array<String>();
+  for (const lifetime of contract.invalidatesLifetimes) {
+    invalidatesLifetimes.push(lifetime.copyBytes(0, lifetime.byteLength));
+  }
   let viewParameter = Option<usize>.none;
   match (in contract.borrowedFromParameter) {
     some(parameter) => {
@@ -159,6 +163,7 @@ function foreignFunctionSignature(
     parameterTypes,
     viewParameter,
     invalidatesParameters,
+    invalidatesLifetimes,
     returnType: localForeignTypeName(
       types,
       namespace,
@@ -381,6 +386,7 @@ function foreignTypeSignature(
       readonlyField: false,
       hasDefault: false,
       optionalField: false,
+      viewLifetime: field.lifetime.copyBytes(0, field.lifetime.byteLength),
     }));
   }
   let variants = Array<ModuleVariantSignature>();
@@ -441,6 +447,8 @@ function foreignTypeSignature(
     constructorSignature: Option<ModuleFunctionSignature>.none,
     foreignKind: type.layout == "union"
       ? "union"
+      : type.viewOnly
+        ? "viewRecord"
       : type.kind.copyBytes(0, type.kind.byteLength),
     foreignLayout: type.layout.copyBytes(0, type.layout.byteLength),
     foreignNativeName: type.nativeName.copyBytes(

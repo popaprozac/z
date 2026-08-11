@@ -2332,13 +2332,17 @@ cleanup, or threading facts.
 Imported C unions are a separate narrow case. A checked `.zd` `out Union*`
 contract may initialize ABI-preserving union storage without `unsafe`. A
 `discriminant tag { ... }` type contract may additionally map producer-proven
-constants to payloadless variants or recursively pointer-free struct members.
-Such values are inspected with `match (in value)`: payload bindings are
-non-escaping `view NativeStruct` values, the fallback binds the raw tag, and
-lowering is one native switch with no wrapper allocation. Without a reusable
-discriminant contract, Clang's layout still does not prove which member is
-active; after validating the API's tag, `unsafe` may read a supported scalar or
-enum member. Pointer-bearing members and imported-union construction remain
+constants to payloadless variants or cleanup-free struct members. Such values
+are inspected with `match (in value)`: payload bindings are non-escaping
+`view NativeStruct` values, the fallback binds the raw tag, and lowering is one
+native switch with no wrapper allocation. Pointer-bearing payload records are
+view-only. Their safe scalar/enum fields remain readable while raw pointer
+fields are hidden. A `.zd` type-field projection may expose a compatible
+`const char *` field as `view cstring` or `view cstring | null`, with provenance
+from a declared native `lifetime`. Without a reusable discriminant contract,
+Clang's layout still does not prove which union member is active; after
+validating the API's tag, `unsafe` may read a supported scalar or enum member.
+Imported-union construction and by-value pointer-bearing record use remain
 unavailable in this tier.
 
 An unsafe expression must finish with `select value;`. `select` supplies the
@@ -2350,8 +2354,10 @@ not. Copy borrowed text with `String.from(value)` before selecting it.
 Prefer an adjacent `.zd` contract whenever the fact is reusable or should make
 the call safe. Use raw native source when the operation cannot be represented
 through Z types at all. Pointer-bearing native records passed by value are one
-such current boundary: checked and unsafe Z both reject them, and the existing
-`.zd` vocabulary cannot change their representation.
+such current boundary: checked and unsafe Z both reject them. The field
+projection vocabulary exposes only non-escaping views into existing native
+storage; it does not change the record's ABI representation or make the record
+constructible.
 
 ### Raw native source
 
@@ -2530,6 +2536,30 @@ that effect explicit. The call is rejected until every view derived from
 creates independent owned storage and therefore ends the loan normally. This
 is not `inout`: the C ABI may still receive the same `sqlite3 *` value rather
 than writable pointer-slot storage.
+
+Runtime-owned storage may instead be named once in the declaration module:
+
+```z
+lifetime eventMemory;
+
+export type NativeTextEvent {
+  project text: view cstring | null {
+    borrowed from eventMemory;
+  }
+}
+
+export function native_poll(out event: _): _ {
+  invalidates eventMemory;
+}
+```
+
+This `lifetime` is a compile-time `.zd` identity, not a general Z lifetime
+parameter or runtime object. The projected field is available only through a
+view-only native record. `native_poll` is rejected while the view is live;
+`String.from(text)` makes an independent owned copy when persistence is needed.
+Clang verifies the record field and compatible `const char *` ABI. The contract
+author remains responsible for the behavioral claims that the bytes actually
+belong to `eventMemory` and that the listed calls invalidate it.
 
 A declaration parameter may also use `{ fixed NATIVE_CONSTANT; }`. The
 parameter remains part of the header-verified native ABI but is omitted from Z

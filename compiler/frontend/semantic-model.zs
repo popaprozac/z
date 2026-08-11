@@ -176,6 +176,7 @@ export struct ModuleFieldSignature {
   readonlyField: boolean;
   hasDefault: boolean;
   optionalField: boolean;
+  viewLifetime: String;
 }
 
 export struct ModuleVariantSignature {
@@ -257,6 +258,7 @@ export struct ModuleFunctionSignature {
   viewParameter: Option<usize>;
   // Foreign calls may invalidate outstanding views derived from these inputs.
   invalidatesParameters: Array<usize>;
+  invalidatesLifetimes: Array<String>;
   returnType: String;
   errorType: String;
 }

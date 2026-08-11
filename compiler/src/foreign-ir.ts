@@ -36,6 +36,13 @@ export type ForeignUnionDiscriminant = {
   readonly fallback: string;
 };
 
+export type ForeignFieldProjection = {
+  readonly name: string;
+  readonly nativeField: string;
+  readonly typeName: string;
+  readonly lifetime: string;
+};
+
 export type ForeignType =
   | { readonly kind: "z"; readonly name: ForeignScalarTypeName | "cstring" | "void" | `__z_slice:${string}`; readonly cName: string }
   | { readonly kind: "nullPointer"; readonly cName: string }
@@ -74,6 +81,18 @@ export type ForeignNamedType = (
     readonly canonicalNativeName: string;
     readonly layout: "struct" | "union";
     readonly fields: readonly ForeignField[];
+    readonly fieldProjections: readonly ForeignFieldProjection[];
+    readonly nativeFields: readonly {
+      readonly name: string;
+      readonly cName: string;
+      readonly metadata: ForeignDeclarationMetadata;
+    }[];
+    /**
+     * The native record contains fields that safe Z cannot represent directly.
+     * It may only be observed through a non-escaping view; hidden fields remain
+     * available to C but never enter Z's ordinary value model.
+     */
+    readonly viewOnly: boolean;
     /** Checked borrowed match projection for a native discriminated union. */
     readonly discriminant?: ForeignUnionDiscriminant;
     /**
@@ -339,6 +358,8 @@ export type ForeignFunctionOverload = {
   readonly returnBorrowedFromParameter: number | null;
   /** Native parameter indices whose calls invalidate outstanding views of those owners. */
   readonly invalidatesParameters: readonly number[];
+  /** .zd-only native lifetime identities invalidated by this call. */
+  readonly invalidatesLifetimes: readonly string[];
   readonly status: {
     readonly success: readonly (number | string)[];
     readonly result: "void";

@@ -177,6 +177,7 @@ import {
   typeHasCustomConstructor,
   typeIsBorrowedForeignResource,
   typeIsForeignResource,
+  typeIsForeignViewOnlyRecord,
   typeMovesOnOwnedUse,
   typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
@@ -484,7 +485,10 @@ function inferMatchArmStatementType(
         } else if (stringStartsWith(typeName, "view ")) {
           const target = typeName.copyBytes(5, typeName.byteLength);
           let visiting = Array<String>();
-          if (!typeHasCleanup(modules, moduleIndex, target, visiting)) {
+          if (
+            !typeHasCleanup(modules, moduleIndex, target, visiting)
+            && !typeIsForeignViewOnlyRecord(modules, moduleIndex, target)
+          ) {
             valueType = target;
           }
         }
@@ -1915,6 +1919,18 @@ function inferSignatureCallType(
       );
     }
   }
+  for (const lifetime of signature.invalidatesLifetimes) {
+    const liveView = liveViewBindingForOwner(bindings, lifetime);
+    if (liveView.byteLength > 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `cannot call "${functionName}" because it invalidates native lifetime "${lifetime}" while view "${liveView}" is live`,
+        tree.nodes[callIndex].line,
+        tree.nodes[callIndex].column
+      );
+    }
+  }
   parameterIndex = 0;
   while (parameterIndex < argumentTypes.length) {
     if (signature.parameterModes[parameterIndex] == "out") {
@@ -2911,7 +2927,8 @@ function inferExpressionNodeType(
         );
       }
     }
-    if (stringStartsWith(receiverValueType, "view ")) {
+    const receiverWasView = stringStartsWith(receiverValueType, "view ");
+    if (receiverWasView) {
       receiverValueType = receiverValueType.copyBytes(5, receiverValueType.byteLength);
     }
     match (genericTypeShape(receiverValueType)) {
@@ -2963,6 +2980,25 @@ function inferExpressionNodeType(
     }
     match (aggregateFieldShape(modules, moduleIndex, receiverValueType, memberName)) {
       some(field) => {
+        match (typeSymbolLocation(modules, moduleIndex, receiverValueType)) {
+          some(location) => {
+            match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+              some(signature) => {
+                if (signature.foreignKind == "viewRecord" && !receiverWasView) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    `native record "${receiverValueType}" can only be inspected through a view`,
+                    node.line,
+                    node.column
+                  );
+                }
+              }
+              none => {}
+            }
+          }
+          none => {}
+        }
         if (field.foreignUnion) {
           if (
             valueBindingType(bindings, "__z_native_unsafe_union_access")
@@ -3019,6 +3055,13 @@ function inferExpressionNodeType(
             visiting
           )) projectedType = `view ${projectedType}`;
           fieldType = optionalValueType(projectedType);
+        }
+        if (field.viewLifetime.byteLength > 0) {
+          setExpressionViewOrigin(
+            inout bindings,
+            node.offset,
+            field.viewLifetime
+          );
         }
         recordExpressionResolution(
           modules,
@@ -4085,6 +4128,20 @@ function inferExpressionNodeType(
             node.line,
             node.column
           );
+        }
+        match (in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature) {
+          some(signature) => {
+            if (signature.foreignKind == "viewRecord") {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `native record "${constructionType}" is view-only and cannot be constructed as a Z value`,
+                node.line,
+                node.column
+              );
+            }
+          }
+          none => {}
         }
         if (typeIsForeignResource(modules, moduleIndex, constructionType)) {
           throw resolutionError(

@@ -7,6 +7,7 @@ function main(): i32 {
   const observed = match (in event) {
     idle => 0;
     value(value) => value.value;
+    text(input) => input.sequence;
     other(type) => type;
   };
   return observed - 42;

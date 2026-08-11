@@ -34,11 +34,38 @@
           "3": { "name": "string.quoted.header.z" }
         }
       }, {
+        "name": "meta.declaration.lifetime.foreign.z",
+        "match": "\\b(lifetime)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.lifecycle.z" },
+          "2": { "name": "entity.name.type.lifetime.z" }
+        }
+      }, {
         "name": "meta.declaration.type-lifecycle.foreign.z",
         "match": "\\b(type)\\s+([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*)(?=\\s*\\{)",
         "captures": {
           "1": { "name": "storage.type.declaration.z" },
           "2": { "name": "entity.name.type.z" }
+        }
+      }, {
+        "name": "meta.declaration.field-projection.foreign.z",
+        "match": "\\b(project)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(:)\\s*(view)\\s+(cstring)(?:\\s*(\\|)\\s*(null))?(?=\\s*\\{)",
+        "captures": {
+          "1": { "name": "keyword.control.declaration.projection.z" },
+          "2": { "name": "variable.other.member.z" },
+          "3": { "name": "punctuation.separator.type.z" },
+          "4": { "name": "storage.modifier.view.z" },
+          "5": { "name": "storage.type.primitive.z" },
+          "6": { "name": "keyword.operator.type.z" },
+          "7": { "name": "constant.language.null.z" }
+        }
+      }, {
+        "name": "meta.declaration.field-projection-lifetime.foreign.z",
+        "match": "\\b(borrowed)\\s+(from)\\s+([A-Za-z_][A-Za-z0-9_]*)(?=\\s*;)",
+        "captures": {
+          "1": { "name": "storage.modifier.capability.z" },
+          "2": { "name": "keyword.control.declaration.lifecycle.z" },
+          "3": { "name": "entity.name.type.lifetime.z" }
         }
       }, {
         "name": "meta.declaration.union-discriminant.foreign.z",
