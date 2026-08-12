@@ -1568,16 +1568,36 @@ owners. Its `view` fields lower to borrowed pointers and are never destroyed;
 any ordinary owned fields still receive normal reverse cleanup. This permits
 fixed compiler-shaped relationships without exposing lifetime parameters.
 
+A populated `Array` can collect several such composites when all elements have
+that same owner:
+
+```z
+const firstSpan = Span({ first, last });
+const secondSpan = Span({ first: last, last });
+const pendingSpans = Array<Span>(firstSpan, secondSpan);
+const spans = scratch.create(pendingSpans);
+const answer = inspect(spans[0]);
+```
+
+Construction consumes each view-bearing element. The Array is an inferred
+`const`, carries one Arena's provenance, and may move only into that Arena.
+Its buffer receives normal Arena cleanup, while the view fields remain borrowed
+pointers. `Array<Span>()` followed by `push` is intentionally rejected in this
+tier: an empty container has no owner provenance, and mutable provenance needs
+separate invalidation rules.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
-enter classes, enums, or ordinary collections; their only owning destination is
-their provenance Arena. A synchronous inline closure accepted through an `in`
+enter classes or enums; ordinary collection storage is limited to populated
+same-owner Arrays, and their only eventual owning destination is their
+provenance Arena. A synchronous inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Mutable projections, container-held region graphs, async regions, thread
-transfer, page reuse, and allocator parameters remain later tiers.
+Mutable container provenance, Map/Set and enum-held region graphs, async
+regions, thread transfer, page reuse, and allocator parameters remain later
+tiers.
 
 ## Generics and traits
 

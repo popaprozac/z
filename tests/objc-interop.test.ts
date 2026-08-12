@@ -1158,6 +1158,65 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   assert.equal(copiedCompositeDiagnostic.code, "Z0206");
   assert.match(copiedCompositeDiagnostic.message, /must be bound directly from its producing expression/);
 
+  const storedArrayProvenance = `
+    import { Arena } from "std/memory";
+    struct Coordinate { value: i32; }
+    struct Span { first: view Coordinate; last: view Coordinate; }
+    function main(): i32 {
+      let arena = Arena();
+      const first = arena.create(Coordinate({ value: 20 }));
+      const last = arena.create(Coordinate({ value: 22 }));
+      const pending = Span({ first, last });
+      const pendingSpans = Array<Span>(pending);
+      const spans = arena.create(pendingSpans);
+      if (spans.length != 1) return 1;
+      return 0;
+    }
+  `;
+  const storedArrayDirectory = mkdtempSync("/tmp/z-arena-stored-array-");
+  const storedArrayFile = resolve(storedArrayDirectory, "main.zs");
+  writeFileSync(storedArrayFile, storedArrayProvenance);
+  const storedArrayResult = spawnSync(process.execPath, [cli, "run", storedArrayFile], { encoding: "utf8" });
+  assert.equal(storedArrayResult.status, 0, storedArrayResult.stderr);
+
+  const mixedArrayOwners = storedArrayProvenance
+    .replace("const last = arena.create", "let other = Arena();\n      const last = other.create");
+  const mixedArrayDiagnostic = diagnostics(mixedArrayOwners, "arena-stored-array-mixed.zs")[0];
+  assert.equal(mixedArrayDiagnostic.code, "Z0206");
+  assert.match(mixedArrayDiagnostic.message, /must borrow from exactly one owner/);
+
+  const wrongArrayRegion = storedArrayProvenance.replace(
+    "const spans = arena.create(pendingSpans);",
+    "let other = Arena();\n      const spans = other.create(pendingSpans);",
+  );
+  const wrongArrayRegionDiagnostic = diagnostics(wrongArrayRegion, "arena-stored-array-wrong-region.zs")[0];
+  assert.equal(wrongArrayRegionDiagnostic.code, "Z0206");
+  assert.match(wrongArrayRegionDiagnostic.message, /only in the Arena that owns every embedded view/);
+
+  const emptyStoredArray = storedArrayProvenance.replace(
+    "const pendingSpans = Array<Span>(pending);",
+    "const pendingSpans = Array<Span>();",
+  );
+  const emptyStoredArrayDiagnostic = diagnostics(emptyStoredArray, "arena-stored-array-empty.zs")[0];
+  assert.equal(emptyStoredArrayDiagnostic.code, "Z0206");
+  assert.match(emptyStoredArrayDiagnostic.message, /must be populated when it is constructed/);
+
+  const reusedStoredArrayElement = storedArrayProvenance.replace(
+    "const spans = arena.create(pendingSpans);",
+    "const observed = pending.first.value;\n      const spans = arena.create(pendingSpans);",
+  );
+  const reusedStoredArrayElementDiagnostic = diagnostics(reusedStoredArrayElement, "arena-stored-array-reuse.zs")[0];
+  assert.equal(reusedStoredArrayElementDiagnostic.code, "Z0201");
+  assert.match(reusedStoredArrayElementDiagnostic.message, /moved value "pending"/);
+
+  const pushedStoredArray = storedArrayProvenance.replace(
+    "const pendingSpans = Array<Span>(pending);",
+    "let pendingSpans = Array<Span>();\n      pendingSpans.push(pending);",
+  );
+  const pushedStoredArrayDiagnostic = diagnostics(pushedStoredArray, "arena-stored-array-push.zs")[0];
+  assert.equal(pushedStoredArrayDiagnostic.code, "Z0206");
+  assert.match(pushedStoredArrayDiagnostic.message, /must be populated when it is constructed/);
+
   const builtinViews = `
     import { Arena } from "std/memory";
     function main(): i32 {

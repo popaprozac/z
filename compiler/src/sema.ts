@@ -8433,6 +8433,24 @@ function inferExpressionInner(
       return fixedArrayTypeName(String(elementType), expression.elements.length);
     }
     case "dynamicArrayExpression":
+      const storedViewElement = containsStoredViewType(expression.elementType, structs, enums);
+      const storedViewOrigins: ViewOrigin[] = [];
+      if (storedViewElement) {
+        if (parseViewType(expression.elementType) || structs.get(expression.elementType)?.kind !== "struct") {
+          throw new DiagnosticError(fileName, expression.location, `Array<${displayAssignableType(expression.elementType, state)}> cannot carry stored provenance in the first container tier`, {
+            code: "Z0206",
+            notes: ["the first dynamic-provenance tier stores one-owner value structs whose fields carry views"],
+            helps: ["wrap the related views in a named value struct, then construct a populated Array of that struct"],
+          });
+        }
+        if (expression.elements.length === 0) {
+          throw new DiagnosticError(fileName, expression.location, "a view-bearing Array must be populated when it is constructed", {
+            code: "Z0206",
+            notes: ["an empty container has no Arena owner to bind its stored provenance"],
+            helps: ["construct Array<T>(first, second) from values owned by one Arena; mutable provenance through push remains a later tier"],
+          });
+        }
+      }
       for (const element of expression.elements) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
         rejectBorrowedNativeResourceEscape(
@@ -8452,6 +8470,16 @@ function inferExpressionInner(
           enums,
           state,
         );
+        if (storedViewElement) {
+          const origin = storedViewOriginForExpression(element, state);
+          if (!origin) {
+            throw new DiagnosticError(fileName, element.location, "a view-bearing Array element must come directly from proven borrowed storage", {
+              code: "Z0206",
+              helps: ["construct each element from views owned by the same Arena"],
+            });
+          }
+          storedViewOrigins.push(origin);
+        }
         consumeOwnedValue(
           element,
           expression.elementType,
@@ -8460,10 +8488,22 @@ function inferExpressionInner(
           enums,
           fileName,
           state,
+          storedViewElement,
         );
       }
       if (expression.elements.length > 0) {
         state.dynamicArrayPushTypes.add(dynamicArrayTypeName(expression.elementType));
+      }
+      if (storedViewElement) {
+        const origin = mergeViewOrigins(storedViewOrigins);
+        if (origin.sources.length !== 1) {
+          throw new DiagnosticError(fileName, expression.location, "a view-bearing Array must borrow from exactly one owner", {
+            code: "Z0206",
+            notes: ["the first dynamic-provenance tier does not mix regions inside one container"],
+            helps: ["construct every element from the same Arena"],
+          });
+        }
+        state.viewCallOrigins.set(expression.location.offset, origin);
       }
       return dynamicArrayTypeName(expression.elementType);
     case "index": {
@@ -15964,6 +16004,18 @@ function containsStoredViewType(
 ): boolean {
   const actual = String(underlyingType(name));
   if (containsViewType(actual)) return true;
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) {
+    return containsStoredViewType(dynamic.elementType, structs, enums, visiting);
+  }
+  const array = parseFixedArrayType(actual);
+  if (array) {
+    return containsStoredViewType(array.elementType, structs, enums, visiting);
+  }
+  const option = parseOptionType(actual);
+  if (option) {
+    return containsStoredViewType(option.target, structs, enums, visiting);
+  }
   const generic = parseGenericType(actual);
   if (generic?.arguments.some((argument) => (
     containsStoredViewType(argument, structs, enums, visiting)

@@ -1069,6 +1069,34 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind == LoweredExpressionKind.arrayValue
+  ) {
+    if (declaration.expressions[index].children.length == 0) {
+      throw "native C emission received an empty populated Array";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_from((__typeof__(");
+    const first = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, first);
+    output.append(")[]){");
+    let childIndex: usize = 0;
+    while (childIndex < declaration.expressions[index].children.length) {
+      if (childIndex > 0) output.append(", ");
+      const child = declaration.expressions[index].children[childIndex];
+      try appendExpression(
+        inout output,
+        declaration,
+        child
+      );
+      childIndex = childIndex + 1;
+    }
+    output.append("}, ");
+    output.append(`${declaration.expressions[index].children.length}`);
+    output.append(")");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayLength
   ) {
     if (declaration.expressions[index].children.length != 1) {
@@ -9706,6 +9734,28 @@ function emitLoweredC(
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_from(const void *values, size_t length) {\n");
+    output.append("  if (length == 0) return (Z_");
+    output.append(declaration.name);
+    output.append("){ NULL, 0, 0 };\n");
+    output.append("  if (length > SIZE_MAX / sizeof(");
+    output.append(elementType);
+    output.append(")) abort();\n");
+    output.append("  void *storage = malloc(length * sizeof(");
+    output.append(elementType);
+    output.append("));\n");
+    output.append("  if (storage == NULL) abort();\n");
+    output.append("  memcpy(storage, values, length * sizeof(");
+    output.append(elementType);
+    output.append("));\n");
+    output.append("  return (Z_");
+    output.append(declaration.name);
+    output.append("){ storage, length, length };\n");
+    output.append("}\n\n");
     output.append("static inline __attribute__((unused)) const ");
     output.append(elementType);
     output.append(" *Z_");

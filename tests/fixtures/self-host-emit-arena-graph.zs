@@ -26,10 +26,15 @@ function main(): i32 {
   const first = arena.create(TokenCoordinate({ offset: 20 }));
   const last = arena.create(TokenCoordinate({ offset: 62 }));
   const pending = TokenSpan({ first, last });
-  const stored = arena.create(pending);
+  const pendingSpans = Array<TokenSpan>(pending);
+  const spans = arena.create(pendingSpans);
+  const arrayLength = spanLength(spans[0]);
+  const stored = arena.create(TokenSpan({ first, last }));
   const namedPending = NamedTokenSpan({ name: "compiler", span: stored });
   const named = arena.create(namedPending);
   const length = spanLength(named.span);
+  if (arrayLength != 42) return 1;
+  if (spans.length != 1) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
   return i32(length) - 42;

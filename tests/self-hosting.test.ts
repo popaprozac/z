@@ -3861,15 +3861,23 @@ test("allocates and reversely cleans Arena values through the native frontend", 
     graphEmission.stdout,
     /const Z_TokenCoordinate \* const first = \(\*span\)\.first;/,
   );
+  assert.match(
+    graphEmission.stdout,
+    /Z___z_Array_TokenSpan_from\(/,
+  );
   const namedDestructor = graphEmission.stdout.match(
     /static __attribute__\(\(unused\)\) void Z_NamedTokenSpan_deinit\(Z_NamedTokenSpan \*self\) \{[^]*?\n\}/,
   )?.[0] ?? "";
   assert.notEqual(namedDestructor, "");
   assert.match(namedDestructor, /Z_String_deinit\(&self->name\)/);
   assert.doesNotMatch(namedDestructor, /self->span/);
-  assert.doesNotMatch(
+  assert.match(
     graphEmission.stdout,
-    /Z_NamedTokenSpan_deinit\(&namedPending\)/,
+    /_z_stage1_live_namedPending = false, namedPending/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /if \(_z_stage1_live_namedPending\) Z_NamedTokenSpan_deinit\(&namedPending\)/,
   );
   const graphExecutable = resolve(directory, "arena-graph");
   const graphCompilation = spawnSync(
@@ -4020,6 +4028,78 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "",
       ].join("\n"),
       expected: /view-bearing value "pending" cannot be copied/,
+    },
+    {
+      name: "arena-stored-array-empty",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let arena = Arena();",
+        "  const pending = Array<Pair>();",
+        "  const stored = arena.create(pending);",
+        "  return i32(stored.length);",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /must be populated when it is constructed/,
+    },
+    {
+      name: "arena-stored-array-mixed",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let firstArena = Arena();",
+        "  let secondArena = Arena();",
+        "  const first = firstArena.create(Item({ value: 20 }));",
+        "  const last = secondArena.create(Item({ value: 22 }));",
+        "  const pending = Array<Pair>(Pair({ first, last }));",
+        "  return i32(pending.length);",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /must borrow from exactly one owner/,
+    },
+    {
+      name: "arena-stored-array-wrong-region",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let source = Arena();",
+        "  let destination = Arena();",
+        "  const first = source.create(Item({ value: 20 }));",
+        "  const last = source.create(Item({ value: 22 }));",
+        "  const pending = Pair({ first, last });",
+        "  const pendingPairs = Array<Pair>(pending);",
+        "  const stored = destination.create(pendingPairs);",
+        "  return i32(stored.length);",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /only in the Arena that owns every embedded view/,
+    },
+    {
+      name: "arena-stored-array-element-reuse",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Pair { first: view Item; last: view Item; }",
+        "function main(): i32 {",
+        "  let arena = Arena();",
+        "  const first = arena.create(Item({ value: 20 }));",
+        "  const last = arena.create(Item({ value: 22 }));",
+        "  const pending = Pair({ first, last });",
+        "  const pendingPairs = Array<Pair>(pending);",
+        "  return pending.first.value + i32(pendingPairs.length);",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /(?:moved value "pending"|value "pending" was moved)/,
     },
     {
       name: "arena-stored-view-class",

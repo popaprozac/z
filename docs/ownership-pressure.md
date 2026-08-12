@@ -2445,11 +2445,21 @@ lowering initially copied borrowed fields into value locals, and an implicit
 Arena transfer left the source cleanup live. Both now lower as pointer borrows
 and consuming moves, while the containing `String` is destroyed exactly once.
 
-The remaining wall is dynamic provenance. A parser still cannot retain a set of
-Arena views in an `Array`, enum payload, class, or returned graph.
-Container-level region identity—and then evidence about shape-stable mutation
-and invalidation—is the next experiment before claiming whole-compiler
-allocation gains.
+The next slice established the first dynamic provenance without adding syntax.
+A populated `Array<TokenSpan>(...)` may consume one-owner view-bearing structs,
+prove that every element belongs to the same Arena, and then move only into that
+Arena. The fixed-point lowerer gained populated Array construction rather than
+delegating that path to Stage 0; its bulk constructor allocates once, copies the
+already-consumed value representation into the buffer, and registers the Array
+cleanup with the region. Stage 0 and native negative probes reject empty
+view-bearing Arrays, mixed owners, use after element transfer, and transfer into
+the wrong Arena.
+
+This remains deliberately immutable during construction. `Array<T>()` followed
+by `push` cannot yet establish or change region identity, and Map/Set, enum,
+class, and returned graph edges remain rejected. Mutable container provenance—
+including shape-stable mutation and invalidation evidence—is the next experiment
+before claiming whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans
 

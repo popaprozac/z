@@ -348,12 +348,29 @@ const stored = arena.create(pending);
 inspect(stored); // `in Span`
 ```
 
+The first dynamic-provenance slice extends that rule to a populated `Array` of
+one-owner view-bearing value structs:
+
+```z
+const pending = Span({ first, last });
+const pendingSpans = Array<Span>(pending);
+const spans = arena.create(pendingSpans);
+inspect(spans[0]);
+```
+
+Every element must have the same Arena provenance. Populated construction
+consumes the element composites, the inferred `const` Array may move only into
+that Arena, and the Arena owns both the growable buffer and its borrowed edges.
+Empty construction followed by `push` remains deferred because mutation needs
+an explicit rule for establishing and preserving a container's region identity.
+
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
-View-bearing structs cannot enter classes, enums, ordinary collections,
-returns, stored or escaping closures, mutable borrows, or suspension. The tier
-is single-threaded and allocation failure traps.
+View-bearing structs cannot enter classes, enums, returns, stored or escaping
+closures, mutable borrows, or suspension. Ordinary collections reject them
+except for the populated same-Arena `Array` rule above. The tier is
+single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer
 arenas remain a separate future ownership shape.

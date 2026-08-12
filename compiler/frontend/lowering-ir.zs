@@ -201,6 +201,7 @@ export enum LoweredExpressionKind {
   stringCopyBytes,
   templateValue,
   arrayEmpty,
+  arrayValue,
   arrayLength,
   arrayIndex,
   arrayMutableIndex,
@@ -2102,6 +2103,31 @@ function treeMovesName(
       ) return true;
     }
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      match (genericTypeShape(tree.nodes[callee].value)) {
+        some(generic) => {
+          if (generic.base == "Array" && generic.arguments.length == 1) {
+            let sharedArcElement = false;
+            for (const declaration of program.aggregates) {
+              if (
+                declaration.name == generic.arguments[0]
+                && declaration.kind == DeclarationKind.classDeclaration
+              ) sharedArcElement = true;
+            }
+            if (!sharedArcElement) {
+              let argumentIndex: usize = 1;
+              while (argumentIndex < tree.nodes[index].children.length) {
+                const argument = tree.nodes[index].children[argumentIndex];
+                if (
+                  tree.nodes[argument].kind == ExpressionKind.identifierExpression
+                  && tree.nodes[argument].value == name
+                ) return true;
+                argumentIndex = argumentIndex + 1;
+              }
+            }
+          }
+        }
+        none => {}
+      }
       if (tree.nodes[index].children.length == 2) {
         const initializer = tree.nodes[index].children[1];
         if (tree.nodes[initializer].kind == ExpressionKind.objectExpression) {
@@ -3109,7 +3135,7 @@ function expressionBorrowsStoredReference(
     || kind == ExpressionKind.memberExpression;
 }
 
-function wrapOptionPayloadStorage(
+function wrapOwnedStorage(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in tree: ExpressionTree,
@@ -6322,10 +6348,7 @@ function lowerExpression(
         labels
       );
     }
-    if (
-      tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
-      && tree.nodes[index].children.length == 1
-    ) {
+    if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
       match (genericTypeShape(tree.nodes[calleeInput].value)) {
         some(generic) => {
           if (generic.base == "Array" && generic.arguments.length == 1) {
@@ -6334,15 +6357,52 @@ function lowerExpression(
               importedTypes,
               tree.nodes[calleeInput].value
             );
+            if (tree.nodes[index].children.length == 1) {
+              return pushExpression(
+                inout output,
+                LoweredExpressionKind.arrayEmpty,
+                arrayType.name,
+                Array<usize>(),
+                Array<String>()
+              );
+            }
+            let values = Array<usize>();
+            let argumentIndex: usize = 1;
+            while (argumentIndex < tree.nodes[index].children.length) {
+              const argumentInput = tree.nodes[index].children[argumentIndex];
+              const argument = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                argumentInput,
+                inout output
+              );
+              const storedValue = try wrapOwnedStorage(
+                program,
+                importedTypes,
+                tree,
+                argumentInput,
+                generic.arguments[0],
+                argument,
+                inout output
+              );
+              values.push(storedValue);
+              argumentIndex = argumentIndex + 1;
+            }
             return pushExpression(
               inout output,
-              LoweredExpressionKind.arrayEmpty,
+              LoweredExpressionKind.arrayValue,
               arrayType.name,
-              Array<usize>(),
+              move values,
               Array<String>()
             );
           }
-          if (generic.base == "Map" && generic.arguments.length == 2) {
+          if (
+            generic.base == "Map"
+            && generic.arguments.length == 2
+            && tree.nodes[index].children.length == 1
+          ) {
             const mapType = try lowerModuleTypeName(
               program,
               importedTypes,
@@ -6356,7 +6416,11 @@ function lowerExpression(
               Array<String>()
             );
           }
-          if (generic.base == "Set" && generic.arguments.length == 1) {
+          if (
+            generic.base == "Set"
+            && generic.arguments.length == 1
+            && tree.nodes[index].children.length == 1
+          ) {
             const setType = try lowerModuleTypeName(
               program,
               importedTypes,
@@ -6897,7 +6961,7 @@ function lowerExpression(
                       some(name) => name;
                       none => throw `native Option lowering lost the payload type for ${intrinsicName}`;
                     };
-                    payload = try wrapOptionPayloadStorage(
+                    payload = try wrapOwnedStorage(
                       program,
                       importedTypes,
                       tree,
@@ -8273,7 +8337,7 @@ function lowerExpressionExpected(
                 payloadIndex,
                 inout output
               );
-              payload = try wrapOptionPayloadStorage(
+              payload = try wrapOwnedStorage(
                 program,
                 importedTypes,
                 tree,
@@ -8424,7 +8488,7 @@ function lowerOptionalFieldExpression(
     payloadTypeName,
     inout output
   );
-  payload = try wrapOptionPayloadStorage(
+  payload = try wrapOwnedStorage(
     program,
     importedTypes,
     tree,

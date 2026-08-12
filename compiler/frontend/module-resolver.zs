@@ -4626,6 +4626,43 @@ function inferExpressionNodeType(
                 array.arguments[0].byteLength
               );
               const arguments = callArgumentNodes(children);
+              let storedViewVisiting = Array<String>();
+              const storedViewElement = typeContainsStoredView(
+                modules,
+                moduleIndex,
+                elementType,
+                storedViewVisiting
+              );
+              let storedViewOwner = "";
+              if (storedViewElement) {
+                let valueStructElement = false;
+                match (typeSymbolLocation(modules, moduleIndex, elementType)) {
+                  some(location) => {
+                    valueStructElement = modules[location.moduleIndex]
+                      .symbols[location.symbolIndex].kind
+                      == ModuleSymbolKind.structSymbol;
+                  }
+                  none => {}
+                }
+                if (!valueStructElement) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    `Array<${elementType}> cannot carry stored provenance in the first container tier`,
+                    node.line,
+                    node.column
+                  );
+                }
+                if (arguments.length == 0) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    "a view-bearing Array must be populated when it is constructed",
+                    node.line,
+                    node.column
+                  );
+                }
+              }
               for (const argument of arguments) {
                 const actual = try inferExpressionNodeTypeExpected(
                   module,
@@ -4647,15 +4684,80 @@ function inferExpressionNodeType(
                   elementType,
                   actual
                 );
-                try consumeOwnedExpressionNode(
-                  module,
-                  modules,
-                  moduleIndex,
-                  tree,
-                  argument,
-                  elementType,
-                  false,
-                  inout bindings
+                if (storedViewElement) {
+                  const elementOwner = storedViewOwnerForExpression(
+                    bindings,
+                    tree,
+                    argument
+                  );
+                  if (elementOwner.byteLength == 0) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.typeMismatch,
+                      module.path,
+                      "a view-bearing Array element must come directly from proven borrowed storage",
+                      tree.nodes[argument].line,
+                      tree.nodes[argument].column
+                    );
+                  }
+                  if (storedViewOwner.byteLength == 0) {
+                    storedViewOwner = elementOwner.copyBytes(
+                      0,
+                      elementOwner.byteLength
+                    );
+                  } else if (storedViewOwner != elementOwner) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.typeMismatch,
+                      module.path,
+                      "a view-bearing Array must borrow from exactly one owner",
+                      node.line,
+                      node.column
+                    );
+                  }
+                }
+                if (storedViewElement) {
+                  if (
+                    tree.nodes[argument].kind
+                    == ExpressionKind.identifierExpression
+                  ) {
+                    const argumentRoot = expressionStorageRootName(
+                      tree,
+                      argument
+                    );
+                    setValueBindingOwnership(
+                      inout bindings,
+                      argumentRoot,
+                      NativeOwnershipState.moved
+                    );
+                  } else {
+                    try consumeOwnedExpressionNode(
+                      module,
+                      modules,
+                      moduleIndex,
+                      tree,
+                      argument,
+                      elementType,
+                      true,
+                      inout bindings
+                    );
+                  }
+                } else {
+                  try consumeOwnedExpressionNode(
+                    module,
+                    modules,
+                    moduleIndex,
+                    tree,
+                    argument,
+                    elementType,
+                    false,
+                    inout bindings
+                  );
+                }
+              }
+              if (storedViewElement) {
+                setExpressionViewOrigin(
+                  inout bindings,
+                  node.offset,
+                  storedViewOwner
                 );
               }
               return copiedString(callee);

@@ -8282,7 +8282,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             return nativeLiveFlag ? `(${nativeLiveFlag} = false, ${moved})` : moved;
           }
           const liveFlag = context.liveFlags.get(expression.name);
-          if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+          if (!liveFlag) {
+            if (type && !hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+              return generatorStorage;
+            }
+            throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+          }
           return `(${liveFlag} = false, ${generatorStorage})`;
         }
         return maybeRetainClass(expression, generatorStorage, context);
@@ -8310,7 +8315,12 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           return nativeLiveFlag ? `(${nativeLiveFlag} = false, ${moved})` : moved;
         }
         const liveFlag = context.liveFlags.get(expression.name);
-        if (!liveFlag) throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+        if (!liveFlag) {
+          if (type && !hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+            return generateStoredValue(expression.name, context);
+          }
+          throw new Error(`missing ownership flag for moved value ${JSON.stringify(expression.name)}`);
+        }
         return `(${liveFlag} = false, ${generateStoredValue(expression.name, context)})`;
       }
       if (
