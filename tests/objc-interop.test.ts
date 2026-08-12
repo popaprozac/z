@@ -1199,7 +1199,7 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   );
   const emptyStoredArrayDiagnostic = diagnostics(emptyStoredArray, "arena-stored-array-empty.zs")[0];
   assert.equal(emptyStoredArrayDiagnostic.code, "Z0206");
-  assert.match(emptyStoredArrayDiagnostic.message, /must be populated when it is constructed/);
+  assert.match(emptyStoredArrayDiagnostic.message, /empty view-bearing Array must use let/);
 
   const reusedStoredArrayElement = storedArrayProvenance.replace(
     "const spans = arena.create(pendingSpans);",
@@ -1213,9 +1213,84 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     "const pendingSpans = Array<Span>(pending);",
     "let pendingSpans = Array<Span>();\n      pendingSpans.push(pending);",
   );
-  const pushedStoredArrayDiagnostic = diagnostics(pushedStoredArray, "arena-stored-array-push.zs")[0];
-  assert.equal(pushedStoredArrayDiagnostic.code, "Z0206");
-  assert.match(pushedStoredArrayDiagnostic.message, /must be populated when it is constructed/);
+  const pushedStoredArrayDirectory = mkdtempSync("/tmp/z-arena-stored-array-push-");
+  const pushedStoredArrayFile = resolve(pushedStoredArrayDirectory, "main.zs");
+  writeFileSync(pushedStoredArrayFile, pushedStoredArray);
+  const pushedStoredArrayResult = spawnSync(
+    process.execPath,
+    [cli, "run", pushedStoredArrayFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(pushedStoredArrayResult.status, 0, pushedStoredArrayResult.stderr);
+
+  const pushedFromAnotherArena = pushedStoredArray.replace(
+    "const spans = arena.create(pendingSpans);",
+    "let other = Arena();\n"
+      + "      const otherFirst = other.create(Coordinate({ value: 1 }));\n"
+      + "      const otherLast = other.create(Coordinate({ value: 2 }));\n"
+      + "      pendingSpans.push(Span({ first: otherFirst, last: otherLast }));\n"
+      + "      const spans = arena.create(pendingSpans);",
+  );
+  const pushedFromAnotherArenaDiagnostic = diagnostics(
+    pushedFromAnotherArena,
+    "arena-stored-array-push-other-owner.zs",
+  )[0];
+  assert.equal(pushedFromAnotherArenaDiagnostic.code, "Z0206");
+  assert.match(pushedFromAnotherArenaDiagnostic.message, /already carries provenance from another Arena/);
+
+  const conditionalFirstPush = pushedStoredArray.replace(
+    "pendingSpans.push(pending);",
+    "if (true) pendingSpans.push(pending);",
+  );
+  const conditionalFirstPushDiagnostic = diagnostics(
+    conditionalFirstPush,
+    "arena-stored-array-conditional-first-push.zs",
+  )[0];
+  assert.equal(conditionalFirstPushDiagnostic.code, "Z0206");
+  assert.match(conditionalFirstPushDiagnostic.message, /first push.*must occur in straight-line code/);
+
+  const reusedPushedElement = pushedStoredArray.replace(
+    "const spans = arena.create(pendingSpans);",
+    "const observed = pending.first.value;\n      const spans = arena.create(pendingSpans);",
+  );
+  const reusedPushedElementDiagnostic = diagnostics(
+    reusedPushedElement,
+    "arena-stored-array-push-reuse.zs",
+  )[0];
+  assert.equal(reusedPushedElementDiagnostic.code, "Z0201");
+  assert.match(reusedPushedElementDiagnostic.message, /moved value "pending"/);
+
+  const conditionalLaterPush = pushedStoredArray
+    .replace(
+      "const spans = arena.create(pendingSpans);",
+      "const second = Span({ first, last });\n"
+        + "      if (true) pendingSpans.push(second);\n"
+        + "      const spans = arena.create(pendingSpans);",
+    )
+    .replace("spans.length != 1", "spans.length != 2");
+  const conditionalLaterPushDirectory = mkdtempSync("/tmp/z-arena-stored-array-conditional-later-");
+  const conditionalLaterPushFile = resolve(conditionalLaterPushDirectory, "main.zs");
+  writeFileSync(conditionalLaterPushFile, conditionalLaterPush);
+  const conditionalLaterPushResult = spawnSync(
+    process.execPath,
+    [cli, "run", conditionalLaterPushFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(conditionalLaterPushResult.status, 0, conditionalLaterPushResult.stderr);
+
+  const pushWhileElementViewLives = pushedStoredArray.replace(
+    "const spans = arena.create(pendingSpans);",
+    "const selected = view pendingSpans[0];\n"
+      + "      pendingSpans.push(Span({ first, last }));\n"
+      + "      const spans = arena.create(pendingSpans);\n"
+      + "      if (selected.first.value == 0) return 2;",
+  );
+  const pushWhileElementViewLivesDiagnostic = diagnostics(
+    pushWhileElementViewLives,
+    "arena-stored-array-live-element-view.zs",
+  )[0];
+  assert.equal(pushWhileElementViewLivesDiagnostic.code, "Z0205");
+  assert.match(pushWhileElementViewLivesDiagnostic.message, /cannot mutate "pendingSpans" while view "selected" is live/);
 
   const builtinViews = `
     import { Arena } from "std/memory";

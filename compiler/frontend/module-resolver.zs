@@ -81,6 +81,7 @@ import {
   setValueBindingInitialization,
   setValueBindingOwnership,
   setValueBindingType,
+  setValueBindingViewOwner,
   valueBindingInitialization,
   valueBindingIsBorrowed,
   valueBindingIsMatchBorrowed,
@@ -257,6 +258,22 @@ function contextualExpectedBindingName(offset: usize): String {
 
 function loopSelectTypeBindingName(): String {
   return "__z_native_loop_select_type";
+}
+
+function regionControlFlowBindingName(): String {
+  return "__z_native_region_control_flow";
+}
+
+function markRegionControlFlow(
+  inout bindings: Array<NativeValueBinding>
+): void {
+  const binding = regionControlFlowBindingName();
+  const existing = valueBindingType(bindings, binding);
+  if (existing.byteLength > 0) {
+    setValueBindingType(inout bindings, binding, "true");
+  } else {
+    addValueBinding(inout bindings, binding, "true");
+  }
 }
 
 function storedViewOwnerForExpression(
@@ -1389,6 +1406,7 @@ function inferMatchExpressionNodeType(
     }
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout armBindings);
     if (borrowedMatch && subjectRoot.byteLength > 0) {
       borrowMatchValueBindingInPlace(inout armBindings, subjectRoot);
     }
@@ -3437,6 +3455,8 @@ function inferExpressionNodeType(
     const expectedType = contextualExpectedType(bindings, tree, index);
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout thenBindings);
+    markRegionControlFlow(inout elseBindings);
     const thenType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3501,6 +3521,7 @@ function inferExpressionNodeType(
     }
     const expectedType = contextualExpectedType(bindings, tree, index);
     let elseBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout elseBindings);
     const elseType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3514,6 +3535,7 @@ function inferExpressionNodeType(
     );
     try requireSettledExpressionType(module, tree, children[2], elseType);
     let bodyBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout bodyBindings);
     let selectedType = elseType.copyBytes(0, elseType.byteLength);
     if (expectedType.byteLength > 0) {
       selectedType = expectedType.copyBytes(0, expectedType.byteLength);
@@ -3554,6 +3576,7 @@ function inferExpressionNodeType(
     const elementType = iterationElementType(iterableType);
     const expectedType = contextualExpectedType(bindings, tree, index);
     let elseBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout elseBindings);
     const elseType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3568,6 +3591,7 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[3], elseType);
 
     let bodyBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout bodyBindings);
     const patternChildren = copyIndices(tree.nodes[children[0]].children);
     for (const pattern of patternChildren) {
       if (tree.nodes[pattern].kind == ExpressionKind.matchBindingExpression) {
@@ -3622,6 +3646,8 @@ function inferExpressionNodeType(
     }
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout thenBindings);
+    markRegionControlFlow(inout elseBindings);
     const expectedType = contextualExpectedType(bindings, tree, index);
     const thenType = try inferExpressionNodeTypeExpected(
       module,
@@ -3815,6 +3841,24 @@ function inferExpressionNodeType(
       }
     }
     let closureBindings = copyValueBindings(bindings);
+    const closureRegionControlFlow = regionControlFlowBindingName();
+    const inheritedRegionControlFlow = valueBindingType(
+      closureBindings,
+      closureRegionControlFlow
+    );
+    if (inheritedRegionControlFlow.byteLength > 0) {
+      setValueBindingType(
+        inout closureBindings,
+        closureRegionControlFlow,
+        "false"
+      );
+    } else {
+      addValueBinding(
+        inout closureBindings,
+        closureRegionControlFlow,
+        "false"
+      );
+    }
     const closureAsynchronous = node.labels.length > 3
       && node.labels[3] == "async";
     const closureAsyncContext = closureAsynchronous ? "true" : "";
@@ -4653,15 +4697,6 @@ function inferExpressionNodeType(
                     node.column
                   );
                 }
-                if (arguments.length == 0) {
-                  throw resolutionError(
-                    ModuleResolveErrorKind.typeMismatch,
-                    module.path,
-                    "a view-bearing Array must be populated when it is constructed",
-                    node.line,
-                    node.column
-                  );
-                }
               }
               for (const argument of arguments) {
                 const actual = try inferExpressionNodeTypeExpected(
@@ -5484,6 +5519,19 @@ function inferExpressionNodeType(
                 );
               }
               receiverAccess = "inout";
+              const liveView = liveViewBindingForOwner(
+                bindings,
+                receiverRoot
+              );
+              if (liveView.byteLength > 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `cannot mutate "${receiverRoot}" while view "${liveView}" is live`,
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
             }
             const substitutions = Array<NativeValueBinding>();
             const argumentNodes = callArgumentNodes(children);
@@ -5507,6 +5555,109 @@ function inferExpressionNodeType(
               "value",
               inout evidence
             );
+            if (methodName == "push") {
+              match (genericTypeShape(ownerType)) {
+                some(array) => {
+                  if (array.base == "Array" && array.arguments.length == 1) {
+                    let storedViewVisiting = Array<String>();
+                    if (typeContainsStoredView(
+                      modules,
+                      moduleIndex,
+                      array.arguments[0],
+                      storedViewVisiting
+                    )) {
+                      if (argumentNodes.length != 1) {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          "Array.push expects one view-bearing value",
+                          tree.nodes[index].line,
+                          tree.nodes[index].column
+                        );
+                      }
+                      const argument = argumentNodes[0];
+                      const elementOwner = storedViewOwnerForExpression(
+                        bindings,
+                        tree,
+                        argument
+                      );
+                      if (elementOwner.byteLength == 0) {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          "a view-bearing Array element must come directly from one proven Arena",
+                          tree.nodes[argument].line,
+                          tree.nodes[argument].column
+                        );
+                      }
+                      const arrayOwner = valueBindingViewOwner(
+                        bindings,
+                        receiverRoot
+                      );
+                      if (
+                        arrayOwner.byteLength > 0
+                        && arrayOwner != elementOwner
+                      ) {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          `Array "${receiverRoot}" already carries provenance from another Arena`,
+                          tree.nodes[argument].line,
+                          tree.nodes[argument].column
+                        );
+                      }
+                      if (arrayOwner.byteLength == 0) {
+                        const controlBinding = regionControlFlowBindingName();
+                        const controlFlow = valueBindingType(
+                          bindings,
+                          controlBinding
+                        );
+                        if (controlFlow == "true") {
+                          throw resolutionError(
+                            ModuleResolveErrorKind.typeMismatch,
+                            module.path,
+                            `the first push into view-bearing Array "${receiverRoot}" must occur in straight-line code`,
+                            tree.nodes[index].line,
+                            tree.nodes[index].column
+                          );
+                        }
+                        setValueBindingViewOwner(
+                          inout bindings,
+                          receiverRoot,
+                          elementOwner
+                        );
+                      }
+                      if (
+                        tree.nodes[argument].kind
+                        == ExpressionKind.identifierExpression
+                      ) {
+                        const argumentRoot = expressionStorageRootName(
+                          tree,
+                          argument
+                        );
+                        setValueBindingOwnership(
+                          inout bindings,
+                          argumentRoot,
+                          NativeOwnershipState.moved
+                        );
+                      } else {
+                        try consumeOwnedExpressionNode(
+                          module,
+                          modules,
+                          moduleIndex,
+                          tree,
+                          argument,
+                          array.arguments[0],
+                          true,
+                          inout bindings
+                        );
+                      }
+                    }
+                  }
+                }
+                none => {}
+              }
+            }
             if (optionalMethodCall) {
               return try optionalCallType(
                 module,
@@ -5949,6 +6100,34 @@ function inferStatement(
       moduleIndex,
       inferred
     );
+    let storedViewArray = false;
+    match (genericTypeShape(inferred)) {
+      some(array) => {
+        if (array.base == "Array" && array.arguments.length == 1) {
+          let visiting = Array<String>();
+          storedViewArray = typeContainsStoredView(
+            modules,
+            moduleIndex,
+            array.arguments[0],
+            visiting
+          );
+        }
+      }
+      none => {}
+    }
+    if (
+      storedViewArray
+      && viewOwner.byteLength == 0
+      && !arena.nodes[index].mutableBinding
+    ) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "an empty view-bearing Array must use let so its first push can establish Arena provenance",
+        arena.nodes[index].line,
+        arena.nodes[index].column
+      );
+    }
     if (
       (borrowedForeignResource || viewOwner.byteLength > 0)
       && (
@@ -6597,6 +6776,8 @@ function inferStatement(
   if (kind == StatementKind.ifStatement) {
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout thenBindings);
+    markRegionControlFlow(inout elseBindings);
     match (in arena.nodes[index].expression) {
       some(condition) => match (in condition.tree) {
         some(tree) => {
@@ -6682,6 +6863,7 @@ function inferStatement(
   if (kind == StatementKind.whileStatement) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout loopBindings);
     const loopContinues = try inferStatementSequence(
       module,
       modules,
@@ -6710,6 +6892,7 @@ function inferStatement(
   ) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
+    markRegionControlFlow(inout loopBindings);
     let elementType = "";
     let iterableType = "";
     match (in arena.nodes[index].expression) {

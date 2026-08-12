@@ -160,6 +160,11 @@ export function prepareFunctionBindings(
     "__z_native_return_type",
     declaration.returnType.name
   );
+  addValueBinding(
+    inout bindings,
+    "__z_native_region_control_flow",
+    "false"
+  );
   if (declaration.asynchronous) {
     addValueBinding(inout bindings, "__z_native_async_context", "true");
   }

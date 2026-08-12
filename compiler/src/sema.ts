@@ -552,6 +552,7 @@ type AnalysisState = {
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly integerConversions: Map<number, IntegerConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
+  readonly unboundStoredViewArrayInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
@@ -645,6 +646,7 @@ type AnalysisState = {
   readonly observer: SemanticObserver | null;
   executorContext: "main" | null;
   nativeThreadBodyDepth: number;
+  regionControlFlowDepth: number;
   asyncScopeDepth: number;
   asyncLoopDepth: number;
   readonly asyncLoopScopeFloors: number[];
@@ -924,6 +926,7 @@ export function analyze(
     integerOperations: new Map(),
     integerConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
+    unboundStoredViewArrayInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
@@ -1006,6 +1009,7 @@ export function analyze(
     observer,
     executorContext: null,
     nativeThreadBodyDepth: 0,
+    regionControlFlowDepth: 0,
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
     asyncLoopScopeFloors: [],
@@ -3777,6 +3781,19 @@ function analyzeStatement(
       const storedViewComposite = !view
         && !optionalView
         && containsStoredViewType(String(variableType), structs, enums);
+      const unboundStoredViewArray = storedViewComposite
+        && state.unboundStoredViewArrayInitializers.has(statement.initializer.location.offset);
+      if (unboundStoredViewArray) {
+        if (!statement.mutable) {
+          throw new DiagnosticError(fileName, statement.location, "an empty view-bearing Array must use let so its first push can establish Arena provenance", {
+            code: "Z0206",
+            helps: ["replace const with let, then push a value whose embedded views come from one Arena"],
+          });
+        }
+        locals.set(statement.name, `${mutablePrefix}${String(variableType)}`);
+        state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
+        return;
+      }
       if (view || optionalView || foreignStringView || ownerTiedForeignView || storedViewComposite) {
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
@@ -4768,6 +4785,7 @@ function analyzeStatement(
             });
           }
         }
+        state.regionControlFlowDepth += 1;
         try {
           const transientViews = new Set(
             patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
@@ -4782,6 +4800,7 @@ function analyzeStatement(
             analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
           }
         } finally {
+          state.regionControlFlowDepth -= 1;
           for (const name of patternNames) {
             const previousBorrow = previousBorrows.get(name);
             if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
@@ -5207,7 +5226,12 @@ function inferClosureExpression(
   let body: Statement[];
   const previousFunction = state.activeFunction;
   const previousExecutorContext = state.executorContext;
+  const previousRegionControlFlowDepth = state.regionControlFlowDepth;
   state.activeFunction = syntheticBase;
+  // A closure body is a new execution context. Whether its declaration was
+  // reached through outer control flow does not make its own straight-line
+  // statements conditional.
+  state.regionControlFlowDepth = 0;
   state.executorContext = executionContext === "inherit"
     ? previousExecutorContext
     : executionContext === "main"
@@ -5244,6 +5268,7 @@ function inferClosureExpression(
     }
   } finally {
     if (nativeThreadBody) state.nativeThreadBodyDepth -= 1;
+    state.regionControlFlowDepth = previousRegionControlFlowDepth;
     state.executorContext = previousExecutorContext;
     state.activeFunction = previousFunction;
   }
@@ -5719,13 +5744,25 @@ function inferIfExpression(
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
   const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
-  const thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state, expected);
+  state.regionControlFlowDepth += 1;
+  let thenType: ValueType;
+  try {
+    thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state, expected);
+  } finally {
+    state.regionControlFlowDepth -= 1;
+  }
   if (thenType !== "never") continuing.push(thenLocals);
 
   const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
-  const elseType = expression.elseBranch.kind === "ifExpression"
-    ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
-    : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
+  state.regionControlFlowDepth += 1;
+  let elseType: ValueType;
+  try {
+    elseType = expression.elseBranch.kind === "ifExpression"
+      ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
+      : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
+  } finally {
+    state.regionControlFlowDepth -= 1;
+  }
   if (elseType !== "never") continuing.push(elseLocals);
 
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
@@ -5950,17 +5987,23 @@ function finishLoopExpression(
 ): ValueType {
   const continuing: Map<string, ValueType>[] = frame.selections.map((selection) => selection.locals);
   const exhaustionLocals = new Map(locals);
-  const exhaustionType = inferValueArm(
-    elseBranch,
-    owner,
-    exhaustionLocals,
-    globals,
-    structs,
-    enums,
-    fileName,
-    state,
-    expected,
-  );
+  state.regionControlFlowDepth += 1;
+  let exhaustionType: ValueType;
+  try {
+    exhaustionType = inferValueArm(
+      elseBranch,
+      owner,
+      exhaustionLocals,
+      globals,
+      structs,
+      enums,
+      fileName,
+      state,
+      expected,
+    );
+  } finally {
+    state.regionControlFlowDepth -= 1;
+  }
   if (exhaustionType !== "never") continuing.push(exhaustionLocals);
   let resultType = exhaustionType;
   for (const selection of frame.selections) {
@@ -6117,6 +6160,7 @@ function inferMatchExpression(
       }
     }
     let armType: ValueType = "never";
+    state.regionControlFlowDepth += 1;
     try {
       const transientViews = new Set(
         patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
@@ -6136,6 +6180,7 @@ function inferMatchExpression(
         transientViews,
       );
     } finally {
+      state.regionControlFlowDepth -= 1;
       for (const name of patternNames) {
         const previousBorrow = previousBorrows.get(name);
         if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
@@ -7764,10 +7809,15 @@ function inferExpressionInner(
             helps: ["use a fixed array, Array<T>, or Slice<T> source"],
           });
         }
-        state.viewCallOrigins.set(
-          expression.location.offset,
-          viewOriginForRoot(root.name, expression.operand.location, state),
-        );
+        const ownerOrigin = viewOriginForRoot(root.name, expression.operand.location, state);
+        const projectionOrigin = parseDynamicArrayType(rootValueType)
+          && state.viewOrigins.has(root.name)
+          ? mergeViewOrigins([
+              directViewOrigin(root.name, expression.operand.location),
+              ownerOrigin,
+            ])
+          : ownerOrigin;
+        state.viewCallOrigins.set(expression.location.offset, projectionOrigin);
         return viewTypeName(target);
       }
       if (expression.operator === "copy") {
@@ -8086,14 +8136,26 @@ function inferExpressionInner(
       const original = new Map(locals);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const activeFunction = state.activeFunction;
-      const thenType = activeFunction?.async
-        ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
-        : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+      state.regionControlFlowDepth += 1;
+      let thenType: ValueType;
+      try {
+        thenType = activeFunction?.async
+          ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
+          : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
+      } finally {
+        state.regionControlFlowDepth -= 1;
+      }
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
-      const elseType = activeFunction?.async
-        ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
-        : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+      state.regionControlFlowDepth += 1;
+      let elseType: ValueType;
+      try {
+        elseType = activeFunction?.async
+          ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
+          : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
+      } finally {
+        state.regionControlFlowDepth -= 1;
+      }
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
@@ -8444,11 +8506,7 @@ function inferExpressionInner(
           });
         }
         if (expression.elements.length === 0) {
-          throw new DiagnosticError(fileName, expression.location, "a view-bearing Array must be populated when it is constructed", {
-            code: "Z0206",
-            notes: ["an empty container has no Arena owner to bind its stored provenance"],
-            helps: ["construct Array<T>(first, second) from values owned by one Arena; mutable provenance through push remains a later tier"],
-          });
+          state.unboundStoredViewArrayInitializers.add(expression.location.offset);
         }
       }
       for (const element of expression.elements) {
@@ -8494,7 +8552,7 @@ function inferExpressionInner(
       if (expression.elements.length > 0) {
         state.dynamicArrayPushTypes.add(dynamicArrayTypeName(expression.elementType));
       }
-      if (storedViewElement) {
+      if (storedViewElement && expression.elements.length > 0) {
         const origin = mergeViewOrigins(storedViewOrigins);
         if (origin.sources.length !== 1) {
           throw new DiagnosticError(fileName, expression.location, "a view-bearing Array must borrow from exactly one owner", {
@@ -10757,7 +10815,52 @@ function inferExpressionInner(
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);
-          consumeOwnedValue(expression.arguments[0], dynamic.elementType, locals, structs, enums, fileName, state);
+          const storedViewElement = containsStoredViewType(dynamic.elementType, structs, enums);
+          if (storedViewElement) {
+            const elementOrigin = storedViewOriginForExpression(expression.arguments[0], state);
+            if (!elementOrigin || elementOrigin.sources.length !== 1) {
+              throw new DiagnosticError(fileName, expression.arguments[0].location, "a view-bearing Array element must come directly from one proven Arena", {
+                code: "Z0206",
+                helps: ["construct the element from views owned by one Arena before pushing it"],
+              });
+            }
+            const arrayOrigin = state.viewOrigins.get(root.name);
+            if (arrayOrigin) {
+              if (
+                arrayOrigin.sources.length !== 1
+                || arrayOrigin.sources[0].owner !== elementOrigin.sources[0].owner
+              ) {
+                throw new DiagnosticError(fileName, expression.arguments[0].location, `Array ${JSON.stringify(root.name)} already carries provenance from another Arena`, {
+                  code: "Z0206",
+                  labels: [{
+                    location: arrayOrigin.sources[0]?.location ?? expression.callee.object.location,
+                    message: "the Array's first push established its Arena here",
+                    length: root.name.length,
+                  }],
+                  helps: ["push only elements borrowed from the Array's established Arena"],
+                });
+              }
+            } else {
+              if (state.regionControlFlowDepth > 0) {
+                throw new DiagnosticError(fileName, expression.location, `the first push into view-bearing Array ${JSON.stringify(root.name)} must occur in straight-line code`, {
+                  code: "Z0206",
+                  notes: ["the first push establishes the container's Arena provenance on every continuing path"],
+                  helps: ["establish the Array with one push before entering conditional or loop control flow"],
+                });
+              }
+              bindViewOrigin(root.name, elementOrigin, fileName, state);
+            }
+          }
+          consumeOwnedValue(
+            expression.arguments[0],
+            dynamic.elementType,
+            locals,
+            structs,
+            enums,
+            fileName,
+            state,
+            storedViewElement,
+          );
           state.dynamicArrayPushTypes.add(receiverValueType);
           return "void";
         }
@@ -12627,7 +12730,12 @@ function analyzeIfBranches(
   const continuingLoans: AccessLoanState[] = [];
 
   const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
-  analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
+  state.regionControlFlowDepth += 1;
+  try {
+    analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
+  } finally {
+    state.regionControlFlowDepth -= 1;
+  }
   if (!statementStopsFlow(statement.thenBranch)) {
     continuing.push(thenLocals);
     continuingLoans.push(snapshotAccessLoanState(state));
@@ -12636,7 +12744,12 @@ function analyzeIfBranches(
   restoreAccessLoanState(state, incomingLoans);
   if (statement.elseBranch) {
     const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
-    analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
+    state.regionControlFlowDepth += 1;
+    try {
+      analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
+    } finally {
+      state.regionControlFlowDepth -= 1;
+    }
     if (!statementStopsFlow(statement.elseBranch)) {
       continuing.push(elseLocals);
       continuingLoans.push(snapshotAccessLoanState(state));
@@ -12714,9 +12827,11 @@ function analyzeWhileLoop(
       valueProducing: Boolean(valueFrame),
     };
     state.loopStack.push(frame);
+    state.regionControlFlowDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
+      state.regionControlFlowDepth -= 1;
       state.loopStack.pop();
     }
 
@@ -13016,9 +13131,11 @@ function analyzeForLoop(
       }
     }
     state.loopStack.push(frame);
+    state.regionControlFlowDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
+      state.regionControlFlowDepth -= 1;
       state.loopStack.pop();
       if (previousIterationBorrow) state.iterationBorrowOrigins.set(root.name, previousIterationBorrow);
       else state.iterationBorrowOrigins.delete(root.name);
@@ -13182,9 +13299,11 @@ function analyzeIteratorForLoop(
       valueProducing: Boolean(valueFrame),
     };
     state.loopStack.push(frame);
+    state.regionControlFlowDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
+      state.regionControlFlowDepth -= 1;
       state.loopStack.pop();
     }
     const backEdges = frame.continues.map(normalize);

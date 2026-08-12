@@ -348,6 +348,28 @@ function replaceBindingType(
   });
 }
 
+function replaceBindingViewOwner(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  in viewOwner: String
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    viewOwner: viewOwner.copyBytes(0, viewOwner.byteLength),
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
+    initialization: bindings[index].initialization,
+    ownership: bindings[index].ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
 export function setValueBindingInitialization(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
@@ -373,6 +395,20 @@ export function setValueBindingType(
     index = index - 1;
     if (bindings[index].name != name) continue;
     replaceBindingType(inout bindings, index, typeName);
+    return;
+  }
+}
+
+export function setValueBindingViewOwner(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  in viewOwner: String
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name != name) continue;
+    replaceBindingViewOwner(inout bindings, index, viewOwner);
     return;
   }
 }
@@ -541,7 +577,14 @@ export function copyBindingFlowStates(
 ): void {
   let index: usize = 0;
   while (index < target.length && index < source.length) {
+    // This binding records the resolver's current lexical context. It is not
+    // flow evidence produced by the nested branch or scope.
+    if (target[index].name == "__z_native_region_control_flow") {
+      index = index + 1;
+      continue;
+    }
     replaceBindingType(inout target, index, source[index].typeName);
+    replaceBindingViewOwner(inout target, index, source[index].viewOwner);
     replaceBindingInitialization(inout target, index, source[index].initialization);
     replaceBindingOwnership(inout target, index, source[index].ownership);
     index = index + 1;
@@ -555,8 +598,17 @@ export function mergeBindingFlowStates(
 ): void {
   let index: usize = 0;
   while (index < target.length && index < left.length && index < right.length) {
+    // Preserve the enclosing lexical context instead of leaking a branch's
+    // contextual marker into statements that follow the merge.
+    if (target[index].name == "__z_native_region_control_flow") {
+      index = index + 1;
+      continue;
+    }
     if (left[index].typeName == right[index].typeName) {
       replaceBindingType(inout target, index, left[index].typeName);
+    }
+    if (left[index].viewOwner == right[index].viewOwner) {
+      replaceBindingViewOwner(inout target, index, left[index].viewOwner);
     }
     replaceBindingInitialization(
       inout target,

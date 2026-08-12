@@ -1582,9 +1582,22 @@ const answer = inspect(spans[0]);
 Construction consumes each view-bearing element. The Array is an inferred
 `const`, carries one Arena's provenance, and may move only into that Arena.
 Its buffer receives normal Arena cleanup, while the view fields remain borrowed
-pointers. `Array<Span>()` followed by `push` is intentionally rejected in this
-tier: an empty container has no owner provenance, and mutable provenance needs
-separate invalidation rules.
+pointers.
+
+An empty `let` Array starts without provenance. Its first consuming `push`
+establishes the owner, and every later element must come from that Arena:
+
+```z
+let spans = Array<Span>();
+spans.push(Span({ first, last }));
+spans.push(secondSpan);
+const stored = scratch.create(spans);
+```
+
+The first push must be in straight-line code; it cannot be conditional or
+loop-carried in this tier. Once provenance is established, later same-owner
+pushes may occur in control flow. `push` remains forbidden while an element view
+or iteration loan is live because growth can relocate the buffer.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
@@ -1595,9 +1608,9 @@ provenance Arena. A synchronous inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Mutable container provenance, Map/Set and enum-held region graphs, async
-regions, thread transfer, page reuse, and allocator parameters remain later
-tiers.
+Control-flow joins that establish identical provenance on every path, Map/Set
+and enum-held region graphs, async regions, thread transfer, page reuse, and
+allocator parameters remain later tiers.
 
 ## Generics and traits
 

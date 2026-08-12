@@ -2451,15 +2451,22 @@ prove that every element belongs to the same Arena, and then move only into that
 Arena. The fixed-point lowerer gained populated Array construction rather than
 delegating that path to Stage 0; its bulk constructor allocates once, copies the
 already-consumed value representation into the buffer, and registers the Array
-cleanup with the region. Stage 0 and native negative probes reject empty
-view-bearing Arrays, mixed owners, use after element transfer, and transfer into
-the wrong Arena.
+cleanup with the region. Stage 0 and native negative probes reject immutable
+empty view-bearing Arrays, mixed owners, use after element transfer, and
+transfer into the wrong Arena.
 
-This remains deliberately immutable during construction. `Array<T>()` followed
-by `push` cannot yet establish or change region identity, and Map/Set, enum,
-class, and returned graph edges remain rejected. Mutable container provenance—
-including shape-stable mutation and invalidation evidence—is the next experiment
-before claiming whole-compiler allocation gains.
+The follow-up mutable slice lets `let Array<T>()` begin without an owner. Its
+first straight-line `push` consumes a view-bearing element and establishes the
+Arena identity; subsequent pushes must prove the same owner. Conditional or
+loop-carried first pushes remain rejected until flow joins can prove identical
+provenance on every continuing path. A local element view now loans both the
+Array's relocatable storage and its Arena edge, so `push` is rejected until that
+view's last use.
+
+Map/Set, enum, class, and returned graph edges remain rejected. Richer mutable
+container provenance—including control-flow-established identity and broader
+shape-stability evidence—is still required before claiming whole-compiler
+allocation gains.
 
 ## Fixed and null-only native argument plans
 
