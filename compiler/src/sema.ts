@@ -646,7 +646,7 @@ type AnalysisState = {
   readonly observer: SemanticObserver | null;
   executorContext: "main" | null;
   nativeThreadBodyDepth: number;
-  regionControlFlowDepth: number;
+  regionLoopDepth: number;
   asyncScopeDepth: number;
   asyncLoopDepth: number;
   readonly asyncLoopScopeFloors: number[];
@@ -1009,7 +1009,7 @@ export function analyze(
     observer,
     executorContext: null,
     nativeThreadBodyDepth: 0,
-    regionControlFlowDepth: 0,
+    regionLoopDepth: 0,
     asyncScopeDepth: 0,
     asyncLoopDepth: 0,
     asyncLoopScopeFloors: [],
@@ -3306,6 +3306,7 @@ function analyzeStatements(
   transientViews: ReadonlySet<string> = new Set(),
 ): boolean {
   const inheritedViews = new Set([...state.viewOrigins.keys()].filter((name) => !transientViews.has(name)));
+  const inheritedRegionArrays = storedViewArrayBindingNames(locals, structs, enums);
   const inheritedConnections = new Set(state.connectionOrigins.keys());
   let returns = false;
   let stops = false;
@@ -3313,6 +3314,7 @@ function analyzeStatements(
     const statement = statements[index];
     for (const name of state.viewOrigins.keys()) {
       if (inheritedViews.has(name)) continue;
+      if (inheritedRegionArrays.has(name)) continue;
       if (!statements.slice(index).some((candidate) => syntaxReferencesName(candidate, name))) {
         unbindViewOrigin(name, state);
       }
@@ -3331,7 +3333,9 @@ function analyzeStatements(
     stops = statementStopsFlow(statement);
   }
   for (const name of state.viewOrigins.keys()) {
-    if (!inheritedViews.has(name)) unbindViewOrigin(name, state);
+    if (!inheritedViews.has(name) && !inheritedRegionArrays.has(name)) {
+      unbindViewOrigin(name, state);
+    }
   }
   for (const name of state.connectionOrigins.keys()) {
     if (!inheritedConnections.has(name)) unbindConnectionOrigin(name, state);
@@ -4694,7 +4698,14 @@ function analyzeStatement(
       }
       const covered = new Set<string>();
       const continuing: Map<string, ValueType>[] = [];
+      const regionArrays = storedViewArrayBindingNames(locals, structs, enums);
+      const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+      const incomingLoans = snapshotAccessLoanState(state);
+      const continuingRegionOrigins: RegionArrayOriginState[] = [];
+      const continuingLoans: AccessLoanState[] = [];
       for (const arm of statement.arms) {
+        restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+        restoreAccessLoanState(state, incomingLoans);
         const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
         const variant = foreignUnion
@@ -4785,7 +4796,6 @@ function analyzeStatement(
             });
           }
         }
-        state.regionControlFlowDepth += 1;
         try {
           const transientViews = new Set(
             patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
@@ -4800,7 +4810,6 @@ function analyzeStatement(
             analyzeStatement(arm.body, owner, armLocals, globals, structs, enums, fileName, state);
           }
         } finally {
-          state.regionControlFlowDepth -= 1;
           for (const name of patternNames) {
             const previousBorrow = previousBorrows.get(name);
             if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
@@ -4818,11 +4827,26 @@ function analyzeStatement(
         if (!statementStopsFlow(arm.body)) {
           if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
           continuing.push(armLocals);
+          continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+          continuingLoans.push(snapshotAccessLoanState(state));
         }
       }
       const missing = declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
       mergeOwnershipStates(locals, continuing, state);
+      if (continuing.length > 0) {
+        mergeRegionArrayOriginStates(
+          regionArrays,
+          continuingRegionOrigins,
+          statement.location,
+          fileName,
+          state,
+        );
+        mergeAccessLoanStates(state, continuingLoans);
+      } else {
+        restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+        restoreAccessLoanState(state, incomingLoans);
+      }
       return;
     }
   }
@@ -5226,12 +5250,11 @@ function inferClosureExpression(
   let body: Statement[];
   const previousFunction = state.activeFunction;
   const previousExecutorContext = state.executorContext;
-  const previousRegionControlFlowDepth = state.regionControlFlowDepth;
+  const previousRegionLoopDepth = state.regionLoopDepth;
   state.activeFunction = syntheticBase;
-  // A closure body is a new execution context. Whether its declaration was
-  // reached through outer control flow does not make its own straight-line
-  // statements conditional.
-  state.regionControlFlowDepth = 0;
+  // A closure body is a new execution context. An outer loop does not make the
+  // closure's own statements loop-carried when the closure later executes.
+  state.regionLoopDepth = 0;
   state.executorContext = executionContext === "inherit"
     ? previousExecutorContext
     : executionContext === "main"
@@ -5268,7 +5291,7 @@ function inferClosureExpression(
     }
   } finally {
     if (nativeThreadBody) state.nativeThreadBodyDepth -= 1;
-    state.regionControlFlowDepth = previousRegionControlFlowDepth;
+    state.regionLoopDepth = previousRegionLoopDepth;
     state.executorContext = previousExecutorContext;
     state.activeFunction = previousFunction;
   }
@@ -5743,30 +5766,53 @@ function inferIfExpression(
 
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
+  const regionArrays = storedViewArrayBindingNames(original, structs, enums);
+  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+  const incomingLoans = snapshotAccessLoanState(state);
+  const continuingRegionOrigins: RegionArrayOriginState[] = [];
+  const continuingLoans: AccessLoanState[] = [];
   const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
-  state.regionControlFlowDepth += 1;
-  let thenType: ValueType;
-  try {
-    thenType = inferValueArm(expression.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state, expected);
-  } finally {
-    state.regionControlFlowDepth -= 1;
+  const thenType = inferValueArm(
+    expression.thenBranch,
+    owner,
+    thenLocals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    expected,
+  );
+  if (thenType !== "never") {
+    continuing.push(thenLocals);
+    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingLoans.push(snapshotAccessLoanState(state));
   }
-  if (thenType !== "never") continuing.push(thenLocals);
 
+  restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+  restoreAccessLoanState(state, incomingLoans);
   const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
-  state.regionControlFlowDepth += 1;
-  let elseType: ValueType;
-  try {
-    elseType = expression.elseBranch.kind === "ifExpression"
-      ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
-      : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
-  } finally {
-    state.regionControlFlowDepth -= 1;
+  const elseType = expression.elseBranch.kind === "ifExpression"
+    ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
+    : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
+  if (elseType !== "never") {
+    continuing.push(elseLocals);
+    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingLoans.push(snapshotAccessLoanState(state));
   }
-  if (elseType !== "never") continuing.push(elseLocals);
 
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
   mergeOwnershipStates(locals, continuing, state);
+  if (continuing.length > 0) {
+    mergeRegionArrayOriginStates(
+      regionArrays,
+      continuingRegionOrigins,
+      expression.location,
+      fileName,
+      state,
+    );
+    mergeAccessLoanStates(state, continuingLoans);
+  }
   return resultType;
 }
 
@@ -5987,7 +6033,7 @@ function finishLoopExpression(
 ): ValueType {
   const continuing: Map<string, ValueType>[] = frame.selections.map((selection) => selection.locals);
   const exhaustionLocals = new Map(locals);
-  state.regionControlFlowDepth += 1;
+  state.regionLoopDepth += 1;
   let exhaustionType: ValueType;
   try {
     exhaustionType = inferValueArm(
@@ -6002,7 +6048,7 @@ function finishLoopExpression(
       expected,
     );
   } finally {
-    state.regionControlFlowDepth -= 1;
+    state.regionLoopDepth -= 1;
   }
   if (exhaustionType !== "never") continuing.push(exhaustionLocals);
   let resultType = exhaustionType;
@@ -6069,8 +6115,15 @@ function inferMatchExpression(
 
   const covered = new Set<string>();
   const continuing: Map<string, ValueType>[] = [];
+  const regionArrays = storedViewArrayBindingNames(locals, structs, enums);
+  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+  const incomingLoans = snapshotAccessLoanState(state);
+  const continuingRegionOrigins: RegionArrayOriginState[] = [];
+  const continuingLoans: AccessLoanState[] = [];
   let resultType: ValueType = "never";
   for (const arm of expression.arms) {
+    restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+    restoreAccessLoanState(state, incomingLoans);
     const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
     if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
     const variant = foreignUnion
@@ -6160,7 +6213,6 @@ function inferMatchExpression(
       }
     }
     let armType: ValueType = "never";
-    state.regionControlFlowDepth += 1;
     try {
       const transientViews = new Set(
         patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
@@ -6180,7 +6232,6 @@ function inferMatchExpression(
         transientViews,
       );
     } finally {
-      state.regionControlFlowDepth -= 1;
       for (const name of patternNames) {
         const previousBorrow = previousBorrows.get(name);
         if (previousBorrow) state.borrowOrigins.set(name, previousBorrow);
@@ -6198,6 +6249,8 @@ function inferMatchExpression(
     if (armType !== "never") {
       if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
       continuing.push(armLocals);
+      continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+      continuingLoans.push(snapshotAccessLoanState(state));
       if (resultType === "never" || resultType === "unknown") resultType = armType;
       else if (armType !== "unknown" && armType !== resultType) {
         throw new DiagnosticError(fileName, arm.location, `match arm produces ${armType}, but previous arms produce ${resultType}`);
@@ -6207,6 +6260,16 @@ function inferMatchExpression(
   const missing = declaration.variants.find((variant) => !covered.has(variant.name));
   if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
   mergeOwnershipStates(locals, continuing, state);
+  if (continuing.length > 0) {
+    mergeRegionArrayOriginStates(
+      regionArrays,
+      continuingRegionOrigins,
+      expression.location,
+      fileName,
+      state,
+    );
+    mergeAccessLoanStates(state, continuingLoans);
+  }
   return resultType;
 }
 
@@ -8134,30 +8197,43 @@ function inferExpressionInner(
         requireAssignable("boolean", conditionType, expression.condition, fileName, structs, enums, state);
       }
       const original = new Map(locals);
+      const regionArrays = storedViewArrayBindingNames(original, structs, enums);
+      const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+      const incomingLoans = snapshotAccessLoanState(state);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const activeFunction = state.activeFunction;
-      state.regionControlFlowDepth += 1;
-      let thenType: ValueType;
-      try {
-        thenType = activeFunction?.async
-          ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
-          : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
-      } finally {
-        state.regionControlFlowDepth -= 1;
-      }
+      const thenType = activeFunction?.async
+        ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
+        : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
-      const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
-      state.regionControlFlowDepth += 1;
-      let elseType: ValueType;
-      try {
-        elseType = activeFunction?.async
-          ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
-          : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
-      } finally {
-        state.regionControlFlowDepth -= 1;
+      const continuingRegionOrigins: RegionArrayOriginState[] = [];
+      const continuingLoans: AccessLoanState[] = [];
+      if (thenType !== "never") {
+        continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+        continuingLoans.push(snapshotAccessLoanState(state));
       }
+      restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+      restoreAccessLoanState(state, incomingLoans);
+      const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
+      const elseType = activeFunction?.async
+        ? inferDirectValue(expression.elseExpression, activeFunction, elseLocals, globals, structs, enums, fileName, state)
+        : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
+      if (elseType !== "never") {
+        continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+        continuingLoans.push(snapshotAccessLoanState(state));
+      }
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
+      if (continuingRegionOrigins.length > 0) {
+        mergeRegionArrayOriginStates(
+          regionArrays,
+          continuingRegionOrigins,
+          expression.location,
+          fileName,
+          state,
+        );
+        mergeAccessLoanStates(state, continuingLoans);
+      }
       return commonBranchType("conditional", thenType, elseType, expression.elseExpression.location, fileName);
     }
     case "new": {
@@ -10841,11 +10917,11 @@ function inferExpressionInner(
                 });
               }
             } else {
-              if (state.regionControlFlowDepth > 0) {
-                throw new DiagnosticError(fileName, expression.location, `the first push into view-bearing Array ${JSON.stringify(root.name)} must occur in straight-line code`, {
+              if (state.regionLoopDepth > 0) {
+                throw new DiagnosticError(fileName, expression.location, `the first push into view-bearing Array ${JSON.stringify(root.name)} cannot occur in a loop`, {
                   code: "Z0206",
-                  notes: ["the first push establishes the container's Arena provenance on every continuing path"],
-                  helps: ["establish the Array with one push before entering conditional or loop control flow"],
+                  notes: ["a loop may execute zero times, so its body cannot establish provenance on every continuing path"],
+                  helps: ["establish the Array before entering the loop"],
                 });
               }
               bindViewOrigin(root.name, elementOrigin, fileName, state);
@@ -12009,6 +12085,85 @@ function mergeViewOrigins(origins: readonly ViewOrigin[]): ViewOrigin {
   return { sources };
 }
 
+type RegionArrayOriginState = ReadonlyMap<string, ViewOrigin>;
+
+function storedViewArrayBindingNames(
+  locals: ReadonlyMap<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+): Set<string> {
+  const names = new Set<string>();
+  for (const [name, stored] of locals) {
+    const array = parseDynamicArrayType(String(underlyingType(stored)));
+    if (array && containsStoredViewType(array.elementType, structs, enums)) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+function snapshotRegionArrayOrigins(
+  names: ReadonlySet<string>,
+  state: AnalysisState,
+): RegionArrayOriginState {
+  const snapshot = new Map<string, ViewOrigin>();
+  for (const name of names) {
+    const origin = state.viewOrigins.get(name);
+    if (origin) snapshot.set(name, origin);
+  }
+  return snapshot;
+}
+
+function restoreRegionArrayOrigins(
+  names: ReadonlySet<string>,
+  snapshot: RegionArrayOriginState,
+  state: AnalysisState,
+): void {
+  for (const name of names) state.viewOrigins.delete(name);
+  for (const [name, origin] of snapshot) state.viewOrigins.set(name, origin);
+}
+
+function originsHaveSameOwner(
+  left: ViewOrigin,
+  right: ViewOrigin,
+): boolean {
+  if (left.sources.length !== right.sources.length) return false;
+  return left.sources.every((source) => (
+    right.sources.some((candidate) => candidate.owner === source.owner)
+  ));
+}
+
+function mergeRegionArrayOriginStates(
+  names: ReadonlySet<string>,
+  paths: readonly RegionArrayOriginState[],
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (paths.length === 0) return;
+  for (const name of names) {
+    const origins = paths.map((path) => path.get(name) ?? null);
+    const first = origins[0];
+    const agree = origins.every((origin) => (
+      first === null ? origin === null : origin !== null && originsHaveSameOwner(first, origin)
+    ));
+    if (!agree) {
+      throw new DiagnosticError(
+        fileName,
+        location,
+        `view-bearing Array ${JSON.stringify(name)} must establish the same Arena provenance on every continuing path`,
+        {
+          code: "Z0206",
+          notes: ["paths cannot disagree about whether the Array is populated or which Arena owns its embedded views"],
+          helps: ["push a value from the same Arena in every continuing branch, or establish provenance before branching"],
+        },
+      );
+    }
+    if (first) state.viewOrigins.set(name, first);
+    else state.viewOrigins.delete(name);
+  }
+}
+
 function viewOriginOwnerLabel(origin: ViewOrigin): string {
   return origin.sources.map((source) => source.owner).join(" | ");
 }
@@ -12728,39 +12883,47 @@ function analyzeIfBranches(
   const continuing: Map<string, ValueType>[] = [];
   const incomingLoans = snapshotAccessLoanState(state);
   const continuingLoans: AccessLoanState[] = [];
+  const regionArrays = storedViewArrayBindingNames(original, structs, enums);
+  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+  const continuingRegionOrigins: RegionArrayOriginState[] = [];
 
   const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
-  state.regionControlFlowDepth += 1;
-  try {
-    analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
-  } finally {
-    state.regionControlFlowDepth -= 1;
-  }
+  analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
   if (!statementStopsFlow(statement.thenBranch)) {
     continuing.push(thenLocals);
     continuingLoans.push(snapshotAccessLoanState(state));
+    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
   }
 
   restoreAccessLoanState(state, incomingLoans);
+  restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
   if (statement.elseBranch) {
     const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
-    state.regionControlFlowDepth += 1;
-    try {
-      analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
-    } finally {
-      state.regionControlFlowDepth -= 1;
-    }
+    analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
     if (!statementStopsFlow(statement.elseBranch)) {
       continuing.push(elseLocals);
       continuingLoans.push(snapshotAccessLoanState(state));
+      continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
     }
   } else {
     continuing.push(narrowedConditionLocals(original, statement.condition, false, state));
     continuingLoans.push(snapshotAccessLoanState(state));
+    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
   }
   mergeOwnershipStates(locals, continuing, state);
-  if (continuingLoans.length > 0) mergeAccessLoanStates(state, continuingLoans);
-  else restoreAccessLoanState(state, incomingLoans);
+  if (continuingLoans.length > 0) {
+    mergeRegionArrayOriginStates(
+      regionArrays,
+      continuingRegionOrigins,
+      statement.location,
+      fileName,
+      state,
+    );
+    mergeAccessLoanStates(state, continuingLoans);
+  } else {
+    restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+    restoreAccessLoanState(state, incomingLoans);
+  }
 }
 
 function analyzeWhileLoop(
@@ -12827,11 +12990,11 @@ function analyzeWhileLoop(
       valueProducing: Boolean(valueFrame),
     };
     state.loopStack.push(frame);
-    state.regionControlFlowDepth += 1;
+    state.regionLoopDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
-      state.regionControlFlowDepth -= 1;
+      state.regionLoopDepth -= 1;
       state.loopStack.pop();
     }
 
@@ -13131,11 +13294,11 @@ function analyzeForLoop(
       }
     }
     state.loopStack.push(frame);
-    state.regionControlFlowDepth += 1;
+    state.regionLoopDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
-      state.regionControlFlowDepth -= 1;
+      state.regionLoopDepth -= 1;
       state.loopStack.pop();
       if (previousIterationBorrow) state.iterationBorrowOrigins.set(root.name, previousIterationBorrow);
       else state.iterationBorrowOrigins.delete(root.name);
@@ -13299,11 +13462,11 @@ function analyzeIteratorForLoop(
       valueProducing: Boolean(valueFrame),
     };
     state.loopStack.push(frame);
-    state.regionControlFlowDepth += 1;
+    state.regionLoopDepth += 1;
     try {
       analyzeStatement(statement.body, owner, bodyLocals, globals, structs, enums, fileName, state);
     } finally {
-      state.regionControlFlowDepth -= 1;
+      state.regionLoopDepth -= 1;
       state.loopStack.pop();
     }
     const backEdges = frame.continues.map(normalize);

@@ -371,10 +371,13 @@ pendingSpans.push(anotherSpan);           // must also belong to `arena`
 const spans = arena.create(pendingSpans);
 ```
 
-The establishing push must occur in straight-line code so every continuing path
-agrees on one owner. Later pushes may use ordinary control flow but must match
-the established Arena. Structural mutation is rejected while an element view or
-iteration loan is live because `push` may reallocate the buffer.
+The establishing push may occur in straight-line code or across exhaustive
+`if`/`match` branches when every continuing path proves the same owner. A path
+that leaves the Array empty or establishes another Arena is rejected at the
+join. A loop body cannot establish provenance because it may execute zero times.
+Later pushes may use ordinary control flow but must match the established Arena.
+Structural mutation is rejected while an element view or iteration loan is live
+because `push` may reallocate the buffer.
 
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;

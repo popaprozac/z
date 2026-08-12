@@ -1223,6 +1223,69 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   );
   assert.equal(pushedStoredArrayResult.status, 0, pushedStoredArrayResult.stderr);
 
+  const branchEstablishedArray = pushedStoredArray.replace(
+    "pendingSpans.push(pending);",
+    "if (first.value == 20) {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "      } else {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "      }",
+  );
+  const branchEstablishedDirectory = mkdtempSync("/tmp/z-arena-stored-array-branch-");
+  const branchEstablishedFile = resolve(branchEstablishedDirectory, "main.zs");
+  writeFileSync(branchEstablishedFile, branchEstablishedArray);
+  const branchEstablishedResult = spawnSync(
+    process.execPath,
+    [cli, "run", branchEstablishedFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(branchEstablishedResult.status, 0, branchEstablishedResult.stderr);
+
+  const matchEstablishedArray = pushedStoredArray
+    .replace(
+      "struct Span { first: view Coordinate; last: view Coordinate; }",
+      "struct Span { first: view Coordinate; last: view Coordinate; }\n"
+        + "    enum Choice { primary, alternate, }",
+    )
+    .replace(
+      "pendingSpans.push(pending);",
+      "const choice = Choice.primary;\n"
+        + "      match (choice) {\n"
+        + "        primary => pendingSpans.push(pending);\n"
+        + "        alternate => pendingSpans.push(pending);\n"
+        + "      }",
+    );
+  const matchEstablishedDirectory = mkdtempSync("/tmp/z-arena-stored-array-match-");
+  const matchEstablishedFile = resolve(matchEstablishedDirectory, "main.zs");
+  writeFileSync(matchEstablishedFile, matchEstablishedArray);
+  const matchEstablishedResult = spawnSync(
+    process.execPath,
+    [cli, "run", matchEstablishedFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(matchEstablishedResult.status, 0, matchEstablishedResult.stderr);
+
+  const expressionEstablishedArray = pushedStoredArray.replace(
+    "pendingSpans.push(pending);",
+    "const selected = if (first.value == 20) {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "        select 20;\n"
+      + "      } else {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "        select 22;\n"
+      + "      };\n"
+      + "      if (selected != 20) return 2;",
+  );
+  const expressionEstablishedDirectory = mkdtempSync("/tmp/z-arena-stored-array-expression-");
+  const expressionEstablishedFile = resolve(expressionEstablishedDirectory, "main.zs");
+  writeFileSync(expressionEstablishedFile, expressionEstablishedArray);
+  const expressionEstablishedResult = spawnSync(
+    process.execPath,
+    [cli, "run", expressionEstablishedFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(expressionEstablishedResult.status, 0, expressionEstablishedResult.stderr);
+
   const pushedFromAnotherArena = pushedStoredArray.replace(
     "const spans = arena.create(pendingSpans);",
     "let other = Arena();\n"
@@ -1247,7 +1310,38 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
     "arena-stored-array-conditional-first-push.zs",
   )[0];
   assert.equal(conditionalFirstPushDiagnostic.code, "Z0206");
-  assert.match(conditionalFirstPushDiagnostic.message, /first push.*must occur in straight-line code/);
+  assert.match(conditionalFirstPushDiagnostic.message, /same Arena provenance on every continuing path/);
+
+  const mixedBranchOwners = pushedStoredArray.replace(
+    "pendingSpans.push(pending);",
+    "let other = Arena();\n"
+      + "      const otherFirst = other.create(Coordinate({ value: 1 }));\n"
+      + "      const otherLast = other.create(Coordinate({ value: 2 }));\n"
+      + "      if (true) {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "      } else {\n"
+      + "        pendingSpans.push(Span({ first: otherFirst, last: otherLast }));\n"
+      + "      }",
+  );
+  const mixedBranchOwnersDiagnostic = diagnostics(
+    mixedBranchOwners,
+    "arena-stored-array-mixed-branch-owners.zs",
+  )[0];
+  assert.equal(mixedBranchOwnersDiagnostic.code, "Z0206");
+  assert.match(mixedBranchOwnersDiagnostic.message, /same Arena provenance on every continuing path/);
+
+  const loopFirstPush = pushedStoredArray.replace(
+    "pendingSpans.push(pending);",
+    "while (pendingSpans.length == 0) {\n"
+      + "        pendingSpans.push(pending);\n"
+      + "      }",
+  );
+  const loopFirstPushDiagnostic = diagnostics(
+    loopFirstPush,
+    "arena-stored-array-loop-first-push.zs",
+  )[0];
+  assert.equal(loopFirstPushDiagnostic.code, "Z0206");
+  assert.match(loopFirstPushDiagnostic.message, /first push.*cannot occur in a loop/);
 
   const reusedPushedElement = pushedStoredArray.replace(
     "const spans = arena.create(pendingSpans);",

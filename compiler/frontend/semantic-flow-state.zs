@@ -609,6 +609,12 @@ export function mergeBindingFlowStates(
     }
     if (left[index].viewOwner == right[index].viewOwner) {
       replaceBindingViewOwner(inout target, index, left[index].viewOwner);
+    } else {
+      replaceBindingViewOwner(
+        inout target,
+        index,
+        "__z_native_mixed_view_owner"
+      );
     }
     replaceBindingInitialization(
       inout target,

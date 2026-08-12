@@ -265,14 +265,34 @@ function regionControlFlowBindingName(): String {
 }
 
 function markRegionControlFlow(
-  inout bindings: Array<NativeValueBinding>
+  inout bindings: Array<NativeValueBinding>,
+  in kind: String
 ): void {
   const binding = regionControlFlowBindingName();
   const existing = valueBindingType(bindings, binding);
+  if (existing == "loop") return;
   if (existing.byteLength > 0) {
-    setValueBindingType(inout bindings, binding, "true");
+    setValueBindingType(inout bindings, binding, kind);
   } else {
-    addValueBinding(inout bindings, binding, "true");
+    addValueBinding(inout bindings, binding, kind);
+  }
+}
+
+function requireSettledRegionProvenance(
+  in module: ParsedModule,
+  in bindings: Array<NativeValueBinding>,
+  line: usize,
+  column: usize
+): void throws ModuleResolveError {
+  for (const binding of bindings) {
+    if (binding.viewOwner != "__z_native_mixed_view_owner") continue;
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `view-bearing Array "${binding.name}" must establish the same Arena provenance on every continuing path`,
+      line,
+      column
+    );
   }
 }
 
@@ -1406,7 +1426,7 @@ function inferMatchExpressionNodeType(
     }
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout armBindings);
+    markRegionControlFlow(inout armBindings, "branch");
     if (borrowedMatch && subjectRoot.byteLength > 0) {
       borrowMatchValueBindingInPlace(inout armBindings, subjectRoot);
     }
@@ -1478,6 +1498,12 @@ function inferMatchExpressionNodeType(
   }
   if (hasContinuingFlow) {
     copyBindingFlowStates(inout bindings, continuingBindings);
+    try requireSettledRegionProvenance(
+      module,
+      bindings,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
   }
   if (unresolvedArm) return "";
   if (!hasContinuingArm) return "__z_never";
@@ -3455,8 +3481,8 @@ function inferExpressionNodeType(
     const expectedType = contextualExpectedType(bindings, tree, index);
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout thenBindings);
-    markRegionControlFlow(inout elseBindings);
+    markRegionControlFlow(inout thenBindings, "branch");
+    markRegionControlFlow(inout elseBindings, "branch");
     const thenType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3481,9 +3507,21 @@ function inferExpressionNodeType(
     );
     try requireSettledExpressionType(module, tree, children[1], thenType);
     try requireSettledExpressionType(module, tree, children[2], elseType);
+    if (thenType == "__z_never") {
+      copyBindingFlowStates(inout bindings, elseBindings);
+      return elseType;
+    }
+    if (elseType == "__z_never") {
+      copyBindingFlowStates(inout bindings, thenBindings);
+      return thenType;
+    }
     mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
-    if (thenType == "__z_never") return elseType;
-    if (elseType == "__z_never") return thenType;
+    try requireSettledRegionProvenance(
+      module,
+      bindings,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
     if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
     if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
       return thenType.copyBytes(0, thenType.byteLength);
@@ -3521,7 +3559,7 @@ function inferExpressionNodeType(
     }
     const expectedType = contextualExpectedType(bindings, tree, index);
     let elseBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout elseBindings);
+    markRegionControlFlow(inout elseBindings, "loop");
     const elseType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3535,7 +3573,7 @@ function inferExpressionNodeType(
     );
     try requireSettledExpressionType(module, tree, children[2], elseType);
     let bodyBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout bodyBindings);
+    markRegionControlFlow(inout bodyBindings, "loop");
     let selectedType = elseType.copyBytes(0, elseType.byteLength);
     if (expectedType.byteLength > 0) {
       selectedType = expectedType.copyBytes(0, expectedType.byteLength);
@@ -3576,7 +3614,7 @@ function inferExpressionNodeType(
     const elementType = iterationElementType(iterableType);
     const expectedType = contextualExpectedType(bindings, tree, index);
     let elseBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout elseBindings);
+    markRegionControlFlow(inout elseBindings, "loop");
     const elseType = try inferExpressionNodeTypeExpected(
       module,
       modules,
@@ -3591,7 +3629,7 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[3], elseType);
 
     let bodyBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout bodyBindings);
+    markRegionControlFlow(inout bodyBindings, "loop");
     const patternChildren = copyIndices(tree.nodes[children[0]].children);
     for (const pattern of patternChildren) {
       if (tree.nodes[pattern].kind == ExpressionKind.matchBindingExpression) {
@@ -3646,8 +3684,8 @@ function inferExpressionNodeType(
     }
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout thenBindings);
-    markRegionControlFlow(inout elseBindings);
+    markRegionControlFlow(inout thenBindings, "branch");
+    markRegionControlFlow(inout elseBindings, "branch");
     const expectedType = contextualExpectedType(bindings, tree, index);
     const thenType = try inferExpressionNodeTypeExpected(
       module,
@@ -3675,6 +3713,12 @@ function inferExpressionNodeType(
     try requireSettledExpressionType(module, tree, children[2], elseType);
     if (thenType.byteLength == 0 || elseType.byteLength == 0) {
       mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
+      try requireSettledRegionProvenance(
+        module,
+        bindings,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
       return "";
     }
     if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
@@ -3699,6 +3743,12 @@ function inferExpressionNodeType(
         inout elseBindings
       );
       mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
+      try requireSettledRegionProvenance(
+        module,
+        bindings,
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
       return copiedString(thenType);
     }
     throw resolutionError(
@@ -5269,6 +5319,16 @@ function inferExpressionNodeType(
               tree,
               argument
             );
+            if (storedViewOwner == "__z_native_mixed_view_owner") {
+              const argumentRoot = expressionStorageRootName(tree, argument);
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `view-bearing Array "${argumentRoot}" must establish the same Arena provenance on every continuing path`,
+                tree.nodes[argument].line,
+                tree.nodes[argument].column
+              );
+            }
             if (storedViewOwner != receiverRoot) {
               throw resolutionError(
                 ModuleResolveErrorKind.typeMismatch,
@@ -5594,6 +5654,15 @@ function inferExpressionNodeType(
                         bindings,
                         receiverRoot
                       );
+                      if (arrayOwner == "__z_native_mixed_view_owner") {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          `view-bearing Array "${receiverRoot}" must establish the same Arena provenance on every continuing path`,
+                          tree.nodes[index].line,
+                          tree.nodes[index].column
+                        );
+                      }
                       if (
                         arrayOwner.byteLength > 0
                         && arrayOwner != elementOwner
@@ -5612,11 +5681,11 @@ function inferExpressionNodeType(
                           bindings,
                           controlBinding
                         );
-                        if (controlFlow == "true") {
+                        if (controlFlow == "loop") {
                           throw resolutionError(
                             ModuleResolveErrorKind.typeMismatch,
                             module.path,
-                            `the first push into view-bearing Array "${receiverRoot}" must occur in straight-line code`,
+                            `the first push into view-bearing Array "${receiverRoot}" cannot occur in a loop`,
                             tree.nodes[index].line,
                             tree.nodes[index].column
                           );
@@ -6776,8 +6845,8 @@ function inferStatement(
   if (kind == StatementKind.ifStatement) {
     let thenBindings = copyValueBindings(bindings);
     let elseBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout thenBindings);
-    markRegionControlFlow(inout elseBindings);
+    markRegionControlFlow(inout thenBindings, "branch");
+    markRegionControlFlow(inout elseBindings, "branch");
     match (in arena.nodes[index].expression) {
       some(condition) => match (in condition.tree) {
         some(tree) => {
@@ -6858,12 +6927,20 @@ function inferStatement(
     } else if (elseContinues) {
       copyBindingFlowStates(inout bindings, elseBindings);
     }
+    if (thenContinues || elseContinues) {
+      try requireSettledRegionProvenance(
+        module,
+        bindings,
+        arena.nodes[index].line,
+        arena.nodes[index].column
+      );
+    }
     return thenContinues || elseContinues;
   }
   if (kind == StatementKind.whileStatement) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout loopBindings);
+    markRegionControlFlow(inout loopBindings, "loop");
     const loopContinues = try inferStatementSequence(
       module,
       modules,
@@ -6892,7 +6969,7 @@ function inferStatement(
   ) {
     const beforeLoop = copyValueBindings(bindings);
     let loopBindings = copyValueBindings(bindings);
-    markRegionControlFlow(inout loopBindings);
+    markRegionControlFlow(inout loopBindings, "loop");
     let elementType = "";
     let iterableType = "";
     match (in arena.nodes[index].expression) {

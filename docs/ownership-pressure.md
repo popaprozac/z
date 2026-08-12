@@ -2456,17 +2456,19 @@ empty view-bearing Arrays, mixed owners, use after element transfer, and
 transfer into the wrong Arena.
 
 The follow-up mutable slice lets `let Array<T>()` begin without an owner. Its
-first straight-line `push` consumes a view-bearing element and establishes the
-Arena identity; subsequent pushes must prove the same owner. Conditional or
-loop-carried first pushes remain rejected until flow joins can prove identical
-provenance on every continuing path. A local element view now loans both the
-Array's relocatable storage and its Arena edge, so `push` is rejected until that
-view's last use.
+first `push` consumes a view-bearing element and establishes the Arena identity;
+subsequent pushes must prove the same owner. Flow-sensitive joins now accept
+exhaustive `if`/`match` control flow when every continuing path establishes
+identical provenance. Stage 0 also preserves that evidence through
+value-producing expressions; native expression emission retains its existing
+bootstrap boundary. Missing paths and mixed owners fail at the join; loop-only
+establishment remains rejected because the body may run zero times. A local
+element view loans both the Array's relocatable storage and its Arena edge, so
+`push` is rejected until that view's last use.
 
 Map/Set, enum, class, and returned graph edges remain rejected. Richer mutable
-container provenance—including control-flow-established identity and broader
-shape-stability evidence—is still required before claiming whole-compiler
-allocation gains.
+container provenance—including loop-carried identity and broader shape-stability
+evidence—is still required before claiming whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans
 

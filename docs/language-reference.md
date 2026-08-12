@@ -1594,10 +1594,23 @@ spans.push(secondSpan);
 const stored = scratch.create(spans);
 ```
 
-The first push must be in straight-line code; it cannot be conditional or
-loop-carried in this tier. Once provenance is established, later same-owner
-pushes may occur in control flow. `push` remains forbidden while an element view
-or iteration loan is live because growth can relocate the buffer.
+The first push may also appear in exhaustive `if` or `match` branches when every
+continuing path establishes the same Arena:
+
+```z
+let spans = Array<Span>();
+if (preferPrimary) {
+  spans.push(primarySpan);
+} else {
+  spans.push(fallbackSpan);
+}
+```
+
+A missing branch or a branch using another Arena is rejected at the join. A loop
+body cannot establish provenance because it may execute zero times. Once
+provenance is established, later same-owner pushes may occur in control flow.
+`push` remains forbidden while an element view or iteration loan is live because
+growth can relocate the buffer.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
@@ -1608,9 +1621,8 @@ provenance Arena. A synchronous inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Control-flow joins that establish identical provenance on every path, Map/Set
-and enum-held region graphs, async regions, thread transfer, page reuse, and
-allocator parameters remain later tiers.
+Loop-carried establishment, Map/Set and enum-held region graphs, async regions,
+thread transfer, page reuse, and allocator parameters remain later tiers.
 
 ## Generics and traits
 
