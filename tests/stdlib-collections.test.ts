@@ -2393,6 +2393,20 @@ test("owns Map keys and values with optional views and deterministic removal", (
     /only in the Arena that owns every embedded view/,
   );
 
+  const clearKeepsArena = arenaValues
+    .replace(
+      "const item = arena.create(Item({ value: 42 }));",
+      "let other = Arena();\n      const item = arena.create(Item({ value: 42 }));\n      const second = other.create(Item({ value: 22 }));",
+    )
+    .replace(
+      'links.set("answer", Link({ item }));',
+      'links.set("answer", Link({ item }));\n      links.clear();\n      links.set("second", Link({ item: second }));',
+    );
+  assert.match(
+    diagnostics(clearKeepsArena, "map-arena-clear-keeps-region.zs")[0].message,
+    /already carries provenance from another Arena/,
+  );
+
   const iterationMutation = `
     import { Map } from "std/collections";
     function main(): i32 {

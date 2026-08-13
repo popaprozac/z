@@ -212,6 +212,8 @@ export enum LoweredExpressionKind {
   mapGet,
   mapSet,
   mapRemove,
+  mapDelete,
+  mapClear,
   setEmpty,
   setLength,
   setHas,
@@ -6763,6 +6765,8 @@ function lowerExpression(
         || tree.nodes[calleeInput].value == "get"
         || tree.nodes[calleeInput].value == "set"
         || tree.nodes[calleeInput].value == "remove"
+        || tree.nodes[calleeInput].value == "delete"
+        || tree.nodes[calleeInput].value == "clear"
       )
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
@@ -6820,6 +6824,10 @@ function lowerExpression(
               kind = LoweredExpressionKind.mapSet;
             } else if (tree.nodes[calleeInput].value == "remove") {
               kind = LoweredExpressionKind.mapRemove;
+            } else if (tree.nodes[calleeInput].value == "delete") {
+              kind = LoweredExpressionKind.mapDelete;
+            } else if (tree.nodes[calleeInput].value == "clear") {
+              kind = LoweredExpressionKind.mapClear;
             }
             let labels = Array<String>();
             if (receiverView) labels.push("view");

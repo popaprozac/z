@@ -1207,11 +1207,16 @@ function appendExpression(
     || declaration.expressions[index].kind == LoweredExpressionKind.mapGet
     || declaration.expressions[index].kind == LoweredExpressionKind.mapSet
     || declaration.expressions[index].kind == LoweredExpressionKind.mapRemove
+    || declaration.expressions[index].kind == LoweredExpressionKind.mapDelete
+    || declaration.expressions[index].kind == LoweredExpressionKind.mapClear
   ) {
     let expected: usize = 2;
     if (
       declaration.expressions[index].kind == LoweredExpressionKind.mapSet
     ) expected = 3;
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.mapClear
+    ) expected = 1;
     if (declaration.expressions[index].children.length != expected) {
       throw "native C emission received a malformed Map method call";
     }
@@ -1226,6 +1231,12 @@ function appendExpression(
     else if (
       declaration.expressions[index].kind == LoweredExpressionKind.mapRemove
     ) output.append("_remove");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.mapDelete
+    ) output.append("_delete");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.mapClear
+    ) output.append("_clear");
     else output.append("_set");
     const viewReceiver = declaration.expressions[index].labels.length > 0
       && declaration.expressions[index].labels[0] == "view";
@@ -1233,10 +1244,16 @@ function appendExpression(
     else output.append("(&(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
-    if (viewReceiver) output.append(", ");
-    else output.append("), ");
-    const key = declaration.expressions[index].children[1];
-    try appendExpression(inout output, declaration, key);
+    if (expected > 1) {
+      if (viewReceiver) output.append(", ");
+      else output.append("), ");
+      const key = declaration.expressions[index].children[1];
+      try appendExpression(inout output, declaration, key);
+    } else {
+      if (viewReceiver) output.append(")");
+      else output.append("))");
+      return;
+    }
     if (expected == 3) {
       output.append(", ");
       const value = declaration.expressions[index].children[2];
@@ -8376,6 +8393,66 @@ function appendMapRuntime(
       output.append("Tag_none };\n");
       output.append("}\n\n");
     }
+    output.append("static __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_delete(Z_");
+    output.append(declaration.name);
+    output.append(" *self, Z_String key) {\n");
+    output.append("  if (self->bucketCount == 0) return false;\n");
+    output.append("  size_t slot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(key) & (self->bucketCount - 1);\n");
+    output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+    output.append("    const size_t stored = self->buckets[slot];\n");
+    output.append("    if (stored == 0) return false;\n");
+    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) {\n");
+    output.append("      const size_t entry = stored - 1;\n");
+    output.append("      const size_t last = self->length - 1;\n");
+    output.append("      Z_String_deinit(&self->entries[entry].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
+      output.append("      Z_");
+      output.append(declaration.valueType.name);
+      output.append("_deinit(&self->entries[entry].value);\n");
+    }
+    output.append("      self->buckets[slot] = SIZE_MAX;\n");
+    output.append("      self->tombstones += 1;\n");
+    output.append("      if (entry != last) {\n");
+    output.append("        self->entries[entry] = self->entries[last];\n");
+    output.append("        size_t movedSlot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
+    output.append("        for (size_t movedProbe = 0; movedProbe < self->bucketCount; movedProbe += 1) {\n");
+    output.append("          if (self->buckets[movedSlot] == self->length) {\n");
+    output.append("            self->buckets[movedSlot] = entry + 1;\n");
+    output.append("            break;\n");
+    output.append("          }\n");
+    output.append("          movedSlot = (movedSlot + 1) & (self->bucketCount - 1);\n");
+    output.append("        }\n");
+    output.append("      }\n");
+    output.append("      self->length = last;\n");
+    output.append("      return true;\n");
+    output.append("    }\n");
+    output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+    output.append("  }\n");
+    output.append("  return false;\n");
+    output.append("}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_clear(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    output.append("  while (self->length > 0) {\n");
+    output.append("    self->length -= 1;\n");
+    output.append("    Z_String_deinit(&self->entries[self->length].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
+      output.append("    Z_");
+      output.append(declaration.valueType.name);
+      output.append("_deinit(&self->entries[self->length].value);\n");
+    }
+    output.append("  }\n");
+    output.append("  if (self->bucketCount > 0) memset(self->buckets, 0, self->bucketCount * sizeof(size_t));\n");
+    output.append("  self->tombstones = 0;\n");
+    output.append("}\n\n");
   }
 }
 

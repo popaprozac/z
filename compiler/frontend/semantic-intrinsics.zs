@@ -318,6 +318,10 @@ export function collectionMethodSignature(
       parameterModes.push("in");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
       returnType = `Option<${valueType}>`;
+    } else if (methodName == "delete") {
+      parameterModes.push("in");
+      parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
+      returnType = "boolean";
     } else if (methodName == "clear") {
       returnType = "void";
     }

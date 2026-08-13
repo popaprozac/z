@@ -3923,6 +3923,23 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   );
   assert.match(
     graphEmission.stdout,
+    /Z___z_Map_6_StringLinkedNode_delete\(&\(linkedByName\), Z_STRING_LITERAL\("retained"\)\)/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /Z___z_Map_6_StringLinkedNode_clear\(&\(linkedByName\)\)/,
+  );
+  const namedMapDelete = graphEmission.stdout.match(
+    /static __attribute__\(\(unused\)\) bool Z___z_Map_6_StringNamedTokenSpan_delete[^]*?\n\}/,
+  )?.[0] ?? "";
+  assert.match(namedMapDelete, /Z_NamedTokenSpan_deinit\(&self->entries\[entry\]\.value\)/);
+  const namedMapClear = graphEmission.stdout.match(
+    /static __attribute__\(\(unused\)\) void Z___z_Map_6_StringNamedTokenSpan_clear[^]*?\n\}/,
+  )?.[0] ?? "";
+  assert.match(namedMapClear, /Z_NamedTokenSpan_deinit\(&self->entries\[self->length\]\.value\)/);
+  assert.match(namedMapClear, /memset\(self->buckets, 0, self->bucketCount \* sizeof\(size_t\)\)/);
+  assert.match(
+    graphEmission.stdout,
     /z_stage1_arena_create_\d+___z_Map_6_StringLinkedNode/,
   );
   const namedDestructor = graphEmission.stdout.match(

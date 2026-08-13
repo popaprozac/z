@@ -83,8 +83,8 @@ function main(): i32 {
   const populatedSpans = Array<TokenSpan>(populatedPending);
   const populated = arena.create(populatedSpans);
   const populatedLength = spanLength(populated[0]);
-  const stored = arena.create(TokenSpan({ first, last }));
-  const namedPending = NamedTokenSpan({ name: "compiler", span: stored });
+  const namedSpan = arena.create(TokenSpan({ first, last }));
+  const namedPending = NamedTokenSpan({ name: "compiler", span: namedSpan });
   const named = arena.create(namedPending);
   const length = spanLength(named.span);
   const pending = TokenSpan({ first, last });
@@ -174,6 +174,20 @@ function main(): i32 {
     some(node) => node.value;
     none => 0;
   };
+  if (!linkedByName.delete("retained")) return 1;
+  if (linkedByName.delete("retained")) return 1;
+  const clearedFirst = LinkedNode({
+    value: 1,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  const clearedSecond = LinkedNode({
+    value: 2,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  linkedByName.set("cleared-first", clearedFirst);
+  linkedByName.set("cleared-second", clearedSecond);
+  linkedByName.clear();
+  if (linkedByName.length != 0) return 1;
   const storedMapPending = LinkedNode({
     value: 20,
     next: Option<view LinkedNode>.some(linkedTail),
@@ -184,6 +198,46 @@ function main(): i32 {
   const storedMappedValue = match (in storedMapped) {
     some(node) => node.value;
     none => 0;
+  };
+  const deleteNameFirst = arena.create(TokenCoordinate({ offset: 20 }));
+  const deleteNameLast = arena.create(TokenCoordinate({ offset: 62 }));
+  const deleteNameSpan = arena.create(TokenSpan({
+    first: deleteNameFirst,
+    last: deleteNameLast,
+  }));
+  const clearNameFirst = arena.create(TokenCoordinate({ offset: 20 }));
+  const clearNameLast = arena.create(TokenCoordinate({ offset: 62 }));
+  const clearNameSpan = arena.create(TokenSpan({
+    first: clearNameFirst,
+    last: clearNameLast,
+  }));
+  const keptNameFirst = arena.create(TokenCoordinate({ offset: 20 }));
+  const keptNameLast = arena.create(TokenCoordinate({ offset: 62 }));
+  const keptNameSpan = arena.create(TokenSpan({
+    first: keptNameFirst,
+    last: keptNameLast,
+  }));
+  let namedByRole = Map<String, NamedTokenSpan>();
+  namedByRole.set("delete", NamedTokenSpan({
+    name: "temporary",
+    span: deleteNameSpan,
+  }));
+  namedByRole.set("clear", NamedTokenSpan({
+    name: "also temporary",
+    span: clearNameSpan,
+  }));
+  if (!namedByRole.delete("delete")) return 1;
+  namedByRole.clear();
+  namedByRole.set("kept", NamedTokenSpan({
+    name: "compiler",
+    span: keptNameSpan,
+  }));
+  const storedNames = arena.create(namedByRole);
+  if (!storedNames.has("kept")) return 1;
+  const keptName = storedNames.get("kept");
+  const keptNameLength = match (in keptName) {
+    some(value) => value.name.byteLength;
+    none => usize(0);
   };
   if (populatedLength != 42) return 1;
   if (arrayLength != 42) return 1;
@@ -199,6 +253,7 @@ function main(): i32 {
   if (storedRemovedValue != 41) return 1;
   if (retainedValue != 7) return 1;
   if (storedMappedValue != 20) return 1;
+  if (keptNameLength != 8) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
   other.reset();

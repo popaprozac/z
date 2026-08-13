@@ -2512,11 +2512,17 @@ transfers the Map's Arena proof to the returned Option. The fixture then moves
 that Option into the same Arena, proving that removal does not erase lifetime
 evidence or duplicate the recursive node.
 
-Native `delete`/`clear`, Arena-owned Set edges, multi-edge recursive enum graphs,
-class, and returned graph edges remain rejected or deferred. Richer mutable
-container provenance—including loop-carried identity and broader
-shape-stability evidence—is still required before claiming whole-compiler
-allocation gains.
+Native `delete` and `clear` now complete the destructive Map surface. `delete`
+destroys one key/value and reports whether it existed; `clear` destroys every
+entry, clears the bucket table and tombstones, but intentionally keeps both the
+allocation and the Map's established Arena proof. A cleanup-bearing
+`NamedTokenSpan` fixture proves that both operations run value destruction and
+that the cleared Map can be populated and moved into the same Arena again.
+
+Arena-owned Set edges, multi-edge recursive enum graphs, class, and returned
+graph edges remain rejected or deferred. Richer mutable container
+provenance—including loop-carried identity and broader shape-stability
+evidence—is still required before claiming whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans
 

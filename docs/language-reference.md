@@ -1691,8 +1691,9 @@ view-bearing Maps require `let`; direct view values, mixed owners, and first
 insertion inside a loop are rejected. Native fixed-point lowering currently
 covers String-keyed `set`, `has`, `get`, and ownership-transferring `remove`
 for this shape. `get` uses the nullable view niche; `remove` returns a tagged
-owned `Option<V>` whose Arena proof follows the value. Native `delete` and
-`clear` are later Map composition layers.
+owned `Option<V>` whose Arena proof follows the value. `delete` destroys one
+matching entry and returns `boolean`; `clear` destroys all entries but retains
+the Map's allocated storage and established Arena proof for compatible reuse.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
