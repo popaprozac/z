@@ -1651,12 +1651,37 @@ or reference-counted region handle. The first tier still rejects direct
 `view T` payloads, mixed-owner payloads, object destructuring, copying,
 consuming matches, mutation, escape, and suspension.
 
+Recursive Arena graphs use `Option<view T>` for a nullable same-region edge:
+
+```z
+struct Node {
+  value: i32;
+  next: Option<view Node>;
+}
+
+const tail = scratch.create(Node({
+  value: 22,
+  next: Option<view Node>.none,
+}));
+const head = scratch.create(Node({
+  value: 20,
+  next: Option<view Node>.some(tail),
+}));
+```
+
+`none` is ownerless. `some(tail)` consumes no pointee; it records the same Arena
+provenance as `tail`, making `head` storable only in `scratch`. Only a proven
+borrowed view may enter this Option. The runtime representation is exactly one
+nullable pointer in both compiler frontends, so inspection adds no tag or ARC
+traffic.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
 enter classes; ordinary collection storage is limited to populated
-compatible-owner Arrays, and enum storage is limited to the variant-sensitive
-one-owner rule above. Their
+compatible-owner Arrays, enum storage is limited to the variant-sensitive
+one-owner rule above, and recursive edges are limited to same-Arena
+`Option<view T>`. Their
 only eventual owning destination is their provenance Arena. A synchronous
 inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.

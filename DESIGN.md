@@ -414,13 +414,39 @@ owners are rejected. This is flow evidence rather than a hidden runtime tag.
 Direct `view T` payloads, object-pattern destructuring, mixed owners, copying,
 consuming matches, mutation, escape, and suspension remain rejected.
 
+The first recursive graph tier uses the existing `Option<view T>` shape for a
+nullable edge to another value in the same Arena:
+
+```z
+struct Node {
+  value: i32;
+  next: Option<view Node>;
+}
+
+const tail = arena.create(Node({
+  value: 22,
+  next: Option<view Node>.none,
+}));
+const head = arena.create(Node({
+  value: 20,
+  next: Option<view Node>.some(tail),
+}));
+```
+
+`none` carries no owner. `some(view)` inherits the view's proven Arena, so the
+containing node may move only into that same Arena. An ordinary local value
+cannot be asserted into `Option<view T>`, and a link from Arena A cannot enter a
+node stored in Arena B. Both frontends lower this Option to one nullable pointer;
+there is no tag, payload union, retain, or cleanup operation.
+
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
 View-bearing structs cannot enter classes, returns, stored or escaping closures,
 mutable borrows, or suspension. Ordinary collections reject them except for the
 compatible-owner `Array` rule above; enums accept the variant-sensitive
-one-owner rule above. The tier is
+one-owner rule above; recursive links are limited to same-Arena
+`Option<view T>`. The tier is
 single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer

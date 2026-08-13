@@ -200,6 +200,15 @@ export function requireExpressionType(
       )
       && expressionStorageRootName(tree, index) == "this"
     ) return;
+    if (equivalentTypes(modules, moduleIndex, target, actual)) {
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a view requires proven borrowed storage",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
   }
   if (stringStartsWith(actual, "view ")) {
     const target = actual.copyBytes(5, actual.byteLength);

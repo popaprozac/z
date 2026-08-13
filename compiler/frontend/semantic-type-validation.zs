@@ -800,7 +800,14 @@ function validateAggregateTypes(
         let nestedValueAggregate = false;
         let optionalAggregate = false;
         match (genericTypeShape(field.type.name)) {
-          some(shape) => optionalAggregate = shape.base == "Option";
+          some(shape) => {
+            optionalAggregate = shape.base == "Option";
+            if (
+              optionalAggregate
+              && shape.arguments.length == 1
+              && stringStartsWith(shape.arguments[0], "view ")
+            ) nestedValueAggregate = true;
+          }
           none => {}
         }
         match (typeSymbolLocation(modules, moduleIndex, field.type.name)) {
@@ -808,7 +815,8 @@ function validateAggregateTypes(
             const nestedKind = modules[location.moduleIndex].symbols[
               location.symbolIndex
             ].kind;
-            nestedValueAggregate = nestedKind == ModuleSymbolKind.structSymbol
+            nestedValueAggregate = nestedValueAggregate
+              || nestedKind == ModuleSymbolKind.structSymbol
               || (
                 nestedKind == ModuleSymbolKind.enumSymbol
                 && !optionalAggregate

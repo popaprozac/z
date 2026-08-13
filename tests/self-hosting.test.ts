@@ -3847,6 +3847,12 @@ test("allocates and reversely cleans Arena values through the native frontend", 
     projectRoot,
     "tests/fixtures/self-host-emit-arena-graph.zs",
   );
+  const graphParity = spawnSync(
+    process.execPath,
+    [cli, "check", graphInput, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(graphParity.status, 0, graphParity.stderr);
   const ownerlessJoinInput = resolve(
     projectRoot,
     "tests/fixtures/self-host-check-arena-ownerless-joins.zs",
@@ -3878,6 +3884,22 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   assert.match(
     graphEmission.stdout,
     /Z___z_Array_TokenSpan_push\(&\(pendingSpans\), pending\)/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /typedef Z_LinkedNode const \* Z___z_NicheViewOption_LinkedNode;/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /Z_LinkedNode linkedTailPending = \(Z_LinkedNode\)\{\.value = 22, \.next = NULL\};/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /Z_LinkedNode linkedHeadPending = \(Z_LinkedNode\)\{\.value = 20, \.next = linkedTail\};/,
+  );
+  assert.doesNotMatch(
+    graphEmission.stdout,
+    /Z___z_NicheViewOption_LinkedNodeTag/,
   );
   const namedDestructor = graphEmission.stdout.match(
     /static __attribute__\(\(unused\)\) void Z_NamedTokenSpan_deinit\(Z_NamedTokenSpan \*self\) \{[^]*?\n\}/,
@@ -4301,6 +4323,48 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "",
       ].join("\n"),
       expected: /only in the Arena that owns every embedded view/,
+    },
+    {
+      name: "arena-stored-option-view-wrong-region",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Node { value: i32; next: Option<view Node>; }",
+        "function main(): i32 {",
+        "  let source = Arena();",
+        "  let destination = Arena();",
+        "  const tail = source.create(Node({",
+        "    value: 22,",
+        "    next: Option<view Node>.none,",
+        "  }));",
+        "  const pending = Node({",
+        "    value: 20,",
+        "    next: Option<view Node>.some(tail),",
+        "  });",
+        "  const head = destination.create(pending);",
+        "  return head.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /only in the Arena that owns every embedded view/,
+    },
+    {
+      name: "arena-stored-option-view-unproven",
+      source: [
+        "struct Node { value: i32; next: Option<view Node>; }",
+        "function main(): i32 {",
+        "  const local = Node({",
+        "    value: 22,",
+        "    next: Option<view Node>.none,",
+        "  });",
+        "  const pending = Node({",
+        "    value: 20,",
+        "    next: Option<view Node>.some(local),",
+        "  });",
+        "  return pending.value;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /proven borrowed storage/,
     },
   ] as const;
   for (const invalidCase of invalidCases) {

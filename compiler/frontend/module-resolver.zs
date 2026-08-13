@@ -308,12 +308,26 @@ function storedViewOwnerForExpression(
   if (direct.byteLength > 0) return direct;
   const root = expressionStorageRootName(tree, index);
   if (root.byteLength == 0) return "";
+  if (root == "this") return "this";
   const inherited = valueBindingViewOwner(bindings, root);
   if (inherited.byteLength > 0) return inherited;
   if (valueBindingIsBorrowed(bindings, root)) {
     return root.copyBytes(0, root.byteLength);
   }
   return "";
+}
+
+function expressionHasProvenBorrowedStorage(
+  in bindings: Array<NativeValueBinding>,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  const root = expressionStorageRootName(tree, index);
+  if (root == "this") return true;
+  if (root.byteLength > 0 && valueBindingIsBorrowed(bindings, root)) return true;
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) return false;
+  const direct = expressionViewOrigin(bindings, tree.nodes[index].offset);
+  return direct.byteLength > 0 && direct != ownerlessViewOwner();
 }
 
 function storedViewOwnerForStatement(
@@ -3008,6 +3022,30 @@ function inferExpressionNodeType(
               0,
               shape.variants[variantIndex].payloadType.byteLength
             );
+            let payloadOwner = "";
+            if (stringStartsWith(expected, "view ")) {
+              payloadOwner = storedViewOwnerForExpression(
+                bindings,
+                tree,
+                children[1]
+              );
+              if (
+                payloadOwner.byteLength == 0
+                || !expressionHasProvenBorrowedStorage(
+                  bindings,
+                  tree,
+                  children[1]
+                )
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "a view can enter Option only from proven borrowed storage",
+                  tree.nodes[children[1]].line,
+                  tree.nodes[children[1]].column
+                );
+              }
+            }
             let actual = "";
             if (tree.nodes[children[1]].kind == ExpressionKind.objectExpression) {
               actual = try inferContextualObjectExpressionNode(
@@ -3033,6 +3071,13 @@ function inferExpressionNodeType(
                 inout evidence
               );
             }
+            if (payloadOwner.byteLength > 0) {
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                payloadOwner
+              );
+            }
             try requireExpressionType(
               module,
               modules,
@@ -3050,12 +3095,12 @@ function inferExpressionNodeType(
               storedViewVisiting
             );
             if (storedViewPayload) {
-              const payloadOwner = storedViewOwnerForExpression(
+              const storedPayloadOwner = storedViewOwnerForExpression(
                 bindings,
                 tree,
                 children[1]
               );
-              if (payloadOwner.byteLength == 0) {
+              if (storedPayloadOwner.byteLength == 0) {
                 throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
                   module.path,
@@ -3067,7 +3112,7 @@ function inferExpressionNodeType(
               setExpressionViewOrigin(
                 inout bindings,
                 tree.nodes[index].offset,
-                payloadOwner
+                storedPayloadOwner
               );
             } else {
               let enumViewVisiting = Array<String>();
@@ -3085,7 +3130,7 @@ function inferExpressionNodeType(
                 );
               }
             }
-            try consumeOwnedExpressionNode(
+            if (!stringStartsWith(expected, "view ")) try consumeOwnedExpressionNode(
               module,
               modules,
               moduleIndex,
@@ -4427,6 +4472,30 @@ function inferExpressionNodeType(
           }
           none => {}
         }
+        let payloadOwner = "";
+        if (stringStartsWith(expectedPayload, "view ")) {
+          payloadOwner = storedViewOwnerForExpression(
+            bindings,
+            tree,
+            payloadIndex
+          );
+          if (
+            payloadOwner.byteLength == 0
+            || !expressionHasProvenBorrowedStorage(
+              bindings,
+              tree,
+              payloadIndex
+            )
+          ) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "a view can enter Option only from proven borrowed storage",
+              tree.nodes[payloadIndex].line,
+              tree.nodes[payloadIndex].column
+            );
+          }
+        }
         const payloadType = try inferExpressionNodeTypeExpected(
           module,
           modules,
@@ -4444,6 +4513,13 @@ function inferExpressionNodeType(
           payloadIndex,
           payloadType
         );
+        if (payloadOwner.byteLength > 0) {
+          setExpressionViewOrigin(
+            inout bindings,
+            tree.nodes[index].offset,
+            payloadOwner
+          );
+        }
         if (expectedPayload.byteLength > 0) {
           try requireExpressionType(
             module,
@@ -4457,16 +4533,18 @@ function inferExpressionNodeType(
         } else {
           expectedPayload = payloadType.copyBytes(0, payloadType.byteLength);
         }
-        try consumeOwnedExpressionNode(
-          module,
-          modules,
-          moduleIndex,
-          tree,
-          payloadIndex,
-          expectedPayload,
-          false,
-          inout bindings
-        );
+        if (!stringStartsWith(expectedPayload, "view ")) {
+          try consumeOwnedExpressionNode(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            payloadIndex,
+            expectedPayload,
+            false,
+            inout bindings
+          );
+        }
         if (optionType.byteLength > 0) return optionType;
         let optionArguments = Array<String>();
         optionArguments.push(expectedPayload.copyBytes(
@@ -4494,6 +4572,30 @@ function inferExpressionNodeType(
                 message
               );
             }
+            let payloadOwner = "";
+            if (stringStartsWith(expected, "view ")) {
+              payloadOwner = storedViewOwnerForExpression(
+                bindings,
+                tree,
+                children[1]
+              );
+              if (
+                payloadOwner.byteLength == 0
+                || !expressionHasProvenBorrowedStorage(
+                  bindings,
+                  tree,
+                  children[1]
+                )
+              ) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "a view can enter Option only from proven borrowed storage",
+                  tree.nodes[children[1]].line,
+                  tree.nodes[children[1]].column
+                );
+              }
+            }
             let actual = "";
             if (tree.nodes[children[1]].kind == ExpressionKind.objectExpression) {
               actual = try inferContextualObjectExpressionNode(
@@ -4519,6 +4621,13 @@ function inferExpressionNodeType(
                 inout evidence
               );
             }
+            if (payloadOwner.byteLength > 0) {
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                payloadOwner
+              );
+            }
             try requireExpressionType(
               module,
               modules,
@@ -4536,12 +4645,12 @@ function inferExpressionNodeType(
               storedViewVisiting
             );
             if (storedViewPayload) {
-              const payloadOwner = storedViewOwnerForExpression(
+              const storedPayloadOwner = storedViewOwnerForExpression(
                 bindings,
                 tree,
                 children[1]
               );
-              if (payloadOwner.byteLength == 0) {
+              if (storedPayloadOwner.byteLength == 0) {
                 throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
                   module.path,
@@ -4553,7 +4662,7 @@ function inferExpressionNodeType(
               setExpressionViewOrigin(
                 inout bindings,
                 tree.nodes[index].offset,
-                payloadOwner
+                storedPayloadOwner
               );
             } else {
               let enumViewVisiting = Array<String>();
@@ -4571,7 +4680,7 @@ function inferExpressionNodeType(
                 );
               }
             }
-            try consumeOwnedExpressionNode(
+            if (!stringStartsWith(expected, "view ")) try consumeOwnedExpressionNode(
               module,
               modules,
               moduleIndex,

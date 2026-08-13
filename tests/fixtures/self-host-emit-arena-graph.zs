@@ -34,6 +34,11 @@ struct StoredNode {
   kind: StoredSpan;
 }
 
+struct LinkedNode {
+  value: i32;
+  next: Option<view LinkedNode>;
+}
+
 function spanLength(in span: TokenSpan): usize {
   const first = span.first;
   const last = span.last;
@@ -50,6 +55,14 @@ function storedSpanLength(in value: StoredSpan): usize {
 function maybeStoredSpanLength(in value: MaybeStoredSpan): usize {
   return match (in value) {
     some(span) => spanLength(in span);
+    none => 0;
+  };
+}
+
+function linkedNextValue(in value: LinkedNode): i32 {
+  const next = value.next;
+  return match (in next) {
+    some(node) => node.value;
     none => 0;
   };
 }
@@ -113,6 +126,17 @@ function main(): i32 {
   }));
   const present = arena.create(presentPending);
   const presentLength = maybeStoredSpanLength(in present);
+  const linkedTailPending = LinkedNode({
+    value: 22,
+    next: Option<view LinkedNode>.none,
+  });
+  const linkedTail = arena.create(linkedTailPending);
+  const linkedHeadPending = LinkedNode({
+    value: 20,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  const linkedHead = arena.create(linkedHeadPending);
+  const linkedValue = linkedNextValue(in linkedHead);
   if (populatedLength != 42) return 1;
   if (arrayLength != 42) return 1;
   if (spans.length != 1) return 1;
@@ -121,6 +145,7 @@ function main(): i32 {
   if (directLength != 42) return 1;
   if (absentLength != 0) return 1;
   if (presentLength != 42) return 1;
+  if (linkedValue != 22) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
   other.reset();

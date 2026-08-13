@@ -2189,12 +2189,13 @@ function analyzeStructDeclaration(
       const directViewField = parseViewType(field.type.name) !== null;
       const nestedType = String(underlyingType(field.type.name));
       const nestedValueAggregate = structs.get(nestedType)?.kind === "struct"
-        || (enums.has(nestedType) && !parseOptionType(field.type.name));
+        || (enums.has(nestedType) && !parseOptionType(field.type.name))
+        || parseOptionalViewType(field.type.name) !== null;
       if (!directViewField && !nestedValueAggregate) {
         throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
           notes: ["fixed nested value structs and variant-sensitive view-bearing enums can carry at most one Arena identity"],
-          helps: ["keep Option, Array, and collection view storage local until those containers carry region provenance"],
+          helps: ["keep Array and collection view storage local until those containers carry region provenance"],
         });
       }
       if (field.defaultValue) {
@@ -8801,7 +8802,8 @@ function inferExpressionInner(
       }
       const payloadView = parseViewType(variant.payload.name);
       if (payloadView) {
-        validateReceiverViewProjection(expression.payload, declaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+        const origin = validateReceiverViewProjection(expression.payload, declaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+        state.viewCallOrigins.set(expression.location.offset, origin);
         return declaration.name;
       }
       let actual = expression.payload.kind === "objectExpression"
@@ -10164,7 +10166,8 @@ function inferExpressionInner(
               const argument = expression.arguments[0];
               const payloadView = parseViewType(variant.payload.name);
               if (payloadView) {
-                validateReceiverViewProjection(argument, enumDeclaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+                const origin = validateReceiverViewProjection(argument, enumDeclaration.name, payloadView.target, locals, globals, structs, enums, fileName, state);
+                state.viewCallOrigins.set(expression.location.offset, origin);
                 return enumDeclaration.name;
               }
               const actual = argument.kind === "objectExpression"
@@ -16433,11 +16436,18 @@ function validateReceiverViewProjection(
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
-): void {
+): ViewOrigin {
+  const actual = inferExpression(expression, locals, globals, structs, enums, fileName, state);
+  const storedView = parseViewType(String(actual));
+  const storedOrigin = storedViewOriginForExpression(expression, state);
+  if (storedView?.target === target && storedOrigin) {
+    return storedOrigin;
+  }
   if (state.activeFunction?.returnType.name !== optionType || !parseOptionalViewType(optionType)) {
-    throw new DiagnosticError(fileName, expression.location, "a view can only enter Option as the direct result of its receiver method", {
+    throw new DiagnosticError(fileName, expression.location, "a view can enter Option only from proven borrowed storage", {
       code: "Z0206",
-      helps: ["return Option.some(this.field) or Option.some(this.items[index]) from a borrowed value-struct method"],
+      notes: ["the Option inherits the same owner provenance and remains nonescaping"],
+      helps: ["use a named Arena view, or return Option.some(this.field) from a borrowed value-struct method"],
     });
   }
   const root = storageRoot(expression);
@@ -16447,9 +16457,9 @@ function validateReceiverViewProjection(
       notes: ["forwarding another view or returning local storage would let it escape the wrong owner"],
     });
   }
-  const actual = inferExpression(expression, locals, globals, structs, enums, fileName, state);
   requireAssignable(target, actual, expression, fileName, structs, enums, state);
   state.viewReturnExpressions.add(expression.location.offset);
+  return viewOriginForRoot(root.name, expression.location, state);
 }
 
 function containsViewType(name: string): boolean {

@@ -1290,6 +1290,85 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   );
   assert.equal(ownerlessEnumResult.status, 0, ownerlessEnumResult.stderr);
 
+  const recursiveOptionView = `
+    import { Arena } from "std/memory";
+    struct Node { value: i32; next: Option<view Node>; }
+    function main(): i32 {
+      let arena = Arena();
+      const tail = arena.create(Node({
+        value: 22,
+        next: Option<view Node>.none,
+      }));
+      const head = arena.create(Node({
+        value: 20,
+        next: Option<view Node>.some(tail),
+      }));
+      const next = head.next;
+      const answer = match (in next) {
+        some(node) => node.value;
+        none => 0;
+      };
+      arena.reset();
+      return answer - 22;
+    }
+  `;
+  const recursiveOptionDirectory = mkdtempSync("/tmp/z-arena-recursive-option-view-");
+  const recursiveOptionFile = resolve(recursiveOptionDirectory, "main.zs");
+  writeFileSync(recursiveOptionFile, recursiveOptionView);
+  const recursiveOptionGenerated = compileToC(
+    recursiveOptionView,
+    recursiveOptionFile,
+  );
+  assert.match(
+    recursiveOptionGenerated,
+    /typedef const Z_Node \*Z_Option___z_view_3a_Node;/,
+  );
+  assert.doesNotMatch(recursiveOptionGenerated, /Z_Option_view_Node_Tag/);
+  const recursiveOptionResult = spawnSync(
+    process.execPath,
+    [cli, "run", recursiveOptionFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(recursiveOptionResult.status, 0, recursiveOptionResult.stderr);
+
+  const wrongRecursiveArena = recursiveOptionView.replace(
+    "const head = arena.create(Node({",
+    "let other = Arena();\n      const head = other.create(Node({",
+  );
+  const wrongRecursiveDiagnostic = diagnostics(
+    wrongRecursiveArena,
+    "arena-recursive-option-wrong-region.zs",
+  )[0];
+  assert.equal(wrongRecursiveDiagnostic.code, "Z0206");
+  assert.match(
+    wrongRecursiveDiagnostic.message,
+    /only in the Arena that owns every embedded view/,
+  );
+
+  const unprovenRecursiveView = `
+    struct Node { value: i32; next: Option<view Node>; }
+    function main(): i32 {
+      const local = Node({
+        value: 22,
+        next: Option<view Node>.none,
+      });
+      const pending = Node({
+        value: 20,
+        next: Option<view Node>.some(local),
+      });
+      return pending.value;
+    }
+  `;
+  const unprovenRecursiveDiagnostic = diagnostics(
+    unprovenRecursiveView,
+    "arena-recursive-option-unproven.zs",
+  )[0];
+  assert.equal(unprovenRecursiveDiagnostic.code, "Z0206");
+  assert.match(
+    unprovenRecursiveDiagnostic.message,
+    /view can enter Option only from proven borrowed storage/,
+  );
+
   const copiedOwnerlessVariant = ownerlessEnumVariant.replace(
     "const absent = other.create(absentPending);",
     "const copiedAbsent = absentPending;\n      const absent = other.create(absentPending);",
@@ -1735,14 +1814,17 @@ test("returns zero-overhead optional receiver-tied views through Option and matc
   assert.equal(matchDiagnostic.code, "Z0206");
   assert.match(matchDiagnostic.message, /match \(in value\)/);
 
-  const storedView = `
+  const storedViewInClass = `
     struct Item { value: i32; }
-    struct Invalid { found: Option<view Item>; }
+    class Invalid { found: Option<view Item>; }
     function main(): i32 { return 0; }
   `;
-  const storageDiagnostic = diagnostics(storedView, "optional-view-storage.zs")[0];
+  const storageDiagnostic = diagnostics(
+    storedViewInClass,
+    "optional-view-class-storage.zs",
+  )[0];
   assert.equal(storageDiagnostic.code, "Z0206");
-  assert.match(storageDiagnostic.message, /cannot be stored in fields/);
+  assert.match(storageDiagnostic.message, /ARC class fields cannot store owner-tied views/);
 
   const bindingOffset = source.indexOf("found =") + 1;
   assert.match(hover(source, "optional-view.zs", bindingOffset)?.contents.value ?? "", /found: Option<view Item>.*view of store/);

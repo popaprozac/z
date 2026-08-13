@@ -539,6 +539,11 @@ function intrinsicOptionName(in payload: LoweredType): String {
   return `__z_Option_${identity}`;
 }
 
+function intrinsicViewOptionName(in payload: LoweredType): String {
+  const identity = loweredTypeIdentity(payload);
+  return `__z_NicheViewOption_${identity}`;
+}
+
 function intrinsicArrayName(in elementType: LoweredType): String {
   const identity = loweredTypeIdentity(elementType);
   return `__z_Array_${identity}`;
@@ -639,6 +644,12 @@ function intrinsicOptionPayloadName(in name: String): Option<String> {
   return Option.some(name.copyBytes(prefix.byteLength, name.byteLength));
 }
 
+function intrinsicViewOptionPayloadName(in name: String): Option<String> {
+  const prefix = "__z_NicheViewOption_";
+  if (!stringStartsWith(name, prefix)) return Option<String>.none;
+  return Option.some(name.copyBytes(prefix.byteLength, name.byteLength));
+}
+
 function optionPayloadTypeName(in name: String): Option<String> {
   match (genericTypeShape(name)) {
     some(generic) => {
@@ -651,6 +662,10 @@ function optionPayloadTypeName(in name: String): Option<String> {
     }
     none => {}
   }
+  match (intrinsicViewOptionPayloadName(name)) {
+    some(payload) => return Option.some(`view ${payload}`);
+    none => {}
+  }
   return intrinsicOptionPayloadName(name);
 }
 
@@ -658,7 +673,8 @@ function sourceTypeIsOption(in name: String): boolean {
   match (genericTypeShape(name)) {
     some(generic) => return generic.base == "Option"
       && generic.arguments.length == 1;
-    none => return stringStartsWith(name, "__z_Option_");
+    none => return stringStartsWith(name, "__z_Option_")
+      || stringStartsWith(name, "__z_NicheViewOption_");
   }
 }
 
@@ -757,13 +773,22 @@ function lowerTypeName(
     });
     none => {}
   }
+  match (intrinsicViewOptionPayloadName(name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {
         const payload = try lowerTypeName(program, generic.arguments[0]);
         return LoweredType({
           kind: LoweredTypeKind.enumType,
-          name: intrinsicOptionName(payload),
+          name: stringStartsWith(generic.arguments[0], "view ")
+            ? intrinsicViewOptionName(payload)
+            : intrinsicOptionName(payload),
         });
       }
       if (generic.base == "Array" && generic.arguments.length == 1) {
@@ -889,6 +914,13 @@ function lowerModuleTypeName(
       targetName
     );
   }
+  match (intrinsicViewOptionPayloadName(name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {
@@ -899,7 +931,9 @@ function lowerModuleTypeName(
         );
         return LoweredType({
           kind: LoweredTypeKind.enumType,
-          name: intrinsicOptionName(payload),
+          name: stringStartsWith(generic.arguments[0], "view ")
+            ? intrinsicViewOptionName(payload)
+            : intrinsicOptionName(payload),
         });
       }
       if (generic.base == "Array" && generic.arguments.length == 1) {
@@ -1811,6 +1845,36 @@ function intrinsicOptionDeclaration(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> throws String {
+  match (intrinsicViewOptionPayloadName(name)) {
+    some(payloadName) => {
+      const payload = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        payloadName
+      );
+      let variants = Array<LoweredVariant>();
+      variants.push(LoweredVariant({
+        name: "some",
+        payload: Option.some(LoweredType({
+          kind: payload.kind,
+          name: payload.name.copyBytes(0, payload.name.byteLength),
+        })),
+      }));
+      variants.push(LoweredVariant({
+        name: "none",
+        payload: Option<LoweredType>.none,
+      }));
+      return Option.some(LoweredEnum({
+        name: intrinsicViewOptionName(payload),
+        nativeCName: "",
+        nativeCUnderlyingType: "",
+        variants,
+        payloadBearing: true,
+        needsDeinit: false,
+      }));
+    }
+    none => {}
+  }
   match (intrinsicOptionPayloadName(name)) {
     some(payloadName) => {
       const payload = try lowerModuleTypeName(
@@ -1855,6 +1919,7 @@ function intrinsicOptionDeclaration(
         importedTypes,
         generic.arguments[0]
       );
+      const borrowedView = stringStartsWith(generic.arguments[0], "view ");
       let variants = Array<LoweredVariant>();
       variants.push(LoweredVariant({
         name: "some",
@@ -1868,12 +1933,15 @@ function intrinsicOptionDeclaration(
         payload: Option<LoweredType>.none,
       }));
       return Option.some(LoweredEnum({
-        name: intrinsicOptionName(payload),
+        name: borrowedView
+          ? intrinsicViewOptionName(payload)
+          : intrinsicOptionName(payload),
         nativeCName: "",
         nativeCUnderlyingType: "",
         variants,
         payloadBearing: true,
-        needsDeinit: moduleTypeNeedsCleanup(program, importedTypes, payload),
+        needsDeinit: !borrowedView
+          && moduleTypeNeedsCleanup(program, importedTypes, payload),
       }));
     }
     none => return Option<LoweredEnum>.none;
@@ -9561,6 +9629,11 @@ function lowerMatchTree(
       root
     );
   };
+  let nicheViewOption = false;
+  match (intrinsicViewOptionPayloadName(declaration.name)) {
+    some(_) => nicheViewOption = true;
+    none => {}
+  }
   let consuming = tree.nodes[root].value != "in";
   match (in foreignPlan) {
     some(_) => consuming = false;
@@ -9702,7 +9775,7 @@ function lowerMatchTree(
       emittedPayloadBinding
     );
     const matchBindingNeedsCleanup = match (in payloadType) {
-      some(type) => consuming
+      some(type) => !nicheViewOption && consuming
         && moduleTypeNeedsCleanup(program, importedTypes, type)
         && !payloadTransfersOut;
       none => false;
@@ -9755,7 +9828,8 @@ function lowerMatchTree(
   match (in foreignPlan) {
     some(_) => {}
     none => {
-      if (declaration.payloadBearing) labels.push("tagged");
+      if (nicheViewOption) labels.push("niche-view-option");
+      else if (declaration.payloadBearing) labels.push("tagged");
     }
   }
   match (resolvedExpressionTypeName(evidence, tree, subjectInput)) {

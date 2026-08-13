@@ -34,6 +34,27 @@ function labelsContain(in labels: Array<String>, in candidate: String): boolean 
   return false;
 }
 
+function isNicheViewOption(in name: String): boolean {
+  return stringStartsWith(name, "__z_NicheViewOption_");
+}
+
+function viewPayloadLoadsAsValue(in type: LoweredType): boolean {
+  return type.kind == LoweredTypeKind.booleanType
+    || type.kind == LoweredTypeKind.i8Type
+    || type.kind == LoweredTypeKind.i16Type
+    || type.kind == LoweredTypeKind.i32Type
+    || type.kind == LoweredTypeKind.i64Type
+    || type.kind == LoweredTypeKind.u8Type
+    || type.kind == LoweredTypeKind.u16Type
+    || type.kind == LoweredTypeKind.u32Type
+    || type.kind == LoweredTypeKind.u64Type
+    || type.kind == LoweredTypeKind.isizeType
+    || type.kind == LoweredTypeKind.usizeType
+    || type.kind == LoweredTypeKind.f32Type
+    || type.kind == LoweredTypeKind.f64Type
+    || type.kind == LoweredTypeKind.foreignEnumType;
+}
+
 function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.i8Type) return "int8_t";
   if (type.kind == LoweredTypeKind.i16Type) return "int16_t";
@@ -2221,6 +2242,13 @@ function appendExpression(
     ) {
       throw "native C emission received a malformed enum value";
     }
+    if (isNicheViewOption(declaration.expressions[index].value)) {
+      if (declaration.expressions[index].labels[0] != "none") {
+        throw "native C emission received a payload-free niche Option.some";
+      }
+      output.append("NULL");
+      return;
+    }
     if (declaration.expressions[index].labels.length == 2) {
       output.append("(Z_");
       output.append(declaration.expressions[index].value);
@@ -2252,6 +2280,14 @@ function appendExpression(
       || declaration.expressions[index].children.length != 1
     ) {
       throw "native C emission received a malformed enum payload value";
+    }
+    if (isNicheViewOption(declaration.expressions[index].value)) {
+      if (declaration.expressions[index].labels[0] != "some") {
+        throw "native C emission received a payload-bearing niche Option.none";
+      }
+      const payload = declaration.expressions[index].children[0];
+      try appendExpression(inout output, declaration, payload);
+      return;
     }
     output.append("(Z_");
     output.append(declaration.expressions[index].value);
@@ -3328,7 +3364,12 @@ function appendStatement(
         none => throw "native C emission received a match without a subject";
       }
     }
-    if (labelsContain(declaration.statements[index].labels, "tagged")) {
+    const nicheViewOption = labelsContain(
+      declaration.statements[index].labels,
+      "niche-view-option"
+    );
+    if (nicheViewOption) output.append(" != NULL ? 1 : 0");
+    else if (labelsContain(declaration.statements[index].labels, "tagged")) {
       if (labelsContain(declaration.statements[index].labels, "view-subject")) {
         output.append("->tag");
       } else {
@@ -3341,11 +3382,19 @@ function appendStatement(
         throw "native C emission received a malformed match arm";
       }
       appendIndent(inout output, depth + 1);
-      output.append("case Z_");
-      output.append(declaration.statements[index].name);
-      if (declaration.statements[index].labels.length > 0) output.append("Tag");
-      output.append("_");
-      output.append(declaration.statements[arm].name);
+      if (nicheViewOption) {
+        output.append(declaration.statements[arm].name == "some"
+          ? "case 1"
+          : "case 0");
+      } else {
+        output.append("case Z_");
+        output.append(declaration.statements[index].name);
+        if (labelsContain(declaration.statements[index].labels, "tagged")) {
+          output.append("Tag");
+        }
+        output.append("_");
+        output.append(declaration.statements[arm].name);
+      }
       output.append(": {\n");
       match (in declaration.statements[arm].type) {
         some(type) => {
@@ -3353,11 +3402,22 @@ function appendStatement(
             throw "native C emission received a payload arm without one binding";
           }
           appendIndent(inout output, depth + 2);
-          if (!declaration.statements[arm].matchBindingNeedsCleanup) {
+          const loadViewValue = nicheViewOption
+            && viewPayloadLoadsAsValue(type);
+          if (
+            !declaration.statements[arm].matchBindingNeedsCleanup
+            && !nicheViewOption
+          ) {
             output.append("const ");
           }
           const payloadType = try cType(type);
           output.append(payloadType);
+          if (
+            nicheViewOption
+            && !loadViewValue
+            && type.kind != LoweredTypeKind.cstringType
+            && type.kind != LoweredTypeKind.foreignHandleType
+          ) output.append(" const *");
           output.append(" __attribute__((unused))");
           output.append(" ");
           appendCBindingName(
@@ -3365,6 +3425,7 @@ function appendStatement(
             declaration.statements[arm].labels[0]
           );
           output.append(" = ");
+          if (loadViewValue) output.append("*(");
           if (declaration.statements[index].matchConsumesSubject) {
             output.append(matchTemporary);
           } else {
@@ -3377,12 +3438,17 @@ function appendStatement(
               none => throw "native C emission received a match without a subject";
             }
           }
-          if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+          if (loadViewValue) output.append(")");
+          if (nicheViewOption) {
+            // The nullable pointer is the payload; no tag or union survives.
+          } else if (labelsContain(declaration.statements[index].labels, "view-subject")) {
             output.append("->payload.");
           } else {
             output.append(".payload.");
           }
-          output.append(declaration.statements[arm].name);
+          if (!nicheViewOption) {
+            output.append(declaration.statements[arm].name);
+          }
           output.append(";\n");
         }
         none => {}
@@ -7676,6 +7742,42 @@ function appendEnumDefinition(
     throw `native C emission found a by-value type cycle through ${program.enums[index].name}`;
   }
   enumStates[index] = 1;
+  if (isNicheViewOption(program.enums[index].name)) {
+    let payload = Option<LoweredType>.none;
+    for (const variant of program.enums[index].variants) {
+      if (variant.name != "some") continue;
+      match (in variant.payload) {
+        some(type) => payload = Option.some(LoweredType({
+          kind: type.kind,
+          name: type.name.copyBytes(0, type.name.byteLength),
+        }));
+        none => {}
+      }
+    }
+    const viewTarget = match (payload) {
+      some(type) => type;
+      none => throw "native C emission lost a niche Option view payload";
+    };
+    if (viewTarget.kind == LoweredTypeKind.structType) {
+      output.append("typedef struct Z_");
+      output.append(viewTarget.name);
+      output.append(" Z_");
+      output.append(viewTarget.name);
+      output.append(";\n");
+    }
+    output.append("typedef ");
+    const viewTargetType = try cType(viewTarget);
+    output.append(viewTargetType);
+    if (
+      viewTarget.kind != LoweredTypeKind.cstringType
+      && viewTarget.kind != LoweredTypeKind.foreignHandleType
+    ) output.append(" const *");
+    output.append(" Z_");
+    output.append(program.enums[index].name);
+    output.append(";\n\n");
+    enumStates[index] = 2;
+    return;
+  }
   if (program.enums[index].nativeCName.byteLength > 0) {
     const underlying = try nativeCIntegerType(
       program.enums[index].nativeCUnderlyingType
@@ -8072,7 +8174,7 @@ function appendMapRuntime(
   for (const declaration of program.maps) {
     const valueType = try cType(declaration.valueType);
     const valueIdentity = try loweredIntrinsicIdentity(declaration.valueType);
-    const optionName = `__z_Option_${valueIdentity}`;
+    const optionName = `__z_NicheViewOption_${valueIdentity}`;
     output.append("static inline __attribute__((unused)) size_t Z_");
     output.append(declaration.name);
     output.append("_hash(Z_String value) {\n");
@@ -8140,32 +8242,16 @@ function appendMapRuntime(
     output.append("_get(const Z_");
     output.append(declaration.name);
     output.append(" *self, Z_String key) {\n");
-    output.append("  if (self->bucketCount == 0) return (Z_");
-    output.append(optionName);
-    output.append("){ .tag = Z_");
-    output.append(optionName);
-    output.append("Tag_none };\n");
+    output.append("  if (self->bucketCount == 0) return NULL;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
     output.append("_hash(key) & (self->bucketCount - 1);\n");
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
-    output.append("    if (stored == 0) return (Z_");
-    output.append(optionName);
-    output.append("){ .tag = Z_");
-    output.append(optionName);
-    output.append("Tag_none };\n");
-    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) return (Z_");
-    output.append(optionName);
-    output.append("){ .tag = Z_");
-    output.append(optionName);
-    output.append("Tag_some, .payload.some = self->entries[stored - 1].value };\n");
+    output.append("    if (stored == 0) return NULL;\n");
+    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) return &(self->entries[stored - 1].value);\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
-    output.append("  }\n  return (Z_");
-    output.append(optionName);
-    output.append("){ .tag = Z_");
-    output.append(optionName);
-    output.append("Tag_none };\n}\n\n");
+    output.append("  }\n  return NULL;\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_set(Z_");
@@ -9621,6 +9707,10 @@ function emitLoweredC(
         output.append(declaration.name);
         output.append("_from_nullable(");
         output.append(payloadType);
+        if (isNicheViewOption(declaration.name)) {
+          output.append(" value) {\n  return value;\n}\n\n");
+          continue;
+        }
         output.append(" value) {\n  if (value == NULL) return (Z_");
         output.append(declaration.name);
         output.append("){ .tag = Z_");

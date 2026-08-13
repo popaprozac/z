@@ -2479,8 +2479,22 @@ frontends preserve that evidence without a runtime tag and continue to reject
 implicit copies, consuming matches, object destructuring, direct `view T`
 payloads, mutation, escape, and suspension.
 
-Map/Set, broader recursive graphs, class, and returned graph edges remain
-rejected. Richer mutable container provenance—including loop-carried
+The next edge makes a compiler-shaped recursive list possible without adding a
+lifetime spelling. A value struct may contain `Option<view Self>`; `none` is
+ownerless, while `some(view)` inherits the view's proven Arena. The containing
+value can therefore enter that Arena and no other one. Construction from an
+ordinary local value is rejected because it has no borrowed-storage proof.
+
+`self-host-emit-arena-graph.zs` now stores a tail and head `LinkedNode`, borrows
+the optional link through `match (in next)`, and executes under both frontends.
+Stage 0 already niche-lowered `Option<view T>` to a nullable pointer. Closing
+native parity exposed that native `Map.get` still materialized a copied
+`Option<V>` despite its `Option<view V>` signature. Native maps and recursive
+Arena links now share the pointer niche: `none` is `NULL`, `some` is the stored
+address, and no tag, payload union, retain, or destructor exists.
+
+Arena-owned Map/Set edges, multi-edge recursive enum graphs, class, and returned
+graph edges remain rejected. Richer mutable container provenance—including loop-carried
 identity and broader shape-stability evidence—is still required before claiming
 whole-compiler allocation gains.
 
