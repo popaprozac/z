@@ -133,6 +133,12 @@ support or producing language-server diagnostics from hypothetical imports.
   large-header import, owned handles, scalar output projection, nominal enum
   conversion, and deterministic shutdown.
 
+## Comparisons
+
+- [`sdl3`](comparisons/sdl3): the same interactive SDL3 application in Z, C,
+  Zig, Nim, and raw-binding Rust, with an explicit comparison of header import,
+  semantic contract work, union/output safety, cleanup, and build setup.
+
 ## Async
 
 - [`async-overview.zs`](async/async-overview.zs): overview of the implemented model
