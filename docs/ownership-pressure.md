@@ -2519,6 +2519,17 @@ allocation and the Map's established Arena proof. A cleanup-bearing
 `NamedTokenSpan` fixture proves that both operations run value destruction and
 that the cleared Map can be populated and moved into the same Arena again.
 
+The fixed-point compiler now uses the same nominal key contract as Stage 0
+rather than treating `String` as a permanent native-emitter special case. A
+readonly `ModuleKey` containing two owned Strings implements `Hashable`, feeds
+both components through the compiler-supplied `Hasher`, and drives the complete
+native `Map<ModuleKey, i32>` replacement, lookup, deletion, and cleanup path.
+The generated table invokes the user-defined `hash` and `equals` methods,
+destroys duplicate or removed owned keys exactly once, and remains executable
+in the Stage-0/native differential corpus. This is the equality foundation the
+next Arena-owned Set slice will reuse; pointer identity is deliberately not a
+fallback for value elements.
+
 Arena-owned Set edges, multi-edge recursive enum graphs, class, and returned
 graph edges remain rejected or deferred. Richer mutable container
 provenance—including loop-carried identity and broader shape-stability

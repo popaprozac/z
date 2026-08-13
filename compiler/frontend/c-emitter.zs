@@ -70,6 +70,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f64Type) return "double";
   if (type.kind == LoweredTypeKind.fsLockType) return "Z_FsLock";
   if (type.kind == LoweredTypeKind.arenaType) return "Z_Arena";
+  if (type.kind == LoweredTypeKind.hasherType) return "Z_Hasher";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.cstringType) return "const char *";
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
@@ -1308,6 +1309,41 @@ function appendExpression(
     declaration.expressions[index].kind == LoweredExpressionKind.textBufferEmpty
   ) {
     output.append("(Z_String){ NULL, 0, 0 }");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind == LoweredExpressionKind.hasherAdd
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed Hasher.add";
+    }
+    const receiver = declaration.expressions[index].children[0];
+    const value = declaration.expressions[index].children[1];
+    const customHashable = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "hashable";
+    if (customHashable) {
+      output.append("Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("_hash(&(");
+      try appendExpression(inout output, declaration, value);
+      output.append("), &(");
+      try appendExpression(inout output, declaration, receiver);
+      output.append("))");
+      return;
+    }
+    if (declaration.expressions[index].value == "String") {
+      output.append("z_hasher_add_string(&(");
+      try appendExpression(inout output, declaration, receiver);
+      output.append("), ");
+      try appendExpression(inout output, declaration, value);
+      output.append(")");
+      return;
+    }
+    output.append("z_hasher_add_u64(&(");
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), (uint64_t)(");
+    try appendExpression(inout output, declaration, value);
+    output.append("))");
     return;
   }
   if (
@@ -8039,9 +8075,6 @@ function appendTypeDefinitions(
     output.append(";\n\n");
   }
   for (const declaration of program.maps) {
-    if (declaration.keyType.kind != LoweredTypeKind.stringType) {
-      throw "native C emission only supports String Map keys in the first self-hosting tier";
-    }
     output.append("typedef struct Z_");
     output.append(declaration.name);
     output.append("_Entry Z_");
@@ -8193,6 +8226,7 @@ function appendMapRuntime(
   in program: LoweredProgram
 ): void throws String {
   for (const declaration of program.maps) {
+    const keyType = try cType(declaration.keyType);
     const valueType = try cType(declaration.valueType);
     const valueIdentity = try loweredIntrinsicIdentity(declaration.valueType);
     const optionName = `__z_NicheViewOption_${valueIdentity}`;
@@ -8203,14 +8237,38 @@ function appendMapRuntime(
     }
     output.append("static inline __attribute__((unused)) size_t Z_");
     output.append(declaration.name);
-    output.append("_hash(Z_String value) {\n");
-    output.append("  uint64_t hash = UINT64_C(14695981039346656037);\n");
-    output.append("  for (size_t index = 0; index < value.length; index += 1) {\n");
-    output.append("    hash ^= (unsigned char)value.data[index];\n");
-    output.append("    hash *= UINT64_C(1099511628211);\n");
-    output.append("  }\n");
-    output.append("  return (size_t)hash;\n");
+    output.append("_hash(");
+    output.append(keyType);
+    output.append(" value) {\n");
+    if (declaration.keyType.kind == LoweredTypeKind.structType) {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n  Z_");
+      output.append(declaration.keyType.name);
+      output.append("_hash(&value, &hasher);\n  return z_hasher_finish(hasher);\n");
+    } else if (declaration.keyType.kind == LoweredTypeKind.stringType) {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n");
+      output.append("  z_hasher_add_string(&hasher, value);\n");
+      output.append("  return z_hasher_finish(hasher);\n");
+    } else {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n");
+      output.append("  z_hasher_add_u64(&hasher, (uint64_t)value);\n");
+      output.append("  return z_hasher_finish(hasher);\n");
+    }
     output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_equal(");
+    output.append(keyType);
+    output.append(" left, ");
+    output.append(keyType);
+    output.append(" right) {\n  return ");
+    if (declaration.keyType.kind == LoweredTypeKind.structType) {
+      output.append("Z_");
+      output.append(declaration.keyType.name);
+      output.append("_equals(&left, &right)");
+    } else if (declaration.keyType.kind == LoweredTypeKind.stringType) {
+      output.append("z_string_equal(left, right)");
+    } else output.append("left == right");
+    output.append(";\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_rehash(Z_");
@@ -8250,7 +8308,9 @@ function appendMapRuntime(
     output.append(declaration.name);
     output.append("_has(const Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String key) {\n");
+    output.append(" *self, ");
+    output.append(keyType);
+    output.append(" key) {\n");
     output.append("  if (self->bucketCount == 0) return false;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
@@ -8258,7 +8318,9 @@ function appendMapRuntime(
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
     output.append("    if (stored == 0) return false;\n");
-    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) return true;\n");
+    output.append("    if (stored != SIZE_MAX && Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->entries[stored - 1].key, key)) return true;\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n  return false;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_");
@@ -8267,7 +8329,9 @@ function appendMapRuntime(
     output.append(declaration.name);
     output.append("_get(const Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String key) {\n");
+    output.append(" *self, ");
+    output.append(keyType);
+    output.append(" key) {\n");
     output.append("  if (self->bucketCount == 0) return NULL;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
@@ -8275,14 +8339,18 @@ function appendMapRuntime(
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
     output.append("    if (stored == 0) return NULL;\n");
-    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) return &(self->entries[stored - 1].value);\n");
+    output.append("    if (stored != SIZE_MAX && Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->entries[stored - 1].key, key)) return &(self->entries[stored - 1].value);\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n  return NULL;\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_set(Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String key, ");
+    output.append(" *self, ");
+    output.append(keyType);
+    output.append(" key, ");
     output.append(valueType);
     output.append(" value) {\n");
     output.append("  Z_");
@@ -8297,8 +8365,14 @@ function appendMapRuntime(
     output.append("    if (stored == 0) break;\n");
     output.append("    if (stored == SIZE_MAX) {\n");
     output.append("      if (available == SIZE_MAX) available = slot;\n");
-    output.append("    } else if (z_string_equal(self->entries[stored - 1].key, key)) {\n");
-    output.append("      Z_String_deinit(&key);\n");
+    output.append("    } else if (Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->entries[stored - 1].key, key)) {\n");
+    if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
+      output.append("      Z_");
+      output.append(declaration.keyType.name);
+      output.append("_deinit(&key);\n");
+    }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("      Z_");
       output.append(declaration.valueType.name);
@@ -8343,7 +8417,9 @@ function appendMapRuntime(
       output.append(declaration.name);
       output.append("_remove(Z_");
       output.append(declaration.name);
-      output.append(" *self, Z_String key) {\n");
+      output.append(" *self, ");
+      output.append(keyType);
+      output.append(" key) {\n");
       output.append("  if (self->bucketCount == 0) return (Z_");
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
@@ -8355,10 +8431,16 @@ function appendMapRuntime(
       output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
       output.append("    const size_t stored = self->buckets[slot];\n");
       output.append("    if (stored == 0) break;\n");
-      output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) {\n");
+      output.append("    if (stored != SIZE_MAX && Z_");
+      output.append(declaration.name);
+      output.append("_equal(self->entries[stored - 1].key, key)) {\n");
       output.append("      const size_t entry = stored - 1;\n");
       output.append("      const size_t last = self->length - 1;\n");
-      output.append("      Z_String_deinit(&self->entries[entry].key);\n");
+      if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
+        output.append("      Z_");
+        output.append(declaration.keyType.name);
+        output.append("_deinit(&self->entries[entry].key);\n");
+      }
       output.append("      ");
       output.append(valueType);
       output.append(" value = self->entries[entry].value;\n");
@@ -8397,7 +8479,9 @@ function appendMapRuntime(
     output.append(declaration.name);
     output.append("_delete(Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String key) {\n");
+    output.append(" *self, ");
+    output.append(keyType);
+    output.append(" key) {\n");
     output.append("  if (self->bucketCount == 0) return false;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
@@ -8405,10 +8489,16 @@ function appendMapRuntime(
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
     output.append("    if (stored == 0) return false;\n");
-    output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) {\n");
+    output.append("    if (stored != SIZE_MAX && Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->entries[stored - 1].key, key)) {\n");
     output.append("      const size_t entry = stored - 1;\n");
     output.append("      const size_t last = self->length - 1;\n");
-    output.append("      Z_String_deinit(&self->entries[entry].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
+      output.append("      Z_");
+      output.append(declaration.keyType.name);
+      output.append("_deinit(&self->entries[entry].key);\n");
+    }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("      Z_");
       output.append(declaration.valueType.name);
@@ -8443,7 +8533,11 @@ function appendMapRuntime(
     output.append(" *self) {\n");
     output.append("  while (self->length > 0) {\n");
     output.append("    self->length -= 1;\n");
-    output.append("    Z_String_deinit(&self->entries[self->length].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
+      output.append("    Z_");
+      output.append(declaration.keyType.name);
+      output.append("_deinit(&self->entries[self->length].key);\n");
+    }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("    Z_");
       output.append(declaration.valueType.name);
@@ -9724,6 +9818,33 @@ function emitLoweredC(
   output.append("  if (left.length == 0) return true;\n");
   output.append("  return memcmp(left.data, right.data, left.length) == 0;\n");
   output.append("}\n\n");
+  output.append("typedef struct Z_Hasher {\n  uint64_t state;\n} Z_Hasher;\n\n");
+  output.append("static inline __attribute__((unused)) Z_Hasher z_hasher_new(void) {\n");
+  output.append("  return (Z_Hasher){ .state = UINT64_C(14695981039346656037) };\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_hasher_add_bytes(Z_Hasher *self, const char *bytes, size_t length) {\n");
+  output.append("  for (size_t index = 0; index < length; index += 1) {\n");
+  output.append("    self->state ^= (unsigned char)bytes[index];\n");
+  output.append("    self->state *= UINT64_C(1099511628211);\n");
+  output.append("  }\n}\n\n");
+  output.append("static inline __attribute__((unused)) void z_hasher_add_u64(Z_Hasher *self, uint64_t value) {\n");
+  output.append("  unsigned char bytes[8];\n");
+  output.append("  for (size_t index = 0; index < 8; index += 1) bytes[index] = (unsigned char)(value >> (index * 8));\n");
+  output.append("  z_hasher_add_bytes(self, (const char *)bytes, 8);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_hasher_add_string(Z_Hasher *self, Z_String value) {\n");
+  output.append("  z_hasher_add_u64(self, (uint64_t)value.length);\n");
+  output.append("  z_hasher_add_bytes(self, value.data != NULL ? value.data : \"\", value.length);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) size_t z_hasher_finish(Z_Hasher self) {\n");
+  output.append("  uint64_t hash = self.state;\n");
+  output.append("  hash ^= hash >> 33;\n");
+  output.append("  hash *= UINT64_C(0xff51afd7ed558ccd);\n");
+  output.append("  hash ^= hash >> 33;\n");
+  output.append("  hash *= UINT64_C(0xc4ceb9fe1a85ec53);\n");
+  output.append("  hash ^= hash >> 33;\n");
+  output.append("  return (size_t)hash;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) void z_string_reserve(Z_String *self, size_t additional) {\n");
   output.append("  if (additional > SIZE_MAX - self->length - 1) abort();\n");
   output.append("  const size_t required = self->length + additional + 1;\n");
@@ -10055,6 +10176,15 @@ function emitLoweredC(
     output.append("  self->length += 1;\n");
     output.append("}\n\n");
   }
+  for (const declaration of program.functions) {
+    try appendFunctionSignature(
+      inout output,
+      declaration,
+      usesProcessArguments
+    );
+    output.append(";\n");
+  }
+  if (program.functions.length > 0) output.append("\n");
   try appendMapRuntime(inout output, program);
   appendSetRuntime(inout output, program);
   for (const declaration of program.arrays) {
@@ -10079,15 +10209,6 @@ function emitLoweredC(
     output.append(" *self);\n");
   }
   if (usesArena) try appendArenaCreateHelpers(inout output, program);
-  for (const declaration of program.functions) {
-    try appendFunctionSignature(
-      inout output,
-      declaration,
-      usesProcessArguments
-    );
-    output.append(";\n");
-  }
-  output.append("\n");
   try appendThreadMainCallHelpers(inout output, program);
   try appendThreadSpawnHelpers(inout output, program);
   try appendMutexWithLockHelpers(inout output, program);
@@ -10125,7 +10246,11 @@ function emitLoweredC(
     output.append(" *self) {\n");
     output.append("  while (self->length > 0) {\n");
     output.append("    self->length -= 1;\n");
-    output.append("    Z_String_deinit(&self->entries[self->length].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
+      output.append("    Z_");
+      output.append(declaration.keyType.name);
+      output.append("_deinit(&self->entries[self->length].key);\n");
+    }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("    Z_");
       output.append(declaration.valueType.name);

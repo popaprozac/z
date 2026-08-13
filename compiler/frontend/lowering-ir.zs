@@ -57,6 +57,7 @@ export enum LoweredTypeKind {
   f64Type,
   fsLockType,
   arenaType,
+  hasherType,
   stringType,
   cstringType,
   arrayType,
@@ -222,6 +223,7 @@ export enum LoweredExpressionKind {
   textBufferAppend,
   textBufferAppendBytes,
   textBufferAppendAscii,
+  hasherAdd,
 }
 
 export struct LoweredExpression {
@@ -529,6 +531,7 @@ function loweredTypeIdentity(in type: LoweredType): String {
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.fsLockType) return "FsLock";
   if (type.kind == LoweredTypeKind.arenaType) return "Arena";
+  if (type.kind == LoweredTypeKind.hasherType) return "Hasher";
   if (type.kind == LoweredTypeKind.stringType) return "String";
   if (type.kind == LoweredTypeKind.cstringType) return "cstring";
   if (type.kind == LoweredTypeKind.mutexType) {
@@ -733,6 +736,12 @@ function lowerTypeName(
     return LoweredType({
       kind: LoweredTypeKind.arenaType,
       name: "Arena",
+    });
+  }
+  if (name == "Hasher") {
+    return LoweredType({
+      kind: LoweredTypeKind.hasherType,
+      name: "Hasher",
     });
   }
   if (name == "String" || name == "TextBuffer") {
@@ -5969,6 +5978,71 @@ function lowerExpression(
           children,
           Array<String>()
         );
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "add"
+      && tree.nodes[index].children.length == 2
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
+        some(receiverTypeName) => {
+          const receiverType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            receiverTypeName
+          );
+          if (receiverType.kind == LoweredTypeKind.hasherType) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            const argumentInput = tree.nodes[index].children[1];
+            const argumentTypeName = match (resolvedExpressionTypeName(
+              evidence,
+              tree,
+              argumentInput
+            )) {
+              some(name) => name;
+              none => throw "native Hasher.add lowering could not resolve its argument type";
+            };
+            const argumentType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              argumentTypeName
+            );
+            const argument = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              argumentInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            children.push(argument);
+            let labels = Array<String>();
+            if (argumentType.kind == LoweredTypeKind.structType) {
+              labels.push("hashable");
+            }
+            const argumentIdentity = loweredTypeIdentity(argumentType);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.hasherAdd,
+              argumentIdentity,
+              children,
+              move labels
+            );
+          }
+        }
+        none => {}
       }
     }
     if (

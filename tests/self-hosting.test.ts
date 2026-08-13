@@ -6202,22 +6202,6 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'Set element type "i32" is not executable in the native compiler yet; only String elements are supported',
     },
     {
-      name: "map-key-representation",
-      source: [
-        'import { Map } from "std/collections";',
-        "function main(): i32 {",
-        "  let values = Map<i32, i32>();",
-        "  return values.has(20) ? 0 : 1;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 7,
-      marker: "^^^^^^",
-      code: "Z1000",
-      summary: 'Map key type "i32" is not executable in the native compiler yet; only String keys are supported',
-    },
-    {
       name: "map-value-representation",
       source: [
         'import { Map } from "std/collections";',

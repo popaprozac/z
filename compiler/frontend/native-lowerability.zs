@@ -218,16 +218,6 @@ function validateNativeCollectionTypeName(
         generic.base == "Map"
         && generic.arguments.length == 2
       ) {
-        if (generic.arguments[0] != "String") {
-          throw loweringBoundary(
-            path,
-            "Z1000",
-            `Map key type "${generic.arguments[0]}" is not executable in the native compiler yet; only String keys are supported`,
-            line,
-            column,
-            length
-          );
-        }
         if (
           generic.arguments[1] == "String"
           || typeUsesGeneric(generic.arguments[1], "Array")
