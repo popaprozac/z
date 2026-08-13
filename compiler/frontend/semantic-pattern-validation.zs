@@ -4,6 +4,7 @@ import {
   addViewValueBinding,
   addValueBinding,
   valueBindingViewOwner,
+  viewOwnerIsOwnerless,
 } from "./semantic-flow-state.zs";
 import {
   NativeFieldShape,
@@ -168,7 +169,7 @@ export function addMatchArmValueBindings(
       );
     } else if (borrowedMatch && storedViewPayload) {
       let payloadOwner = valueBindingViewOwner(bindings, subjectRoot);
-      if (payloadOwner.byteLength == 0) {
+      if (payloadOwner.byteLength == 0 || viewOwnerIsOwnerless(payloadOwner)) {
         payloadOwner = subjectRoot.copyBytes(0, subjectRoot.byteLength);
       }
       addViewValueBinding(

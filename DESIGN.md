@@ -385,7 +385,7 @@ named, one-owner view-bearing value struct:
 ```z
 enum StoredSpan {
   primary Span,
-  alternate Span,
+  none,
 }
 
 struct Node {
@@ -399,7 +399,7 @@ const span = node.span;
 
 match (in span) {
   primary(value) => inspect(in value);
-  alternate(value) => inspect(in value);
+  none => {}
 }
 ```
 
@@ -407,19 +407,20 @@ Construction consumes the payload and transfers its one Arena identity to the
 enum. The enum may then move through other value structs and only into that
 same Arena. Matching must borrow proven storage with `match (in value)`; the
 active payload binding inherits the owner's provenance for the arm. The first
-tier requires every variant to carry a named view-bearing struct. Direct
-`view T` payloads, payloadless or ownerless alternatives, object-pattern
-destructuring, mixed owners, copying, consuming matches, mutation, escape, and
-suspension remain rejected. Variant-sensitive ownerless states require richer
-flow evidence and are deferred rather than represented by a hidden runtime tag.
+tier records payloadless or otherwise non-view-bearing alternatives as carrying
+no active Arena identity. At expression joins, ownerless plus Arena A
+conservatively becomes A, matching owners remain that owner, and different
+owners are rejected. This is flow evidence rather than a hidden runtime tag.
+Direct `view T` payloads, object-pattern destructuring, mixed owners, copying,
+consuming matches, mutation, escape, and suspension remain rejected.
 
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
 View-bearing structs cannot enter classes, returns, stored or escaping closures,
 mutable borrows, or suspension. Ordinary collections reject them except for the
-populated same-Arena `Array` rule above; enums accept only the fixed same-Arena
-rule above. The tier is
+compatible-owner `Array` rule above; enums accept the variant-sensitive
+one-owner rule above. The tier is
 single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer
@@ -2384,8 +2385,10 @@ an owned `documentSnapshot(id)`. Generated C confirms every borrowed shape uses
 `const Document *` without a string copy, while the snapshot allocates and
 copies the selected title. Optional views niche-lower to that same pointer:
 `NULL` is `none`, and `some(document)` inherits the receiver provenance during
-`match (in result)`. This is a constrained borrowed container, not permission
-for general view-bearing enum storage. The implemented `view` tier accepts
+`match (in result)`. That optional representation remains a constrained
+borrowed container. General named view-bearing enum storage now separately
+supports one active owner or an ownerless alternative while retaining the same
+nonescaping boundary. The implemented `view` tier accepts
 either a synchronous borrowed value-struct receiver or immutable value-struct
 parameters returning themselves, direct fields, or indexed elements. A
 parameter function may select among multiple inputs; the call conservatively

@@ -10,6 +10,21 @@ export enum NativeOwnershipState {
   maybeMoved,
 }
 
+export function ownerlessViewOwner(): String {
+  return "__z_native_ownerless_view_owner";
+}
+
+export function viewOwnerIsOwnerless(in owner: String): boolean {
+  return owner == "__z_native_ownerless_view_owner";
+}
+
+export function mergeViewOwners(in left: String, in right: String): String {
+  if (left == right) return left.copyBytes(0, left.byteLength);
+  if (viewOwnerIsOwnerless(left)) return right.copyBytes(0, right.byteLength);
+  if (viewOwnerIsOwnerless(right)) return left.copyBytes(0, left.byteLength);
+  return "__z_native_mixed_view_owner";
+}
+
 export struct NativeValueBinding {
   name: String;
   typeName: String;
@@ -607,15 +622,11 @@ export function mergeBindingFlowStates(
     if (left[index].typeName == right[index].typeName) {
       replaceBindingType(inout target, index, left[index].typeName);
     }
-    if (left[index].viewOwner == right[index].viewOwner) {
-      replaceBindingViewOwner(inout target, index, left[index].viewOwner);
-    } else {
-      replaceBindingViewOwner(
-        inout target,
-        index,
-        "__z_native_mixed_view_owner"
-      );
-    }
+    const mergedOwner = mergeViewOwners(
+      left[index].viewOwner,
+      right[index].viewOwner
+    );
+    replaceBindingViewOwner(inout target, index, mergedOwner);
     replaceBindingInitialization(
       inout target,
       index,

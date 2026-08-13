@@ -3847,6 +3847,16 @@ test("allocates and reversely cleans Arena values through the native frontend", 
     projectRoot,
     "tests/fixtures/self-host-emit-arena-graph.zs",
   );
+  const ownerlessJoinInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-check-arena-ownerless-joins.zs",
+  );
+  const ownerlessJoinParity = spawnSync(
+    process.execPath,
+    [cli, "check", ownerlessJoinInput, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(ownerlessJoinParity.status, 0, ownerlessJoinParity.stderr);
   const graphEmission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", graphInput],
@@ -4221,17 +4231,6 @@ test("allocates and reversely cleans Arena values through the native frontend", 
       expected: /view-bearing value can only enter a synchronous immutable in parameter/,
     },
     {
-      name: "arena-stored-view-enum-ownerless-variant",
-      source: [
-        "struct Item { value: i32; }",
-        "struct Holder { item: view Item; }",
-        "enum MaybeHolder { some Holder, none, }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      expected: /every variant of a view-bearing enum must carry stored provenance/,
-    },
-    {
       name: "arena-stored-direct-view-enum",
       source: [
         "struct Item { value: i32; }",
@@ -4240,6 +4239,30 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "",
       ].join("\n"),
       expected: /view-bearing enum payload must be a named value struct/,
+    },
+    {
+      name: "arena-stored-view-enum-mixed-join",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Holder { item: view Item; }",
+        "enum MaybeHolder { some Holder, none, }",
+        "function main(): i32 {",
+        "  let firstArena = Arena();",
+        "  let secondArena = Arena();",
+        "  const first = firstArena.create(Item({ value: 20 }));",
+        "  const second = secondArena.create(Item({ value: 22 }));",
+        "  const mixed = if (true) {",
+        "    select MaybeHolder.some(Holder({ item: first }));",
+        "  } else {",
+        "    select MaybeHolder.some(Holder({ item: second }));",
+        "  };",
+        "  const stored = firstArena.create(mixed);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /cannot join values from different Arena owners/,
     },
     {
       name: "arena-stored-view-enum-consuming-match",

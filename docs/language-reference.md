@@ -1612,13 +1612,14 @@ provenance is established, later same-owner pushes may occur in control flow.
 `push` remains forbidden while an element view or iteration loan is live because
 growth can relocate the buffer.
 
-An enum may carry one fixed region edge when every variant contains a named
-one-owner view-bearing value struct:
+An enum may carry one region edge in variants that contain a named one-owner
+view-bearing value struct, while alternatives such as `none` carry no active
+edge:
 
 ```z
 enum StoredSpan {
   primary Span,
-  alternate Span,
+  none,
 }
 
 struct Node {
@@ -1632,30 +1633,36 @@ const active = node.span;
 
 return match (in active) {
   primary(span) => inspect(in span);
-  alternate(span) => inspect(in span);
+  none => 0;
 };
 ```
 
-The variant constructor consumes its payload and the enum inherits that
-payload's single Arena identity. It may be nested through value structs and
-stored only in the same Arena. `match (in value)` is required and gives the
-direct payload binding the same provenance for the arm. The first tier rejects
-direct `view T` payloads, variants without a view-bearing named-struct payload,
-mixed-owner payloads, object destructuring, copying, consuming matches,
-mutation, escape, and suspension. Ownerless variants need variant-sensitive
-flow evidence and remain a later relaxation.
+The payload constructor consumes its payload and the active enum value inherits
+that payload's single Arena identity. An ownerless constructor records that no
+region is currently reachable. The enum may nest through value structs;
+owner-bearing values can be stored only in their Arena, while a proven
+ownerless value can be stored in any Arena. `match (in value)` is required and
+gives the direct payload binding the same provenance for the arm.
+
+`if` and `match` expression joins use a small provenance lattice: ownerless plus
+Arena A becomes conservatively Arena A, two Arena A paths remain A, and Arena A
+plus Arena B is rejected. This is compile-time flow evidence, not a runtime tag
+or reference-counted region handle. The first tier still rejects direct
+`view T` payloads, mixed-owner payloads, object destructuring, copying,
+consuming matches, mutation, escape, and suspension.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
-enter classes; ordinary collection storage is limited to populated same-owner
-Arrays, and enum storage is limited to the fixed all-variants rule above. Their
+enter classes; ordinary collection storage is limited to populated
+compatible-owner Arrays, and enum storage is limited to the variant-sensitive
+one-owner rule above. Their
 only eventual owning destination is their provenance Arena. A synchronous
 inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Loop-carried establishment, Map/Set and variant-sensitive enum graphs, async
+Loop-carried establishment, Map/Set and broader recursive enum graphs, async
 regions, thread transfer, page reuse, and allocator parameters remain later
 tiers.
 

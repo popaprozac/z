@@ -893,7 +893,6 @@ function validateEnumTypes(
   in declaration: EnumDeclaration
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
-  let storedViewPayload = false;
   for (const variant of declaration.variants) {
     match (in variant.payload) {
       some(payload) => {
@@ -905,7 +904,6 @@ function validateEnumTypes(
           payload.name,
           payloadViewVisiting
         )) {
-          storedViewPayload = true;
           let valueStructPayload = false;
           match (typeSymbolLocation(modules, moduleIndex, payload.name)) {
             some(location) => {
@@ -925,30 +923,6 @@ function validateEnumTypes(
         }
       }
       none => {}
-    }
-  }
-  if (storedViewPayload) {
-    for (const variant of declaration.variants) {
-      let variantCarriesStoredView = false;
-      match (in variant.payload) {
-        some(payload) => {
-          let visiting = Array<String>();
-          variantCarriesStoredView = typeContainsStoredView(
-            modules,
-            moduleIndex,
-            payload.name,
-            visiting
-          );
-        }
-        none => {}
-      }
-      if (!variantCarriesStoredView) throw validationError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "every variant of a view-bearing enum must carry stored provenance in the first tier",
-        variant.line,
-        variant.column
-      );
     }
   }
 }

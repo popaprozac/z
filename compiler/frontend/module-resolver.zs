@@ -76,6 +76,8 @@ import {
   copyValueBindings,
   expressionViewOrigin,
   liveViewBindingForOwner,
+  mergeViewOwners,
+  ownerlessViewOwner,
   setExpressionViewOrigin,
   mergeBindingFlowStates,
   setValueBindingInitialization,
@@ -89,6 +91,7 @@ import {
   valueBindingOwnership,
   valueBindingType,
   valueBindingViewOwner,
+  viewOwnerIsOwnerless,
 } from "./semantic-flow-state.zs";
 import {
   NativeForeignModuleContract,
@@ -309,6 +312,33 @@ function storedViewOwnerForExpression(
   if (inherited.byteLength > 0) return inherited;
   if (valueBindingIsBorrowed(bindings, root)) {
     return root.copyBytes(0, root.byteLength);
+  }
+  return "";
+}
+
+function storedViewOwnerForStatement(
+  in arena: StatementArena,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): String {
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        return storedViewOwnerForExpression(bindings, tree, root);
+      }
+      none => {}
+    }
+    none => {}
+  }
+  if (arena.nodes[index].children.length > 0) {
+    const children = copyIndices(arena.nodes[index].children);
+    const finalChild = children[children.length - 1];
+    return storedViewOwnerForStatement(
+      arena,
+      finalChild,
+      bindings
+    );
   }
   return "";
 }
@@ -1148,14 +1178,18 @@ function inferContextualObjectExpressionNode(
           }
           if (storedViewOwner.byteLength == 0) {
             storedViewOwner = fieldOwner.copyBytes(0, fieldOwner.byteLength);
-          } else if (storedViewOwner != fieldOwner) {
-            throw resolutionError(
-              ModuleResolveErrorKind.typeMismatch,
-              module.path,
-              `view-bearing struct "${expectedType}" must borrow from exactly one owner`,
-              tree.nodes[index].line,
-              tree.nodes[index].column
-            );
+          } else {
+            const mergedOwner = mergeViewOwners(storedViewOwner, fieldOwner);
+            if (mergedOwner == "__z_native_mixed_view_owner") {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `view-bearing struct "${expectedType}" must borrow from exactly one owner`,
+                tree.nodes[index].line,
+                tree.nodes[index].column
+              );
+            }
+            storedViewOwner = move mergedOwner;
           }
         }
         try consumeOwnedExpressionNode(
@@ -1234,13 +1268,7 @@ function inferContextualObjectExpressionNode(
     aggregateViewVisiting
   )) {
     if (storedViewOwner.byteLength == 0) {
-      throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        `view-bearing struct "${expectedType}" requires proven stored provenance`,
-        tree.nodes[index].line,
-        tree.nodes[index].column
-      );
+      storedViewOwner = ownerlessViewOwner();
     }
     setExpressionViewOrigin(
       inout bindings,
@@ -1431,6 +1459,7 @@ function inferMatchExpressionNodeType(
   let covered = Array<String>();
   const expectedType = contextualExpectedType(bindings, tree, index);
   let resultType = "";
+  let resultViewOwner = "";
   let unresolvedArm = false;
   let hasContinuingArm = false;
   let hasContinuingFlow = false;
@@ -1510,6 +1539,43 @@ function inferMatchExpressionNodeType(
     if (armType.byteLength == 0) unresolvedArm = true;
     else if (armType != "__z_never") {
       hasContinuingArm = true;
+      let armViewVisiting = Array<String>();
+      if (typeContainsStoredView(
+        modules,
+        moduleIndex,
+        armType,
+        armViewVisiting
+      )) {
+        const armOwner = storedViewOwnerForStatement(
+          arena,
+          statements[0],
+          armBindings
+        );
+        if (armOwner.byteLength == 0) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "every continuing arm of a view-bearing match expression must produce proven stored provenance",
+            tree.nodes[armIndex].line,
+            tree.nodes[armIndex].column
+          );
+        }
+        if (resultViewOwner.byteLength == 0) {
+          resultViewOwner = armOwner.copyBytes(0, armOwner.byteLength);
+        } else {
+          const mergedOwner = mergeViewOwners(resultViewOwner, armOwner);
+          if (mergedOwner == "__z_native_mixed_view_owner") {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "a view-bearing match expression cannot join values from different Arena owners",
+              tree.nodes[armIndex].line,
+              tree.nodes[armIndex].column
+            );
+          }
+          resultViewOwner = move mergedOwner;
+        }
+      }
       if (resultType.byteLength == 0) resultType = armType.copyBytes(0, armType.byteLength);
       else if (!equivalentTypes(modules, moduleIndex, resultType, armType)) {
         throw resolutionError(
@@ -1544,6 +1610,11 @@ function inferMatchExpressionNodeType(
   }
   if (unresolvedArm) return "";
   if (!hasContinuingArm) return "__z_never";
+  if (resultViewOwner.byteLength > 0) setExpressionViewOrigin(
+    inout bindings,
+    tree.nodes[index].offset,
+    resultViewOwner
+  );
   return resultType;
 }
 
@@ -2998,6 +3069,21 @@ function inferExpressionNodeType(
                 tree.nodes[index].offset,
                 payloadOwner
               );
+            } else {
+              let enumViewVisiting = Array<String>();
+              if (typeContainsStoredView(
+                modules,
+                moduleIndex,
+                value,
+                enumViewVisiting
+              )) {
+                const ownerlessOwner = ownerlessViewOwner();
+                setExpressionViewOrigin(
+                  inout bindings,
+                  tree.nodes[index].offset,
+                  ownerlessOwner
+                );
+              }
             }
             try consumeOwnedExpressionNode(
               module,
@@ -3089,7 +3175,23 @@ function inferExpressionNodeType(
           if (
             variantIndex < shape.variants.length
             && shape.variants[variantIndex].payloadType.byteLength == 0
-          ) return candidateType;
+          ) {
+            let enumViewVisiting = Array<String>();
+            if (typeContainsStoredView(
+              modules,
+              moduleIndex,
+              candidateType,
+              enumViewVisiting
+            )) {
+              const ownerlessOwner = ownerlessViewOwner();
+              setExpressionViewOrigin(
+                inout bindings,
+                node.offset,
+                ownerlessOwner
+              );
+            }
+            return candidateType;
+          }
         }
         none => {}
       }
@@ -3483,7 +3585,17 @@ function inferExpressionNodeType(
       inout blockBindings,
       inout evidence
     );
+    const resultOwner = storedViewOwnerForStatement(
+      arena,
+      statements[statements.length - 1],
+      blockBindings
+    );
     copyBindingFlowStates(inout bindings, blockBindings);
+    if (resultOwner.byteLength > 0) setExpressionViewOrigin(
+      inout bindings,
+      node.offset,
+      resultOwner
+    );
     return result;
   }
   if (kind == ExpressionKind.unsafeExpression) {
@@ -3570,14 +3682,34 @@ function inferExpressionNodeType(
       inout elseBindings,
       inout evidence
     );
+    const thenOwner = storedViewOwnerForExpression(
+      thenBindings,
+      tree,
+      children[1]
+    );
+    const elseOwner = storedViewOwnerForExpression(
+      elseBindings,
+      tree,
+      children[2]
+    );
     try requireSettledExpressionType(module, tree, children[1], thenType);
     try requireSettledExpressionType(module, tree, children[2], elseType);
     if (thenType == "__z_never") {
       copyBindingFlowStates(inout bindings, elseBindings);
+      if (elseOwner.byteLength > 0) setExpressionViewOrigin(
+        inout bindings,
+        node.offset,
+        elseOwner
+      );
       return elseType;
     }
     if (elseType == "__z_never") {
       copyBindingFlowStates(inout bindings, thenBindings);
+      if (thenOwner.byteLength > 0) setExpressionViewOrigin(
+        inout bindings,
+        node.offset,
+        thenOwner
+      );
       return thenType;
     }
     mergeBindingFlowStates(inout bindings, thenBindings, elseBindings);
@@ -3589,6 +3721,38 @@ function inferExpressionNodeType(
     );
     if (thenType.byteLength == 0 || elseType.byteLength == 0) return "";
     if (equivalentTypes(modules, moduleIndex, thenType, elseType)) {
+      let resultViewVisiting = Array<String>();
+      if (typeContainsStoredView(
+        modules,
+        moduleIndex,
+        thenType,
+        resultViewVisiting
+      )) {
+        if (thenOwner.byteLength == 0 || elseOwner.byteLength == 0) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "every continuing branch of a view-bearing if expression must produce proven stored provenance",
+            node.line,
+            node.column
+          );
+        }
+        const mergedOwner = mergeViewOwners(thenOwner, elseOwner);
+        if (mergedOwner == "__z_native_mixed_view_owner") {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "a view-bearing if expression cannot join values from different Arena owners",
+            node.line,
+            node.column
+          );
+        }
+        setExpressionViewOrigin(
+          inout bindings,
+          node.offset,
+          mergedOwner
+        );
+      }
       return thenType.copyBytes(0, thenType.byteLength);
     }
     throw resolutionError(
@@ -4391,6 +4555,21 @@ function inferExpressionNodeType(
                 tree.nodes[index].offset,
                 payloadOwner
               );
+            } else {
+              let enumViewVisiting = Array<String>();
+              if (typeContainsStoredView(
+                modules,
+                moduleIndex,
+                enumType,
+                enumViewVisiting
+              )) {
+                const ownerlessOwner = ownerlessViewOwner();
+                setExpressionViewOrigin(
+                  inout bindings,
+                  tree.nodes[index].offset,
+                  ownerlessOwner
+                );
+              }
             }
             try consumeOwnedExpressionNode(
               module,
@@ -4882,14 +5061,21 @@ function inferExpressionNodeType(
                       0,
                       elementOwner.byteLength
                     );
-                  } else if (storedViewOwner != elementOwner) {
-                    throw resolutionError(
-                      ModuleResolveErrorKind.typeMismatch,
-                      module.path,
-                      "a view-bearing Array must borrow from exactly one owner",
-                      node.line,
-                      node.column
+                  } else {
+                    const mergedOwner = mergeViewOwners(
+                      storedViewOwner,
+                      elementOwner
                     );
+                    if (mergedOwner == "__z_native_mixed_view_owner") {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        "a view-bearing Array must borrow from exactly one owner",
+                        node.line,
+                        node.column
+                      );
+                    }
+                    storedViewOwner = move mergedOwner;
                   }
                 }
                 if (storedViewElement) {
@@ -5422,7 +5608,10 @@ function inferExpressionNodeType(
                 tree.nodes[argument].column
               );
             }
-            if (storedViewOwner != receiverRoot) {
+            if (
+              !viewOwnerIsOwnerless(storedViewOwner)
+              && storedViewOwner != receiverRoot
+            ) {
               throw resolutionError(
                 ModuleResolveErrorKind.typeMismatch,
                 module.path,
@@ -5758,7 +5947,8 @@ function inferExpressionNodeType(
                       }
                       if (
                         arrayOwner.byteLength > 0
-                        && arrayOwner != elementOwner
+                        && mergeViewOwners(arrayOwner, elementOwner)
+                          == "__z_native_mixed_view_owner"
                       ) {
                         throw resolutionError(
                           ModuleResolveErrorKind.typeMismatch,
@@ -5787,6 +5977,16 @@ function inferExpressionNodeType(
                           inout bindings,
                           receiverRoot,
                           elementOwner
+                        );
+                      } else {
+                        const mergedOwner = mergeViewOwners(
+                          arrayOwner,
+                          elementOwner
+                        );
+                        if (mergedOwner != arrayOwner) setValueBindingViewOwner(
+                          inout bindings,
+                          receiverRoot,
+                          mergedOwner
                         );
                       }
                       if (

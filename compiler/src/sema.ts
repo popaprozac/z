@@ -2193,7 +2193,7 @@ function analyzeStructDeclaration(
       if (!directViewField && !nestedValueAggregate) {
         throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
-          notes: ["fixed nested value structs and all-payload view-bearing enums can carry one Arena identity"],
+          notes: ["fixed nested value structs and variant-sensitive view-bearing enums can carry at most one Arena identity"],
           helps: ["keep Option, Array, and collection view storage local until those containers carry region provenance"],
         });
       }
@@ -2519,7 +2519,6 @@ function analyzeEnumDeclaration(
   state: AnalysisState,
 ): void {
   const names = new Set<string>();
-  let storedViewPayload = false;
   for (const variant of declaration.variants) {
     validateUserName(variant.name, variant.location, fileName);
     if (names.has(variant.name)) {
@@ -2536,7 +2535,6 @@ function analyzeEnumDeclaration(
       }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
       if (containsStoredViewType(variant.payload.name, structs, enums) && !optionalViewPayload) {
-        storedViewPayload = true;
         const payload = structs.get(String(underlyingType(variant.payload.name)));
         if (payload?.kind !== "struct") {
           throw new DiagnosticError(fileName, variant.payload.location, "a view-bearing enum payload must be a named value struct in the first stored-provenance tier", {
@@ -2552,18 +2550,6 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
-    }
-  }
-  if (storedViewPayload) {
-    const mixed = declaration.variants.find((variant) => (
-      !variant.payload || !containsStoredViewType(variant.payload.name, structs, enums)
-    ));
-    if (mixed) {
-      throw new DiagnosticError(fileName, mixed.location, "every variant of a view-bearing enum must carry stored provenance in the first tier", {
-        code: "Z0206",
-        notes: ["variant-sensitive ownerless states require richer flow evidence and remain deferred"],
-        helps: ["give every variant a named one-owner view-bearing struct payload, or keep the owner-tied view outside the enum"],
-      });
     }
   }
   if (declaration.variants.length === 0) {
@@ -5835,6 +5821,9 @@ function inferIfExpression(
     state,
     expected,
   );
+  const thenOrigin = thenType !== "never"
+    ? valueArmStoredViewOrigin(expression.thenBranch, state)
+    : null;
   if (thenType !== "never") {
     continuing.push(thenLocals);
     continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
@@ -5847,6 +5836,11 @@ function inferIfExpression(
   const elseType = expression.elseBranch.kind === "ifExpression"
     ? inferIfExpression(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected)
     : inferValueArm(expression.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state, expected);
+  const elseOrigin = elseType !== "never"
+    ? (expression.elseBranch.kind === "ifExpression"
+      ? storedViewOriginForExpression(expression.elseBranch, state)
+      : valueArmStoredViewOrigin(expression.elseBranch, state))
+    : null;
   if (elseType !== "never") {
     continuing.push(elseLocals);
     continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
@@ -5854,6 +5848,22 @@ function inferIfExpression(
   }
 
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
+  if (containsStoredViewType(String(resultType), structs, enums)) {
+    const origins = [thenOrigin, elseOrigin].filter((origin): origin is ViewOrigin => origin !== null);
+    if (origins.length !== continuing.length) {
+      throw new DiagnosticError(fileName, expression.location, "every continuing branch of a view-bearing if expression must produce proven stored provenance", {
+        code: "Z0206",
+      });
+    }
+    const origin = mergeViewOrigins(origins);
+    if (origin.sources.length > 1) {
+      throw new DiagnosticError(fileName, expression.location, "a view-bearing if expression cannot join values from different Arena owners", {
+        code: "Z0206",
+        notes: ["ownerless alternatives may join either side; owner-bearing alternatives must agree"],
+      });
+    }
+    state.viewCallOrigins.set(expression.location.offset, origin);
+  }
   mergeOwnershipStates(locals, continuing, state);
   if (continuing.length > 0) {
     mergeRegionArrayOriginStates(
@@ -6187,6 +6197,7 @@ function inferMatchExpression(
   const incomingLoans = snapshotAccessLoanState(state);
   const continuingRegionOrigins: RegionArrayOriginState[] = [];
   const continuingLoans: AccessLoanState[] = [];
+  const resultOrigins: ViewOrigin[] = [];
   let resultType: ValueType = "never";
   for (const arm of expression.arms) {
     restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
@@ -6327,6 +6338,8 @@ function inferMatchExpression(
       continuing.push(armLocals);
       continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
       continuingLoans.push(snapshotAccessLoanState(state));
+      const armOrigin = valueArmStoredViewOrigin(arm.body, state);
+      if (armOrigin) resultOrigins.push(armOrigin);
       if (resultType === "never" || resultType === "unknown") resultType = armType;
       else if (armType !== "unknown" && armType !== resultType) {
         throw new DiagnosticError(fileName, arm.location, `match arm produces ${armType}, but previous arms produce ${resultType}`);
@@ -6346,7 +6359,39 @@ function inferMatchExpression(
     );
     mergeAccessLoanStates(state, continuingLoans);
   }
+  if (containsStoredViewType(String(resultType), structs, enums)) {
+    if (resultOrigins.length !== continuing.length) {
+      throw new DiagnosticError(fileName, expression.location, "every continuing arm of a view-bearing match expression must produce proven stored provenance", {
+        code: "Z0206",
+      });
+    }
+    const origin = mergeViewOrigins(resultOrigins);
+    if (origin.sources.length > 1) {
+      throw new DiagnosticError(fileName, expression.location, "a view-bearing match expression cannot join values from different Arena owners", {
+        code: "Z0206",
+        notes: ["ownerless alternatives may join any owner-bearing arm; owner-bearing arms must agree"],
+      });
+    }
+    state.viewCallOrigins.set(expression.location.offset, origin);
+  }
   return resultType;
+}
+
+function valueArmStoredViewOrigin(
+  statement: Statement,
+  state: AnalysisState,
+): ViewOrigin | null {
+  if (statement.kind === "expressionStatement" || statement.kind === "select") {
+    return storedViewOriginForExpression(statement.expression, state);
+  }
+  if (statement.kind === "block") {
+    const finalStatement = statement.statements.at(-1);
+    return finalStatement ? valueArmStoredViewOrigin(finalStatement, state) : null;
+  }
+  if (statement.kind === "match") {
+    return state.viewCallOrigins.get(statement.location.offset) ?? null;
+  }
+  return null;
 }
 
 function inferValueArm(
@@ -8611,7 +8656,7 @@ function inferExpressionInner(
       }
       if (declaration?.kind === "struct" && containsStoredViewType(declaration.name, structs, enums)) {
         const origin = mergeViewOrigins(storedViewOrigins);
-        if (origin.sources.length !== 1) {
+        if (origin.sources.length > 1) {
           throw new DiagnosticError(fileName, expression.location, `view-bearing struct ${JSON.stringify(declaration.name)} must borrow from exactly one owner`, {
             code: "Z0206",
             notes: ["the first stored-provenance tier does not mix regions inside one composite value"],
@@ -8706,7 +8751,7 @@ function inferExpressionInner(
       }
       if (storedViewElement && expression.elements.length > 0) {
         const origin = mergeViewOrigins(storedViewOrigins);
-        if (origin.sources.length !== 1) {
+        if (origin.sources.length > 1) {
           throw new DiagnosticError(fileName, expression.location, "a view-bearing Array must borrow from exactly one owner", {
             code: "Z0206",
             notes: ["the first dynamic-provenance tier does not mix regions inside one container"],
@@ -8774,7 +8819,7 @@ function inferExpressionInner(
             helps: ["construct the payload from views owned by one Arena"],
           });
         }
-        if (origin.sources.length !== 1) {
+        if (origin.sources.length > 1) {
           throw new DiagnosticError(fileName, expression.location, `view-bearing enum ${JSON.stringify(declaration.name)} must borrow from exactly one owner`, {
             code: "Z0206",
             notes: ["the first enum-provenance tier does not mix regions inside one active payload"],
@@ -8782,6 +8827,8 @@ function inferExpressionInner(
           });
         }
         state.viewCallOrigins.set(expression.location.offset, origin);
+      } else if (containsStoredViewType(declaration.name, structs, enums)) {
+        state.viewCallOrigins.set(expression.location.offset, ownerlessViewOrigin());
       }
       consumeOwnedValue(
         expression.payload,
@@ -9015,6 +9062,9 @@ function inferExpressionInner(
           if (!declaredVariant) throw new DiagnosticError(fileName, expression.location, `enum ${JSON.stringify(enumDeclaration.name)} has no variant ${JSON.stringify(expression.property)}`);
           const variant = resolveSemanticEnumVariant(expression.location, enumDeclaration, declaredVariant, state);
           if (variant.payload) throw new DiagnosticError(fileName, expression.location, "payload variant must be called with a value");
+          if (containsStoredViewType(enumDeclaration.name, structs, enums)) {
+            state.viewCallOrigins.set(expression.location.offset, ownerlessViewOrigin());
+          }
           return enumDeclaration.name;
         }
       }
@@ -10138,7 +10188,7 @@ function inferExpressionInner(
                     helps: ["construct the payload from views owned by one Arena"],
                   });
                 }
-                if (origin.sources.length !== 1) {
+                if (origin.sources.length > 1) {
                   throw new DiagnosticError(fileName, expression.location, `view-bearing enum ${JSON.stringify(enumDeclaration.name)} must borrow from exactly one owner`, {
                     code: "Z0206",
                     notes: ["the first enum-provenance tier does not mix regions inside one active payload"],
@@ -10146,6 +10196,8 @@ function inferExpressionInner(
                   });
                 }
                 state.viewCallOrigins.set(expression.location.offset, origin);
+              } else if (containsStoredViewType(enumDeclaration.name, structs, enums)) {
+                state.viewCallOrigins.set(expression.location.offset, ownerlessViewOrigin());
               }
               consumeOwnedValue(
                 expression.arguments[0],
@@ -10157,6 +10209,8 @@ function inferExpressionInner(
                 state,
                 storedViewPayload,
               );
+            } else if (containsStoredViewType(enumDeclaration.name, structs, enums)) {
+              state.viewCallOrigins.set(expression.location.offset, ownerlessViewOrigin());
             }
             return enumDeclaration.name;
           }
@@ -10688,8 +10742,8 @@ function inferExpressionInner(
             const origin = storedViewOriginForExpression(argument, state);
             if (
               !origin
-              || origin.sources.length !== 1
-              || origin.sources[0].owner !== root.name
+              || origin.sources.length > 1
+              || (origin.sources.length === 1 && origin.sources[0].owner !== root.name)
             ) {
               throw new DiagnosticError(fileName, argument.location, "Arena.create can store a view-bearing value only in the Arena that owns every embedded view", {
                 code: "Z0206",
@@ -11024,7 +11078,7 @@ function inferExpressionInner(
           const storedViewElement = containsStoredViewType(dynamic.elementType, structs, enums);
           if (storedViewElement) {
             const elementOrigin = storedViewOriginForExpression(expression.arguments[0], state);
-            if (!elementOrigin || elementOrigin.sources.length !== 1) {
+            if (!elementOrigin || elementOrigin.sources.length > 1) {
               throw new DiagnosticError(fileName, expression.arguments[0].location, "a view-bearing Array element must come directly from one proven Arena", {
                 code: "Z0206",
                 helps: ["construct the element from views owned by one Arena before pushing it"],
@@ -11032,10 +11086,8 @@ function inferExpressionInner(
             }
             const arrayOrigin = state.viewOrigins.get(root.name);
             if (arrayOrigin) {
-              if (
-                arrayOrigin.sources.length !== 1
-                || arrayOrigin.sources[0].owner !== elementOrigin.sources[0].owner
-              ) {
+              const mergedOrigin = mergeViewOrigins([arrayOrigin, elementOrigin]);
+              if (mergedOrigin.sources.length > 1) {
                 throw new DiagnosticError(fileName, expression.arguments[0].location, `Array ${JSON.stringify(root.name)} already carries provenance from another Arena`, {
                   code: "Z0206",
                   labels: [{
@@ -11045,6 +11097,9 @@ function inferExpressionInner(
                   }],
                   helps: ["push only elements borrowed from the Array's established Arena"],
                 });
+              }
+              if (!originsHaveSameOwner(arrayOrigin, mergedOrigin)) {
+                bindViewOrigin(root.name, mergedOrigin, fileName, state);
               }
             } else {
               if (state.regionLoopDepth > 0) {
@@ -12186,6 +12241,10 @@ function directViewOrigin(owner: string, location: SourceLocation): ViewOrigin {
   return { sources: [{ owner, location }] };
 }
 
+function ownerlessViewOrigin(): ViewOrigin {
+  return { sources: [] };
+}
+
 function storedViewOriginForExpression(
   expression: Expression,
   state: AnalysisState,
@@ -12273,11 +12332,13 @@ function mergeRegionArrayOriginStates(
   if (paths.length === 0) return;
   for (const name of names) {
     const origins = paths.map((path) => path.get(name) ?? null);
-    const first = origins[0];
-    const agree = origins.every((origin) => (
-      first === null ? origin === null : origin !== null && originsHaveSameOwner(first, origin)
-    ));
-    if (!agree) {
+    const present = origins.filter((origin): origin is ViewOrigin => origin !== null);
+    if (present.length === 0) {
+      state.viewOrigins.delete(name);
+      continue;
+    }
+    const origin = mergeViewOrigins(present);
+    if (present.length !== origins.length || origin.sources.length > 1) {
       throw new DiagnosticError(
         fileName,
         location,
@@ -12289,13 +12350,14 @@ function mergeRegionArrayOriginStates(
         },
       );
     }
-    if (first) state.viewOrigins.set(name, first);
-    else state.viewOrigins.delete(name);
+    state.viewOrigins.set(name, origin);
   }
 }
 
 function viewOriginOwnerLabel(origin: ViewOrigin): string {
-  return origin.sources.map((source) => source.owner).join(" | ");
+  return origin.sources.length === 0
+    ? "no active Arena edge"
+    : origin.sources.map((source) => source.owner).join(" | ");
 }
 
 function parameterViewSourceIndices(

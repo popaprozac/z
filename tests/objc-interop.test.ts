@@ -1232,16 +1232,102 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   assert.equal(directViewEnumDiagnostic.code, "Z0206");
   assert.match(directViewEnumDiagnostic.message, /payload must be a named value struct/);
 
-  const ownerlessEnumVariant = storedEnumProvenance.replace(
-    "enum StoredSpan { primary Span, alternate Span, }",
-    "enum StoredSpan { primary Span, none, }",
+  const ownerlessEnumVariant = `
+    import { Arena } from "std/memory";
+    struct Coordinate { value: i32; }
+    struct Span { first: view Coordinate; last: view Coordinate; }
+    enum MaybeSpan { some Span, none, }
+    enum Choice { present, absent, }
+    struct Node { span: MaybeSpan; }
+    function inspect(in value: MaybeSpan): i32 {
+      return match (in value) {
+        some(span) => {
+          const first = span.first;
+          const last = span.last;
+          select first.value + last.value;
+        }
+        none => 0;
+      };
+    }
+    function main(): i32 {
+      let arena = Arena();
+      let other = Arena();
+      const absentPending = Node({ span: MaybeSpan.none });
+      const absent = other.create(absentPending);
+      const absentValue = absent.span;
+      const first = arena.create(Coordinate({ value: 20 }));
+      const last = arena.create(Coordinate({ value: 22 }));
+      const presentPending = MaybeSpan.some(Span({ first, last }));
+      const present = arena.create(presentPending);
+      const joinedPending = if (first.value == 20) {
+        select MaybeSpan.some(Span({ first, last }));
+      } else {
+        select MaybeSpan.none;
+      };
+      const joined = arena.create(joinedPending);
+      const choice = Choice.present;
+      const matchedPending = match (choice) {
+        present => MaybeSpan.some(Span({ first, last }));
+        absent => MaybeSpan.none;
+      };
+      const matched = arena.create(matchedPending);
+      const result = inspect(in absentValue)
+        + inspect(in present)
+        + inspect(in joined)
+        + inspect(in matched);
+      other.reset();
+      arena.reset();
+      return result - 126;
+    }
+  `;
+  const ownerlessEnumDirectory = mkdtempSync("/tmp/z-arena-stored-enum-ownerless-");
+  const ownerlessEnumFile = resolve(ownerlessEnumDirectory, "main.zs");
+  writeFileSync(ownerlessEnumFile, ownerlessEnumVariant);
+  const ownerlessEnumResult = spawnSync(
+    process.execPath,
+    [cli, "run", ownerlessEnumFile],
+    { encoding: "utf8" },
   );
-  const ownerlessEnumVariantDiagnostic = diagnostics(
-    ownerlessEnumVariant,
-    "arena-stored-enum-ownerless-variant.zs",
+  assert.equal(ownerlessEnumResult.status, 0, ownerlessEnumResult.stderr);
+
+  const copiedOwnerlessVariant = ownerlessEnumVariant.replace(
+    "const absent = other.create(absentPending);",
+    "const copiedAbsent = absentPending;\n      const absent = other.create(absentPending);",
+  );
+  const copiedOwnerlessDiagnostic = diagnostics(
+    copiedOwnerlessVariant,
+    "arena-stored-enum-ownerless-copy.zs",
   )[0];
-  assert.equal(ownerlessEnumVariantDiagnostic.code, "Z0206");
-  assert.match(ownerlessEnumVariantDiagnostic.message, /every variant.*must carry stored provenance/);
+  assert.equal(copiedOwnerlessDiagnostic.code, "Z0206");
+  assert.match(copiedOwnerlessDiagnostic.message, /must be bound directly from its producing expression/);
+
+  const mixedOwnerJoin = `
+    import { Arena } from "std/memory";
+    struct Coordinate { value: i32; }
+    struct Span { first: view Coordinate; last: view Coordinate; }
+    enum MaybeSpan { some Span, none, }
+    function main(): i32 {
+      let firstArena = Arena();
+      let secondArena = Arena();
+      const firstA = firstArena.create(Coordinate({ value: 20 }));
+      const lastA = firstArena.create(Coordinate({ value: 22 }));
+      const firstB = secondArena.create(Coordinate({ value: 20 }));
+      const lastB = secondArena.create(Coordinate({ value: 22 }));
+      const mixed = if (true) {
+        select MaybeSpan.some(Span({ first: firstA, last: lastA }));
+      } else {
+        select MaybeSpan.some(Span({ first: firstB, last: lastB }));
+      };
+      const stored = firstArena.create(mixed);
+      return 0;
+    }
+  `;
+  const mixedOwnerJoinDiagnostic = diagnostics(
+    mixedOwnerJoin,
+    "arena-stored-enum-mixed-join.zs",
+  )[0];
+  assert.equal(mixedOwnerJoinDiagnostic.code, "Z0206");
+  assert.match(mixedOwnerJoinDiagnostic.message, /cannot join values from different Arena owners/);
 
   const consumingEnumMatch = storedEnumProvenance.replace(
     "return match (in span) {",

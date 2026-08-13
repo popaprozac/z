@@ -25,6 +25,11 @@ enum StoredSpan {
   alternate TokenSpan,
 }
 
+enum MaybeStoredSpan {
+  some TokenSpan,
+  none,
+}
+
 struct StoredNode {
   kind: StoredSpan;
 }
@@ -39,6 +44,13 @@ function storedSpanLength(in value: StoredSpan): usize {
   return match (in value) {
     span(span) => spanLength(in span);
     alternate(span) => spanLength(in span);
+  };
+}
+
+function maybeStoredSpanLength(in value: MaybeStoredSpan): usize {
+  return match (in value) {
+    some(span) => spanLength(in span);
+    none => 0;
   };
 }
 
@@ -89,13 +101,28 @@ function main(): i32 {
   }));
   const directStored = arena.create(directPending);
   const directLength = storedSpanLength(in directStored);
+  let other = Arena({ initialCapacity: 64 });
+  const absentPending = MaybeStoredSpan.none;
+  const absent = other.create(absentPending);
+  const absentLength = maybeStoredSpanLength(in absent);
+  const maybeFirst = arena.create(TokenCoordinate({ offset: 9 }));
+  const maybeLast = arena.create(TokenCoordinate({ offset: 51 }));
+  const presentPending = MaybeStoredSpan.some(TokenSpan({
+    first: maybeFirst,
+    last: maybeLast,
+  }));
+  const present = arena.create(presentPending);
+  const presentLength = maybeStoredSpanLength(in present);
   if (populatedLength != 42) return 1;
   if (arrayLength != 42) return 1;
   if (spans.length != 1) return 1;
   if (matched.length != 1) return 1;
   if (enumLength != 42) return 1;
   if (directLength != 42) return 1;
+  if (absentLength != 0) return 1;
+  if (presentLength != 42) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
+  other.reset();
   return i32(length) - 42;
 }
