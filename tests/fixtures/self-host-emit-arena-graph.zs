@@ -68,6 +68,13 @@ function linkedNextValue(in value: LinkedNode): i32 {
   };
 }
 
+function optionalLinkedValue(in value: Option<LinkedNode>): i32 {
+  return match (in value) {
+    some(node) => node.value;
+    none => 0;
+  };
+}
+
 function main(): i32 {
   let arena = Arena({ initialCapacity: 128 });
   const first = arena.create(TokenCoordinate({ offset: 20 }));
@@ -144,9 +151,27 @@ function main(): i32 {
     next: Option<view LinkedNode>.some(linkedTail),
   });
   linkedByName.set("compiler", mappedPending);
+  const retainedPending = LinkedNode({
+    value: 7,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  linkedByName.set("retained", retainedPending);
   const mapped = linkedByName.get("compiler");
   const mappedValue = match (in mapped) {
     some(node) => node.value + linkedNextValue(in node);
+    none => 0;
+  };
+  const removed = linkedByName.remove("compiler");
+  const removedValue = match (in removed) {
+    some(node) => node.value;
+    none => 0;
+  };
+  const storedRemoved = arena.create(removed);
+  const storedRemovedValue = optionalLinkedValue(in storedRemoved);
+  if (linkedByName.has("compiler")) return 1;
+  const retained = linkedByName.get("retained");
+  const retainedValue = match (in retained) {
+    some(node) => node.value;
     none => 0;
   };
   const storedMapPending = LinkedNode({
@@ -170,6 +195,9 @@ function main(): i32 {
   if (presentLength != 42) return 1;
   if (linkedValue != 22) return 1;
   if (mappedValue != 63) return 1;
+  if (removedValue != 41) return 1;
+  if (storedRemovedValue != 41) return 1;
+  if (retainedValue != 7) return 1;
   if (storedMappedValue != 20) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();

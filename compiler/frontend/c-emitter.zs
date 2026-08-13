@@ -1206,6 +1206,7 @@ function appendExpression(
     declaration.expressions[index].kind == LoweredExpressionKind.mapHas
     || declaration.expressions[index].kind == LoweredExpressionKind.mapGet
     || declaration.expressions[index].kind == LoweredExpressionKind.mapSet
+    || declaration.expressions[index].kind == LoweredExpressionKind.mapRemove
   ) {
     let expected: usize = 2;
     if (
@@ -1222,6 +1223,9 @@ function appendExpression(
     else if (
       declaration.expressions[index].kind == LoweredExpressionKind.mapGet
     ) output.append("_get");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.mapRemove
+    ) output.append("_remove");
     else output.append("_set");
     const viewReceiver = declaration.expressions[index].labels.length > 0
       && declaration.expressions[index].labels[0] == "view";
@@ -8175,6 +8179,11 @@ function appendMapRuntime(
     const valueType = try cType(declaration.valueType);
     const valueIdentity = try loweredIntrinsicIdentity(declaration.valueType);
     const optionName = `__z_NicheViewOption_${valueIdentity}`;
+    const ownedOptionName = `__z_Option_${valueIdentity}`;
+    let supportsRemove = false;
+    for (const enumeration of program.enums) {
+      if (enumeration.name == ownedOptionName) supportsRemove = true;
+    }
     output.append("static inline __attribute__((unused)) size_t Z_");
     output.append(declaration.name);
     output.append("_hash(Z_String value) {\n");
@@ -8310,6 +8319,63 @@ function appendMapRuntime(
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("}\n\n");
+    if (supportsRemove) {
+      output.append("static __attribute__((unused)) Z_");
+      output.append(ownedOptionName);
+      output.append(" Z_");
+      output.append(declaration.name);
+      output.append("_remove(Z_");
+      output.append(declaration.name);
+      output.append(" *self, Z_String key) {\n");
+      output.append("  if (self->bucketCount == 0) return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_none };\n");
+      output.append("  size_t slot = Z_");
+      output.append(declaration.name);
+      output.append("_hash(key) & (self->bucketCount - 1);\n");
+      output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+      output.append("    const size_t stored = self->buckets[slot];\n");
+      output.append("    if (stored == 0) break;\n");
+      output.append("    if (stored != SIZE_MAX && z_string_equal(self->entries[stored - 1].key, key)) {\n");
+      output.append("      const size_t entry = stored - 1;\n");
+      output.append("      const size_t last = self->length - 1;\n");
+      output.append("      Z_String_deinit(&self->entries[entry].key);\n");
+      output.append("      ");
+      output.append(valueType);
+      output.append(" value = self->entries[entry].value;\n");
+      output.append("      self->buckets[slot] = SIZE_MAX;\n");
+      output.append("      self->tombstones += 1;\n");
+      output.append("      if (entry != last) {\n");
+      output.append("        self->entries[entry] = self->entries[last];\n");
+      output.append("        size_t movedSlot = Z_");
+      output.append(declaration.name);
+      output.append("_hash(self->entries[entry].key) & (self->bucketCount - 1);\n");
+      output.append("        for (size_t movedProbe = 0; movedProbe < self->bucketCount; movedProbe += 1) {\n");
+      output.append("          if (self->buckets[movedSlot] == self->length) {\n");
+      output.append("            self->buckets[movedSlot] = entry + 1;\n");
+      output.append("            break;\n");
+      output.append("          }\n");
+      output.append("          movedSlot = (movedSlot + 1) & (self->bucketCount - 1);\n");
+      output.append("        }\n");
+      output.append("      }\n");
+      output.append("      self->length = last;\n");
+      output.append("      return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_some, .payload.some = value };\n");
+      output.append("    }\n");
+      output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+      output.append("  }\n");
+      output.append("  return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_none };\n");
+      output.append("}\n\n");
+    }
   }
 }
 

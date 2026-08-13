@@ -2504,11 +2504,19 @@ address of an already-pointer receiver. Native String-keyed maps now store
 named Z value structs directly, destroy replaced values when required, and
 preserve the lookup pointer niche through both frontends.
 
-Native ownership-bearing Map removal, Arena-owned Set edges, multi-edge
-recursive enum graphs, class, and returned graph edges remain rejected or
-deferred. Richer mutable container provenance—including loop-carried identity
-and broader shape-stability evidence—is still required before claiming
-whole-compiler allocation gains.
+The follow-up removal slice deliberately keeps two representations distinct:
+`get` returns a nullable `Option<view V>`, while `remove` returns a tagged owned
+`Option<V>`. The native runtime destroys the removed key, moves the value into
+`some`, repairs the dense hash table when the last entry changes position, and
+transfers the Map's Arena proof to the returned Option. The fixture then moves
+that Option into the same Arena, proving that removal does not erase lifetime
+evidence or duplicate the recursive node.
+
+Native `delete`/`clear`, Arena-owned Set edges, multi-edge recursive enum graphs,
+class, and returned graph edges remain rejected or deferred. Richer mutable
+container provenance—including loop-carried identity and broader
+shape-stability evidence—is still required before claiming whole-compiler
+allocation gains.
 
 ## Fixed and null-only native argument plans
 

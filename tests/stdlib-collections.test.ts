@@ -2372,6 +2372,27 @@ test("owns Map keys and values with optional views and deterministic removal", (
     /only in the Arena that owns every embedded view/,
   );
 
+  const removedIntoWrongArena = `
+    import { Map } from "std/collections";
+    import { Arena } from "std/memory";
+    struct Item { value: i32; }
+    struct Link { item: view Item; }
+    function main(): i32 {
+      let source = Arena();
+      let destination = Arena();
+      const item = source.create(Item({ value: 42 }));
+      let links = Map<String, Link>();
+      links.set("answer", Link({ item }));
+      const removed = links.remove("answer");
+      const stored = destination.create(removed);
+      return 0;
+    }
+  `;
+  assert.match(
+    diagnostics(removedIntoWrongArena, "map-arena-remove-wrong-region.zs")[0].message,
+    /only in the Arena that owns every embedded view/,
+  );
+
   const iterationMutation = `
     import { Map } from "std/collections";
     function main(): i32 {

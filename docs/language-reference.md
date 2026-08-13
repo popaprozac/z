@@ -1689,8 +1689,10 @@ The first `set` fixes the Map's Arena owner; later values and the eventual
 storage and therefore loans the Map against structural mutation. Empty
 view-bearing Maps require `let`; direct view values, mixed owners, and first
 insertion inside a loop are rejected. Native fixed-point lowering currently
-covers String-keyed `set`, `has`, and `get` for this shape; ownership-bearing
-removal is the next Map composition layer.
+covers String-keyed `set`, `has`, `get`, and ownership-transferring `remove`
+for this shape. `get` uses the nullable view niche; `remove` returns a tagged
+owned `Option<V>` whose Arena proof follows the value. Native `delete` and
+`clear` are later Map composition layers.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable

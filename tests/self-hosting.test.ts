@@ -3911,6 +3911,18 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   );
   assert.match(
     graphEmission.stdout,
+    /Z___z_Option_LinkedNode Z___z_Map_6_StringLinkedNode_remove/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /Z___z_Map_6_StringLinkedNode_remove\(&\(linkedByName\), Z_STRING_LITERAL\("compiler"\)\)/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /z_stage1_arena_create_\d+___z_Option_LinkedNode/,
+  );
+  assert.match(
+    graphEmission.stdout,
     /z_stage1_arena_create_\d+___z_Map_6_StringLinkedNode/,
   );
   const namedDestructor = graphEmission.stdout.match(

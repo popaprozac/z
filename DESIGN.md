@@ -457,9 +457,10 @@ that Arena. `get` remains a zero-copy `Option<view V>` into Map storage, so
 structural mutation is rejected while the lookup view is live. This tier keeps
 keys independently owned and allows only named one-owner value structs; direct
 views, mixed owners, first insertion inside a loop, escape, and suspension are
-rejected. Native lowering supports `set`, `has`, and `get`; the broader
-ownership-bearing removal surface remains a separate fixed-point lowering
-step.
+rejected. Native lowering supports `set`, `has`, and `get`; the
+ownership-bearing `remove` path returns a tagged `Option<V>`, transfers the
+stored value without copying it, and preserves its Arena proof. `delete` and
+`clear` remain separate fixed-point lowering steps.
 
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
