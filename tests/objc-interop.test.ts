@@ -1142,6 +1142,129 @@ test("allocates stable owner-tied views in Arena and cleans them newest-first", 
   const storedResult = spawnSync(process.execPath, [cli, "run", storedFile], { encoding: "utf8" });
   assert.equal(storedResult.status, 0, storedResult.stderr);
 
+  const storedEnumProvenance = `
+    import { Arena } from "std/memory";
+    struct Coordinate { value: i32; }
+    struct Span { first: view Coordinate; last: view Coordinate; }
+    enum StoredSpan { primary Span, alternate Span, }
+    struct Node { span: StoredSpan; }
+    function total(in span: Span): i32 {
+      const first = span.first;
+      const last = span.last;
+      return first.value + last.value;
+    }
+    function inspect(in span: StoredSpan): i32 {
+      return match (in span) {
+        primary(value) => total(in value);
+        alternate(value) => total(in value);
+      };
+    }
+    function main(): i32 {
+      let arena = Arena();
+      const first = arena.create(Coordinate({ value: 20 }));
+      const last = arena.create(Coordinate({ value: 22 }));
+      const pendingSpan = StoredSpan.primary(Span({ first, last }));
+      const pending = Node({ span: pendingSpan });
+      const stored = arena.create(pending);
+      const span = stored.span;
+      const answer = inspect(in span);
+      const directFirst = arena.create(Coordinate({ value: 19 }));
+      const directLast = arena.create(Coordinate({ value: 23 }));
+      const directPending = StoredSpan.alternate(Span({
+        first: directFirst,
+        last: directLast,
+      }));
+      const directStored = arena.create(directPending);
+      const directAnswer = inspect(in directStored);
+      arena.reset();
+      return answer + directAnswer - 84;
+    }
+  `;
+  const storedEnumDirectory = mkdtempSync("/tmp/z-arena-stored-enum-");
+  const storedEnumFile = resolve(storedEnumDirectory, "main.zs");
+  writeFileSync(storedEnumFile, storedEnumProvenance);
+  const storedEnumResult = spawnSync(
+    process.execPath,
+    [cli, "run", storedEnumFile],
+    { encoding: "utf8" },
+  );
+  assert.equal(storedEnumResult.status, 0, storedEnumResult.stderr);
+
+  const wrongEnumRegion = storedEnumProvenance.replace(
+    "const stored = arena.create(pending);",
+    "let other = Arena();\n      const stored = other.create(pending);",
+  );
+  const wrongEnumRegionDiagnostic = diagnostics(
+    wrongEnumRegion,
+    "arena-stored-enum-wrong-region.zs",
+  )[0];
+  assert.equal(wrongEnumRegionDiagnostic.code, "Z0206");
+  assert.match(wrongEnumRegionDiagnostic.message, /only in the Arena that owns every embedded view/);
+
+  const copiedEnum = storedEnumProvenance.replace(
+    "const pending = Node({ span: pendingSpan });",
+    "const copied = pendingSpan;\n      const pending = Node({ span: pendingSpan });",
+  );
+  const copiedEnumDiagnostic = diagnostics(copiedEnum, "arena-stored-enum-copy.zs")[0];
+  assert.equal(copiedEnumDiagnostic.code, "Z0206");
+  assert.match(copiedEnumDiagnostic.message, /must be bound directly from its producing expression/);
+
+  const mixedEnumOwners = storedEnumProvenance.replace(
+    "const last = arena.create(Coordinate({ value: 22 }));",
+    "let other = Arena();\n      const last = other.create(Coordinate({ value: 22 }));",
+  );
+  const mixedEnumOwnersDiagnostic = diagnostics(
+    mixedEnumOwners,
+    "arena-stored-enum-mixed-owners.zs",
+  )[0];
+  assert.equal(mixedEnumOwnersDiagnostic.code, "Z0206");
+  assert.match(mixedEnumOwnersDiagnostic.message, /must borrow from exactly one owner/);
+
+  const directViewEnum = `
+    struct Coordinate { value: i32; }
+    enum StoredCoordinate {
+      primary view Coordinate,
+      alternate view Coordinate,
+    }
+    function main(): i32 { return 0; }
+  `;
+  const directViewEnumDiagnostic = diagnostics(directViewEnum, "arena-stored-enum-direct-view.zs")[0];
+  assert.equal(directViewEnumDiagnostic.code, "Z0206");
+  assert.match(directViewEnumDiagnostic.message, /payload must be a named value struct/);
+
+  const ownerlessEnumVariant = storedEnumProvenance.replace(
+    "enum StoredSpan { primary Span, alternate Span, }",
+    "enum StoredSpan { primary Span, none, }",
+  );
+  const ownerlessEnumVariantDiagnostic = diagnostics(
+    ownerlessEnumVariant,
+    "arena-stored-enum-ownerless-variant.zs",
+  )[0];
+  assert.equal(ownerlessEnumVariantDiagnostic.code, "Z0206");
+  assert.match(ownerlessEnumVariantDiagnostic.message, /every variant.*must carry stored provenance/);
+
+  const consumingEnumMatch = storedEnumProvenance.replace(
+    "return match (in span) {",
+    "return match (span) {",
+  );
+  const consumingEnumMatchDiagnostic = diagnostics(
+    consumingEnumMatch,
+    "arena-stored-enum-consuming-match.zs",
+  )[0];
+  assert.equal(consumingEnumMatchDiagnostic.code, "Z0206");
+  assert.match(consumingEnumMatchDiagnostic.message, /must be matched from proven storage with `match \(in value\)`/);
+
+  const destructuredEnumPayload = storedEnumProvenance.replace(
+    "primary(value) => total(in value);",
+    "primary({ first, last }) => first.value + last.value;",
+  );
+  const destructuredEnumPayloadDiagnostic = diagnostics(
+    destructuredEnumPayload,
+    "arena-stored-enum-destructure.zs",
+  )[0];
+  assert.equal(destructuredEnumPayloadDiagnostic.code, "Z0206");
+  assert.match(destructuredEnumPayloadDiagnostic.message, /requires one direct binding/);
+
   const wrongRegion = storedProvenance.replace(
     "const stored = arena.create(pending);",
     "let other = Arena();\n      const stored = other.create(pending);",

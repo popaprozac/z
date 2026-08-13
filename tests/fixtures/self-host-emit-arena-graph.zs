@@ -20,10 +20,26 @@ enum SpanChoice {
   alternate,
 }
 
+enum StoredSpan {
+  span TokenSpan,
+  alternate TokenSpan,
+}
+
+struct StoredNode {
+  kind: StoredSpan;
+}
+
 function spanLength(in span: TokenSpan): usize {
   const first = span.first;
   const last = span.last;
   return last.offset - first.offset;
+}
+
+function storedSpanLength(in value: StoredSpan): usize {
+  return match (in value) {
+    span(span) => spanLength(in span);
+    alternate(span) => spanLength(in span);
+  };
 }
 
 function main(): i32 {
@@ -57,10 +73,28 @@ function main(): i32 {
     alternate => matchedSpans.push(matchPending);
   }
   const matched = arena.create(matchedSpans);
+  const enumFirst = arena.create(TokenCoordinate({ offset: 20 }));
+  const enumLast = arena.create(TokenCoordinate({ offset: 62 }));
+  const enumPending = StoredNode({
+    kind: StoredSpan.span(TokenSpan({ first: enumFirst, last: enumLast })),
+  });
+  const enumStored = arena.create(enumPending);
+  const enumKind = enumStored.kind;
+  const enumLength = storedSpanLength(in enumKind);
+  const directFirst = arena.create(TokenCoordinate({ offset: 1 }));
+  const directLast = arena.create(TokenCoordinate({ offset: 43 }));
+  const directPending = StoredSpan.alternate(TokenSpan({
+    first: directFirst,
+    last: directLast,
+  }));
+  const directStored = arena.create(directPending);
+  const directLength = storedSpanLength(in directStored);
   if (populatedLength != 42) return 1;
   if (arrayLength != 42) return 1;
   if (spans.length != 1) return 1;
   if (matched.length != 1) return 1;
+  if (enumLength != 42) return 1;
+  if (directLength != 42) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
   return i32(length) - 42;

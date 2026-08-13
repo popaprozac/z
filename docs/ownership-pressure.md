@@ -2466,9 +2466,21 @@ establishment remains rejected because the body may run zero times. A local
 element view loans both the Array's relocatable storage and its Arena edge, so
 `push` is rejected until that view's last use.
 
-Map/Set, enum, class, and returned graph edges remain rejected. Richer mutable
-container provenance—including loop-carried identity and broader shape-stability
-evidence—is still required before claiming whole-compiler allocation gains.
+The next fixed edge lets an enum consume one of several named view-bearing
+value-struct payloads and inherit that payload's single Arena owner. Such an
+enum can nest in another value struct and move into the same Arena. Inspection
+uses `match (in value)`, and its direct payload binding retains the owner proof
+for the arm. Both frontends reject mixed owners, implicit copies, consuming
+matches, object destructuring, direct `view T` payloads, and any variant that
+does not carry a view-bearing named struct. Requiring every variant to carry
+provenance is intentionally conservative: a payloadless `none` state would need
+variant-sensitive evidence so ownerless values do not inherit a fictitious
+region.
+
+Map/Set, variant-sensitive enum alternatives, class, and returned graph edges
+remain rejected. Richer mutable container provenance—including loop-carried
+identity and broader shape-stability evidence—is still required before claiming
+whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans
 

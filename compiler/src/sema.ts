@@ -2187,11 +2187,14 @@ function analyzeStructDeclaration(
         });
       }
       const directViewField = parseViewType(field.type.name) !== null;
-      const nestedValueStruct = structs.get(String(underlyingType(field.type.name)))?.kind === "struct";
-      if (!directViewField && !nestedValueStruct) {
-        throw new DiagnosticError(fileName, field.type.location, "Option, enum, array, and collection view values cannot be stored in fields in the first stored-provenance tier", {
+      const nestedType = String(underlyingType(field.type.name));
+      const nestedValueAggregate = structs.get(nestedType)?.kind === "struct"
+        || (enums.has(nestedType) && !parseOptionType(field.type.name));
+      if (!directViewField && !nestedValueAggregate) {
+        throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
-          helps: ["keep Option, enum, array, and collection view storage local until those containers carry region provenance"],
+          notes: ["fixed nested value structs and all-payload view-bearing enums can carry one Arena identity"],
+          helps: ["keep Option, Array, and collection view storage local until those containers carry region provenance"],
         });
       }
       if (field.defaultValue) {
@@ -2516,6 +2519,7 @@ function analyzeEnumDeclaration(
   state: AnalysisState,
 ): void {
   const names = new Set<string>();
+  let storedViewPayload = false;
   for (const variant of declaration.variants) {
     validateUserName(variant.name, variant.location, fileName);
     if (names.has(variant.name)) {
@@ -2532,7 +2536,15 @@ function analyzeEnumDeclaration(
       }
       const optionalViewPayload = Boolean(parseOptionType(declaration.name) && parseViewType(variant.payload.name));
       if (containsStoredViewType(variant.payload.name, structs, enums) && !optionalViewPayload) {
-        throw new DiagnosticError(fileName, variant.payload.location, "view values cannot be stored in enum payloads", { code: "Z0206" });
+        storedViewPayload = true;
+        const payload = structs.get(String(underlyingType(variant.payload.name)));
+        if (payload?.kind !== "struct") {
+          throw new DiagnosticError(fileName, variant.payload.location, "a view-bearing enum payload must be a named value struct in the first stored-provenance tier", {
+            code: "Z0206",
+            notes: ["the enum inherits one Arena identity from the active value-struct payload"],
+            helps: ["wrap related views in a named struct, then use that struct as the variant payload"],
+          });
+        }
       }
       if (containsSliceType(variant.payload.name)) {
         throw new DiagnosticError(fileName, variant.location, "Slice values cannot be stored in enum payloads");
@@ -2540,6 +2552,18 @@ function analyzeEnumDeclaration(
       if (variant.payload.name === declaration.name) {
         throw new DiagnosticError(fileName, variant.location, "an enum cannot contain itself directly by value");
       }
+    }
+  }
+  if (storedViewPayload) {
+    const mixed = declaration.variants.find((variant) => (
+      !variant.payload || !containsStoredViewType(variant.payload.name, structs, enums)
+    ));
+    if (mixed) {
+      throw new DiagnosticError(fileName, mixed.location, "every variant of a view-bearing enum must carry stored provenance in the first tier", {
+        code: "Z0206",
+        notes: ["variant-sensitive ownerless states require richer flow evidence and remain deferred"],
+        helps: ["give every variant a named one-owner view-bearing struct payload, or keep the owner-tied view outside the enum"],
+      });
     }
   }
   if (declaration.variants.length === 0) {
@@ -3782,6 +3806,7 @@ function analyzeStatement(
       const foreignStringView = foreignPointer(variableType, state)?.stringView === true;
       const ownerTiedForeignView = isBorrowedNativeResource(variableType, state)
         && state.viewCallOrigins.has(statement.initializer.location.offset);
+      const arenaView = state.arenaCreateCalls.has(statement.initializer.location.offset);
       const storedViewComposite = !view
         && !optionalView
         && containsStoredViewType(String(variableType), structs, enums);
@@ -3798,7 +3823,7 @@ function analyzeStatement(
         state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
         return;
       }
-      if (view || optionalView || foreignStringView || ownerTiedForeignView || storedViewComposite) {
+      if (view || arenaView || optionalView || foreignStringView || ownerTiedForeignView || storedViewComposite) {
         if (statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, "a view binding must use const", { code: "Z0206" });
         }
@@ -3809,8 +3834,11 @@ function analyzeStatement(
             helps: ["bind a view-returning method call or `view projection` directly to const storage"],
           });
         }
-        locals.set(statement.name, String(variableType));
-        state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
+        const bindingType = arenaView && !view
+          ? viewTypeName(String(variableType))
+          : String(variableType);
+        locals.set(statement.name, bindingType);
+        state.bindingTypes.set(statement.nameLocation.offset, bindingType);
         bindViewOrigin(statement.name, origin, fileName, state);
         state.viewBindingOwners.set(
           statement.nameLocation.offset,
@@ -4660,7 +4688,8 @@ function analyzeStatement(
       }
       return;
     case "match": {
-      const subjectType = inferExpression(statement.expression, locals, globals, structs, enums, fileName, state);
+      const inferredSubjectType = String(underlyingType(inferExpression(statement.expression, locals, globals, structs, enums, fileName, state)));
+      const subjectType = parseViewType(inferredSubjectType)?.target ?? inferredSubjectType;
       const foreignUnion = foreignUnionMatchDeclaration(subjectType, statement.location, state);
       const declaration = enums.get(subjectType) ?? foreignUnion?.declaration;
       if (!declaration) {
@@ -4681,6 +4710,20 @@ function analyzeStatement(
         throw new DiagnosticError(fileName, statement.expression.location, "an optional receiver-tied view must be matched from its const binding with `match (in value)`", {
           code: "Z0206",
           helps: ["bind the lookup result with const, then borrow it with `match (in result)`"],
+        });
+      }
+      const storedViewEnum = enums.has(subjectType) && containsStoredViewType(subjectType, structs, enums);
+      const storedViewEnumOrigin = storedViewEnum && candidateRoot
+        ? state.viewOrigins.get(candidateRoot.name)
+          ?? (candidateRootType && isBorrowedBinding(candidateRootType)
+            ? directViewOrigin(candidateRoot.name, statement.expression.location)
+            : null)
+        : null;
+      if (storedViewEnum && (statement.mode !== "in" || !candidateRoot || !storedViewEnumOrigin)) {
+        throw new DiagnosticError(fileName, statement.expression.location, "a view-bearing enum must be matched from proven storage with `match (in value)`", {
+          code: "Z0206",
+          notes: ["borrowing the match keeps the enum's Arena owner live while its active payload is inspected"],
+          helps: ["bind the enum-bearing value, then use `match (in value)`"],
         });
       }
       const borrowed = statement.mode === "in" || Boolean(candidateRootType && isBorrowedBinding(candidateRootType));
@@ -4730,6 +4773,12 @@ function analyzeStatement(
           if (!payloadDeclaration) {
             throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
           }
+          if (variant.payload && containsStoredViewType(variant.payload.name, structs, enums)) {
+            throw new DiagnosticError(fileName, arm.location, "a view-bearing enum payload requires one direct binding in the first stored-provenance tier", {
+              code: "Z0206",
+              helps: ["bind the payload, then inspect its fields inside the arm"],
+            });
+          }
           const seen = new Set<string>();
           for (const fieldBinding of arm.objectBindings) {
             if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
@@ -4751,7 +4800,10 @@ function analyzeStatement(
           armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
         }
         if (variant.payload && arm.binding && arm.bindingLocation) {
-          const payloadBorrowed = borrowed && hasOwnershipType(variant.payload.name, structs, enums, state);
+          const payloadBorrowed = borrowed && (
+            hasOwnershipType(variant.payload.name, structs, enums, state)
+            || containsStoredViewType(variant.payload.name, structs, enums)
+          );
           armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
           state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
         }
@@ -4770,12 +4822,12 @@ function analyzeStatement(
         const foreignPayloadOrigin: ViewOrigin | null = foreignUnion && candidateRoot
           ? { sources: [{ owner: candidateRoot.name, location: statement.location }] }
           : null;
-        const patternViewOrigin = optionalViewOrigin ?? foreignPayloadOrigin;
+        const patternViewOrigin = optionalViewOrigin ?? storedViewEnumOrigin ?? foreignPayloadOrigin;
         if (borrowedRoot) {
           state.borrowOrigins.set(borrowedRoot.name, { location: statement.location, kind: "match" });
         }
         if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
-        if (patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
+        if (patternViewOrigin && arm.binding && variant.payload && containsStoredViewType(variant.payload.name, structs, enums)) {
           bindViewOrigin(arm.binding, patternViewOrigin, fileName, state);
           if (arm.bindingLocation) {
             state.viewBindingOwners.set(
@@ -4798,7 +4850,7 @@ function analyzeStatement(
         }
         try {
           const transientViews = new Set(
-            patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
+            patternViewOrigin && arm.binding && variant.payload && containsStoredViewType(variant.payload.name, structs, enums)
               ? [arm.binding]
               : [],
           );
@@ -6076,7 +6128,8 @@ function inferMatchExpression(
   state: AnalysisState,
   expected: ValueType | null = null,
 ): ValueType {
-  const subjectType = inferExpression(expression.expression, locals, globals, structs, enums, fileName, state);
+  const inferredSubjectType = String(underlyingType(inferExpression(expression.expression, locals, globals, structs, enums, fileName, state)));
+  const subjectType = parseViewType(inferredSubjectType)?.target ?? inferredSubjectType;
   const foreignUnion = foreignUnionMatchDeclaration(subjectType, expression.location, state);
   const declaration = enums.get(subjectType) ?? foreignUnion?.declaration;
   if (!declaration) {
@@ -6097,6 +6150,20 @@ function inferMatchExpression(
     throw new DiagnosticError(fileName, expression.expression.location, "an optional receiver-tied view must be matched from its const binding with `match (in value)`", {
       code: "Z0206",
       helps: ["bind the lookup result with const, then borrow it with `match (in result)`"],
+    });
+  }
+  const storedViewEnum = enums.has(subjectType) && containsStoredViewType(subjectType, structs, enums);
+  const storedViewEnumOrigin = storedViewEnum && candidateRoot
+    ? state.viewOrigins.get(candidateRoot.name)
+      ?? (candidateRootType && isBorrowedBinding(candidateRootType)
+        ? directViewOrigin(candidateRoot.name, expression.expression.location)
+        : null)
+    : null;
+  if (storedViewEnum && (expression.mode !== "in" || !candidateRoot || !storedViewEnumOrigin)) {
+    throw new DiagnosticError(fileName, expression.expression.location, "a view-bearing enum must be matched from proven storage with `match (in value)`", {
+      code: "Z0206",
+      notes: ["borrowing the match keeps the enum's Arena owner live while its active payload is inspected"],
+      helps: ["bind the enum-bearing value, then use `match (in value)`"],
     });
   }
   const borrowed = expression.mode === "in" || Boolean(candidateRootType && isBorrowedBinding(candidateRootType));
@@ -6146,6 +6213,12 @@ function inferMatchExpression(
       }
       const payloadDeclaration = variant.payload ? structs.get(variant.payload.name) : null;
       if (!payloadDeclaration) throw new DiagnosticError(fileName, arm.location, "an object pattern requires a struct or class payload");
+      if (variant.payload && containsStoredViewType(variant.payload.name, structs, enums)) {
+        throw new DiagnosticError(fileName, arm.location, "a view-bearing enum payload requires one direct binding in the first stored-provenance tier", {
+          code: "Z0206",
+          helps: ["bind the payload, then inspect its fields inside the arm"],
+        });
+      }
       const seen = new Set<string>();
       for (const fieldBinding of arm.objectBindings) {
         if (seen.has(fieldBinding.fieldName)) throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `duplicate object pattern field ${JSON.stringify(fieldBinding.fieldName)}`);
@@ -6167,7 +6240,10 @@ function inferMatchExpression(
       armLocals.set(borrowedRoot.name, `${borrowedPrefix}${underlyingType(borrowedRootType)}`);
     }
     if (variant.payload && arm.binding && arm.bindingLocation) {
-      const payloadBorrowed = borrowed && hasOwnershipType(variant.payload.name, structs, enums, state);
+      const payloadBorrowed = borrowed && (
+        hasOwnershipType(variant.payload.name, structs, enums, state)
+        || containsStoredViewType(variant.payload.name, structs, enums)
+      );
       armLocals.set(arm.binding, payloadBorrowed ? `${borrowedPrefix}${variant.payload.name}` : variant.payload.name);
       state.bindingTypes.set(arm.bindingLocation.offset, variant.payload.name);
     }
@@ -6186,12 +6262,12 @@ function inferMatchExpression(
     const foreignPayloadOrigin: ViewOrigin | null = foreignUnion && candidateRoot
       ? { sources: [{ owner: candidateRoot.name, location: expression.location }] }
       : null;
-    const patternViewOrigin = optionalViewOrigin ?? foreignPayloadOrigin;
+    const patternViewOrigin = optionalViewOrigin ?? storedViewEnumOrigin ?? foreignPayloadOrigin;
     if (borrowedRoot) {
       state.borrowOrigins.set(borrowedRoot.name, { location: expression.location, kind: "match" });
     }
     if (optionalViewOrigin && candidateRoot) unbindViewOrigin(candidateRoot.name, state);
-    if (patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)) {
+    if (patternViewOrigin && arm.binding && variant.payload && containsStoredViewType(variant.payload.name, structs, enums)) {
       bindViewOrigin(arm.binding, patternViewOrigin, fileName, state);
       if (arm.bindingLocation) {
         state.viewBindingOwners.set(
@@ -6215,7 +6291,7 @@ function inferMatchExpression(
     let armType: ValueType = "never";
     try {
       const transientViews = new Set(
-        patternViewOrigin && arm.binding && variant.payload && parseViewType(variant.payload.name)
+        patternViewOrigin && arm.binding && variant.payload && containsStoredViewType(variant.payload.name, structs, enums)
           ? [arm.binding]
           : [],
       );
@@ -8689,7 +8765,34 @@ function inferExpressionInner(
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       rejectBorrowedNativeResourceEscape(actual, expression.payload, locals, fileName, state, "stored in an enum payload");
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, structs, enums, state);
-      consumeOwnedValue(expression.payload, variant.payload.name, locals, structs, enums, fileName, state);
+      const storedViewPayload = containsStoredViewType(variant.payload.name, structs, enums);
+      if (storedViewPayload) {
+        const origin = storedViewOriginForExpression(expression.payload, state);
+        if (!origin) {
+          throw new DiagnosticError(fileName, expression.payload.location, `view-bearing variant ${JSON.stringify(`${declaration.name}.${variant.name}`)} requires proven stored provenance`, {
+            code: "Z0206",
+            helps: ["construct the payload from views owned by one Arena"],
+          });
+        }
+        if (origin.sources.length !== 1) {
+          throw new DiagnosticError(fileName, expression.location, `view-bearing enum ${JSON.stringify(declaration.name)} must borrow from exactly one owner`, {
+            code: "Z0206",
+            notes: ["the first enum-provenance tier does not mix regions inside one active payload"],
+            helps: ["construct every payload view from the same Arena"],
+          });
+        }
+        state.viewCallOrigins.set(expression.location.offset, origin);
+      }
+      consumeOwnedValue(
+        expression.payload,
+        variant.payload.name,
+        locals,
+        structs,
+        enums,
+        fileName,
+        state,
+        storedViewPayload,
+      );
       return declaration.name;
     }
     case "executorPlacement":
@@ -10026,7 +10129,34 @@ function inferExpressionInner(
                 "stored in an enum payload",
               );
               requireAssignable(variant.payload.name, actual, expression.arguments[0], fileName, structs, enums, state);
-              consumeOwnedValue(expression.arguments[0], variant.payload.name, locals, structs, enums, fileName, state);
+              const storedViewPayload = containsStoredViewType(variant.payload.name, structs, enums);
+              if (storedViewPayload) {
+                const origin = storedViewOriginForExpression(argument, state);
+                if (!origin) {
+                  throw new DiagnosticError(fileName, argument.location, `view-bearing variant ${JSON.stringify(`${enumDeclaration.name}.${variant.name}`)} requires proven stored provenance`, {
+                    code: "Z0206",
+                    helps: ["construct the payload from views owned by one Arena"],
+                  });
+                }
+                if (origin.sources.length !== 1) {
+                  throw new DiagnosticError(fileName, expression.location, `view-bearing enum ${JSON.stringify(enumDeclaration.name)} must borrow from exactly one owner`, {
+                    code: "Z0206",
+                    notes: ["the first enum-provenance tier does not mix regions inside one active payload"],
+                    helps: ["construct every payload view from the same Arena"],
+                  });
+                }
+                state.viewCallOrigins.set(expression.location.offset, origin);
+              }
+              consumeOwnedValue(
+                expression.arguments[0],
+                variant.payload.name,
+                locals,
+                structs,
+                enums,
+                fileName,
+                state,
+                storedViewPayload,
+              );
             }
             return enumDeclaration.name;
           }
@@ -11774,8 +11904,8 @@ function checkArguments(
       requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
       if (argument.kind === "argumentReference") {
-        state.expressionTypes.set(argument.location.offset, String(borrowedActual));
-        state.expressionTypes.set(argument.nameLocation.offset, String(borrowedActual));
+        state.expressionTypes.set(argument.location.offset, String(actual));
+        state.expressionTypes.set(argument.nameLocation.offset, String(actual));
       }
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {

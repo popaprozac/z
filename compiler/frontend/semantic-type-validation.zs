@@ -797,19 +797,29 @@ function validateAggregateTypes(
         );
       }
       if (!stringStartsWith(field.type.name, "view ")) {
-        let nestedValueStruct = false;
+        let nestedValueAggregate = false;
+        let optionalAggregate = false;
+        match (genericTypeShape(field.type.name)) {
+          some(shape) => optionalAggregate = shape.base == "Option";
+          none => {}
+        }
         match (typeSymbolLocation(modules, moduleIndex, field.type.name)) {
           some(location) => {
-            nestedValueStruct = modules[location.moduleIndex].symbols[
+            const nestedKind = modules[location.moduleIndex].symbols[
               location.symbolIndex
-            ].kind == ModuleSymbolKind.structSymbol;
+            ].kind;
+            nestedValueAggregate = nestedKind == ModuleSymbolKind.structSymbol
+              || (
+                nestedKind == ModuleSymbolKind.enumSymbol
+                && !optionalAggregate
+              );
           }
           none => {}
         }
-        if (!nestedValueStruct) throw validationError(
+        if (!nestedValueAggregate) throw validationError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
-          "Option, enum, array, and collection view values cannot be stored in fields in the first stored-provenance tier",
+          "this view-bearing field shape cannot be stored in fields in the first provenance tier",
           field.type.line,
           field.type.column
         );
@@ -883,6 +893,7 @@ function validateEnumTypes(
   in declaration: EnumDeclaration
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
+  let storedViewPayload = false;
   for (const variant of declaration.variants) {
     match (in variant.payload) {
       some(payload) => {
@@ -893,15 +904,51 @@ function validateEnumTypes(
           moduleIndex,
           payload.name,
           payloadViewVisiting
-        )) throw validationError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          "view values cannot be stored in enum payloads",
-          payload.line,
-          payload.column
-        );
+        )) {
+          storedViewPayload = true;
+          let valueStructPayload = false;
+          match (typeSymbolLocation(modules, moduleIndex, payload.name)) {
+            some(location) => {
+              valueStructPayload = modules[location.moduleIndex].symbols[
+                location.symbolIndex
+              ].kind == ModuleSymbolKind.structSymbol;
+            }
+            none => {}
+          }
+          if (!valueStructPayload) throw validationError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "a view-bearing enum payload must be a named value struct in the first stored-provenance tier",
+            payload.line,
+            payload.column
+          );
+        }
       }
       none => {}
+    }
+  }
+  if (storedViewPayload) {
+    for (const variant of declaration.variants) {
+      let variantCarriesStoredView = false;
+      match (in variant.payload) {
+        some(payload) => {
+          let visiting = Array<String>();
+          variantCarriesStoredView = typeContainsStoredView(
+            modules,
+            moduleIndex,
+            payload.name,
+            visiting
+          );
+        }
+        none => {}
+      }
+      if (!variantCarriesStoredView) throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "every variant of a view-bearing enum must carry stored provenance in the first tier",
+        variant.line,
+        variant.column
+      );
     }
   }
 }

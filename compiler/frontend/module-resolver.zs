@@ -1308,6 +1308,43 @@ function inferMatchExpressionNodeType(
       "match (in ...) requires stored enum storage"
     );
   }
+  let storedViewEnum = false;
+  match (typeSymbolLocation(modules, moduleIndex, subjectType)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        == ModuleSymbolKind.enumSymbol
+      ) {
+        let subjectViewVisiting = Array<String>();
+        storedViewEnum = typeContainsStoredView(
+          modules,
+          moduleIndex,
+          subjectType,
+          subjectViewVisiting
+        );
+      }
+    }
+    none => {}
+  }
+  const subjectViewOwner = valueBindingViewOwner(bindings, subjectRoot);
+  if (
+    storedViewEnum
+    && (
+      tree.nodes[index].value != "in"
+      || subjectRoot.byteLength == 0
+      || (
+        subjectViewOwner.byteLength == 0
+        && !valueBindingIsBorrowed(bindings, subjectRoot)
+      )
+    )
+  ) {
+    throw matchError(
+      module,
+      tree,
+      subjectIndex,
+      "a view-bearing enum must be matched from proven storage with match (in value)"
+    );
+  }
   if (!borrowedMatch) {
     try consumeOwnedExpressionNode(
       module,
@@ -2934,6 +2971,34 @@ function inferExpressionNodeType(
               expected,
               actual
             );
+            let storedViewVisiting = Array<String>();
+            const storedViewPayload = typeContainsStoredView(
+              modules,
+              moduleIndex,
+              expected,
+              storedViewVisiting
+            );
+            if (storedViewPayload) {
+              const payloadOwner = storedViewOwnerForExpression(
+                bindings,
+                tree,
+                children[1]
+              );
+              if (payloadOwner.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `view-bearing variant "${value}.${variantName}" requires proven stored provenance`,
+                  tree.nodes[children[1]].line,
+                  tree.nodes[children[1]].column
+                );
+              }
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                payloadOwner
+              );
+            }
             try consumeOwnedExpressionNode(
               module,
               modules,
@@ -2941,7 +3006,7 @@ function inferExpressionNodeType(
               tree,
               children[1],
               expected,
-              false,
+              storedViewPayload,
               inout bindings
             );
           }
@@ -4299,6 +4364,34 @@ function inferExpressionNodeType(
               expected,
               actual
             );
+            let storedViewVisiting = Array<String>();
+            const storedViewPayload = typeContainsStoredView(
+              modules,
+              moduleIndex,
+              expected,
+              storedViewVisiting
+            );
+            if (storedViewPayload) {
+              const payloadOwner = storedViewOwnerForExpression(
+                bindings,
+                tree,
+                children[1]
+              );
+              if (payloadOwner.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `view-bearing variant "${enumType}.${variantName}" requires proven stored provenance`,
+                  tree.nodes[children[1]].line,
+                  tree.nodes[children[1]].column
+                );
+              }
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                payloadOwner
+              );
+            }
             try consumeOwnedExpressionNode(
               module,
               modules,
@@ -4306,7 +4399,7 @@ function inferExpressionNodeType(
               tree,
               children[1],
               expected,
-              false,
+              storedViewPayload,
               inout bindings
             );
             return enumType;

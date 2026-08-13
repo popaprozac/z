@@ -7477,7 +7477,8 @@ function generateForeignUnionMatchExpression(
 function generateMatch(statement: Extract<Statement, { kind: "match" }>, context: GenerationContext): string {
   const foreignUnion = context.semanticInfo.foreignUnionMatches.get(statement.location.offset);
   if (foreignUnion) return generateForeignUnionMatch(statement, foreignUnion, context);
-  const type = inferExpressionType(statement.expression, context);
+  const inferredType = inferExpressionType(statement.expression, context);
+  const type = parseViewType(inferredType)?.target ?? inferredType;
   const declaration = context.enums.get(type)!;
   const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
   if (niche) return generateNicheOptionMatch(statement, context, declaration, niche);
@@ -7504,7 +7505,9 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
     }
   } else {
     subjectStorage = borrowed
-      ? `const ${enumName(type)} *${temporary} = &(${subject});`
+      ? parseViewType(inferredType)
+        ? `const ${enumName(type)} *${temporary} = ${subject};`
+        : `const ${enumName(type)} *${temporary} = &(${subject});`
       : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
   }
   const arms = statement.arms.map((arm) => {
@@ -7653,7 +7656,8 @@ function generateMatchExpression(
       consumeTerminates,
     );
   }
-  const type = inferExpressionType(expression.expression, context);
+  const inferredType = inferExpressionType(expression.expression, context);
+  const type = parseViewType(inferredType)?.target ?? inferredType;
   const declaration = context.enums.get(type)!;
   const niche = nicheOptionPayload(declaration, context.semanticInfo.foreignNamedTypes);
   if (niche) {
@@ -7726,7 +7730,9 @@ function generateMatchExpression(
     return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
   const storage = borrowed
-    ? `const ${enumName(type)} *${temporary} = &(${subject});`
+    ? parseViewType(inferredType)
+      ? `const ${enumName(type)} *${temporary} = ${subject};`
+      : `const ${enumName(type)} *${temporary} = &(${subject});`
     : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
   const invalid = declaration.nativeLayout?.language === "c"
     || requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
@@ -8190,7 +8196,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (
         expression.access === "in"
         && (
-          parsePointerTypeName(
+          parseViewType(context.localTypes.get(expression.name) ?? "")
+          || parsePointerTypeName(
             context.owner.parameters.find((parameter) => parameter.name === expression.name)?.type.name ?? "",
           )
           || storedPointerType(context.localTypes.get(expression.name) ?? "")
@@ -9066,6 +9073,11 @@ function generateCallArgument(expression: Expression, context: GenerationContext
   const foreignIn = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in";
   if (nativeIn && expression.kind === "argumentReference") return value;
   if (foreignIn && expression.kind === "argumentReference") return value;
+  if (
+    nativeIn
+    && expression.kind === "identifier"
+    && parseViewType(context.localTypes.get(expression.name) ?? "")
+  ) return value;
   if (nativeIn && parseViewType(inferExpressionType(expression, context))) return value;
   if (
     (nativeIn || foreignIn)
@@ -10334,7 +10346,8 @@ function matchExpressionType(expression: Extract<Expression, { kind: "matchExpre
     }
     return "i32";
   }
-  const subjectType = inferExpressionType(expression.expression, context);
+  const inferredSubjectType = inferExpressionType(expression.expression, context);
+  const subjectType = parseViewType(inferredSubjectType)?.target ?? inferredSubjectType;
   const declaration = context.enums.get(subjectType)!;
   for (const arm of expression.arms) {
     const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;

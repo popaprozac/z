@@ -3,6 +3,7 @@ import {
   addMatchBorrowedValueBinding,
   addViewValueBinding,
   addValueBinding,
+  valueBindingViewOwner,
 } from "./semantic-flow-state.zs";
 import {
   NativeFieldShape,
@@ -12,7 +13,10 @@ import {
   hasKnownAggregate,
 } from "./semantic-member-lookups.zs";
 import { typeSymbolLocation } from "./semantic-type-identities.zs";
-import { typeHasCleanup } from "./semantic-type-ownership.zs";
+import {
+  typeContainsStoredView,
+  typeHasCleanup,
+} from "./semantic-type-ownership.zs";
 import {
   arrayElementType,
   isNumericTypeName,
@@ -149,12 +153,29 @@ export function addMatchArmValueBindings(
   const patterns = copyIndices(tree.nodes[armIndex].children);
   if (patternKind == "binding" && patterns.length == 1) {
     let visiting = Array<String>();
+    const storedViewPayload = typeContainsStoredView(
+      modules,
+      moduleIndex,
+      variant.payloadType,
+      visiting
+    );
     if (stringStartsWith(variant.payloadType, "view ")) {
       addViewValueBinding(
         inout bindings,
         tree.nodes[patterns[0]].value,
         variant.payloadType,
         subjectRoot
+      );
+    } else if (borrowedMatch && storedViewPayload) {
+      let payloadOwner = valueBindingViewOwner(bindings, subjectRoot);
+      if (payloadOwner.byteLength == 0) {
+        payloadOwner = subjectRoot.copyBytes(0, subjectRoot.byteLength);
+      }
+      addViewValueBinding(
+        inout bindings,
+        tree.nodes[patterns[0]].value,
+        variant.payloadType,
+        payloadOwner
       );
     } else if (
       borrowedMatch
@@ -196,6 +217,20 @@ export function addMatchArmValueBindings(
   if (patternKind != "object") return;
   const payloadModuleIndex = variant.payloadModuleIndex;
   const payloadType = variant.payloadType.copyBytes(0, variant.payloadType.byteLength);
+  let payloadViewVisiting = Array<String>();
+  if (typeContainsStoredView(
+    modules,
+    moduleIndex,
+    payloadType,
+    payloadViewVisiting
+  )) {
+    throw matchError(
+      module,
+      tree,
+      armIndex,
+      "a view-bearing enum payload requires one direct binding in the first stored-provenance tier"
+    );
+  }
   const knownAggregate = hasKnownAggregate(
     modules,
     payloadModuleIndex,

@@ -3329,7 +3329,11 @@ function appendStatement(
       }
     }
     if (labelsContain(declaration.statements[index].labels, "tagged")) {
-      output.append(".tag");
+      if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+        output.append("->tag");
+      } else {
+        output.append(".tag");
+      }
     }
     output.append(") {\n");
     for (const arm of declaration.statements[index].children) {
@@ -3373,7 +3377,11 @@ function appendStatement(
               none => throw "native C emission received a match without a subject";
             }
           }
-          output.append(".payload.");
+          if (labelsContain(declaration.statements[index].labels, "view-subject")) {
+            output.append("->payload.");
+          } else {
+            output.append(".payload.");
+          }
           output.append(declaration.statements[arm].name);
           output.append(";\n");
         }

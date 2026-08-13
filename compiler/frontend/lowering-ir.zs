@@ -4954,7 +4954,7 @@ function lowerExpression(
     && tree.nodes[index].children.length == 1
   ) {
     const binding = tree.nodes[index].children[0];
-    return try lowerExpression(
+    const lowered = try lowerExpression(
       program,
       importedTypes,
       evidence,
@@ -4962,6 +4962,37 @@ function lowerExpression(
       binding,
       inout output
     );
+    let referencedType = "";
+    const bindingName = tree.nodes[binding].value.copyBytes(
+      0,
+      tree.nodes[binding].value.byteLength
+    );
+    const bindingOffset = tree.nodes[binding].offset;
+    match (namedValueTypeName(
+      program,
+      evidence,
+      "",
+      bindingName,
+      bindingOffset
+    )) {
+      some(typeName) => referencedType = move typeName;
+      none => match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      )) {
+        some(typeName) => referencedType = move typeName;
+        none => {}
+      }
+    }
+    if (stringStartsWith(referencedType, "view ")) {
+      if (output[lowered].labels.length > 0) {
+        output[lowered].labels[0] = move referencedType;
+      } else output[lowered].labels.push(move referencedType);
+    }
+    return lowered;
   }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
     return pushExpression(
@@ -7525,12 +7556,18 @@ function lowerExpression(
           )
         ) markMutableStorage(inout output, value);
         children.push(value);
-        labels.push(parameterModes.length >= argument
+        let argumentMode = parameterModes.length >= argument
           ? parameterModes[argument - 1].copyBytes(
             0,
             parameterModes[argument - 1].byteLength
           )
-          : "value");
+          : "value";
+        if (
+          argumentMode == "in"
+          && output[value].labels.length > 0
+          && stringStartsWith(output[value].labels[0], "view ")
+        ) argumentMode = "view";
+        labels.push(move argumentMode);
         argument = argument + 1;
       }
       return pushExpression(
@@ -7725,6 +7762,11 @@ function lowerExpression(
           }
           none => {}
         }
+        if (
+          callLabels[argument - 1] == "in"
+          && output[value].labels.length > 0
+          && stringStartsWith(output[value].labels[0], "view ")
+        ) callLabels[argument - 1] = "view";
       }
       children.push(value);
       argument = argument + 1;
@@ -8840,7 +8882,12 @@ function matchSubjectTypeName(
     tree,
     index
   )) {
-    some(name) => return Option.some(move name);
+    some(name) => {
+      if (stringStartsWith(name, "view ")) {
+        return Option.some(name.copyBytes(5, name.byteLength));
+      }
+      return Option.some(move name);
+    }
     none => {}
   }
   let subject = index;
@@ -9710,6 +9757,12 @@ function lowerMatchTree(
     none => {
       if (declaration.payloadBearing) labels.push("tagged");
     }
+  }
+  match (resolvedExpressionTypeName(evidence, tree, subjectInput)) {
+    some(subjectType) => {
+      if (stringStartsWith(subjectType, "view ")) labels.push("view-subject");
+    }
+    none => {}
   }
   let matchType = LoweredType({
     kind: LoweredTypeKind.enumType,

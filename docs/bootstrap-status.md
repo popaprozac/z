@@ -56,8 +56,8 @@ Status meanings:
 | `Iterator<T>` | Implemented synchronous tier | Explicit `std/iteration` import; generic nominal conformance, `next(inout this): Option<T>`, explicit mutable loans for stored value iterators, unique temporary iterator storage, owned element transfer and cleanup, native-parser parity, and editor support; consuming, mutable-element, move-only foreign-element, and async iterators remain |
 | `Slice<T>` | Partial | Non-escaping parameters plus direct-awaited and scope-bounded child-task borrowing from fixed and growable owners, including cleanup-bearing Z and move-only C++ elements; returned/stored and cross-thread Slices remain |
 | Owner-tied `view T` | Implemented narrow tier | `const value = view owner.field/index` local projections; direct field/index results and niche-backed `Option<view T>` lookups from synchronous value-struct methods; synchronous module-function returns projected from immutable `in` value owners; one-owner local value structs; and same-owner `Array<ValueStructWithViews>` containers established by populated construction, a direct first `push`, or agreeing exhaustive `if`/`match` branches. Multi-source returns conservatively loan every possible input while still lowering to one pointer. Views remain inferred const and read-only, support ordinary by-value loads when `T` is cleanup-free and copyable—including contextual `match`/`if` arms—plus synchronous `in T` forwarding and proven nonescaping inline capture. Read-only `view Array<T>` indexing/length/iteration and `view String` inspection/comparison/interpolation preserve the pointer representation through both frontends; no mutation through a live element view or class owners |
-| `std/memory` `Arena` | Implemented narrow tier in both frontends | Stable paged region allocation, inferred owner-tied views, one-owner view-bearing value structs and same-owner Arrays stored back into the same region, reverse `deinit`/ARC/native RAII cleanup that skips borrowed fields, shared-loan reset exclusion, aliased imports, and proven nonescaping inline capture. Mutable Arrays establish provenance directly or through agreeing exhaustive branches and reject missing paths, mixed owners, and loop-only establishment; the fixed-point native emitter owns the C representation and cleanup helpers; regions remain synchronous and single-threaded |
-| General returned/stored borrows | Planned | Direct immutable parameter provenance, same-Arena fixed composites, immutable populated Arrays, first-push mutable Array provenance, and exhaustive branch joins are implemented; loop-carried provenance, Map/Set and enum-held edges, optional parameter-view containers, class alias safety, retained views, and general lifetime relationships remain open |
+| `std/memory` `Arena` | Implemented narrow tier in both frontends | Stable paged region allocation, inferred owner-tied views, one-owner view-bearing value structs, same-owner Arrays, and fixed all-payload enum edges stored back into the same region; reverse `deinit`/ARC/native RAII cleanup skips borrowed fields, shared loans exclude reset, aliases preserve semantics, and proven inline captures remain nonescaping. Mutable Arrays establish provenance directly or through agreeing exhaustive branches and reject missing paths, mixed owners, and loop-only establishment. View-bearing enums require a named one-owner struct payload in every variant and borrowed direct-binding matches; the fixed-point native emitter owns the C representation and cleanup helpers; regions remain synchronous and single-threaded |
+| General returned/stored borrows | Planned | Direct immutable parameter provenance, same-Arena fixed composites, immutable populated Arrays, first-push mutable Array provenance, exhaustive branch joins, and fixed all-payload enum edges are implemented; loop-carried provenance, Map/Set, variant-sensitive ownerless enum alternatives, optional parameter-view containers, class alias safety, retained views, and general lifetime relationships remain open |
 | ORC cycle collection | Planned | `Weak<T>` works now; arbitrary strong cycles are not collected |
 
 The ongoing empirical record is
@@ -315,9 +315,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    structs, prove one shared owner, and move their growable buffer into that
    Arena. Empty mutable Arrays can now establish the same identity directly or
    across exhaustive branches whose continuing paths agree, enforce it on later
-   pushes, and reject reallocation while an element view is live. Other
-   containers, loop-carried identity, and the complete parser AST still require
-   richer provenance evidence.
+   pushes, and reject reallocation while an element view is live. Fixed enums
+   can now consume a one-owner value-struct payload in every variant, nest
+   through another value struct, move into the same Arena, and expose the active
+   payload through a borrowed match. Other containers, variant-sensitive
+   ownerless enum states, loop-carried identity, and the complete parser AST
+   still require richer provenance evidence.
    The reusable lexer, parser, protocol, and in-process library now live under
    `compiler/frontend`; Source Inspector remains their readable application
    client and standalone bridge pressure test. The first native module resolver

@@ -1612,17 +1612,52 @@ provenance is established, later same-owner pushes may occur in control flow.
 `push` remains forbidden while an element view or iteration loan is live because
 growth can relocate the buffer.
 
+An enum may carry one fixed region edge when every variant contains a named
+one-owner view-bearing value struct:
+
+```z
+enum StoredSpan {
+  primary Span,
+  alternate Span,
+}
+
+struct Node {
+  span: StoredSpan;
+}
+
+const pendingSpan = StoredSpan.primary(Span({ first, last }));
+const pending = Node({ span: pendingSpan });
+const node = scratch.create(pending);
+const active = node.span;
+
+return match (in active) {
+  primary(span) => inspect(in span);
+  alternate(span) => inspect(in span);
+};
+```
+
+The variant constructor consumes its payload and the enum inherits that
+payload's single Arena identity. It may be nested through value structs and
+stored only in the same Arena. `match (in value)` is required and gives the
+direct payload binding the same provenance for the arm. The first tier rejects
+direct `view T` payloads, variants without a view-bearing named-struct payload,
+mixed-owner payloads, object destructuring, copying, consuming matches,
+mutation, escape, and suspension. Ownerless variants need variant-sensitive
+flow evidence and remain a later relaxation.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
-enter classes or enums; ordinary collection storage is limited to populated
-same-owner Arrays, and their only eventual owning destination is their
-provenance Arena. A synchronous inline closure accepted through an `in`
+enter classes; ordinary collection storage is limited to populated same-owner
+Arrays, and enum storage is limited to the fixed all-variants rule above. Their
+only eventual owning destination is their provenance Arena. A synchronous
+inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Loop-carried establishment, Map/Set and enum-held region graphs, async regions,
-thread transfer, page reuse, and allocator parameters remain later tiers.
+Loop-carried establishment, Map/Set and variant-sensitive enum graphs, async
+regions, thread transfer, page reuse, and allocator parameters remain later
+tiers.
 
 ## Generics and traits
 

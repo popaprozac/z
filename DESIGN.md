@@ -379,12 +379,47 @@ Later pushes may use ordinary control flow but must match the established Arena.
 Structural mutation is rejected while an element view or iteration loan is live
 because `push` may reallocate the buffer.
 
+An enum may carry the same fixed graph edge when each variant payload is a
+named, one-owner view-bearing value struct:
+
+```z
+enum StoredSpan {
+  primary Span,
+  alternate Span,
+}
+
+struct Node {
+  span: StoredSpan;
+}
+
+const pendingSpan = StoredSpan.primary(Span({ first, last }));
+const pendingNode = Node({ span: pendingSpan });
+const node = arena.create(pendingNode);
+const span = node.span;
+
+match (in span) {
+  primary(value) => inspect(in value);
+  alternate(value) => inspect(in value);
+}
+```
+
+Construction consumes the payload and transfers its one Arena identity to the
+enum. The enum may then move through other value structs and only into that
+same Arena. Matching must borrow proven storage with `match (in value)`; the
+active payload binding inherits the owner's provenance for the arm. The first
+tier requires every variant to carry a named view-bearing struct. Direct
+`view T` payloads, payloadless or ownerless alternatives, object-pattern
+destructuring, mixed owners, copying, consuming matches, mutation, escape, and
+suspension remain rejected. Variant-sensitive ownerless states require richer
+flow evidence and are deferred rather than represented by a hidden runtime tag.
+
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
-View-bearing structs cannot enter classes, enums, returns, stored or escaping
-closures, mutable borrows, or suspension. Ordinary collections reject them
-except for the populated same-Arena `Array` rule above. The tier is
+View-bearing structs cannot enter classes, returns, stored or escaping closures,
+mutable borrows, or suspension. Ordinary collections reject them except for the
+populated same-Arena `Array` rule above; enums accept only the fixed same-Arena
+rule above. The tier is
 single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer
@@ -400,9 +435,10 @@ Memory.free(move block); // consumes the owner
 
 Arbitrary raw pointers, untracked aliases, pointer arithmetic, and freeing
 foreign storage require an explicit `unsafe` boundary. Later arena work must
-decide how mutable and container-held projections carry provenance, whether
-pages are reused, whether arenas can be sendable, and where allocator
-parameters belong on collections and APIs.
+decide how mutable and broader container-held projections carry provenance,
+whether enum alternatives can omit the owner, whether pages are reused,
+whether arenas can be sendable, and where allocator parameters belong on
+collections and APIs.
 
 Native aggregate construction intentionally distinguishes values from identity:
 
