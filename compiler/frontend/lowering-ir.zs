@@ -6766,10 +6766,25 @@ function lowerExpression(
       const receiverInput = tree.nodes[calleeInput].children[0];
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
         some(receiverTypeName) => {
+          let receiverValueTypeName = receiverTypeName.copyBytes(
+            0,
+            receiverTypeName.byteLength
+          );
+          let receiverView = false;
+          if (
+            stringStartsWith(receiverValueTypeName, "view ")
+            && receiverValueTypeName.byteLength > 5
+          ) {
+            receiverValueTypeName = receiverValueTypeName.copyBytes(
+              5,
+              receiverValueTypeName.byteLength
+            );
+            receiverView = true;
+          }
           const receiverType = try lowerModuleTypeName(
             program,
             importedTypes,
-            receiverTypeName
+            receiverValueTypeName
           );
           if (receiverType.kind == LoweredTypeKind.mapType) {
             const receiver = try lowerExpression(
@@ -6802,12 +6817,14 @@ function lowerExpression(
             } else if (tree.nodes[calleeInput].value == "set") {
               kind = LoweredExpressionKind.mapSet;
             }
+            let labels = Array<String>();
+            if (receiverView) labels.push("view");
             return pushExpression(
               inout output,
               kind,
               receiverType.name,
               children,
-              Array<String>()
+              labels
             );
           }
         }

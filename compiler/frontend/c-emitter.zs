@@ -1223,10 +1223,14 @@ function appendExpression(
       declaration.expressions[index].kind == LoweredExpressionKind.mapGet
     ) output.append("_get");
     else output.append("_set");
-    output.append("(&(");
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
+    if (viewReceiver) output.append("(");
+    else output.append("(&(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
-    output.append("), ");
+    if (viewReceiver) output.append(", ");
+    else output.append("), ");
     const key = declaration.expressions[index].children[1];
     try appendExpression(inout output, declaration, key);
     if (expected == 3) {
@@ -8014,33 +8018,14 @@ function appendTypeDefinitions(
     output.append(";\n\n");
   }
   for (const declaration of program.maps) {
-    if (
-      declaration.keyType.kind == LoweredTypeKind.structType
-      || declaration.keyType.kind == LoweredTypeKind.enumType
-      || declaration.keyType.kind == LoweredTypeKind.arrayType
-      || declaration.keyType.kind == LoweredTypeKind.mapType
-      || declaration.valueType.kind == LoweredTypeKind.structType
-      || declaration.valueType.kind == LoweredTypeKind.enumType
-      || declaration.valueType.kind == LoweredTypeKind.arrayType
-      || declaration.valueType.kind == LoweredTypeKind.mapType
-      || declaration.valueType.kind == LoweredTypeKind.stringType
-    ) {
-      throw "native C emission only supports String-to-scalar Map storage in the first self-hosting tier";
-    }
     if (declaration.keyType.kind != LoweredTypeKind.stringType) {
       throw "native C emission only supports String Map keys in the first self-hosting tier";
     }
-    const keyType = try cType(declaration.keyType);
-    const valueType = try cType(declaration.valueType);
     output.append("typedef struct Z_");
     output.append(declaration.name);
-    output.append("_Entry {\n  ");
-    output.append(keyType);
-    output.append(" key;\n  ");
-    output.append(valueType);
-    output.append(" value;\n} Z_");
+    output.append("_Entry Z_");
     output.append(declaration.name);
-    output.append("_Entry;\n\n");
+    output.append("_Entry;\n");
     output.append("typedef struct Z_");
     output.append(declaration.name);
     output.append(" {\n  Z_");
@@ -8108,6 +8093,17 @@ function appendTypeDefinitions(
     );
     structIndex = structIndex + 1;
   }
+  for (const declaration of program.maps) {
+    const keyType = try cType(declaration.keyType);
+    const valueType = try cType(declaration.valueType);
+    output.append("struct Z_");
+    output.append(declaration.name);
+    output.append("_Entry {\n  ");
+    output.append(keyType);
+    output.append(" key;\n  ");
+    output.append(valueType);
+    output.append(" value;\n};\n\n");
+  }
   for (const taskName of taskNames) {
     const resultType = try taskResultType(program, taskName);
     const nativeResultType = try cType(resultType);
@@ -8164,6 +8160,10 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
+  if (
+    type.kind == LoweredTypeKind.structType
+    || type.kind == LoweredTypeKind.enumType
+  ) return type.name.copyBytes(0, type.name.byteLength);
   throw "native C emission cannot form an intrinsic identity for this type";
 }
 
@@ -8273,6 +8273,11 @@ function appendMapRuntime(
     output.append("      if (available == SIZE_MAX) available = slot;\n");
     output.append("    } else if (z_string_equal(self->entries[stored - 1].key, key)) {\n");
     output.append("      Z_String_deinit(&key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
+      output.append("      Z_");
+      output.append(declaration.valueType.name);
+      output.append("_deinit(&self->entries[stored - 1].value);\n");
+    }
     output.append("      self->entries[stored - 1].value = value;\n");
     output.append("      return;\n    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
@@ -9978,6 +9983,11 @@ function emitLoweredC(
     output.append("  while (self->length > 0) {\n");
     output.append("    self->length -= 1;\n");
     output.append("    Z_String_deinit(&self->entries[self->length].key);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
+      output.append("    Z_");
+      output.append(declaration.valueType.name);
+      output.append("_deinit(&self->entries[self->length].value);\n");
+    }
     output.append("  }\n");
     output.append("  free(self->entries);\n");
     output.append("  free(self->buckets);\n");

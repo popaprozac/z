@@ -2493,9 +2493,21 @@ native parity exposed that native `Map.get` still materialized a copied
 Arena links now share the pointer niche: `none` is `NULL`, `some` is the stored
 address, and no tag, payload union, retain, or destructor exists.
 
-Arena-owned Map/Set edges, multi-edge recursive enum graphs, class, and returned
-graph edges remain rejected. Richer mutable container provenance—including loop-carried
-identity and broader shape-stability evidence—is still required before claiming
+The next pressure test stores those recursive nodes in a mutable
+`Map<String, LinkedNode>`. Its first `set` establishes one Arena owner, later
+insertions must agree with that owner, `get` returns an `Option<view
+LinkedNode>` loan tied to the Map storage, and the complete Map may move only
+into the same Arena. This required no new source syntax, but it exposed two
+important implementation assumptions: the fixed-point native Map runtime only
+represented scalar values, and calls through a `view Map` incorrectly took the
+address of an already-pointer receiver. Native String-keyed maps now store
+named Z value structs directly, destroy replaced values when required, and
+preserve the lookup pointer niche through both frontends.
+
+Native ownership-bearing Map removal, Arena-owned Set edges, multi-edge
+recursive enum graphs, class, and returned graph edges remain rejected or
+deferred. Richer mutable container provenance—including loop-carried identity
+and broader shape-stability evidence—is still required before claiming
 whole-compiler allocation gains.
 
 ## Fixed and null-only native argument plans

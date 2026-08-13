@@ -8845,7 +8845,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         if (map) {
           const receiver = generateExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
-          return `${mapMethodName(receiverValueType, expression.callee.property)}(&(${receiver})${args.length ? `, ${args.join(", ")}` : ""})`;
+          const receiverPointer = receiverView ? receiver : `&(${receiver})`;
+          return `${mapMethodName(receiverValueType, expression.callee.property)}(${receiverPointer}${args.length ? `, ${args.join(", ")}` : ""})`;
         }
         const set = parseSetType(receiverValueType);
         if (set) {

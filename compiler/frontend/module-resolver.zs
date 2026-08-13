@@ -292,7 +292,7 @@ function requireSettledRegionProvenance(
     throw resolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
-      `view-bearing Array "${binding.name}" must establish the same Arena provenance on every continuing path`,
+      `view-bearing collection "${binding.name}" must establish the same Arena provenance on every continuing path`,
       line,
       column
     );
@@ -5268,11 +5268,56 @@ function inferExpressionNodeType(
           node.column
         );
       }
-      if (
-        base == "Map"
-        || base == "Set"
-        || base == "TextBuffer"
-      ) {
+      if (base == "Map") {
+        match (genericTypeShape(callee)) {
+          some(map) => {
+            if (map.arguments.length == 2) {
+              let storedViewVisiting = Array<String>();
+              if (typeContainsStoredView(
+                modules,
+                moduleIndex,
+                map.arguments[1],
+                storedViewVisiting
+              )) {
+                let valueStruct = false;
+                match (typeSymbolLocation(
+                  modules,
+                  moduleIndex,
+                  map.arguments[1]
+                )) {
+                  some(location) => valueStruct = modules[
+                    location.moduleIndex
+                  ].symbols[location.symbolIndex].kind
+                    == ModuleSymbolKind.structSymbol;
+                  none => {}
+                }
+                if (!valueStruct) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    `Map cannot carry stored provenance for value type ${map.arguments[1]} in the first container tier`,
+                    tree.nodes[calleeIndex].line,
+                    tree.nodes[calleeIndex].column
+                  );
+                }
+              }
+            }
+          }
+          none => {}
+        }
+        try inferUnclassifiedCallArguments(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          children,
+          inout bindings,
+          inout evidence
+        );
+        return copiedString(callee);
+      }
+      if (base == "Set" || base == "TextBuffer") {
         try inferUnclassifiedCallArguments(
           module,
           modules,
@@ -5712,7 +5757,7 @@ function inferExpressionNodeType(
               throw resolutionError(
                 ModuleResolveErrorKind.typeMismatch,
                 module.path,
-                `view-bearing Array "${argumentRoot}" must establish the same Arena provenance on every continuing path`,
+                `view-bearing collection "${argumentRoot}" must establish the same Arena provenance on every continuing path`,
                 tree.nodes[argument].line,
                 tree.nodes[argument].column
               );
@@ -6128,6 +6173,140 @@ function inferExpressionNodeType(
                 }
                 none => {}
               }
+            }
+            match (genericTypeShape(ownerType)) {
+              some(map) => {
+                if (map.base == "Map" && map.arguments.length == 2) {
+                  let storedViewVisiting = Array<String>();
+                  const storedViewValue = typeContainsStoredView(
+                    modules,
+                    moduleIndex,
+                    map.arguments[1],
+                    storedViewVisiting
+                  );
+                  if (methodName == "get") {
+                    const storageRoot = expressionStorageRootName(
+                      tree,
+                      receiverIndex
+                    );
+                    if (storageRoot.byteLength > 0) setExpressionViewOrigin(
+                      inout bindings,
+                      tree.nodes[index].offset,
+                      storageRoot
+                    );
+                  }
+                  if (storedViewValue && methodName == "set") {
+                    if (argumentNodes.length != 2) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        "Map.set expects a key and one view-bearing value",
+                        tree.nodes[index].line,
+                        tree.nodes[index].column
+                      );
+                    }
+                    const argument = argumentNodes[1];
+                    const valueOwner = storedViewOwnerForExpression(
+                      bindings,
+                      tree,
+                      argument
+                    );
+                    if (
+                      valueOwner.byteLength == 0
+                      || valueOwner == "__z_native_mixed_view_owner"
+                    ) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        "a view-bearing Map value must come directly from one proven Arena",
+                        tree.nodes[argument].line,
+                        tree.nodes[argument].column
+                      );
+                    }
+                    const mapOwner = valueBindingViewOwner(
+                      bindings,
+                      receiverRoot
+                    );
+                    if (mapOwner == "__z_native_mixed_view_owner") {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        `view-bearing Map "${receiverRoot}" must establish the same Arena provenance on every continuing path`,
+                        tree.nodes[index].line,
+                        tree.nodes[index].column
+                      );
+                    }
+                    if (
+                      mapOwner.byteLength > 0
+                      && mergeViewOwners(mapOwner, valueOwner)
+                        == "__z_native_mixed_view_owner"
+                    ) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        `Map "${receiverRoot}" already carries provenance from another Arena`,
+                        tree.nodes[argument].line,
+                        tree.nodes[argument].column
+                      );
+                    }
+                    if (mapOwner.byteLength == 0) {
+                      const controlBinding = regionControlFlowBindingName();
+                      const controlFlow = valueBindingType(
+                        bindings,
+                        controlBinding
+                      );
+                      if (controlFlow == "loop") {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          `the first set into view-bearing Map "${receiverRoot}" cannot occur in a loop`,
+                          tree.nodes[index].line,
+                          tree.nodes[index].column
+                        );
+                      }
+                      setValueBindingViewOwner(
+                        inout bindings,
+                        receiverRoot,
+                        valueOwner
+                      );
+                    }
+                    const argumentRoot = expressionStorageRootName(
+                      tree,
+                      argument
+                    );
+                    if (argumentRoot.byteLength > 0) {
+                      setValueBindingOwnership(
+                        inout bindings,
+                        argumentRoot,
+                        NativeOwnershipState.moved
+                      );
+                    } else {
+                      try consumeOwnedExpressionNode(
+                        module,
+                        modules,
+                        moduleIndex,
+                        tree,
+                        argument,
+                        map.arguments[1],
+                        true,
+                        inout bindings
+                      );
+                    }
+                  }
+                  if (storedViewValue && methodName == "remove") {
+                    const mapOwner = valueBindingViewOwner(
+                      bindings,
+                      receiverRoot
+                    );
+                    if (mapOwner.byteLength > 0) setExpressionViewOrigin(
+                      inout bindings,
+                      tree.nodes[index].offset,
+                      mapOwner
+                    );
+                  }
+                }
+              }
+              none => {}
             }
             if (optionalMethodCall) {
               return try optionalCallType(
@@ -6571,30 +6750,41 @@ function inferStatement(
       moduleIndex,
       inferred
     );
-    let storedViewArray = false;
+    let storedViewContainer = false;
+    let storedViewContainerKind = "collection";
     match (genericTypeShape(inferred)) {
-      some(array) => {
-        if (array.base == "Array" && array.arguments.length == 1) {
+      some(container) => {
+        if (container.base == "Array" && container.arguments.length == 1) {
           let visiting = Array<String>();
-          storedViewArray = typeContainsStoredView(
+          storedViewContainer = typeContainsStoredView(
             modules,
             moduleIndex,
-            array.arguments[0],
+            container.arguments[0],
             visiting
           );
+          storedViewContainerKind = "Array";
+        } else if (container.base == "Map" && container.arguments.length == 2) {
+          let visiting = Array<String>();
+          storedViewContainer = typeContainsStoredView(
+            modules,
+            moduleIndex,
+            container.arguments[1],
+            visiting
+          );
+          storedViewContainerKind = "Map";
         }
       }
       none => {}
     }
     if (
-      storedViewArray
+      storedViewContainer
       && viewOwner.byteLength == 0
       && !arena.nodes[index].mutableBinding
     ) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
-        "an empty view-bearing Array must use let so its first push can establish Arena provenance",
+        `an empty view-bearing ${storedViewContainerKind} must use let so its first insertion can establish Arena provenance`,
         arena.nodes[index].line,
         arena.nodes[index].column
       );

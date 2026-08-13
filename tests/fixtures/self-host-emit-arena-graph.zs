@@ -1,4 +1,5 @@
 import console from "std/console";
+import { Map } from "std/collections";
 import { Arena } from "std/memory";
 
 struct TokenCoordinate {
@@ -137,6 +138,28 @@ function main(): i32 {
   });
   const linkedHead = arena.create(linkedHeadPending);
   const linkedValue = linkedNextValue(in linkedHead);
+  let linkedByName = Map<String, LinkedNode>();
+  const mappedPending = LinkedNode({
+    value: 41,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  linkedByName.set("compiler", mappedPending);
+  const mapped = linkedByName.get("compiler");
+  const mappedValue = match (in mapped) {
+    some(node) => node.value + linkedNextValue(in node);
+    none => 0;
+  };
+  const storedMapPending = LinkedNode({
+    value: 20,
+    next: Option<view LinkedNode>.some(linkedTail),
+  });
+  linkedByName.set("stored", storedMapPending);
+  const storedLinks = arena.create(linkedByName);
+  const storedMapped = storedLinks.get("stored");
+  const storedMappedValue = match (in storedMapped) {
+    some(node) => node.value;
+    none => 0;
+  };
   if (populatedLength != 42) return 1;
   if (arrayLength != 42) return 1;
   if (spans.length != 1) return 1;
@@ -146,6 +169,8 @@ function main(): i32 {
   if (absentLength != 0) return 1;
   if (presentLength != 42) return 1;
   if (linkedValue != 22) return 1;
+  if (mappedValue != 63) return 1;
+  if (storedMappedValue != 20) return 1;
   console.log(`stored arena span ${length}`);
   arena.reset();
   other.reset();

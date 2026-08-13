@@ -2306,6 +2306,72 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.equal(borrowDiagnostic.code, "Z0205");
   assert.match(borrowDiagnostic.message, /cannot set "values" while view/);
 
+  const arenaValues = `
+    import { Map } from "std/collections";
+    import { Arena } from "std/memory";
+    struct Item { value: i32; }
+    struct Link { item: view Item; }
+    function main(): i32 {
+      let arena = Arena();
+      const item = arena.create(Item({ value: 42 }));
+      let links = Map<String, Link>();
+      links.set("answer", Link({ item }));
+      const found = links.get("answer");
+      const answer = match (in found) {
+        some(link) => {
+          const linked = link.item;
+          select linked.value;
+        }
+        none => 0;
+      };
+      const stored = arena.create(links);
+      const storedFound = stored.get("answer");
+      const storedAnswer = match (in storedFound) {
+        some(link) => {
+          const linked = link.item;
+          select linked.value;
+        }
+        none => 0;
+      };
+      return answer + storedAnswer - 84;
+    }
+  `;
+  assert.deepEqual(diagnostics(arenaValues, "map-arena-values.zs"), []);
+  writeFileSync(input, arenaValues);
+  const arenaValuesResult = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(arenaValuesResult.status, 0, arenaValuesResult.stderr);
+
+  const emptyArenaMap = arenaValues.replace(
+    "let links = Map<String, Link>();",
+    "const links = Map<String, Link>();",
+  );
+  assert.match(
+    diagnostics(emptyArenaMap, "map-arena-empty.zs")[0].message,
+    /empty view-bearing Map must use let/,
+  );
+
+  const mixedArenaMap = arenaValues
+    .replace(
+      "const item = arena.create(Item({ value: 42 }));",
+      "let other = Arena();\n      const item = arena.create(Item({ value: 42 }));\n      const second = other.create(Item({ value: 22 }));",
+    )
+    .replace(
+      'links.set("answer", Link({ item }));',
+      'links.set("answer", Link({ item }));\n      links.set("second", Link({ item: second }));',
+    );
+  assert.match(
+    diagnostics(mixedArenaMap, "map-arena-mixed.zs")[0].message,
+    /already carries provenance from another Arena/,
+  );
+
+  const wrongArenaMap = arenaValues
+    .replace("let arena = Arena();", "let arena = Arena();\n      let other = Arena();")
+    .replace("const stored = arena.create(links);", "const stored = other.create(links);");
+  assert.match(
+    diagnostics(wrongArenaMap, "map-arena-wrong-region.zs")[0].message,
+    /only in the Arena that owns every embedded view/,
+  );
+
   const iterationMutation = `
     import { Map } from "std/collections";
     function main(): i32 {

@@ -552,7 +552,7 @@ type AnalysisState = {
   readonly integerOperations: Map<number, IntegerOperation>;
   readonly integerConversions: Map<number, IntegerConversion>;
   readonly dynamicArrayPushTypes: Set<string>;
-  readonly unboundStoredViewArrayInitializers: Set<number>;
+  readonly unboundStoredViewContainerInitializers: Set<number>;
   readonly arenaCreateCalls: Map<number, string>;
   readonly arenaResetCalls: Set<number>;
   readonly threadSpawnCalls: Map<number, number>;
@@ -926,7 +926,7 @@ export function analyze(
     integerOperations: new Map(),
     integerConversions: new Map(),
     dynamicArrayPushTypes: new Set(),
-    unboundStoredViewArrayInitializers: new Set(),
+    unboundStoredViewContainerInitializers: new Set(),
     arenaCreateCalls: new Map(),
     arenaResetCalls: new Set(),
     threadSpawnCalls: new Map(),
@@ -1507,7 +1507,14 @@ export function analyze(
     const map = parseMapType(declaration.name);
     if (map) {
       validateCollectionKeyType("Map key", map.keyType, structs, enums, state, declaration.location, fileName);
-      if (map.valueType === "void" || containsStoredViewType(map.valueType, structs, enums) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+      const storedViewValue = containsStoredViewType(map.valueType, structs, enums);
+      if (storedViewValue && (parseViewType(map.valueType) || structs.get(map.valueType)?.kind !== "struct")) {
+        throw new DiagnosticError(fileName, declaration.location, `Map cannot carry stored provenance for value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first container tier`, {
+          code: "Z0206",
+          notes: ["the first associative-provenance tier stores one-owner named value structs"],
+        });
+      }
+      if (map.valueType === "void" || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
         throw new DiagnosticError(fileName, declaration.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
       }
       const nativeMapValue = state.foreignNamedTypes.get(map.valueType);
@@ -2190,7 +2197,8 @@ function analyzeStructDeclaration(
       const nestedType = String(underlyingType(field.type.name));
       const nestedValueAggregate = structs.get(nestedType)?.kind === "struct"
         || (enums.has(nestedType) && !parseOptionType(field.type.name))
-        || parseOptionalViewType(field.type.name) !== null;
+        || parseOptionalViewType(field.type.name) !== null
+        || parseMapType(declaration.name) !== null;
       if (!directViewField && !nestedValueAggregate) {
         throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
@@ -3317,7 +3325,7 @@ function analyzeStatements(
   transientViews: ReadonlySet<string> = new Set(),
 ): boolean {
   const inheritedViews = new Set([...state.viewOrigins.keys()].filter((name) => !transientViews.has(name)));
-  const inheritedRegionArrays = storedViewArrayBindingNames(locals, structs, enums);
+  const inheritedRegionContainers = storedViewContainerBindingNames(locals, structs, enums);
   const inheritedConnections = new Set(state.connectionOrigins.keys());
   let returns = false;
   let stops = false;
@@ -3325,7 +3333,7 @@ function analyzeStatements(
     const statement = statements[index];
     for (const name of state.viewOrigins.keys()) {
       if (inheritedViews.has(name)) continue;
-      if (inheritedRegionArrays.has(name)) continue;
+      if (inheritedRegionContainers.has(name)) continue;
       if (!statements.slice(index).some((candidate) => syntaxReferencesName(candidate, name))) {
         unbindViewOrigin(name, state);
       }
@@ -3344,7 +3352,7 @@ function analyzeStatements(
     stops = statementStopsFlow(statement);
   }
   for (const name of state.viewOrigins.keys()) {
-    if (!inheritedViews.has(name) && !inheritedRegionArrays.has(name)) {
+    if (!inheritedViews.has(name) && !inheritedRegionContainers.has(name)) {
       unbindViewOrigin(name, state);
     }
   }
@@ -3797,13 +3805,18 @@ function analyzeStatement(
       const storedViewComposite = !view
         && !optionalView
         && containsStoredViewType(String(variableType), structs, enums);
-      const unboundStoredViewArray = storedViewComposite
-        && state.unboundStoredViewArrayInitializers.has(statement.initializer.location.offset);
-      if (unboundStoredViewArray) {
+      const unboundStoredViewContainer = storedViewComposite
+        && state.unboundStoredViewContainerInitializers.has(statement.initializer.location.offset);
+      if (unboundStoredViewContainer) {
+        const containerKind = parseDynamicArrayType(String(variableType))
+          ? "Array"
+          : parseMapType(String(variableType))
+            ? "Map"
+            : "collection";
         if (!statement.mutable) {
-          throw new DiagnosticError(fileName, statement.location, "an empty view-bearing Array must use let so its first push can establish Arena provenance", {
+          throw new DiagnosticError(fileName, statement.location, `an empty view-bearing ${containerKind} must use let so its first insertion can establish Arena provenance`, {
             code: "Z0206",
-            helps: ["replace const with let, then push a value whose embedded views come from one Arena"],
+            helps: ["replace const with let, then insert a value whose embedded views come from one Arena"],
           });
         }
         locals.set(statement.name, `${mutablePrefix}${String(variableType)}`);
@@ -4728,13 +4741,13 @@ function analyzeStatement(
       }
       const covered = new Set<string>();
       const continuing: Map<string, ValueType>[] = [];
-      const regionArrays = storedViewArrayBindingNames(locals, structs, enums);
-      const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+      const regionContainers = storedViewContainerBindingNames(locals, structs, enums);
+      const incomingRegionOrigins = snapshotRegionContainerOrigins(regionContainers, state);
       const incomingLoans = snapshotAccessLoanState(state);
-      const continuingRegionOrigins: RegionArrayOriginState[] = [];
+      const continuingRegionOrigins: RegionContainerOriginState[] = [];
       const continuingLoans: AccessLoanState[] = [];
       for (const arm of statement.arms) {
-        restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+        restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
         restoreAccessLoanState(state, incomingLoans);
         const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
@@ -4866,7 +4879,7 @@ function analyzeStatement(
         if (!statementStopsFlow(arm.body)) {
           if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
           continuing.push(armLocals);
-          continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+          continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
           continuingLoans.push(snapshotAccessLoanState(state));
         }
       }
@@ -4874,8 +4887,8 @@ function analyzeStatement(
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
       mergeOwnershipStates(locals, continuing, state);
       if (continuing.length > 0) {
-        mergeRegionArrayOriginStates(
-          regionArrays,
+        mergeRegionContainerOriginStates(
+          regionContainers,
           continuingRegionOrigins,
           statement.location,
           fileName,
@@ -4883,7 +4896,7 @@ function analyzeStatement(
         );
         mergeAccessLoanStates(state, continuingLoans);
       } else {
-        restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+        restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
         restoreAccessLoanState(state, incomingLoans);
       }
       return;
@@ -5805,10 +5818,10 @@ function inferIfExpression(
 
   const original = new Map(locals);
   const continuing: Map<string, ValueType>[] = [];
-  const regionArrays = storedViewArrayBindingNames(original, structs, enums);
-  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+  const regionContainers = storedViewContainerBindingNames(original, structs, enums);
+  const incomingRegionOrigins = snapshotRegionContainerOrigins(regionContainers, state);
   const incomingLoans = snapshotAccessLoanState(state);
-  const continuingRegionOrigins: RegionArrayOriginState[] = [];
+  const continuingRegionOrigins: RegionContainerOriginState[] = [];
   const continuingLoans: AccessLoanState[] = [];
   const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
   const thenType = inferValueArm(
@@ -5827,11 +5840,11 @@ function inferIfExpression(
     : null;
   if (thenType !== "never") {
     continuing.push(thenLocals);
-    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
     continuingLoans.push(snapshotAccessLoanState(state));
   }
 
-  restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+  restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
   restoreAccessLoanState(state, incomingLoans);
   const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
   const elseType = expression.elseBranch.kind === "ifExpression"
@@ -5844,7 +5857,7 @@ function inferIfExpression(
     : null;
   if (elseType !== "never") {
     continuing.push(elseLocals);
-    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
     continuingLoans.push(snapshotAccessLoanState(state));
   }
 
@@ -5867,8 +5880,8 @@ function inferIfExpression(
   }
   mergeOwnershipStates(locals, continuing, state);
   if (continuing.length > 0) {
-    mergeRegionArrayOriginStates(
-      regionArrays,
+    mergeRegionContainerOriginStates(
+      regionContainers,
       continuingRegionOrigins,
       expression.location,
       fileName,
@@ -6193,15 +6206,15 @@ function inferMatchExpression(
 
   const covered = new Set<string>();
   const continuing: Map<string, ValueType>[] = [];
-  const regionArrays = storedViewArrayBindingNames(locals, structs, enums);
-  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+  const regionContainers = storedViewContainerBindingNames(locals, structs, enums);
+  const incomingRegionOrigins = snapshotRegionContainerOrigins(regionContainers, state);
   const incomingLoans = snapshotAccessLoanState(state);
-  const continuingRegionOrigins: RegionArrayOriginState[] = [];
+  const continuingRegionOrigins: RegionContainerOriginState[] = [];
   const continuingLoans: AccessLoanState[] = [];
   const resultOrigins: ViewOrigin[] = [];
   let resultType: ValueType = "never";
   for (const arm of expression.arms) {
-    restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+    restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
     restoreAccessLoanState(state, incomingLoans);
     const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
     if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
@@ -6337,7 +6350,7 @@ function inferMatchExpression(
     if (armType !== "never") {
       if (borrowedRoot && borrowedRootType) armLocals.set(borrowedRoot.name, borrowedRootType);
       continuing.push(armLocals);
-      continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+      continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
       continuingLoans.push(snapshotAccessLoanState(state));
       const armOrigin = valueArmStoredViewOrigin(arm.body, state);
       if (armOrigin) resultOrigins.push(armOrigin);
@@ -6351,8 +6364,8 @@ function inferMatchExpression(
   if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
   mergeOwnershipStates(locals, continuing, state);
   if (continuing.length > 0) {
-    mergeRegionArrayOriginStates(
-      regionArrays,
+    mergeRegionContainerOriginStates(
+      regionContainers,
       continuingRegionOrigins,
       expression.location,
       fileName,
@@ -8319,8 +8332,8 @@ function inferExpressionInner(
         requireAssignable("boolean", conditionType, expression.condition, fileName, structs, enums, state);
       }
       const original = new Map(locals);
-      const regionArrays = storedViewArrayBindingNames(original, structs, enums);
-      const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
+      const regionContainers = storedViewContainerBindingNames(original, structs, enums);
+      const incomingRegionOrigins = snapshotRegionContainerOrigins(regionContainers, state);
       const incomingLoans = snapshotAccessLoanState(state);
       const thenLocals = narrowedConditionLocals(original, expression.condition, true, state);
       const activeFunction = state.activeFunction;
@@ -8328,13 +8341,13 @@ function inferExpressionInner(
         ? inferDirectValue(expression.thenExpression, activeFunction, thenLocals, globals, structs, enums, fileName, state)
         : inferExpression(expression.thenExpression, thenLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.thenExpression, thenType, thenLocals, structs, enums, fileName, state);
-      const continuingRegionOrigins: RegionArrayOriginState[] = [];
+      const continuingRegionOrigins: RegionContainerOriginState[] = [];
       const continuingLoans: AccessLoanState[] = [];
       if (thenType !== "never") {
-        continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+        continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
         continuingLoans.push(snapshotAccessLoanState(state));
       }
-      restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+      restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
       restoreAccessLoanState(state, incomingLoans);
       const elseLocals = narrowedConditionLocals(original, expression.condition, false, state);
       const elseType = activeFunction?.async
@@ -8342,13 +8355,13 @@ function inferExpressionInner(
         : inferExpression(expression.elseExpression, elseLocals, globals, structs, enums, fileName, state);
       consumeOwnedValue(expression.elseExpression, elseType, elseLocals, structs, enums, fileName, state);
       if (elseType !== "never") {
-        continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+        continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
         continuingLoans.push(snapshotAccessLoanState(state));
       }
       mergeOwnershipStates(locals, [thenLocals, elseLocals], state);
       if (continuingRegionOrigins.length > 0) {
-        mergeRegionArrayOriginStates(
-          regionArrays,
+        mergeRegionContainerOriginStates(
+          regionContainers,
           continuingRegionOrigins,
           expression.location,
           fileName,
@@ -8704,7 +8717,7 @@ function inferExpressionInner(
           });
         }
         if (expression.elements.length === 0) {
-          state.unboundStoredViewArrayInitializers.add(expression.location.offset);
+          state.unboundStoredViewContainerInitializers.add(expression.location.offset);
         }
       }
       for (const element of expression.elements) {
@@ -9469,7 +9482,15 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, "Map<K, V>() expects no values");
           }
           validateCollectionKeyType("Map key", map.keyType, structs, enums, state, expression.callee.location, fileName);
-          if (map.valueType === "void" || containsStoredViewType(map.valueType, structs, enums) || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
+          const storedViewValue = containsStoredViewType(map.valueType, structs, enums);
+          if (storedViewValue && (parseViewType(map.valueType) || structs.get(map.valueType)?.kind !== "struct")) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Map cannot carry stored provenance for value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first container tier`, {
+              code: "Z0206",
+              notes: ["the first associative-provenance tier stores one-owner named value structs"],
+              helps: ["wrap related Arena views in a named value struct and use that struct as the Map value"],
+            });
+          }
+          if (map.valueType === "void" || containsSliceType(map.valueType) || map.valueType === "Arena" || parseTaskType(map.valueType)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Map cannot own value type ${JSON.stringify(displayAssignableType(map.valueType, state))} in the first collections tier`);
           }
           if (
@@ -9479,6 +9500,9 @@ function inferExpressionInner(
               code: "Z0240",
               helps: ["use a stable Z-owned identifier or readonly Hashable value as the key"],
             });
+          }
+          if (storedViewValue) {
+            state.unboundStoredViewContainerInitializers.add(expression.location.offset);
           }
           return expression.callee.name;
         }
@@ -10862,7 +10886,7 @@ function inferExpressionInner(
             }
             state.viewCallOrigins.set(
               expression.location.offset,
-              viewOriginForRoot(root.name, expression.callee.object.location, state),
+              directViewOrigin(root.name, expression.callee.object.location),
             );
             return optionTypeName(viewTypeName(map.valueType));
           }
@@ -10870,10 +10894,51 @@ function inferExpressionInner(
             const value = expression.arguments[1];
             const actualValue = inferExpression(value, locals, globals, structs, enums, fileName, state);
             requireAssignable(map.valueType, actualValue, value, fileName, structs, enums, state);
+            const storedViewValue = containsStoredViewType(map.valueType, structs, enums);
+            if (storedViewValue) {
+              const valueOrigin = storedViewOriginForExpression(value, state);
+              if (!valueOrigin || valueOrigin.sources.length > 1) {
+                throw new DiagnosticError(fileName, value.location, "a view-bearing Map value must come directly from one proven Arena", {
+                  code: "Z0206",
+                  helps: ["construct the value from views owned by one Arena before inserting it"],
+                });
+              }
+              const mapOrigin = state.viewOrigins.get(root.name);
+              if (mapOrigin) {
+                const mergedOrigin = mergeViewOrigins([mapOrigin, valueOrigin]);
+                if (mergedOrigin.sources.length > 1) {
+                  throw new DiagnosticError(fileName, value.location, `Map ${JSON.stringify(root.name)} already carries provenance from another Arena`, {
+                    code: "Z0206",
+                    labels: [{
+                      location: mapOrigin.sources[0]?.location ?? expression.callee.object.location,
+                      message: "the Map's first set established its Arena here",
+                      length: root.name.length,
+                    }],
+                    helps: ["set only values borrowed from the Map's established Arena"],
+                  });
+                }
+                if (!originsHaveSameOwner(mapOrigin, mergedOrigin)) {
+                  bindViewOrigin(root.name, mergedOrigin, fileName, state);
+                }
+              } else {
+                if (state.regionLoopDepth > 0) {
+                  throw new DiagnosticError(fileName, expression.location, `the first set into view-bearing Map ${JSON.stringify(root.name)} cannot occur in a loop`, {
+                    code: "Z0206",
+                    notes: ["a loop may execute zero times, so its body cannot establish provenance on every continuing path"],
+                    helps: ["establish the Map before entering the loop"],
+                  });
+                }
+                bindViewOrigin(root.name, valueOrigin, fileName, state);
+              }
+            }
             consumeOwnedValue(key, map.keyType, locals, structs, enums, fileName, state);
-            consumeOwnedValue(value, map.valueType, locals, structs, enums, fileName, state);
+            consumeOwnedValue(value, map.valueType, locals, structs, enums, fileName, state, storedViewValue);
             state.dynamicArrayPushTypes.add(dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType)));
             return "void";
+          }
+          if (method === "remove" && containsStoredViewType(map.valueType, structs, enums)) {
+            const mapOrigin = state.viewOrigins.get(root.name);
+            if (mapOrigin) state.viewCallOrigins.set(expression.location.offset, mapOrigin);
           }
           return optionTypeName(map.valueType);
         }
@@ -12277,27 +12342,33 @@ function mergeViewOrigins(origins: readonly ViewOrigin[]): ViewOrigin {
   return { sources };
 }
 
-type RegionArrayOriginState = ReadonlyMap<string, ViewOrigin>;
+type RegionContainerOriginState = ReadonlyMap<string, ViewOrigin>;
 
-function storedViewArrayBindingNames(
+function storedViewContainerBindingNames(
   locals: ReadonlyMap<string, ValueType>,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
 ): Set<string> {
   const names = new Set<string>();
   for (const [name, stored] of locals) {
-    const array = parseDynamicArrayType(String(underlyingType(stored)));
+    const type = String(underlyingType(stored));
+    const array = parseDynamicArrayType(type);
     if (array && containsStoredViewType(array.elementType, structs, enums)) {
+      names.add(name);
+      continue;
+    }
+    const map = parseMapType(type);
+    if (map && containsStoredViewType(map.valueType, structs, enums)) {
       names.add(name);
     }
   }
   return names;
 }
 
-function snapshotRegionArrayOrigins(
+function snapshotRegionContainerOrigins(
   names: ReadonlySet<string>,
   state: AnalysisState,
-): RegionArrayOriginState {
+): RegionContainerOriginState {
   const snapshot = new Map<string, ViewOrigin>();
   for (const name of names) {
     const origin = state.viewOrigins.get(name);
@@ -12306,9 +12377,9 @@ function snapshotRegionArrayOrigins(
   return snapshot;
 }
 
-function restoreRegionArrayOrigins(
+function restoreRegionContainerOrigins(
   names: ReadonlySet<string>,
-  snapshot: RegionArrayOriginState,
+  snapshot: RegionContainerOriginState,
   state: AnalysisState,
 ): void {
   for (const name of names) state.viewOrigins.delete(name);
@@ -12325,9 +12396,9 @@ function originsHaveSameOwner(
   ));
 }
 
-function mergeRegionArrayOriginStates(
+function mergeRegionContainerOriginStates(
   names: ReadonlySet<string>,
-  paths: readonly RegionArrayOriginState[],
+  paths: readonly RegionContainerOriginState[],
   location: SourceLocation,
   fileName: string,
   state: AnalysisState,
@@ -12345,11 +12416,11 @@ function mergeRegionArrayOriginStates(
       throw new DiagnosticError(
         fileName,
         location,
-        `view-bearing Array ${JSON.stringify(name)} must establish the same Arena provenance on every continuing path`,
+        `view-bearing collection ${JSON.stringify(name)} must establish the same Arena provenance on every continuing path`,
         {
           code: "Z0206",
-          notes: ["paths cannot disagree about whether the Array is populated or which Arena owns its embedded views"],
-          helps: ["push a value from the same Arena in every continuing branch, or establish provenance before branching"],
+          notes: ["paths cannot disagree about whether the collection is populated or which Arena owns its embedded views"],
+          helps: ["insert a value from the same Arena in every continuing branch, or establish provenance before branching"],
         },
       );
     }
@@ -13078,37 +13149,37 @@ function analyzeIfBranches(
   const continuing: Map<string, ValueType>[] = [];
   const incomingLoans = snapshotAccessLoanState(state);
   const continuingLoans: AccessLoanState[] = [];
-  const regionArrays = storedViewArrayBindingNames(original, structs, enums);
-  const incomingRegionOrigins = snapshotRegionArrayOrigins(regionArrays, state);
-  const continuingRegionOrigins: RegionArrayOriginState[] = [];
+  const regionContainers = storedViewContainerBindingNames(original, structs, enums);
+  const incomingRegionOrigins = snapshotRegionContainerOrigins(regionContainers, state);
+  const continuingRegionOrigins: RegionContainerOriginState[] = [];
 
   const thenLocals = narrowedConditionLocals(original, statement.condition, true, state);
   analyzeStatement(statement.thenBranch, owner, thenLocals, globals, structs, enums, fileName, state);
   if (!statementStopsFlow(statement.thenBranch)) {
     continuing.push(thenLocals);
     continuingLoans.push(snapshotAccessLoanState(state));
-    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
   }
 
   restoreAccessLoanState(state, incomingLoans);
-  restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+  restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
   if (statement.elseBranch) {
     const elseLocals = narrowedConditionLocals(original, statement.condition, false, state);
     analyzeStatement(statement.elseBranch, owner, elseLocals, globals, structs, enums, fileName, state);
     if (!statementStopsFlow(statement.elseBranch)) {
       continuing.push(elseLocals);
       continuingLoans.push(snapshotAccessLoanState(state));
-      continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+      continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
     }
   } else {
     continuing.push(narrowedConditionLocals(original, statement.condition, false, state));
     continuingLoans.push(snapshotAccessLoanState(state));
-    continuingRegionOrigins.push(snapshotRegionArrayOrigins(regionArrays, state));
+    continuingRegionOrigins.push(snapshotRegionContainerOrigins(regionContainers, state));
   }
   mergeOwnershipStates(locals, continuing, state);
   if (continuingLoans.length > 0) {
-    mergeRegionArrayOriginStates(
-      regionArrays,
+    mergeRegionContainerOriginStates(
+      regionContainers,
       continuingRegionOrigins,
       statement.location,
       fileName,
@@ -13116,7 +13187,7 @@ function analyzeIfBranches(
     );
     mergeAccessLoanStates(state, continuingLoans);
   } else {
-    restoreRegionArrayOrigins(regionArrays, incomingRegionOrigins, state);
+    restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
     restoreAccessLoanState(state, incomingLoans);
   }
 }

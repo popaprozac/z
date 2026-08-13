@@ -439,12 +439,34 @@ cannot be asserted into `Option<view T>`, and a link from Arena A cannot enter a
 node stored in Arena B. Both frontends lower this Option to one nullable pointer;
 there is no tag, payload union, retain, or cleanup operation.
 
+The first associative region tier applies the same proof to Map values:
+
+```z
+struct SymbolLink {
+  declaration: view Declaration;
+}
+
+let symbols = Map<String, SymbolLink>();
+symbols.set("main", SymbolLink({ declaration }));
+const storedSymbols = arena.create(symbols);
+```
+
+An empty view-bearing Map must use `let`. Its first `set` establishes one Arena
+owner, later values must prove that same owner, and the Map may move only into
+that Arena. `get` remains a zero-copy `Option<view V>` into Map storage, so
+structural mutation is rejected while the lookup view is live. This tier keeps
+keys independently owned and allows only named one-owner value structs; direct
+views, mixed owners, first insertion inside a loop, escape, and suspension are
+rejected. Native lowering supports `set`, `has`, and `get`; the broader
+ownership-bearing removal surface remains a separate fixed-point lowering
+step.
+
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
 View-bearing structs cannot enter classes, returns, stored or escaping closures,
 mutable borrows, or suspension. Ordinary collections reject them except for the
-compatible-owner `Array` rule above; enums accept the variant-sensitive
+compatible-owner `Array` and Map-value rules above; enums accept the variant-sensitive
 one-owner rule above; recursive links are limited to same-Arena
 `Option<view T>`. The tier is
 single-threaded and allocation failure traps.

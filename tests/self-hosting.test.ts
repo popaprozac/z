@@ -3901,6 +3901,18 @@ test("allocates and reversely cleans Arena values through the native frontend", 
     graphEmission.stdout,
     /Z___z_NicheViewOption_LinkedNodeTag/,
   );
+  assert.match(
+    graphEmission.stdout,
+    /struct Z___z_Map_6_StringLinkedNode_Entry \{\n  Z_String key;\n  Z_LinkedNode value;/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /Z___z_Map_6_StringLinkedNode_get\(storedLinks, Z_STRING_LITERAL\("stored"\)\)/,
+  );
+  assert.match(
+    graphEmission.stdout,
+    /z_stage1_arena_create_\d+___z_Map_6_StringLinkedNode/,
+  );
   const namedDestructor = graphEmission.stdout.match(
     /static __attribute__\(\(unused\)\) void Z_NamedTokenSpan_deinit\(Z_NamedTokenSpan \*self\) \{[^]*?\n\}/,
   )?.[0] ?? "";
@@ -4098,6 +4110,61 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "",
       ].join("\n"),
       expected: /must borrow from exactly one owner/,
+    },
+    {
+      name: "arena-stored-map-empty",
+      source: [
+        'import { Map } from "std/collections";',
+        "struct Item { value: i32; }",
+        "struct Link { item: view Item; }",
+        "function main(): i32 {",
+        "  const links = Map<String, Link>();",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /empty view-bearing Map must use let/,
+    },
+    {
+      name: "arena-stored-map-mixed",
+      source: [
+        'import { Map } from "std/collections";',
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Link { item: view Item; }",
+        "function main(): i32 {",
+        "  let firstArena = Arena();",
+        "  let secondArena = Arena();",
+        "  const first = firstArena.create(Item({ value: 20 }));",
+        "  const second = secondArena.create(Item({ value: 22 }));",
+        "  let links = Map<String, Link>();",
+        '  links.set("first", Link({ item: first }));',
+        '  links.set("second", Link({ item: second }));',
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /already carries provenance from another Arena/,
+    },
+    {
+      name: "arena-stored-map-wrong-region",
+      source: [
+        'import { Map } from "std/collections";',
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct Link { item: view Item; }",
+        "function main(): i32 {",
+        "  let source = Arena();",
+        "  let destination = Arena();",
+        "  const item = source.create(Item({ value: 42 }));",
+        "  let links = Map<String, Link>();",
+        '  links.set("item", Link({ item }));',
+        "  const stored = destination.create(links);",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      expected: /only in the Arena that owns every embedded view/,
     },
     {
       name: "arena-stored-array-wrong-region",

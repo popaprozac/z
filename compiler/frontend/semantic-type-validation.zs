@@ -799,6 +799,14 @@ function validateAggregateTypes(
       if (!stringStartsWith(field.type.name, "view ")) {
         let nestedValueAggregate = false;
         let optionalAggregate = false;
+        match (genericTypeShape(declaration.name)) {
+          some(owner) => {
+            if (owner.base == "Map" && owner.arguments.length == 2) {
+              nestedValueAggregate = true;
+            }
+          }
+          none => {}
+        }
         match (genericTypeShape(field.type.name)) {
           some(shape) => {
             optionalAggregate = shape.base == "Option";

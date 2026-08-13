@@ -1675,11 +1675,28 @@ borrowed view may enter this Option. The runtime representation is exactly one
 nullable pointer in both compiler frontends, so inspection adds no tag or ARC
 traffic.
 
+A mutable local `Map<K, V>` can establish the same single-Arena provenance when
+`V` is a named value struct containing stored views:
+
+```z
+let symbols = Map<String, SymbolLink>();
+symbols.set("main", SymbolLink({ declaration }));
+const storedSymbols = scratch.create(symbols);
+```
+
+The first `set` fixes the Map's Arena owner; later values and the eventual
+`Arena.create` transfer must agree. `get` returns `Option<view V>` into Map
+storage and therefore loans the Map against structural mutation. Empty
+view-bearing Maps require `let`; direct view values, mixed owners, and first
+insertion inside a loop are rejected. Native fixed-point lowering currently
+covers String-keyed `set`, `has`, and `get` for this shape; ownership-bearing
+removal is the next Map composition layer.
+
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
-enter classes; ordinary collection storage is limited to populated
-compatible-owner Arrays, enum storage is limited to the variant-sensitive
+enter classes; ordinary collection storage is limited to compatible-owner
+Arrays and Map values, enum storage is limited to the variant-sensitive
 one-owner rule above, and recursive edges are limited to same-Arena
 `Option<view T>`. Their
 only eventual owning destination is their provenance Arena. A synchronous
@@ -1687,7 +1704,7 @@ inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Loop-carried establishment, Map/Set and broader recursive enum graphs, async
+Loop-carried establishment, Arena-owned Set and broader recursive enum graphs, async
 regions, thread transfer, page reuse, and allocator parameters remain later
 tiers.
 
