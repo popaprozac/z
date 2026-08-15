@@ -8541,11 +8541,13 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       if (map && expression.property === "length") {
         const owner = generateExpression(expression.object, context);
-        return `((${owner}).entries.length)`;
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        return `(${value}.entries.length)`;
       }
       if (set && expression.property === "length") {
         const owner = generateExpression(expression.object, context);
-        return `((${owner}).values.length)`;
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        return `(${value}.values.length)`;
       }
       const objcClassName = context.semanticInfo.objcClassNames.get(expression.location.offset);
       if (objcClassName) return objcClassName;
@@ -8852,7 +8854,8 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         if (set) {
           const receiver = generateExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
-          return `${setMethodName(receiverValueType, expression.callee.property)}(&(${receiver})${args.length ? `, ${args.join(", ")}` : ""})`;
+          const receiverPointer = receiverView ? receiver : `&(${receiver})`;
+          return `${setMethodName(receiverValueType, expression.callee.property)}(${receiverPointer}${args.length ? `, ${args.join(", ")}` : ""})`;
         }
         if (receiverValueType === "Arena") {
           const receiver = generateExpression(expression.callee.object, context);

@@ -818,6 +818,12 @@ function validateAggregateTypes(
           }
           none => {}
         }
+        match (genericTypeShape(declaration.name)) {
+          some(container) => {
+            if (container.base == "Set") nestedValueAggregate = true;
+          }
+          none => {}
+        }
         match (typeSymbolLocation(modules, moduleIndex, field.type.name)) {
           some(location) => {
             const nestedKind = modules[location.moduleIndex].symbols[

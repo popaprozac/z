@@ -1200,7 +1200,12 @@ function appendExpression(
     output.append("(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
-    output.append(").length");
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view"
+    ) {
+      output.append(")->length");
+    } else output.append(").length");
     return;
   }
   if (
@@ -1280,14 +1285,24 @@ function appendExpression(
     output.append("(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
-    output.append(").length");
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view"
+    ) {
+      output.append(")->length");
+    } else output.append(").length");
     return;
   }
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.setHas
     || declaration.expressions[index].kind == LoweredExpressionKind.setAdd
+    || declaration.expressions[index].kind == LoweredExpressionKind.setRemove
+    || declaration.expressions[index].kind == LoweredExpressionKind.setDelete
+    || declaration.expressions[index].kind == LoweredExpressionKind.setClear
   ) {
-    if (declaration.expressions[index].children.length != 2) {
+    const expected = declaration.expressions[index].kind
+      == LoweredExpressionKind.setClear ? usize(1) : usize(2);
+    if (declaration.expressions[index].children.length != expected) {
       throw "native C emission received a malformed Set method call";
     }
     output.append("Z_");
@@ -1295,13 +1310,32 @@ function appendExpression(
     if (
       declaration.expressions[index].kind == LoweredExpressionKind.setAdd
     ) output.append("_add");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.setRemove
+    ) output.append("_remove");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.setDelete
+    ) output.append("_delete");
+    else if (
+      declaration.expressions[index].kind == LoweredExpressionKind.setClear
+    ) output.append("_clear");
     else output.append("_has");
-    output.append("(&(");
     const receiver = declaration.expressions[index].children[0];
+    const viewReceiver = declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "view";
+    if (viewReceiver) output.append("(");
+    else output.append("(&(");
     try appendExpression(inout output, declaration, receiver);
-    output.append("), ");
-    const value = declaration.expressions[index].children[1];
-    try appendExpression(inout output, declaration, value);
+    if (expected > 1) {
+      if (viewReceiver) output.append(", ");
+      else output.append("), ");
+      const value = declaration.expressions[index].children[1];
+      try appendExpression(inout output, declaration, value);
+    } else {
+      if (viewReceiver) output.append(")");
+      else output.append("))");
+      return;
+    }
     output.append(")");
     return;
   }
@@ -8095,8 +8129,12 @@ function appendTypeDefinitions(
     output.append(";\n\n");
   }
   for (const declaration of program.sets) {
-    if (declaration.elementType.kind != LoweredTypeKind.stringType) {
-      throw "native C emission only supports String Set elements in the first self-hosting tier";
+    if (declaration.elementType.kind == LoweredTypeKind.structType) {
+      output.append("typedef struct Z_");
+      output.append(declaration.elementType.name);
+      output.append(" Z_");
+      output.append(declaration.elementType.name);
+      output.append(";\n");
     }
     const elementType = try cType(declaration.elementType);
     output.append("typedef struct Z_");
@@ -8214,6 +8252,7 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.usizeType) return "usize";
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
+  if (type.kind == LoweredTypeKind.stringType) return "String";
   if (
     type.kind == LoweredTypeKind.structType
     || type.kind == LoweredTypeKind.enumType
@@ -8553,16 +8592,51 @@ function appendMapRuntime(
 function appendSetRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
-): void {
+): void throws String {
   for (const declaration of program.sets) {
+    const elementType = try cType(declaration.elementType);
+    const elementIdentity = try loweredIntrinsicIdentity(
+      declaration.elementType
+    );
+    const optionName = `__z_Option_${elementIdentity}`;
+    let supportsRemove = false;
+    for (const enumeration of program.enums) {
+      if (enumeration.name == optionName) supportsRemove = true;
+    }
     output.append("static inline __attribute__((unused)) size_t Z_");
     output.append(declaration.name);
-    output.append("_hash(Z_String value) {\n");
-    output.append("  uint64_t hash = UINT64_C(14695981039346656037);\n");
-    output.append("  for (size_t index = 0; index < value.length; index += 1) {\n");
-    output.append("    hash ^= (unsigned char)value.data[index];\n");
-    output.append("    hash *= UINT64_C(1099511628211);\n");
-    output.append("  }\n  return (size_t)hash;\n}\n\n");
+    output.append("_hash(");
+    output.append(elementType);
+    output.append(" value) {\n");
+    if (declaration.elementType.kind == LoweredTypeKind.structType) {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n  Z_");
+      output.append(declaration.elementType.name);
+      output.append("_hash(&value, &hasher);\n  return z_hasher_finish(hasher);\n");
+    } else if (declaration.elementType.kind == LoweredTypeKind.stringType) {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n");
+      output.append("  z_hasher_add_string(&hasher, value);\n");
+      output.append("  return z_hasher_finish(hasher);\n");
+    } else {
+      output.append("  Z_Hasher hasher = z_hasher_new();\n");
+      output.append("  z_hasher_add_u64(&hasher, (uint64_t)value);\n");
+      output.append("  return z_hasher_finish(hasher);\n");
+    }
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_equal(");
+    output.append(elementType);
+    output.append(" left, ");
+    output.append(elementType);
+    output.append(" right) {\n  return ");
+    if (declaration.elementType.kind == LoweredTypeKind.structType) {
+      output.append("Z_");
+      output.append(declaration.elementType.name);
+      output.append("_equals(&left, &right)");
+    } else if (declaration.elementType.kind == LoweredTypeKind.stringType) {
+      output.append("z_string_equal(left, right)");
+    } else output.append("left == right");
+    output.append(";\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_rehash(Z_");
@@ -8600,7 +8674,9 @@ function appendSetRuntime(
     output.append(declaration.name);
     output.append("_has(const Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String value) {\n");
+    output.append(" *self, ");
+    output.append(elementType);
+    output.append(" value) {\n");
     output.append("  if (self->bucketCount == 0) return false;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
@@ -8608,14 +8684,18 @@ function appendSetRuntime(
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
     output.append("    if (stored == 0) return false;\n");
-    output.append("    if (stored != SIZE_MAX && z_string_equal(self->values[stored - 1], value)) return true;\n");
+    output.append("    if (stored != SIZE_MAX && Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->values[stored - 1], value)) return true;\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n  return false;\n}\n\n");
     output.append("static __attribute__((unused)) bool Z_");
     output.append(declaration.name);
     output.append("_add(Z_");
     output.append(declaration.name);
-    output.append(" *self, Z_String value) {\n");
+    output.append(" *self, ");
+    output.append(elementType);
+    output.append(" value) {\n");
     output.append("  Z_");
     output.append(declaration.name);
     output.append("_ensure_capacity(self);\n");
@@ -8628,8 +8708,14 @@ function appendSetRuntime(
     output.append("    if (stored == 0) break;\n");
     output.append("    if (stored == SIZE_MAX) {\n");
     output.append("      if (available == SIZE_MAX) available = slot;\n");
-    output.append("    } else if (z_string_equal(self->values[stored - 1], value)) {\n");
-    output.append("      Z_String_deinit(&value);\n");
+    output.append("    } else if (Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->values[stored - 1], value)) {\n");
+    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      output.append("      Z_");
+      output.append(declaration.elementType.name);
+      output.append("_deinit(&value);\n");
+    }
     output.append("      return false;\n    }\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n");
@@ -8641,15 +8727,128 @@ function appendSetRuntime(
     output.append("    if (self->capacity != 0) {\n");
     output.append("      if (next > SIZE_MAX / 2) abort();\n");
     output.append("      next *= 2;\n    }\n");
-    output.append("    if (next > SIZE_MAX / sizeof(Z_String)) abort();\n");
-    output.append("    void *storage = realloc(self->values, next * sizeof(Z_String));\n");
+    output.append("    if (next > SIZE_MAX / sizeof(");
+    output.append(elementType);
+    output.append(")) abort();\n");
+    output.append("    void *storage = realloc(self->values, next * sizeof(");
+    output.append(elementType);
+    output.append("));\n");
     output.append("    if (storage == NULL) abort();\n");
-    output.append("    self->values = (Z_String *)storage;\n");
+    output.append("    self->values = (");
+    output.append(elementType);
+    output.append(" *)storage;\n");
     output.append("    self->capacity = next;\n  }\n");
     output.append("  self->values[self->length] = value;\n");
     output.append("  self->length += 1;\n");
     output.append("  self->buckets[slot] = self->length;\n");
     output.append("  return true;\n}\n\n");
+    if (supportsRemove) {
+      output.append("static __attribute__((unused)) Z_");
+      output.append(optionName);
+      output.append(" Z_");
+      output.append(declaration.name);
+      output.append("_remove(Z_");
+      output.append(declaration.name);
+      output.append(" *self, ");
+      output.append(elementType);
+      output.append(" value) {\n");
+      output.append("  if (self->bucketCount == 0) return (Z_");
+      output.append(optionName);
+      output.append("){ .tag = Z_");
+      output.append(optionName);
+      output.append("Tag_none };\n");
+      output.append("  size_t slot = Z_");
+      output.append(declaration.name);
+      output.append("_hash(value) & (self->bucketCount - 1);\n");
+      output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+      output.append("    const size_t stored = self->buckets[slot];\n");
+      output.append("    if (stored == 0) break;\n");
+      output.append("    if (stored != SIZE_MAX && Z_");
+      output.append(declaration.name);
+      output.append("_equal(self->values[stored - 1], value)) {\n");
+      output.append("      const size_t entry = stored - 1;\n");
+      output.append("      const size_t last = self->length - 1;\n");
+      output.append("      ");
+      output.append(elementType);
+      output.append(" removed = self->values[entry];\n");
+      output.append("      self->buckets[slot] = SIZE_MAX;\n");
+      output.append("      self->tombstones += 1;\n");
+      output.append("      if (entry != last) {\n");
+      output.append("        self->values[entry] = self->values[last];\n");
+      output.append("        size_t movedSlot = Z_");
+      output.append(declaration.name);
+      output.append("_hash(self->values[entry]) & (self->bucketCount - 1);\n");
+      output.append("        for (size_t movedProbe = 0; movedProbe < self->bucketCount; movedProbe += 1) {\n");
+      output.append("          if (self->buckets[movedSlot] == self->length) { self->buckets[movedSlot] = entry + 1; break; }\n");
+      output.append("          movedSlot = (movedSlot + 1) & (self->bucketCount - 1);\n");
+      output.append("        }\n      }\n");
+      output.append("      self->length = last;\n");
+      output.append("      return (Z_");
+      output.append(optionName);
+      output.append("){ .tag = Z_");
+      output.append(optionName);
+      output.append("Tag_some, .payload.some = removed };\n");
+      output.append("    }\n");
+      output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+      output.append("  }\n");
+      output.append("  return (Z_");
+      output.append(optionName);
+      output.append("){ .tag = Z_");
+      output.append(optionName);
+      output.append("Tag_none };\n}\n\n");
+    }
+    output.append("static __attribute__((unused)) bool Z_");
+    output.append(declaration.name);
+    output.append("_delete(Z_");
+    output.append(declaration.name);
+    output.append(" *self, ");
+    output.append(elementType);
+    output.append(" value) {\n");
+    output.append("  if (self->bucketCount == 0) return false;\n");
+    output.append("  size_t slot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(value) & (self->bucketCount - 1);\n");
+    output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
+    output.append("    const size_t stored = self->buckets[slot];\n");
+    output.append("    if (stored == 0) return false;\n");
+    output.append("    if (stored != SIZE_MAX && Z_");
+    output.append(declaration.name);
+    output.append("_equal(self->values[stored - 1], value)) {\n");
+    output.append("      const size_t entry = stored - 1;\n");
+    output.append("      const size_t last = self->length - 1;\n");
+    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      output.append("      Z_");
+      output.append(declaration.elementType.name);
+      output.append("_deinit(&self->values[entry]);\n");
+    }
+    output.append("      self->buckets[slot] = SIZE_MAX;\n");
+    output.append("      self->tombstones += 1;\n");
+    output.append("      if (entry != last) {\n");
+    output.append("        self->values[entry] = self->values[last];\n");
+    output.append("        size_t movedSlot = Z_");
+    output.append(declaration.name);
+    output.append("_hash(self->values[entry]) & (self->bucketCount - 1);\n");
+    output.append("        for (size_t movedProbe = 0; movedProbe < self->bucketCount; movedProbe += 1) {\n");
+    output.append("          if (self->buckets[movedSlot] == self->length) { self->buckets[movedSlot] = entry + 1; break; }\n");
+    output.append("          movedSlot = (movedSlot + 1) & (self->bucketCount - 1);\n");
+    output.append("        }\n      }\n");
+    output.append("      self->length = last;\n      return true;\n    }\n");
+    output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
+    output.append("  }\n  return false;\n}\n\n");
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_clear(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n");
+    output.append("  while (self->length > 0) {\n    self->length -= 1;\n");
+    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      output.append("    Z_");
+      output.append(declaration.elementType.name);
+      output.append("_deinit(&self->values[self->length]);\n");
+    }
+    output.append("  }\n");
+    output.append("  if (self->bucketCount > 0) memset(self->buckets, 0, self->bucketCount * sizeof(size_t));\n");
+    output.append("  self->tombstones = 0;\n}\n\n");
   }
 }
 
@@ -10186,7 +10385,7 @@ function emitLoweredC(
   }
   if (program.functions.length > 0) output.append("\n");
   try appendMapRuntime(inout output, program);
-  appendSetRuntime(inout output, program);
+  try appendSetRuntime(inout output, program);
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
@@ -10274,7 +10473,11 @@ function emitLoweredC(
     output.append(" *self) {\n");
     output.append("  while (self->length > 0) {\n");
     output.append("    self->length -= 1;\n");
-    output.append("    Z_String_deinit(&self->values[self->length]);\n");
+    if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
+      output.append("    Z_");
+      output.append(declaration.elementType.name);
+      output.append("_deinit(&self->values[self->length]);\n");
+    }
     output.append("  }\n");
     output.append("  free(self->values);\n");
     output.append("  free(self->buckets);\n");

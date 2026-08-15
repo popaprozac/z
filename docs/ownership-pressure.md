@@ -2526,12 +2526,22 @@ both components through the compiler-supplied `Hasher`, and drives the complete
 native `Map<ModuleKey, i32>` replacement, lookup, deletion, and cleanup path.
 The generated table invokes the user-defined `hash` and `equals` methods,
 destroys duplicate or removed owned keys exactly once, and remains executable
-in the Stage-0/native differential corpus. This is the equality foundation the
-next Arena-owned Set slice will reuse; pointer identity is deliberately not a
-fallback for value elements.
+in the Stage-0/native differential corpus. The same machinery now drives
+scalar and readonly nominal `Hashable` Set elements across `add`, `has`,
+ownership-transferring `remove`, destructive `delete`, and reusable `clear`.
+Pointer identity is deliberately not a fallback for value elements.
 
-Arena-owned Set edges, multi-edge recursive enum graphs, class, and returned
-graph edges remain rejected or deferred. Richer mutable container
+The Arena-backed Set pressure fixture stores a readonly `CoordinateKey` whose
+identity is computed from an embedded `view Coordinate`. Its first `add`
+establishes one Arena, mixed owners and conditional/loop-only establishment are
+rejected, `remove` carries the proof through `Option<CoordinateKey>`, and the
+remaining Set can move only into the same Arena. This composition exposed a
+second implementation seam: after `Arena.create(set)`, collection member reads
+must use the pointer-backed view representation. Stage 0 and the fixed-point C
+emitter now preserve that access shape instead of emitting an inline `.` read.
+
+Multi-edge recursive enum graphs, class, and returned graph edges remain
+rejected or deferred. Richer mutable container
 provenance—including loop-carried identity and broader shape-stability
 evidence—is still required before claiming whole-compiler allocation gains.
 

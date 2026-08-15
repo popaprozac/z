@@ -5317,7 +5317,56 @@ function inferExpressionNodeType(
         );
         return copiedString(callee);
       }
-      if (base == "Set" || base == "TextBuffer") {
+      if (base == "Set") {
+        match (genericTypeShape(callee)) {
+          some(set) => {
+            if (set.arguments.length == 1) {
+              let storedViewVisiting = Array<String>();
+              if (typeContainsStoredView(
+                modules,
+                moduleIndex,
+                set.arguments[0],
+                storedViewVisiting
+              )) {
+                let valueStruct = false;
+                match (typeSymbolLocation(
+                  modules,
+                  moduleIndex,
+                  set.arguments[0]
+                )) {
+                  some(location) => valueStruct = modules[
+                    location.moduleIndex
+                  ].symbols[location.symbolIndex].kind
+                    == ModuleSymbolKind.structSymbol;
+                  none => {}
+                }
+                if (!valueStruct) {
+                  throw resolutionError(
+                    ModuleResolveErrorKind.typeMismatch,
+                    module.path,
+                    `Set cannot carry stored provenance for element type ${set.arguments[0]} in the first container tier`,
+                    tree.nodes[calleeIndex].line,
+                    tree.nodes[calleeIndex].column
+                  );
+                }
+              }
+            }
+          }
+          none => {}
+        }
+        try inferUnclassifiedCallArguments(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          children,
+          inout bindings,
+          inout evidence
+        );
+        return copiedString(callee);
+      }
+      if (base == "TextBuffer") {
         try inferUnclassifiedCallArguments(
           module,
           modules,
@@ -6308,6 +6357,129 @@ function inferExpressionNodeType(
               }
               none => {}
             }
+            match (genericTypeShape(ownerType)) {
+              some(set) => {
+                if (set.base == "Set" && set.arguments.length == 1) {
+                  let storedViewVisiting = Array<String>();
+                  const storedViewElement = typeContainsStoredView(
+                    modules,
+                    moduleIndex,
+                    set.arguments[0],
+                    storedViewVisiting
+                  );
+                  if (storedViewElement && methodName == "add") {
+                    if (argumentNodes.length != 1) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        "Set.add expects one view-bearing element",
+                        tree.nodes[index].line,
+                        tree.nodes[index].column
+                      );
+                    }
+                    const argument = argumentNodes[0];
+                    const elementOwner = storedViewOwnerForExpression(
+                      bindings,
+                      tree,
+                      argument
+                    );
+                    if (
+                      elementOwner.byteLength == 0
+                      || elementOwner == "__z_native_mixed_view_owner"
+                    ) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        "a view-bearing Set element must come directly from one proven Arena",
+                        tree.nodes[argument].line,
+                        tree.nodes[argument].column
+                      );
+                    }
+                    const setOwner = valueBindingViewOwner(
+                      bindings,
+                      receiverRoot
+                    );
+                    if (setOwner == "__z_native_mixed_view_owner") {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        `view-bearing Set "${receiverRoot}" must establish the same Arena provenance on every continuing path`,
+                        tree.nodes[index].line,
+                        tree.nodes[index].column
+                      );
+                    }
+                    if (
+                      setOwner.byteLength > 0
+                      && mergeViewOwners(setOwner, elementOwner)
+                        == "__z_native_mixed_view_owner"
+                    ) {
+                      throw resolutionError(
+                        ModuleResolveErrorKind.typeMismatch,
+                        module.path,
+                        `Set "${receiverRoot}" already carries provenance from another Arena`,
+                        tree.nodes[argument].line,
+                        tree.nodes[argument].column
+                      );
+                    }
+                    if (setOwner.byteLength == 0) {
+                      const controlBinding = regionControlFlowBindingName();
+                      const controlFlow = valueBindingType(
+                        bindings,
+                        controlBinding
+                      );
+                      if (controlFlow == "loop") {
+                        throw resolutionError(
+                          ModuleResolveErrorKind.typeMismatch,
+                          module.path,
+                          `the first add into view-bearing Set "${receiverRoot}" cannot occur in a loop`,
+                          tree.nodes[index].line,
+                          tree.nodes[index].column
+                        );
+                      }
+                      setValueBindingViewOwner(
+                        inout bindings,
+                        receiverRoot,
+                        elementOwner
+                      );
+                    }
+                    const argumentRoot = expressionStorageRootName(
+                      tree,
+                      argument
+                    );
+                    if (argumentRoot.byteLength > 0) {
+                      setValueBindingOwnership(
+                        inout bindings,
+                        argumentRoot,
+                        NativeOwnershipState.moved
+                      );
+                    } else {
+                      try consumeOwnedExpressionNode(
+                        module,
+                        modules,
+                        moduleIndex,
+                        tree,
+                        argument,
+                        set.arguments[0],
+                        true,
+                        inout bindings
+                      );
+                    }
+                  }
+                  if (storedViewElement && methodName == "remove") {
+                    const setOwner = valueBindingViewOwner(
+                      bindings,
+                      receiverRoot
+                    );
+                    if (setOwner.byteLength > 0) setExpressionViewOrigin(
+                      inout bindings,
+                      tree.nodes[index].offset,
+                      setOwner
+                    );
+                  }
+                }
+              }
+              none => {}
+            }
             if (optionalMethodCall) {
               return try optionalCallType(
                 module,
@@ -6701,6 +6873,7 @@ function inferStatement(
     }
     let stored = inferred.copyBytes(0, inferred.byteLength);
     let viewOwner = "";
+    let directArenaView = false;
     match (in arena.nodes[index].expression) {
       some(expression) => match (in expression.tree) {
         some(tree) => {
@@ -6708,6 +6881,16 @@ function inferStatement(
             bindings,
             tree.nodes[tree.root].offset
           );
+          if (
+            viewOwner.byteLength > 0
+            && tree.nodes[tree.root].kind == ExpressionKind.callExpression
+            && tree.nodes[tree.root].children.length > 0
+          ) {
+            const callee = tree.nodes[tree.root].children[0];
+            directArenaView = tree.nodes[callee].kind
+              == ExpressionKind.memberExpression
+              && tree.nodes[callee].value == "create";
+          }
           let storedViewVisiting = Array<String>();
           if (
             viewOwner.byteLength == 0
@@ -6745,6 +6928,10 @@ function inferStatement(
       }
       none => {}
     }
+    if (
+      directArenaView
+      && !stringStartsWith(stored, "view ")
+    ) stored = `view ${stored}`;
     const borrowedForeignResource = typeIsBorrowedForeignResource(
       modules,
       moduleIndex,
@@ -6772,6 +6959,15 @@ function inferStatement(
             visiting
           );
           storedViewContainerKind = "Map";
+        } else if (container.base == "Set" && container.arguments.length == 1) {
+          let visiting = Array<String>();
+          storedViewContainer = typeContainsStoredView(
+            modules,
+            moduleIndex,
+            container.arguments[0],
+            visiting
+          );
+          storedViewContainerKind = "Set";
         }
       }
       none => {}

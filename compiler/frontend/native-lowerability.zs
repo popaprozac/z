@@ -201,20 +201,6 @@ function validateNativeCollectionTypeName(
   match (genericTypeShape(name)) {
     some(generic) => {
       if (
-        generic.base == "Set"
-        && generic.arguments.length == 1
-        && generic.arguments[0] != "String"
-      ) {
-        throw loweringBoundary(
-          path,
-          "Z1000",
-          `Set element type "${generic.arguments[0]}" is not executable in the native compiler yet; only String elements are supported`,
-          line,
-          column,
-          length
-        );
-      }
-      if (
         generic.base == "Map"
         && generic.arguments.length == 2
       ) {

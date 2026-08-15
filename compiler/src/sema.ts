@@ -1546,7 +1546,16 @@ export function analyze(
       continue;
     }
     const set = parseSetType(declaration.name);
-    if (set) validateCollectionKeyType("Set element", set.elementType, structs, enums, state, declaration.location, fileName);
+    if (set) {
+      validateCollectionKeyType("Set element", set.elementType, structs, enums, state, declaration.location, fileName);
+      const storedViewElement = containsStoredViewType(set.elementType, structs, enums);
+      if (storedViewElement && (parseViewType(set.elementType) || structs.get(set.elementType)?.kind !== "struct")) {
+        throw new DiagnosticError(fileName, declaration.location, `Set cannot carry stored provenance for element type ${JSON.stringify(displayAssignableType(set.elementType, state))} in the first container tier`, {
+          code: "Z0206",
+          notes: ["the first associative-provenance tier stores one-owner named value structs"],
+        });
+      }
+    }
   }
 
   for (const declaration of program.structs) {
@@ -2198,7 +2207,8 @@ function analyzeStructDeclaration(
       const nestedValueAggregate = structs.get(nestedType)?.kind === "struct"
         || (enums.has(nestedType) && !parseOptionType(field.type.name))
         || parseOptionalViewType(field.type.name) !== null
-        || parseMapType(declaration.name) !== null;
+        || parseMapType(declaration.name) !== null
+        || parseSetType(declaration.name) !== null;
       if (!directViewField && !nestedValueAggregate) {
         throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
@@ -3812,7 +3822,9 @@ function analyzeStatement(
           ? "Array"
           : parseMapType(String(variableType))
             ? "Map"
-            : "collection";
+            : parseSetType(String(variableType))
+              ? "Set"
+              : "collection";
         if (!statement.mutable) {
           throw new DiagnosticError(fileName, statement.location, `an empty view-bearing ${containerKind} must use let so its first insertion can establish Arena provenance`, {
             code: "Z0206",
@@ -9519,6 +9531,17 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.location, "Set<T>() expects no values");
           }
           validateCollectionKeyType("Set element", set.elementType, structs, enums, state, expression.callee.location, fileName);
+          const storedViewElement = containsStoredViewType(set.elementType, structs, enums);
+          if (storedViewElement && (parseViewType(set.elementType) || structs.get(set.elementType)?.kind !== "struct")) {
+            throw new DiagnosticError(fileName, expression.callee.location, `Set cannot carry stored provenance for element type ${JSON.stringify(displayAssignableType(set.elementType, state))} in the first container tier`, {
+              code: "Z0206",
+              notes: ["the first associative-provenance tier stores one-owner named value structs"],
+              helps: ["wrap related Arena views in a readonly Hashable value struct and use that struct as the Set element"],
+            });
+          }
+          if (storedViewElement) {
+            state.unboundStoredViewContainerInitializers.add(expression.location.offset);
+          }
           return expression.callee.name;
         }
         const standardType = globals.get(expression.callee.name);
@@ -10983,11 +11006,52 @@ function inferExpressionInner(
           const actual = inferExpression(value, locals, globals, structs, enums, fileName, state);
           requireAssignable(set.elementType, actual, value, fileName, structs, enums, state);
           if (method === "add") {
-            consumeOwnedValue(value, set.elementType, locals, structs, enums, fileName, state);
+            const storedViewElement = containsStoredViewType(set.elementType, structs, enums);
+            if (storedViewElement) {
+              const elementOrigin = storedViewOriginForExpression(value, state);
+              if (!elementOrigin || elementOrigin.sources.length > 1) {
+                throw new DiagnosticError(fileName, value.location, "a view-bearing Set element must come directly from one proven Arena", {
+                  code: "Z0206",
+                  helps: ["construct the element from views owned by one Arena before adding it"],
+                });
+              }
+              const setOrigin = state.viewOrigins.get(root.name);
+              if (setOrigin) {
+                const mergedOrigin = mergeViewOrigins([setOrigin, elementOrigin]);
+                if (mergedOrigin.sources.length > 1) {
+                  throw new DiagnosticError(fileName, value.location, `Set ${JSON.stringify(root.name)} already carries provenance from another Arena`, {
+                    code: "Z0206",
+                    labels: [{
+                      location: setOrigin.sources[0]?.location ?? expression.callee.object.location,
+                      message: "the Set's first add established its Arena here",
+                      length: root.name.length,
+                    }],
+                    helps: ["add only elements borrowed from the Set's established Arena"],
+                  });
+                }
+                if (!originsHaveSameOwner(setOrigin, mergedOrigin)) {
+                  bindViewOrigin(root.name, mergedOrigin, fileName, state);
+                }
+              } else {
+                if (state.regionLoopDepth > 0) {
+                  throw new DiagnosticError(fileName, expression.location, `the first add into view-bearing Set ${JSON.stringify(root.name)} cannot occur in a loop`, {
+                    code: "Z0206",
+                    notes: ["a loop may execute zero times, so its body cannot establish provenance on every continuing path"],
+                    helps: ["establish the Set before entering the loop"],
+                  });
+                }
+                bindViewOrigin(root.name, elementOrigin, fileName, state);
+              }
+            }
+            consumeOwnedValue(value, set.elementType, locals, structs, enums, fileName, state, storedViewElement);
             state.dynamicArrayPushTypes.add(dynamicArrayTypeName(set.elementType));
             return "boolean";
           }
           if (method === "has" || method === "delete") return "boolean";
+          if (containsStoredViewType(set.elementType, structs, enums)) {
+            const setOrigin = state.viewOrigins.get(root.name);
+            if (setOrigin) state.viewCallOrigins.set(expression.location.offset, setOrigin);
+          }
           return optionTypeName(set.elementType);
         }
         if (receiverValueType === "TextBuffer") {
@@ -12359,6 +12423,11 @@ function storedViewContainerBindingNames(
     }
     const map = parseMapType(type);
     if (map && containsStoredViewType(map.valueType, structs, enums)) {
+      names.add(name);
+      continue;
+    }
+    const set = parseSetType(type);
+    if (set && containsStoredViewType(set.elementType, structs, enums)) {
       names.add(name);
     }
   }

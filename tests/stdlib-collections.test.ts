@@ -3153,6 +3153,110 @@ test("owns unique Set values with insertion status and deterministic removal", (
   const enumElement = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(enumElement.status, 0, enumElement.stderr);
 
+  const arenaElements = `
+    import { Set } from "std/collections";
+    import { Hashable, Hasher } from "std/hash";
+    import { Arena } from "std/memory";
+    struct Coordinate { line: i32; column: i32; }
+    readonly struct CoordinateKey implements Hashable {
+      coordinate: view Coordinate;
+      function equals(in other: CoordinateKey): boolean {
+        const current = this.coordinate;
+        const candidate = other.coordinate;
+        return current.line == candidate.line && current.column == candidate.column;
+      }
+      function hash(inout hasher: Hasher): void {
+        const current = this.coordinate;
+        hasher.add(current.line);
+        hasher.add(current.column);
+      }
+    }
+    function main(): i32 {
+      let arena = Arena();
+      const coordinate = arena.create(Coordinate({ line: 20, column: 22 }));
+      let keys = Set<CoordinateKey>();
+      keys.add(CoordinateKey({ coordinate }));
+      const removed = keys.remove(CoordinateKey({ coordinate }));
+      const answer = match (in removed) {
+        some(key) => {
+          const storedCoordinate = key.coordinate;
+          select storedCoordinate.line + storedCoordinate.column;
+        }
+        none => 0;
+      };
+      const stored = arena.create(keys);
+      return answer - 42 + i32(stored.length);
+    }
+  `;
+  assert.deepEqual(diagnostics(arenaElements, "set-arena-elements.zs"), []);
+  writeFileSync(input, arenaElements);
+  const arenaElementResult = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(arenaElementResult.status, 0, arenaElementResult.stderr);
+
+  const mixedArenaSet = arenaElements
+    .replace(
+      "let arena = Arena();",
+      "let arena = Arena();\n      let other = Arena();",
+    )
+    .replace(
+      "let keys = Set<CoordinateKey>();",
+      "const second = other.create(Coordinate({ line: 1, column: 2 }));\n      let keys = Set<CoordinateKey>();",
+    )
+    .replace(
+      "keys.add(CoordinateKey({ coordinate }));",
+      "keys.add(CoordinateKey({ coordinate }));\n      keys.add(CoordinateKey({ coordinate: second }));",
+    );
+  assert.match(
+    diagnostics(mixedArenaSet, "set-arena-mixed.zs")[0].message,
+    /already carries provenance from another Arena/,
+  );
+
+  const wrongArenaSet = arenaElements
+    .replace("let arena = Arena();", "let arena = Arena();\n      let other = Arena();")
+    .replace("const stored = arena.create(keys);", "const stored = other.create(keys);");
+  assert.match(
+    diagnostics(wrongArenaSet, "set-arena-wrong-region.zs")[0].message,
+    /only in the Arena that owns every embedded view/,
+  );
+
+  const removedIntoWrongArena = arenaElements
+    .replace("let arena = Arena();", "let arena = Arena();\n      let other = Arena();")
+    .replace(
+      "const stored = arena.create(keys);",
+      "const stored = other.create(removed);",
+    );
+  assert.match(
+    diagnostics(removedIntoWrongArena, "set-arena-remove-wrong-region.zs")[0].message,
+    /only in the Arena that owns every embedded view/,
+  );
+
+  const emptyArenaSet = arenaElements.replace(
+    "let keys = Set<CoordinateKey>();",
+    "const keys = Set<CoordinateKey>();",
+  );
+  assert.match(
+    diagnostics(emptyArenaSet, "set-arena-empty.zs")[0].message,
+    /empty view-bearing Set must use let/,
+  );
+
+  const conditionalFirstAdd = arenaElements.replace(
+    "keys.add(CoordinateKey({ coordinate }));",
+    "if (true) keys.add(CoordinateKey({ coordinate }));",
+  );
+  assert.match(
+    diagnostics(conditionalFirstAdd, "set-arena-conditional-add.zs")[0].message,
+    /same Arena provenance on every continuing path/,
+  );
+
+  const loopFirstAdd = arenaElements.replace(
+    "keys.add(CoordinateKey({ coordinate }));",
+    "while (false) { keys.add(CoordinateKey({ coordinate })); }",
+  );
+  assert.match(
+    diagnostics(loopFirstAdd, "set-arena-loop-add.zs")[0].message,
+    /first add.*cannot occur in a loop/,
+  );
+
   const immutable = `
     import { Set } from "std/collections";
     function main(): i32 {

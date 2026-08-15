@@ -1506,6 +1506,12 @@ hash production; implementations feed supported scalars, Strings, enums, or
 nested `Hashable` values through `add`. Requiring readonly value keys prevents
 mutation from making an inserted bucket unreachable.
 
+`Set<T>` applies the same contract to its element because the stored value is
+also the lookup key. The fixed-point compiler supports scalar, String, enum,
+and readonly nominal `Hashable` elements across `add`, `has`, `remove`,
+`delete`, and `clear`; `remove` transfers the owned element through
+`Option<T>`, while `delete` destroys it in place.
+
 `Map` supports ordinary Z values, shared Z-class and Objective-C identity, and
 move-only native C++ values. Function/weak values, native keys, and copy-only
 native C++ values still wait for their distinct storage rules. A Z value struct
@@ -1675,8 +1681,8 @@ borrowed view may enter this Option. The runtime representation is exactly one
 nullable pointer in both compiler frontends, so inspection adds no tag or ARC
 traffic.
 
-A mutable local `Map<K, V>` can establish the same single-Arena provenance when
-`V` is a named value struct containing stored views:
+A mutable local `Map<K, V>` or `Set<T>` can establish the same single-Arena
+provenance when its stored view-bearing value is a named value struct:
 
 ```z
 let symbols = Map<String, SymbolLink>();
@@ -1684,22 +1690,24 @@ symbols.set("main", SymbolLink({ declaration }));
 const storedSymbols = scratch.create(symbols);
 ```
 
-The first `set` fixes the Map's Arena owner; later values and the eventual
-`Arena.create` transfer must agree. `get` returns `Option<view V>` into Map
-storage and therefore loans the Map against structural mutation. Empty
-view-bearing Maps require `let`; direct view values, mixed owners, and first
-insertion inside a loop are rejected. Native fixed-point lowering currently
-covers String-keyed `set`, `has`, `get`, and ownership-transferring `remove`
-for this shape. `get` uses the nullable view niche; `remove` returns a tagged
-owned `Option<V>` whose Arena proof follows the value. `delete` destroys one
-matching entry and returns `boolean`; `clear` destroys all entries but retains
-the Map's allocated storage and established Arena proof for compatible reuse.
+For a Set, `T` must additionally be readonly and implement `Hashable`; its
+`equals` and `hash` methods may inspect the embedded views synchronously. The
+first `set` or `add` fixes the collection's Arena owner; later values and the
+eventual `Arena.create` transfer must agree. `Map.get` returns `Option<view V>`
+into Map storage and therefore loans the Map against structural mutation.
+Empty view-bearing Maps and Sets require `let`; direct view values, mixed
+owners, and first insertion inside a loop are rejected. Native fixed-point
+lowering covers the complete hashed mutation surface for both shapes.
+`Map.get` uses the nullable view niche; `Map.remove` and `Set.remove` return
+tagged owned Options whose Arena proof follows the transferred value. `delete`
+destroys one match and returns `boolean`; `clear` destroys all entries but
+retains allocated storage and the established Arena proof for compatible reuse.
 
 The first region tier is synchronous and single-threaded. Arena views cannot be
 returned, captured by stored or escaping closures, passed as owned or mutable
 values, or held across `await`. View-bearing composites additionally cannot
 enter classes; ordinary collection storage is limited to compatible-owner
-Arrays and Map values, enum storage is limited to the variant-sensitive
+Arrays, Map values, and Set elements, enum storage is limited to the variant-sensitive
 one-owner rule above, and recursive edges are limited to same-Arena
 `Option<view T>`. Their
 only eventual owning destination is their provenance Arena. A synchronous
@@ -1707,7 +1715,7 @@ inline closure accepted through an `in`
 function parameter may read the view and ends its loan when the call returns.
 Direct class/reference-identity roots are excluded, although an arena-owned
 value struct may contain ARC fields. Allocation failure currently traps.
-Loop-carried establishment, Arena-owned Set and broader recursive enum graphs, async
+Loop-carried establishment, broader recursive enum graphs, async
 regions, thread transfer, page reuse, and allocator parameters remain later
 tiers.
 

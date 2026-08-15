@@ -219,6 +219,9 @@ export enum LoweredExpressionKind {
   setLength,
   setHas,
   setAdd,
+  setRemove,
+  setDelete,
+  setClear,
   textBufferEmpty,
   textBufferAppend,
   textBufferAppendBytes,
@@ -6785,15 +6788,33 @@ function lowerExpression(
       && (
         tree.nodes[calleeInput].value == "has"
         || tree.nodes[calleeInput].value == "add"
+        || tree.nodes[calleeInput].value == "remove"
+        || tree.nodes[calleeInput].value == "delete"
+        || tree.nodes[calleeInput].value == "clear"
       )
     ) {
       const receiverInput = tree.nodes[calleeInput].children[0];
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
         some(receiverTypeName) => {
+          let receiverValueTypeName = receiverTypeName.copyBytes(
+            0,
+            receiverTypeName.byteLength
+          );
+          let receiverView = false;
+          if (
+            stringStartsWith(receiverValueTypeName, "view ")
+            && receiverValueTypeName.byteLength > 5
+          ) {
+            receiverValueTypeName = receiverValueTypeName.copyBytes(
+              5,
+              receiverValueTypeName.byteLength
+            );
+            receiverView = true;
+          }
           const receiverType = try lowerModuleTypeName(
             program,
             importedTypes,
-            receiverTypeName
+            receiverValueTypeName
           );
           if (receiverType.kind == LoweredTypeKind.setType) {
             const receiver = try lowerExpression(
@@ -6804,27 +6825,38 @@ function lowerExpression(
               receiverInput,
               inout output
             );
-            const argumentInput = tree.nodes[index].children[1];
-            const argument = try lowerExpression(
-              program,
-              importedTypes,
-              evidence,
-              tree,
-              argumentInput,
-              inout output
-            );
             let children = Array<usize>();
             children.push(receiver);
-            children.push(argument);
-            const kind = tree.nodes[calleeInput].value == "add"
-              ? LoweredExpressionKind.setAdd
-              : LoweredExpressionKind.setHas;
+            if (tree.nodes[calleeInput].value != "clear") {
+              const argumentInput = tree.nodes[index].children[1];
+              const argument = try lowerExpression(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                argumentInput,
+                inout output
+              );
+              children.push(argument);
+            }
+            let kind = LoweredExpressionKind.setHas;
+            if (tree.nodes[calleeInput].value == "add") {
+              kind = LoweredExpressionKind.setAdd;
+            } else if (tree.nodes[calleeInput].value == "remove") {
+              kind = LoweredExpressionKind.setRemove;
+            } else if (tree.nodes[calleeInput].value == "delete") {
+              kind = LoweredExpressionKind.setDelete;
+            } else if (tree.nodes[calleeInput].value == "clear") {
+              kind = LoweredExpressionKind.setClear;
+            }
+            let labels = Array<String>();
+            if (receiverView) labels.push("view");
             return pushExpression(
               inout output,
               kind,
               receiverType.name,
               children,
-              Array<String>()
+              labels
             );
           }
         }
@@ -8197,6 +8229,32 @@ function lowerExpression(
             return pushExpression(
               inout output,
               LoweredExpressionKind.arrayLength,
+              receiverType.name,
+              children,
+              labels
+            );
+          }
+          if (
+            receiverType.kind == LoweredTypeKind.mapType
+            || receiverType.kind == LoweredTypeKind.setType
+          ) {
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            let labels = Array<String>();
+            if (receiverView) labels.push("view");
+            return pushExpression(
+              inout output,
+              receiverType.kind == LoweredTypeKind.mapType
+                ? LoweredExpressionKind.mapLength
+                : LoweredExpressionKind.setLength,
               receiverType.name,
               children,
               labels
