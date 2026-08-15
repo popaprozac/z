@@ -254,8 +254,12 @@ c enum Status: i32 {
 ```
 
 The implemented ABI tier accepts synchronous, non-throwing, non-generic
-signatures containing fixed-width scalars and checked C-layout structs/enums;
-library artifacts also generate target-scoped runtime initialize/shutdown
+signatures containing fixed-width scalars, owned `String` inputs, and checked
+C-layout structs/enums. A `String` input appears as `const char *` in the
+generated header; the wrapper validates UTF-8, makes one owned copy, and
+transfers it to the ordinary Z implementation. `String` results remain
+unsupported until the ABI can describe their allocator and release contract.
+Library artifacts also generate target-scoped runtime initialize/shutdown
 functions and bounded entry for host-created threads. A library manifest may
 name one cleanup-bearing `target.runtime.initialize` result that the generated
 runtime owns until shutdown; this is how an embedded library can retain a

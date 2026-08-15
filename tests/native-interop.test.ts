@@ -423,13 +423,13 @@ test("exports fixed-representation C enums as checked scalar values", () => {
 
 test("checks the first C-export ABI tier and its editor surface", () => {
   const unsupported = `
-    export c function z_name(value: String): String {
-      return value;
+    export c function z_name(): String {
+      return "unsupported";
     }
   `;
   assert.throws(
     () => compileToNative(unsupported, "unsupported-export.zs", { requireMain: false }),
-    /C export parameter "value" has unsupported boundary type "String"/,
+    /C export return type "String" is unsupported/,
   );
   assert.throws(
     () => compileToNative(
@@ -557,8 +557,21 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.match(build.stdout, /build\/zmath\.h/);
 
   const generated = readFileSync(resolve(project, ".z-cache/build/zmath.c"), "utf8");
+  const header = readFileSync(resolve(project, "build/zmath.h"), "utf8");
   assert.match(generated, /static int32_t z_double\(int32_t value\)/);
   assert.match(generated, /__z_c_impl_0_z_math_add\(z_double\(10\), 22\)/);
+  assert.match(
+    generated,
+    /z_math_text_byte_length\(const char \* text\)[\s\S]*__z_c_impl_0_z_math_text_byte_length\(z_string_from_cstring\(text\)\)/,
+  );
+  assert.match(
+    generated,
+    /const uintptr_t _z_return_\d+ = \(text\)\.length;\n  if \(_z_live_text_\d+ && \(text\)\.capacity > 0\) free\(\(void \*\)\(text\)\.data\);/,
+  );
+  assert.match(
+    header,
+    /Z_API uintptr_t z_math_text_byte_length\(const char \* text\);/,
+  );
   assert.doesNotMatch(generated, /static int32_t double\(/);
 
   const consumer = resolve(project, "build/consumer");
@@ -575,7 +588,7 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.equal(compileConsumer.status, 0, compileConsumer.stderr);
   const run = spawnSync(consumer, [], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout, "sum=42 answer=42 even=true point=(21,22) status=1\n");
+  assert.equal(run.stdout, "sum=42 answer=42 even=true text=6 point=(21,22) status=1\n");
 
   const cppConsumer = resolve(project, "build/consumer-cpp");
   const compileCppConsumer = spawnSync("clang++", [
@@ -588,6 +601,31 @@ test("builds the Z-to-C example project and runs its handwritten C consumer", ()
   assert.equal(compileCppConsumer.status, 0, compileCppConsumer.stderr);
   const cppRun = spawnSync(cppConsumer, [], { encoding: "utf8" });
   assert.equal(cppRun.status, 0, cppRun.stderr);
+
+  const invalidTextSource = resolve(project, "build/invalid-text-consumer.c");
+  const invalidTextConsumer = resolve(project, "build/invalid-text-consumer");
+  writeFileSync(invalidTextSource, [
+    '#include "zmath.h"',
+    "int main(int argc, char **argv) {",
+    "  if (argc > 1) return (int)z_math_text_byte_length((const char *)0);",
+    "  const char invalid[] = { (char)0xC3, (char)0x28, '\\0' };",
+    "  (void)argv;",
+    "  return (int)z_math_text_byte_length(invalid);",
+    "}",
+    "",
+  ].join("\n"));
+  const compileInvalidTextConsumer = spawnSync("clang", [
+    "-std=c11", "-Wall", "-Wextra", "-Werror",
+    "-I", resolve(project, "build"),
+    invalidTextSource,
+    resolve(project, "build/libzmath.a"),
+    "-o", invalidTextConsumer,
+  ], { encoding: "utf8" });
+  assert.equal(compileInvalidTextConsumer.status, 0, compileInvalidTextConsumer.stderr);
+  const invalidUtf8Run = spawnSync(invalidTextConsumer, [], { encoding: "utf8" });
+  assert.notEqual(invalidUtf8Run.status, 0, "invalid UTF-8 crossed the C export boundary");
+  const nullRun = spawnSync(invalidTextConsumer, ["null"], { encoding: "utf8" });
+  assert.notEqual(nullRun.status, 0, "a null C string crossed the C export boundary");
 });
 
 test("keeps embedded runtime shutdown safe across host-created threads", () => {

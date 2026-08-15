@@ -1914,7 +1914,7 @@ function validateNativeExport(
   const reject = (summary: string, help?: string): never => {
     throw new DiagnosticError(location.fileName ?? fileName, location, summary, {
       code: "Z0830",
-    notes: ["the current C-export tier supports synchronous, non-throwing, non-generic functions over scalars and checked C-layout values"],
+      notes: ["the current C-export tier supports synchronous, non-throwing, non-generic functions over scalars, owned String inputs, and checked C-layout values"],
       helps: help ? [help] : undefined,
     });
   };
@@ -1939,7 +1939,12 @@ function validateNativeExport(
     const cLayoutStruct = aggregate?.kind === "struct" && Boolean(aggregate.nativeLayout);
     const cLayoutEnum = Boolean(enums.get(parameter.type.name)?.nativeLayout);
     if (
-      (!nativeExportScalarTypes.has(parameter.type.name) && !cLayoutStruct && !cLayoutEnum)
+      (
+        !nativeExportScalarTypes.has(parameter.type.name)
+        && parameter.type.name !== "String"
+        && !cLayoutStruct
+        && !cLayoutEnum
+      )
       || parameter.type.name === "void"
     ) {
       reject(`C export parameter ${JSON.stringify(parameter.name)} has unsupported boundary type ${JSON.stringify(parameter.type.name)}`);

@@ -1,9 +1,9 @@
 # C Export Design
 
-Status: scalar functions, checked by-value C-layout structs, and
-fixed-representation C enums implemented in both the Stage-0 and fixed-point
-native compilers. Project-built libraries also publish a target-scoped runtime
-lifecycle and enter it around every public call.
+Status: scalar functions, owned UTF-8 `String` inputs, checked by-value C-layout
+structs, and fixed-representation C enums implemented in both the Stage-0 and
+fixed-point native compilers. Project-built libraries also publish a
+target-scoped runtime lifecycle and enter it around every public call.
 
 This note defines the first direction for calling Z from C-family consumers.
 It complements header-first native imports: importing a header brings native
@@ -71,12 +71,12 @@ The first executable slice accepts only types with an unambiguous scalar C ABI:
 | `boolean` | `bool` |
 | `void` | `void` |
 
-The boundary still rejects strings, collections, slices, nullable values,
-ordinary Z structs and enums, classes, closures, generic functions, typed
-errors, async functions, and executor-affine functions. Checked `c struct` and
-`c enum` values are the deliberate exceptions described below. A targeted
-diagnostic must name the unsupported boundary type or effect rather than
-letting generated C fail.
+The boundary still rejects `String` results, collections, slices, nullable
+values, ordinary Z structs and enums, classes, closures, generic functions,
+typed errors, async functions, and executor-affine functions. Owned `String`
+inputs plus checked `c struct` and `c enum` values are the deliberate
+exceptions described below. A targeted diagnostic must name the unsupported
+boundary type or effect rather than letting generated C fail.
 
 The initial proof uses ordinary by-value scalar parameters. Mapping `in`,
 `inout`, and `out` onto a public pointer ABI is an explicit follow-up design
@@ -85,6 +85,35 @@ decision; the compiler must not silently reinterpret those capabilities.
 This narrow start is deliberate. Z-owned values must never escape through an
 accidental layout, and a C caller cannot be assumed to understand Z cleanup,
 ARC, task, or error representations.
+
+## Owned UTF-8 String inputs
+
+An owned Z `String` parameter deliberately projects to a borrowed C string at
+the public ABI:
+
+```z
+export c function z_message_length(message: String): usize {
+  return message.byteLength;
+}
+```
+
+```c
+Z_API uintptr_t z_message_length(const char *message);
+```
+
+The generated wrapper requires a non-null, NUL-terminated, valid UTF-8 input,
+copies it once into owned Z storage, and transfers that owner to the ordinary Z
+implementation. The implementation's normal parameter cleanup destroys the
+copy on every return path. Invalid input terminates at the boundary just as an
+unknown fixed-representation enum value does; it never becomes an invalid Z
+value.
+
+This mapping applies only to C calls. An ordinary Z caller invokes the same
+function with a `String` and does not cross the public wrapper or make the
+boundary copy. Returning `String` to C remains unsupported until the ABI can
+name an allocator and ownership/release contract. A later `cstring` parameter
+tier will provide zero-copy synchronous access with an enforced non-escaping
+lifetime.
 
 ## C-layout structs
 

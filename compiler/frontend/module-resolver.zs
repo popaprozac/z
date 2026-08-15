@@ -8600,6 +8600,7 @@ function validateNativeCExports(
           parameter.type.name == "void"
           || (
             !isNativeCExportScalarType(parameter.type.name)
+            && parameter.type.name != "String"
             && !isNativeCLayoutType(modules, moduleIndex, parameter.type.name)
           )
         ) {

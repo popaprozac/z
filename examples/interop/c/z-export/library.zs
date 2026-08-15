@@ -25,6 +25,10 @@ export c function z_math_is_even(value: i32): boolean {
   return value % 2 == 0;
 }
 
+export c function z_math_text_byte_length(text: String): usize {
+  return text.byteLength;
+}
+
 export c function z_math_translate(
   point: ZMathPoint,
   dx: i32,

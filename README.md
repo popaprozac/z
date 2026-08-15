@@ -156,7 +156,8 @@ are normalized.
 The reverse boundary now has an executable value-ABI compiler slice:
 `export c function` remains callable from Z while publishing an exact checked
 C ABI symbol and generated C/C++-compatible header. Checked `c struct` values
-and fixed-representation `c enum` values can cross that boundary by value.
+and fixed-representation `c enum` values can cross that boundary by value;
+owned `String` inputs project from validated `const char *` host arguments.
 Strict handwritten C consumers are compiled and linked against both emitted
 static and shared libraries:
 

@@ -5879,6 +5879,10 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     nativeExportSource,
+    /Z_API uintptr_t z_math_text_byte_length\(const char \* text\)[\s\S]*__z_c_impl_0_z_math_text_byte_length\(z_stage1_string_from_cstring\(text\)\)/,
+  );
+  assert.match(
+    nativeExportSource,
     /typedef struct ZMathPoint \{\s+int32_t x;\s+int32_t y;\s+\} ZMathPoint;/,
   );
   const nativeConsumer = resolve(directory, "native-zmath-consumer");
@@ -5911,7 +5915,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(nativeConsumerRun.status, 0, nativeConsumerRun.stderr);
   assert.equal(
     nativeConsumerRun.stdout,
-    "sum=42 answer=42 even=true point=(21,22) status=1\n",
+    "sum=42 answer=42 even=true text=6 point=(21,22) status=1\n",
   );
 
   const runtimeRootProject = resolve(directory, "runtime-root-project");
@@ -6146,8 +6150,8 @@ test("compiles a multi-module Z application through the standalone native driver
   writeFileSync(
     invalidNativeExport,
     [
-      "export c function z_invalid(value: String): String {",
-      "  return value;",
+      "export c function z_invalid(): String {",
+      '  return "unsupported";',
       "}",
       "",
     ].join("\n"),
@@ -6160,7 +6164,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(invalidNativeExportCheck.status, 1);
   assert.match(
     invalidNativeExportCheck.stderr,
-    /C export parameter "value" has unsupported boundary type "String"/,
+    /C export return type "String" is unsupported/,
   );
 
   const nativeLoweringBoundaries = [

@@ -1160,6 +1160,7 @@ const nativeExportCTypes: Readonly<Record<string, string>> = {
   f32: "float",
   f64: "double",
   boolean: "bool",
+  String: "const char *",
   void: "void",
 };
 
@@ -1516,7 +1517,12 @@ function generateNativeExportDefinitions(
       )).join("\n");
       return [`  switch (${cBindingName(parameter.name)}) {\n${cases}\n    default:\n      abort();\n  }`];
     });
-    const arguments_ = declaration.parameters.map((parameter) => cBindingName(parameter.name)).join(", ");
+    const arguments_ = declaration.parameters.map((parameter) => {
+      const name = cBindingName(parameter.name);
+      return parameter.type.name === "String"
+        ? `z_string_from_cstring(${name})`
+        : name;
+    }).join(", ");
     const invocation = `${cFunctionName(declaration.name)}(${arguments_})`;
     const entry = runtime?.requiresEntry
       ? `  Z_ForeignThreadEntry _z_runtime_entry = z_embedded_runtime_${embeddedRuntimeSymbolPart(runtime.targetName)}_enter();\n`
