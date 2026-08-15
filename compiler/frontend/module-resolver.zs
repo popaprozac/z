@@ -7,6 +7,7 @@ import {
 } from "./module-graph.zs";
 import {
   ParsedModule,
+  ParsedModuleBatch,
   moduleSymbolIndex,
   moduleBindingName as bindingName,
 } from "./module-symbols.zs";
@@ -8628,8 +8629,16 @@ export function resolveModules(
   in sources: Array<ModuleSource>,
   in entryPath: String
 ): ModuleGraph throws ModuleResolveError {
-  const parsed = try parseModuleSources(sources);
-  return try resolveParsedModules(parsed, entryPath);
+  const parsedBatch = try parseModuleSources(sources);
+  return try resolveParsedModuleBatch(in parsedBatch, entryPath);
+}
+
+export function resolveParsedModuleBatch(
+  in parsedBatch: ParsedModuleBatch,
+  in entryPath: String
+): ModuleGraph throws ModuleResolveError {
+  const parsed = parsedBatch.modules;
+  return try resolveParsedModules(in parsed, entryPath);
 }
 
 export function resolveParsedModules(

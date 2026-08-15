@@ -4181,6 +4181,86 @@ function namedValueTypeName(
   in name: String,
   useOffset: usize
 ): Option<String> {
+  if (ownerName.byteLength > 0) {
+    for (const declaration of program.functions) {
+      if (declaration.name != ownerName) continue;
+      for (const parameter of declaration.parameters) {
+        if (parameter.name == name) {
+          return Option.some(parameter.type.name.copyBytes(
+            0,
+            parameter.type.name.byteLength
+          ));
+        }
+      }
+    }
+    let methodType = "";
+    for (const aggregate of program.aggregates) {
+      for (const method of aggregate.methods) {
+        if (method.name != ownerName) continue;
+        for (const parameter of method.parameters) {
+          if (parameter.name != name) continue;
+          if (methodType.byteLength == 0) {
+            methodType = parameter.type.name.copyBytes(
+              0,
+              parameter.type.name.byteLength
+            );
+          } else if (methodType != parameter.type.name) {
+            return Option<String>.none;
+          }
+        }
+      }
+    }
+    if (methodType.byteLength > 0) return Option.some(move methodType);
+  } else {
+    let scopedOwnerFound = false;
+    let scopedOwnerOffset: usize = 0;
+    let scopedParameterType = "";
+    for (const declaration of program.functions) {
+      if (
+        declaration.offset > useOffset
+        || (
+          scopedOwnerFound
+          && declaration.offset < scopedOwnerOffset
+        )
+      ) continue;
+      scopedOwnerFound = true;
+      scopedOwnerOffset = declaration.offset;
+      scopedParameterType = "";
+      for (const parameter of declaration.parameters) {
+        if (parameter.name == name) {
+          scopedParameterType = parameter.type.name.copyBytes(
+            0,
+            parameter.type.name.byteLength
+          );
+        }
+      }
+    }
+    for (const aggregate of program.aggregates) {
+      for (const method of aggregate.methods) {
+        if (
+          method.offset > useOffset
+          || (
+            scopedOwnerFound
+            && method.offset < scopedOwnerOffset
+          )
+        ) continue;
+        scopedOwnerFound = true;
+        scopedOwnerOffset = method.offset;
+        scopedParameterType = "";
+        for (const parameter of method.parameters) {
+          if (parameter.name == name) {
+            scopedParameterType = parameter.type.name.copyBytes(
+              0,
+              parameter.type.name.byteLength
+            );
+          }
+        }
+      }
+    }
+    if (scopedParameterType.byteLength > 0) {
+      return Option.some(move scopedParameterType);
+    }
+  }
   let resolved = "";
   let resolvedOffset: usize = 0;
   for (const binding of evidence.bindingResolutions) {
@@ -4197,35 +4277,6 @@ function namedValueTypeName(
     }
   }
   if (resolved.byteLength > 0) return Option.some(move resolved);
-  for (const declaration of program.functions) {
-    if (declaration.name != ownerName) continue;
-    for (const parameter of declaration.parameters) {
-      if (parameter.name == name) {
-        return Option.some(parameter.type.name.copyBytes(
-          0,
-          parameter.type.name.byteLength
-        ));
-      }
-    }
-  }
-  let methodType = "";
-  for (const aggregate of program.aggregates) {
-    for (const method of aggregate.methods) {
-      if (ownerName.byteLength > 0 && method.name != ownerName) continue;
-      for (const parameter of method.parameters) {
-        if (parameter.name != name) continue;
-        if (methodType.byteLength == 0) {
-          methodType = parameter.type.name.copyBytes(
-            0,
-            parameter.type.name.byteLength
-          );
-        } else if (methodType != parameter.type.name) {
-          return Option<String>.none;
-        }
-      }
-    }
-  }
-  if (methodType.byteLength > 0) return Option.some(move methodType);
   return Option<String>.none;
 }
 

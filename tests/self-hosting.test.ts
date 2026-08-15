@@ -503,6 +503,44 @@ test("preserves local views through native lowering and C emission", () => {
   assert.equal(execution.status, 0, execution.stderr);
 }, 20_000);
 
+test("keeps native inferred binding evidence inside its declaration scope", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-parameter-scope.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /size_t inspectRecords\(const Z___z_Array_Record \*records\)/,
+  );
+  assert.match(emission.stdout, /return takeLength\(&\(\(\*records\)\)\);/);
+  assert.doesNotMatch(emission.stdout, /takeLength\(\(\*records\)\)/);
+
+  const directory = mkdtempSync("/tmp/z-native-parameter-scope-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 20_000);
+
 test("keeps native test expectations in parser and semantic parity", () => {
   const input = resolve(projectRoot, "tests/fixtures/native-test-expectations.zs");
   const result = spawnSync(
@@ -8848,6 +8886,24 @@ test("lowers the complete native frontend graph to C", () => {
     emission.stdout,
     /Z___z_Result_Stage1ModuleGraphResult_String resolveModuleGraphPhase\(const Z_String \*entryPath, const Z_String \*batch\);/,
   );
+  assert.match(
+    emission.stdout,
+    /typedef struct Z_ParsedModuleBatch \{\n  Z_Arena arena;\n  Z___z_Array_ParsedModule const \* modules;\n\} Z_ParsedModuleBatch;/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_stage1_arena_create_\d+___z_Array_ParsedModule\(&\(arena\), parsed\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.payload\.success = \(Z_ParsedModuleBatch\)\{\.arena = arena, \.modules = storedModules\}/,
+  );
+  const parsedBatchDestructor = emission.stdout.match(
+    /static __attribute__\(\(unused\)\) void Z_ParsedModuleBatch_deinit\(Z_ParsedModuleBatch \*self\) \{[^]*?\n\}/,
+  )?.[0] ?? "";
+  assert.notEqual(parsedBatchDestructor, "");
+  assert.match(parsedBatchDestructor, /Z_Arena_deinit\(&self->arena\)/);
+  assert.doesNotMatch(parsedBatchDestructor, /modules/);
   const directory = mkdtempSync("/tmp/z-self-host-frontend-");
   const executable = resolve(directory, "frontend");
   const compilation = spawnSync(

@@ -2572,6 +2572,36 @@ containers of bundles, closure capture, generators, and async suspension stay
 rejected. This is evidence for a useful compiler-AST storage shape without
 pretending Z has general returned borrows.
 
+## The production parser now closes one module batch
+
+The returned-owner shape now participates in the real native compiler rather
+than only a synthetic fixture. `parseModuleSources` builds its validated
+`Array<ParsedModule>`, moves that completed root into one `Arena`, and returns a
+readonly `ParsedModuleBatch` containing the Arena and a `view
+Array<ParsedModule>`. Resolution and C emission accept an immutable borrow of
+the batch, project its module view locally, and cannot outlive the batch's one
+cleanup boundary. The single-module `parseModule` API deliberately remains an
+ordinary owning result because the standalone driver uses it during recursive
+import discovery before the final module set exists.
+
+This is a lifetime migration, not yet an allocation-speed claim. The Arena owns
+the complete module Array and therefore transitively owns every parsed Program,
+but individual lexer and AST allocations still use their normal owned
+containers. Moving those inner structures directly into region storage remains
+a later, measured optimization. Keeping this first production step at the root
+avoids inventing general nested returned-borrow or container-of-owner-bundle
+semantics merely to migrate the compiler.
+
+The composition exposed two useful first-tier boundaries. An Arena owner bundle
+still cannot become the success payload of `Result`, so the parser library
+propagates the bundle directly and materializes only its final emitted `String`
+through `attempt`. Native lowering also treated inferred binding evidence as if
+names were module-global: an earlier local `view Array<ParsedModule>` named
+`parsed` contaminated later function parameters with the same spelling.
+Parameter lookup is now scoped to the enclosing declaration before inferred
+local evidence is consulted, with a dedicated executable regression. The full
+frontend graph emits and compiles with the Arena batch through both frontends.
+
 ## Fixed and null-only native argument plans
 
 The native `.zd` implementation now handles two SQLite-shaped ABI positions

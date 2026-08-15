@@ -15,9 +15,13 @@ import {
   resolveModuleGraphPhase,
 } from "./module-resolver-protocol.zs";
 import {
+  ModuleResolveError,
+  ModuleResolveErrorKind,
   ModuleSymbol,
   ModuleSymbolKind,
+  moduleResolutionError,
 } from "./semantic-model.zs";
+import { ParsedModuleBatch } from "./module-symbols.zs";
 
 struct Stage1ResolveResponse {
   success: boolean;
@@ -82,40 +86,59 @@ function stage1Parse(in path: String, in source: String): String {
   };
 }
 
-function stage1Emit(in entryPath: String, in batch: String): String {
+function emitParsedModuleBatch(
+  in parsedBatch: ParsedModuleBatch,
+  in entryPath: String
+): String throws ModuleResolveError {
+  const parsed = parsedBatch.modules;
+  const graph = try resolveParsedModules(
+    in parsed,
+    entryPath
+  );
+  try validateNativeLowerability(
+    in parsed,
+    graph
+  );
+  const emitOutcome = attempt emitModulesC(in parsed, graph);
+  return match (emitOutcome) {
+    success(emitted) => emitted;
+    failure(message) => throw moduleResolutionError(
+      ModuleResolveErrorKind.unsupportedLowering,
+      entryPath,
+      message,
+      1,
+      1
+    );
+  };
+}
+
+function stage1EmitChecked(
+  in entryPath: String,
+  in batch: String
+): String throws ModuleResolveError {
   const sourceOutcome = attempt decodeModuleSources(batch);
   const sources = match (sourceOutcome) {
     success(sources) => sources;
-    failure(message) => return `error\n${message}`;
+    failure(message) => throw moduleResolutionError(
+      ModuleResolveErrorKind.parser,
+      entryPath,
+      message,
+      1,
+      1
+    );
   };
-  const parseOutcome = attempt parseModuleSources(sources);
-  const parsed = match (parseOutcome) {
-    success(parsed) => parsed;
-    failure(error) => {
-      const message = resolverMessage(error);
-      return `error\n${message}`;
-    }
-  };
-  const resolveOutcome = attempt resolveParsedModules(parsed, entryPath);
-  const graph = match (resolveOutcome) {
-    success(graph) => graph;
-    failure(error) => {
-      const message = resolverMessage(error);
-      return `error\n${message}`;
-    }
-  };
-  const lowerabilityOutcome = attempt validateNativeLowerability(parsed, graph);
-  match (lowerabilityOutcome) {
-    success => {}
-    failure(error) => {
-      const message = resolverMessage(error);
-      return `error\n${message}`;
-    }
-  }
-  const emitOutcome = attempt emitModulesC(parsed, graph);
-  return match (emitOutcome) {
+  const parsedBatch = try parseModuleSources(sources);
+  return try emitParsedModuleBatch(in parsedBatch, entryPath);
+}
+
+function stage1Emit(in entryPath: String, in batch: String): String {
+  const outcome = attempt stage1EmitChecked(entryPath, batch);
+  return match (outcome) {
     success(emitted) => `ok\n${emitted}`;
-    failure(message) => `error\n${message}`;
+    failure(error) => {
+      const message = resolverMessage(error);
+      return `error\n${message}`;
+    }
   };
 }
 

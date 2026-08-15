@@ -1,4 +1,5 @@
 import { Map, Set } from "std/collections";
+import { Arena } from "std/memory";
 import {
   Declaration,
   DeclarationKind,
@@ -31,6 +32,11 @@ import { genericTypeShape } from "./semantic-type-shapes.zs";
 export struct ParsedModule {
   path: String;
   program: Program;
+}
+
+export readonly struct ParsedModuleBatch {
+  arena: Arena;
+  modules: view Array<ParsedModule>;
 }
 
 export function findModule(

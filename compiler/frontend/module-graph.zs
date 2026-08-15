@@ -1,4 +1,5 @@
 import { tokenize } from "./lexer.zs";
+import { Arena } from "std/memory";
 import {
   parseProgram,
 } from "./parser.zs";
@@ -9,6 +10,7 @@ import {
 } from "./module-paths.zs";
 import {
   ParsedModule,
+  ParsedModuleBatch,
   buildModuleSymbolIndices,
   buildModuleSymbols,
   findModule,
@@ -28,7 +30,9 @@ import {
   moduleResolutionError,
 } from "./semantic-model.zs";
 
-export function parseModule(in source: ModuleSource): ParsedModule throws ModuleResolveError {
+export function parseModule(
+  in source: ModuleSource
+): ParsedModule throws ModuleResolveError {
   const tokenOutcome = attempt tokenize(source.source);
   const tokens = match (tokenOutcome) {
     success(tokens) => tokens;
@@ -59,22 +63,28 @@ export function parseModule(in source: ModuleSource): ParsedModule throws Module
       );
     }
   };
-  return ParsedModule({
+  const module = ParsedModule({
     path: source.path.copyBytes(0, source.path.byteLength),
     program,
   });
+  try validateModuleBindings(module);
+  return module;
 }
 
 export function parseModuleSources(
   in sources: Array<ModuleSource>
-): Array<ParsedModule> throws ModuleResolveError {
+): ParsedModuleBatch throws ModuleResolveError {
   let parsed = Array<ParsedModule>();
   for (const source of sources) {
     const module = try parseModule(source);
-    try validateModuleBindings(module);
     parsed.push(module);
   }
-  return parsed;
+  let arena = Arena();
+  const storedModules = arena.create(move parsed);
+  return ParsedModuleBatch({
+    arena: move arena,
+    modules: storedModules,
+  });
 }
 
 export function findEntryModule(
