@@ -1037,6 +1037,19 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.cstringProjection
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed cstring projection";
+    }
+    output.append("z_stage1_string_cstring(");
+    const value = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, value);
+    output.append(")");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.templateValue
   ) {
     if (
@@ -9963,6 +9976,9 @@ function emitLoweredC(
   output.append("  size_t length;\n");
   output.append("  size_t capacity;\n");
   output.append("} Z_String;\n\n");
+  output.append("static inline __attribute__((unused)) const char *z_stage1_string_cstring(Z_String value) {\n");
+  output.append("  return value.data != NULL ? value.data : \"\";\n");
+  output.append("}\n\n");
   output.append("typedef enum Z_TemplatePartKind {\n");
   output.append("  Z_TEMPLATE_STRING,\n");
   output.append("  Z_TEMPLATE_BOOLEAN,\n");
@@ -10261,6 +10277,8 @@ function emitLoweredC(
           || foreign.parameterModes[parameterIndex] == "inout"
           || foreign.parameterModes[parameterIndex] == "out"
         )
+        && foreign.parameterTypes[parameterIndex].kind
+          != LoweredTypeKind.cstringType
       ) output.append(" *");
       output.append(" parameter_");
       output.append(`${parameterIndex}`);

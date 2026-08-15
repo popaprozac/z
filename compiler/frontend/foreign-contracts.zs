@@ -1259,6 +1259,13 @@ function foreignValueTypeName(
   in nativeType: String,
   in canonicalNativeType: Option<String>
 ): String throws String {
+  if (nativeType == "const char *") return "cstring";
+  match (in canonicalNativeType) {
+    some(typeName) => {
+      if (typeName == "const char *") return "cstring";
+    }
+    none => {}
+  }
   match (foreignEnumTypeIndex(declarations, nativeType)) {
     some(typeIndex) => return declarations.types[
       typeIndex

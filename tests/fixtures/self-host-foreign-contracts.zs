@@ -51,7 +51,7 @@ function inspect(
   if (normalized.constants[0].typeName != "ZForeignStatus") return 54;
   if (normalized.constants[2].typeName != "i32") return 55;
   if (normalized.constants[4].typeName != "u32") return 56;
-  if (normalized.functions.length != 4) return 11;
+  if (normalized.functions.length != 5) return 11;
   if (normalized.functions[0].name != "z_foreign_add") return 12;
   if (normalized.functions[0].nativeName != "z_foreign_add") return 13;
   if (normalized.functions[0].returnType != "i32") return 14;
@@ -94,6 +94,9 @@ function inspect(
     normalized.functions[3].parameters[0].typeName
       != "ZForeignStatus"
   ) return 58;
+  if (normalized.functions[4].name != "z_foreign_text_length") return 66;
+  if (normalized.functions[4].parameters.length != 1) return 67;
+  if (normalized.functions[4].parameters[0].typeName != "cstring") return 68;
 
   const source = try fs.readText(sourcePath);
   const moduleSource = ModuleSource({
@@ -129,7 +132,7 @@ function inspect(
     );
   };
   if (graph.modules.length != 1) return 29;
-  if (graph.modules[0].semanticEvidence.callResolutions.length != 7) return 30;
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 8) return 30;
   if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "foreign") {
     return 31;
   }
@@ -206,6 +209,18 @@ function inspect(
     graph.modules[0].semanticEvidence.callResolutions[6].parameterTypes[0]
       != "__z_selective_import_0.ZForeignStatus"
   ) return 62;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[7].targetName
+      != "z_foreign_text_length"
+  ) return 69;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[7].parameterTypes[0]
+      != "cstring"
+  ) return 70;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[7].parameterModes[0]
+      != "in"
+  ) return 71;
   let constantEvidence: usize = 0;
   for (
     const resolution

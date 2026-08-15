@@ -79,7 +79,7 @@ function inspectClang(in path: String): i32 throws String {
   if (module.types[0].nativeName != "ZForeignStatus") return 70;
   if (module.types[0].underlyingType != "i32") return 71;
   if (module.fields.length != 0) return 81;
-  if (module.functions.length != 5) return 43;
+  if (module.functions.length != 6) return 43;
   if (module.constants.length != 5) return 60;
   if (module.constants[0].name != "Z_FOREIGN_ENUM_OK") return 61;
   if (module.constants[0].typeName != module.types[0].typeName) return 62;
@@ -90,26 +90,29 @@ function inspectClang(in path: String): i32 throws String {
   if (module.constants[3].name != "Z_FOREIGN_RETRY") return 72;
   if (module.constants[4].name != "Z_FOREIGN_UNSIGNED") return 73;
   if (module.constants[4].typeName != "u32") return 74;
-  if (module.overloads.length != 5) return 44;
-  if (module.parameters.length != 7) return 45;
+  if (module.overloads.length != 6) return 44;
+  if (module.parameters.length != 8) return 45;
   if (module.availability.length != 0) return 46;
   if (module.functions[0].name != "z_foreign_add") return 47;
   if (module.functions[1].name != "z_foreign_status") return 48;
   if (module.functions[2].name != "z_foreign_enum_status") return 49;
   if (module.functions[3].name != "z_foreign_status_code") return 75;
-  if (module.functions[4].name != "z_foreign_measure") return 78;
+  if (module.functions[4].name != "z_foreign_text_length") return 78;
+  if (module.functions[5].name != "z_foreign_measure") return 82;
   if (module.overloads[0].returnNativeType != "int") return 50;
   if (module.overloads[1].returnNativeType != "int") return 51;
   if (module.overloads[2].returnNativeType != "ZForeignStatus") return 52;
   if (module.overloads[3].returnNativeType != "int") return 76;
-  if (module.overloads[4].returnNativeType != "long") return 79;
+  if (module.overloads[4].returnNativeType != "int") return 79;
+  if (module.overloads[5].returnNativeType != "long") return 83;
   if (module.parameters[0].nativeType != "int") return 53;
   if (module.parameters[1].nativeType != "int") return 54;
   if (module.parameters[2].nativeType != "int") return 55;
   if (module.parameters[3].nativeType != "int") return 56;
   if (module.parameters[4].nativeType != "ZForeignStatus") return 57;
-  if (module.parameters[5].nativeType != "int") return 77;
-  if (module.parameters[6].nativeType != "const char *") return 80;
+  if (module.parameters[5].nativeType != "const char *") return 77;
+  if (module.parameters[6].nativeType != "int") return 80;
+  if (module.parameters[7].nativeType != "const char *") return 84;
   match (in module.overloads[0].sourceFile) {
     some(path) => {
       if (path.byteLength == 0) return 58;

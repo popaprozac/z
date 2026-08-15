@@ -11,4 +11,5 @@ declare module "foreign-functions-only.h" {
   }
 
   export function z_foreign_status_code(status: _): _;
+  export function z_foreign_text_length(text: _): _;
 }

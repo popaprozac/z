@@ -19,6 +19,9 @@ function main(): i32 {
   const namespaceConstant =
     native.z_foreign_status_code(native.Z_FOREIGN_ENUM_OK);
   const selectedConstant = statusCode(enumFailed);
+  const label = `hé`;
+  const labelBytes = native.z_foreign_text_length(label);
+  if (labelBytes != 3) return -1;
   const enumStatus = match (enumOutcome) {
     success => 0;
     failure(status) => i32(status);

@@ -5341,6 +5341,10 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     emittedForeignSource,
     /z_foreign_status_code\(Z_FOREIGN_ENUM_FAILED\)/,
   );
+  assert.match(
+    emittedForeignSource,
+    /z_foreign_text_length\(z_stage1_string_cstring\(label\)\)/,
+  );
   assert.doesNotMatch(emittedForeignSource, /native\.z_foreign_add/);
   const foreignApplication = resolve(directory, "foreign-application");
   const foreignApplicationCompilation = spawnSync(
@@ -5694,7 +5698,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignInspection.status, 0, foreignInspection.stderr);
   assert.match(
     foreignInspection.stdout,
-    /decoded 5 foreign functions from clang/,
+    /decoded 6 foreign functions from clang/,
   );
   const invalidForeignAdapterStream = resolve(
     directory,
@@ -5734,7 +5738,7 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.match(
     foreignContractInspection.stdout,
-    /normalized 4 foreign function contracts for foreign-functions-only\.h/,
+    /normalized 5 foreign function contracts for foreign-functions-only\.h/,
   );
   const mismatchedEnumContract = resolve(
     directory,

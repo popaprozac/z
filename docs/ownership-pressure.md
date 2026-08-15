@@ -2640,6 +2640,30 @@ contracts and call-site capability mismatches fail before lowering. This also
 exposed and closed a Stage-0 double-address bug for explicit `in value` at a C
 scalar-pointer boundary.
 
+## Zapp message routing across a migration boundary
+
+An opt-in Zapp pressure test now preserves its production-shaped Nim adapter,
+enters a Z static library through an exported owned `String` parameter, and
+calls back into the current Nim router through a checked `const char *`
+declaration. A UTF-8 JSON envelope survives Nim → Z → Nim unchanged. Generated
+C shows one validated allocation at the C-to-Z export, a zero-allocation
+`String`-to-`cstring` projection for the outbound call, and exact Z cleanup
+after the router returns.
+
+This found two fixed-point parity gaps immediately: canonical `const char *`
+was not normalized to `cstring`, and native call evidence confused Z's
+call-scoped borrow with C's by-value pointer ABI. The compiler now keeps those
+facts separate. The router-side Nim copy remains deliberate migration
+scaffolding; it disappears as envelope parsing, dispatch, application state,
+and platform services move into Z. The ignored legacy `void *app` stays in the
+Nim compatibility adapter instead of forcing an unproven raw-pointer feature
+into Z.
+
+The result is evidence for gradual replacement rather than a permanent mixed
+architecture: Zapp can move one ABI seam at a time from Nim and handwritten
+Objective-C into Z while direct Objective-C/C/C++ interop preserves the native
+platform surface.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

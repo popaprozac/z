@@ -211,8 +211,12 @@ ported; this is a bootstrap implementation boundary, not a restriction of the
 These normalized tiers also reach native semantic analysis and C emission.
 Selective aliases and namespace calls use the same signature/effect
 checker as ordinary Z functions, and a selected native function absent from the
-checked contract is rejected. Infallible calls and borrowed text views remain
-direct. Scalar capability calls take the stored value's address, and `out`
+checked contract is rejected. A fixed `const char *` parameter written with
+inferred `_` becomes an intrinsically borrowed `cstring`; an owned Z `String`
+may supply that argument for one call without being moved or copied. Native
+lowering passes its existing NUL-terminated storage and keeps ordinary Z cleanup
+on the owner. Infallible calls and borrowed text views remain direct. Scalar
+capability calls take the stored value's address, and `out`
 participates in ordinary definite initialization. Null-only positions require
 a literal `null` and lower to `NULL`; fixed
 positions disappear from the Z signature and are reinserted in their original
@@ -241,6 +245,7 @@ still use the Stage-0 compiler.
 | `export type Name on thread.main { ... }` | Combine executor isolation with native value lifecycle facts | Affinity is independent from copy/move/deinit capability |
 | `export function name(...): _ on thread.main` | Isolate a native function or Objective-C method | Calls require proven main-executor context; the native ABI is unchanged |
 | `_` | Infer the ABI type from the header | Never means dynamic or untyped |
+| `_` matching fixed C `const char *` | Infer an intrinsically borrowed `cstring` input | A `cstring` or owned Z `String` may be passed for the call; owned `String` storage is lent without a copy or ownership transfer |
 | `_ \| null` | Expose a header pointer/reference as nullable | Requires a compatible native pointer/reference representation |
 | `null` parameter type | Caller must supply literal `null`; no other value inhabits the parameter type | Requires a native pointer and emits `NULL` without introducing a raw pointer type |
 | `in name: _` | Read-only, call-scoped borrow | Typically `const T *`, `const T &`, or a call-only callback |

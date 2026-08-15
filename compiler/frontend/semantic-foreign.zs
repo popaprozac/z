@@ -118,14 +118,21 @@ function foreignFunctionSignature(
       continue;
     }
     nativeToVisible.push(visibleIndex);
+    const parameterType = localForeignTypeName(
+      types,
+      namespace,
+      parameter.typeName
+    );
     if (parameter.capability == "move") parameterModes.push("value");
+    else if (
+      parameter.capability == "value"
+      && parameterType == "cstring"
+    ) parameterModes.push("in");
     else parameterModes.push(parameter.capability.copyBytes(
       0,
       parameter.capability.byteLength
     ));
-    parameterTypes.push(
-      localForeignTypeName(types, namespace, parameter.typeName)
-    );
+    parameterTypes.push(move parameterType);
     visibleIndex = visibleIndex + 1;
   }
   let errorType = "";

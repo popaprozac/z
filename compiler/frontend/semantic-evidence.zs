@@ -369,9 +369,21 @@ export function recordForeignCallFacts(
           && argument.source
             < evidence.callResolutions[resolutionIndex].parameterModes.length
         ) {
-          evidence.callResolutions[resolutionIndex].parameterModes[
+          const intrinsicCStringBorrow =
             argument.source
-          ] = argument.mode.copyBytes(0, argument.mode.byteLength);
+              < evidence.callResolutions[resolutionIndex].parameterTypes.length
+            && evidence.callResolutions[resolutionIndex].parameterTypes[
+              argument.source
+            ] == "cstring"
+            && evidence.callResolutions[resolutionIndex].parameterModes[
+              argument.source
+            ] == "in"
+            && argument.mode == "value";
+          if (!intrinsicCStringBorrow) {
+            evidence.callResolutions[resolutionIndex].parameterModes[
+              argument.source
+            ] = argument.mode.copyBytes(0, argument.mode.byteLength);
+          }
         }
       }
       return;

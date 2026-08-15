@@ -2250,6 +2250,14 @@ function inferSignatureCallType(
         );
       }
     }
+    if (
+      callKind == "foreign"
+      && requiredExpected == "cstring"
+      && argumentTypes[parameterIndex] == "String"
+    ) {
+      parameterIndex = parameterIndex + 1;
+      continue;
+    }
     try requireExpressionType(
       module,
       modules,

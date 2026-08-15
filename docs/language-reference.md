@@ -2746,6 +2746,12 @@ NUL-terminated native text tied to the function's single borrowed pointer
 input. It must be checked for null before `String.from` makes an owned copy;
 the owner cannot be consumed while the view remains live.
 
+A fixed C `const char *` input inferred as `cstring` is also call-scoped. Z may
+pass an owned `String` directly: its existing NUL-terminated byte storage is
+projected for that invocation, the native callee receives one `const char *`,
+and ownership plus cleanup remain with the Z caller. Persisting that pointer
+after the call still requires an explicit native lifetime contract.
+
 Some native operations keep the owner alive while invalidating storage exposed
 by earlier views. A `.zd` function fact such as `invalidates statement;` makes
 that effect explicit. The call is rejected until every view derived from

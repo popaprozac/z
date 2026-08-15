@@ -149,6 +149,7 @@ export enum LoweredExpressionKind {
   receiverValue,
   integerValue,
   stringValue,
+  cstringProjection,
   booleanValue,
   nullValue,
   checkedAddInteger,
@@ -7947,6 +7948,11 @@ function lowerExpression(
       tree,
       index
     );
+    const parameterTypes = resolvedCallParameterTypes(
+      evidence,
+      tree,
+      index
+    );
     let callLabels = Array<String>();
     for (const mode of parameterModes) {
       callLabels.push(mode.copyBytes(0, mode.byteLength));
@@ -8021,6 +8027,35 @@ function lowerExpression(
           && output[value].labels.length > 0
           && stringStartsWith(output[value].labels[0], "view ")
         ) callLabels[argument - 1] = "view";
+      }
+      if (
+        foreignTarget.byteLength > 0
+        && parameterTypes.length >= argument
+        && parameterTypes[argument - 1] == "cstring"
+      ) {
+        match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput
+        )) {
+          some(argumentType) => {
+            if (argumentType == "String") {
+              let projectionChildren = Array<usize>();
+              projectionChildren.push(value);
+              value = pushExpression(
+                inout output,
+                LoweredExpressionKind.cstringProjection,
+                "cstring",
+                projectionChildren,
+                Array<String>()
+              );
+            }
+          }
+          none => {}
+        }
+        callLabels[argument - 1] = "value";
       }
       children.push(value);
       argument = argument + 1;

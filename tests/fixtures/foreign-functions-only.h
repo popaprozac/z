@@ -14,6 +14,7 @@ int z_foreign_add(int left, int right);
 int z_foreign_status(int code);
 ZForeignStatus z_foreign_enum_status(int code);
 int z_foreign_status_code(ZForeignStatus status);
+int z_foreign_text_length(const char *text);
 long z_foreign_measure(int value, const char *label);
 
 #endif
