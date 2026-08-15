@@ -2540,10 +2540,37 @@ second implementation seam: after `Arena.create(set)`, collection member reads
 must use the pointer-backed view representation. Stage 0 and the fixed-point C
 emitter now preserve that access shape instead of emitting an inline `.` read.
 
-Multi-edge recursive enum graphs, class, and returned graph edges remain
-rejected or deferred. Richer mutable container
+Multi-edge recursive enum graphs, class-backed regions, and general returned
+borrow edges remain rejected or deferred. Richer mutable container
 provenance—including loop-carried identity and broader shape-stability
 evidence—is still required before claiming whole-compiler allocation gains.
+
+## Closing one Arena graph into a returned owner
+
+The first returned graph edge deliberately adds no lifetime syntax. A
+`readonly struct ParsedFile` owns exactly one direct `Arena` plus an
+`Array<NodeRef>` whose embedded node views already prove that same Arena. Its
+constructor must spell both transfers: `arena: move arena` closes the region,
+and `roots: move roots` transfers the dependent container. The completed value
+returns from a synchronous parser, crosses the module/function boundary as one
+move-only owner, and remains inspectable through `in ParsedFile`.
+
+This pressure test exposed three rules that a return-type exemption alone would
+have missed. Moving the Arena must be atomic with closing the graph rather than
+rejected merely because its intended dependent views are live. Any other local
+view into that Arena must become unavailable after closure, or it could be used
+through a moved owner. Finally, Array indexing and nested field projection must
+rebase their provenance onto the completed bundle rather than continue naming
+the vanished local Arena binding. Both semantic frontends now enforce those
+rules and the differential fixture executes unchanged through Stage 0 and the
+fixed-point compiler.
+
+Destruction supplies the runtime half of the proof: cleanup-bearing dependent
+fields are destroyed before the Arena regardless of source declaration order.
+Mutable fields, multiple Arenas, mixed provenance, spread construction,
+containers of bundles, closure capture, generators, and async suspension stay
+rejected. This is evidence for a useful compiler-AST storage shape without
+pretending Z has general returned borrows.
 
 ## Fixed and null-only native argument plans
 

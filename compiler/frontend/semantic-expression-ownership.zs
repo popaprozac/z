@@ -2,6 +2,7 @@ import {
   NativeInitializationState,
   NativeOwnershipState,
   NativeValueBinding,
+  arenaBundleMoveIsAllowed,
   liveViewBindingForOwner,
   setValueBindingOwnership,
   valueBindingInitialization,
@@ -153,7 +154,10 @@ export function consumeOwnedExpressionNode(
   const root = expressionStorageRootName(tree, index);
   if (root.byteLength == 0) return;
   const liveView = liveViewBindingForOwner(bindings, root);
-  if (liveView.byteLength > 0) {
+  if (
+    liveView.byteLength > 0
+    && !arenaBundleMoveIsAllowed(bindings, tree.nodes[index].offset)
+  ) {
     throw moduleResolutionError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
@@ -162,7 +166,10 @@ export function consumeOwnedExpressionNode(
       tree.nodes[index].column
     );
   }
-  if (valueBindingIsBorrowed(bindings, root)) {
+  if (
+    valueBindingIsBorrowed(bindings, root)
+    && !arenaBundleMoveIsAllowed(bindings, tree.nodes[index].offset)
+  ) {
     const message = valueBindingIsMatchBorrowed(bindings, root)
       ? `cannot move borrowed match binding "${root}"`
       : `cannot move borrowed parameter "${root}"`;

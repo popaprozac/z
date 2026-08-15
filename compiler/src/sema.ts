@@ -524,6 +524,7 @@ type AnalysisState = {
   readonly viewBindingOwners: Map<number, string>;
   readonly viewCallOrigins: Map<number, ViewOrigin>;
   readonly viewOrigins: Map<string, ViewOrigin>;
+  readonly arenaBundleMoveExpressions: Set<number>;
   readonly localViewInitializers: Set<number>;
   readonly arrayViewInitializers: Set<number>;
   readonly connectionCallOrigins: Map<number, { readonly owner: string; readonly location: SourceLocation }>;
@@ -898,6 +899,7 @@ export function analyze(
     viewBindingOwners: new Map(),
     viewCallOrigins: new Map(),
     viewOrigins: new Map(),
+    arenaBundleMoveExpressions: new Set(),
     localViewInitializers: new Set(),
     arrayViewInitializers: new Set(),
     connectionCallOrigins: new Map(),
@@ -2208,7 +2210,16 @@ function analyzeStructDeclaration(
         || (enums.has(nestedType) && !parseOptionType(field.type.name))
         || parseOptionalViewType(field.type.name) !== null
         || parseMapType(declaration.name) !== null
-        || parseSetType(declaration.name) !== null;
+        || parseSetType(declaration.name) !== null
+        || (
+          declaration.kind === "struct"
+          && declaration.fields.filter((candidate) => candidate.type.name === "Arena").length === 1
+          && (
+            parseDynamicArrayType(field.type.name) !== null
+            || parseMapType(field.type.name) !== null
+            || parseSetType(field.type.name) !== null
+          )
+        );
       if (!directViewField && !nestedValueAggregate) {
         throw new DiagnosticError(fileName, field.type.location, "this view-bearing field shape cannot be stored in fields in the first provenance tier", {
           code: "Z0206",
@@ -2225,6 +2236,27 @@ function analyzeStructDeclaration(
     }
     if (containsSliceType(field.type.name)) {
       throw new DiagnosticError(fileName, field.location, "Slice values cannot be stored in struct or class fields");
+    }
+  }
+  const directArenaFields = declaration.fields.filter((field) => field.type.name === "Arena");
+  const carriesStoredViews = declaration.fields.some((field) => (
+    field.type.name !== "Arena" && containsStoredViewType(field.type.name, structs, enums)
+  ));
+  if (declaration.kind === "struct" && directArenaFields.length > 0 && carriesStoredViews) {
+    if (directArenaFields.length !== 1) {
+      throw new DiagnosticError(fileName, directArenaFields[1].location, `Arena-owned graph bundle ${JSON.stringify(declaration.name)} must declare exactly one direct Arena field`, {
+        code: "Z0206",
+        notes: ["one region owner gives every embedded view one unambiguous lifetime"],
+        helps: ["keep one Arena field and move separately owned graphs in separate bundles"],
+      });
+    }
+    const mutableField = declaration.fields.find((field) => !field.readonly);
+    if (mutableField) {
+      throw new DiagnosticError(fileName, mutableField.location, `Arena-owned graph bundle ${JSON.stringify(declaration.name)} must be a readonly struct`, {
+        code: "Z0206",
+        notes: ["replacing either the Arena or a dependent field would detach the bundle's internal provenance"],
+        helps: [`declare \`readonly struct ${declaration.name}\``],
+      });
     }
   }
   for (const method of declaration.methods) {
@@ -2718,8 +2750,18 @@ function validateFunctionSignature(
       helps: ["return the native value directly until aggregate native async-result storage is implemented"],
     });
   }
-  if (containsStoredViewType(declaration.returnType.name, structs, enums) && !parseReceiverViewReturnType(declaration.returnType.name)) {
+  if (
+    containsStoredViewType(declaration.returnType.name, structs, enums)
+    && !parseReceiverViewReturnType(declaration.returnType.name)
+    && !isArenaOwnerBundleType(declaration.returnType.name, structs, enums)
+  ) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "view values cannot be nested inside returned storage", { code: "Z0206" });
+  }
+  if (declaration.async && isArenaOwnerBundleType(declaration.returnType.name, structs, enums)) {
+    throw new DiagnosticError(fileName, declaration.returnType.location, "an Arena-owned graph bundle cannot cross async suspension in the first region tier", {
+      code: "Z0704",
+      helps: ["construct and return the bundle from a synchronous helper before or after awaited work"],
+    });
   }
   if (containsSliceType(declaration.returnType.name)) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "returning Slice values requires an explicit lifetime contract and is not implemented yet");
@@ -2745,14 +2787,28 @@ function validateFunctionSignature(
       throw new DiagnosticError(fileName, parameter.location, "async task frames cannot store Generator<T> parameters yet", { code: "Z0704" });
     }
     if (containsStoredViewType(parameter.type.name, structs, enums)) {
+      const arenaBundle = isArenaOwnerBundleType(parameter.type.name, structs, enums);
       const directView = parseViewType(parameter.type.name);
-      if (directView || declaration.async || parameter.mode !== "in") {
+      if (
+        directView
+        || declaration.async
+        || (!arenaBundle && parameter.mode !== "in")
+        || (arenaBundle && parameter.mode !== "in" && parameter.mode !== "value")
+      ) {
         throw new DiagnosticError(fileName, parameter.type.location, directView
           ? "view is a receiver-tied return capability, not a parameter type"
-          : "a view-bearing value can only enter a synchronous immutable in parameter", {
+          : arenaBundle && declaration.async
+            ? "an Arena-owned graph bundle cannot cross async suspension in the first region tier"
+            : arenaBundle
+              ? "an Arena-owned graph bundle accepts only synchronous owned or immutable in parameters"
+              : "a view-bearing value can only enter a synchronous immutable in parameter", {
           code: "Z0206",
-          notes: directView ? undefined : ["the call borrows the complete composite and cannot store it or suspend"],
-          helps: directView ? undefined : ["use an `in` parameter on a synchronous function"],
+          notes: directView ? undefined : [arenaBundle
+            ? "the bundle closes its views over its own Arena but remains a synchronous, move-only region owner"
+            : "the call borrows the complete composite and cannot store it or suspend"],
+          helps: directView ? undefined : [arenaBundle
+            ? "use an owned parameter to consume the bundle or `in` to inspect it"
+            : "use an `in` parameter on a synchronous function"],
         });
       }
     }
@@ -3814,7 +3870,8 @@ function analyzeStatement(
       const arenaView = state.arenaCreateCalls.has(statement.initializer.location.offset);
       const storedViewComposite = !view
         && !optionalView
-        && containsStoredViewType(String(variableType), structs, enums);
+        && containsStoredViewType(String(variableType), structs, enums)
+        && !isArenaOwnerBundleType(String(variableType), structs, enums);
       const unboundStoredViewContainer = storedViewComposite
         && state.unboundStoredViewContainerInitializers.has(statement.initializer.location.offset);
       if (unboundStoredViewContainer) {
@@ -5874,7 +5931,10 @@ function inferIfExpression(
   }
 
   const resultType = commonBranchType("if", thenType, elseType, expression.elseBranch.location, fileName);
-  if (containsStoredViewType(String(resultType), structs, enums)) {
+  if (
+    containsStoredViewType(String(resultType), structs, enums)
+    && !isArenaOwnerBundleType(String(resultType), structs, enums)
+  ) {
     const origins = [thenOrigin, elseOrigin].filter((origin): origin is ViewOrigin => origin !== null);
     if (origins.length !== continuing.length) {
       throw new DiagnosticError(fileName, expression.location, "every continuing branch of a view-bearing if expression must produce proven stored provenance", {
@@ -6385,7 +6445,10 @@ function inferMatchExpression(
     );
     mergeAccessLoanStates(state, continuingLoans);
   }
-  if (containsStoredViewType(String(resultType), structs, enums)) {
+  if (
+    containsStoredViewType(String(resultType), structs, enums)
+    && !isArenaOwnerBundleType(String(resultType), structs, enums)
+  ) {
     if (resultOrigins.length !== continuing.length) {
       throw new DiagnosticError(fileName, expression.location, "every continuing arm of a view-bearing match expression must produce proven stored provenance", {
         code: "Z0206",
@@ -8088,7 +8151,17 @@ function inferExpressionInner(
             helps: ["use the value directly, or use `copy value` when explicit duplication improves clarity"],
           });
         }
-        consumeOwnedValue(expression.operand, sourceType, locals, structs, enums, fileName, state, true);
+        consumeOwnedValue(
+          expression.operand,
+          sourceType,
+          locals,
+          structs,
+          enums,
+          fileName,
+          state,
+          true,
+          state.arenaBundleMoveExpressions.has(expression.location.offset),
+        );
         return actual;
       }
       const operand = implicitlyLoadCopyableView(
@@ -8509,6 +8582,16 @@ function inferExpressionInner(
         state,
         constructionAffinity,
       );
+      const arenaBundle = declaration
+        ? arenaOwnerBundleInfo(declaration.name, structs, enums)
+        : null;
+      if (arenaBundle && expression.spread) {
+        throw new DiagnosticError(fileName, expression.spread.location, "Arena-owned graph bundles cannot use struct spread in the first closed-region tier", {
+          code: "Z0206",
+          notes: ["the constructor must visibly move one Arena together with every dependent view-bearing field"],
+          helps: ["construct the bundle with explicit fields"],
+        });
+      }
       if (expression.spread) {
         if (!declaration || declaration.kind !== "struct" || foreignDeclaration) {
           throw new DiagnosticError(fileName, expression.spread.location, "struct spread is limited to Z value structs in the first tier", {
@@ -8641,6 +8724,51 @@ function inferExpressionInner(
           );
         }
       }
+      let arenaBundleOwner: string | null = null;
+      if (arenaBundle) {
+        const arenaInitializer = expression.fields.find((field) => field.name === arenaBundle.arenaField.name);
+        if (
+          !arenaInitializer
+          || arenaInitializer.expression.kind !== "unary"
+          || arenaInitializer.expression.operator !== "move"
+          || arenaInitializer.expression.operand.kind !== "identifier"
+        ) {
+          throw new DiagnosticError(fileName, arenaInitializer?.expression.location ?? expression.location, `Arena-owned graph bundle field ${JSON.stringify(arenaBundle.arenaField.name)} must explicitly move a named Arena`, {
+            code: "Z0206",
+            helps: [`initialize it with \`${arenaBundle.arenaField.name}: move arena\``],
+          });
+        }
+        arenaBundleOwner = arenaInitializer.expression.operand.name;
+        const storedArena = locals.get(arenaBundleOwner);
+        if (!storedArena || String(underlyingType(storedArena)) !== "Arena") {
+          throw new DiagnosticError(fileName, arenaInitializer.expression.operand.location, `Arena-owned graph bundle requires a local Arena owner, found ${describeValueType(storedArena ?? "unknown", state)}`, {
+            code: "Z0206",
+          });
+        }
+        const provenOrigins: ViewOrigin[] = [];
+        for (const field of arenaBundle.declaration.fields) {
+          if (field.name === arenaBundle.arenaField.name || !containsStoredViewType(field.type.name, structs, enums)) continue;
+          const initializer = expression.fields.find((candidate) => candidate.name === field.name);
+          const origin = initializer ? storedViewOriginForExpression(initializer.expression, state) : null;
+          if (!initializer || !origin) {
+            throw new DiagnosticError(fileName, initializer?.expression.location ?? expression.location, `Arena-owned graph field ${JSON.stringify(field.name)} must come from an already proven view-bearing binding`, {
+              code: "Z0206",
+              notes: ["the first bundle tier makes region closure explicit at one construction site"],
+              helps: ["bind the Arena view or populated view-bearing collection first, then move it into the bundle"],
+            });
+          }
+          provenOrigins.push(origin);
+        }
+        const proven = mergeViewOrigins(provenOrigins);
+        if (proven.sources.length !== 1 || proven.sources[0].owner !== arenaBundleOwner) {
+          throw new DiagnosticError(fileName, expression.location, `every dependent field in Arena-owned graph bundle ${JSON.stringify(declaration!.name)} must borrow from the moved Arena ${JSON.stringify(arenaBundleOwner)}`, {
+            code: "Z0206",
+            notes: ["a closed region cannot retain pointers into another owner"],
+            helps: ["construct every embedded view from the Arena moved into this bundle"],
+          });
+        }
+        state.arenaBundleMoveExpressions.add(arenaInitializer.expression.location.offset);
+      }
       const provided = new Set<string>();
       const storedViewOrigins: ViewOrigin[] = [];
       for (const initializer of expression.fields) {
@@ -8680,7 +8808,9 @@ function inferExpressionInner(
       if (missing) {
         throw new DiagnosticError(fileName, expression.location, `missing field ${JSON.stringify(missing.name)} when constructing ${JSON.stringify(expression.typeName)}`);
       }
-      if (declaration?.kind === "struct" && containsStoredViewType(declaration.name, structs, enums)) {
+      if (arenaBundle && arenaBundleOwner) {
+        closeArenaViewsIntoBundle(arenaBundleOwner, locals, state);
+      } else if (declaration?.kind === "struct" && containsStoredViewType(declaration.name, structs, enums)) {
         const origin = mergeViewOrigins(storedViewOrigins);
         if (origin.sources.length > 1) {
           throw new DiagnosticError(fileName, expression.location, `view-bearing struct ${JSON.stringify(declaration.name)} must borrow from exactly one owner`, {
@@ -8813,7 +8943,12 @@ function inferExpressionInner(
           );
         }
       }
-      return (array ?? slice ?? dynamic)!.elementType;
+      const elementType = (array ?? slice ?? dynamic)!.elementType;
+      if (containsStoredViewType(elementType, structs, enums)) {
+        const origin = storedViewOriginForExpression(expression.object, state);
+        if (origin) state.viewCallOrigins.set(expression.location.offset, origin);
+      }
+      return elementType;
     }
     case "variantExpression": {
       const declaration = enums.get(expression.enumName);
@@ -11866,7 +12001,11 @@ function checkArguments(
         ],
       });
     }
-    if (argument.kind === "identifier" && containsStoredViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")), structs, enums)) {
+    if (
+      argument.kind === "identifier"
+      && containsStoredViewType(String(underlyingType(locals.get(argument.name) ?? "unknown")), structs, enums)
+      && !isArenaOwnerBundleType(String(underlyingType(locals.get(argument.name) ?? "unknown")), structs, enums)
+    ) {
       if (parameter.mode !== "in" || target.async) {
         throw new DiagnosticError(fileName, argument.location, `view-bearing value ${JSON.stringify(argument.name)} can only enter a synchronous in parameter`, {
           code: "Z0206",
@@ -12263,6 +12402,7 @@ function consumeOwnedValue(
   fileName: string,
   state: AnalysisState,
   force = false,
+  allowOwnerWithLiveViews = false,
 ): void {
   if (!force && !hasOwnershipType(type, structs, enums, state)) return;
   if (state.objcStringsToZ.has(expression.location.offset)) return;
@@ -12300,7 +12440,9 @@ function consumeOwnedValue(
     });
   }
   if (expression.kind !== "identifier") return;
-  rejectOwnerMutationWhileViewed(expression.name, expression.location, fileName, state, "move");
+  if (!allowOwnerWithLiveViews) {
+    rejectOwnerMutationWhileViewed(expression.name, expression.location, fileName, state, "move");
+  }
   const stored = locals.get(expression.name);
   if (!stored) return;
   if (isBorrowedBinding(stored)) {
@@ -12383,6 +12525,9 @@ function storedViewOriginForExpression(
 ): ViewOrigin | null {
   const direct = state.viewCallOrigins.get(expression.location.offset);
   if (direct) return direct;
+  if (expression.kind === "unary" && expression.operator === "move") {
+    return storedViewOriginForExpression(expression.operand, state);
+  }
   const root = storageRoot(expression);
   return root ? state.viewOrigins.get(root.name) ?? null : null;
 }
@@ -12404,6 +12549,22 @@ function mergeViewOrigins(origins: readonly ViewOrigin[]): ViewOrigin {
     }
   }
   return { sources };
+}
+
+function closeArenaViewsIntoBundle(
+  owner: string,
+  locals: Map<string, ValueType>,
+  state: AnalysisState,
+): void {
+  for (const [name, origin] of state.viewOrigins) {
+    if (!origin.sources.some((source) => source.owner === owner)) continue;
+    const stored = locals.get(name);
+    if (!stored || ownershipState(stored) !== "available") continue;
+    locals.set(
+      name,
+      `${movedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${underlyingType(stored)}`,
+    );
+  }
 }
 
 type RegionContainerOriginState = ReadonlyMap<string, ViewOrigin>;
@@ -16657,6 +16818,36 @@ function containsStoredViewType(
       ? containsStoredViewType(variant.payload.name, structs, enums, next)
       : false
   )) ?? false;
+}
+
+type ArenaOwnerBundleInfo = {
+  readonly declaration: StructDeclaration;
+  readonly arenaField: StructDeclaration["fields"][number];
+};
+
+function arenaOwnerBundleInfo(
+  name: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): ArenaOwnerBundleInfo | null {
+  const actual = String(underlyingType(name));
+  const declaration = structs.get(actual);
+  if (!declaration || declaration.kind !== "struct") return null;
+  const arenaFields = declaration.fields.filter((field) => field.type.name === "Arena");
+  if (arenaFields.length !== 1 || declaration.fields.some((field) => !field.readonly)) return null;
+  const carriesArenaViews = declaration.fields.some((field) => (
+    field !== arenaFields[0]
+    && containsStoredViewType(field.type.name, structs, enums)
+  ));
+  return carriesArenaViews ? { declaration, arenaField: arenaFields[0] } : null;
+}
+
+function isArenaOwnerBundleType(
+  name: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): boolean {
+  return arenaOwnerBundleInfo(name, structs, enums) !== null;
 }
 
 function requireAssignable(

@@ -4770,7 +4770,11 @@ function generateDeinit(
   })];
   const localCleanup = generateCleanup(context.cleanupScopes, context);
   if (localCleanup) body.push(indent(localCleanup, 2));
-  for (const field of [...declaration.fields].reverse()) {
+  const cleanupFields = [
+    ...declaration.fields.filter((field) => field.type.name !== "Arena").reverse(),
+    ...declaration.fields.filter((field) => field.type.name === "Arena").reverse(),
+  ];
+  for (const field of cleanupFields) {
     if (hasSemanticCleanupType(field.type.name, structs, enums, semanticInfo)) {
       body.push(indent(generateValueCleanup(`self->${field.name}`, field.type.name, null, context), 2));
     }

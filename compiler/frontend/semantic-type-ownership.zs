@@ -1,4 +1,5 @@
 import { TextBuffer } from "std/text";
+import { moduleSymbolIndex } from "./module-symbols.zs";
 import {
   NativeValueBinding,
   addValueBinding,
@@ -27,6 +28,19 @@ function copyStrings(in values: Array<String>): Array<String> {
     copied.push(value.copyBytes(0, value.byteLength));
   }
   return copied;
+}
+
+export function typeNameIsArena(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  if (typeName == "Arena") return true;
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], typeName);
+  if (symbolIndex >= modules[moduleIndex].symbols.length) return false;
+  const symbol = view modules[moduleIndex].symbols[symbolIndex];
+  return symbol.kind == ModuleSymbolKind.importedSymbol
+    && symbol.importedName == "Arena";
 }
 
 function containsString(in values: Array<String>, in value: String): boolean {
@@ -115,7 +129,7 @@ export function typeHasCleanup(
   if (
     typeName == "String"
     || typeName == "TextBuffer"
-    || typeName == "Arena"
+    || typeNameIsArena(modules, moduleIndex, typeName)
     || typeName == "fs.Lock"
     || typeName == "__z_std_fs_Lock"
     || stringStartsWith(typeName, "__z_native_function:")
@@ -349,6 +363,64 @@ export function typeContainsStoredView(
     none => {}
   }
   return false;
+}
+
+export function arenaOwnerBundleFieldName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): String {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        != ModuleSymbolKind.structSymbol
+      ) return "";
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => {
+          let arenaField = "";
+          let arenaCount: usize = 0;
+          let carriesViews = false;
+          for (const field of signature.fields) {
+            if (!field.readonlyField) return "";
+            if (typeNameIsArena(
+              modules,
+              location.moduleIndex,
+              field.typeName
+            )) {
+              arenaCount = arenaCount + 1;
+              arenaField = field.name.copyBytes(0, field.name.byteLength);
+              continue;
+            }
+            let visiting = Array<String>();
+            if (typeContainsStoredView(
+              modules,
+              location.moduleIndex,
+              field.typeName,
+              visiting
+            )) carriesViews = true;
+          }
+          if (arenaCount == 1 && carriesViews) return arenaField;
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return "";
+}
+
+export function typeIsArenaOwnerBundle(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const fieldName = arenaOwnerBundleFieldName(modules, moduleIndex, typeName);
+  return fieldName.byteLength > 0;
 }
 
 export function typeSupportsExplicitCopy(

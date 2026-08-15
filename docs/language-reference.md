@@ -1590,6 +1590,51 @@ Construction consumes each view-bearing element. The Array is an inferred
 Its buffer receives normal Arena cleanup, while the view fields remain borrowed
 pointers.
 
+A synchronous function can close an Arena and its dependent graph into one
+move-only returned owner. The bundle is an ordinary `readonly struct`: it must
+declare exactly one direct `Arena` field, while its other fields may contain
+views or view-bearing `Array`, `Map`, and `Set` storage proven to come from that
+Arena.
+
+```z
+struct SyntaxNode {
+  kind: i32;
+}
+
+struct NodeRef {
+  node: view SyntaxNode;
+}
+
+readonly struct ParsedFile {
+  arena: Arena;
+  roots: Array<NodeRef>;
+}
+
+function parse(): ParsedFile {
+  let arena = Arena();
+  const node = arena.create(SyntaxNode({ kind: 42 }));
+  const roots = Array<NodeRef>(NodeRef({ node }));
+  return ParsedFile({ arena: move arena, roots: move roots });
+}
+```
+
+Construction is the visible region-closing proof: the named Arena is moved
+explicitly, every dependent field must already carry that same Arena identity,
+and any old local views into the Arena become unavailable. The completed bundle
+can return across module boundaries, move into an owned synchronous parameter,
+or be inspected through `in ParsedFile`. Field projections inherit the bundle
+as their owner, so the internal views remain valid for exactly as long as the
+bundle remains live. Dependent fields are destroyed before the Arena regardless
+of declaration order. The bundle itself adds no heap allocation, retain, or
+runtime provenance tag: both emitters lower it to an ordinary C value struct
+containing the Arena descriptor and dependent owners.
+
+The first closed-region tier deliberately rejects mutable bundle fields,
+multiple direct Arenas, mixed owners, struct spread, nesting the bundle inside
+another owner or collection, closure capture, generators, and async suspension.
+Those are separate provenance relationships rather than reasons to weaken the
+safe synchronous return path.
+
 An empty `let` Array starts without provenance. Its first consuming `push`
 establishes the owner, and every later element must come from that Arena:
 

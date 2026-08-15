@@ -464,14 +464,48 @@ destroys a matching key/value and returns whether it existed; `clear` destroys
 every entry while retaining reusable allocation and the Map's established
 Arena proof.
 
+One Arena and its proven dependent graph may be closed into a returned owner
+without exposing a lifetime parameter:
+
+```z
+struct NodeRef {
+  node: view SyntaxNode;
+}
+
+readonly struct ParsedFile {
+  arena: Arena;
+  roots: Array<NodeRef>;
+}
+
+function parse(): ParsedFile {
+  let arena = Arena();
+  const node = arena.create(SyntaxNode({ kind: 42 }));
+  const roots = Array<NodeRef>(NodeRef({ node }));
+  return ParsedFile({ arena: move arena, roots: move roots });
+}
+```
+
+This is a closed region, not a general escaping borrow. The value struct must
+be readonly, own exactly one direct Arena, and initialize every view-bearing
+field from that Arena. Construction explicitly moves the Arena and dependent
+owners together, invalidates earlier local views into the region, and makes the
+completed bundle the provenance root for later projections. It may return,
+cross a module boundary, move into a synchronous owned parameter, or enter a
+synchronous `in` parameter. Dependent fields are destroyed before the Arena.
+The wrapper is an ordinary by-value C struct and adds no allocation, retain, or
+runtime provenance tag beyond the storage its fields already own.
+Struct spread, nested bundles, collection storage, closure capture, generators,
+async suspension, multiple Arenas, and mixed provenance remain rejected.
+
 The Arena then owns both the composite's storage and the region that validates
 its internal pointers. Borrowed fields do not participate in destruction;
 ordinary owned fields still clean up newest-first with the containing value.
-View-bearing structs cannot enter classes, returns, stored or escaping closures,
-mutable borrows, or suspension. Ordinary collections reject them except for the
-compatible-owner `Array` and Map-value rules above; enums accept the variant-sensitive
-one-owner rule above; recursive links are limited to same-Arena
-`Option<view T>`. The tier is
+View-bearing structs cannot enter classes, general returns, stored or escaping
+closures, mutable borrows, or suspension. The closed-region bundle above is the
+only returned-storage exception. Ordinary collections reject them except for
+the compatible-owner `Array`, Map-value, and Set-element rules above; enums
+accept the variant-sensitive one-owner rule above; recursive links are limited
+to same-Arena `Option<view T>`. The tier is
 single-threaded and allocation failure traps.
 The optional `initialCapacity` field sizes the first page; it is not a hard
 limit and does not change growable-arena exhaustion semantics. Fixed-buffer

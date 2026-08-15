@@ -98,6 +98,84 @@ test("checks floating-point widths and integer-only bitwise operators", () => {
   assert.match(compileToC(variadicFloat, "variadic-float.zs"), /printf\("%\.1f", 1\.5\)/);
 });
 
+test("returns a closed Arena-owned graph bundle without letting views escape their owner", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/self-host-emit-arena-owner-bundle.zs");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /\(Z_ParsedFile\)\{ \.arena = .*\.roots = /);
+  assert.doesNotMatch(generated, /malloc\(sizeof\(Z_ParsedFile\)\)/);
+  const deinit = generated.slice(
+    generated.indexOf("Z_UNUSED_FUNCTION static void Z_ParsedFile_deinit"),
+    generated.indexOf("static __attribute__((unused)) Z_ParsedFile", generated.indexOf("Z_UNUSED_FUNCTION static void Z_ParsedFile_deinit")),
+  );
+  assert.ok(deinit.indexOf("free((self->roots).data)") < deinit.indexOf("z_arena_reset(&(self->arena))"));
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const projectEntry = resolve(projectRoot, "tests/fixtures/arena-owner-bundle-project/main.zs");
+  const moduleResult = spawnSync(process.execPath, [cli, "run", projectEntry], { encoding: "utf8" });
+  assert.equal(moduleResult.status, 0, moduleResult.stderr);
+  const nativeModuleCheck = spawnSync(
+    process.execPath,
+    [cli, "check", projectEntry, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeModuleCheck.status, 0, nativeModuleCheck.stderr);
+
+  const mutableBundle = source.replace("readonly struct ParsedFile", "struct ParsedFile");
+  assert.match(
+    diagnostics(mutableBundle, "arena-owner-bundle-mutable.zs")[0].message,
+    /must be a readonly struct/,
+  );
+
+  const implicitArenaMove = source.replace("arena: move arena", "arena");
+  assert.match(
+    diagnostics(implicitArenaMove, "arena-owner-bundle-implicit-move.zs")[0].message,
+    /must explicitly move a named Arena/,
+  );
+
+  const wrongOwner = source
+    .replace(
+      "let arena = Region({ initialCapacity: 256 });",
+      "let arena = Region({ initialCapacity: 256 });\n  let other = Region();",
+    )
+    .replace("arena: move arena", "arena: move other");
+  assert.match(
+    diagnostics(wrongOwner, "arena-owner-bundle-wrong-owner.zs")[0].message,
+    /must borrow from the moved Arena/,
+  );
+
+  const staleLocalView = source.replace(
+    "return ParsedFile({ arena: move arena, roots: move roots });",
+    "const parsed = ParsedFile({ arena: move arena, roots: move roots });\n  const invalid = node.value;\n  return parsed;",
+  );
+  assert.match(
+    diagnostics(staleLocalView, "arena-owner-bundle-stale-view.zs")[0].message,
+    /moved value.*node/,
+  );
+
+  const asyncReturn = source.replace(
+    "function parseValue(value: i32): ParsedFile",
+    "async function parseValue(value: i32): ParsedFile",
+  );
+  assert.match(
+    diagnostics(asyncReturn, "arena-owner-bundle-async.zs")[0].message,
+    /cannot cross async suspension/,
+  );
+
+  const ordinaryViewComposite = `
+    struct Item { value: i32; }
+    struct ItemRef { item: view Item; }
+    function invalid(in item: Item): ItemRef {
+      return ItemRef({ item: view item.value });
+    }
+  `;
+  assert.match(
+    diagnostics(ordinaryViewComposite, "ordinary-view-composite-return.zs")[0].message,
+    /view values cannot be nested inside returned storage/,
+  );
+});
+
 test("accepts null only at explicitly nullable foreign boundaries", () => {
   const nullable = `
     import handles from "tests/fixtures/foreign-handles.h";

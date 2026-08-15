@@ -3981,7 +3981,79 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   assert.equal(graphExecution.status, 0, graphExecution.stderr);
   assert.equal(graphExecution.stdout, "stored arena span 42\n");
 
+  const bundleInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-arena-owner-bundle.zs",
+  );
+  const bundleEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", bundleInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(bundleEmission.status, 0, bundleEmission.stderr);
+  assert.match(bundleEmission.stdout, /return \(Z_ParsedFile\)\{\.arena = arena, \.roots = roots\};/);
+  assert.doesNotMatch(bundleEmission.stdout, /malloc\(sizeof\(Z_ParsedFile\)\)/);
+  const bundleDestructor = bundleEmission.stdout.match(
+    /static __attribute__\(\(unused\)\) void Z_ParsedFile_deinit\(Z_ParsedFile \*self\) \{[^]*?\n\}/,
+  )?.[0] ?? "";
+  assert.notEqual(bundleDestructor, "");
+  assert.ok(
+    bundleDestructor.indexOf("Z___z_Array_NodeRef_deinit(&self->roots)")
+      < bundleDestructor.indexOf("Z_Arena_deinit(&self->arena)"),
+  );
+
   const invalidCases = [
+    {
+      name: "arena-owner-bundle-mutable",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct ItemRef { item: view Item; }",
+        "struct Bundle { arena: Arena; roots: Array<ItemRef>; }",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /must be a readonly struct/,
+    },
+    {
+      name: "arena-owner-bundle-wrong-owner",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct ItemRef { item: view Item; }",
+        "readonly struct Bundle { arena: Arena; roots: Array<ItemRef>; }",
+        "function build(): Bundle {",
+        "  let arena = Arena();",
+        "  let other = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  const roots = Array<ItemRef>(ItemRef({ item }));",
+        "  return Bundle({ arena: move other, roots: move roots });",
+        "}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /must borrow from the moved Arena "other"/,
+    },
+    {
+      name: "arena-owner-bundle-stale-view",
+      source: [
+        'import { Arena } from "std/memory";',
+        "struct Item { value: i32; }",
+        "struct ItemRef { item: view Item; }",
+        "readonly struct Bundle { arena: Arena; roots: Array<ItemRef>; }",
+        "function build(): Bundle {",
+        "  let arena = Arena();",
+        "  const item = arena.create(Item({ value: 42 }));",
+        "  const roots = Array<ItemRef>(ItemRef({ item }));",
+        "  const bundle = Bundle({ arena: move arena, roots: move roots });",
+        "  const invalid = item.value;",
+        "  return bundle;",
+        "}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      expected: /use of moved value "item"/,
+    },
     {
       name: "arena-live-reset",
       source: [

@@ -10547,6 +10547,7 @@ function emitLoweredC(
       while (fieldIndex > 0) {
         fieldIndex = fieldIndex - 1;
         if (aggregate.fields[fieldIndex].borrowedView) continue;
+        if (aggregate.fields[fieldIndex].type.name == "Arena") continue;
         if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_");
           output.append(aggregate.fields[fieldIndex].type.name);
@@ -10562,6 +10563,16 @@ function emitLoweredC(
             output.append(aggregate.fields[fieldIndex].name);
             output.append(");\n");
           }
+        }
+      }
+      fieldIndex = aggregate.fields.length;
+      while (fieldIndex > 0) {
+        fieldIndex = fieldIndex - 1;
+        if (aggregate.fields[fieldIndex].type.name != "Arena") continue;
+        if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
+          output.append("  Z_Arena_deinit(&self->");
+          output.append(aggregate.fields[fieldIndex].name);
+          output.append(");\n");
         }
       }
       output.append("}\n\n");

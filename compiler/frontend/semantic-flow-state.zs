@@ -203,6 +203,47 @@ export function expressionViewOrigin(
   return valueBindingType(bindings, bindingName);
 }
 
+function arenaBundleMoveBindingName(offset: usize): String {
+  return `__z_native_arena_bundle_move_${offset}`;
+}
+
+export function allowArenaBundleMove(
+  inout bindings: Array<NativeValueBinding>,
+  offset: usize
+): void {
+  const name = arenaBundleMoveBindingName(offset);
+  addValueBinding(
+    inout bindings,
+    name,
+    "allowed"
+  );
+}
+
+export function arenaBundleMoveIsAllowed(
+  in bindings: Array<NativeValueBinding>,
+  offset: usize
+): boolean {
+  const name = arenaBundleMoveBindingName(offset);
+  return valueBindingType(
+    bindings,
+    name
+  ) == "allowed";
+}
+
+export function closeArenaViewBindings(
+  inout bindings: Array<NativeValueBinding>,
+  in owner: String
+): void {
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (
+      bindings[index].viewOwner == owner
+      && bindings[index].ownership == NativeOwnershipState.available
+    ) bindings[index].ownership = NativeOwnershipState.moved;
+    index = index + 1;
+  }
+}
+
 export function liveViewBindingForOwner(
   in bindings: Array<NativeValueBinding>,
   in owner: String

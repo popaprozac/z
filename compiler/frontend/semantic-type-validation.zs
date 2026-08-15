@@ -42,7 +42,11 @@ import {
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
-import { typeContainsStoredView } from "./semantic-type-ownership.zs";
+import {
+  typeContainsStoredView,
+  typeIsArenaOwnerBundle,
+  typeNameIsArena,
+} from "./semantic-type-ownership.zs";
 
 struct NativeTypeArity {
   minimum: usize;
@@ -667,15 +671,29 @@ function validateFunctionTypes(
       parameter.type.name,
       parameterViewVisiting
     )) {
+      const arenaBundle = typeIsArenaOwnerBundle(
+        modules,
+        moduleIndex,
+        parameter.type.name
+      );
       const directView = stringStartsWith(parameter.type.name, "view ");
       if (
         directView
         || declaration.asynchronous
-        || parameter.mode != ParameterMode.input
+        || (!arenaBundle && parameter.mode != ParameterMode.input)
+        || (
+          arenaBundle
+          && parameter.mode != ParameterMode.input
+          && parameter.mode != ParameterMode.value
+        )
       ) {
         const message = directView
           ? "view is a receiver-tied return capability, not a parameter type"
-          : "a view-bearing value can only enter a synchronous immutable in parameter";
+          : arenaBundle && declaration.asynchronous
+            ? "an Arena-owned graph bundle cannot cross async suspension in the first region tier"
+            : arenaBundle
+              ? "an Arena-owned graph bundle accepts only synchronous owned or immutable in parameters"
+              : "a view-bearing value can only enter a synchronous immutable in parameter";
         throw validationError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -708,10 +726,31 @@ function validateFunctionTypes(
       }
       none => {}
     }
-    if (!directReceiverView) throw validationError(
+    if (
+      !directReceiverView
+      && !typeIsArenaOwnerBundle(
+        modules,
+        moduleIndex,
+        declaration.returnType.name
+      )
+    ) throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
       "view values cannot be nested inside returned storage",
+      declaration.returnType.line,
+      declaration.returnType.column
+    );
+    if (
+      declaration.asynchronous
+      && typeIsArenaOwnerBundle(
+        modules,
+        moduleIndex,
+        declaration.returnType.name
+      )
+    ) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "an Arena-owned graph bundle cannot cross async suspension in the first region tier",
       declaration.returnType.line,
       declaration.returnType.column
     );
@@ -778,6 +817,46 @@ function validateAggregateTypes(
   for (const implemented of declaration.implementedTraits) {
     try validateTypeReference(module, modules, moduleIndex, bindings, implemented);
   }
+  let directArenaFields: usize = 0;
+  let carriesStoredViews = false;
+  let allFieldsReadonly = true;
+  for (const candidate of declaration.fields) {
+    if (typeNameIsArena(
+      modules,
+      moduleIndex,
+      candidate.type.name
+    )) directArenaFields = directArenaFields + 1;
+    else {
+      let candidateVisiting = Array<String>();
+      if (typeContainsStoredView(
+        modules,
+        moduleIndex,
+        candidate.type.name,
+        candidateVisiting
+      )) carriesStoredViews = true;
+    }
+    if (!candidate.readonlyField) allFieldsReadonly = false;
+  }
+  if (
+    declaration.kind == DeclarationKind.structDeclaration
+    && directArenaFields > 0
+    && carriesStoredViews
+  ) {
+    if (directArenaFields != 1) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `Arena-owned graph bundle "${declaration.name}" must declare exactly one direct Arena field`,
+      declaration.line,
+      declaration.column
+    );
+    if (!allFieldsReadonly) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `Arena-owned graph bundle "${declaration.name}" must be a readonly struct`,
+      declaration.line,
+      declaration.column
+    );
+  }
   for (const field of declaration.fields) {
     try validateTypeReference(module, modules, moduleIndex, bindings, field.type);
     let fieldViewVisiting = Array<String>();
@@ -804,6 +883,20 @@ function validateAggregateTypes(
             if (owner.base == "Map" && owner.arguments.length == 2) {
               nestedValueAggregate = true;
             }
+          }
+          none => {}
+        }
+        match (genericTypeShape(field.type.name)) {
+          some(container) => {
+            if (
+              declaration.kind == DeclarationKind.structDeclaration
+              && directArenaFields == 1
+              && (
+                container.base == "Array"
+                || container.base == "Map"
+                || container.base == "Set"
+              )
+            ) nestedValueAggregate = true;
           }
           none => {}
         }

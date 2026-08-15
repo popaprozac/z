@@ -63,6 +63,7 @@ import {
   NativeOwnershipState,
   NativeValueBinding,
   activeSuspensionBorrowRoot,
+  allowArenaBundleMove,
   addBorrowedValueBinding,
   addMatchBorrowedValueBinding,
   addMutableValueBinding,
@@ -74,6 +75,7 @@ import {
   borrowValueBindingInPlace,
   copyBindingFlowStates,
   copyValueBindings,
+  closeArenaViewBindings,
   expressionViewOrigin,
   liveViewBindingForOwner,
   mergeViewOwners,
@@ -176,6 +178,7 @@ import {
   validateModuleTypes,
 } from "./semantic-type-validation.zs";
 import {
+  arenaOwnerBundleFieldName,
   substituteGenericType,
   typeContainsForeignValueStorage,
   typeContainsStoredView,
@@ -184,6 +187,8 @@ import {
   typeIsBorrowedForeignResource,
   typeIsForeignResource,
   typeIsForeignViewOnlyRecord,
+  typeIsArenaOwnerBundle,
+  typeNameIsArena,
   typeMovesOnOwnedUse,
   typeSupportsExplicitCopy,
 } from "./semantic-type-ownership.zs";
@@ -306,6 +311,14 @@ function storedViewOwnerForExpression(
 ): String {
   const direct = expressionViewOrigin(bindings, tree.nodes[index].offset);
   if (direct.byteLength > 0) return direct;
+  if (
+    tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].value == "move"
+    && tree.nodes[index].children.length == 1
+  ) {
+    const child = tree.nodes[index].children[0];
+    return storedViewOwnerForExpression(bindings, tree, child);
+  }
   const root = expressionStorageRootName(tree, index);
   if (root.byteLength == 0) return "";
   if (root == "this") return "this";
@@ -720,6 +733,76 @@ function inferContextualObjectExpressionNode(
   }
   let hasSpread = children.length > 0
     && tree.nodes[index].labels[0] == "...";
+  const arenaBundleField = arenaOwnerBundleFieldName(
+    modules,
+    moduleIndex,
+    expectedType
+  );
+  let arenaBundleOwner = "";
+  if (arenaBundleField.byteLength > 0) {
+    if (hasSpread) throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "Arena-owned graph bundles cannot use struct spread in the first closed-region tier",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+    let arenaInitializer: usize = 0;
+    let hasArenaInitializer = false;
+    let arenaIndex: usize = 0;
+    while (arenaIndex < tree.nodes[index].labels.length) {
+      if (tree.nodes[index].labels[arenaIndex] == arenaBundleField) {
+        arenaInitializer = children[arenaIndex];
+        hasArenaInitializer = true;
+        break;
+      }
+      arenaIndex = arenaIndex + 1;
+    }
+    if (
+      !hasArenaInitializer
+      || tree.nodes[arenaInitializer].kind != ExpressionKind.unaryExpression
+      || tree.nodes[arenaInitializer].value != "move"
+      || tree.nodes[arenaInitializer].children.length != 1
+    ) throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `Arena-owned graph bundle field "${arenaBundleField}" must explicitly move a named Arena`,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+    const arenaOperand = tree.nodes[arenaInitializer].children[0];
+    if (tree.nodes[arenaOperand].kind != ExpressionKind.identifierExpression) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `Arena-owned graph bundle field "${arenaBundleField}" must explicitly move a named Arena`,
+        tree.nodes[arenaOperand].line,
+        tree.nodes[arenaOperand].column
+      );
+    }
+    arenaBundleOwner = identifierLookupName(tree.nodes[arenaOperand].value);
+    const arenaOwnerType = valueBindingType(bindings, arenaBundleOwner);
+    if (!typeNameIsArena(modules, moduleIndex, arenaOwnerType)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "Arena-owned graph bundle requires a local Arena owner",
+        tree.nodes[arenaOperand].line,
+        tree.nodes[arenaOperand].column
+      );
+    }
+    try requireInitializedBinding(
+      module,
+      tree,
+      arenaOperand,
+      bindings,
+      arenaBundleOwner
+    );
+    allowArenaBundleMove(
+      inout bindings,
+      tree.nodes[arenaOperand].offset
+    );
+  }
   let labelIndex: usize = 1;
   while (labelIndex < tree.nodes[index].labels.length) {
     if (tree.nodes[index].labels[labelIndex] == "...") {
@@ -1058,6 +1141,45 @@ function inferContextualObjectExpressionNode(
           genericParameters,
           substitutions
         );
+        let bundleFieldVisiting = Array<String>();
+        const fieldExpression = children[childIndex];
+        if (
+          arenaBundleOwner.byteLength > 0
+          && typeContainsStoredView(
+            modules,
+            moduleIndex,
+            contextualFieldType,
+            bundleFieldVisiting
+          )
+        ) {
+          const bundleFieldOwner = storedViewOwnerForExpression(
+            bindings,
+            tree,
+            fieldExpression
+          );
+          if (
+            bundleFieldOwner.byteLength > 0
+            && bundleFieldOwner != arenaBundleOwner
+          ) throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `every dependent field in Arena-owned graph bundle "${expectedType}" must borrow from the moved Arena "${arenaBundleOwner}"`,
+            tree.nodes[fieldExpression].line,
+            tree.nodes[fieldExpression].column
+          );
+          if (
+            bundleFieldOwner == arenaBundleOwner
+            && tree.nodes[fieldExpression].kind == ExpressionKind.unaryExpression
+            && tree.nodes[fieldExpression].value == "move"
+            && tree.nodes[fieldExpression].children.length == 1
+          ) {
+            const movedField = tree.nodes[fieldExpression].children[0];
+            allowArenaBundleMove(
+              inout bindings,
+              tree.nodes[movedField].offset
+            );
+          }
+        }
         let optionalPayloadType = "";
         if (field.optionalField) {
           match (genericTypeShape(contextualFieldType)) {
@@ -1275,7 +1397,19 @@ function inferContextualObjectExpressionNode(
     constraintSubstitutions
   );
   let aggregateViewVisiting = Array<String>();
-  if (typeContainsStoredView(
+  if (
+    arenaBundleOwner.byteLength > 0
+    && storedViewOwner != arenaBundleOwner
+  ) throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `every dependent field in Arena-owned graph bundle "${expectedType}" must borrow from the moved Arena "${arenaBundleOwner}"`,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+  if (arenaBundleOwner.byteLength > 0) {
+    closeArenaViewBindings(inout bindings, arenaBundleOwner);
+  } else if (typeContainsStoredView(
     modules,
     moduleIndex,
     expectedType,
@@ -4090,7 +4224,26 @@ function inferExpressionNodeType(
         tree.nodes[children[1]].column
       );
     }
-    return arrayElementType(owner);
+    const elementType = arrayElementType(owner);
+    let elementViewVisiting = Array<String>();
+    if (typeContainsStoredView(
+      modules,
+      moduleIndex,
+      elementType,
+      elementViewVisiting
+    )) {
+      const ownerOrigin = storedViewOwnerForExpression(
+        bindings,
+        tree,
+        children[0]
+      );
+      if (ownerOrigin.byteLength > 0) setExpressionViewOrigin(
+        inout bindings,
+        node.offset,
+        ownerOrigin
+      );
+    }
+    return elementType;
   }
   if (kind == ExpressionKind.closureExpression) {
     let returnType = "";

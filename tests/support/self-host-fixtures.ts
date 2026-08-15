@@ -11,6 +11,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
   { entry: "tests/fixtures/self-host-emit-arena.zs" },
   { entry: "tests/fixtures/self-host-emit-arena-graph.zs" },
+  { entry: "tests/fixtures/self-host-emit-arena-owner-bundle.zs" },
   { entry: "tests/fixtures/self-host-emit-arena-set.zs" },
   { entry: "tests/fixtures/self-host-emit-map.zs" },
   { entry: "tests/fixtures/self-host-emit-custom-map-key.zs" },
@@ -56,6 +57,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
 > = {
   "self-host-emit-arena.zs": differential,
   "self-host-emit-arena-graph.zs": differential,
+  "self-host-emit-arena-owner-bundle.zs": differential,
   "self-host-emit-arena-set.zs": differential,
   "self-host-emit-cleanup-flow.zs": focusedPositive,
   "self-host-emit-cleanup.zs": focusedPositive,
