@@ -1527,13 +1527,10 @@ export function analyze(
           helps: ["declare `move;` in the adjacent .zd contract when the C++ type is genuinely movable"],
         });
       }
-      if (
-        parseFunctionType(map.valueType)
-        || parseWeakType(map.valueType)
-      ) {
+      if (parseWeakType(map.valueType)) {
         throw new DiagnosticError(fileName, declaration.location, `Map value type ${JSON.stringify(displayAssignableType(map.valueType, state))} needs a storage-specific lookup contract`, {
           code: "Z0206",
-          notes: ["function values and weak references need distinct retention rules inside collection storage"],
+          notes: ["weak references need a distinct retention rule inside collection storage"],
           helps: ["store the identity or native value inside an ordinary Z value struct, or keep it outside Map until that storage tier lands"],
         });
       }
@@ -11903,7 +11900,9 @@ function mapValueHasReferenceIdentity(
   structs: ReadonlyMap<string, StructDeclaration>,
   state: AnalysisState,
 ): boolean {
-  return structs.get(type)?.kind === "class" || state.foreignNamedTypes.get(type)?.kind === "object";
+  return Boolean(parseFunctionType(type))
+    || structs.get(type)?.kind === "class"
+    || state.foreignNamedTypes.get(type)?.kind === "object";
 }
 
 function inferContextualObjectExpression(

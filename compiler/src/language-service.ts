@@ -5346,7 +5346,8 @@ type ResolvedReceiver =
   | { readonly kind: "objcConnection" };
 
 function mapValueHasReferenceIdentity(context: AnalyzedSource, type: string): boolean {
-  return context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
+  return Boolean(parseFunctionType(type))
+    || context.program.structs.some((declaration) => declaration.name === type && declaration.kind === "class")
     || context.semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
 }
 

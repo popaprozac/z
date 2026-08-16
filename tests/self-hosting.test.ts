@@ -11433,6 +11433,35 @@ test("preserves throwing closure and transparent callable-alias effects natively
   }
 });
 
+test("preserves callable identities nested in Map values", () => {
+  const input = resolve(
+    projectRoot,
+    "examples/applications/message-router/main.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const observedBindings = result.stdout.match(
+    /observes (\d+) inferred local binding stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeBindings = result.stdout.match(
+    /uses (\d+) inferred local binding native-authoritative contracts/,
+  )?.[1];
+  const observedExpressions = result.stdout.match(
+    /observes (\d+) expression stage-0 Z resolutions/,
+  )?.[1];
+  const authoritativeExpressions = result.stdout.match(
+    /uses (\d+) expression native-authoritative contracts/,
+  )?.[1];
+  assert.ok(observedBindings);
+  assert.ok(observedExpressions);
+  assert.equal(authoritativeBindings, observedBindings);
+  assert.equal(authoritativeExpressions, observedExpressions);
+});
+
 test("preserves weak-reference construction and upgrade effects natively", () => {
   const input = resolve(
     projectRoot,

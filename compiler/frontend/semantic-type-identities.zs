@@ -213,6 +213,17 @@ export function collectTypeIdentities(
   in path: String,
   inout identities: Array<ModuleTypeIdentity>
 ): void {
+  const transparent = transparentTypeName(modules, moduleIndex, typeName);
+  if (transparent != typeName) {
+    collectTypeIdentities(
+      modules,
+      moduleIndex,
+      transparent,
+      path,
+      inout identities
+    );
+    return;
+  }
   match (genericTypeShape(typeName)) {
     some(generic) => {
       match (typeSymbolLocation(modules, moduleIndex, generic.base)) {
@@ -277,6 +288,16 @@ export function collectTypeIdentities(
       }
       const returnPath = childTypeIdentityPath(path, "r");
       collectTypeIdentities(modules, moduleIndex, signature.returnType, returnPath, inout identities);
+      if (signature.errorType.byteLength > 0) {
+        const errorPath = childTypeIdentityPath(path, "e");
+        collectTypeIdentities(
+          modules,
+          moduleIndex,
+          signature.errorType,
+          errorPath,
+          inout identities
+        );
+      }
       return;
     }
     none => {}

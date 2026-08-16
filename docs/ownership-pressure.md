@@ -2664,6 +2664,29 @@ architecture: Zapp can move one ABI seam at a time from Nim and handwritten
 Objective-C into Z while direct Objective-C/C/C++ interop preserves the native
 platform surface.
 
+## ARC-managed handlers in Map
+
+The next Zapp-shaped slice moved message dispatch from a direct callback seam
+toward a Z-native router. `Map<String, Handler>` now treats a function value as
+shared ARC identity rather than as a view into bucket storage. `set` retains a
+named handler so its caller remains usable; `get` returns an independently
+retained `Option<Handler>` that remains callable after the Map is cleared; and
+`remove` transfers the stored handle. Replacement, `delete`, `clear`, and final
+Map destruction use the ordinary function-value release hook.
+
+An executable application fixture combines a direct function, an owned
+capturing closure, typed routing failure, lookup, invocation, and deterministic
+ARC cleanup. The captured class state deinitializes once after the router and
+all retrieved Options leave scope. This confirms that no collection-specific
+closure representation was needed: the existing retain/release function handle
+was the correct storage abstraction.
+
+The pressure test also made the fixed-point boundary sharper. Native semantic
+analysis already understands callable aliases and effects, but native C
+emission still has no general first-class function-value representation. The
+Stage 0 router is executable; native execution remains intentionally rejected
+until callable structs, environments, invocation, and cleanup land together.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

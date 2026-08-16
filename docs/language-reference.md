@@ -1516,10 +1516,16 @@ and readonly nominal `Hashable` elements across `add`, `has`, `remove`,
 `delete`, and `clear`; `remove` transfers the owned element through
 `Option<T>`, while `delete` destroys it in place.
 
-`Map` supports ordinary Z values, shared Z-class and Objective-C identity, and
-move-only native C++ values. Function/weak values, native keys, and copy-only
-native C++ values still wait for their distinct storage rules. A Z value struct
-may provide an explicit owned wrapper where that is already safe.
+`Map` supports ordinary Z values, shared Z-class and Objective-C identity,
+ARC-managed function values, and move-only native C++ values. Inserting a
+function value retains its callable handle, `get` returns an independently
+retained `Option<Handler>`, and `remove` transfers the Map's retained handle.
+Replacement, `delete`, `clear`, and Map destruction release stored handlers
+exactly once. An owned capturing handler must use a `move` closure because a
+borrowed closure cannot escape into collection storage. Weak values, native
+keys, and copy-only native C++ values still wait for their distinct storage
+rules. A Z value struct may provide an explicit owned wrapper where that is
+already safe.
 
 ## Arena regions
 

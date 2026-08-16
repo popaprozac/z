@@ -807,7 +807,9 @@ export function inferGenericCalls(
         if (map) {
           const type = expression.property === "length" ? "usize"
             : expression.property === "has" ? "boolean"
-            : expression.property === "get" ? genericTypeName("Option", [viewTypeName(map.valueType)])
+            : expression.property === "get" ? genericTypeName("Option", [
+              parseFunctionType(map.valueType) ? map.valueType : viewTypeName(map.valueType),
+            ])
             : expression.property === "remove" ? genericTypeName("Option", [map.valueType])
             : expression.property === "set" || expression.property === "clear" ? "void"
             : null;

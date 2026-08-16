@@ -3562,7 +3562,10 @@ function generateMapRuntime(
   }
   self->entries.data[last] = (${mappedEntry}){ 0 };`;
 
-  const storedLookup = structs.get(map.valueType)?.kind === "class"
+  const storedFunction = parseFunctionType(map.valueType);
+  const storedLookup = storedFunction
+    ? `${functionTypeRetainName(storedFunction)}(self->entries.data[stored - 1].value)`
+    : structs.get(map.valueType)?.kind === "class"
     ? `${retainName(map.valueType)}(self->entries.data[stored - 1].value)`
     : identityValue
       ? "self->entries.data[stored - 1].value"
@@ -10530,7 +10533,9 @@ function mapValueHasReferenceIdentity(
   structs: ReadonlyMap<string, StructDeclaration>,
   semanticInfo: Pick<SemanticInfo, "foreignNamedTypes">,
 ): boolean {
-  return structs.get(type)?.kind === "class" || semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
+  return Boolean(parseFunctionType(type))
+    || structs.get(type)?.kind === "class"
+    || semanticInfo.foreignNamedTypes.get(type)?.kind === "object";
 }
 
 export function generateObjCMessage(receiver: string, selector: string, args: string[]): string {

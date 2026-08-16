@@ -2559,6 +2559,86 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
 });
 
+test("stores ARC-managed function values in Map and returns retained handlers", () => {
+  const example = resolve(projectRoot, "examples/applications/message-router/main.zs");
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generated = compileToC(source, example);
+  assert.match(
+    generated,
+    /_get\(const [^\n]+\*self, Z_String key\)[\s\S]*?_retain\(self->entries\.data\[stored - 1\]\.value\)/,
+  );
+  assert.match(generated, /_set\(&\(handlers\), [^\n]+_retain\(addOffset\)\)/);
+  assert.match(generated, /_release\(self->entries\.data\[index\]\.value\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "increment=42 offset=42 missing=missing\nreleased route state 20\n",
+  );
+
+  const retainedLookup = `
+    import { Map } from "std/collections";
+    type Handler = () => i32;
+    function main(): i32 {
+      let handlers = Map<String, Handler>();
+      const offset = 42;
+      const handler: Handler = move () => offset;
+      handlers.set("answer", handler);
+      const found = handlers.get("answer");
+      handlers.clear();
+      return match (found) {
+        some(operation) => operation() - 42;
+        none => 1;
+      };
+    }
+  `;
+  assert.deepEqual(diagnostics(retainedLookup, "map-function-retain.zs"), []);
+  const directory = mkdtempSync("/tmp/z-map-function-retain-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, retainedLookup);
+  const retainedResult = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(retainedResult.status, 0, retainedResult.stderr);
+
+  const lifecycle = `
+    import { Map } from "std/collections";
+    import console from "std/console";
+    class State {
+      id: i32;
+      deinit { console.log(\`drop=\${this.id}\`); }
+    }
+    type Handler = () => i32;
+    function makeHandler(id: i32): Handler {
+      const state = new State({ id });
+      const handler: Handler = move () => state.id;
+      return handler;
+    }
+    function main(): i32 {
+      let handlers = Map<String, Handler>();
+      handlers.set("replace", makeHandler(1));
+      handlers.set("replace", makeHandler(2));
+      if (!handlers.delete("replace")) return 1;
+      handlers.set("clear", makeHandler(3));
+      handlers.clear();
+      handlers.set("remove", makeHandler(4));
+      const removed = handlers.remove("remove");
+      handlers.set("destroy", makeHandler(5));
+      const observed = match (removed) {
+        some(operation) => operation();
+        none => 0;
+      };
+      console.log(\`observed=\${observed}\`);
+      return observed - 4;
+    }
+  `;
+  writeFileSync(fileName, lifecycle);
+  const lifecycleResult = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(lifecycleResult.status, 0, lifecycleResult.stderr);
+  assert.equal(lifecycleResult.stdout, "drop=1\ndrop=2\ndrop=3\ndrop=4\nobserved=4\ndrop=5\n");
+});
+
 test("hashes readonly nominal keys through the standard Hashable contract", () => {
   const example = resolve(projectRoot, "examples/language/collections/custom-hash.zs");
   const source = readFileSync(example, "utf8");
@@ -3049,6 +3129,21 @@ test("exposes Map imports, members, and source-level types to editor services", 
   const identityItems = completions(identitySource, "map-identity-editor.zs", identityOffset);
   assert.match(identityItems.find((item) => item.label === "get")?.detail ?? "", /Option<Session>/);
   assert.doesNotMatch(identityItems.find((item) => item.label === "get")?.detail ?? "", /view Session/);
+
+  const handlerSource = `
+    import { Map } from "std/collections";
+    type Handler = (value: i32) => i32;
+    function main(): i32 {
+      let handlers = Map<String, Handler>();
+      handlers.;
+      return 0;
+    }
+  `;
+  const handlerOffset = handlerSource.indexOf("handlers.;") + "handlers.".length;
+  const handlerItems = completions(handlerSource, "map-handler-editor.zs", handlerOffset);
+  const handlerGet = handlerItems.find((item) => item.label === "get")?.detail ?? "";
+  assert.match(handlerGet, /Option<\(value: i32\) => i32>/);
+  assert.doesNotMatch(handlerGet, /Option<view/);
 
   const iteration = `
     import { Map } from "std/collections";

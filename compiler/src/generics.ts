@@ -546,7 +546,8 @@ export function materializeGenerics(
       ?? { offset: 0, line: 1, column: 1 };
     typeDisplayNames.set(name, `Map<${displayName(keyType)}, ${displayName(valueType)}>`);
     typeDisplayNames.set(entryName, `Map.Entry<${displayName(keyType)}, ${displayName(valueType)}>`);
-    const identityValue = program.structs.some((declaration) => declaration.name === valueType && declaration.kind === "class")
+    const identityValue = Boolean(parseFunctionType(valueType))
+      || program.structs.some((declaration) => declaration.name === valueType && declaration.kind === "class")
       || foreignIdentityTypes.has(valueType);
     if (!identityValue) instantiateStruct("Option", [viewTypeName(valueType)]);
     instantiateStruct("Option", [valueType]);
