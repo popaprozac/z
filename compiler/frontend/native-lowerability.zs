@@ -1240,12 +1240,12 @@ function validateNativeFunction(
       8
     );
   }
-  if (owner.byteLength > 0) {
+  if (owner.byteLength > 0 && declaration.asynchronous) {
     match (in declaration.errorType) {
       some(_) => throw loweringBoundary(
         path,
         "Z1000",
-        `throwing method "${owner}.${declaration.name}" is not executable in the native compiler yet`,
+        `async throwing method "${owner}.${declaration.name}" is not executable in the native compiler yet`,
         declaration.line,
         declaration.column,
         8

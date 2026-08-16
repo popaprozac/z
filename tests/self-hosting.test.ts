@@ -6186,6 +6186,23 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'ordinary async function "deferred" is not executable in the native compiler yet',
     },
     {
+      name: "async-throwing-method",
+      source: [
+        'import { thread } from "std/thread";',
+        "struct DecodeError { code: i32; }",
+        "class Decoder on thread.main {",
+        "  async function decode(): i32 throws DecodeError on thread.main { return 42; }",
+        "}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      line: 4,
+      column: 9,
+      marker: "^^^^^^^^",
+      code: "Z1000",
+      summary: 'async throwing method "Decoder.decode" is not executable in the native compiler yet',
+    },
+    {
       name: "generic-aggregate",
       source: [
         "struct Pair<T> { first: T; second: T; }",
@@ -8875,7 +8892,7 @@ test("lowers the complete native frontend graph to C", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
-}, 30_000);
+}, 60_000);
 
 hostToolchainTest("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");

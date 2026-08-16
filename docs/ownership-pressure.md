@@ -2681,6 +2681,17 @@ all retrieved Options leave scope. This confirms that no collection-specific
 closure representation was needed: the existing retain/release function handle
 was the correct storage abstraction.
 
+Moving the same Map from a local into a long-lived `Router` class exposed two
+native composition gaps. Aggregate destructors could mention collection cleanup
+before the emitter declared it, making valid ownership depend on C declaration
+order. The emitter now forwards Array, Map, and Set cleanup before aggregate
+definitions. Synchronous throwing methods were also rejected even though their
+bodies use the same settled `Result<T, E>`, `try`, `attempt`, and cleanup paths
+as ordinary functions. Method lowering now carries a qualified semantic owner,
+collects its intrinsic types even when the method is unused, and emits that same
+typed Result ABI. Async throwing methods remain a separate suspension-frame
+tier and fail with a source-mapped boundary.
+
 The pressure test then closed the fixed-point boundary it exposed. Native C
 emission represents each callable ABI with a typed call pointer, context, and
 retain/release hooks. Direct named functions use static context-free handles;
@@ -2690,7 +2701,7 @@ as direct throwing calls. Map insertion and lookup retain independently, while
 replacement, removal, clearing, and destruction transfer or release exactly
 once.
 
-The unchanged message router now compiles and runs through both Stage 0 and the
+The class-owned message router now compiles and runs through both Stage 0 and the
 fixed-point emitter under strict C warnings. Its output includes one—and only
 one—`RouteState.deinit`, which makes the retain balance observable: a missing
 lookup release would leak the closure and suppress that line, while an early or

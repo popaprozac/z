@@ -205,9 +205,11 @@ lookups, explicitly copied for durable reports, and moved into their final
 consumer. Its deterministic smoke test and fixed benchmark verified the move
 from dense storage to hashed buckets without changing application source.
 
-[`message-router`](../examples/applications/message-router) stores a direct
-function and an owned capturing closure behind one throwing `Handler` alias in
-`Map<String, Handler>`. Lookup returns an independently retained
+[`message-router`](../examples/applications/message-router) uses an ARC `Router`
+class to own a direct function and an owned capturing closure behind one
+throwing `Handler` alias in `Map<String, Handler>`. Its synchronous throwing
+dispatch method uses the same typed `Result` path as an ordinary function.
+Lookup returns an independently retained
 `Option<Handler>`; borrowed matching invokes it without consuming the Option;
 typed routing failure remains available through `attempt`; and final Map
 cleanup destroys the captured ARC state exactly once. The same source executes

@@ -82,6 +82,14 @@ an inferred receiver-tied view.
 | Native definitions | Implemented slice | Namespace/selective C symbols, Objective-C members, and generated Swift compatibility declarations jump to their native headers |
 | Self-hosting | Partial compiler | Stage 0 remains the trusted Bun/TypeScript seed, foreign-metadata producer, and Swift-target preparer. The fixed-point native compiler owns Z lexing, parsing, module resolution, semantic evidence, ownership-aware lowering, diagnostics, C emission, its 39-module standalone driver, `z.json`, `check`/`emit`/`build`/cached `run`, and adjacent Clang metadata-adapter discovery. Generation one rebuilds generation two to byte-identical C before publication. The in-process parser now closes each completed module Array into an Arena-owned `ParsedModuleBatch`; resolver and emitter borrow that root while the recursive standalone-driver discovery path retains its ordinary single-module owner. Native execution covers ownership-bearing tasks, typed failures, cancellation, `thread.spawn`, main-executor handoff, top-level one-select unsafe value expressions, one heap-owned invocation frame for bounded linear, `if`, `match`, and `while` suspension, readonly nominal `Hashable` Map keys and Set elements through native `Hasher` lowering, transparent aliases, and first-class synchronous function values. Direct functions use static callable handles; capturing expression closures own refcounted environments; typed throwing calls retain `Result`; and function-valued Maps retain, retrieve, transfer, and destroy the same handles. The `while` tier preserves `break`, `continue`, `return`, `throw`, direct synchronous `try`, per-iteration cleanup, and cancellation without per-iteration allocation. Native rejection parity covers off-main access through worker captures and lexical match loans held across suspension while preserving inherited main-executor proof, ordinary async parameter borrows, consuming matches, and persistent async-generator frames. A graph-aware source-mapped lowerability preflight reports `Z0700` for ordinary async and non-tail calls to suspending main-executor functions, plus `Z1000` for generic aggregates, traits, fixed-array types, slices, generators, non-`Array` collection iteration, unsupported fixed-point collection representations, non-`String` explicit copy, cleanup-bearing `Mutex.withLock` results and optional field views, recursively owned value capture in expression-bodied `thread.spawn`, unsupported native template-part types, cleanup-bearing move-spread overrides, destructuring, value-producing loops, multi-statement unsafe expressions, and other syntactically or semantically settled body gaps before raw IR errors can leak; uncatalogued lowering and C-emission failures are labeled as internal compiler errors. General nested suspension, suspending `for`, `try await` inside the placed loop, dynamic delays, cross-executor loans, weak/native collection elements, cross-thread general callables, explicit copy, owned lock results, worker-context destruction, complete native formatting, and partial cleanup for consumed struct spreads, the remaining production command surface, migration of remaining expected lowering gaps from the internal-error fallback into coded boundaries, and replacement of the trusted metadata/Swift preparation tools remain staged. See [the continuation point](#self-hosting-continuation-point) and the async/concurrency rows below for the detailed boundary. |
 
+The fixed-point callable tier also composes through aggregate ownership:
+classes and structs may own supported Array, Map, and Set fields without C
+declaration-order sensitivity, and synchronous throwing methods lower through
+the same `Result<T, E>` ABI as ordinary throwing functions. The maintained
+message router proves this with an ARC `Router` owning
+`Map<String, Handler>`. Async throwing methods remain an explicit `Z1000`
+staging boundary.
+
 ## Foreign interfaces
 
 | Boundary | Status | Current boundary |
@@ -1101,7 +1109,7 @@ Continue focused self-hosting work in this order:
    C output before caching the library. The standalone command follows the same
    rule: generation one builds its own 39-module graph, generation-two C must be
    byte-identical, and the rebuilt command checks a separate project. A separate
-   sixteen-program differential corpus sends the same supported Z sources through
+   27-program differential corpus sends the same supported Z sources through
    Stage 0 and the native compiler, strict-compiles both C artifacts in release
    mode, executes them with identical arguments, and requires matching exit
    status, standard output, and standard error. This covers collections, typed

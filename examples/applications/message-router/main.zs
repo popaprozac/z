@@ -20,33 +20,38 @@ class RouteState {
   }
 }
 
-function route(
-  in handlers: Map<String, Handler>,
-  in message: Message
-): i32 throws RouteError {
-  const found = handlers.get(message.operation);
-  return match (in found) {
-    some(handler) => try handler(in message);
-    none => throw RouteError({ operation: copy message.operation });
-  };
+class Router {
+  handlers: Map<String, Handler>;
+
+  function register(inout this, name: String, handler: Handler): void {
+    this.handlers.set(move name, handler);
+  }
+
+  function dispatch(in message: Message): i32 throws RouteError {
+    const found = this.handlers.get(message.operation);
+    return match (in found) {
+      some(handler) => try handler(in message);
+      none => throw RouteError({ operation: copy message.operation });
+    };
+  }
 }
 
 function main(): i32 {
-  let handlers = Map<String, Handler>();
+  const router = new Router({ handlers: Map<String, Handler>() });
 
   const increment: Handler = (in message) => message.value + 1;
-  handlers.set("increment", increment);
+  router.register("increment", increment);
 
   const state = new RouteState({ offset: 20 });
   const addOffset: Handler = move (in message) => message.value + state.offset;
-  handlers.set("offset", addOffset);
+  router.register("offset", addOffset);
 
   const incrementMessage = Message({ operation: "increment", value: 41 });
   const offsetMessage = Message({ operation: "offset", value: 22 });
   const missingMessage = Message({ operation: "missing", value: 0 });
-  const first = attempt route(in handlers, in incrementMessage);
-  const second = attempt route(in handlers, in offsetMessage);
-  const missing = attempt route(in handlers, in missingMessage);
+  const first = attempt router.dispatch(in incrementMessage);
+  const second = attempt router.dispatch(in offsetMessage);
+  const missing = attempt router.dispatch(in missingMessage);
 
   const firstValue = match (first) {
     success(value) => value;

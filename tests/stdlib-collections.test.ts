@@ -2569,7 +2569,14 @@ test("stores ARC-managed function values in Map and returns retained handlers", 
     generated,
     /_get\(const [^\n]+\*self, Z_String key\)[\s\S]*?_retain\(self->entries\.data\[stored - 1\]\.value\)/,
   );
-  assert.match(generated, /_set\(&\(handlers\), [^\n]+_retain\(addOffset\)\)/);
+  assert.match(
+    generated,
+    /_set\(&\(self->handlers\), [^\n]+_retain\(handler\)\)/,
+  );
+  assert.match(
+    generated,
+    /_Router_register\(router, [^\n]+_retain\(addOffset\)\)/,
+  );
   assert.match(generated, /_release\(self->entries\.data\[index\]\.value\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

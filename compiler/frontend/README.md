@@ -214,7 +214,7 @@ carry all three of these proofs before the executable boundary expands:
 3. an updated implementation-status boundary that names what still fails
    closed.
 
-The current positive differential corpus has sixteen roots. It is useful
+The current positive differential corpus has 27 roots. It is useful
 execution evidence, but it does not replace negative semantic fixtures. Native
 semantic rejection now covers off-main field, method, and function access,
 including a mixed-affinity class captured by `thread.spawn`; placed bodies and
@@ -656,10 +656,15 @@ environment, destroy cleanup-bearing captures on final release, and preserve a
 typed `throws E` channel through `Result<T, E>`. Function-valued `Map` insertion,
 lookup, replacement, removal, clearing, and destruction use those same hooks;
 the message-router application is part of the executable differential corpus
-and proves exact final capture destruction. This first environment counter is
-executor-local. Sending a general stored callable across native threads,
-block-bodied first-class closures, and suspending callable bodies remain
-separate lowering tiers.
+and now proves exact final capture destruction while the Map is owned by a
+long-lived ARC `Router` class. Synchronous throwing methods lower through the
+same `Result<T, E>` ABI as ordinary throwing functions, including methods that
+are not called in the current module. Collection cleanup prototypes are emitted
+before aggregate destructors so classes and structs can own Array, Map, or Set
+fields without declaration-order sensitivity. This first environment counter
+is executor-local. Async throwing methods, sending a general stored callable
+across native threads, block-bodied first-class closures, and suspending
+callable bodies remain separate lowering tiers.
 This corpus is the positive half of the semantic authority gate above. Each
 direct `self-host-emit-*.zs` fixture must also be classified as a differential
 root, a negative semantic fixture, a specialized protocol/diagnostic fixture,

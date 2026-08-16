@@ -8505,6 +8505,32 @@ function appendTypeDefinitions(
     output.append(declaration.name);
     output.append(";\n\n");
   }
+  for (const declaration of program.arrays) {
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
+  for (const declaration of program.maps) {
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
+  for (const declaration of program.sets) {
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
+  if (
+    program.arrays.length > 0
+    || program.maps.length > 0
+    || program.sets.length > 0
+  ) output.append("\n");
   let structStates = Array<u8>();
   let enumStates = Array<u8>();
   let stateIndex: usize = 0;

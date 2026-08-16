@@ -2221,6 +2221,43 @@ function intrinsicEnumDeclaration(
   return try intrinsicResultDeclaration(program, importedTypes, name);
 }
 
+function semanticMethodOwnerName(
+  in aggregateName: String,
+  in methodName: String
+): String {
+  let output = TextBuffer();
+  output.append(aggregateName);
+  output.append(".");
+  output.append(methodName);
+  return output.finish();
+}
+
+function semanticMethodOwnerMatches(
+  in ownerName: String,
+  in aggregateName: String,
+  in methodName: String
+): boolean {
+  if (ownerName == methodName) return true;
+  if (
+    ownerName.byteLength
+      != aggregateName.byteLength + 1 + methodName.byteLength
+  ) return false;
+  let index: usize = 0;
+  while (index < aggregateName.byteLength) {
+    if (ownerName.byteAt(index) != aggregateName.byteAt(index)) return false;
+    index = index + 1;
+  }
+  if (ownerName.byteAt(index) != 46) return false;
+  index = index + 1;
+  let methodIndex: usize = 0;
+  while (methodIndex < methodName.byteLength) {
+    if (ownerName.byteAt(index) != methodName.byteAt(methodIndex)) return false;
+    index = index + 1;
+    methodIndex = methodIndex + 1;
+  }
+  return true;
+}
+
 function throwingFunctionResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -2235,6 +2272,34 @@ function throwingFunctionResult(
             declaration.returnType.name.byteLength
           );
           const errorName = errorType.name.copyBytes(0, errorType.name.byteLength);
+          const resultName = `Result<${returnName}, ${errorName}>`;
+          return try intrinsicResultDeclaration(
+            program,
+            importedTypes,
+            resultName
+          );
+        }
+        none => return Option<LoweredEnum>.none;
+      }
+    }
+  }
+  for (const aggregate of program.aggregates) {
+    for (const declaration of aggregate.methods) {
+      const qualifiedName = semanticMethodOwnerName(
+        aggregate.name,
+        declaration.name
+      );
+      if (qualifiedName != ownerName) continue;
+      match (in declaration.errorType) {
+        some(errorType) => {
+          const returnName = declaration.returnType.name.copyBytes(
+            0,
+            declaration.returnType.name.byteLength
+          );
+          const errorName = errorType.name.copyBytes(
+            0,
+            errorType.name.byteLength
+          );
           const resultName = `Result<${returnName}, ${errorName}>`;
           return try intrinsicResultDeclaration(
             program,
@@ -4459,7 +4524,11 @@ function namedValueTypeName(
     let methodType = "";
     for (const aggregate of program.aggregates) {
       for (const method of aggregate.methods) {
-        if (method.name != ownerName) continue;
+        if (!semanticMethodOwnerMatches(
+          ownerName,
+          aggregate.name,
+          method.name
+        )) continue;
         for (const parameter of method.parameters) {
           if (parameter.name != name) continue;
           if (methodType.byteLength == 0) {
@@ -10540,7 +10609,11 @@ function lowerMatchTree(
     }
     for (const aggregate of program.aggregates) {
       for (const method of aggregate.methods) {
-        if (method.name != ownerName) continue;
+        if (!semanticMethodOwnerMatches(
+          ownerName,
+          aggregate.name,
+          method.name
+        )) continue;
         if (
           subjectName == "this"
           && method.receiverMode != ReceiverMode.move
@@ -14627,6 +14700,7 @@ function lowerFunction(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration,
+  in semanticOwnerName: String,
   in sourcePath: String
 ): LoweredFunction throws String {
   let delayCount: usize = 0;
@@ -14695,7 +14769,7 @@ function lowerFunction(
             const branchDelay = try mainDelayMillisecondsAtStatement(
               program,
               declaration.body,
-              declaration.name,
+              semanticOwnerName,
               sourceChild
             );
             if (branchDelay.byteLength > 0) {
@@ -14736,7 +14810,7 @@ function lowerFunction(
       const delay = try mainDelayMillisecondsAtStatement(
         program,
         declaration.body,
-        declaration.name,
+        semanticOwnerName,
         root
       );
       if (delay.byteLength > 0) {
@@ -14838,7 +14912,7 @@ function lowerFunction(
       delay = try mainDelayMillisecondsAtStatement(
         program,
         declaration.body,
-        declaration.name,
+        semanticOwnerName,
         root
       );
     }
@@ -14876,7 +14950,7 @@ function lowerFunction(
       importedTypes,
       evidence,
       declaration.body,
-      declaration.name,
+      semanticOwnerName,
       root,
       inout expressions,
       inout statements
@@ -14961,7 +15035,7 @@ function lowerFunction(
     importedTypes,
     evidence,
     declaration.body,
-    declaration.name,
+    semanticOwnerName,
     sourceRoots,
     planningRoots,
     ownedParameters,
@@ -15074,7 +15148,7 @@ function lowerFunction(
   const resultType = try throwingFunctionResult(
     program,
     importedTypes,
-    declaration.name
+    semanticOwnerName
   );
   match (in resultType) {
     some(result) => {
@@ -15713,6 +15787,75 @@ function collectArenaIntrinsicEnums(
   }
 }
 
+function collectFunctionIntrinsicTypes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: FunctionDeclaration,
+  inout arrays: Array<LoweredArray>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout enums: Array<LoweredEnum>
+): void throws String {
+  for (const parameter of declaration.parameters) {
+    try collectIntrinsicTypeName(
+      program,
+      importedTypes,
+      parameter.type.name,
+      inout arrays,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+  }
+  try collectIntrinsicTypeName(
+    program,
+    importedTypes,
+    declaration.returnType.name,
+    inout arrays,
+    inout maps,
+    inout sets,
+    inout enums
+  );
+  match (in declaration.errorType) {
+    some(type) => {
+      try collectIntrinsicTypeName(
+        program,
+        importedTypes,
+        type.name,
+        inout arrays,
+        inout maps,
+        inout sets,
+        inout enums
+      );
+      const returnName = declaration.returnType.name.copyBytes(
+        0,
+        declaration.returnType.name.byteLength
+      );
+      const errorName = type.name.copyBytes(0, type.name.byteLength);
+      const resultName = `Result<${returnName}, ${errorName}>`;
+      try collectIntrinsicTypeName(
+        program,
+        importedTypes,
+        resultName,
+        inout arrays,
+        inout maps,
+        inout sets,
+        inout enums
+      );
+    }
+    none => {}
+  }
+  try collectArenaIntrinsicEnums(
+    program,
+    importedTypes,
+    declaration.body,
+    inout arrays,
+    inout maps,
+    inout sets,
+    inout enums
+  );
+}
+
 function collectIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -15782,6 +15925,17 @@ function collectIntrinsicEnums(
       );
       none => {}
     }
+    for (const method of aggregate.methods) {
+      try collectFunctionIntrinsicTypes(
+        program,
+        importedTypes,
+        method,
+        inout arrays,
+        inout maps,
+        inout sets,
+        inout enums
+      );
+    }
   }
   for (const declaration of program.enums) {
     for (const variant of declaration.variants) {
@@ -15801,59 +15955,10 @@ function collectIntrinsicEnums(
   }
   for (const declaration of program.functions) {
     if (declaration.testDeclaration && !includeTests) continue;
-    for (const parameter of declaration.parameters) {
-      try collectIntrinsicTypeName(
-        program,
-        importedTypes,
-        parameter.type.name,
-        inout arrays,
-        inout maps,
-        inout sets,
-        inout enums
-      );
-    }
-    try collectIntrinsicTypeName(
+    try collectFunctionIntrinsicTypes(
       program,
       importedTypes,
-      declaration.returnType.name,
-      inout arrays,
-      inout maps,
-      inout sets,
-      inout enums
-    );
-    match (in declaration.errorType) {
-      some(type) => {
-        try collectIntrinsicTypeName(
-          program,
-          importedTypes,
-          type.name,
-          inout arrays,
-          inout maps,
-          inout sets,
-          inout enums
-        );
-        const returnName = declaration.returnType.name.copyBytes(
-          0,
-          declaration.returnType.name.byteLength
-        );
-        const errorName = type.name.copyBytes(0, type.name.byteLength);
-        const resultName = `Result<${returnName}, ${errorName}>`;
-        try collectIntrinsicTypeName(
-          program,
-          importedTypes,
-          resultName,
-          inout arrays,
-          inout maps,
-          inout sets,
-          inout enums
-        );
-      }
-      none => {}
-    }
-    try collectArenaIntrinsicEnums(
-      program,
-      importedTypes,
-      declaration.body,
+      declaration,
       inout arrays,
       inout maps,
       inout sets,
@@ -16944,6 +17049,10 @@ function appendLoweredProgram(
       ? LoweredTypeKind.classType
       : LoweredTypeKind.structType;
     for (const method of aggregate.methods) {
+      const ownerName = semanticMethodOwnerName(
+        aggregate.name,
+        method.name
+      );
       if (method.staticMethod) {
         throw `native lowering does not support static method ${aggregate.name}.${method.name} yet`;
       }
@@ -16953,8 +17062,8 @@ function appendLoweredProgram(
       if (method.receiverMode == ReceiverMode.move) {
         throw `native lowering does not support consuming method ${aggregate.name}.${method.name} yet`;
       }
-      match (in method.errorType) {
-        some(_) => throw `native lowering does not support throwing method ${aggregate.name}.${method.name} yet`;
+      if (method.asynchronous) match (in method.errorType) {
+        some(_) => throw `native lowering does not support async throwing method ${aggregate.name}.${method.name} yet`;
         none => {}
       }
       const loweredMethodOutcome = attempt lowerFunction(
@@ -16962,6 +17071,7 @@ function appendLoweredProgram(
         importedTypes,
         evidence,
         method,
+        ownerName,
         sourcePath
       );
       let loweredMethod = match (loweredMethodOutcome) {
@@ -17004,6 +17114,7 @@ function appendLoweredProgram(
       importedTypes,
       evidence,
       declaration,
+      declaration.name,
       sourcePath
     );
     let loweredFunction = match (loweredFunctionOutcome) {
