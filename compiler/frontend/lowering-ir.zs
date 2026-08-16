@@ -8974,6 +8974,41 @@ function lowerExpression(
   throw `native lowering does not support ${unsupportedKind} expression at ${tree.nodes[index].line}:${tree.nodes[index].column} yet`;
 }
 
+function moduleCallableAliasTarget(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): String {
+  let target = name.copyBytes(0, name.byteLength);
+  let depth: usize = 0;
+  while (depth < 64) {
+    let next = Option<String>.none;
+    match (localTypeAliasTarget(program, target)) {
+      some(value) => next = Option.some(move value);
+      none => {
+        for (const imported of importedTypes) {
+          if (
+            imported.localName == target
+            && imported.kind == LoweredTypeKind.functionType
+            && imported.underlyingType.byteLength > 0
+          ) {
+            next = Option.some(imported.underlyingType.copyBytes(
+              0,
+              imported.underlyingType.byteLength
+            ));
+          }
+        }
+      }
+    }
+    match (next) {
+      some(value) => target = move value;
+      none => break;
+    }
+    depth = depth + 1;
+  }
+  return target;
+}
+
 function lowerExpressionExpected(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -8983,14 +9018,11 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
-  let callableTypeName = expectedTypeName.copyBytes(
-    0,
-    expectedTypeName.byteLength
+  const callableTypeName = moduleCallableAliasTarget(
+    program,
+    importedTypes,
+    expectedTypeName
   );
-  match (localTypeAliasTarget(program, callableTypeName)) {
-    some(target) => callableTypeName = move target;
-    none => {}
-  }
   match (nativeFunctionSignature(callableTypeName)) {
     some(signature) => {
       const functionTypeName = try moduleFunctionTypeIdentity(
@@ -16084,6 +16116,55 @@ function loweredEnumCopy(
   return Option<LoweredEnum>.none;
 }
 
+function copyImportedTypeAlias(
+  in declaration: LoweredImportedType,
+  in localName: String
+): LoweredImportedType {
+  let fields = Array<LoweredField>();
+  for (const field of declaration.fields) {
+    fields.push(LoweredField({
+      name: field.name.copyBytes(0, field.name.byteLength),
+      type: LoweredType({
+        kind: field.type.kind,
+        name: field.type.name.copyBytes(0, field.type.name.byteLength),
+      }),
+      optionalField: field.optionalField,
+      borrowedView: field.borrowedView,
+    }));
+  }
+  let variants = Array<LoweredVariant>();
+  for (const variant of declaration.variants) {
+    variants.push(copyLoweredVariant(variant));
+  }
+  return LoweredImportedType({
+    localName: localName.copyBytes(0, localName.byteLength),
+    targetName: declaration.targetName.copyBytes(
+      0,
+      declaration.targetName.byteLength
+    ),
+    nativeTypeName: declaration.nativeTypeName.copyBytes(
+      0,
+      declaration.nativeTypeName.byteLength
+    ),
+    kind: declaration.kind,
+    executorBound: declaration.executorBound,
+    threadShareable: declaration.threadShareable,
+    workerDestructible: declaration.workerDestructible,
+    needsDeinit: declaration.needsDeinit,
+    resourceRelease: declaration.resourceRelease.copyBytes(
+      0,
+      declaration.resourceRelease.byteLength
+    ),
+    fields,
+    variants,
+    payloadBearing: declaration.payloadBearing,
+    underlyingType: declaration.underlyingType.copyBytes(
+      0,
+      declaration.underlyingType.byteLength
+    ),
+  });
+}
+
 function loweredForeignFieldType(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
@@ -16126,6 +16207,7 @@ function loweredForeignFieldType(
 }
 
 function importedTypesForModule(
+  in program: Program,
   in graph: ModuleGraph,
   in structs: Array<LoweredStruct>,
   in enums: Array<LoweredEnum>,
@@ -16416,6 +16498,97 @@ function importedTypesForModule(
       }
     }
   }
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    if (symbol.kind != ModuleSymbolKind.importedSymbol) continue;
+    let targetModule = graph.modules.length;
+    match (in symbol.targetModule) {
+      some(index) => targetModule = index;
+      none => {}
+    }
+    if (targetModule >= graph.modules.length) continue;
+    const targetSymbolIndex = moduleSymbolIndex(
+      graph.modules[targetModule],
+      symbol.importedName
+    );
+    if (
+      targetSymbolIndex >= graph.modules[targetModule].symbols.length
+      || graph.modules[targetModule].symbols[targetSymbolIndex].kind
+        != ModuleSymbolKind.typeAliasSymbol
+    ) continue;
+    const aliasTarget = view graph.modules[targetModule].symbols[
+      targetSymbolIndex
+    ].importedName;
+    const lowered = try lowerModuleTypeName(program, types, aliasTarget);
+    if (lowered.kind == LoweredTypeKind.functionType) {
+      const visiting = Array<String>();
+      types.push(LoweredImportedType({
+        localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+        targetName: lowered.name.copyBytes(0, lowered.name.byteLength),
+        nativeTypeName: "",
+        kind: lowered.kind,
+        executorBound: false,
+        threadShareable: false,
+        workerDestructible: moduleTypeIsWorkerDestructible(
+          program,
+          types,
+          lowered.name,
+          visiting
+        ),
+        needsDeinit: moduleTypeNeedsCleanup(program, types, lowered),
+        resourceRelease: "",
+        fields: Array<LoweredField>(),
+        variants: Array<LoweredVariant>(),
+        payloadBearing: false,
+        // Transparent callable aliases retain their source signature so
+        // contextual closure lowering can recover parameter capabilities and
+        // throwing effects in the consuming module.
+        underlyingType: aliasTarget.copyBytes(0, aliasTarget.byteLength),
+      }));
+      continue;
+    }
+    let copiedTarget = Option<LoweredImportedType>.none;
+    for (const type of types) {
+      if (
+        type.kind != lowered.kind
+        || type.targetName != lowered.name
+      ) continue;
+      copiedTarget = Option.some(copyImportedTypeAlias(type, symbol.name));
+      break;
+    }
+    match (copiedTarget) {
+      some(type) => {
+        types.push(move type);
+        continue;
+      }
+      none => {}
+    }
+    const visiting = Array<String>();
+    types.push(LoweredImportedType({
+      localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+      targetName: lowered.name.copyBytes(0, lowered.name.byteLength),
+      nativeTypeName: "",
+      kind: lowered.kind,
+      executorBound: moduleTypeHasExecutorAffinity(
+        program,
+        types,
+        lowered.name,
+        visiting
+      ),
+      threadShareable: threadShareablePrimitive(lowered.name),
+      workerDestructible: moduleTypeIsWorkerDestructible(
+        program,
+        types,
+        lowered.name,
+        visiting
+      ),
+      needsDeinit: moduleTypeNeedsCleanup(program, types, lowered),
+      resourceRelease: "",
+      fields: Array<LoweredField>(),
+      variants: Array<LoweredVariant>(),
+      payloadBearing: false,
+      underlyingType: "",
+    }));
+  }
   return types;
 }
 
@@ -16541,16 +16714,11 @@ function collectProgramFunctionTypeName(
   in typeName: String,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
-  let target = typeName.copyBytes(0, typeName.byteLength);
-  let aliasDepth: usize = 0;
-  while (aliasDepth < 64) {
-    const next = localTypeAliasTarget(program, target);
-    match (next) {
-      some(value) => target = move value;
-      none => break;
-    }
-    aliasDepth = aliasDepth + 1;
-  }
+  const target = moduleCallableAliasTarget(
+    program,
+    importedTypes,
+    typeName
+  );
   match (nativeFunctionSignature(target)) {
     some(signature) => {
       const name = try moduleFunctionTypeIdentity(
@@ -17277,6 +17445,7 @@ function lowerModulesIncludingTests(
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
     let importedTypes = try importedTypesForModule(
+      parsed[moduleIndex].program,
       graph,
       structs,
       enums,

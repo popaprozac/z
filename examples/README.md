@@ -122,6 +122,10 @@ support or producing language-server diagnostics from hypothetical imports.
 - [`project-index`](applications/project-index): an application-shaped Map/Set
   pressure test with borrowed lookup views, explicit owned snapshots, custom
   hashing, typed IO errors, and an unchanged dense-to-hashed benchmark.
+- [`message-router`](applications/message-router): an ARC class owning typed,
+  throwing handlers in `Map`, plus a checked escaping C callback whose sole
+  long-lived root retains the router and releases the complete graph exactly
+  once.
 - [`z-curl`](applications/z-curl): a shimless libcurl GET using an adjacent
   `.zd` for owned handles, typed native status errors, variadic options,
   callback/context lifetime, byte-slice projection, and callback-error

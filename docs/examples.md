@@ -214,6 +214,12 @@ Lookup returns an independently retained
 typed routing failure remains available through `attempt`; and final Map
 cleanup destroys the captured ARC state exactly once. The same source executes
 in Stage 0 and the fixed-point native compiler's strict-C differential corpus.
+Its `native-callback.zs` entry then moves the router into a callback governed by
+an adjacent `.zd` contract. C retains the generated closure environment, the
+closure retains the Z router, and clearing the native registration releases the
+entire handler graph. This is the first application-shaped proof that a
+foreign callback can enter a reusable Z module and reach long-lived,
+class-owned behavior without a handwritten shim or a hidden stack lifetime.
 
 [`source-stager`](../examples/applications/source-stager) is the first
 self-hosting-groundwork tool. It reads a source path from `process.args()`,

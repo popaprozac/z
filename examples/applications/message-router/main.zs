@@ -1,16 +1,5 @@
-import { Map } from "std/collections";
 import console from "std/console";
-
-struct Message {
-  operation: String;
-  value: i32;
-}
-
-struct RouteError {
-  operation: String;
-}
-
-type Handler = (in message: Message) => i32 throws RouteError;
+import { Handler, Message, createRouter } from "./router.zs";
 
 class RouteState {
   offset: i32;
@@ -20,24 +9,8 @@ class RouteState {
   }
 }
 
-class Router {
-  handlers: Map<String, Handler>;
-
-  function register(inout this, name: String, handler: Handler): void {
-    this.handlers.set(move name, handler);
-  }
-
-  function dispatch(in message: Message): i32 throws RouteError {
-    const found = this.handlers.get(message.operation);
-    return match (in found) {
-      some(handler) => try handler(in message);
-      none => throw RouteError({ operation: copy message.operation });
-    };
-  }
-}
-
 function main(): i32 {
-  const router = new Router({ handlers: Map<String, Handler>() });
+  const router = createRouter();
 
   const increment: Handler = (in message) => message.value + 1;
   router.register("increment", increment);

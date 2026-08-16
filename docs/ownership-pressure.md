@@ -2708,6 +2708,25 @@ lookup release would leak the closure and suppress that line, while an early or
 duplicate release would destroy the capture before final Map cleanup. A second
 differential fixture covers transparent aliases, raw function-type parameters,
 direct named-function conversion, and an inferred scalar-capturing closure.
+
+Extracting that router into a reusable module exposed a native-frontend gap
+that the single-file fixture could not reveal: an imported transparent callable
+alias retained its canonical emitted identity but lost the source signature
+needed to contextually lower a closure. Imported callable metadata now carries
+both. The consumer can therefore construct an expression closure against an
+imported `Handler`, while the fixed-point emitter still shares the exact
+canonical ABI declared by the owning module.
+
+The companion native-callback entry moves the router into an escaping callback
+declared by `callbacks.h.zd`. The C registration owns the generated closure
+box; the closure owns the router; the router owns its Map and handler; and the
+handler owns captured ARC state. Calling the contracted native clear operation
+releases that root and produces exactly one state deinitializer before control
+returns to `main`. The callback is explicitly `thread caller`, so this proves
+foreign entry and lifetime composition without claiming arbitrary-thread Map
+access; a `thread any` producer would still require synchronization or executor
+isolation.
+
 The ordinary closure environment remains executor-local in this tier;
 cross-thread general callable sharing, block-bodied first-class closures, and
 suspending callable bodies remain explicit follow-ups.

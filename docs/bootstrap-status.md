@@ -88,7 +88,11 @@ declaration-order sensitivity, and synchronous throwing methods lower through
 the same `Result<T, E>` ABI as ordinary throwing functions. The maintained
 message router proves this with an ARC `Router` owning
 `Map<String, Handler>`. Async throwing methods remain an explicit `Z1000`
-staging boundary.
+staging boundary. Imported transparent callable aliases also retain the source
+signature required for contextual closure lowering while sharing the declaring
+module's canonical callable ABI. The router's companion C-callback entry proves
+that a checked escaping native callback can own that reusable class graph and
+release it deterministically.
 
 ## Foreign interfaces
 

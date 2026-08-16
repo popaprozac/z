@@ -2471,6 +2471,30 @@ test("passes contextual inline closures directly to imported C callbacks", () =>
   assert.equal(result.stdout, "inline-escape-drop=2\n");
 });
 
+test("routes an escaping C callback through a class-owned Z handler map", () => {
+  const example = resolve(
+    projectRoot,
+    "examples/applications/message-router/native-callback.zs",
+  );
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /retainOperation\(__z_c_callback_/);
+  assert.match(generated, /_c_escape_box\(_z_argument_[0-9]+\)/);
+  assert.match(generated, /Router_dispatch\(router, &\(message\)\)/);
+  assert.match(generated, /Router_retain\(router\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "released native route state 20\nnative callback routed=42\n",
+  );
+});
+
 test("narrows thrown callback errors to declared native failure values", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/callback-failure.zs");
   const declarationFile = resolve(projectRoot, "tests/fixtures/callback-failure.h.zd");
