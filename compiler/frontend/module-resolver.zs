@@ -6200,6 +6200,28 @@ function inferExpressionNodeType(
         }
         match (collectionMethodSignature(ownerType, methodName)) {
           some(signature) => {
+            let effectiveSignature = move signature;
+            match (genericTypeShape(ownerType)) {
+              some(mapType) => {
+                if (
+                  mapType.base == "Map"
+                  && mapType.arguments.length == 2
+                  && methodName == "get"
+                ) {
+                  const transparentValue = transparentTypeName(
+                    modules,
+                    moduleIndex,
+                    mapType.arguments[1]
+                  );
+                  match (nativeFunctionSignature(transparentValue)) {
+                    some(_) => effectiveSignature.returnType =
+                      `Option<${mapType.arguments[1]}>`;
+                    none => {}
+                  }
+                }
+              }
+              none => {}
+            }
             let receiverRoot = "";
             let receiverAccess = "";
             if (collectionMethodMutates(ownerType, methodName)) {
@@ -6255,7 +6277,7 @@ function inferExpressionNodeType(
               receiverRoot,
               receiverAccess,
               `${ownerType}.${methodName}`,
-              signature,
+              effectiveSignature,
               substitutions,
               0,
               0,
@@ -6396,15 +6418,27 @@ function inferExpressionNodeType(
                     storedViewVisiting
                   );
                   if (methodName == "get") {
-                    const storageRoot = expressionStorageRootName(
-                      tree,
-                      receiverIndex
+                    const transparentValue = transparentTypeName(
+                      modules,
+                      moduleIndex,
+                      map.arguments[1]
                     );
-                    if (storageRoot.byteLength > 0) setExpressionViewOrigin(
-                      inout bindings,
-                      tree.nodes[index].offset,
-                      storageRoot
-                    );
+                    let returnsOwnedFunction = false;
+                    match (nativeFunctionSignature(transparentValue)) {
+                      some(_) => returnsOwnedFunction = true;
+                      none => {}
+                    }
+                    if (!returnsOwnedFunction) {
+                      const storageRoot = expressionStorageRootName(
+                        tree,
+                        receiverIndex
+                      );
+                      if (storageRoot.byteLength > 0) setExpressionViewOrigin(
+                        inout bindings,
+                        tree.nodes[index].offset,
+                        storageRoot
+                      );
+                    }
                   }
                   if (storedViewValue && methodName == "set") {
                     if (argumentNodes.length != 2) {

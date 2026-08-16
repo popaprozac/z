@@ -4,6 +4,7 @@ import {
   arrayElementType,
   genericTypeShape,
   isIntegerTypeName,
+  nativeFunctionSignature,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
@@ -307,7 +308,13 @@ export function collectionMethodSignature(
     } else if (methodName == "get") {
       parameterModes.push("in");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
-      returnType = `Option<view ${valueType}>`;
+      let functionValue = false;
+      match (nativeFunctionSignature(valueType)) {
+        some(_) => functionValue = true;
+        none => {}
+      }
+      if (functionValue) returnType = `Option<${valueType}>`;
+      else returnType = `Option<view ${valueType}>`;
     } else if (methodName == "set") {
       parameterModes.push("value");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));

@@ -9,6 +9,7 @@ export type SelfHostDifferentialCase = {
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
   { entry: "tests/fixtures/self-host-emit-input.zs" },
   { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
+  { entry: "tests/fixtures/self-host-emit-callables.zs" },
   { entry: "tests/fixtures/self-host-emit-arena.zs" },
   { entry: "tests/fixtures/self-host-emit-arena-graph.zs" },
   { entry: "tests/fixtures/self-host-emit-arena-owner-bundle.zs" },
@@ -28,6 +29,8 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs" },
   { entry: "tests/fixtures/self-host-emit-thread-shared-capture.zs" },
   { entry: "tests/fixtures/self-host-differential-thread-owned.zs" },
+  { entry: "tests/fixtures/self-host-callable-collision/main.zs" },
+  { entry: "examples/applications/message-router/main.zs" },
   { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
   {
     entry: "examples/applications/source-inspector/main.zs",
@@ -62,6 +65,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-arena-set.zs": differential,
   "self-host-emit-cleanup-flow.zs": focusedPositive,
   "self-host-emit-cleanup.zs": focusedPositive,
+  "self-host-emit-callables.zs": differential,
   "self-host-emit-control-flow.zs": differential,
   "self-host-emit-custom-map-key.zs": differential,
   "self-host-emit-custom-set-key.zs": differential,

@@ -62,10 +62,6 @@ function stringContains(in value: String, in candidate: String): boolean {
   return false;
 }
 
-function typeIsFunctionValue(in name: String): boolean {
-  return stringContains(name, "=>");
-}
-
 function typeIsFixedArray(in name: String): boolean {
   let open: usize = 0;
   while (open + 2 < name.byteLength) {
@@ -239,16 +235,6 @@ function validateNativeType(
     typeColumn,
     typeLength
   );
-  if (typeIsFunctionValue(type.name)) {
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `function-value type "${type.name}" has no native representation yet`,
-      type.line,
-      type.column,
-      type.name.byteLength
-    );
-  }
   if (typeIsFixedArray(type.name)) {
     throw loweringBoundary(
       path,
@@ -1060,49 +1046,6 @@ function validateNativeBody(
   asynchronous: boolean
 ): void throws ModuleResolveError {
   for (const statement of body.nodes) {
-    if (statement.kind == StatementKind.variableStatement) {
-      let explicitType = false;
-      match (in statement.typeAnnotation) {
-        some(_) => explicitType = true;
-        none => {}
-      }
-      if (!explicitType && moduleIndex < graph.modules.length) {
-        let bindingType = "";
-        for (const binding of graph.modules[moduleIndex]
-          .semanticEvidence.bindingResolutions) {
-          if (
-            binding.offset == statement.nameOffset
-            && binding.name == statement.name
-          ) {
-            bindingType = binding.typeName.copyBytes(
-              0,
-              binding.typeName.byteLength
-            );
-          }
-        }
-        if (typeIsFunctionValue(bindingType)) {
-          match (in statement.expression) {
-            some(expression) => match (in expression.tree) {
-              some(tree) => {
-                const root = tree.root;
-                if (tree.nodes[root].kind == ExpressionKind.closureExpression) {
-                  throw loweringBoundary(
-                    path,
-                    "Z1000",
-                    `inferred first-class closure local "${statement.name}" has no native representation yet`,
-                    tree.nodes[root].line,
-                    tree.nodes[root].column,
-                    1
-                  );
-                }
-              }
-              none => {}
-            }
-            none => {}
-          }
-        }
-      }
-    }
     match (in statement.typeAnnotation) {
       some(type) => try validateNativeType(path, type);
       none => {}
@@ -1439,17 +1382,6 @@ export function validateNativeLowerability(
         declaration.line,
         declaration.column,
         5
-      );
-    }
-    if (module.program.typeAliases.length > 0) {
-      const declaration = view module.program.typeAliases[0];
-      throw loweringBoundary(
-        module.path,
-        "Z1000",
-        `type alias "${declaration.name}" is not executable in the native compiler yet`,
-        declaration.line,
-        declaration.column,
-        4
       );
     }
     for (const aggregate of module.program.aggregates) {

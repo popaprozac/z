@@ -6212,48 +6212,6 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'trait declaration "Named" is not executable in the native compiler yet',
     },
     {
-      name: "type-alias",
-      source: [
-        "type Count = i32;",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 1,
-      marker: "^^^^",
-      code: "Z1000",
-      summary: 'type alias "Count" is not executable in the native compiler yet',
-    },
-    {
-      name: "function-value",
-      source: [
-        "function accept(operation: (value: i32) => i32): void {}",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 28,
-      marker: "^^^^^^^^^^^^^^^^^^^",
-      code: "Z1000",
-      summary: 'function-value type "(value: i32) => i32" has no native representation yet',
-    },
-    {
-      name: "inferred-closure-local",
-      source: [
-        "function main(): i32 {",
-        "  const offset = 2;",
-        "  const add = (value: i32): i32 => value + offset;",
-        "  return add(40) - 42;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 15,
-      marker: "^",
-      code: "Z1000",
-      summary: 'inferred first-class closure local "add" has no native representation yet',
-    },
-    {
       name: "fixed-array",
       source: [
         "function sum(values: i32[3]): i32 { return values[0]; }",
@@ -6531,22 +6489,6 @@ test("compiles a multi-module Z application through the standalone native driver
     );
     assert.ok(checking.stderr.includes(`${boundary.marker} ${boundary.summary}`));
     assert.doesNotMatch(checking.stderr, /against \d+ local aggregate/);
-
-    if (boundary.name === "function-value") {
-      const hosted = spawnSync(
-        process.execPath,
-        [cli, "self-host-emit", input],
-        { encoding: "utf8" },
-      );
-      assert.equal(hosted.status, 1, hosted.stderr);
-      assert.ok(
-        hosted.stderr.includes(
-          `${input}:1:${boundary.column}: error[${boundary.code}]: ${boundary.summary}`,
-        ),
-        hosted.stderr,
-      );
-      assert.ok(hosted.stderr.includes(`${boundary.marker} ${boundary.summary}`));
-    }
 
     if (boundary.name === "fixed-array") {
       const output = resolve(directory, `native-lowering-${boundary.name}`);

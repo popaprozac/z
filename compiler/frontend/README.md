@@ -227,19 +227,20 @@ current model for closing a lowering slice: the positive path executes, its
 invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
-parser and semantic graph. Unplaced suspending async functions, traits and type
-aliases at the lowering boundary, generic methods, and fixed-array or
-function-value combinations without a settled representation still stop before
-C emission. Those explicit rejections are staged implementation boundaries;
-accepting a program that violates an already-settled Stage-0 safety rule is
-not.
+parser and semantic graph. Unplaced suspending async functions, traits, generic
+methods, fixed arrays, and callable combinations beyond the first synchronous
+direct-function/expression-closure tier still stop before C emission. Ordinary
+transparent aliases and first-class synchronous callable values now cross the
+fixed-point boundary. Those explicit rejections are staged implementation
+boundaries; accepting a program that violates an already-settled Stage-0 safety
+rule is not.
 
 Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
-generic aggregates, traits, aliases, function-value types, fixed arrays,
-`Slice`, generators, destructuring, value-producing loops, `async scope`,
+generic aggregates, traits, fixed arrays, `Slice`, generators, destructuring,
+value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
 no longer fall into resolver-internal messages. Public lowering and C-emission
 boundaries now label every still-uncatalogued failure as an internal compiler
@@ -642,11 +643,23 @@ A representative ordinary-check corpus now covers the native frontend itself,
 two application-shaped multi-module programs, `Result`, arenas, owned closures,
 generic constraints, async ownership, C++-backed resource fields, `Mutex`,
 worker tasks, owned worker-result transfer, and shared ARC capture. The
-differential gate compiles and runs the same 16 roots through Stage 0 and the
+differential gate compiles and runs the same 27 roots through Stage 0 and the
 native frontend under strict warnings (and pthread support where required).
 Every Stage-0 semantic resolution observed on that corpus has a validated
 native authority contract. Migrating the remaining unsupported
 ownership/effect contexts is the next self-hosting layer.
+
+The fixed-point C emitter now represents an ordinary callable as a typed call
+pointer, context pointer, and retain/release hooks. Direct named functions use a
+static context-free handle. Capturing expression closures allocate one shared
+environment, destroy cleanup-bearing captures on final release, and preserve a
+typed `throws E` channel through `Result<T, E>`. Function-valued `Map` insertion,
+lookup, replacement, removal, clearing, and destruction use those same hooks;
+the message-router application is part of the executable differential corpus
+and proves exact final capture destruction. This first environment counter is
+executor-local. Sending a general stored callable across native threads,
+block-bodied first-class closures, and suspending callable bodies remain
+separate lowering tiers.
 This corpus is the positive half of the semantic authority gate above. Each
 direct `self-host-emit-*.zs` fixture must also be classified as a differential
 root, a negative semantic fixture, a specialized protocol/diagnostic fixture,

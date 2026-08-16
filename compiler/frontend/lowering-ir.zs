@@ -30,11 +30,13 @@ import {
   ModuleGraph,
   ModuleForeignArgument,
   ModuleForeignUnionMatch,
+  ModuleFunctionSignature,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
 } from "./semantic-model.zs";
 import {
   genericTypeShape,
+  nativeFunctionSignature,
   nullableTargetType,
 } from "./semantic-type-shapes.zs";
 import { TextBuffer } from "std/text";
@@ -73,6 +75,7 @@ export enum LoweredTypeKind {
   foreignEnumType,
   foreignStructType,
   foreignHandleType,
+  functionType,
 }
 
 export struct LoweredType {
@@ -113,6 +116,12 @@ export struct LoweredMap {
 export struct LoweredSet {
   name: String;
   elementType: LoweredType;
+}
+
+export struct LoweredFunctionType {
+  name: String;
+  parameters: Array<LoweredParameter>;
+  returnType: LoweredType;
 }
 
 export struct LoweredEnum {
@@ -177,6 +186,9 @@ export enum LoweredExpressionKind {
   optionalCallValue,
   optionFromNullable,
   directCall,
+  functionCall,
+  directFunctionValue,
+  closureValue,
   methodCall,
   fieldValue,
   structValue,
@@ -237,6 +249,7 @@ export struct LoweredExpression {
   statements: Array<usize>;
   labels: Array<String>;
   captureBindingOffsets: Array<usize> = Array<usize>();
+  captureTypes: Array<LoweredType> = Array<LoweredType>();
 }
 
 export struct LoweredMainDelaySegment {
@@ -391,6 +404,7 @@ export struct LoweredProgram {
   arrays: Array<LoweredArray>;
   maps: Array<LoweredMap>;
   sets: Array<LoweredSet>;
+  functionTypes: Array<LoweredFunctionType>;
   structs: Array<LoweredStruct>;
   enums: Array<LoweredEnum>;
   functions: Array<LoweredFunction>;
@@ -516,6 +530,107 @@ function stringStartsWith(in value: String, in prefix: String): boolean {
     index = index + 1;
   }
   return true;
+}
+
+function functionIdentityHexDigit(value: u8): u8 {
+  if (value < 10) return 48 + value;
+  return 87 + value;
+}
+
+function encodedFunctionTypeIdentity(in identity: String): String {
+  let output = TextBuffer();
+  output.append("Function_");
+  let index: usize = 0;
+  while (index < identity.byteLength) {
+    const byte = identity.byteAt(index);
+    output.appendAscii(functionIdentityHexDigit(byte >> 4));
+    output.appendAscii(functionIdentityHexDigit(byte & 15));
+    index = index + 1;
+  }
+  return output.finish();
+}
+
+function localFunctionTypeIdentity(
+  in program: Program,
+  in signature: ModuleFunctionSignature
+): String throws String {
+  let canonical = TextBuffer();
+  let parameter: usize = 0;
+  while (parameter < signature.parameterTypes.length) {
+    canonical.append(signature.parameterModes[parameter]);
+    canonical.append(":");
+    const type = try lowerTypeName(
+      program,
+      signature.parameterTypes[parameter]
+    );
+    canonical.append(loweredTypeIdentity(type));
+    canonical.append(";");
+    parameter = parameter + 1;
+  }
+  canonical.append("=>");
+  const returnType = try lowerTypeName(program, signature.returnType);
+  canonical.append(loweredTypeIdentity(returnType));
+  canonical.append(" throws ");
+  if (signature.errorType.byteLength > 0) {
+    const errorType = try lowerTypeName(program, signature.errorType);
+    canonical.append(loweredTypeIdentity(errorType));
+  }
+  const identity = canonical.finish();
+  return encodedFunctionTypeIdentity(identity);
+}
+
+function moduleFunctionTypeIdentity(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in signature: ModuleFunctionSignature
+): String throws String {
+  let canonical = TextBuffer();
+  let parameter: usize = 0;
+  while (parameter < signature.parameterTypes.length) {
+    canonical.append(signature.parameterModes[parameter]);
+    canonical.append(":");
+    const type = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      signature.parameterTypes[parameter]
+    );
+    canonical.append(loweredTypeIdentity(type));
+    canonical.append(";");
+    parameter = parameter + 1;
+  }
+  canonical.append("=>");
+  const returnType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    signature.returnType
+  );
+  canonical.append(loweredTypeIdentity(returnType));
+  canonical.append(" throws ");
+  if (signature.errorType.byteLength > 0) {
+    const errorType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      signature.errorType
+    );
+    canonical.append(loweredTypeIdentity(errorType));
+  }
+  const identity = canonical.finish();
+  return encodedFunctionTypeIdentity(identity);
+}
+
+function localTypeAliasTarget(
+  in program: Program,
+  in name: String
+): Option<String> {
+  for (const declaration of program.typeAliases) {
+    if (declaration.name == name) {
+      return Option.some(declaration.target.name.copyBytes(
+        0,
+        declaration.target.name.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
 }
 
 function loweredTypeIdentity(in type: LoweredType): String {
@@ -710,6 +825,26 @@ function lowerTypeName(
   in program: Program,
   in name: String
 ): LoweredType throws String {
+  match (localTypeAliasTarget(program, name)) {
+    some(target) => return try lowerTypeName(program, target);
+    none => {}
+  }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      const identity = try localFunctionTypeIdentity(program, signature);
+      return LoweredType({
+        kind: LoweredTypeKind.functionType,
+        name: identity,
+      });
+    }
+    none => {}
+  }
+  if (stringStartsWith(name, "Function_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.functionType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
   if (name == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (name == "boolean") {
     return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
@@ -918,6 +1053,34 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  match (localTypeAliasTarget(program, name)) {
+    some(target) => return try lowerModuleTypeName(
+      program,
+      importedTypes,
+      target
+    );
+    none => {}
+  }
+  match (nativeFunctionSignature(name)) {
+    some(signature) => {
+      const identity = try moduleFunctionTypeIdentity(
+        program,
+        importedTypes,
+        signature
+      );
+      return LoweredType({
+        kind: LoweredTypeKind.functionType,
+        name: identity,
+      });
+    }
+    none => {}
+  }
+  if (stringStartsWith(name, "Function_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.functionType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
   const nullableTarget = nullableTargetType(name);
   if (nullableTarget.byteLength > 0) {
     return try lowerModuleTypeName(program, importedTypes, nullableTarget);
@@ -1252,6 +1415,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
     || type.kind == LoweredTypeKind.arenaType
+    || type.kind == LoweredTypeKind.functionType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1428,6 +1592,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
     || type.kind == LoweredTypeKind.arenaType
+    || type.kind == LoweredTypeKind.functionType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
@@ -1448,6 +1613,25 @@ function moduleTypeNeedsCleanupDepth(
         index,
         depth
       );
+      none => {}
+    }
+    match (intrinsicOptionPayloadName(type.name)) {
+      some(payloadName) => {
+        const payload = attempt lowerModuleTypeName(
+          program,
+          importedTypes,
+          payloadName
+        );
+        return match (payload) {
+          success(lowered) => moduleTypeNeedsCleanupDepth(
+            program,
+            importedTypes,
+            lowered,
+            depth + 1
+          );
+          failure(_) => false;
+        };
+      }
       none => {}
     }
   }
@@ -2063,6 +2247,22 @@ function throwingFunctionResult(
     }
   }
   return Option<LoweredEnum>.none;
+}
+
+function requiredThrowingFunctionResult(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String
+): LoweredEnum throws String {
+  const result = try throwingFunctionResult(
+    program,
+    importedTypes,
+    ownerName
+  );
+  return match (result) {
+    some(declaration) => declaration;
+    none => throw "native value-match try lowering requires one semantically resolved throwing call";
+  };
 }
 
 function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
@@ -3948,6 +4148,68 @@ function resolvedExpressionTargetName(
   return Option<String>.none;
 }
 
+function annotatedBindingTypeInArena(
+  in arena: StatementArena,
+  in name: String,
+  useOffset: usize
+): Option<String> {
+  let resolved = "";
+  let resolvedOffset: usize = 0;
+  for (const statement of arena.nodes) {
+    if (
+      statement.kind != StatementKind.variableStatement
+      || statement.name != name
+      || statement.nameOffset > useOffset
+      || statement.nameOffset < resolvedOffset
+    ) continue;
+    match (in statement.typeAnnotation) {
+      some(type) => {
+        resolved = type.name.copyBytes(0, type.name.byteLength);
+        resolvedOffset = statement.nameOffset;
+      }
+      none => {}
+    }
+  }
+  if (resolved.byteLength > 0) return Option.some(move resolved);
+  return Option<String>.none;
+}
+
+function annotatedLocalBindingTypeName(
+  in program: Program,
+  in name: String,
+  useOffset: usize
+): Option<String> {
+  let ownerOffset: usize = 0;
+  for (const declaration of program.functions) {
+    if (
+      declaration.offset <= useOffset
+      && declaration.offset >= ownerOffset
+    ) ownerOffset = declaration.offset;
+  }
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (method.offset <= useOffset && method.offset >= ownerOffset) {
+        ownerOffset = method.offset;
+      }
+    }
+  }
+  for (const declaration of program.functions) {
+    if (declaration.offset != ownerOffset) continue;
+    return annotatedBindingTypeInArena(
+      declaration.body,
+      name,
+      useOffset
+    );
+  }
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (method.offset != ownerOffset) continue;
+      return annotatedBindingTypeInArena(method.body, name, useOffset);
+    }
+  }
+  return Option<String>.none;
+}
+
 function loweredIntegerSourceType(
   in importedTypes: Array<LoweredImportedType>,
   in sourceType: String
@@ -4261,6 +4523,10 @@ function namedValueTypeName(
     if (scopedParameterType.byteLength > 0) {
       return Option.some(move scopedParameterType);
     }
+  }
+  match (annotatedLocalBindingTypeName(program, name, useOffset)) {
+    some(typeName) => return Option.some(move typeName);
+    none => {}
   }
   let resolved = "";
   let resolvedOffset: usize = 0;
@@ -8093,6 +8359,85 @@ function lowerExpression(
       children = move nativeChildren;
       callLabels = move nativeLabels;
     }
+    let callableCalleeType = "";
+    match (resolvedExpressionTypeName(evidence, tree, calleeInput)) {
+      some(typeName) => callableCalleeType = move typeName;
+      none => {}
+    }
+    if (
+      callableCalleeType.byteLength == 0
+      && output[callee].labels.length > 0
+    ) callableCalleeType = output[callee].labels[0].copyBytes(
+      0,
+      output[callee].labels[0].byteLength
+    );
+    let callableBinding = calleeInput;
+    if (
+      tree.nodes[callableBinding].kind
+        == ExpressionKind.argumentReferenceExpression
+      && tree.nodes[callableBinding].children.length == 1
+    ) callableBinding = tree.nodes[callableBinding].children[0];
+    if (
+      tree.nodes[callableBinding].kind
+        == ExpressionKind.identifierExpression
+      || tree.nodes[callableBinding].kind
+        == ExpressionKind.argumentBindingExpression
+    ) {
+      const bindingName = tree.nodes[callableBinding].value.copyBytes(
+        0,
+        tree.nodes[callableBinding].value.byteLength
+      );
+      const bindingOffset = tree.nodes[callableBinding].offset;
+      match (namedValueTypeName(
+        program,
+        evidence,
+        "",
+        bindingName,
+        bindingOffset
+      )) {
+        some(typeName) => callableCalleeType = move typeName;
+        none => {}
+      }
+    }
+    match (localTypeAliasTarget(program, callableCalleeType)) {
+      some(target) => callableCalleeType = move target;
+      none => {}
+    }
+    if (
+      standardTarget.byteLength == 0
+      && foreignTarget.byteLength == 0
+    ) {
+      if (stringStartsWith(callableCalleeType, "Function_")) {
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.functionCall,
+          callableCalleeType,
+          children,
+          callLabels
+        );
+      }
+      match (nativeFunctionSignature(callableCalleeType)) {
+        some(signature) => {
+          const callableIdentity = try moduleFunctionTypeIdentity(
+            program,
+            importedTypes,
+            signature
+          );
+          let callableLabels = Array<String>();
+          for (const mode of signature.parameterModes) {
+            callableLabels.push(mode.copyBytes(0, mode.byteLength));
+          }
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.functionCall,
+            callableIdentity,
+            children,
+            callableLabels
+          );
+        }
+        none => {}
+      }
+    }
     return pushExpression(
       inout output,
       LoweredExpressionKind.directCall,
@@ -8569,6 +8914,220 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  let callableTypeName = expectedTypeName.copyBytes(
+    0,
+    expectedTypeName.byteLength
+  );
+  match (localTypeAliasTarget(program, callableTypeName)) {
+    some(target) => callableTypeName = move target;
+    none => {}
+  }
+  match (nativeFunctionSignature(callableTypeName)) {
+    some(signature) => {
+      const functionTypeName = try moduleFunctionTypeIdentity(
+        program,
+        importedTypes,
+        signature
+      );
+      const functionType = LoweredType({
+        kind: LoweredTypeKind.functionType,
+        name: functionTypeName,
+      });
+      if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
+        if (
+          tree.nodes[index].labels.length < 4
+          || tree.nodes[index].labels[2] != "expression"
+          || tree.nodes[index].labels[3].byteLength > 0
+        ) {
+          throw "native first-class callable lowering currently supports synchronous expression closures";
+        }
+        let parameterNames = Array<String>();
+        let bodyInput = tree.nodes.length;
+        for (const child of tree.nodes[index].children) {
+          if (
+            tree.nodes[child].kind
+              == ExpressionKind.closureParameterExpression
+          ) parameterNames.push(tree.nodes[child].value.copyBytes(
+            0,
+            tree.nodes[child].value.byteLength
+          ));
+          else bodyInput = child;
+        }
+        if (
+          bodyInput >= tree.nodes.length
+          || parameterNames.length != signature.parameterTypes.length
+        ) throw "native callable closure lost its parameter or body shape";
+        const bodyStart = output.length;
+        const body = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          bodyInput,
+          signature.returnType,
+          inout output
+        );
+        let callableParameter: usize = 0;
+        while (callableParameter < parameterNames.length) {
+          if (signature.parameterModes[callableParameter] != "value") {
+            rewriteClosureParameterValues(
+              inout output,
+              bodyStart,
+              parameterNames[callableParameter]
+            );
+          }
+          callableParameter = callableParameter + 1;
+        }
+        let captureNames = Array<String>();
+        let captureTypes = Array<LoweredType>();
+        let scan = bodyStart;
+        while (scan < output.length) {
+          if (output[scan].kind != LoweredExpressionKind.localValue) {
+            scan = scan + 1;
+            continue;
+          }
+          const candidate = output[scan].value.copyBytes(
+            0,
+            output[scan].value.byteLength
+          );
+          let parameter = false;
+          for (const parameterName of parameterNames) {
+            if (parameterName == candidate) parameter = true;
+          }
+          let directCallee = false;
+          let parent = bodyStart;
+          while (parent < output.length) {
+            if (
+              output[parent].kind == LoweredExpressionKind.directCall
+              && output[parent].children.length > 0
+              && output[parent].children[0] == scan
+            ) directCallee = true;
+            parent = parent + 1;
+          }
+          let present = false;
+          for (const captureName of captureNames) {
+            if (captureName == candidate) present = true;
+          }
+          if (parameter || directCallee || present) {
+            scan = scan + 1;
+            continue;
+          }
+          const closureOffset = tree.nodes[index].offset;
+          const captureTypeName = match (namedValueTypeName(
+            program,
+            evidence,
+            "",
+            candidate,
+            closureOffset
+          )) {
+            some(name) => name;
+            none => throw `native callable closure cannot resolve capture ${candidate}`;
+          };
+          captureNames.push(candidate.copyBytes(0, candidate.byteLength));
+          const captureType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            captureTypeName
+          );
+          captureTypes.push(move captureType);
+          scan = scan + 1;
+        }
+        let children = Array<usize>();
+        children.push(body);
+        let capture: usize = 0;
+        while (capture < captureNames.length) {
+          const local = pushExpression(
+            inout output,
+            LoweredExpressionKind.localValue,
+            captureNames[capture],
+            Array<usize>(),
+            Array<String>()
+          );
+          let stored = local;
+          if (
+            tree.nodes[index].value == "move"
+            && moduleTypeNeedsCleanup(
+              program,
+              importedTypes,
+              captureTypes[capture]
+            )
+          ) {
+            let movedChildren = Array<usize>();
+            movedChildren.push(local);
+            stored = pushExpression(
+              inout output,
+              LoweredExpressionKind.moveValue,
+              "",
+              movedChildren,
+              Array<String>()
+            );
+          }
+          children.push(stored);
+          capture = capture + 1;
+        }
+        let labels = Array<String>();
+        labels.push(functionType.name.copyBytes(
+          0,
+          functionType.name.byteLength
+        ));
+        labels.push(tree.nodes[index].value.copyBytes(
+          0,
+          tree.nodes[index].value.byteLength
+        ));
+        labels.push(signature.errorType.byteLength > 0
+          ? "throwing"
+          : "plain");
+        for (const parameterName of parameterNames) {
+          labels.push(parameterName.copyBytes(
+            0,
+            parameterName.byteLength
+          ));
+        }
+        for (const captureName of captureNames) {
+          labels.push(captureName.copyBytes(0, captureName.byteLength));
+        }
+        const closure = pushExpression(
+          inout output,
+          LoweredExpressionKind.closureValue,
+          "",
+          children,
+          labels
+        );
+        for (const captureType of captureTypes) {
+          output[closure].captureTypes.push(LoweredType({
+            kind: captureType.kind,
+            name: captureType.name.copyBytes(0, captureType.name.byteLength),
+          }));
+        }
+        return closure;
+      }
+      if (
+        tree.nodes[index].kind == ExpressionKind.identifierExpression
+      ) {
+        let target = tree.nodes[index].value.copyBytes(
+          0,
+          tree.nodes[index].value.byteLength
+        );
+        match (importedCallTarget(program, target)) {
+          some(imported) => target = move imported;
+          none => {}
+        }
+        let labels = Array<String>();
+        labels.push(functionType.name.copyBytes(
+          0,
+          functionType.name.byteLength
+        ));
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.directFunctionValue,
+          target,
+          Array<usize>(),
+          labels
+        );
+      }
+    }
+    none => {}
+  }
   match (genericTypeShape(expectedTypeName)) {
     some(generic) => {
       if (
@@ -9099,7 +9658,79 @@ function directThrowingCallResult(
       resultName
     );
   }
-  const callee = tree.nodes[index].children[0];
+  let callee = tree.nodes[index].children[0];
+  if (
+    tree.nodes[callee].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[callee].children.length == 1
+  ) callee = tree.nodes[callee].children[0];
+  match (resolvedExpressionTypeName(evidence, tree, callee)) {
+    some(calleeTypeName) => {
+      let callableTypeName = calleeTypeName.copyBytes(
+        0,
+        calleeTypeName.byteLength
+      );
+      match (localTypeAliasTarget(program, callableTypeName)) {
+        some(target) => callableTypeName = move target;
+        none => {}
+      }
+      match (nativeFunctionSignature(callableTypeName)) {
+        some(signature) => {
+          if (signature.errorType.byteLength > 0) {
+            const resultName = `Result<${signature.returnType}, ${signature.errorType}>`;
+            return try intrinsicResultDeclaration(
+              program,
+              importedTypes,
+              resultName
+            );
+          }
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  if (
+    tree.nodes[callee].kind == ExpressionKind.identifierExpression
+    || tree.nodes[callee].kind == ExpressionKind.argumentBindingExpression
+  ) {
+    const calleeName = tree.nodes[callee].value.copyBytes(
+      0,
+      tree.nodes[callee].value.byteLength
+    );
+    const calleeOffset = tree.nodes[callee].offset;
+    match (namedValueTypeName(
+      program,
+      evidence,
+      ownerName,
+      calleeName,
+      calleeOffset
+    )) {
+      some(calleeTypeName) => {
+        let callableTypeName = calleeTypeName.copyBytes(
+          0,
+          calleeTypeName.byteLength
+        );
+        match (localTypeAliasTarget(program, callableTypeName)) {
+          some(target) => callableTypeName = move target;
+          none => {}
+        }
+        match (nativeFunctionSignature(callableTypeName)) {
+          some(signature) => {
+            if (signature.errorType.byteLength > 0) {
+              const resultName = `Result<${signature.returnType}, ${signature.errorType}>`;
+              return try intrinsicResultDeclaration(
+                program,
+                importedTypes,
+                resultName
+              );
+            }
+          }
+          none => {}
+        }
+      }
+      none => {}
+    }
+  }
   if (tree.nodes[callee].kind != ExpressionKind.identifierExpression) {
     return Option<LoweredEnum>.none;
   }
@@ -9515,7 +10146,11 @@ function lowerValueDestination(
         );
         const inner = match (innerResult) {
           some(declaration) => declaration;
-          none => throw "native value-match try lowering requires one direct throwing function call";
+          none => try requiredThrowingFunctionResult(
+            program,
+            importedTypes,
+            ownerName
+          );
         };
         const outerResult = try throwingFunctionResult(
           program,
@@ -14790,6 +15425,28 @@ function rewritePrivateCallTargets(
   let index: usize = 0;
   while (index < lowered.expressions.length) {
     if (
+      lowered.expressions[index].kind
+        == LoweredExpressionKind.directFunctionValue
+    ) {
+      for (const declaration of program.functions) {
+        if (
+          declaration.name == lowered.expressions[index].value
+          && privateFunctionNeedsMangle(
+            program,
+            collisionNames,
+            moduleIndex,
+            entryIndex,
+            declaration.name
+          )
+        ) {
+          lowered.expressions[index].value = emittedPrivateFunctionName(
+            moduleIndex,
+            declaration.name
+          );
+        }
+      }
+    }
+    if (
       lowered.expressions[index].kind == LoweredExpressionKind.directCall
       && lowered.expressions[index].children.length > 0
     ) {
@@ -15756,6 +16413,170 @@ function lowerModuleConstant(
   }
 }
 
+function loweredFunctionParameterMode(in mode: String): LoweredParameterMode {
+  if (mode == "in") return LoweredParameterMode.input;
+  if (mode == "inout") return LoweredParameterMode.inputOutput;
+  if (mode == "out") return LoweredParameterMode.output;
+  return LoweredParameterMode.value;
+}
+
+function containsLoweredFunctionType(
+  in functionTypes: Array<LoweredFunctionType>,
+  in name: String
+): boolean {
+  for (const declaration of functionTypes) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
+function collectProgramFunctionTypeName(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in typeName: String,
+  inout functionTypes: Array<LoweredFunctionType>
+): void throws String {
+  let target = typeName.copyBytes(0, typeName.byteLength);
+  let aliasDepth: usize = 0;
+  while (aliasDepth < 64) {
+    const next = localTypeAliasTarget(program, target);
+    match (next) {
+      some(value) => target = move value;
+      none => break;
+    }
+    aliasDepth = aliasDepth + 1;
+  }
+  match (nativeFunctionSignature(target)) {
+    some(signature) => {
+      const name = try moduleFunctionTypeIdentity(
+        program,
+        importedTypes,
+        signature
+      );
+      if (containsLoweredFunctionType(functionTypes, name)) return;
+      let parameters = Array<LoweredParameter>();
+      let parameter: usize = 0;
+      while (parameter < signature.parameterTypes.length) {
+        const parameterType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          signature.parameterTypes[parameter]
+        );
+        parameters.push(LoweredParameter({
+          name: `argument${parameter}`,
+          type: parameterType,
+          mode: loweredFunctionParameterMode(
+            signature.parameterModes[parameter]
+          ),
+        }));
+        parameter = parameter + 1;
+      }
+      let returnType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        signature.returnType
+      );
+      if (signature.errorType.byteLength > 0) {
+        const errorType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          signature.errorType
+        );
+        returnType = LoweredType({
+          kind: LoweredTypeKind.enumType,
+          name: intrinsicResultName(returnType, errorType),
+        });
+      }
+      functionTypes.push(LoweredFunctionType({
+        name,
+        parameters,
+        returnType,
+      }));
+    }
+    none => {}
+  }
+}
+
+function collectFunctionDeclarationTypes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in declaration: FunctionDeclaration,
+  inout functionTypes: Array<LoweredFunctionType>
+): void throws String {
+  for (const parameter of declaration.parameters) {
+    try collectProgramFunctionTypeName(
+      program,
+      importedTypes,
+      parameter.type.name,
+      inout functionTypes
+    );
+  }
+  try collectProgramFunctionTypeName(
+    program,
+    importedTypes,
+    declaration.returnType.name,
+    inout functionTypes
+  );
+}
+
+function collectProgramFunctionTypes(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  inout functionTypes: Array<LoweredFunctionType>
+): void throws String {
+  for (const alias of program.typeAliases) {
+    try collectProgramFunctionTypeName(
+      program,
+      importedTypes,
+      alias.name,
+      inout functionTypes
+    );
+  }
+  for (const binding of evidence.bindingResolutions) {
+    try collectProgramFunctionTypeName(
+      program,
+      importedTypes,
+      binding.typeName,
+      inout functionTypes
+    );
+  }
+  for (const expression of evidence.expressionResolutions) {
+    try collectProgramFunctionTypeName(
+      program,
+      importedTypes,
+      expression.typeName,
+      inout functionTypes
+    );
+  }
+  for (const declaration of program.functions) {
+    try collectFunctionDeclarationTypes(
+      program,
+      importedTypes,
+      declaration,
+      inout functionTypes
+    );
+  }
+  for (const aggregate of program.aggregates) {
+    for (const field of aggregate.fields) {
+      try collectProgramFunctionTypeName(
+        program,
+        importedTypes,
+        field.type.name,
+        inout functionTypes
+      );
+    }
+    for (const method of aggregate.methods) {
+      try collectFunctionDeclarationTypes(
+        program,
+        importedTypes,
+        method,
+        inout functionTypes
+      );
+    }
+  }
+}
+
 function appendLoweredProgram(
   in program: Program,
   in sourcePath: String,
@@ -15770,15 +16591,13 @@ function appendLoweredProgram(
   inout arrays: Array<LoweredArray>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
+  inout functionTypes: Array<LoweredFunctionType>,
   inout structs: Array<LoweredStruct>,
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
 ): void throws String {
-  if (
-    program.traits.length > 0
-    || program.typeAliases.length > 0
-  ) {
-    throw "native lowering does not support traits or type aliases yet";
+  if (program.traits.length > 0) {
+    throw "native lowering does not support traits yet";
   }
 
   for (const declaration of program.constants) {
@@ -15861,6 +16680,13 @@ function appendLoweredProgram(
       underlyingType: "",
     }));
   }
+
+  try collectProgramFunctionTypes(
+    program,
+    importedTypes,
+    evidence,
+    inout functionTypes
+  );
 
   try collectIntrinsicEnums(
     program,
@@ -16232,6 +17058,7 @@ function lowerProgramUnchecked(
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
+  let functionTypes = Array<LoweredFunctionType>();
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
@@ -16252,6 +17079,7 @@ function lowerProgramUnchecked(
     inout arrays,
     inout maps,
     inout sets,
+    inout functionTypes,
     inout structs,
     inout enums,
     inout functions
@@ -16265,6 +17093,7 @@ function lowerProgramUnchecked(
     arrays,
     maps,
     sets,
+    functionTypes,
     structs,
     enums,
     functions,
@@ -16325,6 +17154,7 @@ function lowerModulesIncludingTests(
   let arrays = Array<LoweredArray>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
+  let functionTypes = Array<LoweredFunctionType>();
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
@@ -16363,6 +17193,7 @@ function lowerModulesIncludingTests(
       inout arrays,
       inout maps,
       inout sets,
+      inout functionTypes,
       inout structs,
       inout enums,
       inout functions
@@ -16387,6 +17218,7 @@ function lowerModulesIncludingTests(
     arrays,
     maps,
     sets,
+    functionTypes,
     structs,
     enums,
     functions,

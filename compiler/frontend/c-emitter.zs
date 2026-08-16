@@ -4,10 +4,12 @@ import { TextBuffer } from "std/text";
 import {
   LoweredExpression,
   LoweredExpressionKind,
+  LoweredEnum,
   LoweredFunction,
   LoweredCleanup,
   LoweredMainDelayLoop,
   LoweredMainDelaySegment,
+  LoweredParameter,
   LoweredParameterMode,
   LoweredProgram,
   LoweredStatementKind,
@@ -76,6 +78,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.mapType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.setType) return `Z_${type.name}`;
+  if (type.kind == LoweredTypeKind.functionType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.booleanType) return "bool";
   if (type.kind == LoweredTypeKind.voidType) return "void";
   if (type.kind == LoweredTypeKind.structType) return `Z_${type.name}`;
@@ -217,6 +220,30 @@ function appendMutexWithLockHelperName(
   appendCBindingName(inout output, declaration.name);
   output.append("_");
   output.append(`${expressionIndex}`);
+}
+
+function appendCallableHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_callable_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
+function appendCallableParameterDeclaration(
+  inout output: TextBuffer,
+  in parameter: LoweredParameter,
+  in name: String
+): void throws String {
+  const type = try cType(parameter.type);
+  if (parameter.mode == LoweredParameterMode.input) output.append("const ");
+  output.append(type);
+  if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+  else output.append(" ");
+  appendCBindingName(inout output, name);
 }
 
 function appendThreadSpawnHelperName(
@@ -1007,6 +1034,33 @@ function appendExpression(
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.localValue) {
     appendCBindingName(inout output, declaration.expressions[index].value);
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.directFunctionValue
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.closureValue
+  ) {
+    output.append("z_stage1_callable_");
+    appendCBindingName(inout output, declaration.name);
+    output.append("_");
+    output.append(`${index}`);
+    if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.closureValue
+      && declaration.expressions[index].captureTypes.length > 0
+    ) {
+      output.append("_make(");
+      let capture: usize = 1;
+      while (capture < declaration.expressions[index].children.length) {
+        if (capture > 1) output.append(", ");
+        const value = declaration.expressions[index].children[capture];
+        try appendExpression(inout output, declaration, value);
+        capture = capture + 1;
+      }
+      output.append(")");
+    } else output.append("_value");
     return;
   }
   if (
@@ -2069,6 +2123,33 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.functionCall) {
+    if (declaration.expressions[index].children.length == 0) {
+      throw "native C emission received a malformed function-value call";
+    }
+    const callee = declaration.expressions[index].children[0];
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_call(");
+    try appendExpression(inout output, declaration, callee);
+    let argument: usize = 1;
+    while (argument < declaration.expressions[index].children.length) {
+      output.append(", ");
+      const borrowed = declaration.expressions[index].labels.length >= argument
+        && (
+          declaration.expressions[index].labels[argument - 1] == "in"
+          || declaration.expressions[index].labels[argument - 1] == "inout"
+          || declaration.expressions[index].labels[argument - 1] == "out"
+        );
+      if (borrowed) output.append("&(");
+      const value = declaration.expressions[index].children[argument];
+      try appendExpression(inout output, declaration, value);
+      if (borrowed) output.append(")");
+      argument = argument + 1;
+    }
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.classValue) {
     output.append("Z_");
     output.append(declaration.expressions[index].value);
@@ -2765,7 +2846,8 @@ function appendLocalStatementStorage(
         && storageType.kind != LoweredTypeKind.classType
         && storageType.kind != LoweredTypeKind.onceLifetimeType
         && storageType.kind != LoweredTypeKind.mutexType
-        && storageType.kind != LoweredTypeKind.taskType;
+        && storageType.kind != LoweredTypeKind.taskType
+        && storageType.kind != LoweredTypeKind.functionType;
     }
     none => false;
   };
@@ -3859,6 +3941,245 @@ function appendFunction(
   }
   try appendFunctionTail(inout output, declaration);
   output.append("}\n\n");
+}
+
+function appendCallableHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (
+        expression.kind != LoweredExpressionKind.directFunctionValue
+        && expression.kind != LoweredExpressionKind.closureValue
+      ) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (expression.labels.length == 0) {
+        throw "native callable helper lost its function type";
+      }
+      let functionTypeIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == expression.labels[0]) {
+          functionTypeIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (functionTypeIndex >= program.functionTypes.length) {
+        throw "native callable helper could not resolve its function type";
+      }
+      const functionType = view program.functionTypes[functionTypeIndex];
+      const returnType = try cType(functionType.returnType);
+      const parameterLabelStart: usize = 3;
+      const captureLabelStart = parameterLabelStart
+        + functionType.parameters.length;
+      if (
+        expression.kind == LoweredExpressionKind.closureValue
+        && expression.labels.length
+          != captureLabelStart + expression.captureTypes.length
+      ) throw "native callable helper lost its closure labels";
+      if (expression.captureTypes.length > 0) {
+        output.append("typedef struct ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment {\n  size_t refcount;\n");
+        let capture: usize = 0;
+        while (capture < expression.captureTypes.length) {
+          output.append("  ");
+          const captureCType = try cType(expression.captureTypes[capture]);
+          output.append(captureCType);
+          output.append(" ");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          output.append(";\n");
+          capture = capture + 1;
+        }
+        output.append("} ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment;\n\n");
+        output.append("static void ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_retain(void *context) {\n  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *environment = (");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *)context;\n  environment->refcount += 1;\n}\n\n");
+        output.append("static void ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_release(void *context) {\n  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *environment = (");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *)context;\n  environment->refcount -= 1;\n  if (environment->refcount != 0) return;\n");
+        capture = expression.captureTypes.length;
+        while (capture > 0) {
+          capture = capture - 1;
+          const captureType = view expression.captureTypes[capture];
+          if (loweredTypeNeedsDeinit(program, captureType)) {
+            output.append("  Z_");
+            output.append(captureType.name);
+            if (captureType.kind == LoweredTypeKind.classType) {
+              output.append("_release(environment->");
+              appendCBindingName(
+                inout output,
+                expression.labels[captureLabelStart + capture]
+              );
+              output.append(");\n");
+            } else {
+              output.append("_deinit(&environment->");
+              appendCBindingName(
+                inout output,
+                expression.labels[captureLabelStart + capture]
+              );
+              output.append(");\n");
+            }
+          }
+        }
+        output.append("  free(environment);\n}\n\n");
+      }
+      output.append("static ");
+      output.append(returnType);
+      output.append(" ");
+      appendCallableHelperName(inout output, owner, expressionIndex);
+      output.append("_call(void *context");
+      let parameter: usize = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append(", ");
+        if (expression.kind == LoweredExpressionKind.closureValue) {
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[parameter],
+            expression.labels[parameterLabelStart + parameter]
+          );
+        } else {
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[parameter],
+            functionType.parameters[parameter].name
+          );
+        }
+        parameter = parameter + 1;
+      }
+      output.append(") {\n");
+      if (expression.captureTypes.length == 0) {
+        output.append("  (void)context;\n");
+      } else {
+        output.append("  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *environment = (");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *)context;\n");
+        let capture: usize = 0;
+        while (capture < expression.captureTypes.length) {
+          output.append("  ");
+          const captureCType = try cType(expression.captureTypes[capture]);
+          output.append(captureCType);
+          output.append(" const ");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          output.append(" = environment->");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          output.append(";\n");
+          capture = capture + 1;
+        }
+      }
+      output.append("  return ");
+      if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+        appendCBindingName(inout output, expression.value);
+        output.append("(");
+        parameter = 0;
+        while (parameter < functionType.parameters.length) {
+          if (parameter > 0) output.append(", ");
+          appendCBindingName(
+            inout output,
+            functionType.parameters[parameter].name
+          );
+          parameter = parameter + 1;
+        }
+        output.append(")");
+      } else {
+        if (expression.children.length == 0) {
+          throw "native closure helper lost its body";
+        }
+        if (expression.labels[2] == "throwing") {
+          output.append("(");
+          output.append(returnType);
+          output.append("){ .tag = Z_");
+          output.append(functionType.returnType.name);
+          output.append("Tag_success, .payload.success = ");
+        }
+        const body = expression.children[0];
+        try appendExpression(inout output, owner, body);
+        if (expression.labels[2] == "throwing") output.append(" }");
+      }
+      output.append(";\n}\n\n");
+      if (expression.captureTypes.length > 0) {
+        output.append("static Z_");
+        output.append(functionType.name);
+        output.append(" ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_make(");
+        let capture: usize = 0;
+        while (capture < expression.captureTypes.length) {
+          if (capture > 0) output.append(", ");
+          const captureCType = try cType(expression.captureTypes[capture]);
+          output.append(captureCType);
+          output.append(" ");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          capture = capture + 1;
+        }
+        output.append(") {\n  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->refcount = 1;\n");
+        capture = 0;
+        while (capture < expression.captureTypes.length) {
+          output.append("  environment->");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          output.append(" = ");
+          appendCBindingName(
+            inout output,
+            expression.labels[captureLabelStart + capture]
+          );
+          output.append(";\n");
+          capture = capture + 1;
+        }
+        output.append("  return (Z_");
+        output.append(functionType.name);
+        output.append("){ .call = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_call, .context = environment, .retain = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_retain, .release = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_release };\n}\n\n");
+      } else {
+        output.append("static const Z_");
+        output.append(functionType.name);
+        output.append(" ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_value = { .call = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_call, .context = NULL, .retain = NULL, .release = NULL };\n\n");
+      }
+      expressionIndex = expressionIndex + 1;
+    }
+  }
 }
 
 function appendThreadTaskRuntime(
@@ -7800,6 +8121,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
     || type.kind == LoweredTypeKind.arenaType
+    || type.kind == LoweredTypeKind.functionType
   ) return true;
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
@@ -8080,6 +8402,18 @@ function appendStructDefinition(
   structStates[index] = 2;
 }
 
+function enumContainsFunctionPayload(in declaration: LoweredEnum): boolean {
+  for (const variant of declaration.variants) {
+    match (in variant.payload) {
+      some(type) => {
+        if (type.kind == LoweredTypeKind.functionType) return true;
+      }
+      none => {}
+    }
+  }
+  return false;
+}
+
 function appendTypeDefinitions(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -8185,13 +8519,15 @@ function appendTypeDefinitions(
   }
   let enumIndex: usize = 0;
   while (enumIndex < program.enums.length) {
-    try appendEnumDefinition(
-      inout output,
-      program,
-      enumIndex,
-      inout structStates,
-      inout enumStates
-    );
+    if (!enumContainsFunctionPayload(program.enums[enumIndex])) {
+      try appendEnumDefinition(
+        inout output,
+        program,
+        enumIndex,
+        inout structStates,
+        inout enumStates
+      );
+    }
     enumIndex = enumIndex + 1;
   }
   let structIndex: usize = 0;
@@ -8204,6 +8540,76 @@ function appendTypeDefinitions(
       inout enumStates
     );
     structIndex = structIndex + 1;
+  }
+  for (const declaration of program.functionTypes) {
+    const returnType = try cType(declaration.returnType);
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" {\n  ");
+    output.append(returnType);
+    output.append(" (*call)(void *context");
+    for (const parameter of declaration.parameters) {
+      output.append(", ");
+      const parameterType = try cType(parameter.type);
+      if (parameter.mode == LoweredParameterMode.input) output.append("const ");
+      output.append(parameterType);
+      if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+    }
+    output.append(");\n  void *context;\n  void (*retain)(void *context);\n  void (*release)(void *context);\n} Z_");
+    output.append(declaration.name);
+    output.append(";\n\n");
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_retain(Z_");
+    output.append(declaration.name);
+    output.append(" value) {\n  if (value.retain != NULL) value.retain(value.context);\n  return value;\n}\n\n");
+    output.append("static inline __attribute__((unused)) ");
+    output.append(returnType);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_call(Z_");
+    output.append(declaration.name);
+    output.append(" value");
+    let parameterIndex: usize = 0;
+    while (parameterIndex < declaration.parameters.length) {
+      output.append(", ");
+      try appendCallableParameterDeclaration(
+        inout output,
+        declaration.parameters[parameterIndex],
+        declaration.parameters[parameterIndex].name
+      );
+      parameterIndex = parameterIndex + 1;
+    }
+    output.append(") {\n  ");
+    if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+      output.append("return ");
+    }
+    output.append("value.call(value.context");
+    for (const parameter of declaration.parameters) {
+      output.append(", ");
+      appendCBindingName(inout output, parameter.name);
+    }
+    output.append(");\n}\n\n");
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n  value->call = NULL;\n  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
+  }
+  enumIndex = 0;
+  while (enumIndex < program.enums.length) {
+    if (enumContainsFunctionPayload(program.enums[enumIndex])) {
+      try appendEnumDefinition(
+        inout output,
+        program,
+        enumIndex,
+        inout structStates,
+        inout enumStates
+      );
+    }
+    enumIndex = enumIndex + 1;
   }
   for (const declaration of program.maps) {
     const keyType = try cType(declaration.keyType);
@@ -8273,6 +8679,9 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.f32Type) return "f32";
   if (type.kind == LoweredTypeKind.f64Type) return "f64";
   if (type.kind == LoweredTypeKind.stringType) return "String";
+  if (type.kind == LoweredTypeKind.functionType) {
+    return type.name.copyBytes(0, type.name.byteLength);
+  }
   if (
     type.kind == LoweredTypeKind.structType
     || type.kind == LoweredTypeKind.enumType
@@ -8290,6 +8699,8 @@ function appendMapRuntime(
     const valueIdentity = try loweredIntrinsicIdentity(declaration.valueType);
     const optionName = `__z_NicheViewOption_${valueIdentity}`;
     const ownedOptionName = `__z_Option_${valueIdentity}`;
+    const ownedFunctionGet = declaration.valueType.kind
+      == LoweredTypeKind.functionType;
     let supportsRemove = false;
     for (const enumeration of program.enums) {
       if (enumeration.name == ownedOptionName) supportsRemove = true;
@@ -8383,7 +8794,8 @@ function appendMapRuntime(
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n  return false;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_");
-    output.append(optionName);
+    if (ownedFunctionGet) output.append(ownedOptionName);
+    else output.append(optionName);
     output.append(" Z_");
     output.append(declaration.name);
     output.append("_get(const Z_");
@@ -8391,18 +8803,46 @@ function appendMapRuntime(
     output.append(" *self, ");
     output.append(keyType);
     output.append(" key) {\n");
-    output.append("  if (self->bucketCount == 0) return NULL;\n");
+    if (ownedFunctionGet) {
+      output.append("  if (self->bucketCount == 0) return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_none };\n");
+    } else output.append("  if (self->bucketCount == 0) return NULL;\n");
     output.append("  size_t slot = Z_");
     output.append(declaration.name);
     output.append("_hash(key) & (self->bucketCount - 1);\n");
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
-    output.append("    if (stored == 0) return NULL;\n");
+    if (ownedFunctionGet) {
+      output.append("    if (stored == 0) return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_none };\n");
+    } else output.append("    if (stored == 0) return NULL;\n");
     output.append("    if (stored != SIZE_MAX && Z_");
     output.append(declaration.name);
-    output.append("_equal(self->entries[stored - 1].key, key)) return &(self->entries[stored - 1].value);\n");
+    output.append("_equal(self->entries[stored - 1].key, key)) return ");
+    if (ownedFunctionGet) {
+      output.append("(Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_some, .payload.some = Z_");
+      output.append(declaration.valueType.name);
+      output.append("_retain(self->entries[stored - 1].value) }");
+    } else output.append("&(self->entries[stored - 1].value)");
+    output.append(";\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
-    output.append("  }\n  return NULL;\n}\n\n");
+    if (ownedFunctionGet) {
+      output.append("  }\n  return (Z_");
+      output.append(ownedOptionName);
+      output.append("){ .tag = Z_");
+      output.append(ownedOptionName);
+      output.append("Tag_none };\n}\n\n");
+    } else output.append("  }\n  return NULL;\n}\n\n");
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
     output.append("_set(Z_");
@@ -8412,6 +8852,11 @@ function appendMapRuntime(
     output.append(" key, ");
     output.append(valueType);
     output.append(" value) {\n");
+    if (ownedFunctionGet) {
+      output.append("  value = Z_");
+      output.append(declaration.valueType.name);
+      output.append("_retain(value);\n");
+    }
     output.append("  Z_");
     output.append(declaration.name);
     output.append("_ensure_capacity(self);\n");
@@ -10419,6 +10864,7 @@ function emitLoweredC(
   if (program.functions.length > 0) output.append("\n");
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
+  try appendCallableHelpers(inout output, program);
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);

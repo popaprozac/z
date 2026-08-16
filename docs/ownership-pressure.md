@@ -2282,7 +2282,7 @@ issue.
 
 The corrective invariant is now explicit: a native lowering slice requires
 positive execution parity, negative ownership/capability/sendability/affinity
-parity, and a current status boundary. The existing sixteen-root differential
+parity, and a current status boundary. The existing differential
 corpus supplies broad positive evidence but cannot prove invalid programs are
 rejected. Native sema now closes the observed gap for off-main field, method,
 and function access, while preserving valid inherited context inside placed
@@ -2307,8 +2307,8 @@ follow-up; they do not substitute for semantic rejection coverage.
 
 The first follow-up now inserts a lowerability preflight between native semantic
 resolution and IR construction. Ordinary unplaced async functions retain
-`Z0700`; generic aggregates, traits, aliases, function-value and fixed-array
-types, `Slice`, generators, destructuring, value-producing loops, unsafe
+`Z0700`; generic aggregates, traits, fixed-array types, `Slice`, generators,
+destructuring, value-producing loops, unsafe
 expressions, and other syntactically settled body gaps use `Z1000`, which
 explicitly means “valid Z, outside the current fixed-point executable tier.”
 Both the standalone driver and the Bun-hosted native emitter preserve the code,
@@ -2681,11 +2681,25 @@ all retrieved Options leave scope. This confirms that no collection-specific
 closure representation was needed: the existing retain/release function handle
 was the correct storage abstraction.
 
-The pressure test also made the fixed-point boundary sharper. Native semantic
-analysis already understands callable aliases and effects, but native C
-emission still has no general first-class function-value representation. The
-Stage 0 router is executable; native execution remains intentionally rejected
-until callable structs, environments, invocation, and cleanup land together.
+The pressure test then closed the fixed-point boundary it exposed. Native C
+emission represents each callable ABI with a typed call pointer, context, and
+retain/release hooks. Direct named functions use static context-free handles;
+capturing expression closures allocate one environment whose final release
+destroys owned captures. Throwing callables return the same `Result<T, E>` shape
+as direct throwing calls. Map insertion and lookup retain independently, while
+replacement, removal, clearing, and destruction transfer or release exactly
+once.
+
+The unchanged message router now compiles and runs through both Stage 0 and the
+fixed-point emitter under strict C warnings. Its output includes one—and only
+one—`RouteState.deinit`, which makes the retain balance observable: a missing
+lookup release would leak the closure and suppress that line, while an early or
+duplicate release would destroy the capture before final Map cleanup. A second
+differential fixture covers transparent aliases, raw function-type parameters,
+direct named-function conversion, and an inferred scalar-capturing closure.
+The ordinary closure environment remains executor-local in this tier;
+cross-thread general callable sharing, block-bodied first-class closures, and
+suspending callable bodies remain explicit follow-ups.
 
 ## Not tested yet
 

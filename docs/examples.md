@@ -205,6 +205,14 @@ lookups, explicitly copied for durable reports, and moved into their final
 consumer. Its deterministic smoke test and fixed benchmark verified the move
 from dense storage to hashed buckets without changing application source.
 
+[`message-router`](../examples/applications/message-router) stores a direct
+function and an owned capturing closure behind one throwing `Handler` alias in
+`Map<String, Handler>`. Lookup returns an independently retained
+`Option<Handler>`; borrowed matching invokes it without consuming the Option;
+typed routing failure remains available through `attempt`; and final Map
+cleanup destroys the captured ARC state exactly once. The same source executes
+in Stage 0 and the fixed-point native compiler's strict-C differential corpus.
+
 [`source-stager`](../examples/applications/source-stager) is the first
 self-hosting-groundwork tool. It reads a source path from `process.args()`,
 copies that source through `std/fs`, invokes Clang directly through
