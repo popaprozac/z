@@ -24,6 +24,7 @@ import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
+import type { StandardModuleName } from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 
 export type SourceModuleInfo = {
@@ -64,6 +65,7 @@ type ModuleNode = {
 type ModuleScope = {
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
+  readonly standardModules: Map<string, StandardModuleName>;
   readonly standardTypes: Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex">;
 };
 
@@ -392,6 +394,7 @@ function buildScope(node: ModuleNode): ModuleScope {
     [...node.ownNames].filter(([name]) => !hiddenTestNames.has(name)),
   );
   const namespaces = new Map<string, ModuleNode>();
+  const standardModules = new Map<string, StandardModuleName>();
   const standardTypes = new Map<string, "TextBuffer" | "Arena" | "Map" | "Set" | "Hashable" | "Hasher" | "Once" | "OnceLifetime" | "Mutex">();
   const occupied = new Map<string, SourceLocation>();
   for (const declaration of [
@@ -435,6 +438,13 @@ function buildScope(node: ModuleNode): ModuleScope {
       continue;
     }
     if (!declaration.bindings) {
+      if (declaration.header === "std/fs") {
+        standardModules.set(declaration.moduleName, "fs");
+      } else if (declaration.header === "std/process") {
+        standardModules.set(declaration.moduleName, "process");
+      } else if (declaration.header === "std/objc") {
+        standardModules.set(declaration.moduleName, "objc");
+      }
       bind(declaration.moduleName, linkedImportName(node, declaration.moduleName), declaration.location);
     } else {
       for (const binding of declaration.bindings) {
@@ -461,7 +471,7 @@ function buildScope(node: ModuleNode): ModuleScope {
       }
     }
   }
-  return { globals, namespaces, standardTypes };
+  return { globals, namespaces, standardModules, standardTypes };
 }
 
 function linkedImportName(node: ModuleNode, name: string): string {
@@ -949,6 +959,8 @@ function renameSimpleType(name: string, scope: ModuleScope): string {
   if (separator >= 0) {
     const namespace = name.slice(0, separator);
     const member = name.slice(separator + 1);
+    const standardModule = scope.standardModules.get(namespace);
+    if (standardModule) return `${standardModule}.${member}`;
     const dependency = scope.namespaces.get(namespace);
     if (dependency) {
       const exported = dependency.exports.get(member);

@@ -2727,6 +2727,21 @@ and returns an `objc.Connection`. The connection must remain bound while the
 callback is desired; its precise scope lifetime and teardown prevent a weak
 target from silently disappearing after a helper returns.
 
+The lifetime may be owned by a longer-lived aggregate rather than a local:
+
+```zs
+import objc from "std/objc";
+
+class Application {
+  actionConnection: objc.Connection on thread.main;
+}
+```
+
+Qualified standard-module types keep this canonical source spelling across Z
+module boundaries. The field is ordinary ARC identity; releasing the
+application tears down the connection, clears the native target/action pair,
+and releases the Z closure environment.
+
 Zeroing `weak` Objective-C delegate and data-source properties use
 `objc.bind`:
 

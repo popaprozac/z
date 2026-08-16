@@ -2731,6 +2731,17 @@ The ordinary closure environment remains executor-local in this tier;
 cross-thread general callable sharing, block-bodied first-class closures, and
 suspending callable bodies remain explicit follow-ups.
 
+The Zapp AppKit probe then attached the same ownership shape to an Objective-C
+event source. Its `Application` class stores the `objc.Connection` alongside
+the native button, so the application root—not a blocking function's local
+frame—owns the target/action lifetime. The connection's closure owns a router,
+the router owns its handler Map, and a deterministic `performClick` crosses
+AppKit → Z dispatch → synchronized application state → main-isolated UI. This
+also exposed and closed a module-linking defect: qualified standard-library
+types such as `objc.Connection` were incorrectly mangled inside a dependency's
+exported aggregate fields. Standard module namespaces now keep a canonical
+type spelling while their expression bindings remain collision-safe.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

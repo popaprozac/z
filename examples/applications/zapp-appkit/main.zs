@@ -1,5 +1,6 @@
 import AppKit from "AppKit/AppKit.h";
 import console from "std/console";
+import objc from "std/objc";
 import { Mutex } from "std/sync";
 import { sleep } from "std/time";
 import { thread } from "std/thread";
@@ -12,6 +13,11 @@ import {
   publishApplicationStatus,
 } from "./application.zs";
 import { refreshProject } from "./background.zs";
+import {
+  Handler,
+  Message,
+  createRouter,
+} from "../message-router/router.zs";
 
 function createApplication(): Application on thread.main {
   const nativeApp = AppKit.NSApplication.sharedApplication;
@@ -40,11 +46,38 @@ function createApplication(): Application on thread.main {
   label.selectable = false;
   content.addSubview(label);
 
+  const actionButton = AppKit.NSButton.alloc().initWithFrame(
+    AppKit.NSMakeRect(24.0, 40.0, 180.0, 32.0)
+  );
+  actionButton.title = "Route Z Action";
+  content.addSubview(actionButton);
+
+  const router = createRouter();
+  const routeAction: Handler = (in message) => message.value + 1;
+  router.register("appkit-action", routeAction);
+  const actionConnection = objc.connect(actionButton, move (): void => {
+    const message = Message({ operation: "appkit-action", value: 41 });
+    const routed = attempt router.dispatch(in message);
+    match (routed) {
+      success(ticket) => {
+        const current = currentApplication();
+        current.finishWork(ticket);
+        current.publish(ticket);
+        console.log(`routed AppKit action ${ticket} on main`);
+      }
+      failure(error) => {
+        console.error(`missing AppKit route ${error.operation}`);
+      }
+    }
+  });
+
   return new Application({
     name: "Zapp",
     state: Mutex(RuntimeState({ started: 0, completed: 0 })),
     window,
     statusLabel: label,
+    actionButton,
+    actionConnection,
   });
 }
 
@@ -84,6 +117,7 @@ async function main(): i32 on thread.main {
   const value = createApplication();
   const lifetime = initializeApplication(value);
   value.show();
+  value.triggerAction();
 
   const refresh = thread.spawn(async (): i32 => {
     const ticket = refreshProject();

@@ -1257,6 +1257,33 @@ test("loads explicit Z exports through selective and namespace module imports", 
   assert.doesNotMatch(generated, /#include <\.\/math\.zs>/);
 });
 
+test("keeps qualified standard-module types canonical across Z modules", () => {
+  const directory = mkdtempSync("/tmp/z-standard-module-types-");
+  const owner = resolve(directory, "owner.zs");
+  const entry = resolve(directory, "main.zs");
+  writeFileSync(owner, `
+    import storage from "std/fs";
+
+    export struct LockOwner {
+      lock: storage.Lock;
+    }
+  `);
+  writeFileSync(entry, `
+    import { LockOwner } from "./owner.zs";
+
+    function main(): i32 {
+      return 0;
+    }
+  `);
+
+  const source = readFileSync(entry, "utf8");
+  assert.deepEqual(diagnostics(source, entry), []);
+  const generated = compileToC(source, entry);
+  assert.match(generated, /Z_FsLock lock;/);
+  assert.doesNotMatch(generated, /__z_module_[0-9]+_import_storage\.Lock/);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("attaches native frontend evidence after authoritative stage-0 analysis", () => {
   const example = resolve(projectRoot, "examples/language/modules/main.zs");
   const source = readFileSync(example, "utf8");

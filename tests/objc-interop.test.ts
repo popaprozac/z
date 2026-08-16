@@ -1927,6 +1927,54 @@ test("bridges owned Z closures to Objective-C target/action through an explicit 
   assert.match(hover(propertySource, example, targetOffset)?.contents.value ?? "", /weak target: /);
 }, 10_000);
 
+hostToolchainTest("owns an AppKit target/action router in a linked application root", () => {
+  if (process.platform !== "darwin") return;
+  const example = resolve(
+    projectRoot,
+    "examples/applications/zapp-appkit/main.zs",
+  );
+  const source = readFileSync(example, "utf8");
+  const artifact = compileToNative(source, example);
+
+  assert.equal(artifact.language, "objective-c");
+  assert.match(artifact.source, /ZObjCConnection \* actionConnection;/);
+  assert.match(artifact.source, /self->actionConnection = actionConnection;/);
+  assert.match(artifact.source, /self->actionConnection = nil;/);
+  assert.match(artifact.source, /z_objc_connect\(/);
+  assert.match(artifact.source, /Router_dispatch\(router, &\(message\)\)/);
+  assert.match(artifact.source, /Application_triggerAction/);
+
+  const compilation = spawnSync("xcrun", [
+    "clang", "-x", "objective-c", "-fobjc-arc", "-fblocks",
+    "-mmacosx-version-min=14.0",
+    "-Wall", "-Wextra", "-Werror", "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", example, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 4 modules, 4 local edges/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "published AppKit job 42 on main\n"
+      + "routed AppKit action 42 on main\n"
+      + "worker completed AppKit job 1\n"
+      + "published AppKit job 1 on main\n"
+      + "worker resumed after publishing AppKit job 1\n"
+      + "closing AppKit window on main\n"
+      + "Zapp completed AppKit job 1\n",
+  );
+}, 60_000);
+
 test("generates safe Objective-C protocol adapters with protocol-aware editor scaffolds", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/protocol-conformance.zs");

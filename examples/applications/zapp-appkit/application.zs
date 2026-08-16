@@ -1,5 +1,6 @@
 import AppKit from "AppKit/AppKit.h";
 import console from "std/console";
+import objc from "std/objc";
 import { Mutex, Once, OnceLifetime } from "std/sync";
 import { thread } from "std/thread";
 
@@ -15,6 +16,8 @@ export class Application {
   readonly state: Mutex<RuntimeState>;
   window: AppKit.NSWindow on thread.main;
   statusLabel: AppKit.NSTextField on thread.main;
+  actionButton: AppKit.NSButton on thread.main;
+  actionConnection: objc.Connection on thread.main;
 
   function beginWork(): i32 {
     return this.state.withLock((inout state): i32 => {
@@ -38,6 +41,10 @@ export class Application {
   function show(): void on thread.main {
     this.window.center();
     this.window.makeKeyAndOrderFront(null);
+  }
+
+  function triggerAction(): void on thread.main {
+    this.actionButton.performClick(null);
   }
 
   function publish(ticket: i32): void on thread.main {
