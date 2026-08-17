@@ -53,6 +53,19 @@ struct NativeTypeArity {
   maximum: usize;
 }
 
+function moduleImportsThreadCapability(in module: ParsedModule): boolean {
+  for (const declaration of module.program.imports) {
+    if (declaration.header != "std/thread" || !declaration.selective) continue;
+    for (const binding of declaration.bindings) {
+      if (
+        binding.importedName == "thread"
+        && binding.localName == "thread"
+      ) return true;
+    }
+  }
+  return false;
+}
+
 struct NativeTypeParameterBinding {
   name: String;
   constraints: Array<String>;
@@ -357,6 +370,16 @@ function validateTypeNameShape(
   }
   match (nativeFunctionSignature(name)) {
     some(signature) => {
+      if (
+        signature.threadContract == "thread.any"
+        && !moduleImportsThreadCapability(module)
+      ) throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "`on thread.any` function types require `import { thread } from \"std/thread\"`",
+        line,
+        column
+      );
       for (const parameterType of signature.parameterTypes) {
         try validateTypeNameShape(
           module,
@@ -375,6 +398,16 @@ function validateTypeNameShape(
         moduleIndex,
         typeBindings,
         signature.returnType,
+        line,
+        column,
+        false
+      );
+      if (signature.errorType.byteLength > 0) try validateTypeNameShape(
+        module,
+        modules,
+        moduleIndex,
+        typeBindings,
+        signature.errorType,
         line,
         column,
         false
@@ -653,8 +686,49 @@ function validateFunctionTypes(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
   in inherited: Array<NativeTypeParameterBinding>,
-  in declaration: FunctionDeclaration
+  in declaration: FunctionDeclaration,
+  method: boolean
 ): void throws ModuleResolveError {
+  if (declaration.threadContract.byteLength > 0) {
+    if (declaration.threadContract != "thread.any") throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "callable thread contracts currently support only `on thread.any`",
+      declaration.line,
+      declaration.column
+    );
+    if (!moduleImportsThreadCapability(module)) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "`on thread.any` requires `import { thread } from \"std/thread\"`",
+      declaration.line,
+      declaration.column
+    );
+    if (method) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "`on thread.any` methods are deferred in the first callable-contract tier",
+      declaration.line,
+      declaration.column
+    );
+    let suspending = declaration.asynchronous;
+    match (genericTypeShape(declaration.returnType.name)) {
+      some(generic) => {
+        if (
+          generic.base == "Generator"
+          || generic.base == "AsyncGenerator"
+        ) suspending = true;
+      }
+      none => {}
+    }
+    if (suspending) throw validationError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "`on thread.any` currently requires a synchronous function",
+      declaration.line,
+      declaration.column
+    );
+  }
   const bindings = try validateTypeParameters(
     module,
     modules,
@@ -962,7 +1036,7 @@ function validateAggregateTypes(
     none => {}
   }
   for (const method of declaration.methods) {
-    try validateFunctionTypes(module, modules, moduleIndex, bindings, method);
+    try validateFunctionTypes(module, modules, moduleIndex, bindings, method, true);
   }
   match (in declaration.deinitializer) {
     some(deinitializer) => try validateArenaTypes(
@@ -984,7 +1058,7 @@ function validateTraitTypes(
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
   for (const method of declaration.methods) {
-    try validateFunctionTypes(module, modules, moduleIndex, empty, method);
+    try validateFunctionTypes(module, modules, moduleIndex, empty, method, true);
     let returnViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -1320,6 +1394,15 @@ export function validateModuleTypes(
   moduleIndex: usize
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
+  for (const declaration of module.program.typeAliases) {
+    try validateTypeReference(
+      module,
+      modules,
+      moduleIndex,
+      empty,
+      declaration.target
+    );
+  }
   try validateModuleConstantTypes(
     module,
     modules,
@@ -1327,7 +1410,7 @@ export function validateModuleTypes(
     inout empty
   );
   for (const declaration of module.program.functions) {
-    try validateFunctionTypes(module, modules, moduleIndex, empty, declaration);
+    try validateFunctionTypes(module, modules, moduleIndex, empty, declaration, false);
   }
   for (const declaration of module.program.aggregates) {
     try validateAggregateTypes(module, modules, moduleIndex, declaration);

@@ -3,6 +3,7 @@ import {
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
 } from "./semantic-model.zs";
+import { TextBuffer } from "std/text";
 
 export struct NativeGenericTypeShape {
   base: String;
@@ -12,6 +13,35 @@ export struct NativeGenericTypeShape {
 export struct NativeFixedArrayShape {
   elementType: String;
   length: String;
+}
+
+export function nativeFunctionTypeName(
+  in signature: ModuleFunctionSignature
+): String {
+  let output = TextBuffer();
+  output.append("__z_native_function:(");
+  let index: usize = 0;
+  while (index < signature.parameterTypes.length) {
+    if (index > 0) output.append(", ");
+    if (signature.parameterModes[index] != "value") {
+      output.append(signature.parameterModes[index]);
+      output.append(" ");
+    }
+    output.append(`value${index}: `);
+    output.append(signature.parameterTypes[index]);
+    index = index + 1;
+  }
+  output.append(") => ");
+  output.append(signature.returnType);
+  if (signature.errorType.byteLength > 0) {
+    output.append(" throws ");
+    output.append(signature.errorType);
+  }
+  if (signature.threadContract.byteLength > 0) {
+    output.append(" on ");
+    output.append(signature.threadContract);
+  }
+  return output.finish();
 }
 
 export function isTypeSymbolKind(kind: ModuleSymbolKind): boolean {
@@ -332,7 +362,19 @@ export function nativeFunctionSignature(
     }
     index = index + 1;
   }
-  const functionTypeLength = functionType.byteLength;
+  let functionTypeLength = functionType.byteLength;
+  let threadContract = "";
+  const anyThreadSuffix = " on thread.any";
+  if (
+    functionTypeLength >= anyThreadSuffix.byteLength
+    && functionType.copyBytes(
+      functionTypeLength - anyThreadSuffix.byteLength,
+      functionTypeLength
+    ) == anyThreadSuffix
+  ) {
+    threadContract = "thread.any";
+    functionTypeLength = functionTypeLength - anyThreadSuffix.byteLength;
+  }
   let throwsAt = functionTypeLength;
   let returnParenthesisDepth: usize = 0;
   let returnAngleDepth: usize = 0;
@@ -373,6 +415,7 @@ export function nativeFunctionSignature(
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
+    threadContract,
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,

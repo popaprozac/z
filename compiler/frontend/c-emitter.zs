@@ -4008,14 +4008,26 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *environment = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment *)context;\n  environment->refcount += 1;\n}\n\n");
+        output.append("_environment *)context;\n  ");
+        if (expression.threadSafe) {
+          output.append("(void)__atomic_add_fetch(&environment->refcount, 1, __ATOMIC_RELAXED);");
+        } else {
+          output.append("environment->refcount += 1;");
+        }
+        output.append("\n}\n\n");
         output.append("static void ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_release(void *context) {\n  ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *environment = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment *)context;\n  environment->refcount -= 1;\n  if (environment->refcount != 0) return;\n");
+        output.append("_environment *)context;\n  ");
+        if (expression.threadSafe) {
+          output.append("if (__atomic_sub_fetch(&environment->refcount, 1, __ATOMIC_ACQ_REL) != 0) return;");
+        } else {
+          output.append("environment->refcount -= 1;\n  if (environment->refcount != 0) return;");
+        }
+        output.append("\n");
         capture = expression.captureTypes.length;
         while (capture > 0) {
           capture = capture - 1;

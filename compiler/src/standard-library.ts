@@ -181,7 +181,7 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 }
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
-  if (module === "thread") return ["spawn", "main"];
+  if (module === "thread") return ["spawn", "main", "any"];
   if (module === "objc") return ["connect", "bind", "Connection", "Binding"];
   if (module === "fs") return [...Object.keys(standardModuleMembers[module]), "Lock"];
   return Object.keys(standardModuleMembers[module]);

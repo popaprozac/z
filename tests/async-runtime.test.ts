@@ -3146,6 +3146,104 @@ test("shares deeply readonly ARC classes through atomic thread captures", () => 
   assert.match(weakDiagnostic.message, /cannot cross.*while Weak<Configuration> is used/);
 });
 
+test("publishes frozen routers with explicit thread-any callable contracts", () => {
+  const example = resolve(projectRoot, "examples/language/concurrency/thread-any-callables.zs");
+  const source = readFileSync(example, "utf8");
+  assert.equal(diagnostics(source, example).length, 0);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/);
+  assert.match(generated, /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/);
+  assert.match(generated, /Z_Router_retain\(frame->value_router\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "thread-any router answer=84\n");
+
+  const handlerOffset = source.indexOf("type Handler") + "type ".length + 1;
+  assert.match(
+    hover(source, example, handlerOffset)?.contents.value ?? "",
+    /\(in message: Message\) => i32 on thread\.any/,
+  );
+  const anyOffset = source.indexOf("thread.any") + "thread.".length + 1;
+  assert.match(
+    hover(source, example, anyOffset)?.contents.value ?? "",
+    /does not schedule or hop/,
+  );
+  const incrementOffset = source.indexOf("function increment") + "function ".length + 1;
+  assert.match(
+    hover(source, example, incrementOffset)?.contents.value ?? "",
+    /function increment\(in message: Message\): i32 on thread\.any/,
+  );
+  const handlerBindingOffset = source.indexOf("const captured") + "const ".length + 1;
+  assert.match(
+    hover(source, example, handlerBindingOffset)?.contents.value ?? "",
+    /captured: Handler[\s\S]*\(in message: Message\) => i32 on thread\.any; callable concurrently/,
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
+  const anyPosition = positionForOffset(source, source.indexOf("thread.any") + "thread.".length);
+  assert.ok(tokens.some((token) => (
+    token.line === anyPosition.line
+    && token.character === anyPosition.character
+    && token.type === semanticTokenTypes.indexOf("property")
+  )));
+  const completionSource = source.replace("on thread.any;", "on thread.a;");
+  const completionOffset = completionSource.indexOf("thread.a;") + "thread.a".length;
+  assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "any"));
+
+  const missingImport = `
+    type Handler = () => i32 on thread.any;
+    function main(): i32 { return 0; }
+  `;
+  const importDiagnostic = diagnostics(missingImport, "thread-any-import.zs")[0];
+  assert.equal(importDiagnostic?.code, "Z0712");
+  assert.match(importDiagnostic?.message ?? "", /require the standard thread capability/);
+
+  const weakerNamedFunction = `
+    import { thread } from "std/thread";
+    type Handler = () => i32 on thread.any;
+    function local(): i32 { return 42; }
+    function main(): i32 {
+      const handler: Handler = local;
+      return handler();
+    }
+  `;
+  const namedDiagnostic = diagnostics(weakerNamedFunction, "thread-any-named.zs")[0];
+  assert.match(namedDiagnostic?.message ?? "", /expected \(\) => i32 on thread\.any, found \(\) => i32/);
+
+  const mutableCapture = `
+    import { Map } from "std/collections";
+    import { thread } from "std/thread";
+    type Handler = () => usize on thread.any;
+    function main(): i32 {
+      let values = Map<String, i32>();
+      const handler: Handler = move () => values.length;
+      return i32(handler());
+    }
+  `;
+  const captureDiagnostic = diagnostics(mutableCapture, "thread-any-mutable-capture.zs")[0];
+  assert.equal(captureDiagnostic?.code, "Z0704");
+  assert.match(captureDiagnostic?.message ?? "", /cannot enter a thread-any function value/);
+  assert.match(captureDiagnostic?.message ?? "", /mutable Map<String, i32> storage/);
+
+  const mainCall = `
+    import { thread } from "std/thread";
+    function mainOnly(): i32 on thread.main { return 42; }
+    function anywhere(): i32 on thread.any { return mainOnly(); }
+    function main(): i32 { return anywhere(); }
+  `;
+  const mainDiagnostic = diagnostics(mainCall, "thread-any-main-call.zs")[0];
+  assert.equal(mainDiagnostic?.code, "Z0711");
+  assert.match(mainDiagnostic?.message ?? "", /requires thread\.main/);
+
+  const localHandlerGraph = source
+    .replace(" => i32 on thread.any;", " => i32;")
+    .replace("function increment(in message: Message): i32 on thread.any", "function increment(in message: Message): i32");
+  const localDiagnostic = diagnostics(localHandlerGraph, example)[0];
+  assert.equal(localDiagnostic?.code, "Z0704");
+  assert.match(localDiagnostic?.message ?? "", /executor-local function value/);
+});
+
 test("applies readonly aggregate shorthand to every stored field", () => {
   const source = `
     export readonly struct Snapshot<T> {

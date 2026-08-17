@@ -93,6 +93,10 @@ function nativeFunctionSignaturesCompatible(
               expectedSignature.errorType.byteLength > 0
               && actualSignature.errorType.byteLength == 0
             )
+            || (
+              expectedSignature.threadContract == "thread.any"
+              && actualSignature.threadContract != "thread.any"
+            )
           ) return false;
           let index: usize = 0;
           while (index < expectedSignature.parameterTypes.length) {

@@ -2756,10 +2756,19 @@ field type with mutable `Map<String, i32>` restores the `Z0704` rejection. This
 is zero-runtime-check shared reading: the safety cost is paid once at the
 consuming publication boundary.
 
-Function-valued frozen routers remain the next deliberate syntax seam. A
-handler needs a declaration-level callable executor/shareability contract
-before `Map<String, Handler>` can satisfy the same recursive proof; freezing the
-container alone must not silently bless an executor-local closure environment.
+The function-valued frozen-router seam is now closed explicitly rather than by
+silently blessing closures stored in immutable containers. `Handler` declares
+`on thread.any`; named functions carry the same declaration contract; and a
+contextually typed closure receives a concurrent capture proof. The compiler
+rejects an ordinary local function assigned to that stronger type, borrowed or
+mutable captures, and a frozen graph whose handler remains executor-local.
+
+The resulting `Router` stores `readonly Map<String, Handler>`, crosses
+`thread.spawn` by atomic ARC identity, and invokes both a direct function and a
+capturing handler on the worker. The capturing environment also uses atomic
+retain/release. The fixed-point compiler preserves the contract in its module
+protocol and type comparisons while deliberately omitting it from the C ABI
+identity, then emits and executes the same atomic closure representation.
 
 The Zapp AppKit probe then attached the same ownership shape to an Objective-C
 event source. Its `Application` class stores the `objc.Connection` alongside

@@ -164,6 +164,7 @@ function foreignFunctionSignature(
   return ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
+    threadContract: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,

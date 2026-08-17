@@ -250,6 +250,7 @@ export struct LoweredExpression {
   labels: Array<String>;
   captureBindingOffsets: Array<usize> = Array<usize>();
   captureTypes: Array<LoweredType> = Array<LoweredType>();
+  threadSafe: boolean = false;
 }
 
 export struct LoweredMainDelaySegment {
@@ -1876,7 +1877,49 @@ function moduleTypeIsThreadShareable(
   in name: String,
   in visiting: Array<String>
 ): boolean {
+  match (localTypeAliasTarget(program, name)) {
+    some(target) => return moduleTypeIsThreadShareable(
+      program,
+      importedTypes,
+      target,
+      visiting
+    );
+    none => {}
+  }
   if (threadShareablePrimitive(name)) return true;
+  match (nativeFunctionSignature(name)) {
+    some(signature) => return signature.threadContract == "thread.any";
+    none => {}
+  }
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    match (genericTypeShape(target)) {
+      some(generic) => {
+        if (
+          (generic.base == "Array" || generic.base == "Set")
+          && generic.arguments.length == 1
+        ) return moduleTypeIsThreadShareable(
+          program,
+          importedTypes,
+          generic.arguments[0],
+          visiting
+        );
+        if (generic.base == "Map" && generic.arguments.length == 2) {
+          for (const argument of generic.arguments) {
+            if (!moduleTypeIsThreadShareable(
+              program,
+              importedTypes,
+              argument,
+              visiting
+            )) return false;
+          }
+          return true;
+        }
+      }
+      none => {}
+    }
+    return false;
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       if (
@@ -9194,6 +9237,7 @@ function lowerExpressionExpected(
           children,
           labels
         );
+        output[closure].threadSafe = signature.threadContract == "thread.any";
         for (const captureType of captureTypes) {
           output[closure].captureTypes.push(LoweredType({
             kind: captureType.kind,
@@ -9205,10 +9249,40 @@ function lowerExpressionExpected(
       if (
         tree.nodes[index].kind == ExpressionKind.identifierExpression
       ) {
-        let target = tree.nodes[index].value.copyBytes(
+        const bindingName = tree.nodes[index].value.copyBytes(
           0,
           tree.nodes[index].value.byteLength
         );
+        const bindingOffset = tree.nodes[index].offset;
+        match (namedValueTypeName(
+          program,
+          evidence,
+          "",
+          bindingName,
+          bindingOffset
+        )) {
+          some(_) => {
+            const local = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              index,
+              inout output
+            );
+            let retainedChildren = Array<usize>();
+            retainedChildren.push(local);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.retainValue,
+              functionType.name,
+              retainedChildren,
+              Array<String>()
+            );
+          }
+          none => {}
+        }
+        let target = bindingName.copyBytes(0, bindingName.byteLength);
         match (importedCallTarget(program, target)) {
           some(imported) => target = move imported;
           none => {}
@@ -16527,7 +16601,12 @@ function importedTypesForModule(
         nativeTypeName: "",
         kind: lowered.kind,
         executorBound: false,
-        threadShareable: false,
+        threadShareable: moduleTypeIsThreadShareable(
+          program,
+          types,
+          aliasTarget,
+          visiting
+        ),
         workerDestructible: moduleTypeIsWorkerDestructible(
           program,
           types,

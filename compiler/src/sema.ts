@@ -1503,8 +1503,11 @@ export function analyze(
   }
 
   for (const declaration of program.typeAliases) {
+    validateCallableThreadTypeCapability(declaration.target, globals, fileName);
     validateType(declaration.target, structs, enums, foreignNamedTypes, fileName, true, state);
   }
+
+  validateCallableThreadTypeCapabilities(program, globals, fileName);
 
   for (const declaration of program.structs) {
     const map = parseMapType(declaration.name);
@@ -1565,12 +1568,14 @@ export function analyze(
     }
     for (const method of declaration.methods) {
       validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
+      validateCallableThreadContract(method, globals, fileName, true);
     }
     analyzeStructDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
   }
   for (const declaration of program.traits) {
     for (const method of declaration.methods) {
       validateExecutorAffinity(method.executorAffinity, method.location, globals, fileName);
+      validateCallableThreadContract(method, globals, fileName, true);
     }
     analyzeTraitDeclaration(declaration, structs, enums, foreignNamedTypes, foreignTypes, fileName, state);
   }
@@ -1584,6 +1589,7 @@ export function analyze(
 
   for (const declaration of program.functions) {
     validateExecutorAffinity(declaration.executorAffinity, declaration.location, globals, fileName);
+    validateCallableThreadContract(declaration, globals, fileName, false);
     if (declaration.receiverMode) {
       throw new DiagnosticError(
         fileName,
@@ -1993,6 +1999,108 @@ function validateExecutorAffinity(
     labels: [{ location: declarationLocation, message: "declaration begins here" }],
     helps: ["import { thread } from \"std/thread\" and write `on thread.main` in the declaration header"],
   });
+}
+
+function validateCallableThreadContract(
+  declaration: FunctionDeclaration,
+  globals: Map<string, SymbolValue>,
+  fileName: string,
+  method: boolean,
+): void {
+  const contract = declaration.threadContract;
+  if (!contract) return;
+  if (method) {
+    throw new DiagnosticError(fileName, contract.onLocation, "`on thread.any` methods are deferred in the first callable-contract tier", {
+      code: "Z0712",
+      notes: ["the receiver would become part of the callable's concurrent environment proof"],
+      helps: ["move the operation into a free function or use a contextually typed thread-any closure"],
+    });
+  }
+  if (declaration.async || isGeneratorFunction(declaration) || isAsyncGeneratorFunction(declaration)) {
+    throw new DiagnosticError(fileName, contract.onLocation, "`on thread.any` currently requires a synchronous function", {
+      code: "Z0712",
+      notes: ["suspending callables require an executor and task-frame contract in addition to concurrent environment ownership"],
+    });
+  }
+  const capability = contract.capability;
+  if (
+    capability.location.fileName
+    && capability.location.fileName !== fileName
+    && capability.kind === "member"
+    && capability.object.kind === "identifier"
+    && capability.object.name === "thread"
+    && capability.property === "any"
+  ) return;
+  if (
+    capability.kind === "member"
+    && capability.object.kind === "identifier"
+    && capability.property === "any"
+  ) {
+    const binding = globals.get(capability.object.name);
+    if (binding?.kind === "standardModule" && binding.module === "thread") return;
+  }
+  throw new DiagnosticError(fileName, capability.location, "callable thread contracts currently require the thread.any capability", {
+    code: "Z0712",
+    labels: [{ location: declaration.location, message: "function begins here" }],
+    helps: ["import { thread } from \"std/thread\" and write `on thread.any` in the function header"],
+  });
+}
+
+function typeContainsAnyThreadCallable(name: string): boolean {
+  const functionType = parseFunctionType(name);
+  if (functionType) {
+    return functionType.thread === "any"
+      || functionType.parameters.some((parameter) => typeContainsAnyThreadCallable(parameter.type))
+      || typeContainsAnyThreadCallable(functionType.returnType)
+      || (functionType.errorType !== null && typeContainsAnyThreadCallable(functionType.errorType));
+  }
+  const readonly = parseReadonlyType(name);
+  if (readonly) return typeContainsAnyThreadCallable(readonly.target);
+  const generic = parseGenericType(name);
+  return generic?.arguments.some(typeContainsAnyThreadCallable) ?? false;
+}
+
+function validateCallableThreadTypeCapability(
+  type: TypeReference,
+  globals: Map<string, SymbolValue>,
+  fileName: string,
+): void {
+  if (!typeContainsAnyThreadCallable(type.name)) return;
+  if (type.location.fileName && type.location.fileName !== fileName) {
+    // Linked dependencies were validated in their own import environment.
+    return;
+  }
+  const binding = globals.get("thread");
+  if (binding?.kind === "standardModule" && binding.module === "thread") return;
+  throw new DiagnosticError(fileName, type.location, "`on thread.any` function types require the standard thread capability", {
+    code: "Z0712",
+    helps: ["import { thread } from \"std/thread\" before declaring the function type"],
+  });
+}
+
+function validateCallableThreadTypeCapabilities(
+  program: Program,
+  globals: Map<string, SymbolValue>,
+  fileName: string,
+): void {
+  const validateFunction = (declaration: FunctionDeclaration): void => {
+    declaration.parameters.forEach((parameter) => validateCallableThreadTypeCapability(parameter.type, globals, fileName));
+    validateCallableThreadTypeCapability(declaration.returnType, globals, fileName);
+    if (declaration.errorType) validateCallableThreadTypeCapability(declaration.errorType, globals, fileName);
+  };
+  for (const declaration of program.structs) {
+    declaration.fields.forEach((field) => validateCallableThreadTypeCapability(field.type, globals, fileName));
+    declaration.constructor?.parameters.forEach((parameter) => validateCallableThreadTypeCapability(parameter.type, globals, fileName));
+    if (declaration.constructor?.errorType) validateCallableThreadTypeCapability(declaration.constructor.errorType, globals, fileName);
+    declaration.methods.forEach(validateFunction);
+  }
+  for (const declaration of program.traits) declaration.methods.forEach(validateFunction);
+  for (const declaration of program.enums) {
+    declaration.variants.forEach((variant) => {
+      if (variant.payload) validateCallableThreadTypeCapability(variant.payload, globals, fileName);
+    });
+  }
+  program.functions.forEach(validateFunction);
 }
 
 function collectAggregateExecutorAffinities(
@@ -5093,6 +5201,7 @@ function closureFunctionType(closure: ClosureInfo): FunctionType {
     })),
     returnType: closure.declaration.returnType.name,
     errorType: closure.declaration.errorType?.name ?? null,
+    thread: closure.declaration.threadContract?.thread ?? "local",
   };
 }
 
@@ -5109,6 +5218,18 @@ function functionTypeDeclaration(name: string, type: FunctionType, location: Sou
     })),
     returnType: { name: type.returnType, location },
     errorType: type.errorType ? { name: type.errorType, location } : null,
+    threadContract: type.thread === "any"
+      ? {
+          thread: "any",
+          capability: {
+            kind: "member",
+            object: { kind: "identifier", name: "thread", location },
+            property: "any",
+            location,
+          },
+          onLocation: location,
+        }
+      : undefined,
     body: [],
     location,
   };
@@ -5366,6 +5487,18 @@ function inferClosureExpression(
     ],
     returnType: provisionalReturn,
     errorType: resolvedErrorType,
+    threadContract: expectedFunction?.thread === "any"
+      ? {
+          thread: "any",
+          capability: {
+            kind: "member",
+            object: { kind: "identifier", name: "thread", location: expression.location },
+            property: "any",
+            location: expression.location,
+          },
+          onLocation: expression.location,
+        }
+      : undefined,
     body: [],
     location: expression.location,
   };
@@ -5468,6 +5601,7 @@ function finalizeClosureFunctionValue(
         actualFunction.parameters,
         actualFunction.returnType,
         actualFunction.errorType,
+        actualFunction.thread,
       ))}`,
     );
   }
@@ -5478,6 +5612,19 @@ function finalizeClosureFunctionValue(
   };
   state.closures.set(expression.location.offset, closure);
   state.expressionTypes.set(expression.location.offset, expectedType);
+  if (expectedFunction.thread === "any") {
+    validateConcurrentCallableClosure(
+      expression,
+      locals,
+      structs,
+      enums,
+      fileName,
+      state,
+      "a thread-any function value",
+      "thread-any function values may outlive their construction scope and may be invoked concurrently",
+    );
+    closure = state.closures.get(expression.location.offset)!;
+  }
   for (const capture of closure.owned ? closure.captures : []) {
     if (!hasOwnershipType(capture.type, structs, enums, state)) continue;
     // Shared identities are retained explicitly when codegen stores them in
@@ -5549,29 +5696,31 @@ function validateForeignCallbackFunctionType(
   }
 }
 
-function validateConcurrentForeignCallbackClosure(
+function validateConcurrentCallableClosure(
   expression: Extract<Expression, { kind: "closure" }>,
   locals: ReadonlyMap<string, ValueType>,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
+  destination: string,
+  concurrencyNote: string,
 ): void {
   const closure = state.closures.get(expression.location.offset)!;
   for (const capture of closure.captures) {
     const binding = locals.get(capture.name);
     if (binding && isBorrowedBinding(binding)) {
-      throw new DiagnosticError(fileName, capture.location, `borrowed capture ${JSON.stringify(capture.name)} cannot enter an arbitrary-thread native callback`, {
+      throw new DiagnosticError(fileName, capture.location, `borrowed capture ${JSON.stringify(capture.name)} cannot enter ${destination}`, {
         code: "Z0704",
-        notes: ["thread any callbacks can outlive the registering call and may execute concurrently on native threads"],
-        helps: ["capture an owned immutable snapshot with move, or keep the callback on thread caller"],
+        notes: [concurrencyNote],
+        helps: ["capture an owned immutable snapshot with move, or keep the callable executor-local"],
       });
     }
     if (capture.mode === "inout") {
-      throw new DiagnosticError(fileName, capture.location, `mutable capture ${JSON.stringify(capture.name)} cannot enter an arbitrary-thread native callback`, {
+      throw new DiagnosticError(fileName, capture.location, `mutable capture ${JSON.stringify(capture.name)} cannot enter ${destination}`, {
         code: "Z0704",
-        notes: ["thread any permits overlapping callback invocations, so captured state must be safe for concurrent read-only sharing"],
-        helps: ["capture an immutable snapshot, use a deeply readonly ARC class, or keep the callback on thread caller"],
+        notes: ["thread any permits overlapping invocations, so captured state must be safe for concurrent read-only sharing"],
+        helps: ["capture an immutable snapshot, use a deeply readonly ARC class, or keep the callable executor-local"],
       });
     }
     const issue = shareableTypeIssue(capture.type, structs, enums, state);
@@ -5579,7 +5728,7 @@ function validateConcurrentForeignCallbackClosure(
       throw new DiagnosticError(
         fileName,
         capture.location,
-        `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot enter an arbitrary-thread native callback: ${issue.reason}`,
+        `capture ${JSON.stringify(capture.name)} of type ${JSON.stringify(capture.type)} cannot enter ${destination}: ${issue.reason}`,
         {
           code: "Z0704",
           notes: ["the first thread any tier supports primitives, owned String snapshots, and deeply readonly atomic-ARC identity"],
@@ -5593,6 +5742,26 @@ function validateConcurrentForeignCallbackClosure(
     }
   }
   state.closures.set(expression.location.offset, { ...closure, threadSafe: true });
+}
+
+function validateConcurrentForeignCallbackClosure(
+  expression: Extract<Expression, { kind: "closure" }>,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  validateConcurrentCallableClosure(
+    expression,
+    locals,
+    structs,
+    enums,
+    fileName,
+    state,
+    "an arbitrary-thread native callback",
+    "thread any callbacks can outlive the registering call and may execute concurrently on native threads",
+  );
 }
 
 function validateConcurrentForeignCallbackSignature(
@@ -8255,6 +8424,7 @@ function inferExpressionInner(
           global.declaration.errorType && !isGeneratorFunction(global.declaration)
             ? global.declaration.errorType.name
             : null,
+          global.declaration.threadContract?.thread ?? "local",
         );
       }
       if (global?.kind === "constant") {
@@ -9979,7 +10149,7 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[1];
-              const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null };
+              const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
               const expectedType = functionTypeName([], "void");
               const controlExecutionContext: ClosureExecutionContext = executorAffinityForType(
                 controlType,
@@ -10745,7 +10915,7 @@ function inferExpressionInner(
               });
             }
             const operation = expression.arguments[1];
-            const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null };
+            const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
             const expectedType = functionTypeName([], "void");
             if (operation.async && operation.errorType) {
               throw new DiagnosticError(fileName, operation.errorType.location, "TaskScope.schedule async operations cannot throw", {
@@ -14343,6 +14513,15 @@ function shareableTypeIssue(
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual) || actual === "String" || actual === "TaskScope" || actual === "TaskControl") {
     return null;
   }
+  const callable = parseFunctionType(actual);
+  if (callable) {
+    return callable.thread === "any"
+      ? null
+      : {
+          reason: `${path} contains an executor-local function value`,
+          help: "declare the callable type `on thread.any` and satisfy its concurrent capture contract",
+        };
+  }
   const mutex = parseMutexType(actual);
   if (mutex) {
     return initialThreadTransferKind(actual, structs, enums, state) === "share"
@@ -14487,6 +14666,8 @@ function initialThreadTransferKind(
   if (actual === "void" || actual === "boolean" || integerTypes.has(actual) || floatTypes.has(actual)) return "copy";
   if (state.aggregateExecutorAffinities.has(actual)) return null;
   if (actual === "TaskScope" || actual === "TaskControl") return "share";
+  const callable = parseFunctionType(actual);
+  if (callable) return callable.thread === "any" ? "share" : null;
   if (actual === "String" || actual === "TextBuffer") return "move";
   if (parseViewType(actual) || parseSliceType(actual) || parseTaskType(actual)) return null;
   const mutex = parseMutexType(actual);
@@ -16035,6 +16216,7 @@ function checkForeignCall(
         actualFunction.parameters,
         actualFunction.returnType,
         actualFunction.errorType,
+        actualFunction.thread,
       );
       validateForeignCallbackFunctionType(
         parameter.type,
@@ -16117,6 +16299,7 @@ function checkForeignCall(
         actualCallback.parameters,
         actualCallback.returnType,
         actualCallback.errorType,
+        actualCallback.thread,
       );
       validateForeignCallbackFunctionType(
         parameter.type,
@@ -16750,6 +16933,7 @@ function resolveSemanticTypeName(
         functionType.parameters.map((parameter) => ({ ...parameter, type: resolveName(parameter.type) })),
         resolveName(functionType.returnType),
         functionType.errorType ? resolveName(functionType.errorType) : null,
+        functionType.thread,
       );
     }
     const weak = parseWeakType(name);

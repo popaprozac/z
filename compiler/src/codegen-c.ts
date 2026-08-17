@@ -2535,7 +2535,7 @@ static inline __attribute__((unused)) void ${functionTypeReleaseName(functionTyp
 }
 
 function generateObjCConnectionRuntime(): string {
-  const functionType: FunctionType = { parameters: [], returnType: "void", errorType: null };
+  const functionType: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
   const functionName = functionTypeCName(functionType);
   const releaseName = functionTypeReleaseName(functionType);
   return `@interface ZObjCConnection : NSObject {
@@ -2703,6 +2703,7 @@ function declarationFunctionType(declaration: FunctionDeclaration, skipParameter
     errorType: declaration.errorType && !isGeneratorFunction(declaration)
       ? declaration.errorType.name
       : null,
+    thread: declaration.threadContract?.thread ?? "local",
   };
 }
 
@@ -2798,6 +2799,7 @@ function generateStandardFunctionAdapter(
     parameters: signature.parameters,
     returnType: signature.returnType,
     errorType: signature.errorType,
+    thread: "local",
   };
   const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
   const names = signature.parameters.map((parameter) => (

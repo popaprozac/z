@@ -8,6 +8,7 @@ import {
 import {
   rebaseTypeName,
   semanticTypeIdentity,
+  transparentTypeName,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -50,6 +51,167 @@ function containsString(in values: Array<String>, in value: String): boolean {
   return false;
 }
 
+function typeIsThreadShareableInner(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String,
+  inout visiting: Array<String>
+): boolean {
+  if (
+    typeName == "void"
+    || typeName == "boolean"
+    || typeName == "i8"
+    || typeName == "i16"
+    || typeName == "i32"
+    || typeName == "i64"
+    || typeName == "u8"
+    || typeName == "u16"
+    || typeName == "u32"
+    || typeName == "u64"
+    || typeName == "isize"
+    || typeName == "usize"
+    || typeName == "f32"
+    || typeName == "f64"
+    || typeName == "String"
+  ) return true;
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => return signature.threadContract == "thread.any";
+    none => {}
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    match (genericTypeShape(target)) {
+      some(generic) => {
+        if (
+          (generic.base == "Array" || generic.base == "Set")
+          && generic.arguments.length == 1
+        ) return typeIsThreadShareableInner(
+          modules,
+          moduleIndex,
+          generic.arguments[0],
+          inout visiting
+        );
+        if (generic.base == "Map" && generic.arguments.length == 2) {
+          for (const argument of generic.arguments) {
+            if (!typeIsThreadShareableInner(
+              modules,
+              moduleIndex,
+              argument,
+              inout visiting
+            )) return false;
+          }
+          return true;
+        }
+      }
+      none => {}
+    }
+    return false;
+  }
+  const actual = transparentTypeName(modules, moduleIndex, typeName);
+  if (actual != typeName) {
+    return typeIsThreadShareableInner(
+      modules,
+      moduleIndex,
+      actual,
+      inout visiting
+    );
+  }
+  match (genericTypeShape(actual)) {
+    some(generic) => {
+      if (generic.base == "Mutex" && generic.arguments.length == 1) {
+        // Stage 0 separately proves worker-safe destruction for the protected
+        // payload. The native graph treats Mutex identity itself as shareable.
+        return true;
+      }
+      if (
+        (generic.base == "Option" && generic.arguments.length == 1)
+        || (generic.base == "Result" && generic.arguments.length == 2)
+      ) {
+        for (const argument of generic.arguments) {
+          if (!typeIsThreadShareableInner(
+            modules,
+            moduleIndex,
+            argument,
+            inout visiting
+          )) return false;
+        }
+        return true;
+      }
+      return false;
+    }
+    none => {}
+  }
+  if (containsString(visiting, actual)) return true;
+  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ];
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (
+            signature.foreignNativeName.byteLength > 0
+            || signature.executorAffinity.byteLength > 0
+            || signature.customDeinit
+          ) return false;
+          for (const method of signature.methods) {
+            if (method.receiverMode == "inout") return false;
+          }
+          let nextVisiting = copyStrings(visiting);
+          nextVisiting.push(actual.copyBytes(0, actual.byteLength));
+          if (symbol.kind == ModuleSymbolKind.enumSymbol) {
+            for (const variant of signature.variants) {
+              if (
+                variant.payloadType.byteLength > 0
+                && !typeIsThreadShareableInner(
+                  modules,
+                  location.moduleIndex,
+                  variant.payloadType,
+                  inout nextVisiting
+                )
+              ) {
+                return false;
+              }
+            }
+          } else {
+            for (const field of signature.fields) {
+              if (
+                !field.readonlyField
+                || field.executorAffinity.byteLength > 0
+                || !typeIsThreadShareableInner(
+                  modules,
+                  location.moduleIndex,
+                  field.typeName,
+                  inout nextVisiting
+                )
+              ) {
+                return false;
+              }
+            }
+          }
+          return true;
+        }
+        none => return false;
+      }
+    }
+    none => return false;
+  }
+}
+
+export function typeIsThreadShareable(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  let visiting = Array<String>();
+  return typeIsThreadShareableInner(
+    modules,
+    moduleIndex,
+    typeName,
+    inout visiting
+  );
+}
+
 export function substituteGenericType(
   in name: String,
   in substitutions: Array<NativeValueBinding>
@@ -73,6 +235,14 @@ export function substituteGenericType(
       }
       output.append(") => ");
       output.append(substituteGenericType(signature.returnType, substitutions));
+      if (signature.errorType.byteLength > 0) {
+        output.append(" throws ");
+        output.append(substituteGenericType(signature.errorType, substitutions));
+      }
+      if (signature.threadContract.byteLength > 0) {
+        output.append(" on ");
+        output.append(signature.threadContract);
+      }
       return output.finish();
     }
     none => {}

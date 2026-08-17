@@ -229,6 +229,7 @@ export struct FunctionDeclaration {
   returnType: TypeReference;
   errorType: Option<TypeReference>;
   executorAffinity: String;
+  threadContract: String;
   body: StatementArena;
   offset: usize;
   line: usize;
@@ -558,6 +559,15 @@ function parseType(
       output.append(" throws ");
       output.append(errorType.name);
       appendTypeNameReferences(inout references, errorType.references);
+    }
+    if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
+      const namespace = try expect(tokens, inout current, TokenKind.identifier, "`thread` after `on` in a function type");
+      try expectKind(tokens, inout current, TokenKind.dot, "`.` after `thread`");
+      const member = try expect(tokens, inout current, TokenKind.identifier, "`any` after `thread.` in a function type");
+      if (namespace.text != "thread" || member.text != "any") {
+        throw fail(namespace, "function types currently support only the `on thread.any` callable contract");
+      }
+      output.append(" on thread.any");
     }
     return TypeReference({
       name: output.finish(),
@@ -3209,11 +3219,13 @@ function parseFunctionDeclaration(
     errorType = Option.some(error);
   }
   let executorAffinity = "";
+  let threadContract = "";
   if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
     const executor = try expect(tokens, inout current, TokenKind.identifier, "an executor name after `on`");
     try expectKind(tokens, inout current, TokenKind.dot, "`.` in an executor name");
     const member = try expect(tokens, inout current, TokenKind.identifier, "an executor member after `.`");
-    executorAffinity = `${executor.text}.${member.text}`;
+    if (member.text == "any") threadContract = `${executor.text}.${member.text}`;
+    else executorAffinity = `${executor.text}.${member.text}`;
   }
   // Stage 1 does not consume Objective-C selector evidence semantically yet,
   // but it must accept the authoritative source grammar so the native frontend
@@ -3267,6 +3279,7 @@ function parseFunctionDeclaration(
     returnType,
     errorType,
     executorAffinity,
+    threadContract,
     body,
     offset: start.offset,
     line: start.line,
@@ -3315,6 +3328,7 @@ function parseTestDeclaration(
       column: start.column,
     })),
     executorAffinity: "",
+    threadContract: "",
     body: StatementArena({ nodes: bodyNodes, roots: bodyRoots }),
     offset: start.offset,
     line: start.line,
@@ -4256,6 +4270,10 @@ export function functionSignatureText(in declaration: FunctionDeclaration): Stri
   if (!declaration.executorAffinity.isEmpty) {
     output.append(" on ");
     output.append(declaration.executorAffinity);
+  }
+  if (!declaration.threadContract.isEmpty) {
+    output.append(" on ");
+    output.append(declaration.threadContract);
   }
   return output.finish();
 }

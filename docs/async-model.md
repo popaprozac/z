@@ -283,6 +283,27 @@ read operations; they may participate in the recursive class proof when their
 elements are also shareable. A frozen route-catalog fixture performs Map and
 Set membership reads on a native worker through atomic-ARC class identity.
 
+Function-valued frozen graphs use the same proof through an explicit callable
+contract:
+
+```z
+import { thread } from "std/thread";
+
+type Handler = (in message: Message) => i32 on thread.any;
+
+readonly class Router {
+  readonly handlers: readonly Map<String, Handler>;
+}
+```
+
+`on thread.any` means the callable may be invoked concurrently on arbitrary
+registered threads; it does not schedule or create work. Capturing closures get
+atomic environment ownership, and their captures must themselves be
+cross-thread shareable. The maintained router example freezes its handler Map,
+shares one ARC `Router` with `thread.spawn`, and invokes both a named handler
+and a handler capturing readonly ARC state. Ordinary function types remain
+executor-local by default.
+
 Mutable classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
 weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII
 value or owned C handle may transfer when its adjacent `.zd` contract explicitly

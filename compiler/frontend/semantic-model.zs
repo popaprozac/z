@@ -250,6 +250,7 @@ export struct ModuleTypeSignature {
 export struct ModuleFunctionSignature {
   asynchronous: boolean;
   executorAffinity: String;
+  threadContract: String;
   typeParameters: Array<String>;
   typeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   parameterModes: Array<String>;

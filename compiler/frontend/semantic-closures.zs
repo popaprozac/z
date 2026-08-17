@@ -32,6 +32,7 @@ export struct NativeClosureSignatureShape {
   parameterTypes: Array<String>;
   returnType: String;
   errorType: String;
+  threadContract: String;
 }
 
 function copyBindings(in bindings: Array<String>): Array<String> {
@@ -99,6 +100,7 @@ export function resolveClosureSignature(
     declaredReturnType.byteLength
   );
   let resolvedErrorType = errorType.copyBytes(0, errorType.byteLength);
+  let threadContract = "";
   const expandedContextualType = transparentTypeName(
     modules,
     moduleIndex,
@@ -106,6 +108,10 @@ export function resolveClosureSignature(
   );
   match (nativeFunctionSignature(expandedContextualType)) {
     some(signature) => {
+      threadContract = signature.threadContract.copyBytes(
+        0,
+        signature.threadContract.byteLength
+      );
       let closureParameterCount: usize = 0;
       for (const child of tree.nodes[index].children) {
         if (
@@ -276,6 +282,7 @@ export function resolveClosureSignature(
     parameterTypes,
     returnType,
     errorType: resolvedErrorType,
+    threadContract,
   });
 }
 
@@ -285,7 +292,8 @@ export function nativeClosureFunctionType(
   in parameterModes: Array<String>,
   in parameterTypes: Array<String>,
   in returnType: String,
-  in errorType: String
+  in errorType: String,
+  in threadContract: String
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
@@ -321,6 +329,10 @@ export function nativeClosureFunctionType(
   if (errorType.byteLength > 0) {
     output.append(" throws ");
     output.append(errorType);
+  }
+  if (threadContract.byteLength > 0) {
+    output.append(" on ");
+    output.append(threadContract);
   }
   return output.finish();
 }

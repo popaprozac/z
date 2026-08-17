@@ -197,6 +197,7 @@ export function materializeGenerics(
         })),
         substituteName(functionType.returnType, substitutions),
         functionType.errorType ? substituteName(functionType.errorType, substitutions) : null,
+        functionType.thread,
       );
     }
     const array = parseFixedArrayType(name);

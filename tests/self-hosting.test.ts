@@ -10831,7 +10831,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     "entry\t0000000000000000\n"
     + "module\t2f612e7a73\n"
     + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t0\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
-    + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
+    + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
     + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
     + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t\t0000000000000000\n"
@@ -10886,6 +10886,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
           functionSignature: {
             asynchronous: true,
             executorAffinity: "thread.main",
+            threadContract: null,
             typeParameters: ["T"],
             typeParameterConstraints: [{ parameter: "T", traitName: "Named" }],
             parameterModes: ["in"],
@@ -10924,6 +10925,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
               signature: {
                 asynchronous: false,
                 executorAffinity: "thread.main",
+                threadContract: null,
                 typeParameters: [],
                 typeParameterConstraints: [],
                 parameterModes: [],
@@ -10938,6 +10940,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
             constructorSignature: {
               asynchronous: false,
               executorAffinity: "thread.main",
+              threadContract: null,
               typeParameters: [],
               typeParameterConstraints: [],
               parameterModes: ["in"],
@@ -11049,6 +11052,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
   assert.deepEqual(structuralTopology.modules[0].symbols[0].functionSignature, {
     asynchronous: true,
     executorAffinity: "thread.main",
+    threadContract: null,
     typeParameters: ["T"],
     typeParameterConstraints: [{ parameter: "T", traitName: "Named" }],
     parameterModes: ["in"],
@@ -11082,6 +11086,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
         signature: {
           asynchronous: false,
           executorAffinity: "thread.main",
+          threadContract: null,
           typeParameters: [],
           typeParameterConstraints: [],
           parameterModes: [],
@@ -11096,6 +11101,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       constructorSignature: {
         asynchronous: false,
         executorAffinity: "thread.main",
+        threadContract: null,
         typeParameters: [],
         typeParameterConstraints: [],
         parameterModes: ["in"],
@@ -11172,7 +11178,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     () => decodeStage1ModuleGraphStream(
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
-      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),
     /function signature appeared before its symbol/,
@@ -11182,7 +11188,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       "entry\t0000000000000000\n"
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tfunction\t76616c7565\t1\t0\t-\t76616c7565\t0000000000000000\t0000000000000001\t0000000000000001\n"
-      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
+      + "signature\t0000000000000000\t0000000000000000\t0\t693332\t\t\t\t0000000000000000\t0000000000000001\t626164\t693332\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 function parameter mode/,
@@ -11214,7 +11220,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
       + "module\t2f612e7a73\n"
       + "symbol\t0000000000000000\tstruct\t506f696e74\t1\t0\t-\t506f696e74\t0000000000000000\t0000000000000001\t0000000000000001\n"
       + "typeSignature\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0000000000000000\t0\t0\t\t\t\n"
-      + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t\t0000000000000000\t0000000000000000\n"
+      + "methodSignature\t0000000000000000\t0000000000000000\t72656164\t0\t7075626c6963\t626164\t0\t693332\t\t\t\t0000000000000000\t0000000000000000\n"
       + "order\t0000000000000000\n",
     ),
     /malformed stage-1 method receiver mode/,
@@ -11357,6 +11363,89 @@ test("compares native function values by capability and type, not parameter name
   )?.[1];
   assert.ok(observedExpressions);
   assert.equal(authoritativeExpressions, observedExpressions);
+});
+
+test("preserves thread-any callable contracts and emits atomic closure environments", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-any-callable.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /__atomic_add_fetch\(&environment->refcount, 1, __ATOMIC_RELAXED\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /__atomic_sub_fetch\(&environment->refcount, 1, __ATOMIC_ACQ_REL\)/,
+  );
+  assert.match(emission.stdout, /_retain\(captured\)/);
+
+  const directory = mkdtempSync("/tmp/z-thread-any-callable-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  const invalidCases = [
+    {
+      name: "missing-thread-import",
+      source: "type Handler = () => i32 on thread.any;\n",
+      expected: /on thread\.any.*require.*std\/thread/,
+    },
+    {
+      name: "weaker-local-function",
+      source:
+        "import { thread } from \"std/thread\";\n"
+        + "type Handler = () => i32 on thread.any;\n"
+        + "function local(): i32 { return 42; }\n"
+        + "function main(): i32 { const handler: Handler = local; return handler(); }\n",
+      expected: /expected.*thread\.any|expected.*Handler|function.*thread/i,
+    },
+    {
+      name: "mutable-capture",
+      source:
+        "import { Map } from \"std/collections\";\n"
+        + "import { thread } from \"std/thread\";\n"
+        + "type Handler = () => i32 on thread.any;\n"
+        + "function main(): i32 {\n"
+        + "  let values = Map<String, i32>();\n"
+        + "  const handler: Handler = move () => i32(values.length);\n"
+        + "  return handler();\n"
+        + "}\n",
+      expected: /capture "values".*not shareable across arbitrary threads/,
+    },
+  ] as const;
+  for (const invalidCase of invalidCases) {
+    const invalidInput = resolve(directory, `${invalidCase.name}.zs`);
+    writeFileSync(invalidInput, invalidCase.source);
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1, invalidCase.name);
+    assert.match(invalid.stderr, invalidCase.expected, invalidCase.name);
+  }
+  rmSync(directory, { recursive: true, force: true });
 });
 
 test("preserves throwing closure and transparent callable-alias effects natively", () => {

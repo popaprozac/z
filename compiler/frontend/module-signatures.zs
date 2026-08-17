@@ -79,6 +79,7 @@ function functionDeclarationSignature(
   return ModuleFunctionSignature({
     asynchronous: declaration.asynchronous,
     executorAffinity: declaration.executorAffinity.copyBytes(0, declaration.executorAffinity.byteLength),
+    threadContract: declaration.threadContract.copyBytes(0, declaration.threadContract.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -112,6 +113,7 @@ function constructorDeclarationSignature(
   return ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
+    threadContract: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,

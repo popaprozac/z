@@ -139,6 +139,7 @@ export function collectionMethodSignature(
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,
       executorAffinity: "",
+      threadContract: "",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes: Array<String>(),
@@ -165,6 +166,7 @@ export function collectionMethodSignature(
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,
       executorAffinity: "",
+      threadContract: "",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes,
@@ -215,6 +217,7 @@ export function collectionMethodSignature(
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,
       executorAffinity: "",
+      threadContract: "",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes,
@@ -233,6 +236,7 @@ export function collectionMethodSignature(
       return Option.some(ModuleFunctionSignature({
         asynchronous: false,
         executorAffinity: "",
+        threadContract: "",
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         parameterModes,
@@ -271,6 +275,7 @@ export function collectionMethodSignature(
       return Option.some(ModuleFunctionSignature({
         asynchronous: false,
         executorAffinity,
+        threadContract: "",
         typeParameters: Array<String>(),
         typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
         parameterModes,
@@ -392,6 +397,7 @@ export function collectionMethodSignature(
     return Option.some(ModuleFunctionSignature({
       asynchronous: generic.base == "AsyncGenerator",
       executorAffinity: "",
+      threadContract: "",
       typeParameters: Array<String>(),
       typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
       parameterModes,
@@ -409,6 +415,7 @@ export function collectionMethodSignature(
   return Option.some(ModuleFunctionSignature({
     asynchronous: false,
     executorAffinity: "",
+    threadContract: "",
     typeParameters: Array<String>(),
     typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
     parameterModes,

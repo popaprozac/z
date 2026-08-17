@@ -204,6 +204,8 @@ function appendFunctionSignature(
       output.appendAscii(9);
       appendHexText(inout output, signature.executorAffinity);
       output.appendAscii(9);
+      appendHexText(inout output, signature.threadContract);
+      output.appendAscii(9);
       appendHexUsize(inout output, signature.typeParameters.length);
       output.appendAscii(9);
       appendHexUsize(inout output, signature.parameterTypes.length);
@@ -404,6 +406,8 @@ function appendMethodSignatures(
         appendHexText(inout output, method.signature.errorType);
         output.appendAscii(9);
         appendHexText(inout output, method.signature.executorAffinity);
+        output.appendAscii(9);
+        appendHexText(inout output, method.signature.threadContract);
         output.appendAscii(9);
         appendHexUsize(inout output, method.signature.typeParameters.length);
         output.appendAscii(9);

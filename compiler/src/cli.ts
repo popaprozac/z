@@ -591,7 +591,8 @@ function canonicalFunctionText(declaration: FunctionDeclaration): string {
   const error = declaration.errorType ? ` throws ${canonicalTypeName(declaration.errorType.name)}` : "";
   const asynchronous = declaration.async ? "async " : "";
   const executor = canonicalExecutorAffinity(declaration.executorAffinity);
-  return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}${executor}`;
+  const thread = declaration.threadContract ? " on thread.any" : "";
+  return `${asynchronous}function ${declaration.name}${generic}(${parameters.join(", ")}): ${canonicalTypeName(declaration.returnType.name)}${error}${executor}${thread}`;
 }
 
 function canonicalExecutorAffinity(

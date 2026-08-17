@@ -467,6 +467,7 @@ export function rebaseModuleFunctionSignature(
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
+    threadContract: signature.threadContract.copyBytes(0, signature.threadContract.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,
@@ -730,6 +731,7 @@ export function methodCallableSignature(
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
     executorAffinity: method.signature.executorAffinity.copyBytes(0, method.signature.executorAffinity.byteLength),
+    threadContract: method.signature.threadContract.copyBytes(0, method.signature.threadContract.byteLength),
     typeParameters,
     typeParameterConstraints,
     parameterModes,

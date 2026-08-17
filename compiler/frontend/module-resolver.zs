@@ -169,6 +169,7 @@ import {
   isTypeSymbolKind,
   nativeFunctionDisplayType,
   nativeFunctionSignature,
+  nativeFunctionTypeName,
   nullableTargetType,
   qualifiedTypeBase,
   qualifiedTypeMember,
@@ -188,6 +189,7 @@ import {
   typeIsBorrowedForeignResource,
   typeIsForeignResource,
   typeIsForeignViewOnlyRecord,
+  typeIsThreadShareable,
   typeIsArenaOwnerBundle,
   typeNameIsArena,
   typeMovesOnOwnedUse,
@@ -2523,6 +2525,34 @@ function isIntegerConstructionSource(
   return false;
 }
 
+function identifierCallableTypeName(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize
+): Option<String> {
+  match (callableSymbolLocation(modules, moduleIndex, tree, index)) {
+    some(location) => {
+      match (in modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].functionSignature) {
+        some(signature) => {
+          const callableSignature = rebaseModuleFunctionSignature(
+            modules,
+            location.moduleIndex,
+            moduleIndex,
+            signature
+          );
+          return Option.some(nativeFunctionTypeName(callableSignature));
+        }
+        none => {}
+      }
+    }
+    none => {}
+  }
+  return Option<String>.none;
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2649,6 +2679,10 @@ function inferExpressionNodeType(
           ].valueType.byteLength
         );
       }
+      none => {}
+    }
+    match (identifierCallableTypeName(modules, moduleIndex, tree, index)) {
+      some(callableType) => return move callableType;
       none => {}
     }
     try requireInitializedBinding(module, tree, index, bindings, lookup);
@@ -4353,10 +4387,13 @@ function inferExpressionNodeType(
       "__z_native_async_context",
       closureAsyncContext
     );
-    const closureExecutorContext = valueBindingType(
-      bindings,
-      "__z_native_closure_executor_context"
-    );
+    const closureExecutorContext = closureSignature.threadContract
+      == "thread.any"
+      ? ""
+      : valueBindingType(
+        bindings,
+        "__z_native_closure_executor_context"
+      );
     addValueBinding(
       inout closureBindings,
       "__z_native_executor_context",
@@ -4387,6 +4424,26 @@ function inferExpressionNodeType(
         );
       }
       const captureType = valueBindingType(bindings, capture);
+      if (closureSignature.threadContract == "thread.any") {
+        if (valueBindingIsBorrowed(bindings, capture)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `borrowed capture "${capture}" cannot enter a thread-any function value`,
+            node.line,
+            node.column
+          );
+        }
+        if (!typeIsThreadShareable(modules, moduleIndex, captureType)) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `capture "${capture}" of type "${captureType}" is not shareable across arbitrary threads`,
+            node.line,
+            node.column
+          );
+        }
+      }
       if (typeIsBorrowedForeignResource(
         modules,
         moduleIndex,
@@ -4524,7 +4581,8 @@ function inferExpressionNodeType(
       closureSignature.parameterModes,
       closureSignature.parameterTypes,
       returnType,
-      closureSignature.errorType
+      closureSignature.errorType,
+      closureSignature.threadContract
     );
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
@@ -6130,7 +6188,8 @@ function inferExpressionNodeType(
                 parameterModes,
                 parameterTypes,
                 contextualReturnType,
-                errorType
+                errorType,
+                ""
               );
               let withLockBindings = copyValueBindings(bindings);
               const inheritedExecutorContext = currentExecutorContext(

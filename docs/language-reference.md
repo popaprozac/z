@@ -727,6 +727,41 @@ callee may use the argument:
 Function declarations and function types include the same capabilities. This
 keeps callbacks and ordinary functions substitutable.
 
+### Callable thread contracts
+
+An ordinary function value is executor-local. When a callable may be stored in
+a shared graph and invoked concurrently from arbitrary registered threads, its
+type states the stronger contract explicitly:
+
+```z
+import { thread } from "std/thread";
+
+type Handler =
+  (in message: Message) => i32 throws RouteError on thread.any;
+
+function route(in message: Message): i32 throws RouteError on thread.any {
+  return message.value;
+}
+
+const offset = new Offset({ value: 20 });
+const handler: Handler = move (in message) => message.value + offset.value;
+```
+
+`on thread.any` does not create a thread, schedule work, or hop executors. It
+is a semantic promise that the callable may be invoked concurrently wherever
+its owner is valid. Z therefore uses atomic ownership for a capturing closure's
+environment and recursively checks every capture. The first tier accepts
+primitives, immutable owned snapshots, frozen collections, deeply readonly ARC
+classes, `Mutex<T>`, and other values already proven shareable. Mutable,
+borrowed, view, weak, native-without-contract, and `thread.main`-bound captures
+are rejected.
+
+A thread-any callable may be passed to an ordinary executor-local function
+type; the reverse is rejected because it would erase the stronger capture and
+ownership proof. This first tier covers synchronous free functions and
+contextually typed expression closures. Methods, suspending callables, and
+other executor-specific function types remain later extensions.
+
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:
 

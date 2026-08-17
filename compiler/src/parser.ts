@@ -77,7 +77,21 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("fatArrow", "`=>` in a function type");
       const returnType = parseType();
       const errorType = match("throws") ? parseType() : null;
-      return { name: functionTypeName(parameters, returnType.name, errorType?.name ?? null), location };
+      let thread: "local" | "any" = "local";
+      if (match("on")) {
+        const namespace = expect("identifier", "`thread` after `on` in a function type");
+        expect("dot", "`.` after `thread`");
+        const member = expect("identifier", "`any` after `thread.` in a function type");
+        if (namespace.text !== "thread" || member.text !== "any") {
+          throw new DiagnosticError(
+            fileName,
+            namespace.location,
+            "function types currently support only the `on thread.any` callable contract",
+          );
+        }
+        thread = "any";
+      }
+      return { name: functionTypeName(parameters, returnType.name, errorType?.name ?? null, thread), location };
     }
     const token = expect("identifier", "a type name");
     let name = token.text;
@@ -311,6 +325,16 @@ export function parse(tokens: Token[], fileName: string): Program {
     if (!match("on")) return undefined;
     const onLocation = previous().location;
     return { executor: parsePostfix(), onLocation };
+  };
+
+  const parseFunctionExecutionContract = (): Pick<FunctionDeclaration, "executorAffinity" | "threadContract"> => {
+    if (!match("on")) return {};
+    const onLocation = previous().location;
+    const capability = parsePostfix();
+    if (capability.kind === "member" && capability.property === "any") {
+      return { threadContract: { thread: "any", capability, onLocation } };
+    }
+    return { executorAffinity: { executor: capability, onLocation } };
   };
 
   const parseTypeParameters = (): { names: string[]; constraints: NonNullable<FunctionDeclaration["typeParameterConstraints"]> } => {
@@ -1113,7 +1137,7 @@ export function parse(tokens: Token[], fileName: string): Program {
     expect("colon", "`:`");
     const returnType = parseType();
     const errorType = match("throws") ? parseType() : null;
-    const executorAffinity = parseExecutorAffinity();
+    const executionContract = parseFunctionExecutionContract();
     const nativeSelector = match("as")
       ? expect("string", "an Objective-C selector string after `as`").text
       : null;
@@ -1142,7 +1166,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       parameters,
       returnType,
       errorType,
-      executorAffinity,
+      ...executionContract,
       nativeSelector,
       rawBody,
       body,

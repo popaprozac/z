@@ -14,6 +14,7 @@ export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage
   return {
     asynchronous: declaration.async ?? false,
     executorAffinity: executorAffinityName(declaration.executorAffinity),
+    threadContract: declaration.threadContract ? "thread.any" : null,
     typeParameters: declaration.typeParameters ?? [],
     typeParameterConstraints: (declaration.typeParameterConstraints ?? []).flatMap((constraint) => (
       constraint.traits.map((trait) => ({
@@ -33,6 +34,7 @@ export function stage0ConstructorSignature(declaration: StructDeclaration): Stag
   return {
     asynchronous: false,
     executorAffinity: null,
+    threadContract: null,
     typeParameters: [],
     typeParameterConstraints: [],
     parameterModes: declaration.constructor.parameters.map((parameter) => parameter.mode),
@@ -150,6 +152,7 @@ function stage0ModuleSymbols(
         signature: {
           asynchronous: method.async ?? false,
           executorAffinity: executorAffinityName(method.executorAffinity),
+          threadContract: null,
           typeParameters: method.typeParameters ?? [],
           typeParameterConstraints: (method.typeParameterConstraints ?? []).flatMap((constraint) => (
             constraint.traits.map((trait) => ({

@@ -939,6 +939,7 @@ function renameTypeName(name: string, scope: ModuleScope, typeParameters: Readon
       })),
       renameTypeName(functionType.returnType, scope, typeParameters),
       functionType.errorType ? renameTypeName(functionType.errorType, scope, typeParameters) : null,
+      functionType.thread,
     );
   }
   const fixed = parseFixedArrayType(name);

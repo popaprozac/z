@@ -189,6 +189,7 @@ export type Stage1ModuleTypeSignature = {
 export type Stage1ModuleFunctionSignature = {
   readonly asynchronous: boolean;
   readonly executorAffinity: string | null;
+  readonly threadContract: string | null;
   readonly typeParameters: readonly string[];
   readonly typeParameterConstraints: readonly Stage1ModuleTypeParameterConstraint[];
   readonly parameterModes: readonly ("value" | "in" | "inout" | "out")[];
@@ -249,6 +250,7 @@ function copyStage1ModuleFunctionSignature(
   return {
     asynchronous: signature.asynchronous,
     executorAffinity: signature.executorAffinity,
+    threadContract: signature.threadContract,
     typeParameters: [...signature.typeParameters],
     typeParameterConstraints: signature.typeParameterConstraints
       .map((constraint) => ({ ...constraint })),
@@ -732,6 +734,7 @@ export function decodeStage1ModuleGraphStream(
       (symbol.typeSignature as { constructorSignature: Stage1ModuleFunctionSignature | null }).constructorSignature = {
         asynchronous: false,
         executorAffinity: null,
+        threadContract: null,
         returnType: Buffer.from(fields[4], "hex").toString("utf8"),
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount)
@@ -744,7 +747,7 @@ export function decodeStage1ModuleGraphStream(
       continue;
     }
     if (fields[0] === "methodSignature") {
-      if (fields.length < 13) throw new Error(`malformed stage-1 method signature line: ${line}`);
+      if (fields.length < 14) throw new Error(`malformed stage-1 method signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "method signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "method signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -766,12 +769,12 @@ export function decodeStage1ModuleGraphStream(
       if (receiverMode !== "in" && receiverMode !== "inout" && receiverMode !== "move") {
         throw new Error(`malformed stage-1 method receiver mode: ${line}`);
       }
-      const typeParameterCount = parseProtocolHexInteger(fields[11], "method type parameter count");
-      const parameterCount = parseProtocolHexInteger(fields[12], "method parameter count");
-      if (fields.length !== 13 + typeParameterCount + (parameterCount * 2)) {
+      const typeParameterCount = parseProtocolHexInteger(fields[12], "method type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[13], "method parameter count");
+      if (fields.length !== 14 + typeParameterCount + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 method signature arity: ${line}`);
       }
-      const encodedTypes = fields.slice(13);
+      const encodedTypes = fields.slice(14);
       if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 method signature type: ${line}`);
       }
@@ -789,6 +792,7 @@ export function decodeStage1ModuleGraphStream(
         signature: {
           asynchronous: fields[7] === "1",
           executorAffinity: fields[10].length === 0 ? null : Buffer.from(fields[10], "hex").toString("utf8"),
+          threadContract: fields[11].length === 0 ? null : Buffer.from(fields[11], "hex").toString("utf8"),
           returnType: Buffer.from(fields[8], "hex").toString("utf8"),
           errorType: fields[9].length === 0 ? null : Buffer.from(fields[9], "hex").toString("utf8"),
           typeParameters: encodedTypes.slice(0, typeParameterCount)
@@ -802,7 +806,7 @@ export function decodeStage1ModuleGraphStream(
       continue;
     }
     if (fields[0] === "signature") {
-      if (fields.length < 9) throw new Error(`malformed stage-1 function signature line: ${line}`);
+      if (fields.length < 10) throw new Error(`malformed stage-1 function signature line: ${line}`);
       const moduleIndex = parseProtocolHexInteger(fields[1], "signature module");
       const symbolIndex = parseProtocolHexInteger(fields[2], "signature symbol");
       const symbol = modules[moduleIndex]?.symbols[symbolIndex] as Stage1ModuleSymbol | undefined;
@@ -813,15 +817,15 @@ export function decodeStage1ModuleGraphStream(
       if (fields[3] !== "0" && fields[3] !== "1") {
         throw new Error(`malformed stage-1 function async state: ${fields[3]}`);
       }
-      if (!/^(?:[0-9a-f]{2})*$/.test(fields[4]) || !/^(?:[0-9a-f]{2})*$/.test(fields[5]) || !/^(?:[0-9a-f]{2})*$/.test(fields[6])) {
+      if (!fields.slice(4, 8).every((field) => /^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 function signature text: ${line}`);
       }
-      const typeParameterCount = parseProtocolHexInteger(fields[7], "signature type parameter count");
-      const parameterCount = parseProtocolHexInteger(fields[8], "signature parameter count");
-      if (fields.length !== 9 + typeParameterCount + (parameterCount * 2)) {
+      const typeParameterCount = parseProtocolHexInteger(fields[8], "signature type parameter count");
+      const parameterCount = parseProtocolHexInteger(fields[9], "signature parameter count");
+      if (fields.length !== 10 + typeParameterCount + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 function signature arity: ${line}`);
       }
-      const encodedTypes = fields.slice(9);
+      const encodedTypes = fields.slice(10);
       if (encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 function signature type: ${line}`);
       }
@@ -834,6 +838,7 @@ export function decodeStage1ModuleGraphStream(
       (symbol as { functionSignature: Stage1ModuleFunctionSignature | null }).functionSignature = {
         asynchronous: fields[3] === "1",
         executorAffinity: fields[6].length === 0 ? null : Buffer.from(fields[6], "hex").toString("utf8"),
+        threadContract: fields[7].length === 0 ? null : Buffer.from(fields[7], "hex").toString("utf8"),
         returnType: Buffer.from(fields[4], "hex").toString("utf8"),
         errorType: fields[5].length === 0 ? null : Buffer.from(fields[5], "hex").toString("utf8"),
         typeParameters: encodedTypes.slice(0, typeParameterCount).map((field) => Buffer.from(field, "hex").toString("utf8")),

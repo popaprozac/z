@@ -151,6 +151,8 @@ export type FunctionDeclaration = {
   readonly returnType: TypeReference;
   readonly errorType: TypeReference | null;
   readonly executorAffinity?: ExecutorAffinity;
+  /** Callable may be invoked concurrently on arbitrary registered threads. */
+  readonly threadContract?: CallableThreadContract;
   /** Objective-C selector exported by a protocol-conforming class method. */
   readonly nativeSelector?: string | null;
   readonly rawBody?: RawNativeBody | null;
@@ -175,6 +177,12 @@ export type RawCapture = {
 
 export type ExecutorAffinity = {
   readonly executor: Expression;
+  readonly onLocation: SourceLocation;
+};
+
+export type CallableThreadContract = {
+  readonly thread: "any";
+  readonly capability: Expression;
   readonly onLocation: SourceLocation;
 };
 

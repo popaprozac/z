@@ -565,11 +565,11 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
             ? "type"
             : objcType
               ? "class"
-              : owner === "thread" && token.text === "main"
+              : owner === "thread" && (token.text === "main" || token.text === "any")
                 ? "property"
                 : "method",
         ),
-        modifiers: owner === "thread" && token.text === "main" ? 6 : 4,
+        modifiers: owner === "thread" && (token.text === "main" || token.text === "any") ? 6 : 4,
       });
       continue;
     }
@@ -1140,6 +1140,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "thread" && word.text === "main") {
       return markdownHover("thread.main: Executor  // main-thread execution target", source, word.start, word.end);
     }
+    if (standardOwner === "thread" && word.text === "any") {
+      return markdownHover(
+        "thread.any: CallableThread  // callable may be invoked concurrently on arbitrary registered threads; does not schedule or hop",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (standardOwner === "fs" && word.text === "Lock") {
       return markdownHover(
         "fs.Lock  // move-only exclusive interprocess filesystem lock; released on scope exit",
@@ -1446,8 +1454,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       && affinity
       ? mixedClassLifecycleHover(affinity)
       : executorAffinityHover(affinity);
+    const callable = parseFunctionType(String(type));
+    const callableContract = aliasType && callable?.thread === "any"
+      ? `\n// ${displayServiceType(type, context)}; callable concurrently from arbitrary registered threads`
+      : "";
     return markdownHover(
-      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${affinityDetail}`,
+      `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${affinityDetail}${callableContract}`,
       source,
       word.start,
       word.end,
@@ -2322,6 +2334,7 @@ function symbolCompletions(
         declaration.async,
         declaration.errorType?.name,
         Boolean(declaration.executorAffinity),
+        Boolean(declaration.threadContract),
       ),
     });
   }
@@ -4484,6 +4497,13 @@ function memberCompletions(
           detail: "main-thread execution target",
         };
       }
+      if (standardModule === "thread" && member === "any") {
+        return {
+          label: member,
+          kind: completionKinds.property,
+          detail: "arbitrary-thread callable contract; does not schedule or hop",
+        };
+      }
       return {
         label: member,
         kind: completionKinds.method,
@@ -5151,6 +5171,7 @@ function sourceExportDetail(
       declaration.async,
       declaration.errorType?.name,
       Boolean(declaration.executorAffinity),
+      Boolean(declaration.threadContract),
     );
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
@@ -6424,6 +6445,7 @@ function declarationHover(
           fn.async,
           fn.errorType?.name,
           Boolean(fn.executorAffinity),
+          Boolean(fn.threadContract),
         ),
         source,
         start,
@@ -6576,7 +6598,11 @@ function collectObjCArgumentLabelInfos(
 
 function zFunctionDetail(
   name: string,
-  parameters: readonly { readonly name: string; readonly type: { readonly name: string } }[],
+  parameters: readonly {
+    readonly name: string;
+    readonly mode?: "value" | "in" | "inout" | "out";
+    readonly type: { readonly name: string };
+  }[],
   returnType: string,
   typeParameters: readonly string[] = [],
   typeDisplayNames: ReadonlyMap<string, string> = new Map(),
@@ -6584,12 +6610,16 @@ function zFunctionDetail(
   isAsync = false,
   errorType: string | undefined = undefined,
   mainIsolated = false,
+  anyThread = false,
 ): string {
   const generic = formatTypeParameters(typeParameters, typeParameterConstraints, typeDisplayNames);
   const asyncPrefix = isAsync ? "async " : "";
   const throws = errorType ? ` throws ${displayType(errorType, typeDisplayNames)}` : "";
-  const executor = mainIsolated ? " on thread.main" : "";
-  return `${asyncPrefix}function ${name}${generic}(${parameters.map((item) => `${item.name}: ${displayType(item.type.name, typeDisplayNames)}`).join(", ")}): ${displayType(returnType, typeDisplayNames)}${throws}${executor}`;
+  const executor = mainIsolated ? " on thread.main" : anyThread ? " on thread.any" : "";
+  return `${asyncPrefix}function ${name}${generic}(${parameters.map((item) => {
+    const capability = item.mode && item.mode !== "value" ? `${item.mode} ` : "";
+    return `${capability}${item.name}: ${displayType(item.type.name, typeDisplayNames)}`;
+  }).join(", ")}): ${displayType(returnType, typeDisplayNames)}${throws}${executor}`;
 }
 
 function methodDetail(
@@ -6937,6 +6967,7 @@ function displaySubstitutedType(
         functionType.errorType
           ? substitutions.get(functionType.errorType) ?? functionType.errorType
           : null,
+        functionType.thread,
       ),
       (nested) => displayType(nested, typeDisplayNames),
     )!;

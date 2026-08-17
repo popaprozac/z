@@ -8,6 +8,12 @@ export type FunctionType = {
   readonly parameters: readonly FunctionTypeParameter[];
   readonly returnType: string;
   readonly errorType: string | null;
+  /**
+   * Where an owned callable environment may be invoked. `any` is a stronger
+   * contract than the ordinary executor-local default and therefore affects
+   * source compatibility without changing the native call ABI.
+   */
+  readonly thread: "local" | "any";
 };
 
 const prefix = "__z_function:";
@@ -16,8 +22,9 @@ export function functionTypeName(
   parameters: readonly FunctionTypeParameter[],
   returnType: string,
   errorType: string | null = null,
+  thread: FunctionType["thread"] = "local",
 ): string {
-  return `${prefix}${encodeURIComponent(JSON.stringify({ parameters, returnType, errorType }))}`;
+  return `${prefix}${encodeURIComponent(JSON.stringify({ parameters, returnType, errorType, thread }))}`;
 }
 
 export function parseFunctionType(name: string): FunctionType | null {
@@ -34,7 +41,8 @@ export function parseFunctionType(name: string): FunctionType | null {
       || !["value", "in", "inout", "out"].includes(parameter.mode)
       || typeof parameter.type !== "string"
     ))) return null;
-    return { ...parsed, errorType: parsed.errorType ?? null };
+    if (parsed.thread !== undefined && parsed.thread !== "local" && parsed.thread !== "any") return null;
+    return { ...parsed, errorType: parsed.errorType ?? null, thread: parsed.thread ?? "local" };
   } catch {
     return null;
   }
@@ -43,6 +51,10 @@ export function parseFunctionType(name: string): FunctionType | null {
 export function functionTypesCompatible(left: FunctionType, right: FunctionType): boolean {
   return left.returnType === right.returnType
     && left.errorType === right.errorType
+    // The left side is the required type. An arbitrary-thread callable may be
+    // used by an executor-local consumer, but the reverse would erase the
+    // environment's ownership and capture proof.
+    && (left.thread === "local" || right.thread === "any")
     && left.parameters.length === right.parameters.length
     && left.parameters.every((parameter, index) => (
       parameter.mode === right.parameters[index].mode
@@ -60,6 +72,7 @@ export function transformFunctionType(
     functionType.parameters.map((parameter) => ({ ...parameter, type: transform(parameter.type) })),
     transform(functionType.returnType),
     functionType.errorType ? transform(functionType.errorType) : null,
+    functionType.thread,
   );
 }
 
@@ -74,7 +87,8 @@ export function displayFunctionType(
     return `${capability}${parameter.name}: ${display(parameter.type)}`;
   });
   const throws = functionType.errorType ? ` throws ${display(functionType.errorType)}` : "";
-  return `(${parameters.join(", ")}) => ${display(functionType.returnType)}${throws}`;
+  const thread = functionType.thread === "any" ? " on thread.any" : "";
+  return `(${parameters.join(", ")}) => ${display(functionType.returnType)}${throws}${thread}`;
 }
 
 export function functionTypeAbiKey(functionType: FunctionType): string {
