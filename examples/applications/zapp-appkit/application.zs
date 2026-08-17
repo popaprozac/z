@@ -7,6 +7,7 @@ import { thread } from "std/thread";
 export struct RuntimeState {
   started: i32;
   completed: i32;
+  routedAction: i32;
 }
 
 // This class deliberately mixes synchronized model state with real AppKit
@@ -35,6 +36,18 @@ export class Application {
   function completedWork(): i32 {
     return this.state.withLock(
       (in state): i32 => state.completed
+    );
+  }
+
+  function recordAction(ticket: i32): void {
+    this.state.withLock((inout state): void => {
+      state.routedAction = ticket;
+    });
+  }
+
+  function routedAction(): i32 {
+    return this.state.withLock(
+      (in state): i32 => state.routedAction
     );
   }
 

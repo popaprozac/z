@@ -1934,6 +1934,11 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
     "examples/applications/zapp-appkit/main.zs",
   );
   const source = readFileSync(example, "utf8");
+  const callbackStart = source.indexOf("const actionConnection");
+  const callbackEnd = source.indexOf("return new Application", callbackStart);
+  const callbackSource = source.slice(callbackStart, callbackEnd);
+  assert.match(callbackSource, /current\.recordAction\(ticket\)/);
+  assert.doesNotMatch(callbackSource, /current\.finishWork\(ticket\)/);
   const artifact = compileToNative(source, example);
 
   assert.equal(artifact.language, "objective-c");
@@ -1942,6 +1947,8 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
   assert.match(artifact.source, /self->actionConnection = nil;/);
   assert.match(artifact.source, /z_objc_connect\(/);
   assert.match(artifact.source, /Router_dispatch\(router, &\(message\)\)/);
+  assert.match(artifact.source, /Application_recordAction/);
+  assert.match(artifact.source, /Application_routedAction/);
   assert.match(artifact.source, /Application_triggerAction/);
 
   const compilation = spawnSync("xcrun", [

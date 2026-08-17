@@ -26,7 +26,9 @@ smoke path clicks the button after `Once<Application>` is initialized, so the
 native callback enters Z, dispatches `Message({ operation: "appkit-action" })`,
 retrieves the current application, and publishes the routed result on main.
 Nothing depends on the stack frame surrounding `NSApplication.run()` to keep
-the target alive.
+the target alive. Routed-action state is distinct from background-job
+completion, so clicking before shutdown cannot change the program's success
+status.
 
 The window title and label are updated by that placed call. After a short
 visible interval, the same worker places `closeApplication()` onto main; that

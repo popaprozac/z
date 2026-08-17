@@ -61,7 +61,7 @@ function createApplication(): Application on thread.main {
     match (routed) {
       success(ticket) => {
         const current = currentApplication();
-        current.finishWork(ticket);
+        current.recordAction(ticket);
         current.publish(ticket);
         console.log(`routed AppKit action ${ticket} on main`);
       }
@@ -73,7 +73,7 @@ function createApplication(): Application on thread.main {
 
   return new Application({
     name: "Zapp",
-    state: Mutex(RuntimeState({ started: 0, completed: 0 })),
+    state: Mutex(RuntimeState({ started: 0, completed: 0, routedAction: 0 })),
     window,
     statusLabel: label,
     actionButton,
@@ -134,5 +134,5 @@ async function main(): i32 on thread.main {
 
   const current = currentApplication();
   console.log(`${current.name} completed AppKit job ${ticket}`);
-  return current.completedWork() - ticket;
+  return current.completedWork() - ticket + current.routedAction() - 42;
 }
