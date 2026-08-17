@@ -509,6 +509,22 @@ function parseType(
   inout current: usize,
   inout pendingGreater: usize
 ): TypeReference throws ParserError {
+  if (tokens[current].kind == TokenKind.readonlyKeyword) {
+    const offset = tokens[current].offset;
+    const line = tokens[current].line;
+    const column = tokens[current].column;
+    current = current + 1;
+    const target = try parseType(tokens, inout current, inout pendingGreater);
+    let references = Array<TypeNameReference>();
+    appendTypeNameReferences(inout references, target.references);
+    return TypeReference({
+      name: `readonly ${target.name}`,
+      references,
+      offset,
+      line,
+      column,
+    });
+  }
   if (tokens[current].kind == TokenKind.leftParen) {
     const start = try expect(tokens, inout current, TokenKind.leftParen, "a function type");
     let output = TextBuffer();

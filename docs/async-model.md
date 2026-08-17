@@ -275,7 +275,15 @@ resulting String through `await`.
 A deeply readonly Z class may also cross by shared identity. The compiler
 recursively verifies its fields and methods, emits atomic strong ARC operations,
 and retains a worker reference; the parent reference remains usable. Mutable
-classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
+collection fields fail that proof even when their field binding is readonly.
+Constructing and consuming them through `freeze()` produces type-position
+`readonly Array<T>`, `readonly Map<K, V>`, or `readonly Set<T>` storage. These
+owners keep the same allocation and deterministic cleanup while exposing only
+read operations; they may participate in the recursive class proof when their
+elements are also shareable. A frozen route-catalog fixture performs Map and
+Set membership reads on a native worker through atomic-ARC class identity.
+
+Mutable classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
 weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII
 value or owned C handle may transfer when its adjacent `.zd` contract explicitly
 declares `thread { transfer; deinit; }`; the source binding is consumed and the

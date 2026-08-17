@@ -1,4 +1,5 @@
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
+import { parseReadonlyType } from "./readonly-types.ts";
 
 const mapPrefix = "__z_Map_";
 const entryPrefix = "__z_MapEntry_";
@@ -31,12 +32,14 @@ export function mapEntryTypeName(keyType: string, valueType: string): string {
   return encodedPair(entryPrefix, keyType, valueType);
 }
 
-export function parseMapType(name: string): { readonly keyType: string; readonly valueType: string } | null {
-  const encoded = parseEncodedPair(name, mapPrefix);
-  if (encoded) return encoded;
-  const generic = parseGenericType(name);
+export function parseMapType(name: string): { readonly keyType: string; readonly valueType: string; readonly readonly: boolean } | null {
+  const qualifier = parseReadonlyType(name);
+  const target = qualifier?.target ?? name;
+  const encoded = parseEncodedPair(target, mapPrefix);
+  if (encoded) return { ...encoded, readonly: qualifier !== null };
+  const generic = parseGenericType(target);
   return generic?.base === "Map" && generic.arguments.length === 2
-    ? { keyType: generic.arguments[0], valueType: generic.arguments[1] }
+    ? { keyType: generic.arguments[0], valueType: generic.arguments[1], readonly: qualifier !== null }
     : null;
 }
 
@@ -46,5 +49,7 @@ export function parseMapEntryType(name: string): { readonly keyType: string; rea
 
 export function displayMapType(name: string): string {
   const map = parseMapType(name);
-  return map ? genericTypeName("Map", [map.keyType, map.valueType]) : name;
+  return map
+    ? `${map.readonly ? "readonly " : ""}${genericTypeName("Map", [map.keyType, map.valueType])}`
+    : name;
 }

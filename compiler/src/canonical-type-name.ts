@@ -4,8 +4,11 @@ import { parseFunctionType } from "./function-types.ts";
 import { parseGenericType } from "./generic-types.ts";
 import { isNullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseViewType } from "./view-types.ts";
+import { parseReadonlyType } from "./readonly-types.ts";
 
 export function canonicalTypeName(name: string): string {
+  const readonly = parseReadonlyType(name);
+  if (readonly) return `readonly ${canonicalTypeName(readonly.target)}`;
   const task = parseTaskType(name);
   if (task) return displayTaskType(task, canonicalTypeName);
   if (isNullableObjCTypeName(name)) return `${canonicalTypeName(publicObjCTypeName(name))} | null`;
@@ -16,7 +19,7 @@ export function canonicalTypeName(name: string): string {
   const slice = parseSliceType(name);
   if (slice) return `Slice<${canonicalTypeName(slice.elementType)}>`;
   const dynamic = parseDynamicArrayType(name);
-  if (dynamic) return `Array<${canonicalTypeName(dynamic.elementType)}>`;
+  if (dynamic) return `${dynamic.readonly ? "readonly " : ""}Array<${canonicalTypeName(dynamic.elementType)}>`;
   const generic = parseGenericType(name);
   if (generic) return `${generic.base}<${generic.arguments.map(canonicalTypeName).join(", ")}>`;
   const functionType = parseFunctionType(name);

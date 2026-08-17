@@ -394,6 +394,7 @@ text value.
 | Growable collection | `Array<T>` | Move-owned growable contiguous buffer |
 | Associative collection | `Map<K, V>` | Move-owned key/value storage from `std/collections` |
 | Unique collection | `Set<T>` | Move-owned unique-value storage from `std/collections` |
+| Frozen owned collection | `readonly Array<T>`, `readonly Map<K, V>`, `readonly Set<T>` | Same owned storage after consuming zero-copy `freeze()`; read API only |
 | Borrowed collection | `Slice<T>` | Non-escaping pointer/length view over contiguous storage |
 | Optional value | `Option<T>` | Built-in `some`/`none` tagged value, niche-backed where representation permits |
 | Typed outcome | `Result<T, E>` | Built-in `success`/`failure` tagged value produced by `attempt` |
@@ -689,6 +690,21 @@ aggregate, but a referenced value is not recursively frozen merely because its
 field is readonly. Deep cross-thread shareability is a separate recursive
 compiler proof. Constructors may initialize readonly fields while establishing
 the value's initial state.
+
+Collections can also carry `readonly` in the type position. The two positions
+express different contracts:
+
+```z
+class Router {
+  readonly handlers: readonly Map<String, Handler>;
+}
+```
+
+The first `readonly` prevents replacing `handlers`; the second removes the
+Map's structural mutation surface. `readonly Array<T>`, `readonly Map<K, V>`,
+and `readonly Set<T>` remain owning values with deterministic cleanup. They are
+not views and do not add reference counting. A deeply readonly class may share
+such storage across threads when every reachable element is also shareable.
 
 When every reachable field is similarly immutable and safe to destroy on any
 thread, Z infers the class as shareable and uses atomic ARC for its references.
@@ -1110,6 +1126,24 @@ element into the buffer. Growth allocates native storage, move-constructs each
 live element into the new allocation, destroys the old elements, and releases
 the old allocation. An indexed element is borrowed rather than extractable;
 moving the whole array transfers its buffer without relocating its elements.
+
+A completed collection can permanently surrender mutation without copying its
+allocation:
+
+```z
+let routes = Map<String, Handler>();
+routes.set("open", openHandler);
+const handlers: readonly Map<String, Handler> = routes.freeze();
+// routes has moved; handlers exposes length, has, get, iteration, and cleanup.
+```
+
+`freeze()` consumes named owned `Array`, `Map`, or `Set` storage and returns the
+corresponding type-position `readonly` value. The buffer or hash buckets are
+transferred unchanged: there is no element copy, allocation, or retain pass at
+the freeze boundary. Read operations and iteration remain available; `push`,
+`set`, `add`, `remove`, `delete`, `clear`, and a second `freeze` are absent.
+There is no implicit thaw. Construct mutable storage, finish initialization,
+then freeze at the publication boundary.
 
 The first `Map` API makes ownership visible without exposing its storage:
 

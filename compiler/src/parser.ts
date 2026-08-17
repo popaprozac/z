@@ -18,6 +18,7 @@ import { dynamicArrayTypeName, fixedArrayTypeName, sliceTypeName } from "./array
 import { genericTypeName } from "./generic-types.ts";
 import { functionTypeName } from "./function-types.ts";
 import { nullableObjCTypeName } from "./objc-types.ts";
+import { readonlyTypeName } from "./readonly-types.ts";
 import { viewTypeName } from "./view-types.ts";
 import type { Token, TokenKind } from "./lexer.ts";
 
@@ -57,6 +58,10 @@ export function parse(tokens: Token[], fileName: string): Program {
   };
 
   const parseType = (): TypeReference => {
+    if (match("readonly")) {
+      const location = previous().location;
+      return { name: readonlyTypeName(parseType().name), location };
+    }
     if (match("leftParen")) {
       const location = previous().location;
       const parameters = [];

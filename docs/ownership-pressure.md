@@ -2731,6 +2731,36 @@ The ordinary closure environment remains executor-local in this tier;
 cross-thread general callable sharing, block-bodied first-class closures, and
 suspending callable bodies remain explicit follow-ups.
 
+## Frozen collection publication
+
+The message-router work exposed a distinction that declaration-position
+`readonly` could not express. `readonly handlers: Map<String, Handler>` keeps a
+class field from being replaced, but the stored Map still exposes structural
+mutation and therefore prevents deep cross-thread shareability. Introducing a
+second nominal `ReadonlyMap` family would duplicate every collection API and
+weaken the established TypeScript-inspired modifier vocabulary.
+
+Z now accepts type-position `readonly Array<T>`, `readonly Map<K, V>`, and
+`readonly Set<T>`. A consuming `freeze()` transfers the existing buffer or hash
+buckets into that capability without allocation, element copying, or a retain
+walk. The source binding becomes moved. The frozen owner still performs exactly
+the ordinary reverse/deterministic cleanup; an early implementation bug that
+treated the wrapper as a distinct cleanup-free type was caught by inspecting
+the emitted live flags and destructors before this slice landed.
+
+The cross-thread probe stores `readonly Map<String, i32>` behind a readonly
+field in an ARC `Router`. The compiler proves the reachable graph immutable,
+uses atomic ARC for Router identity, transfers that identity into
+`thread.spawn`, and executes a Map membership read on the worker. Replacing the
+field type with mutable `Map<String, i32>` restores the `Z0704` rejection. This
+is zero-runtime-check shared reading: the safety cost is paid once at the
+consuming publication boundary.
+
+Function-valued frozen routers remain the next deliberate syntax seam. A
+handler needs a declaration-level callable executor/shareability contract
+before `Map<String, Handler>` can satisfy the same recursive proof; freezing the
+container alone must not silently bless an executor-local closure environment.
+
 The Zapp AppKit probe then attached the same ownership shape to an Objective-C
 event source. Its `Application` class stores the `objc.Connection` alongside
 the native button, so the application root—not a blocking function's local

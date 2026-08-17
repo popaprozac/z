@@ -23,6 +23,7 @@ import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseOnceLifetimeType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import { writableTypeName } from "./readonly-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
 import type { IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadTransferKind } from "./sema.ts";
 import {
@@ -6677,7 +6678,8 @@ function emitFrameExpressionInner(
       }
       const ownerType = frameExpressionType(expression.object, plan);
       const ownerView = parseViewType(ownerType);
-      if ((ownerView?.target ?? ownerType) === "TaskControl") {
+      const ownerValueType = ownerView?.target ?? ownerType;
+      if (ownerValueType === "TaskControl") {
         const owner = emitFrameExpression(expression.object, plan, fileName);
         const value = ownerView ? `(*(${owner}))` : owner;
         if (expression.property === "accepted") return `z_task_control_is_accepted(${value})`;
@@ -6690,7 +6692,19 @@ function emitFrameExpressionInner(
         if (expression.property === "byteLength") return `((${owner}).length)`;
         if (expression.property === "isEmpty") return `((${owner}).length == 0)`;
       }
-      const access = ownerView || plan.types.structs.get(ownerType)?.kind === "class" ? "->" : ".";
+      const map = parseMapType(ownerValueType);
+      if (map && expression.property === "length") {
+        const owner = emitFrameExpression(expression.object, plan, fileName);
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        return `((${value}).entries.length)`;
+      }
+      const set = parseSetType(ownerValueType);
+      if (set && expression.property === "length") {
+        const owner = emitFrameExpression(expression.object, plan, fileName);
+        const value = ownerView ? `(*(${owner}))` : `(${owner})`;
+        return `((${value}).values.length)`;
+      }
+      const access = ownerView || plan.types.structs.get(ownerValueType)?.kind === "class" ? "->" : ".";
       const value = `((${emitFrameExpression(expression.object, plan, fileName)})${access}${expression.property})`;
       const type = frameExpressionType(expression, plan);
       if (
@@ -6881,6 +6895,24 @@ function emitFrameExpressionInner(
           const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
           const argument = emitFrameExpression(expression.arguments[0], plan, fileName);
           return `${dynamicArrayPushName(receiverType)}(&(${receiver}), ${argument})`;
+        }
+        const map = parseMapType(receiverType);
+        if (map) {
+          if (expression.callee.property === "freeze") {
+            return emitFrameExpression(expression.callee.object, plan, fileName);
+          }
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          const arguments_ = emitSyncCallArguments(expression, plan, fileName);
+          return `${asyncMapMethodName(receiverType, expression.callee.property)}(&(${receiver})${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
+        }
+        const set = parseSetType(receiverType);
+        if (set) {
+          if (expression.callee.property === "freeze") {
+            return emitFrameExpression(expression.callee.object, plan, fileName);
+          }
+          const receiver = emitFrameExpression(expression.callee.object, plan, fileName);
+          const arguments_ = emitSyncCallArguments(expression, plan, fileName);
+          return `${asyncSetMethodName(receiverType, expression.callee.property)}(&(${receiver})${arguments_.length ? `, ${arguments_.join(", ")}` : ""})`;
         }
         const owner = plan.types.structs.get(receiverType);
         const method = owner?.methods.find((candidate) => (
@@ -7114,6 +7146,8 @@ function cScalar(type: string): string {
 }
 
 function cFrameType(type: string, types: AsyncTypeContext): string {
+  const writable = writableTypeName(type);
+  if (writable !== type) return cFrameType(writable, types);
   if (parseTaskType(type)) return "Z_AsyncTask *";
   if (type === "TaskScope") return "Z_TaskScope *";
   if (type === "TaskControl") return "Z_TaskControl *";
@@ -7204,6 +7238,8 @@ function isFrameReferenceIdentityType(type: string, types: AsyncTypeContext): bo
 }
 
 function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  const writable = writableTypeName(type);
+  if (writable !== type) return isSupportedFrameType(writable, types, visiting);
   if (parseTaskType(type)) return true;
   if (type === "TaskScope") return true;
   if (type === "TaskControl") return true;
@@ -7249,6 +7285,8 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
 }
 
 function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new Set<string>()): boolean {
+  const writable = writableTypeName(type);
+  if (writable !== type) return hasFrameCleanup(writable, types, visiting);
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
   if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
@@ -7281,6 +7319,8 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
 }
 
 function frameCleanup(value: string, type: string, types: AsyncTypeContext): string {
+  const writable = writableTypeName(type);
+  if (writable !== type) return frameCleanup(value, writable, types);
   if (parseAsyncGeneratorType(type)) {
     return `if ((${value}).context != NULL) { (${value}).destroy((${value}).context); (${value}).context = NULL; }`;
   }
@@ -7435,6 +7475,8 @@ function requiresNativeFramePlacement(
   types: AsyncTypeContext,
   visiting = new Set<string>(),
 ): boolean {
+  const writable = writableTypeName(type);
+  if (writable !== type) return requiresNativeFramePlacement(writable, types, visiting);
   if (visiting.has(type)) return false;
   if (isDirectForeignFrameValue(type, types)) return true;
   const fixedArray = parseFixedArrayType(type);
@@ -7454,7 +7496,15 @@ function requiresNativeFramePlacement(
 }
 
 function dynamicArrayPushName(type: string): string {
-  return `Z_DynamicArray_${asyncNativeSymbolPart(type)}_push`;
+  return `Z_DynamicArray_${asyncNativeSymbolPart(writableTypeName(type))}_push`;
+}
+
+function asyncMapMethodName(type: string, method: string): string {
+  return `Z_Map_${asyncNativeSymbolPart(writableTypeName(type))}_${method}`;
+}
+
+function asyncSetMethodName(type: string, method: string): string {
+  return `Z_Set_${asyncNativeSymbolPart(writableTypeName(type))}_${method}`;
 }
 
 function frameStoredValue(name: string, type: string, types: AsyncTypeContext): string {

@@ -21,6 +21,7 @@ import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 export type ForeignHandleTypeAliases = {
   readonly canonicalBySourceName: ReadonlyMap<string, string>;
@@ -333,6 +334,8 @@ export function transformProgramTypeNames(
 function resolveForeignTypeName(name: string, aliases: ReadonlyMap<string, string>): string {
   const direct = aliases.get(name);
   if (direct) return direct;
+  const readonly = parseReadonlyType(name);
+  if (readonly) return readonlyTypeName(resolveForeignTypeName(readonly.target, aliases));
   if (isNullableObjCTypeName(name)) {
     const target = resolveForeignTypeName(publicObjCTypeName(name), aliases);
     return aliases.get(nullableObjCTypeName(publicObjCTypeName(name)))
@@ -356,7 +359,10 @@ function resolveForeignTypeName(name: string, aliases: ReadonlyMap<string, strin
   const slice = parseSliceType(name);
   if (slice) return sliceTypeName(resolveForeignTypeName(slice.elementType, aliases));
   const dynamic = parseDynamicArrayType(name);
-  if (dynamic) return dynamicArrayTypeName(resolveForeignTypeName(dynamic.elementType, aliases));
+  if (dynamic) {
+    const resolved = dynamicArrayTypeName(resolveForeignTypeName(dynamic.elementType, aliases));
+    return dynamic.readonly ? readonlyTypeName(resolved) : resolved;
+  }
   const generic = parseGenericType(name);
   return generic
     ? genericTypeName(generic.base, generic.arguments.map((argument) => resolveForeignTypeName(argument, aliases)))

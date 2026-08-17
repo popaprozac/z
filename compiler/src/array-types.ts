@@ -1,3 +1,5 @@
+import { parseReadonlyType } from "./readonly-types.ts";
+
 export type FixedArrayType = {
   readonly elementType: string;
   readonly length: number;
@@ -24,6 +26,8 @@ export function displayArrayType(
   name: string,
   displayElement: (name: string) => string = (element) => displayArrayType(element),
 ): string {
+  const readonly = parseReadonlyType(name);
+  if (readonly) return `readonly ${displayArrayType(readonly.target, displayElement)}`;
   const array = parseFixedArrayType(name);
   if (array) return `${displayElement(array.elementType)}[${array.length}]`;
   const slice = parseSliceType(name);
@@ -44,6 +48,10 @@ export function dynamicArrayTypeName(elementType: string): string {
   return `${dynamicPrefix}${elementType}`;
 }
 
-export function parseDynamicArrayType(name: string): { readonly elementType: string } | null {
-  return name.startsWith(dynamicPrefix) ? { elementType: name.slice(dynamicPrefix.length) } : null;
+export function parseDynamicArrayType(name: string): { readonly elementType: string; readonly readonly: boolean } | null {
+  const qualifier = parseReadonlyType(name);
+  const target = qualifier?.target ?? name;
+  return target.startsWith(dynamicPrefix)
+    ? { elementType: target.slice(dynamicPrefix.length), readonly: qualifier !== null }
+    : null;
 }

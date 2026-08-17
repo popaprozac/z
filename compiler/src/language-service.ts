@@ -40,6 +40,7 @@ import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
+import { parseReadonlyType } from "./readonly-types.ts";
 import { parseAsyncGeneratorType, parseGeneratorType } from "./generator-types.ts";
 import { parseOnceLifetimeType, parseOnceType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
@@ -1348,10 +1349,19 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       return markdownHover(`length: usize  // ${displayType(resolved.type, context.typeDisplayNames)}`, source, word.start, word.end);
     }
     if (resolved?.kind === "array" && parseDynamicArrayType(resolved.type)) {
+      const dynamic = parseDynamicArrayType(resolved.type)!;
       if (word.text === "capacity") return markdownHover("capacity: usize", source, word.start, word.end);
-      if (word.text === "push") {
-        const element = parseDynamicArrayType(resolved.type)!.elementType;
+      if (!dynamic.readonly && word.text === "push") {
+        const element = dynamic.elementType;
         return markdownHover(`push(value: ${displayType(element, context.typeDisplayNames)}): void`, source, word.start, word.end);
+      }
+      if (!dynamic.readonly && word.text === "freeze") {
+        return markdownHover(
+          `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
+          source,
+          word.start,
+          word.end,
+        );
       }
     }
     if (resolved?.kind === "string") {
@@ -1400,11 +1410,12 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         resolved.valueType,
         context.typeDisplayNames,
         mapValueHasReferenceIdentity(context, resolved.valueType),
+        resolved.readonly,
       );
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
     if (resolved?.kind === "set") {
-      const detail = setMemberDetail(word.text, resolved.elementType, context.typeDisplayNames);
+      const detail = setMemberDetail(word.text, resolved.elementType, context.typeDisplayNames, resolved.readonly);
       if (detail) return markdownHover(detail, source, word.start, word.end);
     }
   }
@@ -4577,10 +4588,15 @@ function memberCompletions(
       directReceiver.valueType,
       importContext.typeDisplayNames,
       mapValueHasReferenceIdentity(importContext, directReceiver.valueType),
+      directReceiver.readonly,
     ), prefix, 1000);
   }
   if (directReceiver?.kind === "set") {
-    return filterCompletions(setCompletions(directReceiver.elementType, importContext.typeDisplayNames), prefix, 1000);
+    return filterCompletions(setCompletions(
+      directReceiver.elementType,
+      importContext.typeDisplayNames,
+      directReceiver.readonly,
+    ), prefix, 1000);
   }
   if (directReceiver?.kind === "mutex") {
     return filterCompletions(
@@ -4634,11 +4650,16 @@ function memberCompletions(
         map.valueType,
         iterationContext.typeDisplayNames,
         mapValueHasReferenceIdentity(iterationContext, map.valueType),
+        map.readonly,
       ), prefix, 1000);
     }
     const set = parseSetType(iterationBinding.type);
     if (set) {
-      return filterCompletions(setCompletions(set.elementType, iterationContext.typeDisplayNames), prefix, 1000);
+      return filterCompletions(setCompletions(
+        set.elementType,
+        iterationContext.typeDisplayNames,
+        set.readonly,
+      ), prefix, 1000);
     }
     const generator = parseGeneratorType(iterationBinding.type);
     if (generator) {
@@ -4821,13 +4842,20 @@ function memberCompletions(
     if (dynamic) {
       items.push(
         { label: "capacity", kind: completionKinds.property, detail: "usize" },
-        {
+      );
+      if (!dynamic.readonly) {
+        items.push({
           label: "push",
           kind: completionKinds.method,
           detail: `push(value: ${displayType(dynamic.elementType, context.typeDisplayNames)}): void`,
           insertText: "push()",
-        },
-      );
+        }, {
+          label: "freeze",
+          kind: completionKinds.method,
+          detail: `freeze(): readonly Array<${displayType(dynamic.elementType, context.typeDisplayNames)}>  // consumes without copying`,
+          insertText: "freeze()",
+        });
+      }
     }
     return filterCompletions(items, prefix, 1000);
   }
@@ -4879,10 +4907,15 @@ function memberCompletions(
       resolved.valueType,
       context.typeDisplayNames,
       mapValueHasReferenceIdentity(context, resolved.valueType),
+      resolved.readonly,
     ), prefix, 1000);
   }
   if (resolved?.kind === "set") {
-    return filterCompletions(setCompletions(resolved.elementType, context.typeDisplayNames), prefix, 1000);
+    return filterCompletions(setCompletions(
+      resolved.elementType,
+      context.typeDisplayNames,
+      resolved.readonly,
+    ), prefix, 1000);
   }
   if (resolved?.kind === "generator") {
     return filterCompletions([{
@@ -5322,8 +5355,8 @@ type ResolvedReceiver =
   | { readonly kind: "textBuffer" }
   | { readonly kind: "arena" }
   | { readonly kind: "hasher" }
-  | { readonly kind: "map"; readonly keyType: string; readonly valueType: string }
-  | { readonly kind: "set"; readonly elementType: string }
+  | { readonly kind: "map"; readonly keyType: string; readonly valueType: string; readonly readonly: boolean }
+  | { readonly kind: "set"; readonly elementType: string; readonly readonly: boolean }
   | {
     readonly kind: "generator";
     readonly elementType: string;
@@ -5484,6 +5517,7 @@ function mapMemberDetail(
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
   identityValue = false,
+  readonly = false,
 ): string | null {
   const key = displayType(keyType, typeDisplayNames);
   const value = displayType(valueType, typeDisplayNames);
@@ -5495,7 +5529,9 @@ function mapMemberDetail(
     remove: `remove(in key: ${key}): Option<${value}>  // transfers the removed value`,
     delete: `delete(in key: ${key}): boolean  // destroys the removed entry`,
     clear: "clear(): void  // destroys all entries",
+    freeze: `freeze(): readonly Map<${key}, ${value}>  // consumes without copying`,
   };
+  if (readonly && !["length", "has", "get"].includes(name)) return null;
   return details[name] ?? null;
 }
 
@@ -5504,11 +5540,15 @@ function mapCompletions(
   valueType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
   identityValue = false,
+  readonly = false,
 ): CompletionItem[] {
-  return ["length", "has", "get", "set", "remove", "delete", "clear"].map((name) => ({
+  const names = readonly
+    ? ["length", "has", "get"]
+    : ["length", "has", "get", "set", "remove", "delete", "clear", "freeze"];
+  return names.map((name) => ({
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
-    detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames, identityValue)!,
+    detail: mapMemberDetail(name, keyType, valueType, typeDisplayNames, identityValue, readonly)!,
     ...(name === "length" ? {} : { insertText: `${name}()` }),
   }));
 }
@@ -5517,6 +5557,7 @@ function setMemberDetail(
   name: string,
   elementType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  readonly = false,
 ): string | null {
   const element = displayType(elementType, typeDisplayNames);
   const details: Readonly<Record<string, string>> = {
@@ -5526,18 +5567,24 @@ function setMemberDetail(
     remove: `remove(in value: ${element}): Option<${element}>  // transfers the removed value`,
     delete: `delete(in value: ${element}): boolean  // destroys the removed value`,
     clear: "clear(): void  // destroys all values",
+    freeze: `freeze(): readonly Set<${element}>  // consumes without copying`,
   };
+  if (readonly && !["length", "has"].includes(name)) return null;
   return details[name] ?? null;
 }
 
 function setCompletions(
   elementType: string,
   typeDisplayNames: ReadonlyMap<string, string>,
+  readonly = false,
 ): CompletionItem[] {
-  return ["length", "has", "add", "remove", "delete", "clear"].map((name) => ({
+  const names = readonly
+    ? ["length", "has"]
+    : ["length", "has", "add", "remove", "delete", "clear", "freeze"];
+  return names.map((name) => ({
     label: name,
     kind: name === "length" ? completionKinds.property : completionKinds.method,
-    detail: setMemberDetail(name, elementType, typeDisplayNames)!,
+    detail: setMemberDetail(name, elementType, typeDisplayNames, readonly)!,
     ...(name === "length" ? {} : { insertText: `${name}()` }),
   }));
 }
@@ -6724,6 +6771,8 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (type.startsWith("__z_borrowed:")) {
     return displayType(type.slice("__z_borrowed:".length), typeDisplayNames);
   }
+  const readonly = parseReadonlyType(type);
+  if (readonly) return `readonly ${displayType(readonly.target, typeDisplayNames)}`;
   const known = typeDisplayNames.get(type);
   if (known) return known;
   const unsafeNative = displayUnsafeNativeType(type);

@@ -32,6 +32,7 @@ import {
   onceTypeName,
 } from "./once-types.ts";
 import { mutexTypeName } from "./mutex-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 export type GenericAggregateMaterialization = {
   readonly declaration: StructDeclaration;
@@ -157,6 +158,8 @@ export function materializeGenerics(
   const displayName = (name: string): string => {
     const known = typeDisplayNames.get(name);
     if (known) return known;
+    const readonly = parseReadonlyType(name);
+    if (readonly) return `readonly ${displayName(readonly.target)}`;
     const view = parseViewType(name);
     if (view) return `view ${displayName(view.target)}`;
     const array = parseFixedArrayType(name);
@@ -164,7 +167,7 @@ export function materializeGenerics(
     const slice = parseSliceType(name);
     if (slice) return `Slice<${displayName(slice.elementType)}>`;
     const dynamic = parseDynamicArrayType(name);
-    if (dynamic) return `Array<${displayName(dynamic.elementType)}>`;
+    if (dynamic) return `${dynamic.readonly ? "readonly " : ""}Array<${displayName(dynamic.elementType)}>`;
     if (name.startsWith("__z_Map_")) {
       const display = typeDisplayNames.get(name);
       if (display) return display;
@@ -181,6 +184,8 @@ export function materializeGenerics(
     if (substitutions.has(name)) return substitutions.get(name)!;
     const aliasTarget = typeAliasTargets.get(name);
     if (aliasTarget) return substituteName(aliasTarget, substitutions);
+    const readonly = parseReadonlyType(name);
+    if (readonly) return readonlyTypeName(substituteName(readonly.target, substitutions));
     const view = parseViewType(name);
     if (view) return viewTypeName(substituteName(view.target, substitutions));
     const functionType = parseFunctionType(name);
@@ -199,7 +204,10 @@ export function materializeGenerics(
     const slice = parseSliceType(name);
     if (slice) return sliceTypeName(substituteName(slice.elementType, substitutions));
     const dynamic = parseDynamicArrayType(name);
-    if (dynamic) return dynamicArrayTypeName(substituteName(dynamic.elementType, substitutions));
+    if (dynamic) {
+      const substituted = dynamicArrayTypeName(substituteName(dynamic.elementType, substitutions));
+      return dynamic.readonly ? readonlyTypeName(substituted) : substituted;
+    }
     const generic = parseGenericType(name);
     if (!generic) return name;
     const args = generic.arguments.map((argument) => substituteName(argument, substitutions));

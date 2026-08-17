@@ -23,7 +23,6 @@ import {
   encodeForeignFunctionDeclarationStream,
   encodeStage1ModuleBatch,
   existsSync,
-  formatDiagnostic,
   hostToolchainTest,
   hover,
   isProcessOutputOverflowError,
@@ -2228,6 +2227,7 @@ test("exposes Array members and source-level types to editor services", () => {
   assert.equal(items.find((item) => item.label === "length")?.detail, "usize");
   assert.equal(items.find((item) => item.label === "capacity")?.detail, "usize");
   assert.match(items.find((item) => item.label === "push")?.detail ?? "", /push\(value: i32\): void/);
+  assert.match(items.find((item) => item.label === "freeze")?.detail ?? "", /readonly Array<i32>.*without copying/);
 
   const valid = source.replace("      values.;", "      values.push(1);");
   const declaration = valid.indexOf("values =");
@@ -3116,6 +3116,7 @@ test("exposes Map imports, members, and source-level types to editor services", 
   assert.match(items.find((item) => item.label === "get")?.detail ?? "", /Option<view i32>/);
   assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<i32>/);
   assert.match(items.find((item) => item.label === "delete")?.detail ?? "", /boolean.*destroys/);
+  assert.match(items.find((item) => item.label === "freeze")?.detail ?? "", /readonly Map<String, i32>.*without copying/);
 
   const valid = source.replace("      users.;", "      users.set(\"answer\", 42);");
   const binding = valid.indexOf("users =");
@@ -3428,6 +3429,7 @@ test("exposes Set imports, members, and source-level types to editor services", 
   assert.match(items.find((item) => item.label === "add")?.detail ?? "", /add\(value: String\): boolean/);
   assert.match(items.find((item) => item.label === "remove")?.detail ?? "", /Option<String>/);
   assert.match(items.find((item) => item.label === "delete")?.detail ?? "", /boolean.*destroys/);
+  assert.match(items.find((item) => item.label === "freeze")?.detail ?? "", /readonly Set<String>.*without copying/);
 
   const valid = source.replace("      values.;", "      values.add(\"ready\");");
   const binding = valid.indexOf("values =");
@@ -3448,4 +3450,146 @@ test("exposes Set imports, members, and source-level types to editor services", 
   const valueOffset = iteration.indexOf("value.;") + "value.".length;
   const valueItems = completions(iteration, "set-iteration-editor.zs", valueOffset);
   assert.equal(valueItems.find((item) => item.label === "byteLength")?.detail, "usize  // UTF-8 storage bytes");
+});
+
+test("freezes owned collections into type-position readonly storage without copying", () => {
+  const directory = mkdtempSync("/tmp/z-readonly-collections-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Map, Set } from "std/collections";
+
+      function keepRoutes(routes: Map<String, i32>): readonly Map<String, i32> {
+        return routes.freeze();
+      }
+
+      function freezeValues<T>(values: Array<T>): readonly Array<T> {
+        return values.freeze();
+      }
+
+      function main(): i32 {
+        let routes = Map<String, i32>();
+        routes.set("ready", 40);
+        const frozenRoutes: readonly Map<String, i32> = keepRoutes(move routes);
+
+        let names = Set<String>();
+        names.add("ready");
+        const frozenNames: readonly Set<String> = names.freeze();
+
+        let values = Array<i32>(1, 2);
+        const frozenValues: readonly Array<i32> = freezeValues(move values);
+        return frozenRoutes.has("ready") && frozenNames.has("ready") && frozenValues.length == 2
+          ? 0
+          : 1;
+      }
+    `;
+    writeFileSync(file, source);
+    assert.equal(diagnostics(source, file).length, 0);
+
+    const generated = compileToC(source, file);
+    assert.doesNotMatch(generated, /__z_readonly/);
+    assert.match(generated, /bool _z_live_frozenRoutes_\d+ = true/);
+    assert.match(generated, /bool _z_live_frozenNames_\d+ = true/);
+    assert.match(generated, /if \(_z_live_frozenRoutes_\d+\) Z___z_Map_6_Stringi32_deinit/);
+    assert.match(generated, /if \(_z_live_frozenNames_\d+\) Z___z_Set_String_deinit/);
+    const result = spawnSync(process.execPath, [cli, "run", file], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+
+    const frozenBinding = source.indexOf("frozenRoutes:") + 1;
+    assert.match(
+      hover(source, file, frozenBinding)?.contents.value ?? "",
+      /frozenRoutes: readonly Map<String, i32>/,
+    );
+    const freezeOffset = source.indexOf("freeze()") + 2;
+    assert.match(
+      hover(source, file, freezeOffset)?.contents.value ?? "",
+      /freeze\(\): readonly Map<String, i32>.*consumes without copying/,
+    );
+    const completionSource = source.replace(
+      'return frozenRoutes.has("ready")',
+      "frozenRoutes.;\n        return frozenRoutes.has(\"ready\")",
+    );
+    const completionOffset = completionSource.indexOf("frozenRoutes.;") + "frozenRoutes.".length;
+    const frozenMembers = completions(completionSource, file, completionOffset).map((item) => item.label);
+    assert.ok(frozenMembers.includes("length"));
+    assert.ok(frozenMembers.includes("has"));
+    assert.ok(frozenMembers.includes("get"));
+    assert.ok(!frozenMembers.includes("set"));
+    assert.ok(!frozenMembers.includes("clear"));
+    assert.ok(!frozenMembers.includes("freeze"));
+
+    const readonlyMutation = source.replace(
+      "return frozenRoutes.has(\"ready\")",
+      "frozenRoutes.clear();\n        return frozenRoutes.has(\"ready\")",
+    );
+    const mutation = diagnostics(readonlyMutation, file)[0];
+    assert.equal(mutation?.code, "Z0207");
+    assert.match(mutation?.message ?? "", /readonly Map has no mutating method "clear"/);
+
+    const movedSource = source.replace(
+      "const frozenNames: readonly Set<String> = names.freeze();",
+      "const frozenNames: readonly Set<String> = names.freeze();\n        names.add(\"late\");",
+    );
+    assert.match(diagnostics(movedSource, file)[0]?.message ?? "", /use of moved value "names"/);
+
+    const readonlyArrayMutation = source.replace(
+      "return frozenRoutes.has(\"ready\")",
+      "frozenValues.push(3);\n        return frozenRoutes.has(\"ready\")",
+    );
+    assert.match(
+      diagnostics(readonlyArrayMutation, file)[0]?.message ?? "",
+      /readonly Array has no mutating method "push"/,
+    );
+
+    const unsupported = `function inspect(value: readonly i32): i32 { return value; }`;
+    const unsupportedDiagnostic = diagnostics(unsupported, "readonly-scalar.zs")[0];
+    assert.equal(unsupportedDiagnostic?.code, "Z0207");
+    assert.match(unsupportedDiagnostic?.message ?? "", /requires Array, Map, or Set/);
+
+    const libraryFile = resolve(directory, "published-routes.zs");
+    const consumerFile = resolve(directory, "consumer.zs");
+    writeFileSync(libraryFile, `
+      import { Map } from "std/collections";
+      export type PublishedRoutes = readonly Map<String, i32>;
+      export function publish(routes: Map<String, i32>): PublishedRoutes {
+        return routes.freeze();
+      }
+    `);
+    writeFileSync(consumerFile, `
+      import { Map } from "std/collections";
+      import { PublishedRoutes, publish } from "./published-routes.zs";
+      function inspect(in routes: PublishedRoutes): boolean { return routes.has("ready"); }
+      function main(): i32 {
+        let routes = Map<String, i32>();
+        routes.set("ready", 42);
+        const published: PublishedRoutes = publish(move routes);
+        return inspect(published) ? 0 : 1;
+      }
+    `);
+    const moduleResult = spawnSync(process.execPath, [cli, "run", consumerFile], { encoding: "utf8" });
+    assert.equal(moduleResult.status, 0, moduleResult.stderr);
+    const moduleNativeCheck = spawnSync(
+      process.execPath,
+      [cli, "check", consumerFile, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(moduleNativeCheck.status, 0, moduleNativeCheck.stderr);
+
+    const threadFile = resolve(projectRoot, "examples/language/collections/readonly-collections.zs");
+    const threadSource = readFileSync(threadFile, "utf8");
+    assert.equal(diagnostics(threadSource, threadFile).length, 0);
+    const threadResult = spawnSync(process.execPath, [cli, "run", threadFile], { encoding: "utf8" });
+    assert.equal(threadResult.status, 0, threadResult.stderr);
+    assert.equal(threadResult.stdout, "published route ready=true\n");
+
+    const mutableStorage = threadSource.replace(
+      "readonly handlers: readonly Map<String, i32>;",
+      "readonly handlers: Map<String, i32>;",
+    ).replace("handlers: handlers.freeze(),", "handlers,");
+    const mutableStorageDiagnostic = diagnostics(mutableStorage, threadFile)[0];
+    assert.equal(mutableStorageDiagnostic?.code, "Z0704");
+    assert.match(mutableStorageDiagnostic?.message ?? "", /mutable Map<String, i32> storage/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

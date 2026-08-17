@@ -26,6 +26,7 @@ import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
 import type { StandardModuleName } from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 export type SourceModuleInfo = {
   readonly fileName: string;
@@ -921,6 +922,8 @@ function renameTypeReference(reference: TypeReference, scope: ModuleScope, typeP
 }
 
 function renameTypeName(name: string, scope: ModuleScope, typeParameters: ReadonlySet<string>): string {
+  const readonly = parseReadonlyType(name);
+  if (readonly) return readonlyTypeName(renameTypeName(readonly.target, scope, typeParameters));
   const view = parseViewType(name);
   if (view) return viewTypeName(renameTypeName(view.target, scope, typeParameters));
   if (isNullableObjCTypeName(name)) {
@@ -943,7 +946,10 @@ function renameTypeName(name: string, scope: ModuleScope, typeParameters: Readon
   const slice = parseSliceType(name);
   if (slice) return sliceTypeName(renameTypeName(slice.elementType, scope, typeParameters));
   const dynamic = parseDynamicArrayType(name);
-  if (dynamic) return dynamicArrayTypeName(renameTypeName(dynamic.elementType, scope, typeParameters));
+  if (dynamic) {
+    const renamed = dynamicArrayTypeName(renameTypeName(dynamic.elementType, scope, typeParameters));
+    return dynamic.readonly ? readonlyTypeName(renamed) : renamed;
+  }
   const generic = parseGenericType(name);
   if (generic) {
     const base = renameSimpleType(generic.base, scope);

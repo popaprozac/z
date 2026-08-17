@@ -1127,6 +1127,24 @@ to its ordinary ownership rules. Safe indexing uses the same bounds check as
 fixed arrays. Destruction walks initialized elements in reverse order before
 freeing the buffer.
 
+Owned collections have an explicit publication boundary:
+
+```z
+let handlers = Map<String, Handler>();
+handlers.set("open", openHandler);
+const published: readonly Map<String, Handler> = handlers.freeze();
+```
+
+Type-position `readonly` is deliberately limited to `Array<T>`, `Map<K, V>`,
+and `Set<T>` in this tier. It removes structural mutators while preserving the
+same owning representation and deterministic cleanup. `freeze()` consumes the
+mutable named owner and transfers its allocation without copying, allocating,
+or walking elements. It is distinct from declaration-position `readonly`:
+`readonly handlers: Map<K, V>` prevents field replacement but leaves mutable
+Map behavior reachable, while `handlers: readonly Map<K, V>` freezes the
+collection capability. A shared class generally needs both positions. There is
+no implicit or explicit thaw in the first tier.
+
 A growable array can be borrowed as `Slice<T>` for a non-escaping call. A local
 may name a direct field or element projection with
 `const value = view owner.items[index]`; a value-struct method may also return a

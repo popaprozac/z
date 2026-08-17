@@ -85,6 +85,7 @@ import {
 import { optionTypeName, parseOptionType } from "./option-types.ts";
 import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import {
   onceLifetimeTypeName,
@@ -11006,8 +11007,21 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "Map methods require named storage");
           }
           const method = expression.callee.property;
-          if (!["has", "get", "set", "remove", "delete", "clear"].includes(method)) {
+          if (!["has", "get", "set", "remove", "delete", "clear", "freeze"].includes(method)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Map has no method ${JSON.stringify(method)}`);
+          }
+          if (map.readonly && !["has", "get"].includes(method)) {
+            throw new DiagnosticError(fileName, expression.callee.location, `readonly Map has no mutating method ${JSON.stringify(method)}`, {
+              code: "Z0207",
+              notes: ["freezing consumes the mutable Map and permanently removes its mutation surface"],
+            });
+          }
+          if (method === "freeze") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `"freeze" expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);
+            return readonlyTypeName(receiverValueType);
           }
           const mutable = method === "set" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
@@ -11111,8 +11125,21 @@ function inferExpressionInner(
             throw new DiagnosticError(fileName, expression.callee.object.location, "Set methods require named storage");
           }
           const method = expression.callee.property;
-          if (!["has", "add", "remove", "delete", "clear"].includes(method)) {
+          if (!["has", "add", "remove", "delete", "clear", "freeze"].includes(method)) {
             throw new DiagnosticError(fileName, expression.callee.location, `Set has no method ${JSON.stringify(method)}`);
+          }
+          if (set.readonly && method !== "has") {
+            throw new DiagnosticError(fileName, expression.callee.location, `readonly Set has no mutating method ${JSON.stringify(method)}`, {
+              code: "Z0207",
+              notes: ["freezing consumes the mutable Set and permanently removes its mutation surface"],
+            });
+          }
+          if (method === "freeze") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `"freeze" expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);
+            return readonlyTypeName(receiverValueType);
           }
           const mutable = method === "add" || method === "remove" || method === "delete" || method === "clear";
           if (mutable) {
@@ -11309,8 +11336,25 @@ function inferExpressionInner(
         const dynamic = parseDynamicArrayType(receiverValueType);
         if (dynamic) {
           rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
-          if (expression.callee.property !== "push") {
+          if (expression.callee.property !== "push" && expression.callee.property !== "freeze") {
             throw new DiagnosticError(fileName, expression.callee.location, `Array has no method ${JSON.stringify(expression.callee.property)}`);
+          }
+          if (dynamic.readonly) {
+            throw new DiagnosticError(fileName, expression.callee.location, `readonly Array has no mutating method ${JSON.stringify(expression.callee.property)}`, {
+              code: "Z0207",
+              notes: ["freezing consumes the mutable Array and permanently removes its mutation surface"],
+            });
+          }
+          if (expression.callee.property === "freeze") {
+            if (expression.arguments.length !== 0) {
+              throw new DiagnosticError(fileName, expression.location, `"freeze" expects 0 arguments, received ${expression.arguments.length}`);
+            }
+            const root = storageRoot(expression.callee.object);
+            if (!root || !locals.has(root.name)) {
+              throw new DiagnosticError(fileName, expression.callee.object.location, "Array.freeze requires named owned storage");
+            }
+            consumeOwnedValue(expression.callee.object, receiverValueType, locals, structs, enums, fileName, state);
+            return readonlyTypeName(receiverValueType);
           }
           if (expression.arguments.length !== 1) {
             throw new DiagnosticError(fileName, expression.location, `"push" expects 1 argument, received ${expression.arguments.length}`);
@@ -14009,6 +14053,8 @@ function hasCleanupType(
 ): boolean {
   const actual = underlyingType(type);
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const readonly = parseReadonlyType(String(actual));
+  if (readonly) return hasCleanupType(readonly.target, structs, enums, foreignTypes, visiting);
   if (actual === "String" || actual === "TextBuffer" || actual === "Arena" || actual === "TaskScope" || actual === "TaskControl") return true;
   if (parseMutexType(actual)) return true;
   if (parseOnceLifetimeType(actual)) return true;
@@ -14303,6 +14349,37 @@ function shareableTypeIssue(
       ? null
       : mutexThreadShareIssue(actual, structs, enums, state);
   }
+  const dynamic = parseDynamicArrayType(actual);
+  if (dynamic) {
+    if (!dynamic.readonly) {
+      return {
+        reason: `${path} contains mutable ${displayAssignableType(actual, state)} storage`,
+        help: "call freeze() after construction, or keep this collection on one thread",
+      };
+    }
+    return shareableTypeIssue(dynamic.elementType, structs, enums, state, visiting, `${path}[]`);
+  }
+  const map = parseMapType(actual);
+  if (map) {
+    if (!map.readonly) {
+      return {
+        reason: `${path} contains mutable ${displayAssignableType(actual, state)} storage`,
+        help: "call freeze() after construction, or keep this collection on one thread",
+      };
+    }
+    return shareableTypeIssue(map.keyType, structs, enums, state, visiting, `${path}.key`)
+      ?? shareableTypeIssue(map.valueType, structs, enums, state, visiting, `${path}.value`);
+  }
+  const set = parseSetType(actual);
+  if (set) {
+    if (!set.readonly) {
+      return {
+        reason: `${path} contains mutable ${displayAssignableType(actual, state)} storage`,
+        help: "call freeze() after construction, or keep this collection on one thread",
+      };
+    }
+    return shareableTypeIssue(set.elementType, structs, enums, state, visiting, `${path}.value`);
+  }
   const executorAffinity = state.aggregateExecutorAffinities.get(actual);
   if (executorAffinity) {
     const inherited = executorAffinity.declared
@@ -14320,7 +14397,7 @@ function shareableTypeIssue(
       help: "keep the value on thread.main and transfer an owned thread-independent snapshot instead",
     };
   }
-  if (actual === "TextBuffer" || parseDynamicArrayType(actual)) {
+  if (actual === "TextBuffer") {
     return {
       reason: `${path} contains mutable ${displayAssignableType(actual, state)} storage`,
       help: ["store an immutable owned snapshot such as String", "or keep this class on one thread"].join(", "),
@@ -14427,6 +14504,17 @@ function initialThreadTransferKind(
   if (dynamic) {
     return initialThreadTransferKind(dynamic.elementType, structs, enums, state, visiting) ? "move" : null;
   }
+  const map = parseMapType(actual);
+  if (map?.readonly) {
+    return initialThreadTransferKind(map.keyType, structs, enums, state, visiting)
+      && initialThreadTransferKind(map.valueType, structs, enums, state, visiting)
+      ? "move"
+      : null;
+  }
+  const set = parseSetType(actual);
+  if (set?.readonly) {
+    return initialThreadTransferKind(set.elementType, structs, enums, state, visiting) ? "move" : null;
+  }
   const foreignNamed = state.foreignNamedTypes.get(actual);
   if (foreignNamed) {
     return foreignNamed.kind === "value"
@@ -14481,6 +14569,8 @@ function hasMoveOnlyForeignType(
 ): boolean {
   const actual = String(underlyingType(type));
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const readonly = parseReadonlyType(actual);
+  if (readonly) return hasMoveOnlyForeignType(readonly.target, structs, enums, foreignNamedTypes, visiting);
   const foreign = foreignNamedTypes.get(actual);
   if (foreign?.kind === "value") return foreign.lifecycle.move && !foreign.lifecycle.copy;
   if (foreign?.kind === "record" && foreign.resource) return true;
@@ -16461,6 +16551,29 @@ function validateType(
   allowVoid: boolean,
   state: AnalysisState,
 ): void {
+  const readonly = parseReadonlyType(type.name);
+  if (readonly) {
+    if (parseReadonlyType(readonly.target)) {
+      throw new DiagnosticError(fileName, type.location, "a type cannot be readonly more than once", { code: "Z0207" });
+    }
+    const collection = parseDynamicArrayType(type.name) ?? parseMapType(type.name) ?? parseSetType(type.name);
+    if (!collection) {
+      throw new DiagnosticError(fileName, type.location, "type-position readonly currently requires Array, Map, or Set", {
+        code: "Z0207",
+        helps: ["write `readonly Array<T>`, `readonly Map<K, V>`, or `readonly Set<T>`"],
+      });
+    }
+    validateType(
+      { name: readonly.target, location: type.location },
+      structs,
+      enums,
+      foreignNamedTypes,
+      fileName,
+      allowVoid,
+      state,
+    );
+    return;
+  }
   const mutex = parseMutexType(type.name);
   if (mutex) {
     validateType({ name: mutex.valueType, location: type.location }, structs, enums, foreignNamedTypes, fileName, false, state);
@@ -16618,6 +16731,8 @@ function resolveSemanticTypeName(
   state: AnalysisState,
 ): string {
   const resolveName = (name: string): string => {
+    const readonly = parseReadonlyType(name);
+    if (readonly) return readonlyTypeName(resolveName(readonly.target));
     const generic = parseGenericType(name);
     if (generic) {
       const standard = state.standardTypeBindings.get(generic.base);
@@ -16663,7 +16778,10 @@ function resolveSemanticTypeName(
     const slice = parseSliceType(name);
     if (slice) return sliceTypeName(resolveName(slice.elementType));
     const dynamic = parseDynamicArrayType(name);
-    if (dynamic) return dynamicArrayTypeName(resolveName(dynamic.elementType));
+    if (dynamic) {
+      const resolved = dynamicArrayTypeName(resolveName(dynamic.elementType));
+      return dynamic.readonly ? readonlyTypeName(resolved) : resolved;
+    }
     const array = parseFixedArrayType(name);
     if (array) return fixedArrayTypeName(resolveName(array.elementType), array.length);
     const declaration = structs.get(name) ?? enums.get(name);
@@ -16950,6 +17068,8 @@ function containsForeignValueStorage(
 ): boolean {
   const actual = String(underlyingType(type));
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const readonly = parseReadonlyType(actual);
+  if (readonly) return containsForeignValueStorage(readonly.target, structs, enums, foreignNamedTypes, visiting);
   const foreign = foreignNamedTypes.get(actual);
   if (foreign?.kind === "value" || (foreign?.kind === "record" && foreign.resource)) return true;
   const array = parseFixedArrayType(actual);
@@ -17020,6 +17140,8 @@ function containsOpaqueCleanupStorage(
 ): boolean {
   const actual = String(underlyingType(type));
   if (actual === "unknown" || actual === "never" || visiting.has(actual)) return false;
+  const readonly = parseReadonlyType(actual);
+  if (readonly) return containsOpaqueCleanupStorage(readonly.target, structs, enums, foreignTypes, visiting);
   if (foreignTypes.get(actual)?.ownership === "owned") return true;
   const array = parseFixedArrayType(actual);
   if (array) return containsOpaqueCleanupStorage(array.elementType, structs, enums, foreignTypes, visiting);
@@ -17045,6 +17167,8 @@ function containsOpaqueCleanupStorage(
 
 function displayAssignableType(type: ValueType, state: AnalysisState): string {
   const name = String(underlyingType(type));
+  const readonly = parseReadonlyType(name);
+  if (readonly) return `readonly ${displayAssignableType(readonly.target, state)}`;
   const unsafeNative = displayUnsafeNativeType(name);
   if (unsafeNative) return unsafeNative;
   const sourceName = state.typeDisplayNames.get(name);

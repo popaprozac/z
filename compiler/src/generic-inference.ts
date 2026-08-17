@@ -33,6 +33,7 @@ import { mapEntryTypeName, parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseWeakType, weakResultTypeName, weakTypeName } from "./weak-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
@@ -211,6 +212,8 @@ export function inferGenericCalls(
   const substituteType = (type: string, substitutions: ReadonlyMap<string, string>): string => {
     const direct = substitutions.get(type);
     if (direct) return direct;
+    const readonly = parseReadonlyType(type);
+    if (readonly) return readonlyTypeName(substituteType(readonly.target, substitutions));
     const functionType = parseFunctionType(type);
     if (functionType) {
       return functionTypeName(
@@ -227,7 +230,10 @@ export function inferGenericCalls(
     const slice = parseSliceType(type);
     if (slice) return sliceTypeName(substituteType(slice.elementType, substitutions));
     const dynamic = parseDynamicArrayType(type);
-    if (dynamic) return dynamicArrayTypeName(substituteType(dynamic.elementType, substitutions));
+    if (dynamic) {
+      const substituted = dynamicArrayTypeName(substituteType(dynamic.elementType, substitutions));
+      return dynamic.readonly ? readonlyTypeName(substituted) : substituted;
+    }
     const generic = parseGenericType(type);
     return generic
       ? genericTypeName(generic.base, generic.arguments.map((argument) => substituteType(argument, substitutions)))

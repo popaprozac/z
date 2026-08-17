@@ -68,6 +68,7 @@ import {
   parseOnceType,
 } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -172,8 +173,14 @@ export function generateC(
   const arrayTypes = collectFixedArrayTypes(program, semanticInfo);
   const sliceTypes = collectSliceTypes(program, semanticInfo);
   const dynamicArrayTypes = collectDynamicArrayTypes(program, semanticInfo);
-  const mapTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseMapType(name));
-  const setTypes = program.structs.map((declaration) => declaration.name).filter((name) => parseSetType(name));
+  const mapTypes = [...new Set(program.structs
+    .map((declaration) => declaration.name)
+    .filter((name) => parseMapType(name))
+    .map(writableTypeName))];
+  const setTypes = [...new Set(program.structs
+    .map((declaration) => declaration.name)
+    .filter((name) => parseSetType(name))
+    .map(writableTypeName))];
   const generatorTypes = [...new Set(
     [
       ...semanticInfo.iteratorElementTypes.keys(),
@@ -2117,9 +2124,10 @@ function collectDynamicArrayTypes(program: Program, semanticInfo: SemanticInfo):
   const collected = new Set<string>();
   const add = (name: string): void => {
     const dynamic = parseDynamicArrayType(name);
-    if (!dynamic || collected.has(name)) return;
+    const writable = writableTypeName(name);
+    if (!dynamic || collected.has(writable)) return;
     add(dynamic.elementType);
-    collected.add(name);
+    collected.add(writable);
   };
   const visit = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
@@ -7058,6 +7066,8 @@ function generateValueCleanup(
   liveFlag: string | null,
   context: GenerationContext,
 ): string {
+  const readonly = parseReadonlyType(type);
+  if (readonly) return generateValueCleanup(value, readonly.target, liveFlag, context);
   if (parseGeneratorType(type)) {
     const release = `${generatorDeinitName(type)}(&(${value}));`;
     return liveFlag ? `if (${liveFlag}) ${release}` : release;
@@ -8858,6 +8868,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         const map = parseMapType(receiverValueType);
         if (map) {
+          if (expression.callee.property === "freeze") {
+            return generateExpression(expression.callee.object, context);
+          }
           const receiver = generateExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
           const receiverPointer = receiverView ? receiver : `&(${receiver})`;
@@ -8865,6 +8878,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         }
         const set = parseSetType(receiverValueType);
         if (set) {
+          if (expression.callee.property === "freeze") {
+            return generateExpression(expression.callee.object, context);
+          }
           const receiver = generateExpression(expression.callee.object, context);
           const args = expression.arguments.map((argument) => generateCallArgument(argument, context));
           const receiverPointer = receiverView ? receiver : `&(${receiver})`;
@@ -8905,6 +8921,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
         }
         if (parseDynamicArrayType(receiverValueType)) {
+          if (expression.callee.property === "freeze") {
+            return generateExpression(expression.callee.object, context);
+          }
           const receiver = generateExpression(expression.callee.object, context);
           const argument = generateCallArgument(expression.arguments[0], context);
           return `${dynamicArrayPushName(receiverValueType)}(&(${receiver}), ${argument})`;
@@ -10283,6 +10302,7 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         const receiverType = inferExpressionType(expression.callee.object, context);
         const map = parseMapType(receiverType);
         if (map) {
+          if (expression.callee.property === "freeze") return readonlyTypeName(receiverType);
           if (expression.callee.property === "has") return "boolean";
           if (expression.callee.property === "get") {
             return optionTypeName(mapValueHasReferenceIdentity(map.valueType, context.structs, context.semanticInfo)
@@ -10294,11 +10314,14 @@ function inferExpressionType(expression: Expression, context: GenerationContext)
         }
         const set = parseSetType(receiverType);
         if (set) {
+          if (expression.callee.property === "freeze") return readonlyTypeName(receiverType);
           if (expression.callee.property === "has" || expression.callee.property === "add") return "boolean";
           if (expression.callee.property === "remove") return optionTypeName(set.elementType);
           return "void";
         }
-        if (parseDynamicArrayType(receiverType)) return "void";
+        if (parseDynamicArrayType(receiverType)) {
+          return expression.callee.property === "freeze" ? readonlyTypeName(receiverType) : "void";
+        }
         const weak = parseWeakType(receiverType);
         if (weak && expression.callee.property === "upgrade") return weakResultTypeName(weak.target);
         const owner = context.structs.get(receiverType);
@@ -10418,6 +10441,8 @@ function mapType(
   if (name.startsWith("__z_borrowed:")) {
     return mapType(name.slice("__z_borrowed:".length), structs, enums, foreignNamedTypes);
   }
+  const readonly = parseReadonlyType(name);
+  if (readonly) return mapType(readonly.target, structs, enums, foreignNamedTypes);
   const view = parseViewType(name);
   if (view) {
     if (parsePointerTypeName(view.target)) {
@@ -10480,6 +10505,8 @@ function requiresNativeMove(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(name)) return false;
+  const readonly = parseReadonlyType(name);
+  if (readonly) return requiresNativeMove(readonly.target, structs, enums, foreignNamedTypes, visiting);
   const foreign = foreignNamedTypes.get(name);
   if (foreign?.kind === "value") return foreign.lifecycle.move && !foreign.lifecycle.copy;
   const array = parseFixedArrayType(name);
@@ -10508,6 +10535,8 @@ function requiresNativeLifetime(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(name)) return false;
+  const readonly = parseReadonlyType(name);
+  if (readonly) return requiresNativeLifetime(readonly.target, structs, enums, foreignNamedTypes, visiting);
   const foreign = foreignNamedTypes.get(name);
   if (foreign?.kind === "value" || (foreign?.kind === "record" && foreign.resource)) return true;
   const array = parseFixedArrayType(name);
@@ -10646,7 +10675,8 @@ function setEqualityName(name: string): string {
 }
 
 function nativeSymbolPart(name: string): string {
-  return [...name].map((character) => (
+  const writable = writableTypeName(name);
+  return [...writable].map((character) => (
     /[A-Za-z0-9_]/.test(character) ? character : `_${character.codePointAt(0)!.toString(16)}_`
   )).join("");
 }
@@ -10714,6 +10744,8 @@ function hasCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
+  const readonly = parseReadonlyType(type);
+  if (readonly) return hasCleanupType(readonly.target, structs, enums, foreignTypes, visiting);
   if (
     type === "String"
     || type === "TextBuffer"
@@ -10756,6 +10788,8 @@ function hasSemanticCleanupType(
   visiting = new Set<string>(),
 ): boolean {
   if (visiting.has(type)) return false;
+  const readonly = parseReadonlyType(type);
+  if (readonly) return hasSemanticCleanupType(readonly.target, structs, enums, semanticInfo, visiting);
   if (parseGeneratorType(type)) return true;
   if (parseMutexType(type)) return true;
   const foreignNamed = semanticInfo.foreignNamedTypes.get(type);
@@ -10797,6 +10831,8 @@ function containsCValueResourceStorage(
   visiting = new Set<string>(),
 ): boolean {
   if (type.startsWith("__z_borrowed:") || visiting.has(type)) return false;
+  const readonly = parseReadonlyType(type);
+  if (readonly) return containsCValueResourceStorage(readonly.target, structs, enums, foreignNamedTypes, visiting);
   const foreign = foreignNamedTypes.get(type);
   if (foreign?.kind === "record" && foreign.resource) return true;
   const array = parseFixedArrayType(type);

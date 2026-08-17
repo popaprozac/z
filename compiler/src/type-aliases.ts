@@ -11,6 +11,7 @@ import { DiagnosticError } from "./diagnostics.ts";
 import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { genericTypeName, parseGenericType } from "./generic-types.ts";
 import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
+import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 import { transformProgramTypeNames } from "./foreign-handle-types.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 
@@ -54,6 +55,8 @@ export function resolveTypeAliases(
     if (isNullableObjCTypeName(name)) {
       return nullableObjCTypeName(resolveName(publicObjCTypeName(name), stack));
     }
+    const readonly = parseReadonlyType(name);
+    if (readonly) return readonlyTypeName(resolveName(readonly.target, stack));
     const functionType = parseFunctionType(name);
     if (functionType) {
       return functionTypeName(
@@ -72,7 +75,10 @@ export function resolveTypeAliases(
     const slice = parseSliceType(name);
     if (slice) return sliceTypeName(resolveName(slice.elementType, stack));
     const dynamic = parseDynamicArrayType(name);
-    if (dynamic) return dynamicArrayTypeName(resolveName(dynamic.elementType, stack));
+    if (dynamic) {
+      const resolved = dynamicArrayTypeName(resolveName(dynamic.elementType, stack));
+      return dynamic.readonly ? readonlyTypeName(resolved) : resolved;
+    }
     const generic = parseGenericType(name);
     if (generic) {
       return genericTypeName(
