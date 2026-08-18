@@ -5,6 +5,13 @@ a real native boundary. Its user-authored `Application` stores `NSWindow`,
 `NSTextField`, and `NSButton` identities while keeping worker state behind
 `Mutex<T>`.
 
+The same example now builds its message table through a mutable
+`RouteRegistry`, consumes that setup value into a deeply readonly `Router`,
+and stores the published router on `Application`. The AppKit callback and the
+native worker both dispatch through that one immutable table. One worker route
+also throws a typed `RouteError`; `attempt` proves the error remains ordinary Z
+control flow even when the table is shared across executors.
+
 Run it from the repository root:
 
 ```sh
@@ -20,8 +27,9 @@ await on thread.main publishApplicationStatus(ticket);
 ```
 
 The application root also owns an `objc.Connection` for the button's
-target/action lifetime. That connection owns a Z closure, the closure owns a
-reusable `Router`, and the router owns its typed handler Map. The deterministic
+target/action lifetime. That connection owns a Z closure, while the application
+and closure share a reusable readonly `Router` whose immutable Map stores only
+`on thread.any` handlers. The deterministic
 smoke path clicks the button after `Once<Application>` is initialized, so the
 native callback enters Z, dispatches `Message({ operation: "appkit-action" })`,
 retrieves the current application, and publishes the routed result on main.
@@ -51,6 +59,11 @@ The example is intentionally not a built-in framework. It proves that ordinary
 Z code can build a framework-level application root whose synchronized model
 surface is available to workers while AppKit identity and callback lifetimes
 stay main-executor bound.
+
+`Application`, `RouteRegistry`, `Router`, and these route names are all example
+code. Z contributes only the general-purpose ownership, readonly publication,
+typed-error, synchronization, executor, closure, and native-interop features
+used to build them.
 
 AppKit construction currently lives in the synchronous, main-bound
 `createApplication()` helper. Direct imported Objective-C expressions inside

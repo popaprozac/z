@@ -1909,6 +1909,14 @@ through `Mutex<RuntimeState>`, and then executes a direct
 updates both native UI objects; the parent subsequently closes the window on
 main and releases the root deterministically.
 
+The root now also owns a deeply readonly `Router`. Setup registers
+`on thread.any` handlers through a unique mutable `RouteRegistry`, then
+`finish(move this)` transfers the registry's sole owned Map into the published
+router. The AppKit target/action closure and native worker dispatch through the
+same immutable table; a worker route deliberately throws `RouteError`, which
+is materialized with `attempt` without weakening executor or ownership rules.
+This is ordinary example code rather than framework-specific language surface.
+
 This confirms that member-level affinity survives imported Objective-C
 identity rather than working only for synthetic integer fields. It also found
 one current lowering boundary: direct imported Objective-C expressions are not
@@ -2701,11 +2709,14 @@ as direct throwing calls. Map insertion and lookup retain independently, while
 replacement, removal, clearing, and destruction transfer or release exactly
 once.
 
-The class-owned message router now compiles and runs through both Stage 0 and the
-fixed-point emitter under strict C warnings. Its output includes one—and only
-one—`RouteState.deinit`, which makes the retain balance observable: a missing
-lookup release would leak the closure and suppress that line, while an early or
-duplicate release would destroy the capture before final Map cleanup. A second
+The message router now compiles and runs through Stage 0 and native semantic
+authority under strict C warnings. Registration occurs on a mutable
+`RouteRegistry`, while `finish(move this)` consumes that wrapper and publishes
+a deeply readonly ARC `Router`. Closing that seam required one deliberately
+narrow ownership rule: a consuming value-struct method may transfer its sole
+ownership-bearing field, invalidating the whole receiver and disabling its
+cleanup guard. Custom `deinit` or a second cleanup-bearing field still rejects
+the extraction, so this does not introduce general partial-move state. A second
 differential fixture covers transparent aliases, raw function-type parameters,
 direct named-function conversion, and an inferred scalar-capturing closure.
 
@@ -2717,12 +2728,11 @@ both. The consumer can therefore construct an expression closure against an
 imported `Handler`, while the fixed-point emitter still shares the exact
 canonical ABI declared by the owning module.
 
-The companion native-callback entry moves the router into an escaping callback
+The companion native-callback entry shares the published router with an escaping callback
 declared by `callbacks.h.zd`. The C registration owns the generated closure
 box; the closure owns the router; the router owns its Map and handler; and the
 handler owns captured ARC state. Calling the contracted native clear operation
-releases that root and produces exactly one state deinitializer before control
-returns to `main`. The callback is explicitly `thread caller`, so this proves
+releases that foreign root before control returns to `main`. The callback is explicitly `thread caller`, so this proves
 foreign entry and lifetime composition without claiming arbitrary-thread Map
 access; a `thread any` producer would still require synchronization or executor
 isolation.

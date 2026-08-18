@@ -3,6 +3,11 @@ import console from "std/console";
 import objc from "std/objc";
 import { Mutex, Once, OnceLifetime } from "std/sync";
 import { thread } from "std/thread";
+import {
+  Message,
+  RouteError,
+  Router,
+} from "../message-router/router.zs";
 
 export struct RuntimeState {
   started: i32;
@@ -15,6 +20,7 @@ export struct RuntimeState {
 export class Application {
   readonly name: String;
   readonly state: Mutex<RuntimeState>;
+  readonly router: Router;
   window: AppKit.NSWindow on thread.main;
   statusLabel: AppKit.NSTextField on thread.main;
   actionButton: AppKit.NSButton on thread.main;
@@ -49,6 +55,10 @@ export class Application {
     return this.state.withLock(
       (in state): i32 => state.routedAction
     );
+  }
+
+  function route(in message: Message): i32 throws RouteError {
+    return try this.router.dispatch(in message);
   }
 
   function show(): void on thread.main {

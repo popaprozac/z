@@ -1964,7 +1964,7 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
     { encoding: "utf8" },
   );
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
-  assert.match(nativeCheck.stdout, /native frontend hybrid matches 4 modules, 4 local edges/);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 4 modules, 6 local edges/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], {
     encoding: "utf8",

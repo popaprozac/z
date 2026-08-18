@@ -1625,7 +1625,7 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   assert.match(hover(source, example, pointUse)?.contents.value ?? "", /struct Point/);
   const moveUse = source.indexOf("move(origin") + 1;
   const moveHover = hover(source, example, moveUse)?.contents.value ?? "";
-  assert.match(moveHover, /function move\(point: Point, dx: i32, dy: i32\): Point/);
+  assert.match(moveHover, /function move\(in point: Point, dx: i32, dy: i32\): Point/);
   assert.match(moveHover, /Alias of `translate` from `"\.\/geometry\.zs"`\./);
   const moveDeclaration = source.indexOf("move", source.indexOf("translate as")) + 1;
   assert.match(hover(source, example, moveDeclaration)?.contents.value ?? "", /Alias of `translate`/);
@@ -1642,7 +1642,7 @@ test("provides completion, hover, definitions, and semantic tokens across Z modu
   const symbolOffset = symbolSource.indexOf("mov;") + 3;
   const moveCompletion = completions(symbolSource, example, symbolOffset).find((item) => item.label === "move");
   assert.equal(moveCompletion?.kind, 3);
-  assert.match(moveCompletion?.detail ?? "", /function move\(point: Point, dx: i32, dy: i32\): Point/);
+  assert.match(moveCompletion?.detail ?? "", /function move\(in point: Point, dx: i32, dy: i32\): Point/);
   assert.match(moveCompletion?.detail ?? "", /alias of translate from "\.\/geometry\.zs"/);
 
   const tokens = decodeSemanticTokens(semanticTokens(source, example).data);
@@ -1694,7 +1694,7 @@ test("suggests selective imports and typed object fields", () => {
   const translate = completions(localImport, moduleFile, localImportOffset)
     .find((item) => item.label === "translate");
   assert.equal(translate?.kind, 3);
-  assert.match(translate?.detail ?? "", /translate\(point: Point, dx: i32, dy: i32\): Point/);
+  assert.match(translate?.detail ?? "", /translate\(in point: Point, dx: i32, dy: i32\): Point/);
 
   const standardImport = `import { d } from "std/time"; function main(): i32 { return 0; }`;
   const standardImportOffset = standardImport.indexOf("d }") + 1;
@@ -2518,7 +2518,7 @@ test("routes an escaping C callback through a class-owned Z handler map", () => 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "released native route state 20\nnative callback routed=42\n",
+    "native callback routed=42\n",
   );
 });
 

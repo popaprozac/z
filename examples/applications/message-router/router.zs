@@ -1,4 +1,5 @@
 import { Map } from "std/collections";
+import { thread } from "std/thread";
 
 export struct Message {
   operation: String;
@@ -9,14 +10,23 @@ export struct RouteError {
   operation: String;
 }
 
-export type Handler = (in message: Message) => i32 throws RouteError;
+export type Handler =
+  (in message: Message) => i32 throws RouteError on thread.any;
 
-export class Router {
+export struct RouteRegistry {
   handlers: Map<String, Handler>;
 
   function register(inout this, name: String, handler: Handler): void {
     this.handlers.set(move name, handler);
   }
+
+  function finish(move this): Router {
+    return new Router({ handlers: this.handlers.freeze() });
+  }
+}
+
+export readonly class Router {
+  readonly handlers: readonly Map<String, Handler>;
 
   function dispatch(in message: Message): i32 throws RouteError {
     const found = this.handlers.get(message.operation);
@@ -27,6 +37,6 @@ export class Router {
   }
 }
 
-export function createRouter(): Router {
-  return new Router({ handlers: Map<String, Handler>() });
+export function createRouteRegistry(): RouteRegistry {
+  return RouteRegistry({ handlers: Map<String, Handler>() });
 }

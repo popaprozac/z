@@ -2575,7 +2575,7 @@ test("stores ARC-managed function values in Map and returns retained handlers", 
   );
   assert.match(
     generated,
-    /_Router_register\(router, [^\n]+_retain\(addOffset\)\)/,
+    /_RouteRegistry_register\(&\(routes\), [^\n]+_retain\(addOffset\)\)/,
   );
   assert.match(generated, /_release\(self->entries\.data\[index\]\.value\)/);
 
@@ -2583,7 +2583,7 @@ test("stores ARC-managed function values in Map and returns retained handlers", 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
     result.stdout,
-    "increment=42 offset=42 missing=missing\nreleased route state 20\n",
+    "increment=42 offset=42 missing=missing\n",
   );
 
   const retainedLookup = `
@@ -2644,6 +2644,52 @@ test("stores ARC-managed function values in Map and returns retained handlers", 
   const lifecycleResult = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(lifecycleResult.status, 0, lifecycleResult.stderr);
   assert.equal(lifecycleResult.stdout, "drop=1\ndrop=2\ndrop=3\ndrop=4\nobserved=4\ndrop=5\n");
+});
+
+test("consumes a wrapper when extracting its sole owned field", () => {
+  const source = `
+    struct PendingValues {
+      values: Array<i32>;
+
+      function finish(move this): Array<i32> {
+        return this.values;
+      }
+    }
+
+    function main(): i32 {
+      let pending = PendingValues({ values: Array<i32>(20, 22) });
+      const values = pending.finish();
+      return values[0] + values[1] - 42;
+    }
+  `;
+  const generated = compileToC(source, "consume-wrapper-field.zs");
+  assert.match(generated, /_z_live_this_\d+ = false, self\.values/);
+  const directory = mkdtempSync("/tmp/z-consume-wrapper-field-");
+  const input = resolve(directory, "consume-wrapper-field.zs");
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const multipleOwners = source.replace(
+    "      values: Array<i32>;",
+    "      values: Array<i32>;\n      remaining: Array<i32>;",
+  ).replace(
+    "PendingValues({ values: Array<i32>(20, 22) })",
+    "PendingValues({ values: Array<i32>(20, 22), remaining: Array<i32>() })",
+  );
+  assert.throws(
+    () => compileToC(multipleOwners, "consume-wrapper-multiple-fields.zs"),
+    /cannot move an ownership-bearing field or element out of its owner/,
+  );
+
+  const customCleanup = source.replace(
+    "      function finish(move this)",
+    "      deinit {}\n\n      function finish(move this)",
+  );
+  assert.throws(
+    () => compileToC(customCleanup, "consume-wrapper-custom-cleanup.zs"),
+    /cannot move an ownership-bearing field or element out of its owner/,
+  );
 });
 
 test("hashes readonly nominal keys through the standard Hashable contract", () => {

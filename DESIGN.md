@@ -210,6 +210,13 @@ forwarded. Copyable receivers copy instead of invalidating the caller. `move`
 is contextual in this position, so it remains available as an ordinary name.
 `out` is not meaningful for an already-existing receiver.
 
+A `move this` value-struct method may transfer the receiver's sole
+ownership-bearing field. The transfer consumes the whole receiver, so it does
+not create observable partial-move state. Structs with custom `deinit` or
+another cleanup-bearing field remain rejected until Z has a general partial
+move model. This narrow rule supports mutable builder → readonly publication
+without weakening deterministic cleanup.
+
 Whether explicit `move this` should always invalidate even a copyable source is
 deliberately open. The bootstrap currently follows ordinary owned-parameter
 semantics and copies copyable receivers. Forced invalidation, or rejecting

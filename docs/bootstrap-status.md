@@ -441,7 +441,10 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    and loops merge state conservatively while exiting branches are excluded,
    borrowed bindings cannot be consumed, assignment
    and successful `out` restore storage, and `move this` invalidates a named
-   receiver. Exhaustive `match (value)` consumes cleanup-bearing subjects while
+   receiver. A consuming value-struct method may transfer its sole
+   ownership-bearing field while invalidating the whole receiver; custom
+   `deinit` and any second cleanup-bearing field preserve the general
+   partial-move rejection. Exhaustive `match (value)` consumes cleanup-bearing subjects while
    `match (in value)` borrows named storage; payload bindings inherit the matching
    access, cleanup-bearing destructured fields remain borrowed, and continuing
    arms merge outer move state. Readonly-field receiver paths, richer reachability,

@@ -1,23 +1,24 @@
 import console from "std/console";
-import { Handler, Message, createRouter } from "./router.zs";
+import {
+  Handler,
+  Message,
+  createRouteRegistry,
+} from "./router.zs";
 
-class RouteState {
-  offset: i32;
-
-  deinit {
-    console.log(`released route state ${this.offset}`);
-  }
+readonly class RouteState {
+  readonly offset: i32;
 }
 
 function main(): i32 {
-  const router = createRouter();
+  let routes = createRouteRegistry();
 
   const increment: Handler = (in message) => message.value + 1;
-  router.register("increment", increment);
+  routes.register("increment", increment);
 
   const state = new RouteState({ offset: 20 });
   const addOffset: Handler = move (in message) => message.value + state.offset;
-  router.register("offset", addOffset);
+  routes.register("offset", addOffset);
+  const router = routes.finish();
 
   const incrementMessage = Message({ operation: "increment", value: 41 });
   const offsetMessage = Message({ operation: "offset", value: 22 });

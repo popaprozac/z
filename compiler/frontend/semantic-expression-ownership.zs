@@ -5,6 +5,7 @@ import {
   arenaBundleMoveIsAllowed,
   liveViewBindingForOwner,
   setValueBindingOwnership,
+  valueBindingType,
   valueBindingInitialization,
   valueBindingIsBorrowed,
   valueBindingIsMatchBorrowed,
@@ -15,9 +16,11 @@ import {
   typeExpressionName,
 } from "./semantic-member-lookups.zs";
 import { typeMovesOnOwnedUse } from "./semantic-type-ownership.zs";
+import { typeSymbolLocation } from "./semantic-type-identities.zs";
 import {
   ModuleResolveError,
   ModuleResolveErrorKind,
+  ModuleSymbolKind,
   ResolvedModule,
   moduleResolutionError,
 } from "./semantic-model.zs";
@@ -139,8 +142,57 @@ export function consumeOwnedExpressionNode(
       || isKnownMatchVariant(modules, moduleIndex, typeName, variantName)
     ) return;
   }
+  let consumesWholeReceiver = false;
   if (
     kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiverIndex = tree.nodes[index].children[0];
+    if (
+      tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression
+      && identifierLookupName(tree.nodes[receiverIndex].value) == "this"
+      && !valueBindingIsBorrowed(bindings, "this")
+    ) {
+      const receiverType = valueBindingType(bindings, "this");
+      match (typeSymbolLocation(modules, moduleIndex, receiverType)) {
+        some(location) => {
+          const symbol = view modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ];
+          if (symbol.kind == ModuleSymbolKind.structSymbol) {
+            match (in symbol.typeSignature) {
+              some(signature) => {
+                if (!signature.customDeinit) {
+                  let foundField = false;
+                  let otherOwnedField = false;
+                  for (const field of signature.fields) {
+                    if (field.name == tree.nodes[index].value) {
+                      foundField = typeMovesOnOwnedUse(
+                        modules,
+                        location.moduleIndex,
+                        field.typeName
+                      );
+                    } else if (typeMovesOnOwnedUse(
+                      modules,
+                      location.moduleIndex,
+                      field.typeName
+                    )) {
+                      otherOwnedField = true;
+                    }
+                  }
+                  consumesWholeReceiver = foundField && !otherOwnedField;
+                }
+              }
+              none => {}
+            }
+          }
+        }
+        none => {}
+      }
+    }
+  }
+  if (
+    (kind == ExpressionKind.memberExpression && !consumesWholeReceiver)
     || kind == ExpressionKind.indexExpression
   ) {
     throw moduleResolutionError(

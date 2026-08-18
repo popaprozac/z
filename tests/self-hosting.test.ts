@@ -9852,6 +9852,49 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
 
   writeFileSync(
     bindingState,
+    "struct Payload {\n"
+      + "  id: i32;\n"
+      + "  deinit {}\n"
+      + "}\n"
+      + "struct Registry {\n"
+      + "  payload: Payload;\n"
+      + "  function finish(move this): Payload { return this.payload; }\n"
+      + "}\n"
+      + "function valid(): i32 {\n"
+      + "  const registry = Registry({ payload: Payload({ id: 42 }) });\n"
+      + "  const payload = registry.finish();\n"
+      + "  return payload.id;\n"
+      + "}\n",
+  );
+  const consumedReceiverField = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(consumedReceiverField.status, 0, consumedReceiverField.stderr);
+
+  writeFileSync(
+    bindingState,
+    "struct Payload { id: i32; deinit {} }\n"
+      + "struct Registry {\n"
+      + "  payload: Payload;\n"
+      + "  remaining: Payload;\n"
+      + "  function finish(move this): Payload { return this.payload; }\n"
+      + "}\n",
+  );
+  const partialReceiverMove = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(partialReceiverMove.status, 1);
+  assert.match(
+    partialReceiverMove.stderr,
+    /cannot move an ownership-bearing field or element out of its owner/,
+  );
+
+  writeFileSync(
+    bindingState,
     "struct Resource {\n"
       + "  id: i32;\n"
       + "  function merge(move this, in other: Resource): void {}\n"

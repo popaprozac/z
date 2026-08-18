@@ -4,21 +4,18 @@ import {
   invokeRetainedOperation,
   retainOperation
 } from "../../interop/c/callbacks.h";
-import { Handler, Message, Router, createRouter } from "./router.zs";
+import {
+  Handler,
+  Message,
+  Router,
+  createRouteRegistry,
+} from "./router.zs";
 
-class RouteState {
-  offset: i32;
-
-  deinit {
-    console.log(`released native route state ${this.offset}`);
-  }
+readonly class RouteState {
+  readonly offset: i32;
 }
 
 function installNativeDispatch(router: Router): void {
-  const state = new RouteState({ offset: 20 });
-  const addOffset: Handler = move (in message) => message.value + state.offset;
-  router.register("offset", addOffset);
-
   retainOperation(move (value) => {
     const message = Message({ operation: "offset", value });
     const routed = attempt router.dispatch(in message);
@@ -30,8 +27,12 @@ function installNativeDispatch(router: Router): void {
 }
 
 function main(): i32 {
-  const router = createRouter();
-  installNativeDispatch(move router);
+  let routes = createRouteRegistry();
+  const state = new RouteState({ offset: 20 });
+  const addOffset: Handler = move (in message) => message.value + state.offset;
+  routes.register("offset", addOffset);
+  const router = routes.finish();
+  installNativeDispatch(router);
 
   const routed = invokeRetainedOperation(22);
   clearRetainedOperation();

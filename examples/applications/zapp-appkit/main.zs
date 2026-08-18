@@ -16,7 +16,8 @@ import { refreshProject } from "./background.zs";
 import {
   Handler,
   Message,
-  createRouter,
+  RouteError,
+  createRouteRegistry,
 } from "../message-router/router.zs";
 
 function createApplication(): Application on thread.main {
@@ -52,9 +53,16 @@ function createApplication(): Application on thread.main {
   actionButton.title = "Route Z Action";
   content.addSubview(actionButton);
 
-  const router = createRouter();
+  let routes = createRouteRegistry();
   const routeAction: Handler = (in message) => message.value + 1;
-  router.register("appkit-action", routeAction);
+  routes.register("appkit-action", routeAction);
+  const routeBackground: Handler = (in message) => message.value;
+  routes.register("background-job", routeBackground);
+  const rejectAction: Handler = (in message) => {
+    throw RouteError({ operation: copy message.operation });
+  };
+  routes.register("reject-action", rejectAction);
+  const router = routes.finish();
   const actionConnection = objc.connect(actionButton, move (): void => {
     const message = Message({ operation: "appkit-action", value: 41 });
     const routed = attempt router.dispatch(in message);
@@ -74,6 +82,7 @@ function createApplication(): Application on thread.main {
   return new Application({
     name: "Zapp",
     state: Mutex(RuntimeState({ started: 0, completed: 0, routedAction: 0 })),
+    router,
     window,
     statusLabel: label,
     actionButton,

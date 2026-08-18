@@ -509,6 +509,25 @@ fields transfer, while overridden cleanup-bearing source fields are destroyed
 exactly once. Cleanup also remains correct if evaluating a later override exits
 before construction completes.
 
+A `move this` value-struct method may also transfer its sole
+ownership-bearing field:
+
+```zs
+struct Registry {
+  handlers: Map<String, Handler>;
+
+  function finish(move this): readonly Map<String, Handler> {
+    return this.handlers.freeze();
+  }
+}
+```
+
+The field transfer consumes the whole receiver and disables its cleanup guard;
+the returned value now owns that storage. The first tier rejects this extraction
+when the struct defines custom `deinit` or another field also needs cleanup.
+Those shapes require a future general partial-move model; Z never leaves an
+aggregate responsible for emptied owned storage.
+
 Nested Z-owned resources are supported, including `String`, collections,
 options, enums, classes, and Z structs that define `deinit`. The first tier
 rejects spreading an outer struct that defines its own custom `deinit`, because

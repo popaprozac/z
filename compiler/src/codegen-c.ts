@@ -8594,6 +8594,11 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           : context.owner.receiverMode === "move"
           ? `self.${expression.property}`
           : `self->${expression.property}`;
+        if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
+          const liveFlag = context.liveFlags.get("this");
+          if (!liveFlag) throw new Error("missing ownership flag for consumed receiver field");
+          return `(${liveFlag} = false, ${value})`;
+        }
         return maybeRetainClass(expression, value, context);
       }
       const owner = context.structs.get(ownerValueType);

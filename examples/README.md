@@ -96,7 +96,9 @@ support or producing language-server diagnostics from hypothetical imports.
   dedicated worker work, and explicit result delivery to `thread.main`.
 - [`zapp-appkit`](applications/zapp-appkit): the same user-owned architecture
   holding real `NSWindow` and `NSTextField` identities, with worker-safe model
-  access and a native UI update explicitly placed onto `thread.main`.
+  access, one published readonly handler table shared by AppKit and a native
+  worker, typed route failure, and UI updates explicitly placed onto
+  `thread.main`.
 - [`z-notes`](applications/z-notes): a native AppKit and SQLite application
   combining ARC state, Objective-C protocols and target/action, owned native
   handles, async loading on a dedicated worker, typed owned result transfer,

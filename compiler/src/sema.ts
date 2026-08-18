@@ -12645,7 +12645,22 @@ function consumeOwnedValue(
   ) {
     return;
   }
-  if (expression.kind === "member" || expression.kind === "index") {
+  const consumesWholeReceiver = expression.kind === "member"
+    && expression.object.kind === "identifier"
+    && expression.object.name === "this"
+    && state.activeFunction?.receiverMode === "move"
+    && state.activeReceiver !== null
+    && (() => {
+      const receiver = structs.get(state.activeReceiver!);
+      if (!receiver || receiver.kind !== "struct" || receiver.deinitializer) return false;
+      const field = receiver.fields.find((candidate) => candidate.name === expression.property);
+      if (!field || !hasOwnershipType(field.type.name, structs, enums, state)) return false;
+      return receiver.fields.every((candidate) => (
+        candidate.name === expression.property
+        || !hasOwnershipType(candidate.type.name, structs, enums, state)
+      ));
+    })();
+  if ((expression.kind === "member" || expression.kind === "index") && !consumesWholeReceiver) {
     throw new DiagnosticError(fileName, expression.location, "cannot move an ownership-bearing field or element out of its owner", {
       code: "Z0204",
       notes: [
@@ -12657,14 +12672,15 @@ function consumeOwnedValue(
       ],
     });
   }
-  if (expression.kind !== "identifier") return;
+  if (expression.kind !== "identifier" && !consumesWholeReceiver) return;
+  const rootName = consumesWholeReceiver ? "this" : expression.name;
   if (!allowOwnerWithLiveViews) {
-    rejectOwnerMutationWhileViewed(expression.name, expression.location, fileName, state, "move");
+    rejectOwnerMutationWhileViewed(rootName, expression.location, fileName, state, "move");
   }
-  const stored = locals.get(expression.name);
+  const stored = locals.get(rootName);
   if (!stored) return;
   if (isBorrowedBinding(stored)) {
-    if (expression.name === "this") {
+    if (rootName === "this") {
       throw new DiagnosticError(fileName, expression.location, "cannot move the borrowed method receiver `this`; declare `move this`", {
         code: "Z0203",
         length: 4,
@@ -12672,47 +12688,47 @@ function consumeOwnedValue(
         helps: ["change the receiver declaration to `move this` if this method must consume the value"],
       });
     }
-    const borrow = state.borrowOrigins.get(expression.name);
+    const borrow = state.borrowOrigins.get(rootName);
     if (borrow?.kind === "closure") {
-      throw new DiagnosticError(fileName, expression.location, `cannot transfer ownership of ${JSON.stringify(expression.name)} while it is borrowed by a closure`, {
+      throw new DiagnosticError(fileName, expression.location, `cannot transfer ownership of ${JSON.stringify(rootName)} while it is borrowed by a closure`, {
         code: "Z0203",
-        length: expression.name.length,
-        labels: [{ location: borrow.location, message: "closure borrow begins here", length: expression.name.length }],
+        length: rootName.length,
+        labels: [{ location: borrow.location, message: "closure borrow begins here", length: rootName.length }],
         notes: ["the borrowed closure may still read this value later in the enclosing scope"],
         helps: ["keep the owner available until the closure is no longer used; owned escaping closure environments are not implemented yet"],
       });
     }
     if (borrow?.kind === "iteration") {
-      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed iteration binding ${JSON.stringify(expression.name)}`, {
+      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed iteration binding ${JSON.stringify(rootName)}`, {
         code: "Z0203",
-        length: expression.name.length,
+        length: rootName.length,
         labels: [{ location: borrow.location, message: "for...of borrows the collection element here", length: 3 }],
         notes: ["moving an element would leave a hole in collection storage that still owns its elements"],
         helps: ["use `copy` when an independent copy is supported, or remove the value after iteration ends"],
       });
     }
     if (borrow?.kind === "match" || borrow?.kind === "ownedMatch") {
-      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed match binding ${JSON.stringify(expression.name)}`, {
+      throw new DiagnosticError(fileName, expression.location, `cannot move borrowed match binding ${JSON.stringify(rootName)}`, {
         code: "Z0231",
-        length: expression.name.length,
+        length: rootName.length,
         labels: [{ location: borrow.location, message: "borrowed match begins here", length: 5 }],
         notes: ["this match inspects payload storage without taking it out of the enum"],
         helps: ["match an owned enum value when its payload should be consumed"],
       });
     }
-    throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(expression.name)}`, {
+    throw new DiagnosticError(fileName, expression.location, `cannot move borrowed parameter ${JSON.stringify(rootName)}`, {
       code: "Z0203",
-      length: expression.name.length,
+      length: rootName.length,
       notes: ["an `in` parameter is borrowed from its caller and is not owned by this function"],
       helps: ["remove `in` from the parameter if the function is intended to take ownership"],
     });
   }
   locals.set(
-    expression.name,
+    rootName,
     `${movedPrefix}${isMutableBinding(stored) ? mutablePrefix : ""}${underlyingType(stored)}`,
   );
   state.movedExpressions.add(expression.location.offset);
-  state.moveOrigins.set(expression.name, expression.location);
+  state.moveOrigins.set(rootName, expression.location);
 }
 
 function accessCapabilitiesConflict(left: AccessCapability, right: AccessCapability): boolean {
