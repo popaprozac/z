@@ -2317,8 +2317,8 @@ follow-up; they do not substitute for semantic rejection coverage.
 The first follow-up now inserts a lowerability preflight between native semantic
 resolution and IR construction. Ordinary unplaced async functions retain
 `Z0700`; generic aggregates, traits, fixed-array types, `Slice`, generators,
-array/rest or explicit copy/move object destructuring, value-producing loops, unsafe
-expressions, and other syntactically settled body gaps use `Z1000`, which
+array/rest destructuring, value-producing loops, unsafe expressions, and other
+syntactically settled body gaps use `Z1000`, which
 explicitly means “valid Z, outside the current fixed-point executable tier.”
 Both the standalone driver and the Bun-hosted native emitter preserve the code,
 source location, and span. Public lowering and C-emission boundaries now mark
@@ -2861,6 +2861,32 @@ destructuring evaluates the producer once into a stack temporary and loads its
 two pointer fields. Local-storage escape, mixed owners, nested retained storage,
 ARC-class or mutable/consuming receiver methods, and suspending or throwing
 producers remain deliberately closed.
+
+## Cleanup-aware object destructuring in the fixed-point compiler
+
+The earlier native tier only projected cleanup-free fields. That left an
+awkward split in compiler code: Stage 0 accepted `copy` and `move` object
+patterns over ordinary owned structs, while the fixed-point compiler rejected
+the same source before lowering. `semantic-type-validation.zs` now exercises
+the closed path directly by copying and destructuring a fixed-array shape.
+
+Native lowering evaluates the source exactly once into an owned temporary.
+`copy source` recursively copies its supported Z-owned graph—`String`,
+`Array<T>`, structs, and enums—while `move source` transfers the whole owner and
+marks the original binding dead. Each selected cleanup-bearing field then moves
+into its own binding and its source slot is replaced with an empty value. The
+temporary's ordinary destructor cleans up only the unselected fields. The new
+bindings receive normal scope cleanup and live flags, so early return and later
+movement preserve exact-once destruction without a runtime ownership table.
+
+The generated-C fixture includes nested structs, an Array of owned Strings, and
+an enum with an owned String payload. It compiles under strict Clang warnings,
+runs successfully, and is part of the differential fixed-point corpus. A paired
+negative fixture proves that `move source` makes every later use of the original
+struct a native semantic error. The remaining boundary is deliberate: classes,
+custom-`deinit` structs, foreign RAII values, nested/rest patterns, mutable
+patterns, and positional Array/Slice destructuring need separate ownership
+rules rather than inheriting this transfer mechanically.
 
 ## Not tested yet
 

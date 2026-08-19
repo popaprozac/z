@@ -1705,10 +1705,29 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received a malformed copy expression";
     }
-    output.append("z_string_copy(");
+    if (
+      declaration.expressions[index].value.byteLength == 0
+      || declaration.expressions[index].value == "String"
+      || declaration.expressions[index].value == "copy"
+    ) output.append("z_string_copy(");
+    else {
+      output.append("z_stage1_copy_");
+      output.append(declaration.expressions[index].value);
+      output.append("(");
+    }
     const operand = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, operand);
     output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.emptyValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed empty value";
+    }
+    output.append("(__typeof__(");
+    const storage = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, storage);
+    output.append(")){0}");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.retainValue) {
@@ -8336,6 +8355,314 @@ function loweredEnumIndex(
   return Option<usize>.none;
 }
 
+function loweredArrayIndex(
+  in program: LoweredProgram,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < program.arrays.length) {
+    if (program.arrays[index].name == name) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function copyHelperTypePresent(
+  in types: Array<LoweredType>,
+  in name: String
+): boolean {
+  for (const type of types) {
+    if (type.name == name) return true;
+  }
+  return false;
+}
+
+function collectCopyHelperType(
+  in program: LoweredProgram,
+  in type: LoweredType,
+  inout types: Array<LoweredType>
+): void throws String {
+  if (
+    type.kind != LoweredTypeKind.arrayType
+    && type.kind != LoweredTypeKind.structType
+    && type.kind != LoweredTypeKind.enumType
+  ) return;
+  if (copyHelperTypePresent(types, type.name)) return;
+  types.push(LoweredType({
+    kind: type.kind,
+    name: type.name.copyBytes(0, type.name.byteLength),
+  }));
+  if (type.kind == LoweredTypeKind.arrayType) {
+    match (loweredArrayIndex(program, type.name)) {
+      some(index) => try collectCopyHelperType(
+        program,
+        program.arrays[index].elementType,
+        inout types
+      );
+      none => throw `native copy emission lost Array type ${type.name}`;
+    }
+    return;
+  }
+  if (type.kind == LoweredTypeKind.structType) {
+    match (loweredStructIndex(program, type.name)) {
+      some(index) => {
+        if (program.structs[index].referenceType) {
+          throw `native copy emission cannot copy class ${type.name}`;
+        }
+        for (const field of program.structs[index].fields) {
+          try collectCopyHelperType(program, field.type, inout types);
+        }
+      }
+      none => throw `native copy emission lost struct type ${type.name}`;
+    }
+    return;
+  }
+  match (loweredEnumIndex(program, type.name)) {
+    some(index) => {
+      for (const variant of program.enums[index].variants) {
+        match (in variant.payload) {
+          some(payload) => try collectCopyHelperType(
+            program,
+            payload,
+            inout types
+          );
+          none => {}
+        }
+      }
+    }
+    none => throw `native copy emission lost enum type ${type.name}`;
+  }
+}
+
+function programCopyHelperTypes(
+  in program: LoweredProgram
+): Array<LoweredType> throws String {
+  let types = Array<LoweredType>();
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind != LoweredExpressionKind.copyValue
+        || expression.value.byteLength == 0
+        || expression.value == "String"
+        || expression.value == "copy"
+      ) continue;
+      let found = Option<LoweredType>.none;
+      match (loweredArrayIndex(program, expression.value)) {
+        some(_) => found = Option.some(LoweredType({
+          kind: LoweredTypeKind.arrayType,
+          name: expression.value.copyBytes(0, expression.value.byteLength),
+        }));
+        none => {}
+      }
+      match (loweredStructIndex(program, expression.value)) {
+        some(_) => found = Option.some(LoweredType({
+          kind: LoweredTypeKind.structType,
+          name: expression.value.copyBytes(0, expression.value.byteLength),
+        }));
+        none => {}
+      }
+      match (loweredEnumIndex(program, expression.value)) {
+        some(_) => found = Option.some(LoweredType({
+          kind: LoweredTypeKind.enumType,
+          name: expression.value.copyBytes(0, expression.value.byteLength),
+        }));
+        none => {}
+      }
+      match (found) {
+        some(type) => try collectCopyHelperType(program, type, inout types);
+        none => throw `native copy emission could not resolve ${expression.value}`;
+      }
+    }
+  }
+  return types;
+}
+
+function appendCopiedValue(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in type: LoweredType,
+  in value: String
+): void throws String {
+  if (type.kind == LoweredTypeKind.stringType) {
+    output.append("z_string_copy(");
+    output.append(value);
+    output.append(")");
+    return;
+  }
+  if (
+    type.kind == LoweredTypeKind.arrayType
+    || type.kind == LoweredTypeKind.structType
+    || type.kind == LoweredTypeKind.enumType
+  ) {
+    output.append("z_stage1_copy_");
+    output.append(type.name);
+    output.append("(");
+    output.append(value);
+    output.append(")");
+    return;
+  }
+  if (loweredTypeNeedsDeinit(program, type)) {
+    throw `native copy emission cannot copy ownership-bearing type ${type.name}`;
+  }
+  output.append(value);
+}
+
+function appendCopyHelper(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in type: LoweredType
+): void throws String {
+  const storageType = try cType(type);
+  output.append("static __attribute__((unused)) ");
+  output.append(storageType);
+  output.append(" z_stage1_copy_");
+  output.append(type.name);
+  output.append("(");
+  output.append(storageType);
+  output.append(" source) {\n");
+  if (type.kind == LoweredTypeKind.arrayType) {
+    const index = match (loweredArrayIndex(program, type.name)) {
+      some(value) => value;
+      none => throw `native copy emission lost Array type ${type.name}`;
+    };
+    const elementType = LoweredType({
+      kind: program.arrays[index].elementType.kind,
+      name: program.arrays[index].elementType.name.copyBytes(
+        0,
+        program.arrays[index].elementType.name.byteLength
+      ),
+    });
+    const elementStorage = try cType(elementType);
+    output.append("  ");
+    output.append(storageType);
+    output.append(" result = { NULL, 0, 0 };\n");
+    output.append("  if (source.length == 0) return result;\n");
+    output.append("  if (source.length > SIZE_MAX / sizeof(");
+    output.append(elementStorage);
+    output.append(")) abort();\n  ");
+    output.append(elementStorage);
+    output.append(" *source_data = (");
+    output.append(elementStorage);
+    output.append(" *)source.data;\n  ");
+    output.append(elementStorage);
+    output.append(" *result_data = (");
+    output.append(elementStorage);
+    output.append(" *)malloc(sizeof(");
+    output.append(elementStorage);
+    output.append(") * source.length);\n");
+    output.append("  if (result_data == NULL) abort();\n");
+    output.append("  result.data = result_data;\n  result.length = source.length;\n  result.capacity = source.length;\n");
+    output.append("  for (size_t index = 0; index < source.length; index += 1) {\n    result_data[index] = ");
+    try appendCopiedValue(
+      inout output,
+      program,
+      elementType,
+      "source_data[index]"
+    );
+    output.append(";\n  }\n  return result;\n}\n\n");
+    return;
+  }
+  if (type.kind == LoweredTypeKind.structType) {
+    const index = match (loweredStructIndex(program, type.name)) {
+      some(value) => value;
+      none => throw `native copy emission lost struct type ${type.name}`;
+    };
+    output.append("  return (");
+    output.append(storageType);
+    output.append("){ ");
+    let fieldIndex: usize = 0;
+    while (fieldIndex < program.structs[index].fields.length) {
+      if (fieldIndex > 0) output.append(", ");
+      const fieldName = program.structs[index].fields[
+        fieldIndex
+      ].name.copyBytes(
+        0,
+        program.structs[index].fields[fieldIndex].name.byteLength
+      );
+      const fieldType = LoweredType({
+        kind: program.structs[index].fields[fieldIndex].type.kind,
+        name: program.structs[index].fields[fieldIndex].type.name.copyBytes(
+          0,
+          program.structs[index].fields[fieldIndex].type.name.byteLength
+        ),
+      });
+      const borrowedView = program.structs[index].fields[
+        fieldIndex
+      ].borrowedView;
+      output.append(".");
+      output.append(fieldName);
+      output.append(" = ");
+      if (borrowedView) output.append(`source.${fieldName}`);
+      else try appendCopiedValue(
+          inout output,
+          program,
+          fieldType,
+          `source.${fieldName}`
+        );
+      fieldIndex = fieldIndex + 1;
+    }
+    output.append(" };\n}\n\n");
+    return;
+  }
+  const index = match (loweredEnumIndex(program, type.name)) {
+    some(value) => value;
+    none => throw `native copy emission lost enum type ${type.name}`;
+  };
+  if (
+    program.enums[index].nativeCName.byteLength > 0
+    || !program.enums[index].payloadBearing
+  ) {
+    output.append("  return source;\n}\n\n");
+    return;
+  }
+  output.append("  ");
+  output.append(storageType);
+  output.append(" result = { 0 };\n  result.tag = source.tag;\n  switch (source.tag) {\n");
+  for (const variant of program.enums[index].variants) {
+    match (in variant.payload) {
+      some(payload) => {
+        output.append("    case Z_");
+        output.append(type.name);
+        output.append("Tag_");
+        output.append(variant.name);
+        output.append(":\n      result.payload.");
+        output.append(variant.name);
+        output.append(" = ");
+        try appendCopiedValue(
+          inout output,
+          program,
+          payload,
+          `source.payload.${variant.name}`
+        );
+        output.append(";\n      break;\n");
+      }
+      none => {}
+    }
+  }
+  output.append("    default:\n      break;\n  }\n  return result;\n}\n\n");
+}
+
+function appendCopyHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  const types = try programCopyHelperTypes(program);
+  for (const type of types) {
+    const storageType = try cType(type);
+    output.append("static __attribute__((unused)) ");
+    output.append(storageType);
+    output.append(" z_stage1_copy_");
+    output.append(type.name);
+    output.append("(");
+    output.append(storageType);
+    output.append(" source);\n");
+  }
+  if (types.length > 0) output.append("\n");
+  for (const type of types) {
+    try appendCopyHelper(inout output, program, type);
+  }
+}
+
 function appendEnumDefinition(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -10828,6 +11155,7 @@ function emitLoweredC(
   }
   if (program.foreignResources.length > 0) output.append("\n");
   try appendTypeDefinitions(inout output, program);
+  try appendCopyHelpers(inout output, program);
   for (const declaration of program.enums) {
     let nullablePayload = Option<LoweredType>.none;
     let hasNone = false;

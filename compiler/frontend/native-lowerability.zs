@@ -96,6 +96,44 @@ function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
     || name == "usize";
 }
 
+function nativeExplicitCopyTypeSupported(
+  in graph: ModuleGraph,
+  moduleIndex: usize,
+  in name: String
+): boolean {
+  if (
+    name == "String"
+    || name == "cstring"
+    || name == "boolean"
+    || name == "f32"
+    || name == "f64"
+    || isIntegerTypeName(name)
+  ) return true;
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Array" || generic.arguments.length != 1) {
+        return false;
+      }
+      return nativeExplicitCopyTypeSupported(
+        graph,
+        moduleIndex,
+        generic.arguments[0]
+      );
+    }
+    none => {}
+  }
+  match (typeSymbolLocation(graph.modules, moduleIndex, name)) {
+    some(location) => {
+      const kind = graph.modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].kind;
+      return kind == ModuleSymbolKind.structSymbol
+        || kind == ModuleSymbolKind.enumSymbol;
+    }
+    none => return false;
+  }
+}
+
 function expressionIsStructSpreadCapability(
   in tree: ExpressionTree,
   index: usize
@@ -718,11 +756,18 @@ function validateNativeExpressionTree(
         tree,
         operand
       );
-      if (operandType.byteLength > 0 && operandType != "String") {
+      if (
+        operandType.byteLength > 0
+        && !nativeExplicitCopyTypeSupported(
+          graph,
+          moduleIndex,
+          operandType
+        )
+      ) {
         throw loweringBoundary(
           path,
           "Z1000",
-          `explicit copy of "${operandType}" is not executable in the native compiler yet; only String copy is supported`,
+          `explicit copy of "${operandType}" is not executable in the native compiler yet`,
           node.line,
           node.column,
           4
@@ -1115,29 +1160,6 @@ function validateNativeBody(
           statement.column,
           5
         );
-      match (in statement.expression) {
-        some(expression) => match (in expression.tree) {
-          some(tree) => {
-            const root = tree.root;
-            if (
-              tree.nodes[root].kind == ExpressionKind.unaryExpression
-              && (
-                tree.nodes[root].value == "copy"
-                || tree.nodes[root].value == "move"
-              )
-            ) throw loweringBoundary(
-              path,
-              "Z1000",
-              "explicit copy/move object destructuring is not executable in the native compiler yet",
-              statement.line,
-              statement.column,
-              5
-            );
-          }
-          none => {}
-        }
-        none => {}
-      }
     }
     if (
       statement.kind == StatementKind.forAwaitStatement

@@ -699,6 +699,81 @@ test("returns retained parameter view aggregates through native semantics and em
   }
 }, 240_000);
 
+test("copies and moves owned fields through native object destructuring", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-owned-object-destructure.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_FileRecord z_stage1_copy_FileRecord\(Z_FileRecord source\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.label = z_stage1_copy_Label\(source\.label\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.tags = z_stage1_copy___z_Array_String\(source\.tags\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.state = z_stage1_copy_RecordState\(source\.state\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /_z_stage1_live_original = false, original/,
+  );
+  assert.match(
+    emission.stdout,
+    /_z_destructure_\d+\.path = \(__typeof__\(_z_destructure_\d+\.path\)\)\{0\}/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_FileRecord_deinit\(&_z_destructure_\d+\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-owned-destructure-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const invalid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-owned-object-destructure-use-after-move.zs",
+  );
+  const invalidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", invalid],
+    { encoding: "utf8" },
+  );
+  assert.equal(invalidResult.status, 1);
+  assert.match(invalidResult.stderr, /use of moved value "record"/);
+}, 240_000);
+
 test("keeps native inferred binding evidence inside its declaration scope", () => {
   const input = resolve(
     projectRoot,
@@ -6651,22 +6726,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^^",
       code: "Z1000",
       summary: 'Map value type "String" is not executable in the native compiler yet; only cleanup-free scalar values are supported',
-    },
-    {
-      name: "explicit-copy-representation",
-      source: [
-        "function main(): i32 {",
-        "  const values = Array<i32>(20, 22);",
-        "  const copied = copy values;",
-        "  return copied[0] + copied[1] - 42;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 18,
-      marker: "^^^^",
-      code: "Z1000",
-      summary: 'explicit copy of "Array<i32>" is not executable in the native compiler yet; only String copy is supported',
     },
     {
       name: "mutex-cleanup-bearing-result",

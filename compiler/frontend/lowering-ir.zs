@@ -177,6 +177,7 @@ export enum LoweredExpressionKind {
   fsLockUnlock,
   moveValue,
   copyValue,
+  emptyValue,
   retainValue,
   viewProjection,
   borrowedTemporary,
@@ -3354,6 +3355,91 @@ function planCleanupSequence(
         none => {}
       }
     } else if (
+      arena.nodes[sourceIndex].kind == StatementKind.destructureStatement
+      && statements[loweredIndex].kind == LoweredStatementKind.blockStatement
+      && loweredStatementHasLabel(
+        statements[loweredIndex],
+        "destructure-normalized"
+      )
+    ) {
+      let destructureChildren = Array<usize>();
+      for (const child of statements[loweredIndex].children) {
+        destructureChildren.push(child);
+      }
+      for (const child of destructureChildren) {
+        if (
+          statements[child].kind != LoweredStatementKind.localStatement
+          || !loweredStatementHasLabel(
+            statements[child],
+            "destructure-binding"
+          )
+        ) continue;
+        const ownedType = match (in statements[child].type) {
+          some(type) => LoweredType({
+            kind: type.kind,
+            name: type.name.copyBytes(0, type.name.byteLength),
+          });
+          none => throw "native cleanup planning lost a destructured binding type";
+        };
+        let bindingOffset: usize = 0;
+        let borrowedView = false;
+        for (const binding of arena.nodes[sourceIndex].objectBindings) {
+          if (binding.bindingName != statements[child].name) continue;
+          bindingOffset = binding.bindingOffset;
+          for (const resolution of evidence.bindingResolutions) {
+            if (
+              resolution.offset == binding.bindingOffset
+              && resolution.name == binding.bindingName
+              && stringStartsWith(resolution.typeName, "view ")
+            ) borrowedView = true;
+          }
+        }
+        if (
+          borrowedView
+          || !moduleTypeNeedsCleanup(program, importedTypes, ownedType)
+        ) continue;
+        const bindingName = statements[child].name.copyBytes(
+          0,
+          statements[child].name.byteLength
+        );
+        const moved = arenaMovesName(
+          program,
+          evidence,
+          arena,
+          bindingName
+        ) || loweredMoveConsumesBinding(
+          expressions,
+          bindingName
+        ) || loweredThreadSpawnMovesBinding(
+          expressions,
+          bindingName,
+          bindingOffset
+        );
+        let guard = "";
+        if (moved && (forceMoveLiveGuards || arenaHasControlFlow(arena))) {
+          guard = ownerLiveFlag(bindingName);
+          statements[child].liveFlag = guard.copyBytes(
+            0,
+            guard.byteLength
+          );
+          liveFlags.push(LoweredLiveFlag({
+            owner: bindingName.copyBytes(0, bindingName.byteLength),
+            name: guard.copyBytes(0, guard.byteLength),
+            parameter: false,
+          }));
+        }
+        if (!moved || guard.byteLength > 0) {
+          const cleanup = LoweredCleanup({
+            name: bindingName.copyBytes(0, bindingName.byteLength),
+            type: move ownedType,
+            guard: move guard,
+          });
+          live.push(copyCleanup(cleanup));
+          if (insideLoop) loopCleanups.push(copyCleanup(cleanup));
+          introduced.push(move cleanup);
+        }
+      }
+    } else if (
       arena.nodes[sourceIndex].kind == StatementKind.assignmentStatement
     ) {
       attachReplacementCleanup(
@@ -5827,14 +5913,40 @@ function lowerExpression(
     }
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
     else if (tree.nodes[index].value == "copy") {
-      const operandType = match (
+      const operandTypeName = match (
         resolvedExpressionTypeName(evidence, tree, operandInput)
       ) {
         some(name) => name;
         none => throw "native copy lowering could not resolve its operand type";
       };
-      if (operandType != "String") {
-        throw `native copy lowering does not support ${operandType} yet`;
+      const operandType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        operandTypeName
+      );
+      if (
+        operandType.kind == LoweredTypeKind.booleanType
+        || operandType.kind == LoweredTypeKind.i8Type
+        || operandType.kind == LoweredTypeKind.i16Type
+        || operandType.kind == LoweredTypeKind.i32Type
+        || operandType.kind == LoweredTypeKind.i64Type
+        || operandType.kind == LoweredTypeKind.u8Type
+        || operandType.kind == LoweredTypeKind.u16Type
+        || operandType.kind == LoweredTypeKind.u32Type
+        || operandType.kind == LoweredTypeKind.u64Type
+        || operandType.kind == LoweredTypeKind.isizeType
+        || operandType.kind == LoweredTypeKind.usizeType
+        || operandType.kind == LoweredTypeKind.f32Type
+        || operandType.kind == LoweredTypeKind.f64Type
+        || operandType.kind == LoweredTypeKind.cstringType
+      ) return operand;
+      if (
+        operandType.kind != LoweredTypeKind.stringType
+        && operandType.kind != LoweredTypeKind.arrayType
+        && operandType.kind != LoweredTypeKind.structType
+        && operandType.kind != LoweredTypeKind.enumType
+      ) {
+        throw `native copy lowering does not support ${operandTypeName} yet`;
       }
       kind = LoweredExpressionKind.copyValue;
     }
@@ -5875,12 +5987,26 @@ function lowerExpression(
     }
     let children = Array<usize>();
     children.push(operand);
-    const operation = kind == LoweredExpressionKind.checkedNegateInteger
-      ? checkedIntegerTypeName(program, evidence, tree, index)
-      : tree.nodes[index].value.copyBytes(
-        0,
-        tree.nodes[index].value.byteLength
+    let operation = tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    );
+    if (kind == LoweredExpressionKind.checkedNegateInteger) {
+      operation = checkedIntegerTypeName(program, evidence, tree, index);
+    } else if (kind == LoweredExpressionKind.copyValue) {
+      const operandTypeName = match (
+        resolvedExpressionTypeName(evidence, tree, operandInput)
+      ) {
+        some(name) => name;
+        none => throw "native copy lowering lost its operand type";
+      };
+      const operandType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        operandTypeName
       );
+      operation = operandType.name.copyBytes(0, operandType.name.byteLength);
+    }
     return pushExpression(
       inout output,
       kind,
@@ -12806,9 +12932,11 @@ function lowerStatementCore(
           importedTypes,
           sourceTypeName
         );
-        if (moduleTypeNeedsCleanup(program, importedTypes, sourceType)) {
-          throw "native object destructuring of cleanup-bearing storage remains deferred";
-        }
+        const sourceNeedsCleanup = moduleTypeNeedsCleanup(
+          program,
+          importedTypes,
+          sourceType
+        );
         const sourceValue = try lowerExpressionExpected(
           program,
           importedTypes,
@@ -12820,18 +12948,23 @@ function lowerStatementCore(
         );
         const temporaryName = `_z_destructure_${arena.nodes[index].offset}`;
         let flattened = Array<usize>();
+        let temporaryLabels = Array<String>();
+        temporaryLabels.push("destructure-source");
         const temporary = statements.length;
         statements.push(LoweredStatement({
           kind: LoweredStatementKind.localStatement,
           mutableBinding: false,
           name: temporaryName.copyBytes(0, temporaryName.byteLength),
-          type: Option.some(move sourceType),
+          type: Option.some(LoweredType({
+            kind: sourceType.kind,
+            name: sourceType.name.copyBytes(0, sourceType.name.byteLength),
+          })),
           expression: Option.some(sourceValue),
           secondExpression: Option<usize>.none,
           children: Array<usize>(),
           cleanups: Array<LoweredCleanup>(),
           liveFlag: "",
-          labels: Array<String>(),
+          labels: move temporaryLabels,
           matchConsumesSubject: false,
           matchBindingNeedsCleanup: false,
         }));
@@ -12868,13 +13001,32 @@ function lowerStatementCore(
           if (stringStartsWith(bindingTypeName, "view ")) {
             fieldLabels.push("resultView");
           }
-          const fieldValue = pushExpression(
+          let fieldValue = pushExpression(
             inout expressions,
             LoweredExpressionKind.fieldValue,
             objectBinding.fieldName,
             fieldChildren,
             fieldLabels
           );
+          const borrowedView = stringStartsWith(bindingTypeName, "view ");
+          const bindingNeedsCleanup = !borrowedView && moduleTypeNeedsCleanup(
+            program,
+            importedTypes,
+            bindingType
+          );
+          if (bindingNeedsCleanup) {
+            let moveChildren = Array<usize>();
+            moveChildren.push(fieldValue);
+            fieldValue = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.moveValue,
+              "",
+              move moveChildren,
+              Array<String>()
+            );
+          }
+          let bindingLabels = Array<String>();
+          bindingLabels.push("destructure-binding");
           const local = statements.length;
           statements.push(LoweredStatement({
             kind: LoweredStatementKind.localStatement,
@@ -12889,14 +13041,70 @@ function lowerStatementCore(
             children: Array<usize>(),
             cleanups: Array<LoweredCleanup>(),
             liveFlag: "",
-            labels: Array<String>(),
+            labels: move bindingLabels,
             matchConsumesSubject: false,
             matchBindingNeedsCleanup: false,
           }));
           flattened.push(local);
+          if (bindingNeedsCleanup) {
+            const clearReceiver = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.localValue,
+              temporaryName,
+              Array<usize>(),
+              Array<String>()
+            );
+            let clearFieldChildren = Array<usize>();
+            clearFieldChildren.push(clearReceiver);
+            const clearField = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.fieldValue,
+              objectBinding.fieldName,
+              move clearFieldChildren,
+              Array<String>()
+            );
+            let emptyChildren = Array<usize>();
+            emptyChildren.push(clearField);
+            const empty = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.emptyValue,
+              "",
+              move emptyChildren,
+              Array<String>()
+            );
+            let clearLabels = Array<String>();
+            clearLabels.push("destructure-clear");
+            const clear = statements.length;
+            statements.push(LoweredStatement({
+              kind: LoweredStatementKind.assignmentStatement,
+              mutableBinding: false,
+              name: "",
+              type: Option<LoweredType>.none,
+              expression: Option.some(clearField),
+              secondExpression: Option.some(empty),
+              children: Array<usize>(),
+              cleanups: Array<LoweredCleanup>(),
+              liveFlag: "",
+              labels: move clearLabels,
+              matchConsumesSubject: false,
+              matchBindingNeedsCleanup: false,
+            }));
+            flattened.push(clear);
+          }
         }
         let labels = Array<String>();
         labels.push("destructure-normalized");
+        let blockCleanups = Array<LoweredCleanup>();
+        if (sourceNeedsCleanup) {
+          blockCleanups.push(LoweredCleanup({
+            name: temporaryName.copyBytes(0, temporaryName.byteLength),
+            type: LoweredType({
+              kind: sourceType.kind,
+              name: sourceType.name.copyBytes(0, sourceType.name.byteLength),
+            }),
+            guard: "",
+          }));
+        }
         const block = statements.length;
         statements.push(LoweredStatement({
           kind: LoweredStatementKind.blockStatement,
@@ -12906,7 +13114,7 @@ function lowerStatementCore(
           expression: Option<usize>.none,
           secondExpression: Option<usize>.none,
           children: move flattened,
-          cleanups: Array<LoweredCleanup>(),
+          cleanups: move blockCleanups,
           liveFlag: "",
           labels: move labels,
           matchConsumesSubject: false,

@@ -356,6 +356,10 @@ cleanup-bearing struct requires `copy record` to preserve the source or
 unselected owned fields are destroyed. Private fields are accessible only from
 the declaring type. The current tier rejects classes, custom-`deinit` or foreign
 RAII storage, and nested, object-rest, default, parameter, and async patterns.
+The fixed-point native compiler implements the same rule for recursively
+copyable Z-owned fields, including `String`, `Array<T>`, structs, and enums. It
+evaluates the source once, clears every transferred slot, and destroys the
+remaining temporary, so early returns cannot double-destroy or leak fields.
 
 Fixed arrays, `Array<T>`, and `Slice<T>` support positional local patterns:
 

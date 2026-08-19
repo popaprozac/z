@@ -24,6 +24,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
+  NativeFixedArrayShape,
   NativeGenericTypeShape,
   fixedArrayShape,
   genericTypeShape,
@@ -356,12 +357,13 @@ function validateTypeNameShape(
   }
   match (fixedArrayShape(name)) {
     some(array) => {
+      const { elementType } = copy array;
       try validateTypeNameShape(
         module,
         modules,
         moduleIndex,
         typeBindings,
-        array.elementType,
+        elementType,
         line,
         column,
         false
