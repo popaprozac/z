@@ -859,7 +859,12 @@ a direct field or indexed projection. A module producer must likewise be
 synchronous and non-throwing and return an immutable `in` parameter, its field,
 or an indexed element. Local producers have the same value-storage and
 direct-projection restrictions. The view itself cannot be annotated as
-storage, duplicated, stored, returned again, or held across `await`. It may be
+storage, duplicated, stored, returned again, or held across `await`. A module
+function may also return `Option<view T>` by constructing `some` directly from
+one or more immutable input projections, or by forwarding an owner-tied method
+result. `none` carries no live borrow. At the call site, every possible input
+owner remains immutable until the optional binding or matched payload is last
+used; the runtime representation is still one nullable pointer. The view may be
 forwarded to a synchronous `in T` parameter or read through an inline closure
 passed to a synchronous `in` function parameter. The latter closure is
 compiler-proven nonescaping and copies only the view pointer into its stack
@@ -867,7 +872,7 @@ environment; owned, stored, mutable, escaping, and async forwarding remain
 rejected. Its owner cannot mutate or move before the view's last use. ARC class
 owners are excluded because another alias could invalidate growable projected
 storage. Parameter provenance currently remains direct and synchronous;
-optional parameter-view results and retained views are later layers.
+retained view-bearing aggregate results are a later layer.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
 load an independent `T` from `view T` implicitly. This is an ordinary by-value

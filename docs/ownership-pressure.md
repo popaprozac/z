@@ -2831,12 +2831,23 @@ types such as `objc.Connection` were incorrectly mangled inside a dependency's
 exported aggregate fields. Standard module namespaces now keep a canonical
 type spelling while their expression bindings remain collision-safe.
 
+The optional parameter-view slice then exercised the same rule across a module
+boundary. `findWorkspaceDocument(id, in workspace)` forwards a receiver lookup
+as `Option<view DocumentSession>`; a separate two-workspace fixture may return a
+document from either immutable input. Both frontends conservatively loan every
+possible owner, preserve that provenance through `match (in found)`, and end the
+loan after the payload's actual final use even inside a value-producing arm.
+Stage 0 and the fixed-point emitter both lower the option to one nullable
+`const Document *`: `some` returns a projected address and `none` is `NULL`.
+Mutating either workspace before the last use is rejected, while growing both
+workspaces immediately afterward is accepted.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
-- optional parameter-provenanced containers and retained views; direct
-  immutable parameter provenance now has positive, negative, native-frontend,
-  hover, and one-pointer lowering evidence;
+- retained parameter-provenanced view-bearing aggregates; direct and optional
+  immutable parameter provenance now have positive, negative, native-frontend,
+  hover, last-use, and one-pointer lowering evidence;
 - mutable shared ARC identity, concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

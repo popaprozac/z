@@ -64,6 +64,7 @@ import {
   NativeOwnershipState,
   NativeValueBinding,
   activeSuspensionBorrowRoot,
+  appendIndependentViewOwner,
   allowArenaBundleMove,
   addBorrowedValueBinding,
   addMatchBorrowedValueBinding,
@@ -565,6 +566,7 @@ function inferMatchArmStatementType(
   in tree: ExpressionTree,
   statementIndex: usize,
   in expectedType: String,
+  releaseBindingIndex: usize,
   inout bindings: Array<NativeValueBinding>,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
@@ -640,6 +642,13 @@ function inferMatchArmStatementType(
     if (children.length == 0) return "";
     let index: usize = 0;
     while (index + 1 < children.length) {
+      releaseUnusedViewBindings(
+        arena,
+        children,
+        index,
+        releaseBindingIndex,
+        inout bindings
+      );
       const continues = try inferStatement(
         module,
         modules,
@@ -653,6 +662,13 @@ function inferMatchArmStatementType(
       if (!continues) return "__z_never";
       index = index + 1;
     }
+    releaseUnusedViewBindings(
+      arena,
+      children,
+      children.length - 1,
+      releaseBindingIndex,
+      inout bindings
+    );
     return try inferMatchArmStatementType(
       module,
       modules,
@@ -661,6 +677,7 @@ function inferMatchArmStatementType(
       tree,
       children[children.length - 1],
       expectedType,
+      releaseBindingIndex,
       inout bindings,
       inout evidence
     );
@@ -1506,6 +1523,9 @@ function inferMatchExpressionNodeType(
     none => {}
   }
   const subjectViewOwner = valueBindingViewOwner(bindings, subjectRoot);
+  const optionalViewSubject = subjectViewOwner.byteLength > 0
+    && stringStartsWith(subjectType, "Option<view ");
+  const subjectOwnership = valueBindingOwnership(bindings, subjectRoot);
   if (
     storedViewEnum
     && (
@@ -1643,9 +1663,17 @@ function inferMatchExpressionNodeType(
     }
     covered.push(variantName.copyBytes(0, variantName.byteLength));
     let armBindings = copyValueBindings(bindings);
+    const armBindingIndex = armBindings.length;
     markRegionControlFlow(inout armBindings, "branch");
     if (borrowedMatch && subjectRoot.byteLength > 0) {
       borrowMatchValueBindingInPlace(inout armBindings, subjectRoot);
+    }
+    if (optionalViewSubject && subjectRoot.byteLength > 0) {
+      setValueBindingOwnership(
+        inout armBindings,
+        subjectRoot,
+        NativeOwnershipState.moved
+      );
     }
     try addMatchArmValueBindings(
       module,
@@ -1670,8 +1698,16 @@ function inferMatchExpressionNodeType(
         tree,
         statements[0],
         expectedType,
+        armBindingIndex,
         inout armBindings,
         inout evidence
+      );
+    }
+    if (optionalViewSubject && subjectRoot.byteLength > 0) {
+      setValueBindingOwnership(
+        inout armBindings,
+        subjectRoot,
+        subjectOwnership
       );
     }
     if (armType != "__z_never") {
@@ -1950,6 +1986,19 @@ function inferSignatureCallType(
   }
   let accesses = Array<NativeCallAccess>();
   if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
+    if (receiverMode == "inout" || receiverMode == "out" || receiverMode == "move") {
+      const liveView = liveViewBindingForOwner(bindings, receiverRoot);
+      if (liveView.byteLength > 0) {
+        const action = receiverMode == "move" ? "move" : "mutate";
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `cannot ${action} "${receiverRoot}" while view "${liveView}" is live`,
+          tree.nodes[calleeIndex].line,
+          tree.nodes[calleeIndex].column
+        );
+      }
+    }
     try registerCallAccess(
       module,
       tree,
@@ -1971,6 +2020,22 @@ function inferSignatureCallType(
       capability == "value"
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
+    if (
+      root.byteLength > 0
+      && (capability == "inout" || capability == "out" || capability == "move")
+    ) {
+      const liveView = liveViewBindingForOwner(bindings, root);
+      if (liveView.byteLength > 0) {
+        const action = capability == "move" ? "move" : "mutate";
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `cannot ${action} "${root}" while view "${liveView}" is live`,
+          tree.nodes[nodeIndex].line,
+          tree.nodes[nodeIndex].column
+        );
+      }
+    }
     try registerCallAccess(
       module,
       tree,
@@ -2336,37 +2401,53 @@ function inferSignatureCallType(
     }
     parameterIndex = parameterIndex + 1;
   }
+  let resultViewParameters = Array<usize>();
   match (in signature.viewParameter) {
-    some(viewParameter) => {
-      if (viewParameter >= argumentNodes.length) {
-        throw resolutionError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          `borrowed result from ${functionName} has no matching owner argument`,
-          tree.nodes[callIndex].line,
-          tree.nodes[callIndex].column
-        );
-      }
-      const owner = expressionStorageRootName(
-        tree,
-        argumentNodes[viewParameter]
-      );
-      if (owner.byteLength == 0) {
-        throw resolutionError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          `owner-tied borrowed result from ${functionName} requires a named owner binding`,
-          tree.nodes[argumentNodes[viewParameter]].line,
-          tree.nodes[argumentNodes[viewParameter]].column
-        );
-      }
-      setExpressionViewOrigin(
-        inout bindings,
-        tree.nodes[callIndex].offset,
-        owner
+    some(viewParameter) => resultViewParameters.push(viewParameter);
+    none => {}
+  }
+  for (const viewParameter of signature.viewParameters) {
+    let present = false;
+    for (const existing of resultViewParameters) {
+      if (existing == viewParameter) present = true;
+    }
+    if (!present) resultViewParameters.push(viewParameter);
+  }
+  let resultViewOwner = "";
+  for (const viewParameter of resultViewParameters) {
+    if (viewParameter >= argumentNodes.length) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `borrowed result from ${functionName} has no matching owner argument`,
+        tree.nodes[callIndex].line,
+        tree.nodes[callIndex].column
       );
     }
-    none => {}
+    const owner = expressionStorageRootName(
+      tree,
+      argumentNodes[viewParameter]
+    );
+    if (owner.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        `owner-tied borrowed result from ${functionName} requires a named owner binding`,
+        tree.nodes[argumentNodes[viewParameter]].line,
+        tree.nodes[argumentNodes[viewParameter]].column
+      );
+    }
+    resultViewOwner = appendIndependentViewOwner(
+      resultViewOwner,
+      owner
+    );
+  }
+  if (resultViewOwner.byteLength > 0) {
+    setExpressionViewOrigin(
+      inout bindings,
+      tree.nodes[callIndex].offset,
+      resultViewOwner
+    );
   }
   let returnType = substituteGenericType(signature.returnType, substitutions);
   let errorType = "";
@@ -3297,13 +3378,21 @@ function inferExpressionNodeType(
                 payloadOwner
               );
             }
+            let requiredPayload = expected.copyBytes(0, expected.byteLength);
+            if (
+              payloadOwner.byteLength > 0
+              && !viewOwnerIsOwnerless(payloadOwner)
+              && stringStartsWith(expected, "view ")
+            ) {
+              requiredPayload = expected.copyBytes(5, expected.byteLength);
+            }
             try requireExpressionType(
               module,
               modules,
               moduleIndex,
               tree,
               children[1],
-              expected,
+              requiredPayload,
               actual
             );
             let storedViewVisiting = Array<String>();
@@ -3821,9 +3910,17 @@ function inferExpressionNodeType(
     const statements = copyIndices(node.statements);
     if (statements.length == 0) return "";
     let blockBindings = copyValueBindings(bindings);
+    const blockBindingIndex = blockBindings.length;
     const expectedReturn = valueBindingType(bindings, "__z_native_return_type");
     let statementIndex: usize = 0;
     while (statementIndex + 1 < statements.length) {
+      releaseUnusedViewBindings(
+        arena,
+        statements,
+        statementIndex,
+        blockBindingIndex,
+        inout blockBindings
+      );
       const continues = try inferStatement(
         module,
         modules,
@@ -3837,6 +3934,13 @@ function inferExpressionNodeType(
       if (!continues) return "__z_never";
       statementIndex = statementIndex + 1;
     }
+    releaseUnusedViewBindings(
+      arena,
+      statements,
+      statements.length - 1,
+      blockBindingIndex,
+      inout blockBindings
+    );
     const expectedType = contextualExpectedType(bindings, tree, index);
     const result = try inferMatchArmStatementType(
       module,
@@ -3846,6 +3950,7 @@ function inferExpressionNodeType(
       tree,
       statements[statements.length - 1],
       expectedType,
+      blockBindingIndex,
       inout blockBindings,
       inout evidence
     );
@@ -3882,6 +3987,7 @@ function inferExpressionNodeType(
       "__z_native_unsafe_union_access",
       "true"
     );
+    const unsafeBindingIndex = unsafeBindings.length;
     const expectedType = contextualExpectedType(bindings, tree, index);
     const result = try inferMatchArmStatementType(
       module,
@@ -3891,6 +3997,7 @@ function inferExpressionNodeType(
       tree,
       statements[0],
       expectedType,
+      unsafeBindingIndex,
       inout unsafeBindings,
       inout evidence
     );
@@ -4783,13 +4890,25 @@ function inferExpressionNodeType(
           );
         }
         if (expectedPayload.byteLength > 0) {
+          let requiredPayload = expectedPayload.copyBytes(
+            0,
+            expectedPayload.byteLength
+          );
+          if (
+            payloadOwner.byteLength > 0
+            && !viewOwnerIsOwnerless(payloadOwner)
+            && stringStartsWith(expectedPayload, "view ")
+          ) requiredPayload = expectedPayload.copyBytes(
+            5,
+            expectedPayload.byteLength
+          );
           try requireExpressionType(
             module,
             modules,
             moduleIndex,
             tree,
             payloadIndex,
-            expectedPayload,
+            requiredPayload,
             payloadType
           );
         } else {
@@ -4890,13 +5009,21 @@ function inferExpressionNodeType(
                 payloadOwner
               );
             }
+            let requiredPayload = expected.copyBytes(0, expected.byteLength);
+            if (
+              payloadOwner.byteLength > 0
+              && !viewOwnerIsOwnerless(payloadOwner)
+              && stringStartsWith(expected, "view ")
+            ) {
+              requiredPayload = expected.copyBytes(5, expected.byteLength);
+            }
             try requireExpressionType(
               module,
               modules,
               moduleIndex,
               tree,
               children[1],
-              expected,
+              requiredPayload,
               actual
             );
             let storedViewVisiting = Array<String>();
@@ -8244,29 +8371,7 @@ function inferStatementSequence(
 ): boolean throws ModuleResolveError {
   let position: usize = 0;
   while (position < indices.length) {
-    let bindingIndex: usize = 0;
-    while (bindingIndex < bindings.length) {
-      if (
-        bindings[bindingIndex].viewOwner.byteLength > 0
-        && bindings[bindingIndex].ownership
-          == NativeOwnershipState.available
-      ) {
-        let usedLater = false;
-        let remaining = position;
-        while (remaining < indices.length && !usedLater) {
-          usedLater = statementUsesBinding(
-            arena,
-            indices[remaining],
-            bindings[bindingIndex].name
-          );
-          remaining = remaining + 1;
-        }
-        if (!usedLater) {
-          bindings[bindingIndex].ownership = NativeOwnershipState.moved;
-        }
-      }
-      bindingIndex = bindingIndex + 1;
-    }
+    releaseUnusedViewBindings(arena, indices, position, 0, inout bindings);
     const index = indices[position];
     const continues = try inferStatement(
       module,
@@ -8282,6 +8387,38 @@ function inferStatementSequence(
     position = position + 1;
   }
   return true;
+}
+
+function releaseUnusedViewBindings(
+  in arena: StatementArena,
+  in indices: Array<usize>,
+  position: usize,
+  firstBindingIndex: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  let bindingIndex = firstBindingIndex;
+  while (bindingIndex < bindings.length) {
+    if (
+      bindings[bindingIndex].viewOwner.byteLength > 0
+      && bindings[bindingIndex].ownership
+        == NativeOwnershipState.available
+    ) {
+      let usedLater = false;
+      let remaining = position;
+      while (remaining < indices.length && !usedLater) {
+        usedLater = statementUsesBinding(
+          arena,
+          indices[remaining],
+          bindings[bindingIndex].name
+        );
+        remaining = remaining + 1;
+      }
+      if (!usedLater) {
+        bindings[bindingIndex].ownership = NativeOwnershipState.moved;
+      }
+    }
+    bindingIndex = bindingIndex + 1;
+  }
 }
 
 function inferFunctionExpressions(

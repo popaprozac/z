@@ -59,3 +59,10 @@ export struct DocumentWorkspace {
 export function saveWorkspace(inout workspace: DocumentWorkspace): i32 throws WorkspaceError {
   return try workspace.saveAll();
 }
+
+export function findWorkspaceDocument(
+  documentId: i32,
+  in workspace: DocumentWorkspace
+): Option<view DocumentSession> {
+  return workspace.findDocument(documentId);
+}

@@ -5,6 +5,7 @@ import {
 } from "./document.zs";
 import {
   DocumentWorkspace,
+  findWorkspaceDocument,
   saveWorkspace,
 } from "./workspace.zs";
 
@@ -30,7 +31,7 @@ function exerciseDocumentWorkspace(): WorkspaceRunSummary {
   workspace.registerDocument("Roadmap", 40);
   workspace.registerDocument("Release notes", 42);
 
-  const foundBeforeMutation = workspace.findDocument(42);
+  const foundBeforeMutation = findWorkspaceDocument(42, in workspace);
   const foundDocumentId = match (in foundBeforeMutation) {
     some(document) => document.documentId();
     none => -1;

@@ -161,11 +161,15 @@ export function addMatchArmValueBindings(
       visiting
     );
     if (stringStartsWith(variant.payloadType, "view ")) {
+      let payloadOwner = valueBindingViewOwner(bindings, subjectRoot);
+      if (payloadOwner.byteLength == 0 || viewOwnerIsOwnerless(payloadOwner)) {
+        payloadOwner = subjectRoot.copyBytes(0, subjectRoot.byteLength);
+      }
       addViewValueBinding(
         inout bindings,
         tree.nodes[patterns[0]].value,
         variant.payloadType,
-        subjectRoot
+        payloadOwner
       );
     } else if (borrowedMatch && storedViewPayload) {
       let payloadOwner = valueBindingViewOwner(bindings, subjectRoot);

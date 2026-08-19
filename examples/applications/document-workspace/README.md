@@ -27,8 +27,9 @@ invariant.
    message. `DocumentOpenResult` distinguishes an opened document from a
    rejected request.
 2. [`workspace.zs`](workspace.zs) owns `Array<DocumentSession>`. Registration
-   consumes an opened session into that array, lookup returns
-   `Option<view DocumentSession>`, and saving mutates each registered session.
+   consumes an opened session into that array, receiver and module-function
+   lookup return `Option<view DocumentSession>`, and saving mutates each
+   registered session.
 3. [`main.zs`](main.zs) runs one understandable scenario: reject an invalid draft,
    register three documents, look one up, save them, and inspect the outcome.
 4. [`document-lease.hpp`](../../../tests/fixtures/document-lease.hpp) is the
@@ -45,13 +46,14 @@ invariant.
 | consuming `match (opened)` | the selected session moves from the result into the matching arm |
 | `documents.push(document)` | the workspace takes ownership of the open session |
 | `Option<view DocumentSession>` | lookup borrows an existing document without copying its title or native lease |
+| `findWorkspaceDocument(..., in workspace)` | a module function forwards the optional view while retaining its input-owner provenance |
 | `match (in found)` | inspecting the optional view does not consume it or its workspace owner |
 | `attempt saveWorkspace(...)` | the caller keeps `Result<i32, WorkspaceError>` to handle success and failure locally |
 | `liveDocumentLeases()` after the scenario | verifies deterministic native cleanup after the workspace leaves scope |
 
 The example intentionally mutates the workspace after the first optional-view
-match. This is safe because the view's last use ended with that match; attempting
-the mutation while the view is still live is rejected.
+match. This is safe because the module-returned view's last use ended with that
+match; attempting the mutation while the view is still live is rejected.
 
 ## Pressure-test findings
 

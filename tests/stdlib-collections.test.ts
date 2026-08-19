@@ -3140,6 +3140,78 @@ test("ties returned parameter views to every possible input owner", () => {
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
 });
 
+test("preserves optional parameter-view provenance through match and precise last use", () => {
+  const example = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-optional-view.zs",
+  );
+  const source = readFileSync(example, "utf8");
+  assert.deepEqual(diagnostics(source, example), []);
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /typedef const Z_Document \*Z_Option___z_view_3a_Document;/);
+  assert.match(
+    generated,
+    /findDocument\(int32_t id, const Z_Workspace \*active, const Z_Workspace \*archive\)/,
+  );
+  assert.match(generated, /return &\([^;]*active[^;]*documents[^;]*data/);
+  assert.match(generated, /return &\([^;]*archive[^;]*documents[^;]*data/);
+  assert.match(generated, /return NULL;/);
+  assert.doesNotMatch(generated, /struct Z___z_Option___z_view/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const foundOffset = source.indexOf("found =") + 1;
+  assert.match(
+    hover(source, example, foundOffset)?.contents.value ?? "",
+    /found: Option<view Document>.*view of active \| archive/,
+  );
+  const payloadOffset = source.indexOf("some(document)") + "some(".length + 1;
+  assert.match(
+    hover(source, example, payloadOffset)?.contents.value ?? "",
+    /document: view Document.*view of active \| archive/,
+  );
+
+  const invalidExample = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-optional-view-invalid.zs",
+  );
+  const invalidSource = readFileSync(invalidExample, "utf8");
+  const archiveDiagnostic = diagnostics(invalidSource, invalidExample)[0];
+  assert.equal(archiveDiagnostic.code, "Z0205");
+  assert.match(archiveDiagnostic.message, /cannot mutate "archive" while view "found" is live/);
+
+  const activeMutation = invalidSource.replace(
+    "archive.add(Document({ id: 24 }));",
+    "active.add(Document({ id: 24 }));",
+  );
+  const activeDiagnostic = diagnostics(activeMutation, "optional-parameter-view-active.zs")[0];
+  assert.equal(activeDiagnostic.code, "Z0205");
+  assert.match(activeDiagnostic.message, /cannot mutate "active" while view "found" is live/);
+
+  const armMutation = source.replace(
+    "      const id = document.id;\n      active.add(Document({ id: 24 }));",
+    "      active.add(Document({ id: 24 }));\n      const id = document.id;",
+  );
+  const armDiagnostic = diagnostics(armMutation, "optional-parameter-view-arm.zs")[0];
+  assert.equal(armDiagnostic.code, "Z0205");
+  assert.match(armDiagnostic.message, /cannot mutate "active" while view "document" is live/);
+
+  const localEscape = `
+    struct Document { id: i32; }
+    struct Workspace { documents: Array<Document>; }
+    function choose(local: boolean, in workspace: Workspace): Option<view Document> {
+      if (!local) return Option.some(workspace.documents[0]);
+      const document = Document({ id: 42 });
+      return Option.some(document);
+    }
+  `;
+  const localDiagnostic = diagnostics(localEscape, "optional-parameter-view-local.zs")[0];
+  assert.equal(localDiagnostic.code, "Z0206");
+  assert.match(localDiagnostic.message, /must project immutable borrowed storage directly/);
+});
+
 test("exposes Map imports, members, and source-level types to editor services", () => {
   const source = `
     import { Map as Dictionary } from "std/collections";

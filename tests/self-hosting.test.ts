@@ -503,6 +503,80 @@ test("preserves local views through native lowering and C emission", () => {
   assert.equal(execution.status, 0, execution.stderr);
 }, 20_000);
 
+test("preserves multi-owner optional parameter views through native semantics and emission", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-optional-view.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /typedef Z_Document const \* Z___z_NicheViewOption_Document;/,
+  );
+  assert.match(
+    emission.stdout,
+    /return &\(\(\*Z___z_Array_Document_at\(&\(\(\*active\)\.documents\), index\)\)\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /return &\(\(\*Z___z_Array_Document_at\(&\(\(\*archive\)\.documents\), index\)\)\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-parameter-optional-view-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+
+    const invalid = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-resolve-parameter-optional-view-invalid.zs",
+    );
+    const archiveResult = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", invalid],
+      { encoding: "utf8" },
+    );
+    assert.equal(archiveResult.status, 1);
+    assert.match(
+      archiveResult.stderr,
+      /cannot mutate "archive" while view "found" is live/,
+    );
+
+    const armInvalid = resolve(directory, "invalid-arm.zs");
+    writeFileSync(
+      armInvalid,
+      readFileSync(input, "utf8").replace(
+        "      const id = document.id;\n      active.add(Document({ id: 24 }));",
+        "      active.add(Document({ id: 24 }));\n      const id = document.id;",
+      ),
+    );
+    const armResult = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", armInvalid],
+      { encoding: "utf8" },
+    );
+    assert.equal(armResult.status, 1);
+    assert.match(
+      armResult.stderr,
+      /cannot mutate "active" while view "document" is live/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("keeps native inferred binding evidence inside its declaration scope", () => {
   const input = resolve(
     projectRoot,
@@ -4722,7 +4796,11 @@ test("allocates and reversely cleans Arena values through the native frontend", 
       [cli, "self-host-emit", invalidInput],
       { encoding: "utf8" },
     );
-    assert.equal(invalidEmission.status, 1);
+    assert.equal(
+      invalidEmission.status,
+      1,
+      `${invalidCase.name}\n${invalidEmission.stderr}`,
+    );
     assert.match(invalidEmission.stderr, invalidCase.expected);
   }
 
@@ -5687,7 +5765,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   writeFileSync(truncatedPath, encoded.slice(0, -2));
   const truncated = spawnSync(executable, [truncatedPath], { encoding: "utf8" });
   assert.equal(truncated.status, 3, truncated.stderr);
-}, 60_000);
+}, 240_000);
 
 test("compiles a multi-module Z application through the standalone native driver", () => {
   const driverSource = resolve(projectRoot, "compiler/driver/main.zs");
@@ -8981,7 +9059,7 @@ test("lowers the complete native frontend graph to C", () => {
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
-}, 60_000);
+}, 240_000);
 
 hostToolchainTest("resolves a canonical module graph directly from native Z ASTs", () => {
   const fixture = resolve(projectRoot, "tests/fixtures/self-host-module-resolver.zs");

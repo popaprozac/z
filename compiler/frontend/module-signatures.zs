@@ -2,10 +2,13 @@ import {
   Declaration,
   DeclarationKind,
   ConstructorDeclaration,
+  ExpressionKind,
+  ExpressionTree,
   FunctionDeclaration,
   ParameterMode,
   Program,
   ReceiverMode,
+  StatementKind,
   Visibility,
 } from "./parser.zs";
 import {
@@ -85,6 +88,7 @@ function functionDeclarationSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
+    viewParameters: functionDeclarationViewParameters(declaration),
     invalidatesParameters: Array<usize>(),
     invalidatesLifetimes: Array<String>(),
     returnType: declaration.returnType.name.copyBytes(
@@ -93,6 +97,161 @@ function functionDeclarationSignature(
     ),
     errorType,
   });
+}
+
+function returnTypeContainsDirectView(in typeName: String): boolean {
+  if (typeName.byteLength > 5 && typeName.copyBytes(0, 5) == "view ") {
+    return true;
+  }
+  return typeName.byteLength > 13
+    && typeName.copyBytes(0, 12) == "Option<view "
+    && typeName.byteAt(typeName.byteLength - 1) == 62;
+}
+
+function returnExpressionStorageRootName(
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const kind = tree.nodes[index].kind;
+  if (
+    kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.argumentReferenceExpression
+  ) return tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  if (
+    (
+      kind == ExpressionKind.memberExpression
+      || kind == ExpressionKind.indexExpression
+    )
+    && tree.nodes[index].children.length > 0
+  ) {
+    const child = tree.nodes[index].children[0];
+    return returnExpressionStorageRootName(tree, child);
+  }
+  return "";
+}
+
+function appendReturnViewRoot(
+  in tree: ExpressionTree,
+  index: usize,
+  inout roots: Array<String>
+): void {
+  const kind = tree.nodes[index].kind;
+  if (
+    kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.memberExpression
+    || kind == ExpressionKind.indexExpression
+  ) {
+    const root = returnExpressionStorageRootName(tree, index);
+    if (root.byteLength > 0) roots.push(root);
+    return;
+  }
+  if (kind == ExpressionKind.variantExpression) {
+    if (tree.nodes[index].children.length > 1) {
+      const payload = tree.nodes[index].children[1];
+      appendReturnViewRoot(
+        tree,
+        payload,
+        inout roots
+      );
+    }
+    return;
+  }
+  if (kind == ExpressionKind.callExpression) {
+    if (tree.nodes[index].children.length == 0) return;
+    const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].children.length == 1
+    ) {
+      const receiver = tree.nodes[callee].children[0];
+      if (
+        tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+        && tree.nodes[receiver].value == "Option"
+        && tree.nodes[callee].value == "some"
+      ) {
+        if (tree.nodes[index].children.length > 1) {
+          const payload = tree.nodes[index].children[1];
+          appendReturnViewRoot(
+            tree,
+            payload,
+            inout roots
+          );
+        }
+      } else {
+        appendReturnViewRoot(tree, receiver, inout roots);
+      }
+      return;
+    }
+    let childIndex: usize = 1;
+    while (childIndex < tree.nodes[index].children.length) {
+      const argument = tree.nodes[index].children[childIndex];
+      appendReturnViewRoot(
+        tree,
+        argument,
+        inout roots
+      );
+      childIndex = childIndex + 1;
+    }
+    return;
+  }
+  if (
+    kind == ExpressionKind.tryExpression
+    || kind == ExpressionKind.attemptExpression
+    || kind == ExpressionKind.awaitExpression
+  ) {
+    if (tree.nodes[index].children.length == 1) {
+      const child = tree.nodes[index].children[0];
+      appendReturnViewRoot(
+        tree,
+        child,
+        inout roots
+      );
+    }
+  }
+}
+
+function functionDeclarationViewParameters(
+  in declaration: FunctionDeclaration
+): Array<usize> {
+  if (!returnTypeContainsDirectView(declaration.returnType.name)) {
+    return Array<usize>();
+  }
+  let roots = Array<String>();
+  for (const statement of declaration.body.nodes) {
+    if (statement.kind != StatementKind.returnStatement) continue;
+    match (in statement.expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          const root = tree.root;
+          appendReturnViewRoot(
+            tree,
+            root,
+            inout roots
+          );
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
+  let selected = Array<usize>();
+  for (const root of roots) {
+    let index: usize = 0;
+    while (index < declaration.parameters.length) {
+      if (
+        declaration.parameters[index].mode == ParameterMode.input
+        && declaration.parameters[index].name == root
+      ) {
+        let present = false;
+        for (const existing of selected) {
+          if (existing == index) present = true;
+        }
+        if (!present) selected.push(index);
+      }
+      index = index + 1;
+    }
+  }
+  return selected;
 }
 
 function constructorDeclarationSignature(

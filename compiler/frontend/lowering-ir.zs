@@ -9619,15 +9619,41 @@ function lowerExpressionExpected(
                 payloadIndex,
                 inout output
               );
-              payload = try wrapOwnedStorage(
-                program,
-                importedTypes,
-                tree,
-                payloadIndex,
-                generic.arguments[0],
-                payload,
-                inout output
-              );
+              if (stringStartsWith(generic.arguments[0], "view ")) {
+                let payloadAlreadyView = false;
+                match (evidenceResolvedExpressionTypeName(
+                  program,
+                  importedTypes,
+                  evidence,
+                  tree,
+                  payloadIndex
+                )) {
+                  some(actualType) => payloadAlreadyView = stringStartsWith(
+                    actualType,
+                    "view "
+                  );
+                  none => {}
+                }
+                if (!payloadAlreadyView) {
+                  let projected = Array<usize>();
+                  projected.push(payload);
+                  payload = pushExpression(
+                    inout output,
+                    LoweredExpressionKind.viewProjection,
+                    generic.arguments[0],
+                    projected,
+                    Array<String>()
+                  );
+                }
+              } else payload = try wrapOwnedStorage(
+                  program,
+                  importedTypes,
+                  tree,
+                  payloadIndex,
+                  generic.arguments[0],
+                  payload,
+                  inout output
+                );
               let children = Array<usize>();
               children.push(payload);
               let labels = Array<String>();

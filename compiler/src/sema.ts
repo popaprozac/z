@@ -12915,7 +12915,14 @@ function parameterViewSourceIndices(
       if (index >= 0) sources.add(index);
     }
     if (expression.kind === "call") {
-      expression.arguments.forEach(record);
+      if (
+        expression.callee.kind === "member"
+        && expression.callee.property === "some"
+      ) expression.arguments.forEach(record);
+      else if (expression.callee.kind === "member") record(expression.callee.object);
+      else expression.arguments.forEach(record);
+    } else if (expression.kind === "variantExpression") {
+      record(expression.payload);
     } else if (
       expression.kind === "try"
       || expression.kind === "attempt"
@@ -17074,10 +17081,24 @@ function validateReceiverViewProjection(
     });
   }
   const root = storageRoot(expression);
-  if (!root || root.name !== "this" || (expression.kind !== "member" && expression.kind !== "index")) {
-    throw new DiagnosticError(fileName, expression.location, "an optional view method must project a field or indexed element derived directly from this", {
+  const directProjection = expression.kind === "identifier"
+    || expression.kind === "member"
+    || expression.kind === "index";
+  const parameter = root
+    ? state.activeFunction.parameters.find((candidate) => (
+      candidate.name === root.name && candidate.mode === "in"
+    ))
+    : null;
+  const receiverProjection = Boolean(
+    root
+    && root.name === "this"
+    && (expression.kind === "member" || expression.kind === "index")
+  );
+  if (!root || !directProjection || (!receiverProjection && !parameter)) {
+    throw new DiagnosticError(fileName, expression.location, "an optional view return must project immutable borrowed storage directly", {
       code: "Z0206",
-      notes: ["forwarding another view or returning local storage would let it escape the wrong owner"],
+      notes: ["forwarding another view or returning local storage would detach the result from its owner"],
+      helps: ["return Option.some(this.field), Option.some(input.field), or Option.none"],
     });
   }
   requireAssignable(target, actual, expression, fileName, structs, enums, state);

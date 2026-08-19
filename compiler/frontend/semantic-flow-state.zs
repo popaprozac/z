@@ -25,6 +25,42 @@ export function mergeViewOwners(in left: String, in right: String): String {
   return "__z_native_mixed_view_owner";
 }
 
+export function appendIndependentViewOwner(
+  in existing: String,
+  in owner: String
+): String {
+  if (existing.byteLength == 0) return owner.copyBytes(0, owner.byteLength);
+  if (viewOwnerContains(existing, owner)) {
+    return existing.copyBytes(0, existing.byteLength);
+  }
+  return `${existing}\n${owner}`;
+}
+
+export function viewOwnerContains(
+  in owners: String,
+  in owner: String
+): boolean {
+  let start: usize = 0;
+  while (start <= owners.byteLength) {
+    let end = start;
+    while (end < owners.byteLength && owners.byteAt(end) != 10) {
+      end = end + 1;
+    }
+    if (end - start == owner.byteLength) {
+      let matches = true;
+      let index: usize = 0;
+      while (index < owner.byteLength) {
+        if (owners.byteAt(start + index) != owner.byteAt(index)) matches = false;
+        index = index + 1;
+      }
+      if (matches) return true;
+    }
+    if (end == owners.byteLength) return false;
+    start = end + 1;
+  }
+  return false;
+}
+
 export struct NativeValueBinding {
   name: String;
   typeName: String;
@@ -252,7 +288,7 @@ export function liveViewBindingForOwner(
   while (index > 0) {
     index = index - 1;
     if (
-      bindings[index].viewOwner == owner
+      viewOwnerContains(bindings[index].viewOwner, owner)
       && bindings[index].ownership == NativeOwnershipState.available
     ) return bindings[index].name.copyBytes(0, bindings[index].name.byteLength);
   }
