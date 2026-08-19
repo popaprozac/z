@@ -12,6 +12,7 @@ import {
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
 import {
+  fixedArrayShape,
   genericTypeShape,
   isIntegerTypeName,
   stringStartsWith,
@@ -63,25 +64,14 @@ function stringContains(in value: String, in candidate: String): boolean {
   return false;
 }
 
-function typeIsFixedArray(in name: String): boolean {
-  let open: usize = 0;
-  while (open + 2 < name.byteLength) {
-    if (name.byteAt(open) == 91) {
-      let digit = open + 1;
-      while (
-        digit < name.byteLength
-        && name.byteAt(digit) >= 48
-        && name.byteAt(digit) <= 57
-      ) {
-        digit = digit + 1;
-      }
-      if (digit > open + 1 && digit < name.byteLength && name.byteAt(digit) == 93) {
-        return true;
-      }
-    }
-    open = open + 1;
-  }
-  return false;
+function nativeFixedArrayTypeSupported(in name: String): boolean {
+  return match (fixedArrayShape(name)) {
+    some(shape) => shape.elementType == "boolean"
+      || shape.elementType == "f32"
+      || shape.elementType == "f64"
+      || isIntegerTypeName(shape.elementType);
+    none => false;
+  };
 }
 
 function typeUsesGeneric(in name: String, in base: String): boolean {
@@ -102,6 +92,7 @@ function nativeExplicitCopyTypeSupported(
   moduleIndex: usize,
   in name: String
 ): boolean {
+  if (nativeFixedArrayTypeSupported(name)) return true;
   if (
     name == "String"
     || name == "cstring"
@@ -274,15 +265,19 @@ function validateNativeType(
     typeColumn,
     typeLength
   );
-  if (typeIsFixedArray(type.name)) {
+  match (fixedArrayShape(type.name)) {
+    some(_) => {
+      if (nativeFixedArrayTypeSupported(type.name)) return;
     throw loweringBoundary(
       path,
       "Z1000",
-      `fixed-array type "${type.name}" has no native representation yet`,
+      `native fixed arrays currently require cleanup-free primitive elements; found "${type.name}"`,
       type.line,
       type.column,
       type.name.byteLength
     );
+    }
+    none => {}
   }
   if (typeUsesGeneric(type.name, "AsyncGenerator")) {
     throw loweringBoundary(
@@ -450,6 +445,21 @@ function resolvedExpressionType(
       nodeValue,
       nodeOffset
     );
+  }
+  if (
+    nodeKind == ExpressionKind.arrayExpression
+    && tree.nodes[index].children.length > 0
+  ) {
+    const first = tree.nodes[index].children[0];
+    const elementType = resolvedExpressionType(
+      graph,
+      moduleIndex,
+      tree,
+      first
+    );
+    if (elementType.byteLength > 0) {
+      return `${elementType}[${tree.nodes[index].children.length}]`;
+    }
   }
   if (
     nodeKind == ExpressionKind.memberExpression
@@ -673,14 +683,25 @@ function validateNativeExpressionTree(
       try validateNativeType(path, type);
     }
     if (node.kind == ExpressionKind.arrayExpression) {
-      throw loweringBoundary(
-        path,
-        "Z1000",
-        "fixed-array literals are not executable in the native compiler yet",
-        node.line,
-        node.column,
-        1
+      const typeName = resolvedExpressionType(
+        graph,
+        moduleIndex,
+        tree,
+        index
       );
+      if (
+        typeName.byteLength > 0
+        && !nativeFixedArrayTypeSupported(typeName)
+      ) {
+        throw loweringBoundary(
+          path,
+          "Z1000",
+          `native fixed-array literals currently require cleanup-free primitive elements; found "${typeName}"`,
+          node.line,
+          node.column,
+          1
+        );
+      }
     }
     if (
       node.kind == ExpressionKind.unsafeExpression
@@ -1174,10 +1195,13 @@ function validateNativeBody(
             && generic.arguments.length == 1;
           none => {}
         }
+        if (nativeFixedArrayTypeSupported(sourceType)) {
+          positionalStorage = true;
+        }
         if (!positionalStorage) throw loweringBoundary(
             path,
             "Z1000",
-            `native array destructuring currently requires Array<T> or Slice<T> storage, found ${sourceType}`,
+            `native array destructuring currently requires fixed-array, Array<T>, or Slice<T> storage, found ${sourceType}`,
             statement.line,
             statement.column,
             5

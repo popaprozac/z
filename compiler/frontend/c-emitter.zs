@@ -76,6 +76,7 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.hasherType) return "Z_Hasher";
   if (type.kind == LoweredTypeKind.stringType) return "Z_String";
   if (type.kind == LoweredTypeKind.cstringType) return "const char *";
+  if (type.kind == LoweredTypeKind.fixedArrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.arrayType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.sliceType) return `Z_${type.name}`;
   if (type.kind == LoweredTypeKind.mapType) return `Z_${type.name}`;
@@ -432,6 +433,12 @@ function loweredTypeForIdentity(
   if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
   if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
+  for (const declaration of program.fixedArrays) {
+    if (declaration.name == identity) return LoweredType({
+      kind: LoweredTypeKind.fixedArrayType,
+      name: identity.copyBytes(0, identity.byteLength),
+    });
+  }
   for (const declaration of program.arrays) {
     if (declaration.name == identity) return LoweredType({
       kind: LoweredTypeKind.arrayType,
@@ -1258,6 +1265,23 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.fixedArrayValue
+  ) {
+    output.append("(Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("){ .data = {");
+    let childIndex: usize = 0;
+    while (childIndex < declaration.expressions[index].children.length) {
+      if (childIndex > 0) output.append(", ");
+      const child = declaration.expressions[index].children[childIndex];
+      try appendExpression(inout output, declaration, child);
+      childIndex = childIndex + 1;
+    }
+    output.append("} }");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.arrayRequireLength
   ) {
     if (declaration.expressions[index].children.length != 1) {
@@ -1309,6 +1333,21 @@ function appendExpression(
     try appendExpression(inout output, declaration, receiver);
     if (viewReceiver) output.append(")->length");
     else output.append(").length");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.fixedArrayLength
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed fixed-array length";
+    }
+    output.append("((void)(");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, receiver);
+    output.append("), (size_t)");
+    output.append(declaration.expressions[index].value);
+    output.append(")");
     return;
   }
   if (
@@ -9001,6 +9040,18 @@ function appendTypeDefinitions(
     output.append(mutexName);
     output.append(";\n\n");
   }
+  for (const declaration of program.fixedArrays) {
+    const elementType = try cType(declaration.elementType);
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" {\n  ");
+    output.append(elementType);
+    output.append(" data[");
+    output.append(declaration.length);
+    output.append("];\n} Z_");
+    output.append(declaration.name);
+    output.append(";\n\n");
+  }
   for (const declaration of program.slices) {
     output.append("typedef struct Z_");
     output.append(declaration.name);
@@ -11412,6 +11463,49 @@ function emitLoweredC(
     output.append(declaration.name);
     output.append("){ data, self->length - index };\n");
     output.append("}\n\n");
+  }
+  for (const declaration of program.fixedArrays) {
+    const elementType = try cType(declaration.elementType);
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(declaration.sliceName);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_slice_unchecked(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  return (Z_");
+    output.append(declaration.sliceName);
+    output.append("){ (void *)&(self->data[index]), ");
+    output.append(declaration.length);
+    output.append(" - index };\n}\n\n");
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  if (index >= ");
+    output.append(declaration.length);
+    output.append(") abort();\n  return &(self->data[index]);\n}\n\n");
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at_unchecked(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  return &(self->data[index]);\n}\n\n");
+    output.append("static inline __attribute__((unused)) ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at_mut(Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  if (index >= ");
+    output.append(declaration.length);
+    output.append(") abort();\n  return &(self->data[index]);\n}\n\n");
   }
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);

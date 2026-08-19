@@ -227,6 +227,14 @@ export function fixedArrayShape(in name: String): Option<NativeFixedArrayShape> 
       if (index == 0 || index + 1 == name.byteLength - 1) {
         return Option<NativeFixedArrayShape>.none;
       }
+      let digit = index + 1;
+      while (digit < name.byteLength - 1) {
+        const byte = name.byteAt(digit);
+        if (byte < 48 || byte > 57) {
+          return Option<NativeFixedArrayShape>.none;
+        }
+        digit = digit + 1;
+      }
       return Option.some(NativeFixedArrayShape({
         elementType: name.copyBytes(0, index),
         length: name.copyBytes(index + 1, name.byteLength - 1),

@@ -2316,9 +2316,9 @@ follow-up; they do not substitute for semantic rejection coverage.
 
 The first follow-up now inserts a lowerability preflight between native semantic
 resolution and IR construction. Ordinary unplaced async functions retain
-`Z0700`; generic aggregates, traits, fixed-array types, `Slice`, generators,
-array/rest destructuring, value-producing loops, unsafe expressions, and other
-syntactically settled body gaps use `Z1000`, which
+`Z0700`; generic aggregates, traits, cleanup-bearing fixed arrays, generators,
+unsupported collection iteration, value-producing loops, broader unsafe
+expressions, and other syntactically settled body gaps use `Z1000`, which
 explicitly means “valid Z, outside the current fixed-point executable tier.”
 Both the standalone driver and the Bun-hosted native emitter preserve the code,
 source location, and span. Public lowering and C-emission boundaries now mark
@@ -2888,7 +2888,7 @@ custom-`deinit` structs, foreign RAII values, nested/rest patterns, mutable
 patterns, and object-rest patterns need separate ownership rules rather than
 inheriting this transfer mechanically.
 
-## Array positional destructuring in the fixed-point compiler
+## Array, fixed-array, and Slice positional destructuring in the fixed-point compiler
 
 The native frontend now closes the `Array<T>` source part of the local
 positional-pattern design, including zero-copy rest. Lowering borrows the source
@@ -2918,8 +2918,16 @@ existing Slice may itself be positionally destructured into a shorter Slice.
 The fixture exercises scalar and cleanup-bearing parameters, nested rest,
 checked indexing, and `Slice<Document>` field access before releasing the owner
 loan and mutating the Array. A standalone fixture proves that a Slice signature
-does not depend on an owning Array declaration. Fixed-array sources and
-fixed-array-to-Slice projection remain the source-mapped native boundary.
+does not depend on an owning Array declaration.
+
+Cleanup-free primitive fixed arrays now use their established inline C value
+wrapper in the native IR. Literals initialize that storage directly; checked
+indexing, mutable indexing, `in` parameters, value copying, positional
+destructuring, and fixed-array-to-Slice projection all compose without heap
+allocation. Their known length removes the dynamic destructuring guard while
+leaving ordinary indexing checked. Cleanup-bearing fixed-array elements remain
+a coded boundary: exact reverse-order destruction and partial transfer must be
+implemented before the native compiler accepts them.
 
 ## Not tested yet
 

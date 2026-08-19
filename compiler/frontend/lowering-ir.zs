@@ -36,6 +36,7 @@ import {
   ModuleSymbolKind,
 } from "./semantic-model.zs";
 import {
+  fixedArrayShape,
   genericTypeShape,
   nativeFunctionSignature,
   nullableTargetType,
@@ -63,6 +64,7 @@ export enum LoweredTypeKind {
   hasherType,
   stringType,
   cstringType,
+  fixedArrayType,
   arrayType,
   sliceType,
   mapType,
@@ -108,6 +110,13 @@ export struct LoweredArray {
   name: String;
   sliceName: String;
   elementType: LoweredType;
+}
+
+export struct LoweredFixedArray {
+  name: String;
+  sliceName: String;
+  elementType: LoweredType;
+  length: String;
 }
 
 export struct LoweredSlice {
@@ -226,8 +235,10 @@ export enum LoweredExpressionKind {
   templateValue,
   arrayEmpty,
   arrayValue,
+  fixedArrayValue,
   arrayRequireLength,
   arrayLength,
+  fixedArrayLength,
   arrayIndex,
   arrayMutableIndex,
   arraySlice,
@@ -414,6 +425,7 @@ export struct LoweredProgram {
   foreignFunctions: Array<LoweredForeignFunction>;
   foreignResources: Array<LoweredForeignResource>;
   constants: Array<LoweredConstant>;
+  fixedArrays: Array<LoweredFixedArray>;
   arrays: Array<LoweredArray>;
   slices: Array<LoweredSlice>;
   maps: Array<LoweredMap>;
@@ -688,6 +700,14 @@ function intrinsicArrayName(in elementType: LoweredType): String {
   return `__z_Array_${identity}`;
 }
 
+function intrinsicFixedArrayName(
+  in elementType: LoweredType,
+  in length: String
+): String {
+  const identity = loweredTypeIdentity(elementType);
+  return `__z_FixedArray_${length}_${identity}`;
+}
+
 function intrinsicSliceName(in elementType: LoweredType): String {
   const identity = loweredTypeIdentity(elementType);
   return `__z_Slice_${identity}`;
@@ -914,6 +934,16 @@ function lowerTypeName(
       name: "cstring",
     });
   }
+  match (fixedArrayShape(name)) {
+    some(shape) => {
+      const elementType = try lowerTypeName(program, shape.elementType);
+      return LoweredType({
+        kind: LoweredTypeKind.fixedArrayType,
+        name: intrinsicFixedArrayName(elementType, shape.length),
+      });
+    }
+    none => {}
+  }
   if (stringStartsWith(name, "__z_Array_")) {
     return LoweredType({
       kind: LoweredTypeKind.arrayType,
@@ -1126,6 +1156,20 @@ function lowerModuleTypeName(
       importedTypes,
       targetName
     );
+  }
+  match (fixedArrayShape(name)) {
+    some(shape) => {
+      const elementType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        shape.elementType
+      );
+      return LoweredType({
+        kind: LoweredTypeKind.fixedArrayType,
+        name: intrinsicFixedArrayName(elementType, shape.length),
+      });
+    }
+    none => {}
   }
   match (intrinsicViewOptionPayloadName(name)) {
     some(_) => return LoweredType({
@@ -2071,6 +2115,29 @@ function intrinsicArrayDeclaration(
       }));
     }
     none => return Option<LoweredArray>.none;
+  }
+}
+
+function intrinsicFixedArrayDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<LoweredFixedArray> throws String {
+  match (fixedArrayShape(name)) {
+    some(shape) => {
+      const elementType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        shape.elementType
+      );
+      return Option.some(LoweredFixedArray({
+        name: intrinsicFixedArrayName(elementType, shape.length),
+        sliceName: intrinsicSliceName(elementType),
+        elementType,
+        length: shape.length.copyBytes(0, shape.length.byteLength),
+      }));
+    }
+    none => return Option<LoweredFixedArray>.none;
   }
 }
 
@@ -5357,6 +5424,24 @@ function evidenceResolvedExpressionTypeName(
     return namedValueTypeName(program, evidence, "", name, offset);
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.arrayExpression
+    && tree.nodes[index].children.length > 0
+  ) {
+    const first = tree.nodes[index].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      first
+    )) {
+      some(elementType) => return Option.some(
+        `${elementType}[${tree.nodes[index].children.length}]`
+      );
+      none => {}
+    }
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.indexExpression
     && tree.nodes[index].children.length == 2
   ) {
@@ -5847,6 +5932,47 @@ function lowerExpression(
       Array<String>()
     );
   }
+  if (tree.nodes[index].kind == ExpressionKind.arrayExpression) {
+    const typeName = match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index
+    )) {
+      some(name) => name;
+      none => throw "native fixed-array literal lowering could not resolve its type";
+    };
+    const shape = match (fixedArrayShape(typeName)) {
+      some(value) => value;
+      none => throw `native array literal resolved to unsupported type ${typeName}`;
+    };
+    const arrayType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      typeName
+    );
+    let children = Array<usize>();
+    for (const childInput of tree.nodes[index].children) {
+      const child = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        childInput,
+        shape.elementType,
+        inout output
+      );
+      children.push(child);
+    }
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.fixedArrayValue,
+      arrayType.name,
+      move children,
+      Array<String>()
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.newExpression) {
     let className = tree.nodes[index].value.copyBytes(
       0,
@@ -5998,6 +6124,7 @@ function lowerExpression(
         || operandType.kind == LoweredTypeKind.f32Type
         || operandType.kind == LoweredTypeKind.f64Type
         || operandType.kind == LoweredTypeKind.cstringType
+        || operandType.kind == LoweredTypeKind.fixedArrayType
       ) return operand;
       if (
         operandType.kind != LoweredTypeKind.stringType
@@ -6027,11 +6154,12 @@ function lowerExpression(
       );
       if (
         operandType.kind != LoweredTypeKind.structType
+        && operandType.kind != LoweredTypeKind.fixedArrayType
         && operandType.kind != LoweredTypeKind.arrayType
         && operandType.kind != LoweredTypeKind.sliceType
         && operandType.kind != LoweredTypeKind.stringType
       ) {
-        throw `native view lowering currently supports value-struct, Array, Slice, and String projections, found ${operandTypeName}`;
+        throw `native view lowering currently supports value-struct, fixed-array, Array, Slice, and String projections, found ${operandTypeName}`;
       }
       kind = LoweredExpressionKind.viewProjection;
     }
@@ -8790,6 +8918,60 @@ function lowerExpression(
                     }
                     none => {}
                   }
+                  match (fixedArrayShape(actualStorageTypeName)) {
+                    some(actual) => {
+                      const actualElement = try lowerModuleTypeName(
+                        program,
+                        importedTypes,
+                        actual.elementType
+                      );
+                      const expectedElement = try lowerModuleTypeName(
+                        program,
+                        importedTypes,
+                        expected.arguments[0]
+                      );
+                      if (
+                        loweredTypeIdentity(actualElement)
+                          == loweredTypeIdentity(expectedElement)
+                      ) {
+                        const arrayType = try lowerModuleTypeName(
+                          program,
+                          importedTypes,
+                          actualStorageTypeName
+                        );
+                        let source = value;
+                        if (!alreadyViewed) {
+                          let viewChildren = Array<usize>();
+                          viewChildren.push(value);
+                          source = pushExpression(
+                            inout output,
+                            LoweredExpressionKind.viewProjection,
+                            arrayType.name,
+                            move viewChildren,
+                            Array<String>()
+                          );
+                        }
+                        const zero = pushExpression(
+                          inout output,
+                          LoweredExpressionKind.integerValue,
+                          "0",
+                          Array<usize>(),
+                          Array<String>()
+                        );
+                        let sliceChildren = Array<usize>();
+                        sliceChildren.push(source);
+                        sliceChildren.push(zero);
+                        value = pushExpression(
+                          inout output,
+                          LoweredExpressionKind.arraySlice,
+                          arrayType.name,
+                          move sliceChildren,
+                          Array<String>()
+                        );
+                      }
+                    }
+                    none => {}
+                  }
                 }
                 none => {}
               }
@@ -9083,6 +9265,7 @@ function lowerExpression(
     if (
       receiverType.kind != LoweredTypeKind.arrayType
       && receiverType.kind != LoweredTypeKind.sliceType
+      && receiverType.kind != LoweredTypeKind.fixedArrayType
     ) {
       throw `native lowering does not support indexing ${receiverTypeName} yet`;
     }
@@ -9246,6 +9429,29 @@ function lowerExpression(
             importedTypes,
             receiverValueTypeName
           );
+          if (receiverType.kind == LoweredTypeKind.fixedArrayType) {
+            const shape = match (fixedArrayShape(receiverValueTypeName)) {
+              some(value) => value;
+              none => throw "native fixed-array length lowering lost its source shape";
+            };
+            const receiver = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.fixedArrayLength,
+              shape.length,
+              move children,
+              Array<String>()
+            );
+          }
           if (
             receiverType.kind == LoweredTypeKind.arrayType
             || receiverType.kind == LoweredTypeKind.sliceType
@@ -9554,6 +9760,38 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (tree.nodes[index].kind == ExpressionKind.arrayExpression) {
+    match (fixedArrayShape(expectedTypeName)) {
+      some(shape) => {
+        const arrayType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          expectedTypeName
+        );
+        let children = Array<usize>();
+        for (const childInput of tree.nodes[index].children) {
+          const child = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            childInput,
+            shape.elementType,
+            inout output
+          );
+          children.push(child);
+        }
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.fixedArrayValue,
+          arrayType.name,
+          move children,
+          Array<String>()
+        );
+      }
+      none => {}
+    }
+  }
   const callableTypeName = moduleCallableAliasTarget(
     program,
     importedTypes,
@@ -13105,8 +13343,9 @@ function lowerStatementCore(
             if (
               sourceType.kind != LoweredTypeKind.arrayType
               && sourceType.kind != LoweredTypeKind.sliceType
+              && sourceType.kind != LoweredTypeKind.fixedArrayType
             ) {
-              throw `native array destructuring expected Array or Slice storage, found ${sourceTypeName}`;
+              throw `native array destructuring expected fixed-array, Array, or Slice storage, found ${sourceTypeName}`;
             }
             const sourceValue = try lowerExpressionExpected(
               program,
@@ -13160,7 +13399,10 @@ function lowerStatementCore(
                 requiredLength = requiredLength + 1;
               }
             }
-            if (requiredLength > 0) {
+            if (
+              requiredLength > 0
+              && sourceType.kind != LoweredTypeKind.fixedArrayType
+            ) {
               const lengthReceiver = pushExpression(
                 inout expressions,
                 LoweredExpressionKind.localValue,
@@ -16452,6 +16694,16 @@ function containsLoweredArray(
   return false;
 }
 
+function containsLoweredFixedArray(
+  in arrays: Array<LoweredFixedArray>,
+  in name: String
+): boolean {
+  for (const declaration of arrays) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function containsLoweredSlice(
   in slices: Array<LoweredSlice>,
   in name: String
@@ -16777,12 +17029,41 @@ function collectIntrinsicTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in name: String,
+  inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
+  const fixedArray = try intrinsicFixedArrayDeclaration(
+    program,
+    importedTypes,
+    name
+  );
+  match (fixedArray) {
+    some(declaration) => {
+      if (!containsLoweredSlice(slices, declaration.sliceName)) {
+        slices.push(LoweredSlice({
+          name: declaration.sliceName.copyBytes(
+            0,
+            declaration.sliceName.byteLength
+          ),
+          elementType: LoweredType({
+            kind: declaration.elementType.kind,
+            name: declaration.elementType.name.copyBytes(
+              0,
+              declaration.elementType.name.byteLength
+            ),
+          }),
+        }));
+      }
+      if (!containsLoweredFixedArray(fixedArrays, declaration.name)) {
+        fixedArrays.push(move declaration);
+      }
+    }
+    none => {}
+  }
   match (genericTypeShape(name)) {
     some(generic) => {
       for (const argument of generic.arguments) {
@@ -16790,6 +17071,7 @@ function collectIntrinsicTypeName(
           program,
           importedTypes,
           argument,
+          inout fixedArrays,
           inout arrays,
           inout slices,
           inout maps,
@@ -16803,6 +17085,7 @@ function collectIntrinsicTypeName(
           program,
           importedTypes,
           resultName,
+          inout fixedArrays,
           inout arrays,
           inout slices,
           inout maps,
@@ -16899,6 +17182,7 @@ function collectArenaIntrinsicEnums(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
+  inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
@@ -16911,6 +17195,7 @@ function collectArenaIntrinsicEnums(
         program,
         importedTypes,
         type.name,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -16928,6 +17213,7 @@ function collectArenaIntrinsicEnums(
                 program,
                 importedTypes,
                 node.value,
+                inout fixedArrays,
                 inout arrays,
                 inout slices,
                 inout maps,
@@ -16945,6 +17231,7 @@ function collectArenaIntrinsicEnums(
                   program,
                   importedTypes,
                   workerResult,
+                  inout fixedArrays,
                   inout arrays,
                   inout slices,
                   inout maps,
@@ -16968,6 +17255,7 @@ function collectArenaIntrinsicEnums(
                 program,
                 importedTypes,
                 node.value,
+                inout fixedArrays,
                 inout arrays,
                 inout slices,
                 inout maps,
@@ -16988,6 +17276,7 @@ function collectFunctionIntrinsicTypes(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in declaration: FunctionDeclaration,
+  inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
@@ -16999,6 +17288,7 @@ function collectFunctionIntrinsicTypes(
       program,
       importedTypes,
       parameter.type.name,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -17010,6 +17300,7 @@ function collectFunctionIntrinsicTypes(
     program,
     importedTypes,
     declaration.returnType.name,
+    inout fixedArrays,
     inout arrays,
     inout slices,
     inout maps,
@@ -17022,6 +17313,7 @@ function collectFunctionIntrinsicTypes(
         program,
         importedTypes,
         type.name,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -17038,6 +17330,7 @@ function collectFunctionIntrinsicTypes(
         program,
         importedTypes,
         resultName,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -17051,6 +17344,7 @@ function collectFunctionIntrinsicTypes(
     program,
     importedTypes,
     declaration.body,
+    inout fixedArrays,
     inout arrays,
     inout slices,
     inout maps,
@@ -17064,6 +17358,7 @@ function collectIntrinsicEnums(
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
   includeTests: boolean,
+  inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
@@ -17075,6 +17370,7 @@ function collectIntrinsicEnums(
       program,
       importedTypes,
       binding.typeName,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -17087,6 +17383,7 @@ function collectIntrinsicEnums(
       program,
       importedTypes,
       expression.typeName,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -17101,6 +17398,7 @@ function collectIntrinsicEnums(
       program,
       importedTypes,
       resultName,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -17114,6 +17412,7 @@ function collectIntrinsicEnums(
         program,
         importedTypes,
         field.type.name,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -17126,6 +17425,7 @@ function collectIntrinsicEnums(
         program,
         importedTypes,
         deinitializer.body,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -17139,6 +17439,7 @@ function collectIntrinsicEnums(
         program,
         importedTypes,
         method,
+        inout fixedArrays,
         inout arrays,
         inout slices,
         inout maps,
@@ -17154,6 +17455,7 @@ function collectIntrinsicEnums(
           program,
           importedTypes,
           type.name,
+          inout fixedArrays,
           inout arrays,
           inout slices,
           inout maps,
@@ -17170,6 +17472,7 @@ function collectIntrinsicEnums(
       program,
       importedTypes,
       declaration,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -18056,6 +18359,7 @@ function appendLoweredProgram(
   entryIndex: usize,
   includeTests: boolean,
   inout constants: Array<LoweredConstant>,
+  inout fixedArrays: Array<LoweredFixedArray>,
   inout arrays: Array<LoweredArray>,
   inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
@@ -18162,6 +18466,7 @@ function appendLoweredProgram(
     importedTypes,
     evidence,
     includeTests,
+    inout fixedArrays,
     inout arrays,
     inout slices,
     inout maps,
@@ -18530,6 +18835,7 @@ function lowerProgramUnchecked(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   let constants = Array<LoweredConstant>();
+  let fixedArrays = Array<LoweredFixedArray>();
   let arrays = Array<LoweredArray>();
   let slices = Array<LoweredSlice>();
   let maps = Array<LoweredMap>();
@@ -18552,6 +18858,7 @@ function lowerProgramUnchecked(
     0,
     false,
     inout constants,
+    inout fixedArrays,
     inout arrays,
     inout slices,
     inout maps,
@@ -18567,6 +18874,7 @@ function lowerProgramUnchecked(
     foreignFunctions,
     foreignResources,
     constants,
+    fixedArrays,
     arrays,
     slices,
     maps,
@@ -18629,6 +18937,7 @@ function lowerModulesIncludingTests(
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();
   let constants = Array<LoweredConstant>();
+  let fixedArrays = Array<LoweredFixedArray>();
   let arrays = Array<LoweredArray>();
   let slices = Array<LoweredSlice>();
   let maps = Array<LoweredMap>();
@@ -18670,6 +18979,7 @@ function lowerModulesIncludingTests(
       entryIndex,
       includeTests,
       inout constants,
+      inout fixedArrays,
       inout arrays,
       inout slices,
       inout maps,
@@ -18696,6 +19006,7 @@ function lowerModulesIncludingTests(
     foreignFunctions,
     foreignResources,
     constants,
+    fixedArrays,
     arrays,
     slices,
     maps,

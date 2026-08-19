@@ -9103,7 +9103,8 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     const target = mapType(conversion.targetType, context.structs, context.enums, context.semanticInfo.foreignNamedTypes);
     const length = source ? String(source.length) : `(${value}).length`;
     if (!source && !dynamic) throw new Error("slice conversion requires fixed or growable array storage");
-    return `(${target}){ .data = (${value}).data, .length = ${length} }`;
+    const data = source ? `(void *)(${value}).data` : `(${value}).data`;
+    return `(${target}){ .data = ${data}, .length = ${length} }`;
   }
   if (context.semanticInfo.foreignCxxArgumentAccesses.has(expression.location.offset)) {
     return expression.kind === "argumentReference"

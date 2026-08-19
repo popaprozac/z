@@ -1291,7 +1291,7 @@ test("borrows fixed arrays as read-only and mutable Slice parameters", () => {
   const generated = compileToC(readFileSync(example, "utf8"), example);
   assert.match(generated, /struct Z_Slice_[\s\S]*int32_t \*data;\n\s+uintptr_t length;/);
   assert.match(generated, /static int32_t sum\(Z_Slice_\S+ values\)/);
-  assert.match(generated, /sum\(\(Z_Slice_\S+\)\{ \.data = \(values\)\.data, \.length = 4 \}\)/);
+  assert.match(generated, /sum\(\(Z_Slice_\S+\)\{ \.data = \(void \*\)\(values\)\.data, \.length = 4 \}\)/);
 });
 
 test("keeps Slice values non-escaping until lifetime contracts exist", () => {

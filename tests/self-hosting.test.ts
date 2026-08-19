@@ -5304,7 +5304,7 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
       `${testCase.entry} produced different stderr`,
     );
   }
-}, 90_000);
+}, 150_000);
 
 test("bootstraps a fixed-point native z executable for local use", () => {
   const directory = mkdtempSync("/tmp/z-native-bootstrap-");
@@ -6701,27 +6701,15 @@ test("compiles a multi-module Z application through the standalone native driver
     {
       name: "fixed-array",
       source: [
-        "function sum(values: i32[3]): i32 { return values[0]; }",
+        "function sum(values: String[3]): usize { return values[0].byteLength; }",
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
       line: 1,
       column: 22,
-      marker: "^^^^^^",
+      marker: "^^^^^^^^^",
       code: "Z1000",
-      summary: 'fixed-array type "i32[3]" has no native representation yet',
-    },
-    {
-      name: "local-fixed-array",
-      source: [
-        "function main(): i32 { const values = [20, 22]; return values[1] - 22; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 39,
-      marker: "^",
-      code: "Z1000",
-      summary: "fixed-array literals are not executable in the native compiler yet",
+      summary: 'native fixed arrays currently require cleanup-free primitive elements; found "String[3]"',
     },
     {
       name: "generator",
