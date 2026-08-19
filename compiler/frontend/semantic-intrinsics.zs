@@ -135,6 +135,18 @@ export function collectionMethodSignature(
     const target = ownerType.copyBytes(5, ownerType.byteLength);
     return collectionMethodSignature(target, methodName);
   }
+  let collectionOwnerType = ownerType.copyBytes(0, ownerType.byteLength);
+  let readonlyCollection = false;
+  if (
+    stringStartsWith(collectionOwnerType, "readonly ")
+    && collectionOwnerType.byteLength > 9
+  ) {
+    readonlyCollection = true;
+    collectionOwnerType = collectionOwnerType.copyBytes(
+      9,
+      collectionOwnerType.byteLength
+    );
+  }
   if (ownerType == "fs.Lock" && methodName == "unlock") {
     return Option.some(ModuleFunctionSignature({
       asynchronous: false,
@@ -249,7 +261,7 @@ export function collectionMethodSignature(
       }));
     }
   }
-  const generic = match (genericTypeShape(ownerType)) {
+  const generic = match (genericTypeShape(collectionOwnerType)) {
     some(generic) => generic;
     none => return Option<ModuleFunctionSignature>.none;
   };
@@ -292,10 +304,12 @@ export function collectionMethodSignature(
       0,
       generic.arguments[0].byteLength
     );
-    if (methodName == "push") {
+    if (!readonlyCollection && methodName == "push") {
       parameterModes.push("value");
       parameterTypes.push(elementType);
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "freeze") {
+      returnType = `readonly ${collectionOwnerType}`;
     }
   } else if (generic.base == "Map" && generic.arguments.length == 2) {
     const keyType = generic.arguments[0].copyBytes(
@@ -320,22 +334,24 @@ export function collectionMethodSignature(
       }
       if (functionValue) returnType = `Option<${valueType}>`;
       else returnType = `Option<view ${valueType}>`;
-    } else if (methodName == "set") {
+    } else if (!readonlyCollection && methodName == "set") {
       parameterModes.push("value");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
       parameterModes.push("value");
       parameterTypes.push(valueType.copyBytes(0, valueType.byteLength));
       returnType = "void";
-    } else if (methodName == "remove") {
+    } else if (!readonlyCollection && methodName == "remove") {
       parameterModes.push("in");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
       returnType = `Option<${valueType}>`;
-    } else if (methodName == "delete") {
+    } else if (!readonlyCollection && methodName == "delete") {
       parameterModes.push("in");
       parameterTypes.push(keyType.copyBytes(0, keyType.byteLength));
       returnType = "boolean";
-    } else if (methodName == "clear") {
+    } else if (!readonlyCollection && methodName == "clear") {
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "freeze") {
+      returnType = `readonly ${collectionOwnerType}`;
     }
   } else if (generic.base == "Set" && generic.arguments.length == 1) {
     const elementType = generic.arguments[0].copyBytes(
@@ -346,16 +362,22 @@ export function collectionMethodSignature(
       parameterModes.push("in");
       parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
       returnType = "boolean";
-    } else if (methodName == "add") {
+    } else if (!readonlyCollection && methodName == "add") {
       parameterModes.push("value");
       parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
       returnType = "boolean";
-    } else if (methodName == "remove") {
+    } else if (!readonlyCollection && methodName == "remove") {
       parameterModes.push("in");
       parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
       returnType = `Option<${elementType}>`;
-    } else if (methodName == "clear") {
+    } else if (!readonlyCollection && methodName == "delete") {
+      parameterModes.push("in");
+      parameterTypes.push(elementType.copyBytes(0, elementType.byteLength));
+      returnType = "boolean";
+    } else if (!readonlyCollection && methodName == "clear") {
       returnType = "void";
+    } else if (!readonlyCollection && methodName == "freeze") {
+      returnType = `readonly ${collectionOwnerType}`;
     }
   } else if (
     generic.base == "Weak"
@@ -444,11 +466,13 @@ export function collectionMethodMutates(
       : generic.base == "Map"
       ? methodName == "set"
         || methodName == "remove"
+        || methodName == "delete"
         || methodName == "clear"
       : generic.base == "Set"
         && (
           methodName == "add"
           || methodName == "remove"
+          || methodName == "delete"
           || methodName == "clear"
         );
     none => false;

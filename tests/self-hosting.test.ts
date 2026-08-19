@@ -1687,6 +1687,66 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.match(invalidEmission.stderr, /invalid\.zs:1:\d+: unknown name missing/);
 }, 45_000);
 
+test("emits consuming receivers with guarded cleanup and sole-field transfer", () => {
+  const directory = mkdtempSync("/tmp/z-self-host-move-this-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    struct Wrapper {
+      value: String;
+
+      function measure(move this): i32 {
+        return i32(this.value.byteLength);
+      }
+
+      function take(move this): String {
+        return this.value;
+      }
+    }
+
+    function main(): i32 {
+      const measuredSource = Wrapper({ value: "abc" });
+      const measured = measuredSource.measure();
+      const takenSource = Wrapper({ value: "ready" });
+      const taken = takenSource.take();
+      return measured + i32(taken.byteLength) - 8;
+    }
+  `);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_Wrapper_measure\(Z_Wrapper self\).*?bool _z_stage1_live_this = true;.*?if \(_z_stage1_live_this\) Z_Wrapper_deinit\(&self\);/s,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Wrapper_take\(Z_Wrapper self\).*?\(_z_stage1_live_this = false, self\.value\).*?if \(_z_stage1_live_this\) Z_Wrapper_deinit\(&self\);/s,
+  );
+  assert.match(
+    emission.stdout,
+    /const int32_t measured = Z_Wrapper_measure\(measuredSource\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_String taken = Z_Wrapper_take\(takenSource\);/,
+  );
+
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 90_000);
+
 test("emits cleanup-free module constants through the native frontend", () => {
   const directory = mkdtempSync("/tmp/z-self-host-constants-");
   const input = resolve(

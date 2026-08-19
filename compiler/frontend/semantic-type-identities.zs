@@ -377,6 +377,11 @@ export function rebaseTypeName(
     const rebased = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, target);
     return `view ${rebased}`;
   }
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    const rebased = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, target);
+    return `readonly ${rebased}`;
+  }
   match (fixedArrayShape(name)) {
     some(array) => {
       const element = rebaseTypeName(modules, fromModuleIndex, toModuleIndex, array.elementType);
@@ -482,6 +487,11 @@ export function semanticTypeIdentity(
     const identity = semanticTypeIdentity(modules, moduleIndex, target);
     return `view ${identity}`;
   }
+  if (stringStartsWith(name, "readonly ")) {
+    const target = name.copyBytes(9, name.byteLength);
+    const identity = semanticTypeIdentity(modules, moduleIndex, target);
+    return `readonly ${identity}`;
+  }
   match (fixedArrayShape(name)) {
     some(array) => {
       const identity = semanticTypeIdentity(modules, moduleIndex, array.elementType);
@@ -512,7 +522,18 @@ export function semanticTypeIdentity(
     none => {}
   }
   return match (typeSymbolLocation(modules, moduleIndex, name)) {
-    some(location) => symbolTypeIdentity(modules, location);
+    some(location) => {
+      if (
+        modules[location.moduleIndex].symbols[location.symbolIndex].kind
+        == ModuleSymbolKind.typeAliasSymbol
+      ) {
+        const transparent = transparentTypeName(modules, moduleIndex, name);
+        if (transparent != name) {
+          return semanticTypeIdentity(modules, moduleIndex, transparent);
+        }
+      }
+      return symbolTypeIdentity(modules, location);
+    }
     none => name.copyBytes(0, name.byteLength);
   };
 }

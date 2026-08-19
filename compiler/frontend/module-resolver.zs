@@ -2553,6 +2553,48 @@ function identifierCallableTypeName(
   return Option<String>.none;
 }
 
+function effectiveCollectionMethodSignature(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in ownerType: String,
+  in methodName: String
+): Option<ModuleFunctionSignature> {
+  const signature = match (collectionMethodSignature(ownerType, methodName)) {
+    some(signature) => signature;
+    none => return Option<ModuleFunctionSignature>.none;
+  };
+  let effective = move signature;
+  let collectionOwnerType = ownerType.copyBytes(0, ownerType.byteLength);
+  if (
+    stringStartsWith(collectionOwnerType, "readonly ")
+    && collectionOwnerType.byteLength > 9
+  ) collectionOwnerType = collectionOwnerType.copyBytes(
+    9,
+    collectionOwnerType.byteLength
+  );
+  match (genericTypeShape(collectionOwnerType)) {
+    some(mapType) => {
+      if (
+        mapType.base == "Map"
+        && mapType.arguments.length == 2
+        && methodName == "get"
+      ) {
+        const transparentValue = transparentTypeName(
+          modules,
+          moduleIndex,
+          mapType.arguments[1]
+        );
+        match (nativeFunctionSignature(transparentValue)) {
+          some(_) => effective.returnType = `Option<${mapType.arguments[1]}>`;
+          none => {}
+        }
+      }
+    }
+    none => {}
+  }
+  return Option.some(move effective);
+}
+
 function inferExpressionNodeType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -6257,33 +6299,37 @@ function inferExpressionNodeType(
           }
           none => {}
         }
-        match (collectionMethodSignature(ownerType, methodName)) {
-          some(signature) => {
-            let effectiveSignature = move signature;
-            match (genericTypeShape(ownerType)) {
-              some(mapType) => {
-                if (
-                  mapType.base == "Map"
-                  && mapType.arguments.length == 2
-                  && methodName == "get"
-                ) {
-                  const transparentValue = transparentTypeName(
-                    modules,
-                    moduleIndex,
-                    mapType.arguments[1]
-                  );
-                  match (nativeFunctionSignature(transparentValue)) {
-                    some(_) => effectiveSignature.returnType =
-                      `Option<${mapType.arguments[1]}>`;
-                    none => {}
-                  }
-                }
-              }
-              none => {}
-            }
+        match (effectiveCollectionMethodSignature(
+          modules,
+          moduleIndex,
+          ownerType,
+          methodName
+        )) {
+          some(effectiveSignature) => {
             let receiverRoot = "";
             let receiverAccess = "";
-            if (collectionMethodMutates(ownerType, methodName)) {
+            if (methodName == "freeze") {
+              if (optionalMethodCall) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "optional call cannot consume a collection; use an explicit match",
+                  tree.nodes[calleeIndex].line,
+                  tree.nodes[calleeIndex].column
+                );
+              }
+              receiverRoot = expressionStorageRootName(tree, receiverIndex);
+              if (receiverRoot.byteLength == 0) {
+                throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "collection freeze requires named owned storage",
+                  tree.nodes[receiverIndex].line,
+                  tree.nodes[receiverIndex].column
+                );
+              }
+              receiverAccess = "move";
+            } else if (collectionMethodMutates(ownerType, methodName)) {
               if (optionalMethodCall) {
                 throw resolutionError(
                   ModuleResolveErrorKind.typeMismatch,
@@ -6343,6 +6389,13 @@ function inferExpressionNodeType(
               "value",
               inout evidence
             );
+            if (receiverAccess == "move") {
+              setValueBindingOwnership(
+                inout bindings,
+                receiverRoot,
+                NativeOwnershipState.moved
+              );
+            }
             if (methodName == "push") {
               match (genericTypeShape(ownerType)) {
                 some(array) => {

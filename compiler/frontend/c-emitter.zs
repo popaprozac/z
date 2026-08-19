@@ -1024,11 +1024,16 @@ function appendExpression(
 ): void throws String {
   if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
     let classReceiver = false;
+    let valueReceiver = false;
     match (in declaration.receiverType) {
-      some(type) => classReceiver = type.kind == LoweredTypeKind.classType;
+      some(type) => {
+        classReceiver = type.kind == LoweredTypeKind.classType;
+        valueReceiver = declaration.receiverMode == LoweredParameterMode.value;
+      }
       none => {}
     }
     if (classReceiver) output.append("self");
+    else if (valueReceiver) output.append("self");
     else output.append("(*self)");
     return;
   }
@@ -1982,9 +1987,11 @@ function appendExpression(
     const receiver = declaration.expressions[index].children[0];
     const classReceiver = declaration.expressions[index].labels.length > 0
       && declaration.expressions[index].labels[0] == "class";
-    if (!classReceiver) output.append("&(");
+    const moveReceiver = declaration.expressions[index].labels.length > 1
+      && declaration.expressions[index].labels[1] == "move";
+    if (!classReceiver && !moveReceiver) output.append("&(");
     try appendExpression(inout output, declaration, receiver);
-    if (!classReceiver) output.append(")");
+    if (!classReceiver && !moveReceiver) output.append(")");
     let argument: usize = 1;
     while (argument < declaration.expressions[index].children.length) {
       output.append(", ");
@@ -2373,7 +2380,14 @@ function appendExpression(
     if (
       declaration.expressions[receiver].kind == LoweredExpressionKind.receiverValue
     ) {
-      output.append("self->");
+      let valueReceiver = false;
+      match (in declaration.receiverType) {
+        some(_) => valueReceiver = declaration.receiverMode
+          == LoweredParameterMode.value;
+        none => {}
+      }
+      if (valueReceiver) output.append("self.");
+      else output.append("self->");
       output.append(declaration.expressions[index].value);
       return;
     }
@@ -3853,7 +3867,9 @@ function appendFunctionSignature(
       }
       output.append("Z_");
       output.append(receiver.name);
-      output.append(" *self");
+      if (declaration.receiverMode == LoweredParameterMode.value) {
+        output.append(" self");
+      } else output.append(" *self");
       first = false;
     }
     none => {}

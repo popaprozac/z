@@ -1094,6 +1094,14 @@ function lowerModuleTypeName(
       targetName
     );
   }
+  if (stringStartsWith(name, "readonly ")) {
+    const targetName = name.copyBytes(9, name.byteLength);
+    return try lowerModuleTypeName(
+      program,
+      importedTypes,
+      targetName
+    );
+  }
   match (intrinsicViewOptionPayloadName(name)) {
     some(_) => return LoweredType({
       kind: LoweredTypeKind.enumType,
@@ -2466,7 +2474,17 @@ function treeMovesName(
       && tree.nodes[callee].children.length == 1
     ) {
       const receiver = tree.nodes[callee].children[0];
-      let consumesReceiver = tree.nodes[callee].value == "finish";
+      let consumesReceiver = resolvedCallReceiverMode(
+        evidence,
+        tree,
+        index
+      ) == "move" || tree.nodes[callee].value == "freeze";
+      if (tree.nodes[callee].value == "finish") {
+        match (resolvedExpressionTypeName(evidence, tree, receiver)) {
+          some(typeName) => consumesReceiver = typeName == "TextBuffer";
+          none => {}
+        }
+      }
       if (tree.nodes[callee].value == "unlock") {
         match (resolvedExpressionTypeName(evidence, tree, receiver)) {
           some(typeName) => {
@@ -2642,10 +2660,7 @@ function loweredMoveConsumesBinding(
       || expression.children.length != 1
     ) continue;
     const operand = expression.children[0];
-    if (
-      expressions[operand].kind == LoweredExpressionKind.localValue
-      && expressions[operand].value == name
-    ) return true;
+    if (loweredExpressionStorageRoot(expressions, operand) == name) return true;
   }
   return false;
 }
@@ -3389,16 +3404,47 @@ function attachMoveLiveFlagsRange(
     ) {
       const operand = expressions[index].children[0];
       expressions[index].value = "";
-      if (expressions[operand].kind == LoweredExpressionKind.localValue) {
+      const owner = loweredExpressionStorageRoot(expressions, operand);
+      if (owner.byteLength > 0) {
         for (const flag of liveFlags) {
-          if (flag.owner == expressions[operand].value) {
-            expressions[index].value = flag.name.copyBytes(0, flag.name.byteLength);
+          if (flag.owner == owner) {
+            expressions[index].value = flag.name.copyBytes(
+              0,
+              flag.name.byteLength
+            );
           }
         }
       }
     }
     index = index + 1;
   }
+}
+
+function loweredExpressionStorageRoot(
+  in expressions: Array<LoweredExpression>,
+  index: usize
+): String {
+  if (expressions[index].kind == LoweredExpressionKind.localValue) {
+    return expressions[index].value.copyBytes(
+      0,
+      expressions[index].value.byteLength
+    );
+  }
+  if (expressions[index].kind == LoweredExpressionKind.receiverValue) {
+    return "this";
+  }
+  if (
+    (
+      expressions[index].kind == LoweredExpressionKind.fieldValue
+      || expressions[index].kind == LoweredExpressionKind.arrayIndex
+      || expressions[index].kind == LoweredExpressionKind.arrayMutableIndex
+    )
+    && expressions[index].children.length > 0
+  ) {
+    const receiver = expressions[index].children[0];
+    return loweredExpressionStorageRoot(expressions, receiver);
+  }
+  return "";
 }
 
 function markWorkerOwnedMoveRange(
@@ -3514,6 +3560,23 @@ function wrapImplicitOwnedTransfer(
     move children,
     Array<String>()
   );
+}
+
+function sourceExpressionRootsInThis(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    return tree.nodes[index].value == "this";
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiver = tree.nodes[index].children[0];
+    return sourceExpressionRootsInThis(tree, receiver);
+  }
+  return false;
 }
 
 function expressionBorrowsStoredReference(
@@ -3812,6 +3875,7 @@ function lowerParameterMode(mode: ParameterMode): LoweredParameterMode {
 }
 
 function lowerReceiverMode(mode: ReceiverMode): LoweredParameterMode {
+  if (mode == ReceiverMode.move) return LoweredParameterMode.value;
   if (mode == ReceiverMode.inputOutput) {
     return LoweredParameterMode.inputOutput;
   }
@@ -4235,6 +4299,20 @@ function resolvedExpressionTypeName(
     }
   }
   return Option<String>.none;
+}
+
+function resolvedMemberReceiverTypeIs(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  member: usize,
+  in expected: String
+): boolean {
+  if (tree.nodes[member].children.length != 1) return false;
+  const receiver = tree.nodes[member].children[0];
+  return match (resolvedExpressionTypeName(evidence, tree, receiver)) {
+    some(name) => name == expected;
+    none => false;
+  };
 }
 
 function resolvedExpressionTargetName(
@@ -7215,6 +7293,52 @@ function lowerExpression(
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "freeze"
+    ) {
+      if (tree.nodes[index].children.length != 1) {
+        throw "native collection freeze lowering requires zero arguments";
+      }
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (resolvedExpressionTypeName(
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => throw "native collection freeze could not resolve its receiver type";
+      };
+      const receiverType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        receiverTypeName
+      );
+      if (
+        receiverType.kind == LoweredTypeKind.arrayType
+        || receiverType.kind == LoweredTypeKind.mapType
+        || receiverType.kind == LoweredTypeKind.setType
+      ) {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        let children = Array<usize>();
+        children.push(receiver);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.moveValue,
+          "",
+          children,
+          Array<String>()
+        );
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
       && (
         tree.nodes[calleeInput].value == "has"
         || tree.nodes[calleeInput].value == "add"
@@ -7529,6 +7653,12 @@ function lowerExpression(
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
+      && resolvedMemberReceiverTypeIs(
+        evidence,
+        tree,
+        calleeInput,
+        "TextBuffer"
+      )
       && (
         tree.nodes[calleeInput].value == "append"
         || tree.nodes[calleeInput].value == "appendBytes"
@@ -8135,10 +8265,7 @@ function lowerExpression(
         tree,
         index
       );
-      if (receiverMode == "move") {
-        throw "native method-call lowering does not support consuming receivers yet";
-      }
-      const receiver = try lowerExpression(
+      let receiver = try lowerExpression(
         program,
         importedTypes,
         evidence,
@@ -8146,6 +8273,18 @@ function lowerExpression(
         receiverInput,
         inout output
       );
+      if (
+        receiverMode == "move"
+        && moduleTypeNeedsCleanup(program, importedTypes, receiverType)
+      ) {
+        receiver = pushExpression(
+          inout output,
+          LoweredExpressionKind.moveValue,
+          "",
+          Array<usize>(receiver),
+          Array<String>()
+        );
+      }
       let children = Array<usize>();
       children.push(receiver);
       const parameterModes = resolvedCallParameterModes(
@@ -13403,18 +13542,23 @@ function lowerStatementCore(
                 expectedTypeName,
                 inout expressions
               );
+              loweredValue = wrapImplicitOwnedTransfer(
+                tree,
+                root,
+                loweredValue,
+                inout expressions
+              );
               if (
-                tree.nodes[root].kind == ExpressionKind.identifierExpression
+                tree.nodes[root].kind == ExpressionKind.memberExpression
+                && sourceExpressionRootsInThis(tree, root)
                 && expressions[loweredValue].kind
                   != LoweredExpressionKind.moveValue
               ) {
-                let moveChildren = Array<usize>();
-                moveChildren.push(loweredValue);
                 loweredValue = pushExpression(
                   inout expressions,
                   LoweredExpressionKind.moveValue,
                   "",
-                  moveChildren,
+                  Array<usize>(loweredValue),
                   Array<String>()
                 );
               }
@@ -14807,7 +14951,10 @@ function lowerFunction(
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration,
   in semanticOwnerName: String,
-  in sourcePath: String
+  in sourcePath: String,
+  in receiverName: String,
+  receiverKind: LoweredTypeKind,
+  receiverSourceMode: ReceiverMode
 ): LoweredFunction throws String {
   let delayCount: usize = 0;
   let lastDelayPosition: usize = 0;
@@ -15135,6 +15282,28 @@ function lowerFunction(
     }
     parameterIndex = parameterIndex + 1;
   }
+  if (
+    receiverName.byteLength > 0
+    && receiverSourceMode == ReceiverMode.move
+  ) {
+    const receiverType = LoweredType({
+      kind: receiverKind,
+      name: receiverName.copyBytes(0, receiverName.byteLength),
+    });
+    if (moduleTypeNeedsCleanup(program, importedTypes, receiverType)) {
+      const guard = ownerLiveFlag("this");
+      liveFlags.push(LoweredLiveFlag({
+        owner: "this",
+        name: guard.copyBytes(0, guard.byteLength),
+        parameter: true,
+      }));
+      ownedParameters.push(LoweredCleanup({
+        name: "self",
+        type: move receiverType,
+        guard,
+      }));
+    }
+  }
   const rootLoopCleanups = Array<LoweredCleanup>();
   const introduced = try planCleanupSequence(
     program,
@@ -15282,6 +15451,13 @@ function lowerFunction(
     }
     none => {}
   }
+  let loweredReceiverType = Option<LoweredType>.none;
+  if (receiverName.byteLength > 0) {
+    loweredReceiverType = Option.some(LoweredType({
+      kind: receiverKind,
+      name: receiverName.copyBytes(0, receiverName.byteLength),
+    }));
+  }
   return LoweredFunction({
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     testName: declaration.testName.copyBytes(0, declaration.testName.byteLength),
@@ -15294,8 +15470,8 @@ function lowerFunction(
     mainDelayIfs,
     mainDelayMatches,
     mainDelayLoops,
-    receiverType: Option<LoweredType>.none,
-    receiverMode: LoweredParameterMode.value,
+    receiverType: move loweredReceiverType,
+    receiverMode: lowerReceiverMode(receiverSourceMode),
     parameters,
     returnType: move returnType,
     fallthroughExpression,
@@ -17306,20 +17482,21 @@ function appendLoweredProgram(
       if (method.typeParameters.length > 0) {
         throw `native lowering does not support generic method ${aggregate.name}.${method.name} yet`;
       }
-      if (method.receiverMode == ReceiverMode.move) {
-        throw `native lowering does not support consuming method ${aggregate.name}.${method.name} yet`;
-      }
       if (method.asynchronous) match (in method.errorType) {
         some(_) => throw `native lowering does not support async throwing method ${aggregate.name}.${method.name} yet`;
         none => {}
       }
+      const methodReceiverMode = method.receiverMode;
       const loweredMethodOutcome = attempt lowerFunction(
         program,
         importedTypes,
         evidence,
         method,
         ownerName,
-        sourcePath
+        sourcePath,
+        emittedName,
+        receiverKind,
+        methodReceiverMode
       );
       let loweredMethod = match (loweredMethodOutcome) {
         success(lowered) => lowered;
@@ -17327,11 +17504,6 @@ function appendLoweredProgram(
       };
       loweredMethod.name = `Z_${emittedName}_${method.name}`;
       loweredMethod.nativeCExportName = "";
-      loweredMethod.receiverType = Option.some(LoweredType({
-        kind: receiverKind,
-        name: emittedName.copyBytes(0, emittedName.byteLength),
-      }));
-      loweredMethod.receiverMode = lowerReceiverMode(method.receiverMode);
       rewritePrivateCallTargets(
         program,
         privateFunctionCollisionNames,
@@ -17362,7 +17534,10 @@ function appendLoweredProgram(
       evidence,
       declaration,
       declaration.name,
-      sourcePath
+      sourcePath,
+      "",
+      LoweredTypeKind.voidType,
+      ReceiverMode.none
     );
     let loweredFunction = match (loweredFunctionOutcome) {
       success(lowered) => lowered;

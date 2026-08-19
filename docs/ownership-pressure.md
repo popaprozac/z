@@ -2720,6 +2720,35 @@ the extraction, so this does not introduce general partial-move state. A second
 differential fixture covers transparent aliases, raw function-type parameters,
 direct named-function conversion, and an inferred scalar-capturing closure.
 
+The fixed-point audit subsequently carried that same seam through native C
+emission rather than stopping at semantic authority. Consuming value-struct
+methods now receive `self` by value, own its deterministic cleanup, and guard
+that cleanup whenever a return path transfers the receiver or its permitted
+sole owned field. `freeze()` is represented as the same zero-copy move while
+type-position `readonly` erases only at the C representation boundary. The
+unchanged message-router application now emits, compiles under strict Clang
+warnings, and produces equivalent observable behavior in the Stage-0/native
+differential corpus. A focused fixture separately proves both the ordinary
+consuming path, which destroys `self`, and sole-field publication, which clears
+the guard before returning the field.
+
+This also exposed two older name/alias shortcuts that application composition
+made unsafe. Native lowering had treated every method named `finish` as
+`TextBuffer.finish`; it now requires the resolved `TextBuffer` receiver or a
+resolved `move this` contract. A `readonly Map<K, Handler>` lookup also has to
+see through the transparent callable alias before choosing retained
+`Option<Handler>` rather than a bucket view. Both decisions are now driven by
+semantic type evidence rather than spelling.
+
+The first fixed-point run also exposed a bootstrap-performance constraint that
+ordinary application fixtures could not: adding the readonly callable-alias
+logic inline to the recursive expression resolver increased its unoptimized C
+stack frame enough to overflow on a deeply nested compiler expression. The
+logic now lives in a non-recursive helper, reducing every recursive frame while
+preserving the same semantic evidence. Fixed-point tests therefore remain both
+correctness and compiler-shape pressure tests; an implementation that is sound
+but cannot compile the compiler under the development profile is not complete.
+
 Extracting that router into a reusable module exposed a native-frontend gap
 that the single-file fixture could not reveal: an imported transparent callable
 alias retained its canonical emitted identity but lost the source signature
