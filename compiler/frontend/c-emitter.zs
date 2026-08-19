@@ -3024,6 +3024,7 @@ function appendLocalStatementStorage(
       select storageType.kind != LoweredTypeKind.structType
         && storageType.kind != LoweredTypeKind.enumType
         && storageType.kind != LoweredTypeKind.arrayType
+        && storageType.kind != LoweredTypeKind.fixedArrayType
         && storageType.kind != LoweredTypeKind.mapType
         && storageType.kind != LoweredTypeKind.setType
         && storageType.kind != LoweredTypeKind.stringType
@@ -8424,6 +8425,15 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
+  if (type.kind == LoweredTypeKind.fixedArrayType) {
+    match (loweredFixedArrayIndex(program, type.name)) {
+      some(index) => return loweredTypeNeedsDeinit(
+        program,
+        program.fixedArrays[index].elementType
+      );
+      none => return false;
+    }
+  }
   if (type.kind == LoweredTypeKind.structType) {
     return loweredStructNeedsDeinit(program, type.name);
   }
@@ -8480,6 +8490,18 @@ function loweredArrayIndex(
   return Option<usize>.none;
 }
 
+function loweredFixedArrayIndex(
+  in program: LoweredProgram,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < program.fixedArrays.length) {
+    if (program.fixedArrays[index].name == name) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function copyHelperTypePresent(
   in types: Array<LoweredType>,
   in name: String
@@ -8496,7 +8518,8 @@ function collectCopyHelperType(
   inout types: Array<LoweredType>
 ): void throws String {
   if (
-    type.kind != LoweredTypeKind.arrayType
+    type.kind != LoweredTypeKind.fixedArrayType
+    && type.kind != LoweredTypeKind.arrayType
     && type.kind != LoweredTypeKind.structType
     && type.kind != LoweredTypeKind.enumType
   ) return;
@@ -8505,6 +8528,17 @@ function collectCopyHelperType(
     kind: type.kind,
     name: type.name.copyBytes(0, type.name.byteLength),
   }));
+  if (type.kind == LoweredTypeKind.fixedArrayType) {
+    match (loweredFixedArrayIndex(program, type.name)) {
+      some(index) => try collectCopyHelperType(
+        program,
+        program.fixedArrays[index].elementType,
+        inout types
+      );
+      none => throw `native copy emission lost fixed-array type ${type.name}`;
+    }
+    return;
+  }
   if (type.kind == LoweredTypeKind.arrayType) {
     match (loweredArrayIndex(program, type.name)) {
       some(index) => try collectCopyHelperType(
@@ -8560,6 +8594,13 @@ function programCopyHelperTypes(
         || expression.value == "copy"
       ) continue;
       let found = Option<LoweredType>.none;
+      match (loweredFixedArrayIndex(program, expression.value)) {
+        some(_) => found = Option.some(LoweredType({
+          kind: LoweredTypeKind.fixedArrayType,
+          name: expression.value.copyBytes(0, expression.value.byteLength),
+        }));
+        none => {}
+      }
       match (loweredArrayIndex(program, expression.value)) {
         some(_) => found = Option.some(LoweredType({
           kind: LoweredTypeKind.arrayType,
@@ -8603,7 +8644,8 @@ function appendCopiedValue(
     return;
   }
   if (
-    type.kind == LoweredTypeKind.arrayType
+    type.kind == LoweredTypeKind.fixedArrayType
+    || type.kind == LoweredTypeKind.arrayType
     || type.kind == LoweredTypeKind.structType
     || type.kind == LoweredTypeKind.enumType
   ) {
@@ -8633,6 +8675,33 @@ function appendCopyHelper(
   output.append("(");
   output.append(storageType);
   output.append(" source) {\n");
+  if (type.kind == LoweredTypeKind.fixedArrayType) {
+    const index = match (loweredFixedArrayIndex(program, type.name)) {
+      some(value) => value;
+      none => throw `native copy emission lost fixed-array type ${type.name}`;
+    };
+    const elementType = LoweredType({
+      kind: program.fixedArrays[index].elementType.kind,
+      name: program.fixedArrays[index].elementType.name.copyBytes(
+        0,
+        program.fixedArrays[index].elementType.name.byteLength
+      ),
+    });
+    output.append("  ");
+    output.append(storageType);
+    output.append(" result = {0};\n");
+    output.append("  for (size_t index = 0; index < ");
+    output.append(program.fixedArrays[index].length);
+    output.append("; index += 1) {\n    result.data[index] = ");
+    try appendCopiedValue(
+      inout output,
+      program,
+      elementType,
+      "source.data[index]"
+    );
+    output.append(";\n  }\n  return result;\n}\n\n");
+    return;
+  }
   if (type.kind == LoweredTypeKind.arrayType) {
     const index = match (loweredArrayIndex(program, type.name)) {
       some(value) => value;
@@ -8776,10 +8845,78 @@ function appendCopyHelpers(
   }
 }
 
+function appendFixedArrayDefinition(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  index: usize,
+  inout fixedArrayStates: Array<u8>,
+  inout structStates: Array<u8>,
+  inout enumStates: Array<u8>
+): void throws String {
+  if (fixedArrayStates[index] == 2) return;
+  if (fixedArrayStates[index] == 1) {
+    throw `native C emission found a by-value type cycle through ${program.fixedArrays[index].name}`;
+  }
+  fixedArrayStates[index] = 1;
+  const sourceElementType = view program.fixedArrays[index].elementType;
+  const elementType = LoweredType({
+    kind: sourceElementType.kind,
+    name: sourceElementType.name.copyBytes(
+      0,
+      sourceElementType.name.byteLength
+    ),
+  });
+  match (loweredFixedArrayIndex(program, elementType.name)) {
+    some(dependency) => try appendFixedArrayDefinition(
+      inout output,
+      program,
+      dependency,
+      inout fixedArrayStates,
+      inout structStates,
+      inout enumStates
+    );
+    none => {}
+  }
+  match (loweredStructIndex(program, elementType.name)) {
+    some(dependency) => try appendStructDefinition(
+      inout output,
+      program,
+      dependency,
+      inout fixedArrayStates,
+      inout structStates,
+      inout enumStates
+    );
+    none => {}
+  }
+  match (loweredEnumIndex(program, elementType.name)) {
+    some(dependency) => try appendEnumDefinition(
+      inout output,
+      program,
+      dependency,
+      inout fixedArrayStates,
+      inout structStates,
+      inout enumStates
+    );
+    none => {}
+  }
+  const nativeElementType = try cType(elementType);
+  output.append("typedef struct Z_");
+  output.append(program.fixedArrays[index].name);
+  output.append(" {\n  ");
+  output.append(nativeElementType);
+  output.append(" data[");
+  output.append(program.fixedArrays[index].length);
+  output.append("];\n} Z_");
+  output.append(program.fixedArrays[index].name);
+  output.append(";\n\n");
+  fixedArrayStates[index] = 2;
+}
+
 function appendEnumDefinition(
   inout output: TextBuffer,
   in program: LoweredProgram,
   index: usize,
+  inout fixedArrayStates: Array<u8>,
   inout structStates: Array<u8>,
   inout enumStates: Array<u8>
 ): void throws String {
@@ -8870,6 +9007,7 @@ function appendEnumDefinition(
             inout output,
             program,
             dependency,
+            inout fixedArrayStates,
             inout structStates,
             inout enumStates
           );
@@ -8880,6 +9018,18 @@ function appendEnumDefinition(
             inout output,
             program,
             dependency,
+            inout fixedArrayStates,
+            inout structStates,
+            inout enumStates
+          );
+          none => {}
+        }
+        match (loweredFixedArrayIndex(program, type.name)) {
+          some(dependency) => try appendFixedArrayDefinition(
+            inout output,
+            program,
+            dependency,
+            inout fixedArrayStates,
             inout structStates,
             inout enumStates
           );
@@ -8938,6 +9088,7 @@ function appendStructDefinition(
   inout output: TextBuffer,
   in program: LoweredProgram,
   index: usize,
+  inout fixedArrayStates: Array<u8>,
   inout structStates: Array<u8>,
   inout enumStates: Array<u8>
 ): void throws String {
@@ -8952,6 +9103,7 @@ function appendStructDefinition(
         inout output,
         program,
         dependency,
+        inout fixedArrayStates,
         inout structStates,
         inout enumStates
       );
@@ -8962,6 +9114,18 @@ function appendStructDefinition(
         inout output,
         program,
         dependency,
+        inout fixedArrayStates,
+        inout structStates,
+        inout enumStates
+      );
+      none => {}
+    }
+    match (loweredFixedArrayIndex(program, field.type.name)) {
+      some(dependency) => try appendFixedArrayDefinition(
+        inout output,
+        program,
+        dependency,
+        inout fixedArrayStates,
         inout structStates,
         inout enumStates
       );
@@ -9060,18 +9224,6 @@ function appendTypeDefinitions(
     output.append(mutexName);
     output.append(";\n\n");
   }
-  for (const declaration of program.fixedArrays) {
-    const elementType = try cType(declaration.elementType);
-    output.append("typedef struct Z_");
-    output.append(declaration.name);
-    output.append(" {\n  ");
-    output.append(elementType);
-    output.append(" data[");
-    output.append(declaration.length);
-    output.append("];\n} Z_");
-    output.append(declaration.name);
-    output.append(";\n\n");
-  }
   for (const declaration of program.slices) {
     output.append("typedef struct Z_");
     output.append(declaration.name);
@@ -9162,9 +9314,15 @@ function appendTypeDefinitions(
     || program.maps.length > 0
     || program.sets.length > 0
   ) output.append("\n");
+  let fixedArrayStates = Array<u8>();
   let structStates = Array<u8>();
   let enumStates = Array<u8>();
   let stateIndex: usize = 0;
+  while (stateIndex < program.fixedArrays.length) {
+    fixedArrayStates.push(0);
+    stateIndex = stateIndex + 1;
+  }
+  stateIndex = 0;
   while (stateIndex < program.structs.length) {
     structStates.push(0);
     stateIndex = stateIndex + 1;
@@ -9181,6 +9339,7 @@ function appendTypeDefinitions(
         inout output,
         program,
         enumIndex,
+        inout fixedArrayStates,
         inout structStates,
         inout enumStates
       );
@@ -9193,10 +9352,23 @@ function appendTypeDefinitions(
       inout output,
       program,
       structIndex,
+      inout fixedArrayStates,
       inout structStates,
       inout enumStates
     );
     structIndex = structIndex + 1;
+  }
+  let fixedArrayIndex: usize = 0;
+  while (fixedArrayIndex < program.fixedArrays.length) {
+    try appendFixedArrayDefinition(
+      inout output,
+      program,
+      fixedArrayIndex,
+      inout fixedArrayStates,
+      inout structStates,
+      inout enumStates
+    );
+    fixedArrayIndex = fixedArrayIndex + 1;
   }
   for (const declaration of program.functionTypes) {
     const returnType = try cType(declaration.returnType);
@@ -9272,6 +9444,7 @@ function appendTypeDefinitions(
         inout output,
         program,
         enumIndex,
+        inout fixedArrayStates,
         inout structStates,
         inout enumStates
       );
@@ -11348,6 +11521,14 @@ function emitLoweredC(
     output.append(resource.releaseName);
     output.append("(*self);\n}\n\n");
   }
+  for (const declaration of program.fixedArrays) {
+    if (!loweredTypeNeedsDeinit(program, declaration.elementType)) continue;
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self);\n");
+  }
   for (const aggregate of program.structs) {
     if (aggregate.needsDeinit && !aggregate.referenceType) {
       output.append("static __attribute__((unused)) void Z_");
@@ -11666,6 +11847,24 @@ function emitLoweredC(
   try appendThreadMainCallHelpers(inout output, program);
   try appendThreadSpawnHelpers(inout output, program);
   try appendMutexWithLockHelpers(inout output, program);
+  for (const declaration of program.fixedArrays) {
+    if (!loweredTypeNeedsDeinit(program, declaration.elementType)) continue;
+    output.append("static __attribute__((unused)) void Z_");
+    output.append(declaration.name);
+    output.append("_deinit(Z_");
+    output.append(declaration.name);
+    output.append(" *self) {\n  if (self == NULL) return;\n");
+    output.append("  size_t index = ");
+    output.append(declaration.length);
+    output.append(";\n  while (index > 0) {\n    index -= 1;\n    Z_");
+    output.append(declaration.elementType.name);
+    if (declaration.elementType.kind == LoweredTypeKind.classType) {
+      output.append("_release(self->data[index]);\n");
+    } else {
+      output.append("_deinit(&self->data[index]);\n");
+    }
+    output.append("  }\n}\n\n");
+  }
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);

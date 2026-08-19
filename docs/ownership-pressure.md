@@ -2920,22 +2920,27 @@ checked indexing, and `Slice<Document>` field access before releasing the owner
 loan and mutating the Array. A standalone fixture proves that a Slice signature
 does not depend on an owning Array declaration.
 
-Cleanup-free primitive fixed arrays now use their established inline C value
-wrapper in the native IR. Literals initialize that storage directly; checked
-indexing, mutable indexing, `in` parameters, value copying, positional
-destructuring, and fixed-array-to-Slice projection all compose without heap
-allocation. Their known length removes the dynamic destructuring guard while
-leaving ordinary indexing checked. Cleanup-bearing fixed-array elements remain
-a coded boundary: exact reverse-order destruction and partial transfer must be
-implemented before the native compiler accepts them.
+Fixed arrays use their established inline C value wrapper in the native IR.
+Literals initialize that storage directly; checked indexing, mutable indexing,
+`in` parameters, whole-owner move/return, explicit recursive copying,
+positional destructuring, and fixed-array-to-Slice projection all compose
+without wrapper allocation. Cleanup-bearing element graphs now receive exact
+reverse-order destruction, while each statement-lowered literal temporary has
+a live flag: if a later nested `try` fails, the completed prefix is destroyed
+before error propagation. The same common Stage 0 aggregate fix closes that
+partial-construction leak for struct, enum-payload, constructor, and fixed-array
+materialization. Their known length removes the dynamic destructuring guard
+while leaving ordinary indexing checked. Individual cleanup-bearing elements
+remain borrowed; the checker rejects moving one out of the still-owning array.
 
-The same representation now composes recursively for nested cleanup-free fixed
-arrays. Inner declarations are collected before outer wrappers, so C layout is
-valid without opaque storage or heap indirection. Imported functions can return
-these values by value, callers can explicitly `copy` them, and `for...of` uses
-the fixed length directly while reading each element through the generated
-array helper. The differential corpus runs the same local and multi-module
-programs through Stage 0 and the fixed-point compiler.
+The representation composes recursively for nested fixed arrays. Inner
+declarations are collected before outer wrappers, so C layout is valid without
+opaque storage or heap indirection. Imported functions can return these values
+by value, callers can explicitly `copy` copyable graphs, and `for...of` uses the
+fixed length directly while borrowing each element through the generated array
+helper. The differential corpus runs cleanup-free local and multi-module cases
+plus cleanup-bearing construction, failure cleanup, explicit String copying,
+and custom destruction through Stage 0 and the fixed-point compiler.
 
 ## Not tested yet
 

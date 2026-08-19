@@ -708,6 +708,26 @@ function intrinsicFixedArrayName(
   return `__z_FixedArray_${length}_${identity}`;
 }
 
+function intrinsicFixedArrayElementIdentity(in name: String): Option<String> {
+  const prefix = "__z_FixedArray_";
+  if (
+    !stringStartsWith(name, prefix)
+    || name.byteLength <= prefix.byteLength + 2
+  ) return Option<String>.none;
+  let index = prefix.byteLength;
+  let sawDigit = false;
+  while (index < name.byteLength && name.byteAt(index) != 95) {
+    const byte = name.byteAt(index);
+    if (byte < 48 || byte > 57) return Option<String>.none;
+    sawDigit = true;
+    index = index + 1;
+  }
+  if (!sawDigit || index + 1 >= name.byteLength) {
+    return Option<String>.none;
+  }
+  return Option.some(name.copyBytes(index + 1, name.byteLength));
+}
+
 function intrinsicSliceName(in elementType: LoweredType): String {
   const identity = loweredTypeIdentity(elementType);
   return `__z_Slice_${identity}`;
@@ -944,6 +964,13 @@ function lowerTypeName(
     }
     none => {}
   }
+  match (intrinsicFixedArrayElementIdentity(name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.fixedArrayType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+    none => {}
+  }
   if (stringStartsWith(name, "__z_Array_")) {
     return LoweredType({
       kind: LoweredTypeKind.arrayType,
@@ -1169,6 +1196,13 @@ function lowerModuleTypeName(
         name: intrinsicFixedArrayName(elementType, shape.length),
       });
     }
+    none => {}
+  }
+  match (intrinsicFixedArrayElementIdentity(name)) {
+    some(_) => return LoweredType({
+      kind: LoweredTypeKind.fixedArrayType,
+      name: name.copyBytes(0, name.byteLength),
+    });
     none => {}
   }
   match (intrinsicViewOptionPayloadName(name)) {
@@ -1506,6 +1540,18 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
+  if (type.kind == LoweredTypeKind.fixedArrayType) {
+    match (intrinsicFixedArrayElementIdentity(type.name)) {
+      some(elementName) => {
+        const element = attempt lowerTypeName(program, elementName);
+        return match (element) {
+          success(lowered) => typeNeedsCleanup(program, lowered);
+          failure(_) => false;
+        };
+      }
+      none => return false;
+    }
+  }
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return aggregateNeedsCleanup(program, index, 0);
@@ -1683,6 +1729,27 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
+  if (type.kind == LoweredTypeKind.fixedArrayType) {
+    match (intrinsicFixedArrayElementIdentity(type.name)) {
+      some(elementName) => {
+        const element = attempt lowerModuleTypeName(
+          program,
+          importedTypes,
+          elementName
+        );
+        return match (element) {
+          success(lowered) => moduleTypeNeedsCleanupDepth(
+            program,
+            importedTypes,
+            lowered,
+            depth + 1
+          );
+          failure(_) => false;
+        };
+      }
+      none => return false;
+    }
+  }
   if (type.kind == LoweredTypeKind.structType) {
     match (structIndex(program, type.name)) {
       some(index) => return moduleAggregateNeedsCleanup(
@@ -6131,11 +6198,15 @@ function lowerExpression(
         || operandType.kind == LoweredTypeKind.f32Type
         || operandType.kind == LoweredTypeKind.f64Type
         || operandType.kind == LoweredTypeKind.cstringType
-        || operandType.kind == LoweredTypeKind.fixedArrayType
+        || (
+          operandType.kind == LoweredTypeKind.fixedArrayType
+          && !moduleTypeNeedsCleanup(program, importedTypes, operandType)
+        )
       ) return operand;
       if (
         operandType.kind != LoweredTypeKind.stringType
         && operandType.kind != LoweredTypeKind.arrayType
+        && operandType.kind != LoweredTypeKind.fixedArrayType
         && operandType.kind != LoweredTypeKind.structType
         && operandType.kind != LoweredTypeKind.enumType
       ) {
@@ -12954,23 +13025,6 @@ function appendNestedTryPreludeTree(
       continue;
     }
         const attempted = tree.nodes[nestedTry].children[0];
-        const successTypeName = match (staticallyResolvedExpressionTypeName(
-          program,
-          importedTypes,
-          evidence,
-          arena,
-          ownerName,
-          tree,
-          nestedTry
-        )) {
-          some(name) => name;
-          none => throw `native nested try lowering could not resolve its success type at ${tree.nodes[nestedTry].line}:${tree.nodes[nestedTry].column}`;
-        };
-        const successType = try lowerModuleTypeName(
-          program,
-          importedTypes,
-          successTypeName
-        );
         const directResult = try directThrowingCallResult(
           program,
           importedTypes,
@@ -12978,6 +13032,46 @@ function appendNestedTryPreludeTree(
           tree,
           attempted,
           ownerName
+        );
+        const resolvedSuccessTypeName = staticallyResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          nestedTry
+        );
+        let directSuccessTypeName = Option<String>.none;
+        match (in directResult) {
+          some(declaration) => {
+            for (const variant of declaration.variants) {
+              if (variant.name != "success") continue;
+              match (in variant.payload) {
+                some(payload) => directSuccessTypeName = Option.some(
+                  payload.name.copyBytes(0, payload.name.byteLength)
+                );
+                none => {}
+              }
+            }
+          }
+          none => {}
+        }
+        let successTypeName = "";
+        match (resolvedSuccessTypeName) {
+          some(name) => successTypeName = move name;
+          none => match (directSuccessTypeName) {
+            some(name) => successTypeName = move name;
+            none => {}
+          }
+        }
+        if (successTypeName.byteLength == 0) {
+          throw `native nested try lowering could not resolve its success type at ${tree.nodes[nestedTry].line}:${tree.nodes[nestedTry].column}`;
+        }
+        const successType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          successTypeName
         );
         const innerResult: Option<LoweredEnum> = match (directResult) {
           some(declaration) => Option<LoweredEnum>.some(move declaration);
@@ -13099,6 +13193,7 @@ function loweredExpressionDirectlyConsumesChild(
     expressions[parent].kind == LoweredExpressionKind.structValue
     || expressions[parent].kind == LoweredExpressionKind.classValue
     || expressions[parent].kind == LoweredExpressionKind.enumPayloadValue
+    || expressions[parent].kind == LoweredExpressionKind.fixedArrayValue
     || expressions[parent].kind == LoweredExpressionKind.mutexValue
     || expressions[parent].kind == LoweredExpressionKind.onceInitialize
   ) return true;

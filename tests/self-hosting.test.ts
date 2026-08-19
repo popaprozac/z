@@ -458,7 +458,7 @@ test("reports evidence-dependent native iteration boundaries before lowering", (
   assert.equal(emission.status, 1);
   assert.match(
     emission.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and fixed arrays are supported/,
   );
   assert.match(emission.stderr, /for \(const path of openDocuments\)/);
 }, 20_000);
@@ -5303,6 +5303,20 @@ test("runs Stage 0 and the native compiler against the same executable corpus", 
       stage0Run.stderr,
       `${testCase.entry} produced different stderr`,
     );
+    if (testCase.expectedStatus !== undefined) {
+      assert.equal(
+        stage0Run.status,
+        testCase.expectedStatus,
+        `${testCase.entry} returned an unexpected exit status`,
+      );
+    }
+    if (testCase.expectedStdout !== undefined) {
+      assert.equal(
+        stage0Run.stdout,
+        testCase.expectedStdout,
+        `${testCase.entry} produced unexpected stdout`,
+      );
+    }
   }
 }, 150_000);
 
@@ -6699,19 +6713,6 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'trait declaration "Named" is not executable in the native compiler yet',
     },
     {
-      name: "fixed-array",
-      source: [
-        "function sum(values: String[3]): usize { return values[0].byteLength; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 22,
-      marker: "^^^^^^^^^",
-      code: "Z1000",
-      summary: 'native fixed arrays currently require cleanup-free primitive elements; found "String[3]"',
-    },
-    {
       name: "generator",
       source: [
         'import { Generator } from "std/iteration";',
@@ -6919,12 +6920,6 @@ test("compiles a multi-module Z application through the standalone native driver
     assert.ok(checking.stderr.includes(`${boundary.marker} ${boundary.summary}`));
     assert.doesNotMatch(checking.stderr, /against \d+ local aggregate/);
 
-    if (boundary.name === "fixed-array") {
-      const output = resolve(directory, `native-lowering-${boundary.name}`);
-      const building = spawnSync(driver, ["build", input, output], { encoding: "utf8" });
-      assert.equal(building.status, 1, `${boundary.name}\n${building.stderr}`);
-      assert.equal(existsSync(output), false);
-    }
   }
 
   const nativeStructSpread = spawnSync(
@@ -6964,7 +6959,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(backendIce.status, 1, backendIce.stderr);
   assert.match(
     backendIce.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and fixed arrays are supported/,
   );
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");

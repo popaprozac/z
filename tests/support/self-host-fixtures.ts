@@ -4,10 +4,17 @@ import { resolve } from "node:path";
 export type SelfHostDifferentialCase = {
   readonly entry: string;
   readonly arguments?: readonly string[];
+  readonly expectedStatus?: number;
+  readonly expectedStdout?: string;
 };
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
   { entry: "tests/fixtures/self-host-emit-fixed-array.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-fixed-array-owned.zs",
+    expectedStatus: 0,
+    expectedStdout: "drop 1\ndrop 2\ndrop 1\n",
+  },
   { entry: "tests/fixtures/self-host-emit-fixed-array-modules/main.zs" },
   { entry: "tests/fixtures/self-host-emit-array-destructure.zs" },
   { entry: "tests/fixtures/self-host-emit-slice-signature.zs" },
@@ -66,6 +73,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   Record<string, SelfHostEmitFixtureClassification>
 > = {
   "self-host-emit-fixed-array.zs": differential,
+  "self-host-emit-fixed-array-owned.zs": differential,
   "self-host-emit-array-destructure.zs": differential,
   "self-host-emit-slice-signature.zs": differential,
   "self-host-emit-arena.zs": differential,

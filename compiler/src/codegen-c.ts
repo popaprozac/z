@@ -6642,15 +6642,44 @@ function generateLoweredAggregate(
 ): string {
   const lines: string[] = [];
   const overrides = new Map<number, string>();
-  for (const valueExpression of values) {
-    const type = temporaryValueType(valueExpression, context);
-    const temporary = `_z_aggregate_${context.valueCounter.value++}`;
-    lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
-    lines.push(generateDirectValue(valueExpression, context, (value) => `${temporary} = ${value};`));
-    overrides.set(valueExpression.location.offset, temporary);
+  const ownedTemporaries: CleanupLocal[] = [];
+  const cleanupScope = context.cleanupScopes.at(-1);
+  try {
+    for (const valueExpression of values) {
+      const type = temporaryValueType(valueExpression, context);
+      const temporary = `_z_aggregate_${context.valueCounter.value++}`;
+      lines.push(`${generateLocalDeclaration(type, temporary, true, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)};`);
+      const needsCleanup = hasSemanticCleanupType(
+        type,
+        context.structs,
+        context.enums,
+        context.semanticInfo,
+      );
+      let liveFlag: string | null = null;
+      if (needsCleanup) {
+        liveFlag = nextLiveFlag(temporary, context.liveFlagCounter);
+        const cleanup = { name: temporary, type, liveFlag };
+        ownedTemporaries.push(cleanup);
+        cleanupScope?.push(cleanup);
+        lines.push(`bool ${liveFlag} = false;`);
+        lines.push(`(void)${liveFlag};`);
+      }
+      lines.push(generateDirectValue(
+        valueExpression,
+        context,
+        (value) => `${temporary} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
+      ));
+      overrides.set(valueExpression.location.offset, temporary);
+    }
+    const loweredContext = withExpressionOverrides(context, overrides);
+    lines.push(generateDirectValue(expression, loweredContext, (value, valueContext) => {
+      const transfer = ownedTemporaries.map((temporary) => `${temporary.liveFlag} = false;`).join("\n");
+      const consumed = consumeValue(value, valueContext);
+      return transfer ? `${transfer}\n${consumed}` : consumed;
+    }, consumeTerminates));
+  } finally {
+    for (let index = 0; index < ownedTemporaries.length; index += 1) cleanupScope?.pop();
   }
-  const loweredContext = withExpressionOverrides(context, overrides);
-  lines.push(generateDirectValue(expression, loweredContext, consumeValue, consumeTerminates));
   return lines.join("\n");
 }
 

@@ -8,6 +8,7 @@ import {
   ReceiverMode,
   StatementArena,
   StatementKind,
+  TypeNameReference,
   TypeReference,
 } from "./parser.zs";
 import { ParsedModule } from "./module-symbols.zs";
@@ -66,11 +67,7 @@ function stringContains(in value: String, in candidate: String): boolean {
 
 function nativeFixedArrayTypeSupported(in name: String): boolean {
   return match (fixedArrayShape(name)) {
-    some(shape) => shape.elementType == "boolean"
-      || shape.elementType == "f32"
-      || shape.elementType == "f64"
-      || isIntegerTypeName(shape.elementType)
-      || nativeFixedArrayTypeSupported(shape.elementType);
+    some(_) => true;
     none => false;
   };
 }
@@ -93,7 +90,14 @@ function nativeExplicitCopyTypeSupported(
   moduleIndex: usize,
   in name: String
 ): boolean {
-  if (nativeFixedArrayTypeSupported(name)) return true;
+  match (fixedArrayShape(name)) {
+    some(shape) => return nativeExplicitCopyTypeSupported(
+      graph,
+      moduleIndex,
+      shape.elementType
+    );
+    none => {}
+  }
   if (
     name == "String"
     || name == "cstring"
@@ -267,16 +271,16 @@ function validateNativeType(
     typeLength
   );
   match (fixedArrayShape(type.name)) {
-    some(_) => {
-      if (nativeFixedArrayTypeSupported(type.name)) return;
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `native fixed arrays currently require cleanup-free primitive elements; found "${type.name}"`,
-      type.line,
-      type.column,
-      type.name.byteLength
-    );
+    some(shape) => {
+      const elementType = TypeReference({
+        name: shape.elementType.copyBytes(0, shape.elementType.byteLength),
+        references: Array<TypeNameReference>(),
+        offset: type.offset,
+        line: type.line,
+        column: type.column,
+      });
+      try validateNativeType(path, elementType);
+      return;
     }
     none => {}
   }
@@ -697,7 +701,7 @@ function validateNativeExpressionTree(
         throw loweringBoundary(
           path,
           "Z1000",
-          `native fixed-array literals currently require cleanup-free primitive elements; found "${typeName}"`,
+          `native array literal resolved to unsupported storage "${typeName}"`,
           node.line,
           node.column,
           1
@@ -1264,7 +1268,7 @@ function validateNativeBody(
               throw loweringBoundary(
                 path,
                 "Z1000",
-                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported`,
+                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array and fixed arrays are supported`,
                 statement.line,
                 statement.column,
                 3

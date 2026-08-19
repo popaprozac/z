@@ -377,24 +377,27 @@ Extra elements are ignored unless captured by rest. Assignment, parameter,
 match, nested, default, and owned `copy`/`move` collection patterns remain later
 tiers.
 
-The fixed-point native compiler executes cleanup-free primitive fixed arrays,
-including recursively nested shapes, plus `Array<T>` and existing `Slice<T>`
+The fixed-point native compiler executes fixed arrays, including recursively
+nested and cleanup-bearing shapes, plus `Array<T>` and existing `Slice<T>`
 sources, including rest. It evaluates the collection once, performs one dynamic
 length check where needed, then projects every requested position under that
 proof. Fixed arrays use an inline value wrapper, so their length is compile-time
-evidence and ordinary `copy` is a recursive C value copy. Functions may pass and
-return these wrappers across module boundaries, and ordinary `for...of` reads
-each cleanup-free element through the same checked storage contract without
-allocation. Rest becomes a
+evidence and the wrapper itself never allocates. Functions may pass, move, and
+return the whole owner across module boundaries. Explicit `copy` recursively
+copies every element when the element graph is copyable; cleanup-bearing arrays
+run element cleanup in reverse order. Literal lowering tracks each initialized
+element, so a later failing `try` destroys the completed prefix before
+propagating the error. Ordinary `for...of` borrows each element through the same
+checked storage contract. Rest becomes a
 two-word pointer/length descriptor and does not allocate or retain. A rest-only
 pattern on an empty Array preserves a null data pointer without performing
 pointer arithmetic. Cleanup-bearing elements require `view source` and remain
-tied to the named Array owner, so a reallocating mutation is rejected until
+tied to the named collection owner, so a reallocating mutation is rejected until
 every destructured element or Slice view's last use. Synchronous `Slice<T>`
 parameters use the same descriptor, and passing a fixed array or Array to one
-projects the whole backing range without copying. Cleanup-bearing fixed-array
-elements remain Stage-0-authoritative until reverse-order element cleanup and
-partial-transfer rules land.
+projects the whole backing range without copying. Individual cleanup-bearing
+elements remain borrowed in this tier: moving one out would leave a partially
+initialized owner, so ownership transfer happens at the whole-array boundary.
 
 ## Type vocabulary
 
