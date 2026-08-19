@@ -14,7 +14,7 @@ bun run z run examples/applications/document-workspace/main.zs
 Expected shape:
 
 ```text
-workspace registered=3, saved=3, found=42, save count=1, rejected=100, empty save=200, native moves=<count>, live=0
+workspace registered=3, saved=3, found=42, endpoints=40..42, save count=1, rejected=100, empty save=200, native moves=<count>, live=0
 ```
 
 The exact move count is an implementation observation. `live=0` is the lifetime
@@ -28,7 +28,8 @@ invariant.
    rejected request.
 2. [`workspace.zs`](workspace.zs) owns `Array<DocumentSession>`. Registration
    consumes an opened session into that array, receiver and module-function
-   lookup return `Option<view DocumentSession>`, and saving mutates each
+   lookup return `Option<view DocumentSession>`, `DocumentSelection` returns two
+   parameter-provenanced views together as one value, and saving mutates each
    registered session.
 3. [`main.zs`](main.zs) runs one understandable scenario: reject an invalid draft,
    register three documents, look one up, save them, and inspect the outcome.
@@ -47,13 +48,15 @@ invariant.
 | `documents.push(document)` | the workspace takes ownership of the open session |
 | `Option<view DocumentSession>` | lookup borrows an existing document without copying its title or native lease |
 | `findWorkspaceDocument(..., in workspace)` | a module function forwards the optional view while retaining its input-owner provenance |
+| `selectWorkspaceEndpoints(in workspace)` | returns a stack value containing two borrowed pointers tied to the same workspace, with no allocation or retain |
 | `match (in found)` | inspecting the optional view does not consume it or its workspace owner |
 | `attempt saveWorkspace(...)` | the caller keeps `Result<i32, WorkspaceError>` to handle success and failure locally |
 | `liveDocumentLeases()` after the scenario | verifies deterministic native cleanup after the workspace leaves scope |
 
-The example intentionally mutates the workspace after the first optional-view
-match. This is safe because the module-returned view's last use ended with that
-match; attempting the mutation while the view is still live is rejected.
+The example intentionally mutates the workspace after both the optional-view
+match and the endpoint aggregate's final field read. This is safe because both
+module-returned loans have ended; attempting the mutation while either result
+is still live is rejected.
 
 ## Pressure-test findings
 

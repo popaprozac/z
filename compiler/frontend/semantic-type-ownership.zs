@@ -535,6 +535,47 @@ export function typeContainsStoredView(
   return false;
 }
 
+export function typeIsRetainedParameterViewAggregate(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (genericTypeShape(typeName)) {
+    some(_) => return false;
+    none => {}
+  }
+  if (typeIsArenaOwnerBundle(modules, moduleIndex, typeName)) return false;
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ];
+      if (symbol.kind != ModuleSymbolKind.structSymbol) return false;
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          let hasDirectView = false;
+          for (const field of signature.fields) {
+            if (stringStartsWith(field.typeName, "view ")) {
+              hasDirectView = true;
+              continue;
+            }
+            let visiting = Array<String>();
+            if (typeContainsStoredView(
+              modules,
+              location.moduleIndex,
+              field.typeName,
+              visiting
+            )) return false;
+          }
+          return hasDirectView;
+        }
+        none => return false;
+      }
+    }
+    none => return false;
+  }
+}
+
 export function arenaOwnerBundleFieldName(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -166,13 +166,123 @@ test("returns a closed Arena-owned graph bundle without letting views escape the
   const ordinaryViewComposite = `
     struct Item { value: i32; }
     struct ItemRef { item: view Item; }
-    function invalid(in item: Item): ItemRef {
-      return ItemRef({ item: view item.value });
+    struct Items { item: Item; }
+    function inspect(in items: Items): ItemRef {
+      return ItemRef({ item: view items.item });
+    }
+    function main(): i32 {
+      const items = Items({ item: Item({ value: 42 }) });
+      const inspected = inspect(in items);
+      return inspected.item.value - 42;
+    }
+  `;
+  const ordinaryViewGenerated = compileToC(
+    ordinaryViewComposite,
+    resolve(projectRoot, "ordinary-view-composite-return.zs"),
+  );
+  assert.match(ordinaryViewGenerated, /const Z_Item \* item/);
+  const forwardedViewComposite = ordinaryViewComposite.replace(
+    "function main(): i32 {",
+    "function forward(in inspected: ItemRef): ItemRef { return inspected; }\nfunction main(): i32 {",
+  );
+  assert.match(
+    diagnostics(forwardedViewComposite, "ordinary-view-composite-forward.zs")[0].message,
+    /must be constructed directly at its return/,
+  );
+});
+
+test("returns retained parameter views as zero-allocation value aggregates", () => {
+  const fixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-view-aggregate.zs",
+  );
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /struct Z_DocumentSpan \{[^]*const Z_Document \* first;[^]*const Z_Document \* last;/);
+  assert.match(generated, /return \(Z_DocumentSpan\)\{ \.first = &/);
+  assert.doesNotMatch(generated, /malloc\(sizeof\(Z_DocumentSpan\)/);
+  const selectedOffset = source.indexOf("selected =") + 1;
+  assert.match(
+    hover(source, fixture, selectedOffset)?.contents.value ?? "",
+    /selected: DocumentSpan.*view of archive \| active/s,
+  );
+  const selectedFieldOffset = source.indexOf("selected.first") + "selected.".length + 1;
+  assert.match(
+    hover(source, fixture, selectedFieldOffset)?.contents.value ?? "",
+    /first: view Document/,
+  );
+
+  const execution = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  const invalidFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-parameter-view-aggregate-mutation.zs",
+  );
+  const invalidSource = readFileSync(invalidFixture, "utf8");
+  assert.match(
+    diagnostics(invalidSource, invalidFixture)[0].message,
+    /cannot mutate "workspace" while view "selected" is live/,
+  );
+  const mixedOwners = `
+    struct Document { id: i32; }
+    struct DocumentSpan { first: view Document; last: view Document; }
+    struct Workspace { documents: Array<Document>; }
+    function invalid(in left: Workspace, in right: Workspace): DocumentSpan {
+      return DocumentSpan({
+        first: view left.documents[0],
+        last: view right.documents[0],
+      });
     }
   `;
   assert.match(
-    diagnostics(ordinaryViewComposite, "ordinary-view-composite-return.zs")[0].message,
-    /view values cannot be nested inside returned storage/,
+    diagnostics(mixedOwners, "parameter-view-aggregate-mixed.zs")[0].message,
+    /must borrow from exactly one owner/,
+  );
+
+  const localEscape = `
+    struct Document { id: i32; }
+    struct DocumentSpan { first: view Document; last: view Document; }
+    function invalid(): DocumentSpan {
+      const documents = Array<Document>(Document({ id: 20 }), Document({ id: 22 }));
+      return DocumentSpan({
+        first: view documents[0],
+        last: view documents[1],
+      });
+    }
+  `;
+  assert.match(
+    diagnostics(localEscape, "parameter-view-aggregate-local.zs")[0].message,
+    /requires at least one direct return from an immutable `in` parameter/,
+  );
+
+  const mutableResult = source.replace(
+    "const selected = selectDocuments",
+    "let selected = selectDocuments",
+  );
+  assert.match(
+    diagnostics(mutableResult, "parameter-view-aggregate-let.zs")[0].message,
+    /view binding must use const/,
+  );
+
+  const copiedResult = source.replace(
+    "const total = selected.first.id + selected.last.id;",
+    "const copied = selected;\n  const total = copied.first.id + copied.last.id;",
+  );
+  assert.match(
+    diagnostics(copiedResult, "parameter-view-aggregate-copy.zs")[0].message,
+    /must be bound directly from its producing expression/,
+  );
+
+  const asyncProducer = source.replace(
+    "function selectDocuments(",
+    "async function selectDocuments(",
+  );
+  assert.match(
+    diagnostics(asyncProducer, "parameter-view-aggregate-async.zs")[0].message,
+    /requires a synchronous, non-throwing Z function/,
   );
 });
 

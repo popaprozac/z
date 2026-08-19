@@ -57,6 +57,7 @@ exercises candidates 1 through 3 against the same lookup:
 | `documentAt(index): view Document` | inferred receiver-tied borrow | `const Document *`, bounds check, no document or string copy | straight-line until the view's last use; owner mutation is then permitted |
 | `document(id): Option<view Document>` | optional receiver-tied borrow, inspected with `match (in result)` | one `const Document *`; `NULL` is `none`, no tag or string copy | natural fallible lookup; `some` inherits owner provenance and `none` carries no borrow |
 | `chooseDocument(flag, in drafts, in published): view Document` | direct parameter-provenanced borrow | one `const Document *`; no provenance tag, retain, or copy | both possible owners remain read-only until the selected view's last use |
+| `selectWorkspaceEndpoints(in workspace): DocumentSelection` | retained parameter-provenanced aggregate with two direct view fields | one by-value C struct containing two `const Document *`; no allocation, retain, provenance tag, or cleanup | straight-line multi-view access; the shared owner remains read-only until the aggregate's last use |
 
 The scoped form reads naturally for enumeration and one operation. It becomes
 awkward when several later statements need the selected document. The snapshot
@@ -2842,12 +2843,25 @@ Stage 0 and the fixed-point emitter both lower the option to one nullable
 Mutating either workspace before the last use is rejected, while growing both
 workspaces immediately afterward is accepted.
 
+The retained parameter-view aggregate slice then extended the same proof to a
+named value result without adding lifetime syntax. `DocumentSelection` returns
+the first and last document projections from one immutable workspace. Both
+frontends require direct construction at `return`, explicit `view` on every
+borrowed field, and exactly one source owner per returned instance. At the call
+site the ordinary `const` result carries the loan through its final field read;
+mutation is accepted immediately afterward and rejected one statement earlier.
+Stage 0 and the fixed-point emitter both lower the result to a by-value C struct
+of two borrowed pointers with no heap allocation or retain. Local-storage
+escape, mixed owners, forwarding, nested retained storage, methods, and
+suspending or throwing producers remain deliberately closed.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
-- retained parameter-provenanced view-bearing aggregates; direct and optional
-  immutable parameter provenance now have positive, negative, native-frontend,
-  hover, last-use, and one-pointer lowering evidence;
+- broader retained parameter-provenanced aggregates: the direct one-owner
+  synchronous named-struct tier now has positive, negative, native-frontend,
+  hover, last-use, and borrowed-pointer lowering evidence; forwarding, nesting,
+  multi-owner fields within one result, methods, and suspension remain open;
 - mutable shared ARC identity, concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

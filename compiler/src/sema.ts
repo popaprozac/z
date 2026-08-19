@@ -1602,7 +1602,12 @@ export function analyze(
     const returnedView = parseReceiverViewReturnType(
       declaration.returnType.name,
     );
-    if (returnedView) {
+    const returnedViewAggregate = retainedParameterViewAggregateDeclaration(
+      declaration.returnType.name,
+      structs,
+      enums,
+    );
+    if (returnedView || returnedViewAggregate) {
       if (
         declaration.async
         || declaration.errorType
@@ -1610,11 +1615,11 @@ export function analyze(
         || isGeneratorFunction(declaration)
         || isAsyncGeneratorFunction(declaration)
       ) {
-        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view return requires a synchronous, non-throwing Z function", {
+        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view result requires a synchronous, non-throwing Z function", {
           code: "Z0206",
         });
       }
-      if (structs.get(returnedView.target)?.kind !== "struct") {
+      if (returnedView && structs.get(returnedView.target)?.kind !== "struct") {
         const foreignViewTarget = foreignPointer(returnedView.target, state);
         if (!foreignViewTarget || foreignViewTarget.ownership !== "borrowed") {
           throw new DiagnosticError(fileName, declaration.returnType.location, "the first parameter-view tier requires a concrete Z struct or borrowed native handle target", {
@@ -1622,11 +1627,16 @@ export function analyze(
           });
         }
       }
-      const sources = parameterViewSourceIndices(declaration);
-      if (sources.length === 0 && !foreignPointer(returnedView.target, state)) {
-        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view requires at least one direct return from an immutable `in` parameter", {
+      const sources = parameterViewSourceIndices(declaration, structs, enums);
+      if (
+        sources.length === 0
+        && (!returnedView || !foreignPointer(returnedView.target, state))
+      ) {
+        throw new DiagnosticError(fileName, declaration.returnType.location, "a parameter-provenanced view result requires at least one direct return from an immutable `in` parameter", {
           code: "Z0206",
-          helps: ["return the borrowed parameter itself, one of its fields, or one of its indexed elements"],
+          helps: returnedViewAggregate
+            ? [`construct ${returnedViewAggregate.name} directly from view fields projected from one immutable input`]
+            : ["return the borrowed parameter itself, one of its fields, or one of its indexed elements"],
         });
       }
       for (const source of sources) {
@@ -2423,6 +2433,15 @@ function analyzeStructDeclaration(
       if (structs.get(view.target)?.kind !== "struct") {
         throw new DiagnosticError(fileName, method.returnType.location, "the first view tier requires a concrete Z struct target", { code: "Z0206" });
       }
+    } else if (retainedParameterViewAggregateDeclaration(
+      method.returnType.name,
+      structs,
+      enums,
+    )) {
+      throw new DiagnosticError(fileName, method.returnType.location, "retained view-bearing aggregate results are limited to module functions in the first tier", {
+        code: "Z0206",
+        helps: ["pass the value owner as an immutable `in` parameter to a module function"],
+      });
     }
   }
   if (declaration.constructor) {
@@ -2865,6 +2884,11 @@ function validateFunctionSignature(
     containsStoredViewType(declaration.returnType.name, structs, enums)
     && !parseReceiverViewReturnType(declaration.returnType.name)
     && !isArenaOwnerBundleType(declaration.returnType.name, structs, enums)
+    && !retainedParameterViewAggregateDeclaration(
+      declaration.returnType.name,
+      structs,
+      enums,
+    )
   ) {
     throw new DiagnosticError(fileName, declaration.returnType.location, "view values cannot be nested inside returned storage", { code: "Z0206" });
   }
@@ -4011,7 +4035,7 @@ function analyzeStatement(
         if (!origin) {
           throw new DiagnosticError(fileName, statement.initializer.location, "a view-bearing value must be bound directly from its producing expression", {
             code: "Z0206",
-            helps: ["bind a view-returning method call or `view projection` directly to const storage"],
+            helps: ["bind the producing view call, retained aggregate, or `view projection` directly to const storage"],
           });
         }
         const bindingType = arenaView && !view
@@ -4630,6 +4654,22 @@ function analyzeStatement(
       const optionalView = parseOptionalViewType(expected);
       if (optionalView) {
         validateOptionalViewReturn(statement.expression, expected, owner, locals, globals, structs, enums, fileName, state);
+        requireOutParametersInitialized(owner, locals, statement.location, fileName);
+        return;
+      }
+      if (retainedParameterViewAggregateDeclaration(expected, structs, enums)) {
+        const actual = validateRetainedParameterViewAggregateReturn(
+          statement.expression,
+          expected,
+          owner,
+          locals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+        consumeOwnedValue(statement.expression, actual, locals, structs, enums, fileName, state);
         requireOutParametersInitialized(owner, locals, statement.location, fileName);
         return;
       }
@@ -9405,7 +9445,19 @@ function inferExpressionInner(
       }
       const receiverType = inferExpression(expression.object, locals, globals, structs, enums, fileName, state);
       const receiverView = parseViewType(String(receiverType));
-      if (receiverView && expression.object.kind !== "identifier") {
+      const receiverRoot = storageRoot(expression.object);
+      const stableAggregateView = receiverRoot
+        ? containsStoredViewType(
+          String(underlyingType(locals.get(receiverRoot.name) ?? "unknown")),
+          structs,
+          enums,
+        ) && state.viewOrigins.has(receiverRoot.name)
+        : false;
+      if (
+        receiverView
+        && expression.object.kind !== "identifier"
+        && !stableAggregateView
+      ) {
         throw new DiagnosticError(fileName, expression.object.location, "bind a returned view to const before reading its fields", {
           code: "Z0206",
           helps: ["use `const projected = owner.viewMethod();`"],
@@ -12094,11 +12146,20 @@ function inferExpressionInner(
         if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
         return resultTypeName(callable.returnType.name, callable.errorType.name);
       }
-      if (parseReceiverViewReturnType(callable.returnType.name)) {
+      if (
+        parseReceiverViewReturnType(callable.returnType.name)
+        || retainedParameterViewAggregateDeclaration(
+          callable.returnType.name,
+          structs,
+          enums,
+        )
+      ) {
         const origin = parameterViewCallOrigin(
           callable,
           expression.arguments,
           locals,
+          structs,
+          enums,
           fileName,
           state,
         );
@@ -12900,8 +12961,20 @@ function viewOriginOwnerLabel(origin: ViewOrigin): string {
 
 function parameterViewSourceIndices(
   declaration: FunctionDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
 ): readonly number[] {
-  if (!parseReceiverViewReturnType(declaration.returnType.name)) return [];
+  const retainedAggregate = retainedParameterViewAggregateDeclaration(
+    declaration.returnType.name,
+    structs,
+    enums,
+  );
+  if (!parseReceiverViewReturnType(declaration.returnType.name) && !retainedAggregate) return [];
+  const retainedViewFields = new Set(
+    retainedAggregate?.fields
+      .filter((field) => parseViewType(field.type.name))
+      .map((field) => field.name) ?? [],
+  );
   const sources = new Set<number>();
   const record = (expression: Expression | null): void => {
     if (!expression) return;
@@ -12913,6 +12986,20 @@ function parameterViewSourceIndices(
         parameter.name === rootName && parameter.mode === "in"
       ));
       if (index >= 0) sources.add(index);
+    }
+    if (retainedAggregate) {
+      if (expression.kind === "unary" && expression.operator === "view") {
+        record(expression.operand);
+      } else if (expression.kind === "objectExpression") {
+        for (const field of expression.fields) {
+          if (retainedViewFields.has(field.name)) record(field.expression);
+        }
+      } else if (
+        expression.kind === "call"
+        && expression.callee.kind === "identifier"
+        && expression.callee.name === retainedAggregate.name
+      ) expression.arguments.forEach(record);
+      return;
     }
     if (expression.kind === "call") {
       if (
@@ -12968,11 +13055,13 @@ function parameterViewCallOrigin(
   declaration: FunctionDeclaration,
   arguments_: readonly Expression[],
   locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
   fileName: string,
   state: AnalysisState,
 ): ViewOrigin | null {
   const origins: ViewOrigin[] = [];
-  for (const sourceIndex of parameterViewSourceIndices(declaration)) {
+  for (const sourceIndex of parameterViewSourceIndices(declaration, structs, enums)) {
     const argument = arguments_[sourceIndex];
     const rootName = argument?.kind === "argumentReference"
       ? argument.name
@@ -17039,6 +17128,87 @@ function validateOptionalViewReturn(
   }
 }
 
+function validateRetainedParameterViewAggregateReturn(
+  expression: Expression,
+  expected: string,
+  owner: FunctionDeclaration,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ValueType {
+  const declaration = retainedParameterViewAggregateDeclaration(
+    expected,
+    structs,
+    enums,
+  );
+  if (
+    !declaration
+    || expression.kind !== "call"
+    || expression.callee.kind !== "identifier"
+    || expression.callee.name !== declaration.name
+    || expression.arguments.length !== 1
+    || expression.arguments[0].kind !== "objectExpression"
+    || expression.arguments[0].spread
+  ) {
+    throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result must be constructed directly at its return", {
+      code: "Z0206",
+      notes: ["forwarding stored view aggregates requires a broader lifetime relationship than the first parameter-provenance tier"],
+      helps: declaration
+        ? [`return ${declaration.name}({ ... }) with every view field projected from one immutable input`]
+        : undefined,
+    });
+  }
+  const object = expression.arguments[0];
+  for (const field of declaration.fields) {
+    if (!parseViewType(field.type.name)) continue;
+    const initializer = object.fields.find((candidate) => candidate.name === field.name);
+    if (
+      !initializer
+      || initializer.expression.kind !== "unary"
+      || initializer.expression.operator !== "view"
+    ) {
+      throw new DiagnosticError(fileName, initializer?.expression.location ?? object.location, `returned view field ${JSON.stringify(field.name)} requires an explicit view projection`, {
+        code: "Z0206",
+        helps: [`initialize ${field.name} with \`view owner.field\` or \`view owner.items[index]\``],
+      });
+    }
+    state.localViewInitializers.add(initializer.expression.location.offset);
+  }
+  const actual = inferDirectValue(
+    expression,
+    owner,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+    expected,
+  );
+  requireAssignable(expected, actual, expression, fileName, structs, enums, state);
+  const origin = state.viewCallOrigins.get(expression.location.offset);
+  if (!origin || origin.sources.length !== 1) {
+    throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result must borrow from exactly one immutable input owner", {
+      code: "Z0206",
+      notes: ["all view fields in one returned aggregate share one lifetime in the first tier"],
+    });
+  }
+  const source = origin.sources[0];
+  const parameter = owner.parameters.find((candidate) => (
+    candidate.name === source.owner && candidate.mode === "in"
+  ));
+  if (!parameter) {
+    throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result cannot borrow local storage", {
+      code: "Z0206",
+      helps: ["project every view field from one immutable `in` parameter"],
+    });
+  }
+  return actual;
+}
+
 function optionalViewReturnVariant(expression: Expression, expected: string): "some" | "none" | null {
   if (expression.kind === "variantExpression" && expression.enumName === expected) {
     return expression.variantName === "some" || expression.variantName === "none" ? expression.variantName : null;
@@ -17161,6 +17331,26 @@ function containsStoredViewType(
       ? containsStoredViewType(variant.payload.name, structs, enums, next)
       : false
   )) ?? false;
+}
+
+function retainedParameterViewAggregateDeclaration(
+  name: string,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  enums: ReadonlyMap<string, EnumDeclaration>,
+): StructDeclaration | null {
+  const actual = name;
+  const declaration = structs.get(actual);
+  if (!declaration || declaration.kind !== "struct") return null;
+  if (isArenaOwnerBundleType(actual, structs, enums)) return null;
+  let hasDirectView = false;
+  for (const field of declaration.fields) {
+    if (parseViewType(field.type.name)) {
+      hasDirectView = true;
+      continue;
+    }
+    if (containsStoredViewType(field.type.name, structs, enums)) return null;
+  }
+  return hasDirectView ? declaration : null;
 }
 
 type ArenaOwnerBundleInfo = {

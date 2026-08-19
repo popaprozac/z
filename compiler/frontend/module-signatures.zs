@@ -49,12 +49,13 @@ export function programFunctionSignature(
   }
   for (const functionDeclaration of program.functions) {
     if (functionDeclaration.name != declaration.name) continue;
-    return Option.some(functionDeclarationSignature(functionDeclaration));
+    return Option.some(functionDeclarationSignature(program, functionDeclaration));
   }
   return Option<ModuleFunctionSignature>.none;
 }
 
 function functionDeclarationSignature(
+  in program: Program,
   in declaration: FunctionDeclaration
 ): ModuleFunctionSignature {
   let typeParameters = Array<String>();
@@ -88,7 +89,7 @@ function functionDeclarationSignature(
     parameterModes,
     parameterTypes,
     viewParameter: Option<usize>.none,
-    viewParameters: functionDeclarationViewParameters(declaration),
+    viewParameters: functionDeclarationViewParameters(program, declaration),
     invalidatesParameters: Array<usize>(),
     invalidatesLifetimes: Array<String>(),
     returnType: declaration.returnType.name.copyBytes(
@@ -97,6 +98,39 @@ function functionDeclarationSignature(
     ),
     errorType,
   });
+}
+
+function retainedReturnViewFieldNames(
+  in program: Program,
+  in typeName: String
+): Array<String> {
+  let fields = Array<String>();
+  for (const aggregate of program.aggregates) {
+    if (
+      aggregate.name != typeName
+      || aggregate.kind != DeclarationKind.structDeclaration
+      || aggregate.typeParameters.length > 0
+    ) continue;
+    for (const field of aggregate.fields) {
+      if (
+        field.type.name.byteLength <= 5
+        || field.type.name.copyBytes(0, 5) != "view "
+      ) continue;
+      fields.push(field.name.copyBytes(0, field.name.byteLength));
+    }
+    return fields;
+  }
+  return fields;
+}
+
+function returnViewFieldSelected(
+  in fields: Array<String>,
+  in name: String
+): boolean {
+  for (const field of fields) {
+    if (field == name) return true;
+  }
+  return false;
 }
 
 function returnTypeContainsDirectView(in typeName: String): boolean {
@@ -210,12 +244,58 @@ function appendReturnViewRoot(
   }
 }
 
+function appendAggregateReturnViewRoots(
+  in tree: ExpressionTree,
+  index: usize,
+  in returnType: String,
+  in viewFields: Array<String>,
+  inout roots: Array<String>
+): void {
+  if (
+    tree.nodes[index].kind != ExpressionKind.callExpression
+    || tree.nodes[index].children.length != 2
+  ) return;
+  const callee = tree.nodes[index].children[0];
+  const initializer = tree.nodes[index].children[1];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.identifierExpression
+    || tree.nodes[callee].value != returnType
+    || tree.nodes[initializer].kind != ExpressionKind.objectExpression
+  ) return;
+  let fieldIndex: usize = 0;
+  while (
+    fieldIndex < tree.nodes[initializer].children.length
+    && fieldIndex < tree.nodes[initializer].labels.length
+  ) {
+    const candidate = tree.nodes[initializer].children[fieldIndex];
+    const explicitView = tree.nodes[candidate].kind == ExpressionKind.unaryExpression
+      && tree.nodes[candidate].value == "view"
+      && tree.nodes[candidate].children.length == 1;
+    if (
+      returnViewFieldSelected(viewFields, tree.nodes[initializer].labels[fieldIndex])
+      || (viewFields.length == 0 && explicitView)
+    ) {
+      let fieldExpression = tree.nodes[initializer].children[fieldIndex];
+      if (
+        tree.nodes[fieldExpression].kind == ExpressionKind.unaryExpression
+        && tree.nodes[fieldExpression].value == "view"
+        && tree.nodes[fieldExpression].children.length == 1
+      ) fieldExpression = tree.nodes[fieldExpression].children[0];
+      appendReturnViewRoot(tree, fieldExpression, inout roots);
+    }
+    fieldIndex = fieldIndex + 1;
+  }
+}
+
 function functionDeclarationViewParameters(
+  in program: Program,
   in declaration: FunctionDeclaration
 ): Array<usize> {
-  if (!returnTypeContainsDirectView(declaration.returnType.name)) {
-    return Array<usize>();
-  }
+  const directView = returnTypeContainsDirectView(declaration.returnType.name);
+  const aggregateViewFields = retainedReturnViewFieldNames(
+    program,
+    declaration.returnType.name
+  );
   let roots = Array<String>();
   for (const statement of declaration.body.nodes) {
     if (statement.kind != StatementKind.returnStatement) continue;
@@ -223,9 +303,12 @@ function functionDeclarationViewParameters(
       some(expression) => match (in expression.tree) {
         some(tree) => {
           const root = tree.root;
-          appendReturnViewRoot(
+          if (directView) appendReturnViewRoot(tree, root, inout roots);
+          else appendAggregateReturnViewRoots(
             tree,
             root,
+            declaration.returnType.name,
+            aggregateViewFields,
             inout roots
           );
         }
@@ -349,7 +432,7 @@ export function programTypeSignature(
           staticMethod: method.staticMethod,
           visibility: visibilityName(method.visibility),
           receiverMode: receiverModeName(method.receiverMode),
-          signature: functionDeclarationSignature(method),
+          signature: functionDeclarationSignature(program, method),
         }));
       }
       let customDeinit = false;
@@ -402,7 +485,7 @@ export function programTypeSignature(
           staticMethod: false,
           visibility: "public",
           receiverMode: receiverModeName(method.receiverMode),
-          signature: functionDeclarationSignature(method),
+          signature: functionDeclarationSignature(program, method),
         }));
       }
       return Option.some(ModuleTypeSignature({

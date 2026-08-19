@@ -577,6 +577,83 @@ test("preserves multi-owner optional parameter views through native semantics an
   }
 }, 240_000);
 
+test("returns retained parameter view aggregates through native semantics and emission", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-view-aggregate.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /typedef struct Z_DocumentSpan \{\n  Z_Document const \* first;\n  Z_Document const \* last;/,
+  );
+  assert.match(
+    emission.stdout,
+    /return \(Z_DocumentSpan\)\{\.first = &/,
+  );
+  assert.doesNotMatch(emission.stdout, /malloc\(sizeof\(Z_DocumentSpan\)/);
+
+  const directory = mkdtempSync("/tmp/z-native-parameter-view-aggregate-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+
+    const invalid = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-reject-parameter-view-aggregate-mutation.zs",
+    );
+    const invalidResult = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", invalid],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalidResult.status, 1);
+    assert.match(
+      invalidResult.stderr,
+      /cannot mutate "workspace" while view "selected" is live/,
+    );
+
+    const localEscape = resolve(directory, "local-escape.zs");
+    writeFileSync(localEscape, [
+      "struct Document { id: i32; }",
+      "struct DocumentSpan { first: view Document; last: view Document; }",
+      "function invalid(): DocumentSpan {",
+      "  const documents = Array<Document>(Document({ id: 20 }), Document({ id: 22 }));",
+      "  return DocumentSpan({",
+      "    first: view documents[0],",
+      "    last: view documents[1],",
+      "  });",
+      "}",
+      "function main(): i32 { return 0; }",
+      "",
+    ].join("\n"));
+    const localResult = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", localEscape],
+      { encoding: "utf8" },
+    );
+    assert.equal(localResult.status, 1);
+    assert.match(
+      localResult.stderr,
+      /must be initialized directly from proven borrowed storage/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("keeps native inferred binding evidence inside its declaration scope", () => {
   const input = resolve(
     projectRoot,
@@ -4579,7 +4656,7 @@ test("allocates and reversely cleans Arena values through the native frontend", 
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
-      expected: /view values cannot be nested inside returned storage/,
+      expected: /must be constructed directly at its return/,
     },
     {
       name: "arena-stored-view-async",

@@ -56,6 +56,11 @@ export struct DocumentWorkspace {
   }
 }
 
+export struct DocumentSelection {
+  first: view DocumentSession;
+  last: view DocumentSession;
+}
+
 export function saveWorkspace(inout workspace: DocumentWorkspace): i32 throws WorkspaceError {
   return try workspace.saveAll();
 }
@@ -65,4 +70,13 @@ export function findWorkspaceDocument(
   in workspace: DocumentWorkspace
 ): Option<view DocumentSession> {
   return workspace.findDocument(documentId);
+}
+
+export function selectWorkspaceEndpoints(
+  in workspace: DocumentWorkspace
+): DocumentSelection {
+  return DocumentSelection({
+    first: view workspace.documents[0],
+    last: view workspace.documents[workspace.documents.length - 1],
+  });
 }

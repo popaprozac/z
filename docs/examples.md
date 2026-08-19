@@ -195,8 +195,10 @@ reloads quoted text from the same database without opening a window.
 recommended non-GUI application walkthrough. It uses domain-oriented names to
 combine three Z modules, a move-only C++ document lease, dynamic storage, a
 move-only named enum, cleanup-bearing errors, `try`/`attempt`, mutable methods,
-and `Option<view DocumentSession>`. Its deterministic run ends with three saved
-documents and zero live native leases. Read its adjacent
+and `Option<view DocumentSession>`. It also returns a zero-allocation
+`DocumentSelection` containing two `view DocumentSession` fields tied to one
+workspace, then proves the loan ends before the workspace grows. Its
+deterministic run ends with three saved documents and zero live native leases. Read its adjacent
 [`README.md`](../examples/applications/document-workspace/README.md) for the
 scenario and an ownership-by-ownership explanation.
 

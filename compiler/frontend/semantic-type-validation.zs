@@ -45,6 +45,7 @@ import {
 import {
   typeContainsStoredView,
   typeIsArenaOwnerBundle,
+  typeIsRetainedParameterViewAggregate,
   typeNameIsArena,
 } from "./semantic-type-ownership.zs";
 
@@ -786,6 +787,12 @@ function validateFunctionTypes(
     declaration.returnType.name,
     returnViewVisiting
   )) {
+    const retainedParameterViewAggregate =
+      typeIsRetainedParameterViewAggregate(
+        modules,
+        moduleIndex,
+        declaration.returnType.name
+      );
     let directReceiverView = stringStartsWith(
       declaration.returnType.name,
       "view "
@@ -807,6 +814,7 @@ function validateFunctionTypes(
         moduleIndex,
         declaration.returnType.name
       )
+      && !retainedParameterViewAggregate
     ) throw validationError(
       ModuleResolveErrorKind.typeMismatch,
       module.path,
@@ -814,6 +822,27 @@ function validateFunctionTypes(
       declaration.returnType.line,
       declaration.returnType.column
     );
+    if (retainedParameterViewAggregate) {
+      if (method) throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "retained view-bearing aggregate results are limited to module functions in the first tier",
+        declaration.returnType.line,
+        declaration.returnType.column
+      );
+      let throwing = false;
+      match (in declaration.errorType) {
+        some(_) => throwing = true;
+        none => {}
+      }
+      if (declaration.asynchronous || throwing) throw validationError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a retained parameter-provenanced view aggregate must be returned by a synchronous non-throwing function",
+        declaration.returnType.line,
+        declaration.returnType.column
+      );
+    }
     if (
       declaration.asynchronous
       && typeIsArenaOwnerBundle(

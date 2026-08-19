@@ -803,8 +803,9 @@ inspect(node);
 tree.append(next); // valid after node's last use
 ```
 
-`view expression` must directly initialize an inferred `const` local and must
-project a field or indexed element from named value storage. Hover reports both
+`view expression` must directly initialize an inferred `const` local or a
+direct retained-result field, and must project a field or indexed element from
+named value storage. Hover reports both
 the projected `view T` and its owner. It creates a `const T *` in generated C;
 there is no value copy, allocation, retain, or cleanup.
 
@@ -858,8 +859,9 @@ must be synchronous and non-throwing, borrow a value-struct receiver, and return
 a direct field or indexed projection. A module producer must likewise be
 synchronous and non-throwing and return an immutable `in` parameter, its field,
 or an indexed element. Local producers have the same value-storage and
-direct-projection restrictions. The view itself cannot be annotated as
-storage, duplicated, stored, returned again, or held across `await`. A module
+direct-projection restrictions. Outside the retained aggregate tier below, the
+view itself cannot be annotated as storage, duplicated, stored, returned again,
+or held across `await`. A module
 function may also return `Option<view T>` by constructing `some` directly from
 one or more immutable input projections, or by forwarding an owner-tied method
 result. `none` carries no live borrow. At the call site, every possible input
@@ -871,8 +873,39 @@ compiler-proven nonescaping and copies only the view pointer into its stack
 environment; owned, stored, mutable, escaping, and async forwarding remain
 rejected. Its owner cannot mutate or move before the view's last use. ARC class
 owners are excluded because another alias could invalidate growable projected
-storage. Parameter provenance currently remains direct and synchronous;
-retained view-bearing aggregate results are a later layer.
+storage. Parameter provenance remains direct and synchronous.
+
+A synchronous non-throwing module function may retain several projections from
+one immutable input in a named value struct:
+
+```z
+struct DocumentSpan {
+  first: view Document;
+  last: view Document;
+}
+
+function endpoints(in workspace: DocumentStore): DocumentSpan {
+  return DocumentSpan({
+    first: view workspace.documents[0],
+    last: view workspace.documents[workspace.documents.length - 1],
+  });
+}
+
+const span = endpoints(in workspace);
+console.log(span.first.title, span.last.title);
+workspace.open(next); // valid after span's last field read
+```
+
+The returned struct is a stack value containing `const T *` fields. It adds no
+allocation, retain, provenance tag, or cleanup. Every view field in one returned
+instance must be written with explicit `view` and derive from the same immutable
+`in` parameter; different return paths may choose different parameters, so the
+caller conservatively loans every possible source. The function must construct
+the result directly at `return`. Forwarding an existing aggregate, returning
+local storage, struct spread, methods, `throws`, async suspension, nested
+view-bearing fields, and storage in classes, enums, or collections remain
+outside this tier. The caller binds the move-only result with `const`; its owner
+cannot mutate, move, or deinitialize until the aggregate's last use.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
 load an independent `T` from `view T` implicitly. This is an ordinary by-value

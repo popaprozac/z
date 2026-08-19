@@ -7,6 +7,7 @@ import {
   DocumentWorkspace,
   findWorkspaceDocument,
   saveWorkspace,
+  selectWorkspaceEndpoints,
 } from "./workspace.zs";
 
 struct WorkspaceRunSummary {
@@ -14,6 +15,8 @@ struct WorkspaceRunSummary {
   saved: i32;
   foundDocumentId: i32;
   foundSaveCount: i32;
+  firstDocumentId: i32;
+  lastDocumentId: i32;
   rejectedCode: i32;
   emptySaveCode: i32;
 }
@@ -37,7 +40,11 @@ function exerciseDocumentWorkspace(): WorkspaceRunSummary {
     none => -1;
   };
 
-  // The optional view ended with the match, so growing the workspace is safe.
+  const endpoints = selectWorkspaceEndpoints(in workspace);
+  const firstDocumentId = endpoints.first.documentId();
+  const lastDocumentId = endpoints.last.documentId();
+
+  // Both returned-view loans ended at their last reads, so growth is safe.
   workspace.registerDocument("API guide", 43);
 
   const saveResult = attempt saveWorkspace(inout workspace);
@@ -60,6 +67,8 @@ function exerciseDocumentWorkspace(): WorkspaceRunSummary {
     saved,
     foundDocumentId,
     foundSaveCount,
+    firstDocumentId,
+    lastDocumentId,
     rejectedCode: 0 - rejectedStatus,
     emptySaveCode,
   });
@@ -71,6 +80,7 @@ function main(): i32 {
   const moves = movedDocumentLeases();
   console.log(
     `workspace registered=${summary.registered}, saved=${summary.saved}, found=${summary.foundDocumentId},`,
+    `endpoints=${summary.firstDocumentId}..${summary.lastDocumentId},`,
     `save count=${summary.foundSaveCount}, rejected=${summary.rejectedCode}, empty save=${summary.emptySaveCode},`,
     `native moves=${moves}, live=${live}`
   );
@@ -79,7 +89,9 @@ function main(): i32 {
   if (summary.saved != 3) return 2;
   if (summary.foundDocumentId != 42) return 3;
   if (summary.foundSaveCount != 1) return 4;
-  if (summary.rejectedCode != 100) return 5;
-  if (summary.emptySaveCode != 200) return 6;
+  if (summary.firstDocumentId != 40) return 5;
+  if (summary.lastDocumentId != 42) return 6;
+  if (summary.rejectedCode != 100) return 7;
+  if (summary.emptySaveCode != 200) return 8;
   return live;
 }

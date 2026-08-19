@@ -1162,6 +1162,15 @@ caller conservatively loans every possible source owner until the result's last
 use; the runtime result remains one pointer and carries no provenance tag. The
 compiler ties each read-only view to its named value-storage owner or owners and
 prevents invalidating mutation until last use.
+One module function may also directly construct and return a named value struct
+whose direct `view` fields all project from the same immutable input. The
+aggregate lowers to an ordinary C value struct containing borrowed pointers;
+the caller's inferred loan is attached to the aggregate binding and ends at its
+last use. Different return paths may choose different inputs, conservatively
+loaning all possible sources. This first retained tier rejects forwarding,
+local-storage escape, mixed owners within one result, nested view-bearing
+fields, spread, methods, throwing or suspending producers, and storage in a
+class, enum, or collection.
 The local form lowers to `const T *` and does not copy the projected value. The
 same pointer representation survives read-only `Array<T>` indexing, length,
 and iteration plus read-only `String` inspection, comparison, and formatting;
