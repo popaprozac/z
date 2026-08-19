@@ -2929,6 +2929,14 @@ leaving ordinary indexing checked. Cleanup-bearing fixed-array elements remain
 a coded boundary: exact reverse-order destruction and partial transfer must be
 implemented before the native compiler accepts them.
 
+The same representation now composes recursively for nested cleanup-free fixed
+arrays. Inner declarations are collected before outer wrappers, so C layout is
+valid without opaque storage or heap indirection. Imported functions can return
+these values by value, callers can explicitly `copy` them, and `for...of` uses
+the fixed length directly while reading each element through the generated
+array helper. The differential corpus runs the same local and multi-module
+programs through Stage 0 and the fixed-point compiler.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

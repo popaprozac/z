@@ -5294,6 +5294,13 @@ function staticallyResolvedExpressionTypeName(
                 iterableRoot
               )) {
                 some(iterableType) => {
+                  match (fixedArrayShape(iterableType)) {
+                    some(shape) => return Option.some(shape.elementType.copyBytes(
+                      0,
+                      shape.elementType.byteLength
+                    ));
+                    none => {}
+                  }
                   match (genericTypeShape(iterableType)) {
                     some(generic) => {
                       if (
@@ -14968,14 +14975,28 @@ function lowerStatementCore(
             importedTypes,
             typeName
           );
-          if (iterableType.kind != LoweredTypeKind.arrayType) {
-            throw `native lowering only supports Array for iteration, found ${typeName}`;
+          if (
+            iterableType.kind != LoweredTypeKind.arrayType
+            && iterableType.kind != LoweredTypeKind.fixedArrayType
+          ) {
+            throw `native lowering only supports Array and fixed arrays for iteration, found ${typeName}`;
           }
           const missingElementType = match (in type) {
             some(_) => false;
             none => true;
           };
           if (missingElementType) {
+            match (fixedArrayShape(typeName)) {
+              some(shape) => {
+                const elementType = try lowerModuleTypeName(
+                  program,
+                  importedTypes,
+                  shape.elementType
+                );
+                type = Option.some(move elementType);
+              }
+              none => {}
+            }
             match (genericTypeShape(typeName)) {
               some(generic) => {
                 if (
@@ -15012,6 +15033,13 @@ function lowerStatementCore(
             0,
             iterableType.name.byteLength
           ));
+          match (fixedArrayShape(typeName)) {
+            some(shape) => {
+              labels.push("fixed");
+              labels.push(shape.length.copyBytes(0, shape.length.byteLength));
+            }
+            none => {}
+          }
           if (viewIterable) labels.push("view");
         }
         none => throw "native lowering cannot iterate an opaque expression";
@@ -17043,6 +17071,20 @@ function collectIntrinsicTypeName(
   );
   match (fixedArray) {
     some(declaration) => {
+      match (fixedArrayShape(name)) {
+        some(shape) => try collectIntrinsicTypeName(
+          program,
+          importedTypes,
+          shape.elementType,
+          inout fixedArrays,
+          inout arrays,
+          inout slices,
+          inout maps,
+          inout sets,
+          inout enums
+        );
+        none => {}
+      }
       if (!containsLoweredSlice(slices, declaration.sliceName)) {
         slices.push(LoweredSlice({
           name: declaration.sliceName.copyBytes(

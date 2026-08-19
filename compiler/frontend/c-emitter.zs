@@ -3934,12 +3934,24 @@ function appendStatement(
     if (
       declaration.statements[index].children.length != 1
       || declaration.statements[index].labels.length < 1
-      || declaration.statements[index].labels.length > 2
+      || declaration.statements[index].labels.length > 4
     ) {
       throw "native C emission received a malformed for statement";
     }
-    const viewIterable = declaration.statements[index].labels.length == 2
-      && declaration.statements[index].labels[1] == "view";
+    const viewIterable = labelsContain(
+      declaration.statements[index].labels,
+      "view"
+    );
+    const fixedIterable = labelsContain(
+      declaration.statements[index].labels,
+      "fixed"
+    );
+    if (
+      fixedIterable
+      && declaration.statements[index].labels.length < 3
+    ) {
+      throw "native C emission received a fixed-array loop without its length";
+    }
     const elementType = match (in declaration.statements[index].type) {
       some(type) => try cType(type);
       none => throw "native C emission received an untyped for binding";
@@ -3950,18 +3962,26 @@ function appendStatement(
     output.append(position);
     output.append(" = 0; ");
     output.append(position);
-    output.append(" < (");
-    if (viewIterable) output.append("(*(");
-    match (in declaration.statements[index].expression) {
-      some(iterable) => try appendExpression(
-        inout output,
-        declaration,
-        iterable
-      );
-      none => throw "native C emission received a for without an iterable";
+    output.append(" < ");
+    if (fixedIterable) {
+      output.append("(");
+      output.append(declaration.statements[index].labels[2]);
+      output.append(")");
+    } else {
+      output.append("(");
+      if (viewIterable) output.append("(*(");
+      match (in declaration.statements[index].expression) {
+        some(iterable) => try appendExpression(
+          inout output,
+          declaration,
+          iterable
+        );
+        none => throw "native C emission received a for without an iterable";
+      }
+      if (viewIterable) output.append("))");
+      output.append(").length");
     }
-    if (viewIterable) output.append("))");
-    output.append(").length; ");
+    output.append("; ");
     output.append(position);
     output.append(" += 1) {\n");
     appendIndent(inout output, depth + 1);

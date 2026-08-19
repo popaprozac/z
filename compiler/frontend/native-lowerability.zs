@@ -69,7 +69,8 @@ function nativeFixedArrayTypeSupported(in name: String): boolean {
     some(shape) => shape.elementType == "boolean"
       || shape.elementType == "f32"
       || shape.elementType == "f64"
-      || isIntegerTypeName(shape.elementType);
+      || isIntegerTypeName(shape.elementType)
+      || nativeFixedArrayTypeSupported(shape.elementType);
     none => false;
   };
 }
@@ -1258,11 +1259,12 @@ function validateNativeBody(
             if (
               iterableType.byteLength > 0
               && !typeUsesGeneric(iterableType, "Array")
+              && !nativeFixedArrayTypeSupported(iterableType)
             ) {
               throw loweringBoundary(
                 path,
                 "Z1000",
-                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array is supported`,
+                `iteration over "${iterableType}" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported`,
                 statement.line,
                 statement.column,
                 3

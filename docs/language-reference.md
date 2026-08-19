@@ -378,11 +378,14 @@ match, nested, default, and owned `copy`/`move` collection patterns remain later
 tiers.
 
 The fixed-point native compiler executes cleanup-free primitive fixed arrays,
-`Array<T>`, and existing `Slice<T>` sources, including rest. It evaluates the
-collection once, performs one dynamic length check where needed, then projects
-every requested position under that proof. Fixed arrays use an inline value
-wrapper, so their length is compile-time evidence and ordinary `copy` is a C
-value copy. Rest becomes a
+including recursively nested shapes, plus `Array<T>` and existing `Slice<T>`
+sources, including rest. It evaluates the collection once, performs one dynamic
+length check where needed, then projects every requested position under that
+proof. Fixed arrays use an inline value wrapper, so their length is compile-time
+evidence and ordinary `copy` is a recursive C value copy. Functions may pass and
+return these wrappers across module boundaries, and ordinary `for...of` reads
+each cleanup-free element through the same checked storage contract without
+allocation. Rest becomes a
 two-word pointer/length descriptor and does not allocate or retain. A rest-only
 pattern on an empty Array preserves a null data pointer without performing
 pointer arithmetic. Cleanup-bearing elements require `view source` and remain

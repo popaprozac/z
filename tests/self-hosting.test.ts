@@ -458,7 +458,7 @@ test("reports evidence-dependent native iteration boundaries before lowering", (
   assert.equal(emission.status, 1);
   assert.match(
     emission.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array is supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported/,
   );
   assert.match(emission.stderr, /for \(const path of openDocuments\)/);
 }, 20_000);
@@ -6964,7 +6964,7 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(backendIce.status, 1, backendIce.stderr);
   assert.match(
     backendIce.stderr,
-    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array is supported/,
+    /error\[Z1000\]: iteration over "Set<String>" is not executable in the native compiler yet; only Array and cleanup-free fixed arrays are supported/,
   );
 
   const runtimeCollisionProject = resolve(directory, "runtime-collision");
