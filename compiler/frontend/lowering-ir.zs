@@ -110,6 +110,11 @@ export struct LoweredArray {
   elementType: LoweredType;
 }
 
+export struct LoweredSlice {
+  name: String;
+  elementType: LoweredType;
+}
+
 export struct LoweredMap {
   name: String;
   keyType: LoweredType;
@@ -410,6 +415,7 @@ export struct LoweredProgram {
   foreignResources: Array<LoweredForeignResource>;
   constants: Array<LoweredConstant>;
   arrays: Array<LoweredArray>;
+  slices: Array<LoweredSlice>;
   maps: Array<LoweredMap>;
   sets: Array<LoweredSet>;
   functionTypes: Array<LoweredFunctionType>;
@@ -2065,6 +2071,30 @@ function intrinsicArrayDeclaration(
       }));
     }
     none => return Option<LoweredArray>.none;
+  }
+}
+
+function intrinsicSliceDeclaration(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<LoweredSlice> throws String {
+  match (genericTypeShape(name)) {
+    some(generic) => {
+      if (generic.base != "Slice" || generic.arguments.length != 1) {
+        return Option<LoweredSlice>.none;
+      }
+      const elementType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        generic.arguments[0]
+      );
+      return Option.some(LoweredSlice({
+        name: intrinsicSliceName(elementType),
+        elementType,
+      }));
+    }
+    none => return Option<LoweredSlice>.none;
   }
 }
 
@@ -5998,9 +6028,10 @@ function lowerExpression(
       if (
         operandType.kind != LoweredTypeKind.structType
         && operandType.kind != LoweredTypeKind.arrayType
+        && operandType.kind != LoweredTypeKind.sliceType
         && operandType.kind != LoweredTypeKind.stringType
       ) {
-        throw `native view lowering currently supports value-struct, Array, and String projections, found ${operandTypeName}`;
+        throw `native view lowering currently supports value-struct, Array, Slice, and String projections, found ${operandTypeName}`;
       }
       kind = LoweredExpressionKind.viewProjection;
     }
@@ -8662,6 +8693,111 @@ function lowerExpression(
         argumentInput,
         inout output
       );
+      if (parameterTypes.length >= argument) {
+        const expectedTypeName = parameterTypes[argument - 1].copyBytes(
+          0,
+          parameterTypes[argument - 1].byteLength
+        );
+        match (genericTypeShape(expectedTypeName)) {
+          some(expected) => {
+            if (
+              expected.base == "Slice"
+              && expected.arguments.length == 1
+            ) {
+              match (evidenceResolvedExpressionTypeName(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                argumentInput
+              )) {
+                some(actualTypeName) => {
+                  let actualStorageTypeName = actualTypeName.copyBytes(
+                    0,
+                    actualTypeName.byteLength
+                  );
+                  let alreadyViewed = false;
+                  if (
+                    stringStartsWith(actualStorageTypeName, "view ")
+                    && actualStorageTypeName.byteLength > 5
+                  ) {
+                    alreadyViewed = true;
+                    actualStorageTypeName = actualStorageTypeName.copyBytes(
+                      5,
+                      actualStorageTypeName.byteLength
+                    );
+                  }
+                  match (genericTypeShape(actualStorageTypeName)) {
+                    some(actual) => {
+                      let matchingElements = false;
+                      if (
+                        actual.base == "Array"
+                        && actual.arguments.length == 1
+                      ) {
+                        const actualElement = try lowerModuleTypeName(
+                          program,
+                          importedTypes,
+                          actual.arguments[0]
+                        );
+                        const expectedElement = try lowerModuleTypeName(
+                          program,
+                          importedTypes,
+                          expected.arguments[0]
+                        );
+                        matchingElements = loweredTypeIdentity(actualElement)
+                          == loweredTypeIdentity(expectedElement);
+                      }
+                      if (
+                        actual.base == "Array"
+                        && actual.arguments.length == 1
+                        && matchingElements
+                      ) {
+                        const arrayType = try lowerModuleTypeName(
+                          program,
+                          importedTypes,
+                          actualStorageTypeName
+                        );
+                        let source = value;
+                        if (!alreadyViewed) {
+                          let viewChildren = Array<usize>();
+                          viewChildren.push(value);
+                          source = pushExpression(
+                            inout output,
+                            LoweredExpressionKind.viewProjection,
+                            arrayType.name,
+                            move viewChildren,
+                            Array<String>()
+                          );
+                        }
+                        const zero = pushExpression(
+                          inout output,
+                          LoweredExpressionKind.integerValue,
+                          "0",
+                          Array<usize>(),
+                          Array<String>()
+                        );
+                        let sliceChildren = Array<usize>();
+                        sliceChildren.push(source);
+                        sliceChildren.push(zero);
+                        value = pushExpression(
+                          inout output,
+                          LoweredExpressionKind.arraySlice,
+                          arrayType.name,
+                          move sliceChildren,
+                          Array<String>()
+                        );
+                      }
+                    }
+                    none => {}
+                  }
+                }
+                none => {}
+              }
+            }
+          }
+          none => {}
+        }
+      }
       if (
         parameterModes.length >= argument
         && parameterModes[argument - 1] == "value"
@@ -12966,8 +13102,11 @@ function lowerStatementCore(
               importedTypes,
               sourceTypeName
             );
-            if (sourceType.kind != LoweredTypeKind.arrayType) {
-              throw `native array destructuring expected Array storage, found ${sourceTypeName}`;
+            if (
+              sourceType.kind != LoweredTypeKind.arrayType
+              && sourceType.kind != LoweredTypeKind.sliceType
+            ) {
+              throw `native array destructuring expected Array or Slice storage, found ${sourceTypeName}`;
             }
             const sourceValue = try lowerExpressionExpected(
               program,
@@ -16313,6 +16452,16 @@ function containsLoweredArray(
   return false;
 }
 
+function containsLoweredSlice(
+  in slices: Array<LoweredSlice>,
+  in name: String
+): boolean {
+  for (const declaration of slices) {
+    if (declaration.name == name) return true;
+  }
+  return false;
+}
+
 function containsLoweredMap(
   in maps: Array<LoweredMap>,
   in name: String
@@ -16629,6 +16778,7 @@ function collectIntrinsicTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String,
   inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
@@ -16641,6 +16791,7 @@ function collectIntrinsicTypeName(
           importedTypes,
           argument,
           inout arrays,
+          inout slices,
           inout maps,
           inout sets,
           inout enums
@@ -16653,6 +16804,7 @@ function collectIntrinsicTypeName(
           importedTypes,
           resultName,
           inout arrays,
+          inout slices,
           inout maps,
           inout sets,
           inout enums
@@ -16665,8 +16817,36 @@ function collectIntrinsicTypeName(
       );
       match (array) {
         some(declaration) => {
+          if (!containsLoweredSlice(slices, declaration.sliceName)) {
+            slices.push(LoweredSlice({
+              name: declaration.sliceName.copyBytes(
+                0,
+                declaration.sliceName.byteLength
+              ),
+              elementType: LoweredType({
+                kind: declaration.elementType.kind,
+                name: declaration.elementType.name.copyBytes(
+                  0,
+                  declaration.elementType.name.byteLength
+                ),
+              }),
+            }));
+          }
           if (!containsLoweredArray(arrays, declaration.name)) {
             arrays.push(move declaration);
+          }
+        }
+        none => {}
+      }
+      const slice = try intrinsicSliceDeclaration(
+        program,
+        importedTypes,
+        name
+      );
+      match (slice) {
+        some(declaration) => {
+          if (!containsLoweredSlice(slices, declaration.name)) {
+            slices.push(move declaration);
           }
         }
         none => {}
@@ -16720,6 +16900,7 @@ function collectArenaIntrinsicEnums(
   in importedTypes: Array<LoweredImportedType>,
   in arena: StatementArena,
   inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
@@ -16731,6 +16912,7 @@ function collectArenaIntrinsicEnums(
         importedTypes,
         type.name,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16747,6 +16929,7 @@ function collectArenaIntrinsicEnums(
                 importedTypes,
                 node.value,
                 inout arrays,
+                inout slices,
                 inout maps,
                 inout sets,
                 inout enums
@@ -16763,6 +16946,7 @@ function collectArenaIntrinsicEnums(
                   importedTypes,
                   workerResult,
                   inout arrays,
+                  inout slices,
                   inout maps,
                   inout sets,
                   inout enums
@@ -16785,6 +16969,7 @@ function collectArenaIntrinsicEnums(
                 importedTypes,
                 node.value,
                 inout arrays,
+                inout slices,
                 inout maps,
                 inout sets,
                 inout enums
@@ -16804,6 +16989,7 @@ function collectFunctionIntrinsicTypes(
   in importedTypes: Array<LoweredImportedType>,
   in declaration: FunctionDeclaration,
   inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
@@ -16814,6 +17000,7 @@ function collectFunctionIntrinsicTypes(
       importedTypes,
       parameter.type.name,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout enums
@@ -16824,6 +17011,7 @@ function collectFunctionIntrinsicTypes(
     importedTypes,
     declaration.returnType.name,
     inout arrays,
+    inout slices,
     inout maps,
     inout sets,
     inout enums
@@ -16835,6 +17023,7 @@ function collectFunctionIntrinsicTypes(
         importedTypes,
         type.name,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16850,6 +17039,7 @@ function collectFunctionIntrinsicTypes(
         importedTypes,
         resultName,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16862,6 +17052,7 @@ function collectFunctionIntrinsicTypes(
     importedTypes,
     declaration.body,
     inout arrays,
+    inout slices,
     inout maps,
     inout sets,
     inout enums
@@ -16874,6 +17065,7 @@ function collectIntrinsicEnums(
   in evidence: ModuleSemanticEvidence,
   includeTests: boolean,
   inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
@@ -16884,6 +17076,7 @@ function collectIntrinsicEnums(
       importedTypes,
       binding.typeName,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout enums
@@ -16895,6 +17088,7 @@ function collectIntrinsicEnums(
       importedTypes,
       expression.typeName,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout enums
@@ -16908,6 +17102,7 @@ function collectIntrinsicEnums(
       importedTypes,
       resultName,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout enums
@@ -16920,6 +17115,7 @@ function collectIntrinsicEnums(
         importedTypes,
         field.type.name,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16931,6 +17127,7 @@ function collectIntrinsicEnums(
         importedTypes,
         deinitializer.body,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16943,6 +17140,7 @@ function collectIntrinsicEnums(
         importedTypes,
         method,
         inout arrays,
+        inout slices,
         inout maps,
         inout sets,
         inout enums
@@ -16957,6 +17155,7 @@ function collectIntrinsicEnums(
           importedTypes,
           type.name,
           inout arrays,
+          inout slices,
           inout maps,
           inout sets,
           inout enums
@@ -16972,6 +17171,7 @@ function collectIntrinsicEnums(
       importedTypes,
       declaration,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout enums
@@ -17857,6 +18057,7 @@ function appendLoweredProgram(
   includeTests: boolean,
   inout constants: Array<LoweredConstant>,
   inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
   inout maps: Array<LoweredMap>,
   inout sets: Array<LoweredSet>,
   inout functionTypes: Array<LoweredFunctionType>,
@@ -17962,6 +18163,7 @@ function appendLoweredProgram(
     evidence,
     includeTests,
     inout arrays,
+    inout slices,
     inout maps,
     inout sets,
     inout enums
@@ -18329,6 +18531,7 @@ function lowerProgramUnchecked(
   let functions = Array<LoweredFunction>();
   let constants = Array<LoweredConstant>();
   let arrays = Array<LoweredArray>();
+  let slices = Array<LoweredSlice>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
   let functionTypes = Array<LoweredFunctionType>();
@@ -18350,6 +18553,7 @@ function lowerProgramUnchecked(
     false,
     inout constants,
     inout arrays,
+    inout slices,
     inout maps,
     inout sets,
     inout functionTypes,
@@ -18364,6 +18568,7 @@ function lowerProgramUnchecked(
     foreignResources,
     constants,
     arrays,
+    slices,
     maps,
     sets,
     functionTypes,
@@ -18425,6 +18630,7 @@ function lowerModulesIncludingTests(
   let functions = Array<LoweredFunction>();
   let constants = Array<LoweredConstant>();
   let arrays = Array<LoweredArray>();
+  let slices = Array<LoweredSlice>();
   let maps = Array<LoweredMap>();
   let sets = Array<LoweredSet>();
   let functionTypes = Array<LoweredFunctionType>();
@@ -18465,6 +18671,7 @@ function lowerModulesIncludingTests(
       includeTests,
       inout constants,
       inout arrays,
+      inout slices,
       inout maps,
       inout sets,
       inout functionTypes,
@@ -18490,6 +18697,7 @@ function lowerModulesIncludingTests(
     foreignResources,
     constants,
     arrays,
+    slices,
     maps,
     sets,
     functionTypes,

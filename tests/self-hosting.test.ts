@@ -774,7 +774,7 @@ test("copies and moves owned fields through native object destructuring", () => 
   assert.match(invalidResult.stderr, /use of moved value "record"/);
 }, 240_000);
 
-test("reads fixed Array positions and zero-copy rest through native destructuring", () => {
+test("composes native Array destructuring, zero-copy rest, and Slice parameters", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-array-destructure.zs",
@@ -831,6 +831,18 @@ test("reads fixed Array positions and zero-copy rest through native destructurin
   assert.match(
     emission.stdout,
     /\*Z___z_Slice_Document_at\(&\(remainingDocuments\), 0\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /int32_t addFirstTwo\(Z___z_Slice_i32 values\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /addFirstTwo\(Z___z_Array_i32_slice_unchecked\(&\(batch\.values\), 0\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /firstTitleLength\(Z___z_Array_Document_slice_unchecked\(&\(documents\), 0\)\)/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-array-destructure-");
@@ -6698,19 +6710,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^^",
       code: "Z1000",
       summary: 'fixed-array type "i32[3]" has no native representation yet',
-    },
-    {
-      name: "slice",
-      source: [
-        "function first(values: Slice<i32>): i32 { return values[0]; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 24,
-      marker: "^^^^^^^^^^",
-      code: "Z1000",
-      summary: 'Slice type "Slice<i32>" has no native representation yet',
     },
     {
       name: "local-fixed-array",

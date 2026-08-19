@@ -284,16 +284,6 @@ function validateNativeType(
       type.name.byteLength
     );
   }
-  if (typeUsesGeneric(type.name, "Slice")) {
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `Slice type "${type.name}" has no native representation yet`,
-      type.line,
-      type.column,
-      type.name.byteLength
-    );
-  }
   if (typeUsesGeneric(type.name, "AsyncGenerator")) {
     throw loweringBoundary(
       path,
@@ -1175,16 +1165,19 @@ function validateNativeBody(
           }
           none => {}
         }
-        let dynamicArray = false;
+        let positionalStorage = false;
         match (genericTypeShape(sourceType)) {
-          some(generic) => dynamicArray = generic.base == "Array"
+          some(generic) => positionalStorage = (
+              generic.base == "Array"
+              || generic.base == "Slice"
+            )
             && generic.arguments.length == 1;
           none => {}
         }
-        if (!dynamicArray) throw loweringBoundary(
+        if (!positionalStorage) throw loweringBoundary(
             path,
             "Z1000",
-            `native array destructuring currently requires Array<T> storage, found ${sourceType}`,
+            `native array destructuring currently requires Array<T> or Slice<T> storage, found ${sourceType}`,
             statement.line,
             statement.column,
             5

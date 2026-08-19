@@ -437,7 +437,9 @@ function loweredTypeForIdentity(
       kind: LoweredTypeKind.arrayType,
       name: identity.copyBytes(0, identity.byteLength),
     });
-    if (declaration.sliceName == identity) return LoweredType({
+  }
+  for (const declaration of program.slices) {
+    if (declaration.name == identity) return LoweredType({
       kind: LoweredTypeKind.sliceType,
       name: identity.copyBytes(0, identity.byteLength),
     });
@@ -8999,15 +9001,17 @@ function appendTypeDefinitions(
     output.append(mutexName);
     output.append(";\n\n");
   }
-  for (const declaration of program.arrays) {
+  for (const declaration of program.slices) {
     output.append("typedef struct Z_");
-    output.append(declaration.sliceName);
+    output.append(declaration.name);
     output.append(" {\n");
     output.append("  void *data;\n");
     output.append("  size_t length;\n");
     output.append("} Z_");
-    output.append(declaration.sliceName);
+    output.append(declaration.name);
     output.append(";\n\n");
+  }
+  for (const declaration of program.arrays) {
     output.append("typedef struct Z_");
     output.append(declaration.name);
     output.append(" {\n");
@@ -10500,7 +10504,7 @@ function appendSystemStandardRuntime(
     output.append("}\n\n");
   }
   if (usesProcessRun) {
-    output.append("static __attribute__((unused)) Z___z_Result_i32_String z_stage1_process_run(const Z_String *program, Z___z_Array_String arguments) {\n");
+    output.append("static __attribute__((unused)) Z___z_Result_i32_String z_stage1_process_run(const Z_String *program, Z___z_Slice_String arguments) {\n");
     output.append("  if (program == NULL || (program->length > 0 && memchr(program->data, '\\0', program->length) != NULL)) {\n");
     output.append("    return (Z___z_Result_i32_String){ .tag = Z___z_Result_i32_StringTag_failure, .payload.failure = z_stage1_string_from_cstring(\"program contains an embedded null byte\") };\n");
     output.append("  }\n");
@@ -11369,6 +11373,46 @@ function emitLoweredC(
   }
   appendSystemStandardRuntime(inout output, program);
   try appendClassAndOnceRuntime(inout output, program);
+  for (const declaration of program.slices) {
+    const elementType = try cType(declaration.elementType);
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  if (index >= self->length) abort();\n");
+    output.append("  return &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at_unchecked(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  return &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append("_slice_unchecked(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
+    output.append("  void *data = self->data == NULL ? NULL : &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("  return (Z_");
+    output.append(declaration.name);
+    output.append("){ data, self->length - index };\n");
+    output.append("}\n\n");
+  }
   for (const declaration of program.arrays) {
     const elementType = try cType(declaration.elementType);
     output.append("static inline __attribute__((unused)) Z_");
@@ -11406,18 +11450,6 @@ function emitLoweredC(
     output.append("  return (Z_");
     output.append(declaration.sliceName);
     output.append("){ data, self->length - index };\n");
-    output.append("}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
-    output.append(elementType);
-    output.append(" *Z_");
-    output.append(declaration.sliceName);
-    output.append("_at(const Z_");
-    output.append(declaration.sliceName);
-    output.append(" *self, size_t index) {\n");
-    output.append("  if (index >= self->length) abort();\n");
-    output.append("  return &((");
-    output.append(elementType);
-    output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
     output.append("static inline __attribute__((unused)) const ");
     output.append(elementType);

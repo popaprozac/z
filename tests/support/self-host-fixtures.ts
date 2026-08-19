@@ -8,6 +8,7 @@ export type SelfHostDifferentialCase = {
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
   { entry: "tests/fixtures/self-host-emit-array-destructure.zs" },
+  { entry: "tests/fixtures/self-host-emit-slice-signature.zs" },
   { entry: "tests/fixtures/self-host-emit-input.zs" },
   { entry: "tests/fixtures/self-host-emit-control-flow.zs" },
   { entry: "tests/fixtures/self-host-emit-callables.zs" },
@@ -63,6 +64,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   Record<string, SelfHostEmitFixtureClassification>
 > = {
   "self-host-emit-array-destructure.zs": differential,
+  "self-host-emit-slice-signature.zs": differential,
   "self-host-emit-arena.zs": differential,
   "self-host-emit-arena-graph.zs": differential,
   "self-host-emit-arena-owner-bundle.zs": differential,

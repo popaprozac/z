@@ -2911,11 +2911,15 @@ Rest uses a distinct non-owning native `Slice<T>` descriptor containing only a
 data pointer and length. It borrows the Array at the current positional offset;
 it never reuses owning Array layout, allocates storage, or gains cleanup. The
 runtime proof covers the offset before projection, while a rest-only empty
-pattern avoids null-pointer arithmetic. The fixture exercises scalar Slice
-indexing and cleanup-bearing `Slice<Document>` field access before releasing the
-owner loan and mutating the Array. Declared Slice parameters and positional
-patterns whose source is a fixed array or existing Slice still receive the
-source-mapped native boundary until those representations compose end to end.
+pattern avoids null-pointer arithmetic. The descriptor is also emitted
+independently for synchronous `Slice<T>` parameters. A direct Array argument is
+projected to its full pointer/length range at the call boundary, while an
+existing Slice may itself be positionally destructured into a shorter Slice.
+The fixture exercises scalar and cleanup-bearing parameters, nested rest,
+checked indexing, and `Slice<Document>` field access before releasing the owner
+loan and mutating the Array. A standalone fixture proves that a Slice signature
+does not depend on an owning Array declaration. Fixed-array sources and
+fixed-array-to-Slice projection remain the source-mapped native boundary.
 
 ## Not tested yet
 
