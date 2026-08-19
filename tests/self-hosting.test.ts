@@ -812,6 +812,22 @@ test("materializes concrete generic value structs through native ownership", () 
     emission.stdout,
     /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{0\}/,
   );
+  assert.match(
+    emission.stdout,
+    /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_replace\(Z___z_mono_[A-Za-z0-9_]+ \*self, Z_String next\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /static __attribute__\(\(unused\)\) bool Z___z_mono_[A-Za-z0-9_]+_occupied\(const Z___z_mono_[A-Za-z0-9_]+ \*self\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_String _z_stage1_assignment_\d+ = next;\s+Z_String_deinit\(&self->value\);\s+self->value = _z_stage1_assignment_\d+;/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_String _z_stage1_return_\d+ = \(_z_stage1_live_this = false, self\.value\);/,
+  );
 
   const moduleInput = resolve(
     projectRoot,
@@ -835,6 +851,14 @@ test("materializes concrete generic value structs through native ownership", () 
   assert.match(
     moduleEmission.stdout,
     /int32_t total\(const Z___z_mono_[A-Za-z0-9_]+ \*pair\)/,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_replaceSecond\(Z___z_mono_[A-Za-z0-9_]+ \*self, int32_t value\)/,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+_replaceSecond\(&\(updated\), 23\);/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-generic-struct-");

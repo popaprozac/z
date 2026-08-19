@@ -239,7 +239,8 @@ Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
-generic classes, behavior-bearing generic structs, traits, generators,
+generic classes, independently generic or static generic-struct methods,
+traits, generators,
 value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
 no longer fall into resolver-internal messages. Public lowering and C-emission
@@ -249,15 +250,19 @@ boundaries must migrate from that fallback to stable diagnostics; malformed or
 lost lowered IR stays an internal compiler error. This DX work does not
 substitute for fail-closed behavior.
 
-Field-only generic value structs now cross that boundary. Native semantic
+Concrete generic value structs now cross that boundary. Native semantic
 evidence supplies each demanded concrete source identity and its recursively
 substituted fields; lowering assigns a collision-safe concrete C identity,
 orders nested specializations before their owners, and derives cleanup and
 thread capabilities from the concrete field graph. Inferred or explicit local
 and cross-module construction, field access, cleanup, `copy`/`move` spread, and
 object destructuring therefore use the same ordinary value-struct machinery.
-Generic classes and generic structs with methods, custom constructors, field
-defaults, or custom `deinit` remain source-mapped `Z1000` boundaries.
+Declared instance methods without their own type parameters are specialized in
+the defining module under that same nominal C identity. Immutable, `inout`,
+and `move this` receivers reuse ordinary method ownership, including
+replacement cleanup and owned-field transfer. Generic classes, static or
+independently generic methods, custom constructors, field defaults, and custom
+`deinit` remain source-mapped `Z1000` boundaries.
 
 Two nearby findings remain explicitly separate from ordinary `Z1000`
 representation gaps, and both now fail at their proper boundary. Native flow

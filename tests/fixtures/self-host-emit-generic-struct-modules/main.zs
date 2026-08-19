@@ -6,6 +6,7 @@ import {
 
 function main(): i32 {
   const pair = makePair(20, 22);
-  const updated = ImportedPair({ ...pair, second: 23 });
+  let updated = ImportedPair({ ...pair, second: 21 });
+  updated.replaceSecond(23);
   return total(in updated) - 43;
 }

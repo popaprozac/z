@@ -8651,7 +8651,18 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           : `self->${expression.property}`;
         if (context.semanticInfo.movedExpressions.has(expression.location.offset)) {
           const liveFlag = context.liveFlags.get("this");
-          if (!liveFlag) throw new Error("missing ownership flag for consumed receiver field");
+          if (!liveFlag) {
+            if (
+              context.receiver
+              && hasCleanupType(
+                context.receiver.name,
+                context.structs,
+                context.enums,
+                context.semanticInfo.foreignTypes,
+              )
+            ) throw new Error("missing ownership flag for consumed receiver field");
+            return value;
+          }
           return `(${liveFlag} = false, ${value})`;
         }
         return maybeRetainClass(expression, value, context);
@@ -10227,6 +10238,17 @@ function generateContextualSignedLiteral(operator: "+" | "-", value: string, typ
 }
 
 function inferExpressionType(expression: Expression, context: GenerationContext): string {
+  if (
+    expression.kind === "member"
+    && expression.object.kind === "identifier"
+    && expression.object.name === "this"
+    && context.receiver
+  ) {
+    const receiverField = context.receiver.fields.find(
+      (field) => field.name === expression.property,
+    );
+    if (receiverField) return receiverField.type.name;
+  }
   const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
   if (integerOperation) return integerOperation.type;
   const analyzedType = context.semanticInfo.expressionTypes.get(expression.location.offset);

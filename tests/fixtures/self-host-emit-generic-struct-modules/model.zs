@@ -1,6 +1,10 @@
 export struct Pair<T> {
   first: T;
   second: T;
+
+  function replaceSecond(inout this, value: T): void {
+    this.second = value;
+  }
 }
 
 export function makePair(first: i32, second: i32): Pair<i32> {

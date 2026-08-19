@@ -3681,7 +3681,42 @@ function appendStatement(
         );
         none => {}
       }
-      appendCleanups(inout output, declaration.statements[index].cleanups, depth);
+      appendIndent(inout output, depth);
+      if (declaration.statements[index].cleanups[0].guard.byteLength > 0) {
+        output.append("if (");
+        output.append(declaration.statements[index].cleanups[0].guard);
+        output.append(") ");
+      }
+      if (
+        declaration.statements[index].cleanups[0].type.kind
+          == LoweredTypeKind.classType
+      ) {
+        output.append("Z_");
+        output.append(declaration.statements[index].cleanups[0].type.name);
+        output.append("_release(");
+        match (in declaration.statements[index].expression) {
+          some(target) => try appendExpression(
+            inout output,
+            declaration,
+            target
+          );
+          none => throw "native C emission received an assignment without a target";
+        }
+        output.append(");\n");
+      } else {
+        output.append("Z_");
+        output.append(declaration.statements[index].cleanups[0].type.name);
+        output.append("_deinit(&");
+        match (in declaration.statements[index].expression) {
+          some(target) => try appendExpression(
+            inout output,
+            declaration,
+            target
+          );
+          none => throw "native C emission received an assignment without a target";
+        }
+        output.append(");\n");
+      }
       appendIndent(inout output, depth);
       match (in declaration.statements[index].expression) {
         some(target) => try appendExpression(inout output, declaration, target);

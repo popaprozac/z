@@ -2953,7 +2953,7 @@ Writing the compiler itself exposed that native generic evidence was useful but
 not sufficient: Stage 1 could prove `Pair<String>` or
 `Pair<Box<i32>>`, yet it still had no concrete value layout to own. The first
 generic aggregate execution tier now consumes those settled semantic identities
-as a demand list. For every field-only generic value struct used by a module,
+as a demand list. For every generic value struct used by a module,
 lowering substitutes the ordered arguments into its fields, recursively demands
 nested specializations, emits them before their owners, and records a
 collision-safe C identity keyed by the declaring module and symbol rather than
@@ -2969,6 +2969,17 @@ destructuring all operate on the concrete layout. The executable fixture is
 compiled with strict Clang warnings and is also part of the Stage-0/native
 differential corpus together with a multi-module fixture.
 
+Declared instance methods now specialize alongside that layout. Lowering adds
+temporary local aliases from each aggregate type parameter to its demanded
+concrete argument, then sends the method through the ordinary value-struct
+method path. This keeps immutable, `inout`, and `move this` semantics identical to
+non-generic structs: ownership-bearing field replacement evaluates the incoming
+owner once and destroys the previous field before installation, while a
+consuming method may transfer its sole owned field and suppress receiver
+cleanup. A specialization demanded only through an importing module still
+emits its method in the declaring module under the same canonical nominal C
+identity, so selective-import aliases cannot create a second ABI.
+
 The contextual constructor path matters for correctness. A nested
 `Box({ value: 20 })` inside a field expected to be `Box<i32>` must receive that
 concrete expected type; otherwise an unspecialized template name can leak into
@@ -2976,11 +2987,11 @@ generated C even though semantic demand already found the right layout. Native
 lowering now carries that context into construction and explicitly excludes
 generic templates from ordinary local aggregate emission.
 
-This tier deliberately stops before behavior. Generic classes, methods, custom
+This tier deliberately stops before independently generic behavior. Generic
+classes, static methods, methods with their own type parameters, custom
 constructors, non-optional field defaults, and custom `deinit` bodies remain
-source-mapped `Z1000` boundaries. Those require callable specialization and
-behavior ownership, not merely a concrete field layout, and should be closed as
-separate composition slices.
+source-mapped `Z1000` boundaries. Those require additional call-demand or
+behavior ownership rules and should be closed as separate composition slices.
 
 ## Not tested yet
 

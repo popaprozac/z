@@ -1313,17 +1313,6 @@ function validateNativeAggregate(
       );
       none => {}
     }
-    if (aggregate.methods.length > 0) {
-      const method = view aggregate.methods[0];
-      throw loweringBoundary(
-        path,
-        "Z1000",
-        `methods on generic struct "${aggregate.name}" are not executable in the native compiler yet`,
-        method.line,
-        method.column,
-        8
-      );
-    }
     match (in aggregate.deinitializer) {
       some(deinitializer) => throw loweringBoundary(
         path,
@@ -1348,6 +1337,16 @@ function validateNativeAggregate(
         none => {}
       }
       try validateNativeType(path, field.type);
+    }
+    for (const method of aggregate.methods) {
+      try validateNativeFunction(
+        path,
+        moduleIndex,
+        modules,
+        graph,
+        method,
+        aggregate.name
+      );
     }
     return;
   }
