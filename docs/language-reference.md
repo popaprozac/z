@@ -377,6 +377,14 @@ Extra elements are ignored unless captured by rest. Assignment, parameter,
 match, nested, default, and owned `copy`/`move` collection patterns remain later
 tiers.
 
+The fixed-point native compiler currently executes the fixed-position
+`Array<T>` subset. It evaluates the collection once, performs one length check,
+then projects every requested position under that proof. Cleanup-bearing
+elements require `view source` and remain tied to the named Array owner, so a
+reallocating mutation is rejected until every destructured view's last use.
+Native fixed-array, `Slice<T>`, and rest lowering await the native Slice
+representation; the Stage-0 compiler remains authoritative for those forms.
+
 ## Type vocabulary
 
 Z uses lowercase names for primitive machine values and PascalCase names for

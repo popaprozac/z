@@ -270,9 +270,10 @@ export function collectionMethodSignature(
   let returnType = "";
   let errorType = "";
   if (generic.base == "Once" && generic.arguments.length == 1) {
-    const valueType = generic.arguments[0].copyBytes(
+    const [valueTypeView] = view generic.arguments;
+    const valueType = valueTypeView.copyBytes(
       0,
-      generic.arguments[0].byteLength
+      valueTypeView.byteLength
     );
     let executorAffinity = "";
     if (methodName == "initialize") {

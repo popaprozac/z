@@ -1,5 +1,6 @@
 import {
   AggregateDeclaration,
+  ArrayBindingKind,
   DeclarationKind,
   ExpressionKind,
   ExpressionSyntax,
@@ -14,6 +15,7 @@ import { ParsedModule } from "./module-symbols.zs";
 import {
   genericTypeShape,
   isIntegerTypeName,
+  stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import { typeSymbolLocation } from "./semantic-type-identities.zs";
@@ -1152,14 +1154,53 @@ function validateNativeBody(
       );
     }
     if (statement.kind == StatementKind.destructureStatement) {
-      if (statement.arrayBindings.length > 0) throw loweringBoundary(
-          path,
-          "Z1000",
-          "array destructuring is not executable in the native compiler yet",
-          statement.line,
-          statement.column,
-          5
-        );
+      if (statement.arrayBindings.length > 0) {
+        let sourceType = "";
+        let viewed = false;
+        match (in statement.expression) {
+          some(expression) => match (in expression.tree) {
+            some(tree) => {
+              const root = tree.root;
+              sourceType = resolvedExpressionType(
+                graph,
+                moduleIndex,
+                tree,
+                root
+              );
+              viewed = stringStartsWith(sourceType, "view ");
+              if (viewed && sourceType.byteLength > 5) {
+                sourceType = sourceType.copyBytes(5, sourceType.byteLength);
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+        let dynamicArray = false;
+        match (genericTypeShape(sourceType)) {
+          some(generic) => dynamicArray = generic.base == "Array"
+            && generic.arguments.length == 1;
+          none => {}
+        }
+        if (!dynamicArray) throw loweringBoundary(
+            path,
+            "Z1000",
+            `native array destructuring currently requires Array<T> storage, found ${sourceType}`,
+            statement.line,
+            statement.column,
+            5
+          );
+        for (const binding of statement.arrayBindings) {
+          if (binding.kind == ArrayBindingKind.rest) throw loweringBoundary(
+              path,
+              "Z1000",
+              "array rest destructuring requires the future native Slice<T> representation",
+              binding.line,
+              binding.column,
+              3
+            );
+        }
+      }
     }
     if (
       statement.kind == StatementKind.forAwaitStatement

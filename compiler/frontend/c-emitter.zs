@@ -1250,6 +1250,21 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.arrayRequireLength
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed Array length requirement";
+    }
+    const receiver = declaration.expressions[index].children[0];
+    output.append("((");
+    try appendExpression(inout output, declaration, receiver);
+    output.append(")->length < ");
+    output.append(declaration.expressions[index].value);
+    output.append(" ? abort() : (void)0)");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.arrayLength
   ) {
     if (declaration.expressions[index].children.length != 1) {
@@ -1278,6 +1293,10 @@ function appendExpression(
     const offset = declaration.expressions[index].children[1];
     const viewReceiver = declaration.expressions[index].labels.length > 0
       && declaration.expressions[index].labels[0] == "view";
+    const boundsProven = labelsContain(
+      declaration.expressions[index].labels,
+      "bounds-proven"
+    );
     if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.arrayMutableIndex
@@ -1287,7 +1306,10 @@ function appendExpression(
       }
       output.append("_at_mut(&(");
     } else {
-      if (viewReceiver) output.append("_at(");
+      if (viewReceiver) {
+        if (boundsProven) output.append("_at_unchecked(");
+        else output.append("_at(");
+      }
       else output.append("_at(&(");
     }
     try appendExpression(inout output, declaration, receiver);
@@ -11341,6 +11363,17 @@ function emitLoweredC(
     output.append(declaration.name);
     output.append(" *self, size_t index) {\n");
     output.append("  if (index >= self->length) abort();\n");
+    output.append("  return &((");
+    output.append(elementType);
+    output.append(" *)self->data)[index];\n");
+    output.append("}\n\n");
+    output.append("static inline __attribute__((unused)) const ");
+    output.append(elementType);
+    output.append(" *Z_");
+    output.append(declaration.name);
+    output.append("_at_unchecked(const Z_");
+    output.append(declaration.name);
+    output.append(" *self, size_t index) {\n");
     output.append("  return &((");
     output.append(elementType);
     output.append(" *)self->data)[index];\n");

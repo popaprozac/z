@@ -2885,8 +2885,34 @@ runs successfully, and is part of the differential fixed-point corpus. A paired
 negative fixture proves that `move source` makes every later use of the original
 struct a native semantic error. The remaining boundary is deliberate: classes,
 custom-`deinit` structs, foreign RAII values, nested/rest patterns, mutable
-patterns, and positional Array/Slice destructuring need separate ownership
-rules rather than inheriting this transfer mechanically.
+patterns, and object-rest patterns need separate ownership rules rather than
+inheriting this transfer mechanically.
+
+## Fixed-position Array destructuring in the fixed-point compiler
+
+The native frontend now closes the fixed-position `Array<T>` part of the local
+positional-pattern design. Lowering borrows the source into one generated local,
+proves the full requested prefix with one runtime length check, and then emits
+unchecked element projections under that compiler-owned proof. Discards still
+contribute to the required prefix but generate no binding. This avoids repeated
+source evaluation and repeated bounds checks without weakening safe indexing
+elsewhere.
+
+Cleanup-free elements load by value. An Array whose element graph needs cleanup
+must be destructured from an explicit named `view`; each selected element is an
+owner-tied borrowed binding, and the ordinary last-use loan checker prevents a
+reallocating `push`, move, or destruction of the Array while any binding is
+live. Paired negative fixtures prove both the missing-`view` diagnostic and the
+live-view mutation rejection. The executable fixture compiles under strict
+Clang warnings, runs in the differential corpus, and the compiler itself now
+uses view Array destructuring while resolving `Once<T>` intrinsics.
+
+Rest stays intentionally outside native emission. Stage 0 represents
+`...remaining` as a non-owning `Slice<T>`, while the fixed-point runtime does not
+yet have an honest native Slice descriptor. Reusing owning Array layout would
+make the example pass by lying about ownership, so native preflight reports a
+source-mapped `Z1000` until that representation lands. Fixed-array and existing
+`Slice<T>` positional sources remain part of the same later composition slice.
 
 ## Not tested yet
 

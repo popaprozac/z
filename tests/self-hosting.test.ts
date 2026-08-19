@@ -774,6 +774,87 @@ test("copies and moves owned fields through native object destructuring", () => 
   assert.match(invalidResult.stderr, /use of moved value "record"/);
 }, 240_000);
 
+test("reads fixed Array positions through native destructuring", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-array-destructure.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /const Z___z_Array_i32 \* const _z_array_destructure_\d+ = &\(batch\.values\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /->length < 3 \? abort\(\) : \(void\)0/,
+  );
+  assert.match(
+    emission.stdout,
+    /\*Z___z_Array_i32_at_unchecked\(_z_array_destructure_\d+, 2\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /const Z_Document \* const current = &\(\(\*Z___z_Array_Document_at_unchecked\(_z_array_destructure_\d+, 0\)\)\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-array-destructure-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+
+  const missingView = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-array-destructure-without-view.zs",
+  );
+  const missingViewResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", missingView],
+    { encoding: "utf8" },
+  );
+  assert.equal(missingViewResult.status, 1);
+  assert.match(
+    missingViewResult.stderr,
+    /destructuring ownership-bearing Document elements requires an explicit view/,
+  );
+
+  const liveView = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-array-destructure-live-view-mutation.zs",
+  );
+  const liveViewResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", liveView],
+    { encoding: "utf8" },
+  );
+  assert.equal(liveViewResult.status, 1);
+  assert.match(
+    liveViewResult.stderr,
+    /cannot mutate "documents" while view "current" is live/,
+  );
+}, 240_000);
+
 test("keeps native inferred binding evidence inside its declaration scope", () => {
   const input = resolve(
     projectRoot,
@@ -6638,16 +6719,16 @@ test("compiles a multi-module Z application through the standalone native driver
       source: [
         "function main(): i32 {",
         "  const values = Array<i32>(20, 22);",
-        "  const [left, right] = values;",
-        "  return left + right - 42;",
+        "  const [left, ...remaining] = view values;",
+        "  return left + i32(remaining.length) - 21;",
         "}",
         "",
       ].join("\n"),
       line: 3,
-      column: 3,
-      marker: "^^^^^",
+      column: 16,
+      marker: "^^^",
       code: "Z1000",
-      summary: "array destructuring is not executable in the native compiler yet",
+      summary: "array rest destructuring requires the future native Slice<T> representation",
     },
     {
       name: "async-scope",

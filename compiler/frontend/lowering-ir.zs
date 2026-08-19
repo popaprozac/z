@@ -6,6 +6,7 @@
 // this representation when ownership-bearing aggregates land.
 
 import {
+  ArrayBindingKind,
   DeclarationKind,
   ExpressionKind,
   ExpressionSyntax,
@@ -218,6 +219,7 @@ export enum LoweredExpressionKind {
   templateValue,
   arrayEmpty,
   arrayValue,
+  arrayRequireLength,
   arrayLength,
   arrayIndex,
   arrayMutableIndex,
@@ -12906,9 +12908,234 @@ function lowerStatementCore(
   inout statements: Array<LoweredStatement>
 ): usize throws String {
   if (arena.nodes[index].kind == StatementKind.destructureStatement) {
+    if (arena.nodes[index].arrayBindings.length > 0) {
+      if (arena.nodes[index].objectBindings.length > 0) {
+        throw "native array destructuring received object bindings";
+      }
+      match (in arena.nodes[index].expression) {
+        some(source) => return match (in source.tree) {
+          some(tree) => {
+            const root = tree.root;
+            const sourceTypeName = match (staticallyResolvedExpressionTypeName(
+              program,
+              importedTypes,
+              evidence,
+              arena,
+              ownerName,
+              tree,
+              root
+            )) {
+              some(name) => name;
+              none => throw "native array destructuring could not resolve its source type";
+            };
+            const sourceType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              sourceTypeName
+            );
+            if (sourceType.kind != LoweredTypeKind.arrayType) {
+              throw `native array destructuring expected Array storage, found ${sourceTypeName}`;
+            }
+            const sourceValue = try lowerExpressionExpected(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              root,
+              sourceTypeName,
+              inout expressions
+            );
+            const sourceViewed = stringStartsWith(sourceTypeName, "view ");
+            let sourceView = sourceValue;
+            if (!sourceViewed) {
+              let viewChildren = Array<usize>();
+              viewChildren.push(sourceValue);
+              sourceView = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.viewProjection,
+                sourceType.name,
+                move viewChildren,
+                Array<String>()
+              );
+            }
+            const temporaryName = `_z_array_destructure_${arena.nodes[index].offset}`;
+            let flattened = Array<usize>();
+            let temporaryLabels = Array<String>();
+            temporaryLabels.push("array-destructure-source");
+            const temporary = statements.length;
+            statements.push(LoweredStatement({
+              kind: LoweredStatementKind.localStatement,
+              mutableBinding: false,
+              name: temporaryName.copyBytes(0, temporaryName.byteLength),
+              type: Option.some(LoweredType({
+                kind: sourceType.kind,
+                name: sourceType.name.copyBytes(0, sourceType.name.byteLength),
+              })),
+              expression: Option.some(sourceView),
+              secondExpression: Option<usize>.none,
+              children: Array<usize>(),
+              cleanups: Array<LoweredCleanup>(),
+              liveFlag: "",
+              labels: move temporaryLabels,
+              matchConsumesSubject: false,
+              matchBindingNeedsCleanup: false,
+            }));
+            flattened.push(temporary);
+
+            let requiredLength: usize = 0;
+            for (const binding of arena.nodes[index].arrayBindings) {
+              if (binding.kind != ArrayBindingKind.rest) {
+                requiredLength = requiredLength + 1;
+              }
+            }
+            const lengthReceiver = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.localValue,
+              temporaryName,
+              Array<usize>(),
+              Array<String>()
+            );
+            let lengthChildren = Array<usize>();
+            lengthChildren.push(lengthReceiver);
+            const requireLength = pushExpression(
+              inout expressions,
+              LoweredExpressionKind.arrayRequireLength,
+              `${requiredLength}`,
+              move lengthChildren,
+              Array<String>()
+            );
+            const lengthStatement = statements.length;
+            statements.push(LoweredStatement({
+              kind: LoweredStatementKind.expressionStatement,
+              mutableBinding: false,
+              name: "",
+              type: Option<LoweredType>.none,
+              expression: Option.some(requireLength),
+              secondExpression: Option<usize>.none,
+              children: Array<usize>(),
+              cleanups: Array<LoweredCleanup>(),
+              liveFlag: "",
+              labels: Array<String>(),
+              matchConsumesSubject: false,
+              matchBindingNeedsCleanup: false,
+            }));
+            flattened.push(lengthStatement);
+
+            let elementIndex: usize = 0;
+            for (const binding of arena.nodes[index].arrayBindings) {
+              if (binding.kind == ArrayBindingKind.rest) {
+                throw "native array rest lowering remains deferred";
+              }
+              if (binding.kind == ArrayBindingKind.discard) {
+                elementIndex = elementIndex + 1;
+                continue;
+              }
+              let bindingTypeName = "";
+              for (const resolution of evidence.bindingResolutions) {
+                if (
+                  resolution.offset == binding.bindingOffset
+                  && resolution.name == binding.bindingName
+                ) bindingTypeName = resolution.typeName.copyBytes(
+                  0,
+                  resolution.typeName.byteLength
+                );
+              }
+              if (bindingTypeName.byteLength == 0) {
+                throw `native array destructuring could not resolve binding ${binding.bindingName}`;
+              }
+              const bindingType = try lowerModuleTypeName(
+                program,
+                importedTypes,
+                bindingTypeName
+              );
+              const receiver = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.localValue,
+                temporaryName,
+                Array<usize>(),
+                Array<String>()
+              );
+              const offset = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.integerValue,
+                `${elementIndex}`,
+                Array<usize>(),
+                Array<String>()
+              );
+              let elementChildren = Array<usize>();
+              elementChildren.push(receiver);
+              elementChildren.push(offset);
+              let elementLabels = Array<String>();
+              elementLabels.push("view");
+              elementLabels.push("bounds-proven");
+              const element = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.arrayIndex,
+                sourceType.name,
+                move elementChildren,
+                move elementLabels
+              );
+              let bindingValue = element;
+              if (stringStartsWith(bindingTypeName, "view ")) {
+                let projected = Array<usize>();
+                projected.push(element);
+                bindingValue = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.viewProjection,
+                  bindingTypeName,
+                  move projected,
+                  Array<String>()
+                );
+              }
+              let bindingLabels = Array<String>();
+              bindingLabels.push("array-destructure-binding");
+              const local = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.localStatement,
+                mutableBinding: arena.nodes[index].mutableBinding,
+                name: binding.bindingName.copyBytes(
+                  0,
+                  binding.bindingName.byteLength
+                ),
+                type: Option.some(move bindingType),
+                expression: Option.some(bindingValue),
+                secondExpression: Option<usize>.none,
+                children: Array<usize>(),
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: move bindingLabels,
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              flattened.push(local);
+              elementIndex = elementIndex + 1;
+            }
+            let labels = Array<String>();
+            labels.push("destructure-normalized");
+            const block = statements.length;
+            statements.push(LoweredStatement({
+              kind: LoweredStatementKind.blockStatement,
+              mutableBinding: false,
+              name: "",
+              type: Option<LoweredType>.none,
+              expression: Option<usize>.none,
+              secondExpression: Option<usize>.none,
+              children: move flattened,
+              cleanups: Array<LoweredCleanup>(),
+              liveFlag: "",
+              labels: move labels,
+              matchConsumesSubject: false,
+              matchBindingNeedsCleanup: false,
+            }));
+            select block;
+          }
+          none => throw "native array destructuring cannot lower an opaque expression";
+        };
+        none => throw "native array destructuring requires a source expression";
+      }
+    }
     if (
-      arena.nodes[index].arrayBindings.length > 0
-      || arena.nodes[index].objectBindings.length == 0
+      arena.nodes[index].objectBindings.length == 0
       || arena.nodes[index].mutableBinding
     ) throw "native lowering currently supports immutable object destructuring only";
     match (in arena.nodes[index].expression) {

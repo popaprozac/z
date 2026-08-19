@@ -7755,6 +7755,38 @@ function inferStatement(
       none => {}
     }
     if (arena.nodes[index].arrayBindings.length > 0) {
+      let viewed = false;
+      let viewOwner = "";
+      if (stringStartsWith(sourceType, "view ") && sourceType.byteLength > 5) {
+        viewed = true;
+        sourceType = sourceType.copyBytes(5, sourceType.byteLength);
+        match (in arena.nodes[index].expression) {
+          some(expression) => match (in expression.tree) {
+            some(tree) => {
+              const root = tree.root;
+              if (
+                tree.nodes[root].kind == ExpressionKind.unaryExpression
+                && tree.nodes[root].value == "view"
+                && tree.nodes[root].children.length == 1
+              ) {
+                const operand = tree.nodes[root].children[0];
+                viewOwner = expressionStorageRootName(tree, operand);
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+        if (viewOwner.byteLength == 0) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "array view destructuring requires named stable storage",
+            arena.nodes[index].line,
+            arena.nodes[index].column
+          );
+        }
+      }
       const elementType = iterationElementType(sourceType);
       if (elementType.byteLength == 0) {
         throw resolutionError(
@@ -7765,11 +7797,52 @@ function inferStatement(
           arena.nodes[index].column
         );
       }
+      let visiting = Array<String>();
+      const elementNeedsCleanup = typeHasCleanup(
+        modules,
+        moduleIndex,
+        elementType,
+        visiting
+      );
+      let referenceIdentity = false;
+      match (typeSymbolLocation(modules, moduleIndex, elementType)) {
+        some(location) => referenceIdentity = modules[location.moduleIndex]
+          .symbols[location.symbolIndex].kind == ModuleSymbolKind.classSymbol;
+        none => {}
+      }
       for (const binding of arena.nodes[index].arrayBindings) {
         if (binding.kind == ArrayBindingKind.discard) continue;
-        const bindingType = binding.kind == ArrayBindingKind.rest
-          ? `Slice<${elementType}>`
-          : elementType.copyBytes(0, elementType.byteLength);
+        if (binding.kind == ArrayBindingKind.rest && !viewed) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "array rest is a borrowed Slice and requires an explicit view source",
+            binding.line,
+            binding.column
+          );
+        }
+        if (
+          binding.kind == ArrayBindingKind.binding
+          && elementNeedsCleanup
+          && !viewed
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `destructuring ownership-bearing ${elementType} elements requires an explicit view`,
+            binding.line,
+            binding.column
+          );
+        }
+        let bindingType = elementType.copyBytes(0, elementType.byteLength);
+        let borrowed = false;
+        if (binding.kind == ArrayBindingKind.rest) {
+          bindingType = `Slice<${elementType}>`;
+          borrowed = true;
+        } else if (viewed && elementNeedsCleanup) {
+          borrowed = true;
+          if (!referenceIdentity) bindingType = `view ${elementType}`;
+        }
         const bindingName = binding.bindingName.copyBytes(
           0,
           binding.bindingName.byteLength
@@ -7785,7 +7858,16 @@ function inferStatement(
           bindingType,
           inout evidence
         );
-        addValueBinding(inout bindings, bindingName, bindingType);
+        if (borrowed) {
+          addViewValueBinding(
+            inout bindings,
+            bindingName,
+            bindingType,
+            viewOwner
+          );
+        } else {
+          addValueBinding(inout bindings, bindingName, bindingType);
+        }
       }
       return true;
     }
