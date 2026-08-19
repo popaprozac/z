@@ -211,6 +211,7 @@ export enum LoweredExpressionKind {
   methodCall,
   fieldValue,
   structValue,
+  moveStructSpreadValue,
   foreignStructValue,
   classValue,
   mutexValue,
@@ -273,6 +274,7 @@ export struct LoweredExpression {
   labels: Array<String>;
   captureBindingOffsets: Array<usize> = Array<usize>();
   captureTypes: Array<LoweredType> = Array<LoweredType>();
+  moveSpreadOverrides: Array<LoweredField> = Array<LoweredField>();
   threadSafe: boolean = false;
 }
 
@@ -8462,7 +8464,7 @@ function lowerExpression(
         }
         match (in localAggregate) {
           some(aggregateIndex) => {
-            let attachedMove = false;
+            let moveSpreadOverrides = Array<LoweredField>();
             for (const field of program.aggregates[aggregateIndex].fields) {
               if (containsString(labels, field.name)) {
                 if (hasSpread && spreadMode == "move") {
@@ -8476,7 +8478,12 @@ function lowerExpression(
                     importedTypes,
                     overriddenType
                   )) {
-                    throw `native move struct-spread lowering cannot clean an overridden ownership-bearing field "${field.name}" yet`;
+                    moveSpreadOverrides.push(LoweredField({
+                      name: field.name.copyBytes(0, field.name.byteLength),
+                      type: move overriddenType,
+                      optionalField: field.optionalField,
+                      borrowedView: false,
+                    }));
                   }
                 }
                 continue;
@@ -8488,18 +8495,6 @@ function lowerExpression(
                   field.type
                 );
                 let source = spreadSource;
-                if (spreadMode == "move" && !attachedMove) {
-                  let moveChildren = Array<usize>();
-                  moveChildren.push(source);
-                  source = pushExpression(
-                    inout output,
-                    LoweredExpressionKind.moveValue,
-                    "",
-                    moveChildren,
-                    Array<String>()
-                  );
-                  attachedMove = true;
-                }
                 let fieldChildren = Array<usize>();
                 fieldChildren.push(source);
                 let value = pushExpression(
@@ -8588,8 +8583,35 @@ function lowerExpression(
                 }
               }
             }
-            if (hasSpread && spreadMode == "move" && !attachedMove) {
-              throw "native move struct-spread lowering requires at least one retained field";
+            if (hasSpread && spreadMode == "move") {
+              let moveChildren = Array<usize>();
+              moveChildren.push(spreadSource);
+              const movedSource = pushExpression(
+                inout output,
+                LoweredExpressionKind.moveValue,
+                "",
+                moveChildren,
+                Array<String>()
+              );
+              const constructed = pushExpression(
+                inout output,
+                LoweredExpressionKind.structValue,
+                constructionName,
+                children,
+                labels
+              );
+              let spreadChildren = Array<usize>();
+              spreadChildren.push(constructed);
+              spreadChildren.push(movedSource);
+              const spread = pushExpression(
+                inout output,
+                LoweredExpressionKind.moveStructSpreadValue,
+                constructionName,
+                move spreadChildren,
+                Array<String>()
+              );
+              output[spread].moveSpreadOverrides = move moveSpreadOverrides;
+              return spread;
             }
           }
           none => {}
@@ -13191,6 +13213,8 @@ function loweredExpressionDirectlyConsumesChild(
   if (expressions[parent].kind == LoweredExpressionKind.moveValue) return true;
   if (
     expressions[parent].kind == LoweredExpressionKind.structValue
+    || expressions[parent].kind
+      == LoweredExpressionKind.moveStructSpreadValue
     || expressions[parent].kind == LoweredExpressionKind.classValue
     || expressions[parent].kind == LoweredExpressionKind.enumPayloadValue
     || expressions[parent].kind == LoweredExpressionKind.fixedArrayValue

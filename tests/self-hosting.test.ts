@@ -6876,26 +6876,6 @@ test("compiles a multi-module Z application through the standalone native driver
       code: "Z1000",
       summary: "the native compiler cannot yet prove this template interpolation's type",
     },
-    {
-      name: "move-spread-cleanup-override",
-      source: [
-        "struct Bundle {",
-        "  kept: i32;",
-        "  replaced: String;",
-        "}",
-        "function main(): i32 {",
-        '  const source = Bundle({ kept: 42, replaced: "old" });',
-        '  const spread = Bundle({ move ...source, replaced: "new" });',
-        "  return spread.kept - 42;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 7,
-      column: 27,
-      marker: "^^^^",
-      code: "Z1000",
-      summary: 'move struct spread cannot override cleanup-bearing field "replaced" in the native compiler yet',
-    },
   ] as const;
   for (const boundary of nativeLoweringBoundaries) {
     const input = resolve(directory, `native-lowering-${boundary.name}.zs`);
@@ -12423,25 +12403,72 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
 
   const cleanupBoundary = resolve(directory, "cleanup-boundary.zs");
   writeFileSync(cleanupBoundary, `
+    import console from "std/console";
+
+    struct Resource {
+      id: i32;
+
+      deinit {
+        console.log(\`released \${this.id}\`);
+      }
+    }
+
     struct Bundle {
-      retained: String;
-      replaced: String;
+      retained: Resource;
+      replaced: Resource;
     }
 
     function main(): i32 {
-      const source = Bundle({ retained: "kept", replaced: "old" });
-      const spread = Bundle({ move ...source, replaced: "new" });
-      return i32(spread.retained.byteLength) - 4;
+      const source = Bundle({
+        retained: Resource({ id: 1 }),
+        replaced: Resource({ id: 2 }),
+      });
+      const spread = Bundle({
+        move ...source,
+        replaced: Resource({ id: 3 }),
+      });
+      console.log(\`\${spread.retained.id}\`);
+      const allSource = Bundle({
+        retained: Resource({ id: 4 }),
+        replaced: Resource({ id: 5 }),
+      });
+      const replacedAll = Bundle({
+        move ...allSource,
+        retained: Resource({ id: 6 }),
+        replaced: Resource({ id: 7 }),
+      });
+      console.log(\`\${replacedAll.retained.id}\`);
+      return spread.replaced.id + replacedAll.replaced.id - 10;
     }
   `);
-  const boundary = spawnSync(
+  const cleanupStage0 = spawnSync(
+    process.execPath,
+    [cli, "run", cleanupBoundary],
+    { encoding: "utf8" },
+  );
+  assert.equal(cleanupStage0.status, 0, cleanupStage0.stderr);
+  assert.equal(
+    cleanupStage0.stdout,
+    "released 2\n1\nreleased 5\nreleased 4\n6\nreleased 7\nreleased 6\nreleased 3\nreleased 1\n",
+  );
+  const cleanupEmission = spawnSync(
     process.execPath,
     [cli, "self-host-emit", cleanupBoundary],
     { encoding: "utf8" },
   );
-  assert.equal(boundary.status, 1, boundary.stdout);
+  assert.equal(cleanupEmission.status, 0, cleanupEmission.stderr);
   assert.match(
-    boundary.stderr,
-    /error\[Z1000\]: move struct spread cannot override cleanup-bearing field "replaced" in the native compiler yet/,
+    cleanupEmission.stdout,
+    /Z_Resource_deinit\(&\(source\.replaced\)\)/,
   );
+  const cleanupExecutable = resolve(directory, "cleanup-boundary");
+  const cleanupCompilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", cleanupExecutable],
+    { encoding: "utf8", input: cleanupEmission.stdout },
+  );
+  assert.equal(cleanupCompilation.status, 0, cleanupCompilation.stderr);
+  const cleanupExecution = spawnSync(cleanupExecutable, [], { encoding: "utf8" });
+  assert.equal(cleanupExecution.status, 0, cleanupExecution.stderr);
+  assert.equal(cleanupExecution.stdout, cleanupStage0.stdout);
 }, 90_000);

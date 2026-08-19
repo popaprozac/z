@@ -2579,6 +2579,71 @@ function appendExpression(
     return;
   }
   if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.moveStructSpreadValue
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received a malformed moved struct spread";
+    }
+    const constructed = declaration.expressions[index].children[0];
+    const movedSource = declaration.expressions[index].children[1];
+    if (
+      declaration.expressions[movedSource].kind
+        != LoweredExpressionKind.moveValue
+      || declaration.expressions[movedSource].children.length != 1
+    ) {
+      throw "native C emission lost the moved struct-spread source";
+    }
+    const spreadSourceExpression = declaration.expressions[movedSource]
+      .children[0];
+    const temporary = `_z_stage1_spread_${index}`;
+    output.append("({ Z_");
+    output.append(declaration.expressions[index].value);
+    output.append(" ");
+    output.append(temporary);
+    output.append(" = ");
+    try appendExpression(inout output, declaration, constructed);
+    output.append("; ");
+    let overrideIndex = declaration.expressions[index].moveSpreadOverrides.length;
+    while (overrideIndex > 0) {
+      overrideIndex = overrideIndex - 1;
+      const override = view declaration.expressions[index]
+        .moveSpreadOverrides[overrideIndex];
+      if (override.type.kind == LoweredTypeKind.classType) {
+        output.append("Z_");
+        output.append(override.type.name);
+        output.append("_release(");
+        try appendExpression(
+          inout output,
+          declaration,
+          spreadSourceExpression
+        );
+        output.append(".");
+        output.append(override.name);
+        output.append("); ");
+      } else {
+        output.append("Z_");
+        output.append(override.type.name);
+        output.append("_deinit(&(");
+        try appendExpression(
+          inout output,
+          declaration,
+          spreadSourceExpression
+        );
+        output.append(".");
+        output.append(override.name);
+        output.append(")); ");
+      }
+    }
+    if (declaration.expressions[movedSource].value.byteLength > 0) {
+      output.append(declaration.expressions[movedSource].value);
+      output.append(" = false; ");
+    }
+    output.append(temporary);
+    output.append("; })");
+    return;
+  }
+  if (
     declaration.expressions[index].kind == LoweredExpressionKind.structValue
     || declaration.expressions[index].kind
       == LoweredExpressionKind.foreignStructValue

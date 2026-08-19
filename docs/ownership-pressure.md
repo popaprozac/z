@@ -2376,9 +2376,14 @@ lowerability. `copy ...source` performs field-wise copying and must not be
 classified as standalone `copy value`; its existing native positive remains.
 For `move ...source`, retained fields transfer into the destination, while an
 overridden cleanup-bearing field still belongs to the consumed source and must
-be destroyed exactly once. Until native lowering emits that partial cleanup,
-the capability keyword receives source-mapped `Z1000`; no-override moves and
-cleanup-free overrides remain executable.
+be destroyed exactly once. Native lowering now constructs the destination
+first, destroys those overridden source fields in reverse order, and only then
+marks the complete source consumed. The same representation supports an
+all-fields-overridden move rather than depending on one retained field to carry
+the ownership transition. An exact Stage 0/native destructor-trace differential
+covers both shapes. Stage 0 also live-guards cleanup-bearing override
+temporaries so future nested fallible aggregate expressions inherit correct
+partial-construction unwinding rather than requiring another ownership model.
 Value-producing `if` expressions are another intentional language feature whose
 native lowering is not complete. Stage 1 now reports `Z1000` at the expression's
 `if` token instead of falling through to a lowering assertion; ordinary `if`

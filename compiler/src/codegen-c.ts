@@ -6696,51 +6696,77 @@ function generateStructSpreadValue(
   }
   const lines: string[] = [];
   const overrides = new Map<string, string>();
-  for (const field of expression.fields) {
-    const type = declaration.fields.find((candidate) => candidate.name === field.name)?.type.name;
-    if (!type) throw new Error(`missing spread override field ${JSON.stringify(field.name)}`);
-    const temporary = `_z_spread_field_${context.valueCounter.value++}`;
-    lines.push(`${generateLocalDeclaration(
-      type,
-      temporary,
-      true,
-      context.structs,
-      context.enums,
-      context.semanticInfo.foreignNamedTypes,
-    )};`);
-    lines.push(generateDirectValue(field.expression, context, (value) => `${temporary} = ${value};`));
-    overrides.set(field.name, temporary);
-  }
-
-  const source = generateStoredValue(plan.sourceName, context);
-  const retained = new Map(plan.retained.map((field) => [field.name, field]));
-  const fields = declaration.fields.map((field) => {
-    const overridden = overrides.get(field.name);
-    if (overridden) return `.${field.name} = ${overridden}`;
-    const spread = retained.get(field.name);
-    if (!spread) throw new Error(`missing retained spread field ${JSON.stringify(field.name)}`);
-    const value = `(${source}).${field.name}`;
-    if (spread.action === "retain") return `.${field.name} = ${retainName(spread.type)}(${value})`;
-    if (spread.action === "copy") {
-      return `.${field.name} = ${explicitCopyValue(value, spread.type, context.structs, context.enums)}`;
+  const ownedOverrides: CleanupLocal[] = [];
+  const cleanupScope = context.cleanupScopes.at(-1);
+  try {
+    for (const field of expression.fields) {
+      const type = declaration.fields.find((candidate) => candidate.name === field.name)?.type.name;
+      if (!type) throw new Error(`missing spread override field ${JSON.stringify(field.name)}`);
+      const temporary = `_z_spread_field_${context.valueCounter.value++}`;
+      lines.push(`${generateLocalDeclaration(
+        type,
+        temporary,
+        true,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      )};`);
+      const needsCleanup = hasSemanticCleanupType(
+        type,
+        context.structs,
+        context.enums,
+        context.semanticInfo,
+      );
+      let liveFlag: string | null = null;
+      if (needsCleanup) {
+        liveFlag = nextLiveFlag(temporary, context.liveFlagCounter);
+        const cleanup = { name: temporary, type, liveFlag };
+        ownedOverrides.push(cleanup);
+        cleanupScope?.push(cleanup);
+        lines.push(`bool ${liveFlag} = false;`);
+        lines.push(`(void)${liveFlag};`);
+      }
+      lines.push(generateDirectValue(
+        field.expression,
+        context,
+        (value) => `${temporary} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
+      ));
+      overrides.set(field.name, temporary);
     }
-    return `.${field.name} = ${value}`;
-  });
-  const temporary = `_z_spread_${context.valueCounter.value++}`;
-  lines.push(
-    `${structName(plan.type)} ${temporary} = (${structName(plan.type)}){ ${fields.join(", ")} };`,
-  );
 
-  if (plan.mode === "move") {
-    for (const field of [...plan.overridden].reverse()) {
-      if (!hasSemanticCleanupType(field.type, context.structs, context.enums, context.semanticInfo)) continue;
-      lines.push(generateValueCleanup(`(${source}).${field.name}`, field.type, null, context));
+    const source = generateStoredValue(plan.sourceName, context);
+    const retained = new Map(plan.retained.map((field) => [field.name, field]));
+    const fields = declaration.fields.map((field) => {
+      const overridden = overrides.get(field.name);
+      if (overridden) return `.${field.name} = ${overridden}`;
+      const spread = retained.get(field.name);
+      if (!spread) throw new Error(`missing retained spread field ${JSON.stringify(field.name)}`);
+      const value = `(${source}).${field.name}`;
+      if (spread.action === "retain") return `.${field.name} = ${retainName(spread.type)}(${value})`;
+      if (spread.action === "copy") {
+        return `.${field.name} = ${explicitCopyValue(value, spread.type, context.structs, context.enums)}`;
+      }
+      return `.${field.name} = ${value}`;
+    });
+    const temporary = `_z_spread_${context.valueCounter.value++}`;
+    lines.push(
+      `${structName(plan.type)} ${temporary} = (${structName(plan.type)}){ ${fields.join(", ")} };`,
+    );
+    for (const override of ownedOverrides) lines.push(`${override.liveFlag} = false;`);
+
+    if (plan.mode === "move") {
+      for (const field of [...plan.overridden].reverse()) {
+        if (!hasSemanticCleanupType(field.type, context.structs, context.enums, context.semanticInfo)) continue;
+        lines.push(generateValueCleanup(`(${source}).${field.name}`, field.type, null, context));
+      }
+      const liveFlag = context.liveFlags.get(plan.sourceName);
+      if (!liveFlag) throw new Error(`missing ownership flag for moved spread source ${JSON.stringify(plan.sourceName)}`);
+      lines.push(`${liveFlag} = false;`);
     }
-    const liveFlag = context.liveFlags.get(plan.sourceName);
-    if (!liveFlag) throw new Error(`missing ownership flag for moved spread source ${JSON.stringify(plan.sourceName)}`);
-    lines.push(`${liveFlag} = false;`);
+    lines.push(consumeValue(temporary, context));
+  } finally {
+    for (let index = 0; index < ownedOverrides.length; index += 1) cleanupScope?.pop();
   }
-  lines.push(consumeValue(temporary, context));
   return lines.join("\n");
 }
 

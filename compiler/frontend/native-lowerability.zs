@@ -147,81 +147,6 @@ function expressionIsStructSpreadCapability(
   return false;
 }
 
-function validateNativeMoveStructSpread(
-  in path: String,
-  moduleIndex: usize,
-  in modules: Array<ParsedModule>,
-  in graph: ModuleGraph,
-  in tree: ExpressionTree,
-  callIndex: usize
-): void throws ModuleResolveError {
-  if (
-    moduleIndex >= modules.length
-    || moduleIndex >= graph.modules.length
-  ) return;
-  const call = view tree.nodes[callIndex];
-  if (call.children.length != 2) return;
-  const calleeIndex = call.children[0];
-  if (tree.nodes[calleeIndex].kind != ExpressionKind.identifierExpression) {
-    return;
-  }
-  let aggregateIndex = modules[moduleIndex].program.aggregates.length;
-  let index: usize = 0;
-  while (index < modules[moduleIndex].program.aggregates.length) {
-    if (
-      modules[moduleIndex].program.aggregates[index].kind
-        == DeclarationKind.structDeclaration
-      && modules[moduleIndex].program.aggregates[index].name
-        == tree.nodes[calleeIndex].value
-    ) {
-      aggregateIndex = index;
-      break;
-    }
-    index = index + 1;
-  }
-  if (aggregateIndex >= modules[moduleIndex].program.aggregates.length) return;
-  const objectIndex = call.children[1];
-  if (
-    tree.nodes[objectIndex].kind != ExpressionKind.objectExpression
-    || tree.nodes[objectIndex].labels.length < 2
-    || tree.nodes[objectIndex].labels[0] != "..."
-    || tree.nodes[objectIndex].children.length
-      != tree.nodes[objectIndex].labels.length
-  ) return;
-  const spreadIndex = tree.nodes[objectIndex].children[0];
-  if (
-    tree.nodes[spreadIndex].kind != ExpressionKind.unaryExpression
-    || tree.nodes[spreadIndex].value != "move"
-  ) return;
-  let overrideIndex: usize = 1;
-  while (overrideIndex < tree.nodes[objectIndex].labels.length) {
-    const fieldName = tree.nodes[objectIndex].labels[overrideIndex].copyBytes(
-      0,
-      tree.nodes[objectIndex].labels[overrideIndex].byteLength
-    );
-    for (const field of modules[moduleIndex].program.aggregates[aggregateIndex].fields) {
-      if (field.name != fieldName) continue;
-      let visiting = Array<String>();
-      if (typeHasCleanup(
-        graph.modules,
-        moduleIndex,
-        field.type.name,
-        visiting
-      )) {
-        throw loweringBoundary(
-          path,
-          "Z1000",
-          `move struct spread cannot override cleanup-bearing field "${fieldName}" in the native compiler yet`,
-          tree.nodes[spreadIndex].line,
-          tree.nodes[spreadIndex].column,
-          4
-        );
-      }
-    }
-    overrideIndex = overrideIndex + 1;
-  }
-}
-
 function validateNativeCollectionTypeName(
   in path: String,
   in name: String,
@@ -907,14 +832,6 @@ function validateNativeExpressionTree(
       node.kind == ExpressionKind.callExpression
       && node.children.length > 0
     ) {
-      try validateNativeMoveStructSpread(
-        path,
-        moduleIndex,
-        modules,
-        graph,
-        tree,
-        index
-      );
       const callee = view tree.nodes[node.children[0]];
       if (
         callee.kind == ExpressionKind.identifierExpression
