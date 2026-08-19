@@ -774,6 +774,95 @@ test("copies and moves owned fields through native object destructuring", () => 
   assert.match(invalidResult.stderr, /use of moved value "record"/);
 }, 240_000);
 
+test("materializes concrete generic value structs through native ownership", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-generic-struct.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /typedef struct Z___z_mono_[A-Za-z0-9_]+ \{\s+int32_t first;\s+int32_t second;/,
+  );
+  assert.match(
+    emission.stdout,
+    /typedef struct Z___z_mono_[A-Za-z0-9_]+ \{\s+Z_String first;\s+Z_String second;/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_string_copy\(words\.first\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_String_deinit\(&\(copied\.first\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /_z_destructure_\d+\.first = \(__typeof__\(_z_destructure_\d+\.first\)\)\{0\}/,
+  );
+
+  const moduleInput = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-generic-struct-modules/main.zs",
+  );
+  const moduleEmission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", moduleInput],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleEmission.status, 0, moduleEmission.stderr);
+  assert.equal(
+    [...moduleEmission.stdout.matchAll(/typedef struct Z___z_mono_/g)].length,
+    1,
+    "one nominal specialization must cross the module ABI under every local spelling",
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ makePair\(int32_t first, int32_t second\)/,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /int32_t total\(const Z___z_mono_[A-Za-z0-9_]+ \*pair\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-generic-struct-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+
+    const moduleExecutable = resolve(directory, "module-program");
+    const moduleCompilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", moduleExecutable],
+      { encoding: "utf8", input: moduleEmission.stdout },
+    );
+    assert.equal(moduleCompilation.status, 0, moduleCompilation.stderr);
+    const moduleExecution = spawnSync(moduleExecutable, [], { encoding: "utf8" });
+    assert.equal(moduleExecution.status, 0, moduleExecution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("composes native Array destructuring, zero-copy rest, and Slice parameters", () => {
   const input = resolve(
     projectRoot,
@@ -6687,17 +6776,17 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'async throwing method "Decoder.decode" is not executable in the native compiler yet',
     },
     {
-      name: "generic-aggregate",
+      name: "generic-class",
       source: [
-        "struct Pair<T> { first: T; second: T; }",
+        "class Box<T> { value: T; }",
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
       line: 1,
       column: 1,
-      marker: "^^^^^^",
+      marker: "^^^^^",
       code: "Z1000",
-      summary: 'generic struct "Pair" is not executable in the native compiler yet',
+      summary: 'generic class "Box" is not executable in the native compiler yet',
     },
     {
       name: "trait",

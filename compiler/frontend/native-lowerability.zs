@@ -1292,14 +1292,64 @@ function validateNativeAggregate(
 ): void throws ModuleResolveError {
   if (aggregate.typeParameters.length > 0) {
     const kind = aggregateKindName(aggregate);
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `generic ${kind} "${aggregate.name}" is not executable in the native compiler yet`,
-      aggregate.line,
-      aggregate.column,
-      kind.byteLength
-    );
+    if (aggregate.kind == DeclarationKind.classDeclaration) {
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        `generic ${kind} "${aggregate.name}" is not executable in the native compiler yet`,
+        aggregate.line,
+        aggregate.column,
+        kind.byteLength
+      );
+    }
+    match (in aggregate.constructorDeclaration) {
+      some(initializer) => throw loweringBoundary(
+        path,
+        "Z1000",
+        `constructor for generic struct "${aggregate.name}" is not executable in the native compiler yet`,
+        initializer.line,
+        initializer.column,
+        11
+      );
+      none => {}
+    }
+    if (aggregate.methods.length > 0) {
+      const method = view aggregate.methods[0];
+      throw loweringBoundary(
+        path,
+        "Z1000",
+        `methods on generic struct "${aggregate.name}" are not executable in the native compiler yet`,
+        method.line,
+        method.column,
+        8
+      );
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => throw loweringBoundary(
+        path,
+        "Z1000",
+        `custom deinit for generic struct "${aggregate.name}" is not executable in the native compiler yet`,
+        deinitializer.line,
+        deinitializer.column,
+        6
+      );
+      none => {}
+    }
+    for (const field of aggregate.fields) {
+      match (in field.defaultValue) {
+        some(_) => throw loweringBoundary(
+          path,
+          "Z1000",
+          `default value for generic field "${aggregate.name}.${field.name}" is not executable in the native compiler yet`,
+          field.line,
+          field.column,
+          field.name.byteLength
+        );
+        none => {}
+      }
+      try validateNativeType(path, field.type);
+    }
+    return;
   }
   match (in aggregate.constructorDeclaration) {
     some(initializer) => throw loweringBoundary(

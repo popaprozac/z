@@ -263,6 +263,12 @@ export function collectTypeIdentities(
     collectTypeIdentities(modules, moduleIndex, target, childPath, inout identities);
     return;
   }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    const childPath = childTypeIdentityPath(path, "0");
+    collectTypeIdentities(modules, moduleIndex, target, childPath, inout identities);
+    return;
+  }
   match (fixedArrayShape(typeName)) {
     some(array) => {
       const childPath = childTypeIdentityPath(path, "0");

@@ -34,6 +34,7 @@ import {
   ModuleFunctionSignature,
   ModuleSemanticEvidence,
   ModuleSymbolKind,
+  ModuleTypeIdentity,
 } from "./semantic-model.zs";
 import {
   fixedArrayShape,
@@ -41,6 +42,12 @@ import {
   nativeFunctionSignature,
   nullableTargetType,
 } from "./semantic-type-shapes.zs";
+import {
+  NativeValueBinding,
+  addValueBinding,
+} from "./semantic-flow-state.zs";
+import { substituteGenericType } from "./semantic-type-ownership.zs";
+import { rebaseTypeName } from "./semantic-type-identities.zs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 
@@ -507,6 +514,21 @@ struct LoweredImportedType {
   underlyingType: String;
 }
 
+struct LoweredGenericStructField {
+  name: String;
+  typeName: String;
+  optionalField: boolean;
+  hasDefault: boolean;
+  borrowedView: boolean;
+}
+
+struct LoweredGenericStructUse {
+  consumerModuleIndex: usize;
+  sourceName: String;
+  emittedName: String;
+  fields: Array<LoweredGenericStructField>;
+}
+
 function structIndex(in program: Program, in name: String): Option<usize> {
   let index: usize = 0;
   while (index < program.aggregates.length) {
@@ -576,6 +598,377 @@ function encodedFunctionTypeIdentity(in identity: String): String {
     index = index + 1;
   }
   return output.finish();
+}
+
+function encodedGenericStructName(
+  ownerModuleIndex: usize,
+  ownerSymbolIndex: usize,
+  in identity: String
+): String {
+  let output = TextBuffer();
+  output.append(`__z_mono_${ownerModuleIndex}_${ownerSymbolIndex}_`);
+  let index: usize = 0;
+  while (index < identity.byteLength) {
+    const byte = identity.byteAt(index);
+    output.appendAscii(functionIdentityHexDigit(byte >> 4));
+    output.appendAscii(functionIdentityHexDigit(byte & 15));
+    index = index + 1;
+  }
+  return output.finish();
+}
+
+function genericTypeIdentityPath(in path: String, in segment: String): String {
+  if (path.byteLength == 0) return segment.copyBytes(0, segment.byteLength);
+  return `${path}/${segment}`;
+}
+
+function typeIdentityAtPath(
+  in identities: Array<ModuleTypeIdentity>,
+  in path: String
+): Option<ModuleTypeIdentity> {
+  for (const identity of identities) {
+    if (identity.path != path) continue;
+    return Option.some(ModuleTypeIdentity({
+      path: identity.path.copyBytes(0, identity.path.byteLength),
+      targetModuleIndex: identity.targetModuleIndex,
+      targetSymbolIndex: identity.targetSymbolIndex,
+    }));
+  }
+  return Option<ModuleTypeIdentity>.none;
+}
+
+function canonicalGenericTypeIdentity(
+  in typeName: String,
+  in identities: Array<ModuleTypeIdentity>,
+  in path: String
+): String {
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      let output = TextBuffer();
+      match (typeIdentityAtPath(identities, path)) {
+        some(identity) => output.append(
+          `@${identity.targetModuleIndex}:${identity.targetSymbolIndex}`
+        );
+        none => output.append(generic.base);
+      }
+      output.append("<");
+      let argumentIndex: usize = 0;
+      while (argumentIndex < generic.arguments.length) {
+        if (argumentIndex > 0) output.append(",");
+        const childPath = genericTypeIdentityPath(
+          path,
+          `${argumentIndex}`
+        );
+        const argument = canonicalGenericTypeIdentity(
+          generic.arguments[argumentIndex],
+          identities,
+          childPath
+        );
+        output.append(argument);
+        argumentIndex = argumentIndex + 1;
+      }
+      output.append(">");
+      return output.finish();
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    const childPath = genericTypeIdentityPath(path, "0");
+    const target = canonicalGenericTypeIdentity(
+      nullable,
+      identities,
+      childPath
+    );
+    return `${target}|null`;
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const targetName = typeName.copyBytes(5, typeName.byteLength);
+    const childPath = genericTypeIdentityPath(path, "0");
+    const target = canonicalGenericTypeIdentity(
+      targetName,
+      identities,
+      childPath
+    );
+    return `view ${target}`;
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const targetName = typeName.copyBytes(9, typeName.byteLength);
+    const childPath = genericTypeIdentityPath(path, "0");
+    const target = canonicalGenericTypeIdentity(
+      targetName,
+      identities,
+      childPath
+    );
+    return `readonly ${target}`;
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => {
+      const childPath = genericTypeIdentityPath(path, "0");
+      const element = canonicalGenericTypeIdentity(
+        array.elementType,
+        identities,
+        childPath
+      );
+      return `${element}[${array.length}]`;
+    }
+    none => {}
+  }
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      let output = TextBuffer();
+      output.append("(");
+      let parameterIndex: usize = 0;
+      while (parameterIndex < signature.parameterTypes.length) {
+        if (parameterIndex > 0) output.append(",");
+        output.append(signature.parameterModes[parameterIndex]);
+        output.append(":");
+        const parameterPath = genericTypeIdentityPath(
+          path,
+          `p${parameterIndex}`
+        );
+        const parameterType = canonicalGenericTypeIdentity(
+          signature.parameterTypes[parameterIndex],
+          identities,
+          parameterPath
+        );
+        output.append(parameterType);
+        parameterIndex = parameterIndex + 1;
+      }
+      output.append(")=>");
+      const returnPath = genericTypeIdentityPath(path, "r");
+      const returnType = canonicalGenericTypeIdentity(
+        signature.returnType,
+        identities,
+        returnPath
+      );
+      output.append(returnType);
+      if (signature.errorType.byteLength > 0) {
+        output.append(" throws ");
+        const errorPath = genericTypeIdentityPath(path, "e");
+        const errorType = canonicalGenericTypeIdentity(
+          signature.errorType,
+          identities,
+          errorPath
+        );
+        output.append(errorType);
+      }
+      if (signature.threadContract.byteLength > 0) {
+        output.append(" on ");
+        output.append(signature.threadContract);
+      }
+      return output.finish();
+    }
+    none => {}
+  }
+  match (typeIdentityAtPath(identities, path)) {
+    some(identity) => return
+      `@${identity.targetModuleIndex}:${identity.targetSymbolIndex}`;
+    none => {}
+  }
+  return typeName.copyBytes(0, typeName.byteLength);
+}
+
+function containsGenericStructUse(
+  in uses: Array<LoweredGenericStructUse>,
+  moduleIndex: usize,
+  in sourceName: String
+): boolean {
+  for (const use of uses) {
+    if (
+      use.consumerModuleIndex == moduleIndex
+      && use.sourceName == sourceName
+    ) return true;
+  }
+  return false;
+}
+
+function collectGenericStructUseFromType(
+  in graph: ModuleGraph,
+  consumerModuleIndex: usize,
+  in typeName: String,
+  in identities: Array<ModuleTypeIdentity>,
+  in path: String,
+  inout uses: Array<LoweredGenericStructUse>
+): void {
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      let argumentIndex: usize = 0;
+      while (argumentIndex < generic.arguments.length) {
+        const childPath = genericTypeIdentityPath(
+          path,
+          `${argumentIndex}`
+        );
+        collectGenericStructUseFromType(
+          graph,
+          consumerModuleIndex,
+          generic.arguments[argumentIndex],
+          identities,
+          childPath,
+          inout uses
+        );
+        argumentIndex = argumentIndex + 1;
+      }
+      match (typeIdentityAtPath(identities, path)) {
+        some(identity) => {
+          if (
+            identity.targetModuleIndex >= graph.modules.length
+            || identity.targetSymbolIndex
+              >= graph.modules[identity.targetModuleIndex].symbols.length
+          ) return;
+          const symbol = view graph.modules[identity.targetModuleIndex].symbols[
+            identity.targetSymbolIndex
+          ];
+          if (symbol.kind != ModuleSymbolKind.structSymbol) return;
+          match (in symbol.typeSignature) {
+            some(signature) => {
+              if (
+                signature.typeParameters.length == 0
+                || signature.typeParameters.length != generic.arguments.length
+                || containsGenericStructUse(
+                  uses,
+                  consumerModuleIndex,
+                  typeName
+                )
+              ) return;
+              let substitutions = Array<NativeValueBinding>();
+              let parameterIndex: usize = 0;
+              while (parameterIndex < signature.typeParameters.length) {
+                addValueBinding(
+                  inout substitutions,
+                  signature.typeParameters[parameterIndex],
+                  generic.arguments[parameterIndex]
+                );
+                parameterIndex = parameterIndex + 1;
+              }
+              let fields = Array<LoweredGenericStructField>();
+              for (const field of signature.fields) {
+                const rebasedType = rebaseTypeName(
+                  graph.modules,
+                  identity.targetModuleIndex,
+                  consumerModuleIndex,
+                  field.typeName
+                );
+                const concreteType = substituteGenericType(
+                  rebasedType,
+                  substitutions
+                );
+                fields.push(LoweredGenericStructField({
+                  name: field.name.copyBytes(0, field.name.byteLength),
+                  typeName: move concreteType,
+                  optionalField: field.optionalField,
+                  hasDefault: field.hasDefault,
+                  borrowedView: stringStartsWith(field.typeName, "view "),
+                }));
+              }
+              const canonicalIdentity = canonicalGenericTypeIdentity(
+                typeName,
+                identities,
+                path
+              );
+              uses.push(LoweredGenericStructUse({
+                consumerModuleIndex,
+                sourceName: typeName.copyBytes(0, typeName.byteLength),
+                emittedName: encodedGenericStructName(
+                  identity.targetModuleIndex,
+                  identity.targetSymbolIndex,
+                  canonicalIdentity
+                ),
+                fields,
+              }));
+            }
+            none => {}
+          }
+        }
+        none => {}
+      }
+      return;
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    const childPath = genericTypeIdentityPath(path, "0");
+    collectGenericStructUseFromType(
+      graph,
+      consumerModuleIndex,
+      nullable,
+      identities,
+      childPath,
+      inout uses
+    );
+    return;
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    const childPath = genericTypeIdentityPath(path, "0");
+    collectGenericStructUseFromType(
+      graph,
+      consumerModuleIndex,
+      target,
+      identities,
+      childPath,
+      inout uses
+    );
+    return;
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    const childPath = genericTypeIdentityPath(path, "0");
+    collectGenericStructUseFromType(
+      graph,
+      consumerModuleIndex,
+      target,
+      identities,
+      childPath,
+      inout uses
+    );
+    return;
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => {
+      const childPath = genericTypeIdentityPath(path, "0");
+      collectGenericStructUseFromType(
+        graph,
+        consumerModuleIndex,
+        array.elementType,
+        identities,
+        childPath,
+        inout uses
+      );
+    }
+    none => {}
+  }
+}
+
+function collectGenericStructUses(in graph: ModuleGraph): Array<LoweredGenericStructUse> {
+  let uses = Array<LoweredGenericStructUse>();
+  let moduleIndex: usize = 0;
+  while (moduleIndex < graph.modules.length) {
+    const evidence = view graph.modules[moduleIndex].semanticEvidence;
+    for (const resolution of evidence.bindingResolutions) {
+      collectGenericStructUseFromType(
+        graph,
+        moduleIndex,
+        resolution.typeName,
+        resolution.typeIdentities,
+        "",
+        inout uses
+      );
+    }
+    for (const resolution of evidence.expressionResolutions) {
+      collectGenericStructUseFromType(
+        graph,
+        moduleIndex,
+        resolution.typeName,
+        resolution.typeIdentities,
+        "",
+        inout uses
+      );
+    }
+    moduleIndex = moduleIndex + 1;
+  }
+  return uses;
 }
 
 function localFunctionTypeIdentity(
@@ -4879,6 +5272,24 @@ function importedStructIsForeign(
   return false;
 }
 
+function importedValueStructIndex(
+  in importedTypes: Array<LoweredImportedType>,
+  in name: String
+): Option<usize> {
+  let importedIndex = importedTypes.length;
+  while (importedIndex > 0) {
+    importedIndex = importedIndex - 1;
+    if (
+      importedTypes[importedIndex].kind == LoweredTypeKind.structType
+      && (
+        importedTypes[importedIndex].localName == name
+        || importedTypes[importedIndex].targetName == name
+      )
+    ) return Option.some(importedIndex);
+  }
+  return Option<usize>.none;
+}
+
 function uniquelyResolvedFieldTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -5668,6 +6079,26 @@ function lowerExpression(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  return try lowerExpressionContextual(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    "",
+    inout output
+  );
+}
+
+function lowerExpressionContextual(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in contextualTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
   match (resolvedExpressionTargetName(evidence, tree, index)) {
@@ -8296,6 +8727,40 @@ function lowerExpression(
         constructorTypeName = `${tree.nodes[constructorReceiver].value}.${tree.nodes[calleeInput].value}`;
       }
     }
+    if (contextualTypeName.byteLength > 0) {
+      match (genericTypeShape(contextualTypeName)) {
+        some(generic) => {
+          if (generic.base == constructorTypeName) {
+            match (importedStructTarget(importedTypes, contextualTypeName)) {
+              some(_) => constructorTypeName = contextualTypeName.copyBytes(
+                0,
+                contextualTypeName.byteLength
+              );
+              none => {}
+            }
+          }
+        }
+        none => {}
+      }
+    }
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(resolvedTypeName) => match (genericTypeShape(resolvedTypeName)) {
+        some(generic) => {
+          if (generic.base == constructorTypeName) match (importedStructTarget(
+            importedTypes,
+            resolvedTypeName
+          )) {
+            some(_) => constructorTypeName = resolvedTypeName.copyBytes(
+              0,
+              resolvedTypeName.byteLength
+            );
+            none => {}
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
     if (
       constructorTypeName.byteLength > 0
       && (
@@ -8308,7 +8773,9 @@ function lowerExpression(
       if (tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression) {
         match (structIndex(program, constructorTypeName)) {
           some(aggregateIndex) => {
-            localAggregate = Option.some(aggregateIndex);
+            if (program.aggregates[aggregateIndex].typeParameters.length == 0) {
+              localAggregate = Option.some(aggregateIndex);
+            }
           }
           none => {}
         }
@@ -8359,7 +8826,13 @@ function lowerExpression(
           if (hasSpread) {
             match (in localAggregate) {
               some(_) => {}
-              none => throw "native struct-spread lowering requires a local Z value struct";
+              none => match (importedValueStructIndex(
+                importedTypes,
+                constructionName
+              )) {
+                some(_) => {}
+                none => throw "native struct-spread lowering requires a Z value struct";
+              }
             }
             const spreadInput = tree.nodes[objectInput].children[0];
             spreadSourceInput = spreadInput;
@@ -8615,6 +9088,113 @@ function lowerExpression(
             }
           }
           none => {}
+        }
+        if (hasSpread && !localConstruction) {
+          match (importedValueStructIndex(
+            importedTypes,
+            constructionName
+          )) {
+            some(importedIndex) => {
+              let moveSpreadOverrides = Array<LoweredField>();
+              for (const field of importedTypes[importedIndex].fields) {
+                if (containsString(labels, field.name)) {
+                  if (
+                    spreadMode == "move"
+                    && moduleTypeNeedsCleanup(
+                      program,
+                      importedTypes,
+                      field.type
+                    )
+                  ) {
+                    moveSpreadOverrides.push(LoweredField({
+                      name: field.name.copyBytes(0, field.name.byteLength),
+                      type: LoweredType({
+                        kind: field.type.kind,
+                        name: field.type.name.copyBytes(
+                          0,
+                          field.type.name.byteLength
+                        ),
+                      }),
+                      optionalField: field.optionalField,
+                      borrowedView: field.borrowedView,
+                    }));
+                  }
+                  continue;
+                }
+                let fieldChildren = Array<usize>();
+                fieldChildren.push(spreadSource);
+                let value = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.fieldValue,
+                  field.name,
+                  fieldChildren,
+                  Array<String>()
+                );
+                if (spreadMode == "copy") {
+                  if (field.type.kind == LoweredTypeKind.stringType) {
+                    let copyChildren = Array<usize>();
+                    copyChildren.push(value);
+                    value = pushExpression(
+                      inout output,
+                      LoweredExpressionKind.copyValue,
+                      "",
+                      copyChildren,
+                      Array<String>()
+                    );
+                  } else if (moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    field.type
+                  )) {
+                    const fieldTypeName = loweredTypeIdentity(field.type);
+                    throw `native copy struct-spread lowering does not support field "${field.name}" of type ${fieldTypeName} yet`;
+                  }
+                } else if (
+                  spreadMode.byteLength == 0
+                  && moduleTypeNeedsCleanup(
+                    program,
+                    importedTypes,
+                    field.type
+                  )
+                ) {
+                  throw `native plain struct-spread lowering cannot retain ownership-bearing field "${field.name}"`;
+                }
+                children.push(value);
+                labels.push(field.name.copyBytes(0, field.name.byteLength));
+              }
+              if (spreadMode == "move") {
+                let moveChildren = Array<usize>();
+                moveChildren.push(spreadSource);
+                const movedSource = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.moveValue,
+                  "",
+                  moveChildren,
+                  Array<String>()
+                );
+                const constructed = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.structValue,
+                  constructionName,
+                  children,
+                  labels
+                );
+                let spreadChildren = Array<usize>();
+                spreadChildren.push(constructed);
+                spreadChildren.push(movedSource);
+                const spread = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.moveStructSpreadValue,
+                  constructionName,
+                  move spreadChildren,
+                  Array<String>()
+                );
+                output[spread].moveSpreadOverrides = move moveSpreadOverrides;
+                return spread;
+              }
+            }
+            none => {}
+          }
         }
         if (!localConstruction) {
           for (const imported of importedTypes) {
@@ -10334,12 +10914,23 @@ function lowerExpressionExpected(
     }
     none => {}
   }
-  return try lowerExpression(
+  let contextualTypeName = "";
+  match (importedValueStructIndex(importedTypes, expectedTypeName)) {
+    some(importedIndex) => {
+      contextualTypeName = importedTypes[importedIndex].localName.copyBytes(
+        0,
+        importedTypes[importedIndex].localName.byteLength
+      );
+    }
+    none => {}
+  }
+  return try lowerExpressionContextual(
     program,
     importedTypes,
     evidence,
     tree,
     index,
+    contextualTypeName,
     inout output
   );
 }
@@ -17717,6 +18308,106 @@ function loweredStructWorkerDestructible(
   return false;
 }
 
+function appendConcreteGenericStructs(
+  in program: Program,
+  in uses: Array<LoweredGenericStructUse>,
+  moduleIndex: usize,
+  inout importedTypes: Array<LoweredImportedType>,
+  inout structs: Array<LoweredStruct>
+): void throws String {
+  for (const use of uses) {
+    if (use.consumerModuleIndex != moduleIndex) continue;
+    let present = false;
+    for (const imported of importedTypes) {
+      if (imported.localName == use.sourceName) present = true;
+    }
+    if (present) continue;
+    let fields = Array<LoweredField>();
+    let needsDeinit = false;
+    let threadShareable = true;
+    let workerDestructible = true;
+    let executorBound = false;
+    for (const sourceField of use.fields) {
+      if (sourceField.hasDefault && !sourceField.optionalField) {
+        throw `native generic struct ${use.sourceName} does not support field defaults yet`;
+      }
+      const type = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        sourceField.typeName
+      );
+      if (moduleTypeNeedsCleanup(program, importedTypes, type)) {
+        needsDeinit = true;
+      }
+      const visiting = Array<String>();
+      if (!moduleTypeIsThreadShareable(
+        program,
+        importedTypes,
+        sourceField.typeName,
+        visiting
+      )) threadShareable = false;
+      if (!moduleTypeIsWorkerDestructible(
+        program,
+        importedTypes,
+        sourceField.typeName,
+        visiting
+      )) workerDestructible = false;
+      if (moduleTypeHasExecutorAffinity(
+        program,
+        importedTypes,
+        sourceField.typeName,
+        visiting
+      )) executorBound = true;
+      fields.push(LoweredField({
+        name: sourceField.name.copyBytes(0, sourceField.name.byteLength),
+        type,
+        optionalField: sourceField.optionalField,
+        borrowedView: sourceField.borrowedView,
+      }));
+    }
+    if (!containsLoweredStruct(structs, use.emittedName)) {
+      let concreteFields = Array<LoweredField>();
+      for (const field of fields) {
+        concreteFields.push(LoweredField({
+          name: field.name.copyBytes(0, field.name.byteLength),
+          type: LoweredType({
+            kind: field.type.kind,
+            name: field.type.name.copyBytes(0, field.type.name.byteLength),
+          }),
+          optionalField: field.optionalField,
+          borrowedView: field.borrowedView,
+        }));
+      }
+      structs.push(LoweredStruct({
+        name: use.emittedName.copyBytes(0, use.emittedName.byteLength),
+        nativeCName: "",
+        fields: move concreteFields,
+        referenceType: false,
+        executorBound,
+        threadShareable,
+        workerDestructible,
+        needsDeinit,
+        deinitializer: Option<LoweredFunction>.none,
+      }));
+    }
+    importedTypes.push(LoweredImportedType({
+      localName: use.sourceName.copyBytes(0, use.sourceName.byteLength),
+      targetName: use.emittedName.copyBytes(0, use.emittedName.byteLength),
+      nativeTypeName: "",
+      kind: LoweredTypeKind.structType,
+      executorBound,
+      threadShareable,
+      workerDestructible,
+      needsDeinit,
+      resourceRelease: "",
+      fields,
+      variants: Array<LoweredVariant>(),
+      payloadBearing: false,
+      underlyingType: "",
+    }));
+  }
+}
+
 function copyLoweredVariant(in variant: LoweredVariant): LoweredVariant {
   let payload = Option<LoweredType>.none;
   match (in variant.payload) {
@@ -18513,6 +19204,7 @@ function appendLoweredProgram(
   in program: Program,
   in sourcePath: String,
   inout importedTypes: Array<LoweredImportedType>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
   in evidence: ModuleSemanticEvidence,
   in privateFunctionCollisionNames: Array<String>,
   in privateTypeCollisionNames: Array<String>,
@@ -18719,6 +19411,7 @@ function appendLoweredProgram(
   }
 
   for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
     const emittedName = privateTypeNeedsMangle(
       program,
       privateTypeCollisionNames,
@@ -18737,9 +19430,8 @@ function appendLoweredProgram(
         aggregate.kind != DeclarationKind.structDeclaration
         && aggregate.kind != DeclarationKind.classDeclaration
       )
-      || aggregate.typeParameters.length > 0
     ) {
-      throw "native lowering only supports non-generic structs and classes yet";
+      throw "native lowering only supports structs and classes yet";
     }
     match (in aggregate.constructorDeclaration) {
       some(_) => throw `native lowering does not support constructor on ${aggregate.name} yet`;
@@ -18827,6 +19519,7 @@ function appendLoweredProgram(
   }
 
   for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
     const emittedName = privateTypeNeedsMangle(
       program,
       privateTypeCollisionNames,
@@ -18868,7 +19561,16 @@ function appendLoweredProgram(
     }
   }
 
+  try appendConcreteGenericStructs(
+    program,
+    genericStructUses,
+    moduleIndex,
+    inout importedTypes,
+    inout structs
+  );
+
   for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
     const emittedName = privateTypeNeedsMangle(
       program,
       privateTypeCollisionNames,
@@ -19008,10 +19710,12 @@ function lowerProgramUnchecked(
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
+  const genericStructUses = Array<LoweredGenericStructUse>();
   try appendLoweredProgram(
     program,
     "",
     inout importedTypes,
+    genericStructUses,
     evidence,
     privateCollisionNames,
     privateTypeCollisionNames,
@@ -19112,6 +19816,7 @@ function lowerModulesIncludingTests(
     includeTests
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
+  const genericStructUses = collectGenericStructUses(graph);
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
     let importedTypes = try importedTypesForModule(
@@ -19133,6 +19838,7 @@ function lowerModulesIncludingTests(
       parsed[moduleIndex].program,
       parsed[moduleIndex].path,
       inout importedTypes,
+      genericStructUses,
       graph.modules[moduleIndex].semanticEvidence,
       privateFunctionCollisionNames,
       privateTypeCollisionNames,

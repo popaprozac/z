@@ -2947,6 +2947,41 @@ helper. The differential corpus runs cleanup-free local and multi-module cases
 plus cleanup-bearing construction, failure cleanup, explicit String copying,
 and custom destruction through Stage 0 and the fixed-point compiler.
 
+## Concrete generic value structs in the fixed-point compiler
+
+Writing the compiler itself exposed that native generic evidence was useful but
+not sufficient: Stage 1 could prove `Pair<String>` or
+`Pair<Box<i32>>`, yet it still had no concrete value layout to own. The first
+generic aggregate execution tier now consumes those settled semantic identities
+as a demand list. For every field-only generic value struct used by a module,
+lowering substitutes the ordered arguments into its fields, recursively demands
+nested specializations, emits them before their owners, and records a
+collision-safe C identity keyed by the declaring module and symbol rather than
+by display text alone.
+
+Concrete specializations then enter the existing value-struct ownership path.
+`Pair<i32>` is cleanup-free, while `Pair<String>` automatically destroys its
+fields in reverse order. Construction supports inferred and explicit nested
+specializations; cross-module aliases retain the declaration's nominal
+identity. Field access, ordinary and explicit-copy spread, whole-owner
+move spread with cleanup of overridden fields, and consuming object
+destructuring all operate on the concrete layout. The executable fixture is
+compiled with strict Clang warnings and is also part of the Stage-0/native
+differential corpus together with a multi-module fixture.
+
+The contextual constructor path matters for correctness. A nested
+`Box({ value: 20 })` inside a field expected to be `Box<i32>` must receive that
+concrete expected type; otherwise an unspecialized template name can leak into
+generated C even though semantic demand already found the right layout. Native
+lowering now carries that context into construction and explicitly excludes
+generic templates from ordinary local aggregate emission.
+
+This tier deliberately stops before behavior. Generic classes, methods, custom
+constructors, non-optional field defaults, and custom `deinit` bodies remain
+source-mapped `Z1000` boundaries. Those require callable specialization and
+behavior ownership, not merely a concrete field layout, and should be closed as
+separate composition slices.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
