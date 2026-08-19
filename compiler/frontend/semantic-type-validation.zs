@@ -8,6 +8,7 @@ import {
   ExpressionTree,
   FunctionDeclaration,
   ParameterMode,
+  ReceiverMode,
   StatementArena,
   TraitDeclaration,
   TypeParameter,
@@ -688,7 +689,8 @@ function validateFunctionTypes(
   moduleIndex: usize,
   in inherited: Array<NativeTypeParameterBinding>,
   in declaration: FunctionDeclaration,
-  method: boolean
+  method: boolean,
+  valueStructMethod: boolean
 ): void throws ModuleResolveError {
   if (declaration.threadContract.byteLength > 0) {
     if (declaration.threadContract != "thread.any") throw validationError(
@@ -823,25 +825,36 @@ function validateFunctionTypes(
       declaration.returnType.column
     );
     if (retainedParameterViewAggregate) {
-      if (method) throw validationError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "retained view-bearing aggregate results are limited to module functions in the first tier",
-        declaration.returnType.line,
-        declaration.returnType.column
-      );
       let throwing = false;
       match (in declaration.errorType) {
         some(_) => throwing = true;
         none => {}
       }
-      if (declaration.asynchronous || throwing) throw validationError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "a retained parameter-provenanced view aggregate must be returned by a synchronous non-throwing function",
-        declaration.returnType.line,
-        declaration.returnType.column
-      );
+      if (
+        declaration.asynchronous
+        || throwing
+        || (
+          method
+          && (
+            !valueStructMethod
+            || declaration.staticMethod
+            || declaration.receiverMode == ReceiverMode.inputOutput
+            || declaration.receiverMode == ReceiverMode.move
+          )
+        )
+      ) {
+        let message = "a retained parameter-provenanced view aggregate must be returned by a synchronous non-throwing function";
+        if (method) {
+          message = "a retained view-bearing aggregate return requires a synchronous, non-throwing borrowed value-struct method";
+        }
+        throw validationError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          message,
+          declaration.returnType.line,
+          declaration.returnType.column
+        );
+      }
     }
     if (
       declaration.asynchronous
@@ -1065,7 +1078,15 @@ function validateAggregateTypes(
     none => {}
   }
   for (const method of declaration.methods) {
-    try validateFunctionTypes(module, modules, moduleIndex, bindings, method, true);
+    try validateFunctionTypes(
+      module,
+      modules,
+      moduleIndex,
+      bindings,
+      method,
+      true,
+      declaration.kind == DeclarationKind.structDeclaration
+    );
   }
   match (in declaration.deinitializer) {
     some(deinitializer) => try validateArenaTypes(
@@ -1087,7 +1108,7 @@ function validateTraitTypes(
 ): void throws ModuleResolveError {
   let empty = Array<NativeTypeParameterBinding>();
   for (const method of declaration.methods) {
-    try validateFunctionTypes(module, modules, moduleIndex, empty, method, true);
+    try validateFunctionTypes(module, modules, moduleIndex, empty, method, true, false);
     let returnViewVisiting = Array<String>();
     if (typeContainsStoredView(
       modules,
@@ -1439,7 +1460,7 @@ export function validateModuleTypes(
     inout empty
   );
   for (const declaration of module.program.functions) {
-    try validateFunctionTypes(module, modules, moduleIndex, empty, declaration, false);
+    try validateFunctionTypes(module, modules, moduleIndex, empty, declaration, false, false);
   }
   for (const declaration of module.program.aggregates) {
     try validateAggregateTypes(module, modules, moduleIndex, declaration);

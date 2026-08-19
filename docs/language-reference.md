@@ -875,8 +875,8 @@ rejected. Its owner cannot mutate or move before the view's last use. ARC class
 owners are excluded because another alias could invalidate growable projected
 storage. Parameter provenance remains direct and synchronous.
 
-A synchronous non-throwing module function may retain several projections from
-one immutable input in a named value struct:
+A synchronous non-throwing borrowed value-struct method or module function may
+retain several projections from one immutable owner in a named value struct:
 
 ```z
 struct DocumentSpan {
@@ -884,28 +884,44 @@ struct DocumentSpan {
   last: view Document;
 }
 
-function endpoints(in workspace: DocumentStore): DocumentSpan {
-  return DocumentSpan({
-    first: view workspace.documents[0],
-    last: view workspace.documents[workspace.documents.length - 1],
-  });
+struct DocumentStore {
+  documents: Array<Document>;
+
+  function endpoints(): DocumentSpan {
+    return DocumentSpan({
+      first: view this.documents[0],
+      last: view this.documents[this.documents.length - 1],
+    });
+  }
 }
 
-const span = endpoints(in workspace);
-console.log(span.first.title, span.last.title);
-workspace.open(next); // valid after span's last field read
+function endpoints(in workspace: DocumentStore): DocumentSpan {
+  return workspace.endpoints(); // provenance-preserving forwarding
+}
+
+const { first, last } = endpoints(in workspace);
+console.log(first.title, last.title);
+workspace.open(next); // valid after both destructured views' last reads
 ```
 
 The returned struct is a stack value containing `const T *` fields. It adds no
 allocation, retain, provenance tag, or cleanup. Every view field in one returned
 instance must be written with explicit `view` and derive from the same immutable
-`in` parameter; different return paths may choose different parameters, so the
-caller conservatively loans every possible source. The function must construct
-the result directly at `return`. Forwarding an existing aggregate, returning
-local storage, struct spread, methods, `throws`, async suspension, nested
-view-bearing fields, and storage in classes, enums, or collections remain
-outside this tier. The caller binds the move-only result with `const`; its owner
-cannot mutate, move, or deinitialize until the aggregate's last use.
+`this` receiver or `in` parameter; different return paths may choose different
+parameters, so the caller conservatively loans every possible source. The
+ultimate producer constructs the value directly at `return`. A synchronous
+wrapper may then return that method/function result or forward an immutable
+`in` aggregate while preserving the source parameter in its callable contract.
+
+The caller may retain the aggregate in `const`, pass it to a synchronous `in`
+parameter, or object-destructure it. Each destructured view carries the same
+owner provenance, so mutation becomes legal only after every resulting binding
+has reached its final use. Mutable destructuring remains invalid. Returning
+local storage, struct spread at the producer boundary, ARC-class methods,
+`inout`/`move this`, `throws`, async suspension, nested view-bearing fields, and
+storage in classes, enums, or collections remain outside this tier. The owner
+cannot mutate, move, or deinitialize while any aggregate or destructured view is
+still live.
 
 When `T` already has ordinary cleanup-free copy semantics, a value context may
 load an independent `T` from `view T` implicitly. This is an ordinary by-value

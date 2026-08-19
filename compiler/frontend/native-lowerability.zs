@@ -1107,14 +1107,37 @@ function validateNativeBody(
       );
     }
     if (statement.kind == StatementKind.destructureStatement) {
-      throw loweringBoundary(
-        path,
-        "Z1000",
-        "destructuring statements are not executable in the native compiler yet",
-        statement.line,
-        statement.column,
-        5
-      );
+      if (statement.arrayBindings.length > 0) throw loweringBoundary(
+          path,
+          "Z1000",
+          "array destructuring is not executable in the native compiler yet",
+          statement.line,
+          statement.column,
+          5
+        );
+      match (in statement.expression) {
+        some(expression) => match (in expression.tree) {
+          some(tree) => {
+            const root = tree.root;
+            if (
+              tree.nodes[root].kind == ExpressionKind.unaryExpression
+              && (
+                tree.nodes[root].value == "copy"
+                || tree.nodes[root].value == "move"
+              )
+            ) throw loweringBoundary(
+              path,
+              "Z1000",
+              "explicit copy/move object destructuring is not executable in the native compiler yet",
+              statement.line,
+              statement.column,
+              5
+            );
+          }
+          none => {}
+        }
+        none => {}
+      }
     }
     if (
       statement.kind == StatementKind.forAwaitStatement

@@ -2438,10 +2438,19 @@ function analyzeStructDeclaration(
       structs,
       enums,
     )) {
-      throw new DiagnosticError(fileName, method.returnType.location, "retained view-bearing aggregate results are limited to module functions in the first tier", {
-        code: "Z0206",
-        helps: ["pass the value owner as an immutable `in` parameter to a module function"],
-      });
+      if (declaration.kind !== "struct") {
+        throw new DiagnosticError(fileName, method.returnType.location, "the zero-overhead retained-view aggregate tier requires a value-struct owner", {
+          code: "Z0206",
+          notes: ["ARC class aliases could otherwise mutate or reallocate projected storage through another reference"],
+          helps: ["move the projected storage into a value struct, or return an owned snapshot from the class"],
+        });
+      }
+      if (method.static || method.async || method.receiverMode === "inout" || method.receiverMode === "move" || method.errorType) {
+        throw new DiagnosticError(fileName, method.returnType.location, "a retained view-bearing aggregate return requires a synchronous, non-throwing borrowed instance method", {
+          code: "Z0206",
+          notes: ["every returned view field remains tied directly to the immutable `this` receiver"],
+        });
+      }
     }
   }
   if (declaration.constructor) {
@@ -4405,6 +4414,26 @@ function analyzeStatement(
           helps: ["move the complete aggregate or expose a type-specific extraction method"],
         });
       }
+      const retainedViewAggregate = retainedParameterViewAggregateDeclaration(
+        sourceType,
+        structs,
+        enums,
+      );
+      const retainedViewOrigin = retainedViewAggregate
+        ? storedViewOriginForExpression(statement.initializer, state)
+        : null;
+      if (retainedViewAggregate && statement.mutable) {
+        throw new DiagnosticError(fileName, statement.location, "retained view aggregate destructuring requires immutable const bindings", {
+          code: "Z0206",
+          notes: ["the bindings are aliases into one immutably borrowed owner"],
+        });
+      }
+      if (retainedViewAggregate && !retainedViewOrigin) {
+        throw new DiagnosticError(fileName, statement.initializer.location, "retained view aggregate destructuring requires one proven owner", {
+          code: "Z0206",
+          helps: ["destructure a direct returned aggregate or a const binding that still carries its owner provenance"],
+        });
+      }
       const explicitOwnership = statement.initializer.kind === "unary"
         && (statement.initializer.operator === "copy" || statement.initializer.operator === "move");
       if (hasOwnershipType(sourceType, structs, enums, state)
@@ -4423,6 +4452,13 @@ function analyzeStatement(
         const stored = statement.mutable ? `${mutablePrefix}${field.type.name}` : field.type.name;
         locals.set(binding.bindingName, stored);
         state.bindingTypes.set(binding.bindingLocation.offset, field.type.name);
+        if (retainedViewOrigin && parseViewType(field.type.name)) {
+          bindViewOrigin(binding.bindingName, retainedViewOrigin, fileName, state);
+          state.viewBindingOwners.set(
+            binding.bindingLocation.offset,
+            viewOriginOwnerLabel(retainedViewOrigin),
+          );
+        }
       }
       return;
     }
@@ -9447,11 +9483,14 @@ function inferExpressionInner(
       const receiverView = parseViewType(String(receiverType));
       const receiverRoot = storageRoot(expression.object);
       const stableAggregateView = receiverRoot
-        ? containsStoredViewType(
-          String(underlyingType(locals.get(receiverRoot.name) ?? "unknown")),
-          structs,
-          enums,
-        ) && state.viewOrigins.has(receiverRoot.name)
+        ? (() => {
+          const stored = locals.get(receiverRoot.name);
+          return containsStoredViewType(
+            String(underlyingType(stored ?? "unknown")),
+            structs,
+            enums,
+          ) && (state.viewOrigins.has(receiverRoot.name) || Boolean(stored && isBorrowedBinding(stored)));
+        })()
         : false;
       if (
         receiverView
@@ -12007,7 +12046,12 @@ function inferExpressionInner(
           return resultTypeName(callable.returnType.name, callable.errorType.name);
         }
         const returnedView = parseReceiverViewReturnType(callable.returnType.name);
-        if (returnedView) {
+        const returnedViewAggregate = retainedParameterViewAggregateDeclaration(
+          callable.returnType.name,
+          structs,
+          enums,
+        );
+        if (returnedView || returnedViewAggregate) {
           const root = storageRoot(expression.callee.object);
           if (!root || !locals.has(root.name)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a view-returning method requires a named owner binding", {
@@ -12999,6 +13043,14 @@ function parameterViewSourceIndices(
         && expression.callee.kind === "identifier"
         && expression.callee.name === retainedAggregate.name
       ) expression.arguments.forEach(record);
+      else if (expression.kind === "call") {
+        if (expression.callee.kind === "member") record(expression.callee.object);
+        else expression.arguments.forEach(record);
+      } else if (
+        expression.kind === "try"
+        || expression.kind === "attempt"
+        || expression.kind === "await"
+      ) record(expression.expression);
       return;
     }
     if (expression.kind === "call") {
@@ -17144,38 +17196,39 @@ function validateRetainedParameterViewAggregateReturn(
     structs,
     enums,
   );
-  if (
-    !declaration
-    || expression.kind !== "call"
-    || expression.callee.kind !== "identifier"
-    || expression.callee.name !== declaration.name
-    || expression.arguments.length !== 1
-    || expression.arguments[0].kind !== "objectExpression"
-    || expression.arguments[0].spread
-  ) {
+  if (!declaration) {
     throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result must be constructed directly at its return", {
       code: "Z0206",
-      notes: ["forwarding stored view aggregates requires a broader lifetime relationship than the first parameter-provenance tier"],
-      helps: declaration
-        ? [`return ${declaration.name}({ ... }) with every view field projected from one immutable input`]
-        : undefined,
     });
   }
-  const object = expression.arguments[0];
-  for (const field of declaration.fields) {
-    if (!parseViewType(field.type.name)) continue;
-    const initializer = object.fields.find((candidate) => candidate.name === field.name);
-    if (
-      !initializer
-      || initializer.expression.kind !== "unary"
-      || initializer.expression.operator !== "view"
-    ) {
-      throw new DiagnosticError(fileName, initializer?.expression.location ?? object.location, `returned view field ${JSON.stringify(field.name)} requires an explicit view projection`, {
+  const directConstruction = expression.kind === "call"
+    && expression.callee.kind === "identifier"
+    && expression.callee.name === declaration.name
+    && expression.arguments.length === 1
+    && expression.arguments[0].kind === "objectExpression";
+  if (directConstruction) {
+    const object = expression.arguments[0] as Extract<Expression, { kind: "objectExpression" }>;
+    if (object.spread) {
+      throw new DiagnosticError(fileName, object.location, "a retained view-bearing aggregate return cannot use struct spread", {
         code: "Z0206",
-        helps: [`initialize ${field.name} with \`view owner.field\` or \`view owner.items[index]\``],
+        notes: ["every returned view field must expose its owner provenance at the return boundary"],
       });
     }
-    state.localViewInitializers.add(initializer.expression.location.offset);
+    for (const field of declaration.fields) {
+      if (!parseViewType(field.type.name)) continue;
+      const initializer = object.fields.find((candidate) => candidate.name === field.name);
+      if (
+        !initializer
+        || initializer.expression.kind !== "unary"
+        || initializer.expression.operator !== "view"
+      ) {
+        throw new DiagnosticError(fileName, initializer?.expression.location ?? object.location, `returned view field ${JSON.stringify(field.name)} requires an explicit view projection`, {
+          code: "Z0206",
+          helps: [`initialize ${field.name} with \`view owner.field\` or \`view owner.items[index]\``],
+        });
+      }
+      state.localViewInitializers.add(initializer.expression.location.offset);
+    }
   }
   const actual = inferDirectValue(
     expression,
@@ -17189,7 +17242,18 @@ function validateRetainedParameterViewAggregateReturn(
     expected,
   );
   requireAssignable(expected, actual, expression, fileName, structs, enums, state);
-  const origin = state.viewCallOrigins.get(expression.location.offset);
+  let origin = state.viewCallOrigins.get(expression.location.offset);
+  if (!origin) {
+    const root = storageRoot(expression);
+    const forwardedParameter = root
+      ? owner.parameters.find((candidate) => (
+        candidate.name === root.name && candidate.mode === "in"
+      ))
+      : null;
+    if (root && forwardedParameter) {
+      origin = directViewOrigin(root.name, expression.location);
+    }
+  }
   if (!origin || origin.sources.length !== 1) {
     throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result must borrow from exactly one immutable input owner", {
       code: "Z0206",
@@ -17200,10 +17264,15 @@ function validateRetainedParameterViewAggregateReturn(
   const parameter = owner.parameters.find((candidate) => (
     candidate.name === source.owner && candidate.mode === "in"
   ));
-  if (!parameter) {
+  const borrowedReceiver = source.owner === "this"
+    && state.activeReceiver !== null
+    && !owner.static
+    && owner.receiverMode !== "inout"
+    && owner.receiverMode !== "move";
+  if (!parameter && !borrowedReceiver) {
     throw new DiagnosticError(fileName, expression.location, "a retained view-bearing result cannot borrow local storage", {
       code: "Z0206",
-      helps: ["project every view field from one immutable `in` parameter"],
+      helps: ["project every view field from one immutable `in` parameter or the borrowed `this` receiver"],
     });
   }
   return actual;

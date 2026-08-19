@@ -34,6 +34,13 @@ export struct DocumentWorkspace {
     return Option.none;
   }
 
+  function endpoints(): DocumentSelection {
+    return DocumentSelection({
+      first: view this.documents[0],
+      last: view this.documents[this.documents.length - 1],
+    });
+  }
+
   function saveAll(inout this): i32 throws WorkspaceError {
     if (this.documents.length == 0) {
       throw WorkspaceError({
@@ -75,8 +82,5 @@ export function findWorkspaceDocument(
 export function selectWorkspaceEndpoints(
   in workspace: DocumentWorkspace
 ): DocumentSelection {
-  return DocumentSelection({
-    first: view workspace.documents[0],
-    last: view workspace.documents[workspace.documents.length - 1],
-  });
+  return workspace.endpoints();
 }

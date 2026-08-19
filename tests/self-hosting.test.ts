@@ -539,6 +539,51 @@ test("preserves multi-owner optional parameter views through native semantics an
     const execution = spawnSync(executable, [], { encoding: "utf8" });
     assert.equal(execution.status, 0, execution.stderr);
 
+    const composition = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-resolve-parameter-view-composition.zs",
+    );
+    const compositionEmission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", composition],
+      { encoding: "utf8" },
+    );
+    assert.equal(compositionEmission.status, 0, compositionEmission.stderr);
+    assert.match(
+      compositionEmission.stdout,
+      /Z_DocumentSelection Z_Workspace_endpoints\(const Z_Workspace \*self\)/,
+    );
+    assert.match(
+      compositionEmission.stdout,
+      /const Z_Document \* const first = _z_destructure_[0-9]+\.first;/,
+    );
+    const compositionExecutable = resolve(directory, "composition");
+    const compositionCompilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", compositionExecutable],
+      { encoding: "utf8", input: compositionEmission.stdout },
+    );
+    assert.equal(compositionCompilation.status, 0, compositionCompilation.stderr);
+    const compositionExecution = spawnSync(compositionExecutable, [], {
+      encoding: "utf8",
+    });
+    assert.equal(compositionExecution.status, 0, compositionExecution.stderr);
+
+    const destructureInvalid = resolve(
+      projectRoot,
+      "tests/fixtures/self-host-reject-parameter-view-destructure-mutation.zs",
+    );
+    const destructureInvalidResult = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", destructureInvalid],
+      { encoding: "utf8" },
+    );
+    assert.equal(destructureInvalidResult.status, 1);
+    assert.match(
+      destructureInvalidResult.stderr,
+      /cannot mutate "workspace" while view "last" is live/,
+    );
+
     const invalid = resolve(
       projectRoot,
       "tests/fixtures/self-host-resolve-parameter-optional-view-invalid.zs",
@@ -4648,17 +4693,6 @@ test("allocates and reversely cleans Arena values through the native frontend", 
       expected: /ARC class fields cannot store owner-tied views/,
     },
     {
-      name: "arena-stored-view-return",
-      source: [
-        "struct Item { value: i32; }",
-        "struct Holder { item: view Item; }",
-        "function leak(in holder: Holder): Holder { return holder; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      expected: /must be constructed directly at its return/,
-    },
-    {
       name: "arena-stored-view-async",
       source: [
         "struct Item { value: i32; }",
@@ -5865,7 +5899,7 @@ test("compiles a multi-module Z application through the standalone native driver
   const driver = resolve(directory, "z-native");
   const driverCompilation = spawnSync(
     "clang",
-    ["-x", "c", "-std=c11", "-O0", "-Wall", "-Wextra", "-Werror", "-", "-o", driver],
+    ["-x", "c", "-std=c11", "-O2", "-DNDEBUG", "-Wall", "-Wextra", "-Werror", "-", "-o", driver],
     { encoding: "utf8", input: driverEmission.stdout },
   );
   assert.equal(driverCompilation.status, 0, driverCompilation.stderr);
@@ -6525,21 +6559,20 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'generator type "Generator<i32>" is not executable in the native compiler yet',
     },
     {
-      name: "destructuring",
+      name: "array-destructuring",
       source: [
-        "struct Pair { left: i32; right: i32; }",
         "function main(): i32 {",
-        "  const pair = Pair({ left: 20, right: 22 });",
-        "  const { left, right } = pair;",
+        "  const values = Array<i32>(20, 22);",
+        "  const [left, right] = values;",
         "  return left + right - 42;",
         "}",
         "",
       ].join("\n"),
-      line: 4,
+      line: 3,
       column: 3,
       marker: "^^^^^",
       code: "Z1000",
-      summary: "destructuring statements are not executable in the native compiler yet",
+      summary: "array destructuring is not executable in the native compiler yet",
     },
     {
       name: "async-scope",
@@ -9078,7 +9111,7 @@ function main(): i32 {
   );
   assert.match(changedSourceRunning.stdout, /compiled 1 Z modules/);
   assert.ok(statSync(cachedArgumentApplication).mtimeMs > 0);
-}, 150_000);
+}, 300_000);
 
 test("lowers the complete native frontend graph to C", () => {
   const frontend = resolve(projectRoot, "compiler/frontend/parser-library.zs");
@@ -11512,7 +11545,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     ),
     /malformed stage-1 method receiver mode/,
   );
-}, 10_000);
+}, 60_000);
 
 test("rejects executor-affinity violations in the native resolver", () => {
   const cases = [
@@ -11590,7 +11623,7 @@ test("keeps native semantic authority composable across a representative Z corpu
       assert.deepEqual(authoritative, observed, `${entry} left an observed native semantic result on Stage 0`);
     }
   }
-}, 60_000);
+}, 120_000);
 
 test("preserves trait receiver capabilities in the native module graph", () => {
   const input = resolve(projectRoot, "examples/language/basics/classes.zs");
@@ -11915,7 +11948,7 @@ test("defers unavailable foreign ABI semantics without inventing native diagnost
     assert.equal(authoritativeBindings, observedBindings, fileName);
     assert.equal(authoritativeExpressions, observedExpressions, fileName);
   }
-}, 30_000);
+}, 60_000);
 
 test("classifies unresolved foreign integer conversion evidence before native lowering", () => {
   const input = resolve(

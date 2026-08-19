@@ -2947,6 +2947,11 @@ function planCleanupStatement(
   if (
     statements[loweredIndex].kind == LoweredStatementKind.blockStatement
     && statements[loweredIndex].labels.length == 1
+    && statements[loweredIndex].labels[0] == "destructure-normalized"
+  ) return;
+  if (
+    statements[loweredIndex].kind == LoweredStatementKind.blockStatement
+    && statements[loweredIndex].labels.length == 1
     && statements[loweredIndex].labels[0] == "nested-try-normalized"
   ) {
     if (statements[loweredIndex].children.length < 2) {
@@ -12774,6 +12779,146 @@ function lowerStatementCore(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.destructureStatement) {
+    if (
+      arena.nodes[index].arrayBindings.length > 0
+      || arena.nodes[index].objectBindings.length == 0
+      || arena.nodes[index].mutableBinding
+    ) throw "native lowering currently supports immutable object destructuring only";
+    match (in arena.nodes[index].expression) {
+      some(source) => return match (in source.tree) {
+        some(tree) => {
+        const root = tree.root;
+        const sourceTypeName = match (staticallyResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          root
+        )) {
+          some(name) => name;
+          none => throw "native object destructuring could not resolve its source type";
+        };
+        const sourceType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          sourceTypeName
+        );
+        if (moduleTypeNeedsCleanup(program, importedTypes, sourceType)) {
+          throw "native object destructuring of cleanup-bearing storage remains deferred";
+        }
+        const sourceValue = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root,
+          sourceTypeName,
+          inout expressions
+        );
+        const temporaryName = `_z_destructure_${arena.nodes[index].offset}`;
+        let flattened = Array<usize>();
+        const temporary = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.localStatement,
+          mutableBinding: false,
+          name: temporaryName.copyBytes(0, temporaryName.byteLength),
+          type: Option.some(move sourceType),
+          expression: Option.some(sourceValue),
+          secondExpression: Option<usize>.none,
+          children: Array<usize>(),
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: Array<String>(),
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+        flattened.push(temporary);
+        for (const objectBinding of arena.nodes[index].objectBindings) {
+          let bindingTypeName = "";
+          for (const resolution of evidence.bindingResolutions) {
+            if (
+              resolution.offset == objectBinding.bindingOffset
+              && resolution.name == objectBinding.bindingName
+            ) bindingTypeName = resolution.typeName.copyBytes(
+              0,
+              resolution.typeName.byteLength
+            );
+          }
+          if (bindingTypeName.byteLength == 0) {
+            throw `native object destructuring could not resolve binding ${objectBinding.bindingName}`;
+          }
+          const bindingType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            bindingTypeName
+          );
+          const receiver = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.localValue,
+            temporaryName,
+            Array<usize>(),
+            Array<String>()
+          );
+          let fieldChildren = Array<usize>();
+          fieldChildren.push(receiver);
+          let fieldLabels = Array<String>();
+          if (stringStartsWith(bindingTypeName, "view ")) {
+            fieldLabels.push("resultView");
+          }
+          const fieldValue = pushExpression(
+            inout expressions,
+            LoweredExpressionKind.fieldValue,
+            objectBinding.fieldName,
+            fieldChildren,
+            fieldLabels
+          );
+          const local = statements.length;
+          statements.push(LoweredStatement({
+            kind: LoweredStatementKind.localStatement,
+            mutableBinding: false,
+            name: objectBinding.bindingName.copyBytes(
+              0,
+              objectBinding.bindingName.byteLength
+            ),
+            type: Option.some(move bindingType),
+            expression: Option.some(fieldValue),
+            secondExpression: Option<usize>.none,
+            children: Array<usize>(),
+            cleanups: Array<LoweredCleanup>(),
+            liveFlag: "",
+            labels: Array<String>(),
+            matchConsumesSubject: false,
+            matchBindingNeedsCleanup: false,
+          }));
+          flattened.push(local);
+        }
+        let labels = Array<String>();
+        labels.push("destructure-normalized");
+        const block = statements.length;
+        statements.push(LoweredStatement({
+          kind: LoweredStatementKind.blockStatement,
+          mutableBinding: false,
+          name: "",
+          type: Option<LoweredType>.none,
+          expression: Option<usize>.none,
+          secondExpression: Option<usize>.none,
+          children: move flattened,
+          cleanups: Array<LoweredCleanup>(),
+          liveFlag: "",
+          labels: move labels,
+          matchConsumesSubject: false,
+          matchBindingNeedsCleanup: false,
+        }));
+          select block;
+        }
+        none => throw "native object destructuring cannot lower an opaque expression";
+      };
+      none => throw "native object destructuring requires a source expression";
+    }
+  }
   if (arena.nodes[index].kind == StatementKind.expressionStatement) {
     match (in arena.nodes[index].expression) {
       some(syntax) => match (in syntax.tree) {

@@ -185,10 +185,10 @@ test("returns a closed Arena-owned graph bundle without letting views escape the
     "function main(): i32 {",
     "function forward(in inspected: ItemRef): ItemRef { return inspected; }\nfunction main(): i32 {",
   );
-  assert.match(
-    diagnostics(forwardedViewComposite, "ordinary-view-composite-forward.zs")[0].message,
-    /must be constructed directly at its return/,
-  );
+  assert.doesNotThrow(() => compileToC(
+    forwardedViewComposite,
+    resolve(projectRoot, "ordinary-view-composite-forward.zs"),
+  ));
 });
 
 test("returns retained parameter views as zero-allocation value aggregates", () => {
@@ -216,6 +216,59 @@ test("returns retained parameter views as zero-allocation value aggregates", () 
     encoding: "utf8",
   });
   assert.equal(execution.status, 0, execution.stderr);
+
+  const compositionFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-resolve-parameter-view-composition.zs",
+  );
+  const compositionSource = readFileSync(compositionFixture, "utf8");
+  const compositionGenerated = compileToC(
+    compositionSource,
+    compositionFixture,
+  );
+  assert.match(
+    compositionGenerated,
+    /Z_DocumentSelection Z_Workspace_endpoints\(const Z_Workspace \*\s*self\)/,
+  );
+  assert.match(
+    compositionGenerated,
+    /const Z_Document \* const first = .*\.first/,
+  );
+  assert.match(
+    hover(
+      compositionSource,
+      compositionFixture,
+      compositionSource.indexOf("{ first, last }") + 2,
+    )?.contents.value ?? "",
+    /first: view Document.*view of workspace/s,
+  );
+  const compositionExecution = spawnSync(
+    process.execPath,
+    [cli, "run", compositionFixture],
+    { encoding: "utf8" },
+  );
+  assert.equal(compositionExecution.status, 0, compositionExecution.stderr);
+
+  const destructureInvalidFixture = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-parameter-view-destructure-mutation.zs",
+  );
+  const destructureInvalidSource = readFileSync(
+    destructureInvalidFixture,
+    "utf8",
+  );
+  assert.match(
+    diagnostics(destructureInvalidSource, destructureInvalidFixture)[0].message,
+    /cannot mutate "workspace" while view "last" is live/,
+  );
+  const mutableMethod = compositionSource.replace(
+    "function endpoints(): DocumentSelection",
+    "function endpoints(inout this): DocumentSelection",
+  );
+  assert.match(
+    diagnostics(mutableMethod, "parameter-view-aggregate-mutating-method.zs")[0].message,
+    /requires a synchronous, non-throwing borrowed instance method/,
+  );
 
   const invalidFixture = resolve(
     projectRoot,

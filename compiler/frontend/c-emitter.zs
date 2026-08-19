@@ -3743,8 +3743,10 @@ function appendStatement(
   if (declaration.statements[index].kind == LoweredStatementKind.blockStatement) {
     if (
       declaration.statements[index].labels.length == 1
-      && declaration.statements[index].labels[0]
-        == "nested-try-normalized"
+      && (
+        declaration.statements[index].labels[0] == "nested-try-normalized"
+        || declaration.statements[index].labels[0] == "destructure-normalized"
+      )
     ) {
       for (const child of declaration.statements[index].children) {
         try appendStatement(inout output, declaration, child, depth);

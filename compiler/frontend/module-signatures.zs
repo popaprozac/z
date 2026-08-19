@@ -304,13 +304,21 @@ function functionDeclarationViewParameters(
         some(tree) => {
           const root = tree.root;
           if (directView) appendReturnViewRoot(tree, root, inout roots);
-          else appendAggregateReturnViewRoots(
-            tree,
-            root,
-            declaration.returnType.name,
-            aggregateViewFields,
-            inout roots
-          );
+          else if (aggregateViewFields.length > 0) {
+            const before = roots.length;
+            appendAggregateReturnViewRoots(
+              tree,
+              root,
+              declaration.returnType.name,
+              aggregateViewFields,
+              inout roots
+            );
+            if (roots.length == before) appendReturnViewRoot(
+              tree,
+              root,
+              inout roots
+            );
+          }
         }
         none => {}
       }

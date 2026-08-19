@@ -40,9 +40,9 @@ function exerciseDocumentWorkspace(): WorkspaceRunSummary {
     none => -1;
   };
 
-  const endpoints = selectWorkspaceEndpoints(in workspace);
-  const firstDocumentId = endpoints.first.documentId();
-  const lastDocumentId = endpoints.last.documentId();
+  const { first, last } = selectWorkspaceEndpoints(in workspace);
+  const firstDocumentId = first.documentId();
+  const lastDocumentId = last.documentId();
 
   // Both returned-view loans ended at their last reads, so growth is safe.
   workspace.registerDocument("API guide", 43);

@@ -349,81 +349,77 @@ function validateRetainedParameterViewAggregateReturn(
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
+      let directConstruction = false;
+      let initializer: usize = root;
       if (
-        tree.nodes[root].kind != ExpressionKind.callExpression
-        || tree.nodes[root].children.length != 2
-      ) throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "a retained view-bearing aggregate must be constructed directly at its return",
-        tree.nodes[root].line,
-        tree.nodes[root].column
-      );
-      const callee = tree.nodes[root].children[0];
-      const initializer = tree.nodes[root].children[1];
-      if (
-        tree.nodes[callee].kind != ExpressionKind.identifierExpression
-        || tree.nodes[callee].value != expectedType
-        || tree.nodes[initializer].kind != ExpressionKind.objectExpression
-      ) throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "a retained view-bearing aggregate must be constructed directly at its return",
-        tree.nodes[root].line,
-        tree.nodes[root].column
-      );
-      for (const label of tree.nodes[initializer].labels) {
-        if (label == "...") throw resolutionError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          "a retained view-bearing aggregate return cannot use struct spread",
-          tree.nodes[initializer].line,
-          tree.nodes[initializer].column
-        );
+        tree.nodes[root].kind == ExpressionKind.callExpression
+        && tree.nodes[root].children.length == 2
+      ) {
+        const callee = tree.nodes[root].children[0];
+        const candidate = tree.nodes[root].children[1];
+        if (
+          tree.nodes[callee].kind == ExpressionKind.identifierExpression
+          && tree.nodes[callee].value == expectedType
+          && tree.nodes[candidate].kind == ExpressionKind.objectExpression
+        ) {
+          directConstruction = true;
+          initializer = candidate;
+        }
       }
-      match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
-        some(location) => match (in modules[location.moduleIndex].symbols[
-          location.symbolIndex
-        ].typeSignature) {
-          some(signature) => {
-            for (const field of signature.fields) {
-              if (!stringStartsWith(field.typeName, "view ")) continue;
-              let fieldIndex: usize = 0;
-              let found = false;
-              while (
-                fieldIndex < tree.nodes[initializer].labels.length
-                && fieldIndex < tree.nodes[initializer].children.length
-              ) {
-                if (tree.nodes[initializer].labels[fieldIndex] == field.name) {
-                  found = true;
-                  const fieldExpression = tree.nodes[initializer].children[fieldIndex];
-                  if (
-                    tree.nodes[fieldExpression].kind != ExpressionKind.unaryExpression
-                    || tree.nodes[fieldExpression].value != "view"
-                    || tree.nodes[fieldExpression].children.length != 1
-                  ) throw resolutionError(
-                    ModuleResolveErrorKind.typeMismatch,
-                    module.path,
-                    `retained view field "${field.name}" must use an explicit view expression`,
-                    tree.nodes[fieldExpression].line,
-                    tree.nodes[fieldExpression].column
-                  );
-                  break;
+      if (directConstruction) {
+        for (const label of tree.nodes[initializer].labels) {
+          if (label == "...") throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "a retained view-bearing aggregate return cannot use struct spread",
+            tree.nodes[initializer].line,
+            tree.nodes[initializer].column
+          );
+        }
+        match (typeSymbolLocation(modules, moduleIndex, expectedType)) {
+          some(location) => match (in modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].typeSignature) {
+            some(signature) => {
+              for (const field of signature.fields) {
+                if (!stringStartsWith(field.typeName, "view ")) continue;
+                let fieldIndex: usize = 0;
+                let found = false;
+                while (
+                  fieldIndex < tree.nodes[initializer].labels.length
+                  && fieldIndex < tree.nodes[initializer].children.length
+                ) {
+                  if (tree.nodes[initializer].labels[fieldIndex] == field.name) {
+                    found = true;
+                    const fieldExpression = tree.nodes[initializer].children[fieldIndex];
+                    if (
+                      tree.nodes[fieldExpression].kind != ExpressionKind.unaryExpression
+                      || tree.nodes[fieldExpression].value != "view"
+                      || tree.nodes[fieldExpression].children.length != 1
+                    ) throw resolutionError(
+                      ModuleResolveErrorKind.typeMismatch,
+                      module.path,
+                      `retained view field "${field.name}" must use an explicit view expression`,
+                      tree.nodes[fieldExpression].line,
+                      tree.nodes[fieldExpression].column
+                    );
+                    break;
+                  }
+                  fieldIndex = fieldIndex + 1;
                 }
-                fieldIndex = fieldIndex + 1;
+                if (!found) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  `retained view field "${field.name}" must be initialized directly at the return`,
+                  tree.nodes[initializer].line,
+                  tree.nodes[initializer].column
+                );
               }
-              if (!found) throw resolutionError(
-                ModuleResolveErrorKind.typeMismatch,
-                module.path,
-                `retained view field "${field.name}" must be initialized directly at the return`,
-                tree.nodes[initializer].line,
-                tree.nodes[initializer].column
-              );
             }
+            none => {}
           }
           none => {}
         }
-        none => {}
       }
       const owner = expressionViewOrigin(bindings, tree.nodes[root].offset);
       const ownerViewOwner = valueBindingViewOwner(bindings, owner);
@@ -438,7 +434,7 @@ function validateRetainedParameterViewAggregateReturn(
       ) throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
-        "a retained view-bearing aggregate must borrow every view field from one immutable in parameter",
+        "a retained view-bearing aggregate must borrow every view field from one immutable input or receiver",
         tree.nodes[root].line,
         tree.nodes[root].column
       );
@@ -7254,6 +7250,41 @@ function inferExpressionNodeType(
               callKind,
               inout evidence
             );
+            if (
+              !method.staticMethod
+              && typeIsRetainedParameterViewAggregate(
+                modules,
+                moduleIndex,
+                callType
+              )
+            ) {
+              const borrowedReceiver = expressionStorageRootName(
+                tree,
+                receiverIndex
+              );
+              if (borrowedReceiver.byteLength == 0) throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `retained view result from ${method.ownerName}.${method.name} requires a named owner binding`,
+                tree.nodes[receiverIndex].line,
+                tree.nodes[receiverIndex].column
+              );
+              let resultOwner = valueBindingViewOwner(
+                bindings,
+                borrowedReceiver
+              );
+              if (resultOwner.byteLength == 0) {
+                resultOwner = borrowedReceiver.copyBytes(
+                  0,
+                  borrowedReceiver.byteLength
+                );
+              }
+              setExpressionViewOrigin(
+                inout bindings,
+                tree.nodes[index].offset,
+                resultOwner
+              );
+            }
             if (receiverAccess == "move" && receiverRoot.byteLength > 0) {
               setValueBindingOwnership(
                 inout bindings,
@@ -7646,6 +7677,7 @@ function inferStatement(
   if (kind == StatementKind.destructureStatement) {
     let inferred = "";
     let sourceType = "";
+    let retainedViewOwner = "";
     match (in arena.nodes[index].typeAnnotation) {
       some(type) => sourceType = type.name.copyBytes(0, type.name.byteLength);
       none => {}
@@ -7673,6 +7705,41 @@ function inferStatement(
           );
         } else {
           sourceType = inferred.copyBytes(0, inferred.byteLength);
+        }
+        if (typeIsRetainedParameterViewAggregate(
+          modules,
+          moduleIndex,
+          sourceType
+        )) {
+          if (arena.nodes[index].mutableBinding) throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "retained view aggregate destructuring requires immutable const bindings",
+            arena.nodes[index].line,
+            arena.nodes[index].column
+          );
+          match (in expression.tree) {
+            some(tree) => {
+              const root = tree.root;
+              retainedViewOwner = storedViewOwnerForExpression(
+                bindings,
+                tree,
+                root
+              );
+              if (
+                retainedViewOwner.byteLength == 0
+                || viewOwnerIsOwnerless(retainedViewOwner)
+                || retainedViewOwner == "__z_native_mixed_view_owner"
+              ) throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                "retained view aggregate destructuring requires one proven owner",
+                tree.nodes[root].line,
+                tree.nodes[root].column
+              );
+            }
+            none => {}
+          }
         }
         if (arena.nodes[index].arrayBindings.length == 0) {
           try consumeOwnedExpressionSyntax(
@@ -7747,7 +7814,17 @@ function inferStatement(
         fieldType,
         inout evidence
       );
-      if (mutableBinding) {
+      if (
+        retainedViewOwner.byteLength > 0
+        && stringStartsWith(fieldType, "view ")
+      ) {
+        addViewValueBinding(
+          inout bindings,
+          bindingName,
+          fieldType,
+          retainedViewOwner
+        );
+      } else if (mutableBinding) {
         addMutableValueBinding(inout bindings, bindingName, fieldType);
       } else {
         addValueBinding(inout bindings, bindingName, fieldType);
