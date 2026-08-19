@@ -2757,14 +2757,25 @@ both. The consumer can therefore construct an expression closure against an
 imported `Handler`, while the fixed-point emitter still shares the exact
 canonical ABI declared by the owning module.
 
-The companion native-callback entry shares the published router with an escaping callback
-declared by `callbacks.h.zd`. The C registration owns the generated closure
+The fixed-point native driver now compiles and runs the companion
+native-callback entry, which shares the published router with an escaping
+callback declared by `callbacks.h.zd`. The C registration owns the generated closure
 box; the closure owns the router; the router owns its Map and handler; and the
 handler owns captured ARC state. Calling the contracted native clear operation
 releases that foreign root before control returns to `main`. The callback is explicitly `thread caller`, so this proves
 foreign entry and lifetime composition without claiming arbitrary-thread Map
 access; a `thread any` producer would still require synchronization or executor
 isolation.
+
+That fixed-point run exposed two adjacent composition gaps. Native contract
+attachment had treated `.zd` as a replacement surface, hiding ordinary
+header-inferred functions such as the callback invoker and clearer; normalization
+now merges every still-representable uncontracted function back into the checked
+module. Contextual function types from foreign call signatures also now enter the
+native function-type registry, allowing an inline expression closure to share
+the exact callable ABI used by its generated trampoline. Finally, immutable ARC
+class parameters emit `T * const *` rather than `const T **`, preserving the
+pointer identity's constness without changing the pointee type.
 
 The ordinary closure environment remains executor-local in this tier;
 cross-thread general callable sharing, block-bodied first-class closures, and

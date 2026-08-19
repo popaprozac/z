@@ -6,6 +6,7 @@ import {
   LoweredExpressionKind,
   LoweredEnum,
   LoweredFunction,
+  LoweredFunctionType,
   LoweredCleanup,
   LoweredMainDelayLoop,
   LoweredMainDelaySegment,
@@ -239,9 +240,16 @@ function appendCallableParameterDeclaration(
   in name: String
 ): void throws String {
   const type = try cType(parameter.type);
-  if (parameter.mode == LoweredParameterMode.input) output.append("const ");
+  if (
+    parameter.mode == LoweredParameterMode.input
+    && parameter.type.kind != LoweredTypeKind.classType
+  ) output.append("const ");
   output.append(type);
-  if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+  if (
+    parameter.mode == LoweredParameterMode.input
+    && parameter.type.kind == LoweredTypeKind.classType
+  ) output.append(" const *");
+  else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
   else output.append(" ");
   appendCBindingName(inout output, name);
 }
@@ -1022,6 +1030,56 @@ function appendExpression(
   in declaration: LoweredFunction,
   index: usize
 ): void throws String {
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.foreignCallbackValue
+  ) {
+    if (declaration.expressions[index].labels.length < 2) {
+      throw "native C callback lowering lost its ABI role";
+    }
+    const role = declaration.expressions[index].labels[0].copyBytes(
+      0,
+      declaration.expressions[index].labels[0].byteLength
+    );
+    const lifetime = declaration.expressions[index].labels[1].copyBytes(
+      0,
+      declaration.expressions[index].labels[1].byteLength
+    );
+    if (role == "callbackAdapter") {
+      output.append("z_stage1_c_callback_Z_");
+      output.append(declaration.expressions[index].value);
+      return;
+    }
+    if (role == "callbackRelease") {
+      output.append("Z_");
+      output.append(declaration.expressions[index].value);
+      output.append("_c_escape_box_release");
+      return;
+    }
+    if (role == "callbackContext") {
+      if (declaration.expressions[index].children.length != 1) {
+        throw "native C callback context lost its Z closure value";
+      }
+      const callbackValue = declaration.expressions[index].children[0];
+      if (lifetime == "escaping") {
+        output.append("Z_");
+        output.append(declaration.expressions[index].value);
+        output.append("_c_escape_box(");
+        try appendExpression(
+          inout output,
+          declaration,
+          callbackValue
+        );
+        output.append(")");
+        return;
+      }
+      throw "native fixed-point C emission does not execute call-scoped callback contexts yet";
+    }
+    if (role == "callbackDirect") {
+      throw "native fixed-point C emission does not execute context-free callbacks yet";
+    }
+    throw `native C callback lowering has unknown ABI role "${role}"`;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.receiverValue) {
     let classReceiver = false;
     let valueReceiver = false;
@@ -3878,9 +3936,16 @@ function appendFunctionSignature(
     if (!first) output.append(", ");
     first = false;
     const parameterType = try cType(parameter.type);
-    if (parameter.mode == LoweredParameterMode.input) output.append("const ");
+    if (
+      parameter.mode == LoweredParameterMode.input
+      && parameter.type.kind != LoweredTypeKind.classType
+    ) output.append("const ");
     output.append(parameterType);
-    if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+    if (
+      parameter.mode == LoweredParameterMode.input
+      && parameter.type.kind == LoweredTypeKind.classType
+    ) output.append(" const *");
+    else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
     else output.append(" ");
     appendCBindingName(inout output, parameter.name);
   }
@@ -3957,6 +4022,80 @@ function appendFunction(
   }
   try appendFunctionTail(inout output, declaration);
   output.append("}\n\n");
+}
+
+function programUsesForeignCallbackType(
+  in program: LoweredProgram,
+  in name: String
+): boolean {
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.foreignCallbackValue
+        && expression.value == name
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function appendForeignCallbackHelpers(
+  inout output: TextBuffer,
+  in declaration: LoweredFunctionType
+): void throws String {
+  const returnType = try cType(declaration.returnType);
+  output.append("static __attribute__((unused)) ");
+  output.append(returnType);
+  output.append(" z_stage1_c_callback_Z_");
+  output.append(declaration.name);
+  output.append("(");
+  let parameterIndex: usize = 0;
+  while (parameterIndex < declaration.parameters.length) {
+    if (parameterIndex > 0) output.append(", ");
+    try appendCallableParameterDeclaration(
+      inout output,
+      declaration.parameters[parameterIndex],
+      declaration.parameters[parameterIndex].name
+    );
+    parameterIndex = parameterIndex + 1;
+  }
+  if (parameterIndex > 0) output.append(", ");
+  output.append("void *callback_context) {\n  Z_");
+  output.append(declaration.name);
+  output.append(" *callback = (Z_");
+  output.append(declaration.name);
+  output.append(" *)callback_context;\n  ");
+  if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+    output.append("return ");
+  }
+  output.append("Z_");
+  output.append(declaration.name);
+  output.append("_call(*callback");
+  for (const parameter of declaration.parameters) {
+    output.append(", ");
+    appendCBindingName(inout output, parameter.name);
+  }
+  output.append(");\n}\n\n");
+  output.append("static __attribute__((unused)) void *Z_");
+  output.append(declaration.name);
+  output.append("_c_escape_box(Z_");
+  output.append(declaration.name);
+  output.append(" value) {\n  Z_");
+  output.append(declaration.name);
+  output.append(" *box = (Z_");
+  output.append(declaration.name);
+  output.append(" *)malloc(sizeof(Z_");
+  output.append(declaration.name);
+  output.append("));\n  if (box == NULL) abort();\n  *box = value;\n  return box;\n}\n\n");
+  output.append("static __attribute__((unused)) void Z_");
+  output.append(declaration.name);
+  output.append("_c_escape_box_release(void *context) {\n  Z_");
+  output.append(declaration.name);
+  output.append(" *box = (Z_");
+  output.append(declaration.name);
+  output.append(" *)context;\n  if (box == NULL) return;\n  Z_");
+  output.append(declaration.name);
+  output.append("_deinit(box);\n  free(box);\n}\n\n");
 }
 
 function appendCallableHelpers(
@@ -8605,9 +8744,16 @@ function appendTypeDefinitions(
     for (const parameter of declaration.parameters) {
       output.append(", ");
       const parameterType = try cType(parameter.type);
-      if (parameter.mode == LoweredParameterMode.input) output.append("const ");
+      if (
+        parameter.mode == LoweredParameterMode.input
+        && parameter.type.kind != LoweredTypeKind.classType
+      ) output.append("const ");
       output.append(parameterType);
-      if (parameter.mode != LoweredParameterMode.value) output.append(" *");
+      if (
+        parameter.mode == LoweredParameterMode.input
+        && parameter.type.kind == LoweredTypeKind.classType
+      ) output.append(" const *");
+      else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
     }
     output.append(");\n  void *context;\n  void (*retain)(void *context);\n  void (*release)(void *context);\n} Z_");
     output.append(declaration.name);
@@ -8651,6 +8797,9 @@ function appendTypeDefinitions(
     output.append("_deinit(Z_");
     output.append(declaration.name);
     output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n  value->call = NULL;\n  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
+    if (programUsesForeignCallbackType(program, declaration.name)) {
+      try appendForeignCallbackHelpers(inout output, declaration);
+    }
   }
   enumIndex = 0;
   while (enumIndex < program.enums.length) {

@@ -113,7 +113,11 @@ function foreignFunctionSignature(
   let nativeToVisible = Array<usize>();
   let visibleIndex: usize = 0;
   for (const parameter of contract.parameters) {
-    if (parameter.fixedValue.byteLength > 0) {
+    if (
+      parameter.fixedValue.byteLength > 0
+      || parameter.abiMode == "callbackContext"
+      || parameter.abiMode == "callbackRelease"
+    ) {
       nativeToVisible.push(contract.parameters.length);
       continue;
     }
@@ -181,12 +185,55 @@ function foreignFunctionSignature(
   });
 }
 
+function visibleSourceForNativeParameter(
+  in contract: NativeForeignFunctionContract,
+  nativeParameter: usize
+): usize {
+  let source: usize = 0;
+  let index: usize = 0;
+  while (index < nativeParameter && index < contract.parameters.length) {
+    const parameter = view contract.parameters[index];
+    if (
+      parameter.fixedValue.byteLength == 0
+      && parameter.abiMode != "callbackContext"
+      && parameter.abiMode != "callbackRelease"
+    ) source = source + 1;
+    index = index + 1;
+  }
+  return source;
+}
+
+function callbackIndexForNativeParameter(
+  in contract: NativeForeignFunctionContract,
+  nativeParameter: usize,
+  in role: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < contract.callbacks.length) {
+    if (
+      role == "callbackContext"
+      && contract.callbacks[index].contextIndex == nativeParameter
+    ) return Option.some(index);
+    if (role == "callbackRelease") {
+      match (in contract.callbacks[index].releaseIndex) {
+        some(releaseIndex) => {
+          if (releaseIndex == nativeParameter) return Option.some(index);
+        }
+        none => {}
+      }
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function foreignArgumentPlan(
   in contract: NativeForeignFunctionContract
 ): Array<ModuleForeignArgument> {
   let arguments = Array<ModuleForeignArgument>();
-  let source: usize = 0;
-  for (const parameter of contract.parameters) {
+  let nativeIndex: usize = 0;
+  while (nativeIndex < contract.parameters.length) {
+    const parameter = view contract.parameters[nativeIndex];
     if (parameter.fixedValue.byteLength > 0) {
       arguments.push(ModuleForeignArgument({
         kind: "fixed",
@@ -197,15 +244,69 @@ function foreignArgumentPlan(
         ),
         mode: "value",
       }));
+      nativeIndex = nativeIndex + 1;
       continue;
     }
+    if (
+      parameter.abiMode == "callbackContext"
+      || parameter.abiMode == "callbackRelease"
+    ) {
+      const callbackIndex = match (callbackIndexForNativeParameter(
+        contract,
+        nativeIndex,
+        parameter.abiMode
+      )) {
+        some(index) => index;
+        none => contract.callbacks.length;
+      };
+      if (callbackIndex < contract.callbacks.length) {
+        const callback = view contract.callbacks[callbackIndex];
+        arguments.push(ModuleForeignArgument({
+          kind: parameter.abiMode.copyBytes(
+            0,
+            parameter.abiMode.byteLength
+          ),
+          source: visibleSourceForNativeParameter(
+            contract,
+            callback.parameterIndex
+          ),
+          value: callback.functionType.copyBytes(
+            0,
+            callback.functionType.byteLength
+          ),
+          mode: callback.lifetime.copyBytes(
+            0,
+            callback.lifetime.byteLength
+          ),
+        }));
+      }
+      nativeIndex = nativeIndex + 1;
+      continue;
+    }
+    let kind = "argument";
+    let value = "";
+    let mode = parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength);
+    if (parameter.abiMode == "callback") {
+      kind = "callbackAdapter";
+      value = parameter.typeName.copyBytes(0, parameter.typeName.byteLength);
+      mode = "call";
+      for (const callback of contract.callbacks) {
+        if (callback.parameterIndex == nativeIndex) {
+          mode = callback.lifetime.copyBytes(0, callback.lifetime.byteLength);
+          break;
+        }
+      }
+    } else if (parameter.abiMode == "callbackDirect") {
+      kind = "callbackDirect";
+      value = parameter.typeName.copyBytes(0, parameter.typeName.byteLength);
+    }
     arguments.push(ModuleForeignArgument({
-      kind: "argument",
-      source,
-      value: "",
-      mode: parameter.abiMode.copyBytes(0, parameter.abiMode.byteLength),
+      kind,
+      source: visibleSourceForNativeParameter(contract, nativeIndex),
+      value,
+      mode,
     }));
-    source = source + 1;
+    nativeIndex = nativeIndex + 1;
   }
   return arguments;
 }

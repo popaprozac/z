@@ -1,5 +1,6 @@
 import {
   RawForeignModuleDeclarations,
+  RawForeignParameter,
   RawForeignType,
 } from "./foreign-declaration-protocol.zs";
 import {
@@ -7,10 +8,15 @@ import {
   TokenKind,
   tokenize,
 } from "./lexer.zs";
+import {
+  ModuleFunctionSignature,
+  ModuleTypeParameterConstraint,
+} from "./semantic-model.zs";
+import { nativeFunctionTypeName } from "./semantic-type-shapes.zs";
 import { TextBuffer } from "std/text";
 
-// Native .zd slice: inferred scalar/record, value-resource, opaque-handle, and
-// integer-status functions.
+// Native .zd slice: inferred scalar/record, value-resource, opaque-handle,
+// integer-status, and first retained C-callback functions.
 //
 // The model is intentionally separate from raw producer declarations. A
 // contract must match Clang evidence before it can produce these normalized
@@ -30,6 +36,7 @@ export struct RawForeignContractParameter {
 export struct RawForeignFunctionContract {
   name: String;
   parameters: Array<RawForeignContractParameter>;
+  callbacks: Array<RawForeignCallbackContract>;
   returnKind: String;
   returnNullable: boolean;
   successValues: Array<String>;
@@ -37,6 +44,16 @@ export struct RawForeignFunctionContract {
   resultBorrowedFrom: String;
   invalidates: Array<String>;
   resultRelease: String;
+  line: usize;
+  column: usize;
+}
+
+export struct RawForeignCallbackContract {
+  parameter: String;
+  context: String;
+  release: String;
+  thread: String;
+  cardinality: String;
   line: usize;
   column: usize;
 }
@@ -88,9 +105,20 @@ export struct NativeForeignFunctionContract {
   errorType: Option<String>;
   successValues: Array<String>;
   parameters: Array<NativeForeignParameterContract>;
+  callbacks: Array<NativeForeignCallbackContract>;
   borrowedFromParameter: Option<usize>;
   invalidatesParameters: Array<usize>;
   invalidatesLifetimes: Array<String>;
+}
+
+export struct NativeForeignCallbackContract {
+  parameterIndex: usize;
+  contextIndex: usize;
+  releaseIndex: Option<usize>;
+  functionType: String;
+  lifetime: String;
+  thread: String;
+  cardinality: String;
 }
 
 export struct NativeForeignTypeContract {
@@ -458,6 +486,7 @@ function parseFunction(
   let resultBorrowedFrom = "";
   let invalidates = Array<String>();
   let resultRelease = "";
+  let callbacks = Array<RawForeignCallbackContract>();
   if (atText(cursor, "void")) {
     returnKind = "status";
     cursor.index = cursor.index + 1;
@@ -510,6 +539,81 @@ function parseFunction(
           cursor.tokens[cursor.index].text.byteLength
         );
         cursor.index = cursor.index + 1;
+        if (fact == "callback") {
+          const callbackLine = cursor.tokens[cursor.index].line;
+          const callbackColumn = cursor.tokens[cursor.index].column;
+          const callbackParameter = try parseQualifiedName(inout cursor);
+          for (const existing of callbacks) {
+            if (existing.parameter == callbackParameter) {
+              throw contractError(
+                cursor,
+                `foreign function "${name}" cannot declare callback "${callbackParameter}" more than once`
+              );
+            }
+          }
+          try expectText(inout cursor, "{");
+          let context = "";
+          let release = "";
+          let thread = "";
+          let cardinality = "";
+          while (!atText(cursor, "}")) {
+            const callbackFact = cursor.tokens[cursor.index].text.copyBytes(
+              0,
+              cursor.tokens[cursor.index].text.byteLength
+            );
+            cursor.index = cursor.index + 1;
+            if (callbackFact == "context") {
+              if (context.byteLength > 0) {
+                throw contractError(cursor, `callback "${callbackParameter}" cannot declare context more than once`);
+              }
+              context = try parseQualifiedName(inout cursor);
+            } else if (callbackFact == "deinit") {
+              if (release.byteLength > 0) {
+                throw contractError(cursor, `callback "${callbackParameter}" cannot declare deinit more than once`);
+              }
+              release = try parseQualifiedName(inout cursor);
+            } else if (callbackFact == "thread") {
+              if (thread.byteLength > 0) {
+                throw contractError(cursor, `callback "${callbackParameter}" cannot declare thread more than once`);
+              }
+              thread = try parseQualifiedName(inout cursor);
+              if (thread != "caller" && thread != "any") {
+                throw contractError(cursor, `callback threading must be "caller" or "any", found "${thread}"`);
+              }
+            } else if (callbackFact == "invoked") {
+              if (cardinality.byteLength > 0) {
+                throw contractError(cursor, `callback "${callbackParameter}" cannot declare invocation cardinality more than once`);
+              }
+              cardinality = try parseQualifiedName(inout cursor);
+              if (cardinality != "once" && cardinality != "repeatedly") {
+                throw contractError(cursor, `callback invocation cardinality must be "once" or "repeatedly", found "${cardinality}"`);
+              }
+            } else {
+              throw contractError(
+                cursor,
+                `the first native callback tier supports context, deinit, thread, and invoked facts, found "${callbackFact}"`
+              );
+            }
+            try expectText(inout cursor, ";");
+          }
+          try expectText(inout cursor, "}");
+          if (context.byteLength == 0) {
+            throw contractError(cursor, `C callback "${callbackParameter}" requires a named native context parameter`);
+          }
+          if (cardinality.byteLength == 0) {
+            throw contractError(cursor, `callback "${callbackParameter}" requires explicit invocation cardinality`);
+          }
+          callbacks.push(RawForeignCallbackContract({
+            parameter: callbackParameter,
+            context,
+            release,
+            thread,
+            cardinality,
+            line: callbackLine,
+            column: callbackColumn,
+          }));
+          continue;
+        }
         if (fact == "deinit") {
           if (resultRelease.byteLength > 0) {
             throw contractError(
@@ -556,6 +660,7 @@ function parseFunction(
         resultOwnership.byteLength == 0
         && resultRelease.byteLength == 0
         && invalidates.length == 0
+        && callbacks.length == 0
       ) {
         throw contractErrorAt(
           cursor,
@@ -662,6 +767,7 @@ function parseFunction(
   return RawForeignFunctionContract({
     name,
     parameters,
+    callbacks,
     returnKind,
     returnNullable,
     successValues,
@@ -1251,6 +1357,129 @@ function scalarTypeNameWithCanonical(
     some(typeName) => return try scalarTypeName(typeName);
     none => return try scalarTypeName(nativeType);
   }
+}
+
+struct NativeCallbackShape {
+  functionType: String;
+  contextIndex: usize;
+  nativeParameterCount: usize;
+  returnType: String;
+}
+
+function compactNativeType(in nativeType: String): String {
+  let output = TextBuffer();
+  let index: usize = 0;
+  while (index < nativeType.byteLength) {
+    const byte = nativeType.byteAt(index);
+    if (
+      byte != 9
+      && byte != 10
+      && byte != 11
+      && byte != 12
+      && byte != 13
+      && byte != 32
+    ) output.appendAscii(byte);
+    index = index + 1;
+  }
+  return output.finish();
+}
+
+function nativeCallbackShape(
+  in declarations: RawForeignModuleDeclarations,
+  in nativeType: String,
+  in thread: String,
+  requireContext: boolean
+): NativeCallbackShape throws String {
+  const compact = compactNativeType(nativeType);
+  let marker = compact.byteLength;
+  let index: usize = 0;
+  while (index + 3 < compact.byteLength) {
+    if (
+      compact.byteAt(index) == 40
+      && compact.byteAt(index + 1) == 42
+      && compact.byteAt(index + 2) == 41
+      && compact.byteAt(index + 3) == 40
+    ) {
+      marker = index;
+      break;
+    }
+    index = index + 1;
+  }
+  if (
+    marker == compact.byteLength
+    || compact.byteLength < marker + 5
+    || compact.byteAt(compact.byteLength - 1) != 41
+  ) throw `native callback parameter must resolve to a C function pointer, found "${nativeType}"`;
+  const nativeReturn = compact.copyBytes(0, marker);
+  const returnType = try scalarTypeNameWithCanonical(
+    declarations,
+    nativeReturn,
+    Option<String>.none
+  );
+  let parameterTypes = Array<String>();
+  let contextIndex = compact.byteLength;
+  let nativeParameterCount: usize = 0;
+  let start = marker + 4;
+  index = start;
+  while (index < compact.byteLength) {
+    if (compact.byteAt(index) == 44 || index + 1 == compact.byteLength) {
+      const end = index;
+      if (end <= start) {
+        throw `native callback parameter has an empty C argument in "${nativeType}"`;
+      }
+      const parameterType = compact.copyBytes(start, end);
+      if (parameterType == "void" && nativeParameterCount == 0) {
+        // A literal void parameter list carries no callback arguments.
+      } else if (parameterType == "void*" && requireContext) {
+        if (contextIndex != compact.byteLength) {
+          throw `native callback "${nativeType}" has more than one void context parameter`;
+        }
+        contextIndex = nativeParameterCount;
+      } else {
+        const zParameterType = try scalarTypeNameWithCanonical(
+          declarations,
+          parameterType,
+          Option<String>.none
+        );
+        parameterTypes.push(move zParameterType);
+      }
+      nativeParameterCount = nativeParameterCount + 1;
+      start = index + 1;
+    }
+    index = index + 1;
+  }
+  if (requireContext && contextIndex == compact.byteLength) {
+    throw `native callback "${nativeType}" requires one void context parameter`;
+  }
+  if (requireContext && contextIndex + 1 != nativeParameterCount) {
+    throw `the first native callback tier requires the void context parameter last`;
+  }
+  let modes = Array<String>();
+  let modeIndex: usize = 0;
+  while (modeIndex < parameterTypes.length) {
+    modes.push("value");
+    modeIndex = modeIndex + 1;
+  }
+  const signature = ModuleFunctionSignature({
+    asynchronous: false,
+    executorAffinity: "",
+    threadContract: thread == "any" ? "thread.any" : "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    parameterModes: modes,
+    parameterTypes,
+    viewParameter: Option<usize>.none,
+    invalidatesParameters: Array<usize>(),
+    invalidatesLifetimes: Array<String>(),
+    returnType: returnType.copyBytes(0, returnType.byteLength),
+    errorType: "",
+  });
+  return NativeCallbackShape({
+    functionType: nativeFunctionTypeName(signature),
+    contextIndex,
+    nativeParameterCount,
+    returnType,
+  });
 }
 
 function foreignValueTypeName(
@@ -2256,6 +2485,82 @@ function attachFieldProjectionContracts(
   }
 }
 
+function contractParameterIndex(
+  in parameters: Array<RawForeignContractParameter>,
+  in name: String
+): usize throws String {
+  let index: usize = 0;
+  while (index < parameters.length) {
+    if (parameters[index].name == name) return index;
+    index = index + 1;
+  }
+  throw `native callback fact names unknown function parameter "${name}"`;
+}
+
+function nativeCallbackIndexForParameter(
+  in callbacks: Array<NativeForeignCallbackContract>,
+  parameterIndex: usize
+): Option<usize> {
+  let index: usize = 0;
+  while (index < callbacks.length) {
+    if (callbacks[index].parameterIndex == parameterIndex) {
+      return Option.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function nativeCallbackIndexForContext(
+  in callbacks: Array<NativeForeignCallbackContract>,
+  parameterIndex: usize
+): Option<usize> {
+  let index: usize = 0;
+  while (index < callbacks.length) {
+    if (callbacks[index].contextIndex == parameterIndex) {
+      return Option.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function nativeCallbackIndexForRelease(
+  in callbacks: Array<NativeForeignCallbackContract>,
+  parameterIndex: usize
+): Option<usize> {
+  let index: usize = 0;
+  while (index < callbacks.length) {
+    match (in callbacks[index].releaseIndex) {
+      some(releaseIndex) => {
+        if (releaseIndex == parameterIndex) return Option.some(index);
+      }
+      none => {}
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function callbackNativeType(
+  in parameter: RawForeignParameter
+): String {
+  match (in parameter.canonicalNativeType) {
+    some(typeName) => return typeName.copyBytes(0, typeName.byteLength);
+    none => return parameter.nativeType.copyBytes(0, parameter.nativeType.byteLength);
+  }
+}
+
+function rawContractFunctionExists(
+  in contracts: RawForeignContractSet,
+  in name: String
+): boolean {
+  for (const contract of contracts.functions) {
+    if (contract.name == name) return true;
+  }
+  return false;
+}
+
 export function normalizeForeignContracts(
   contracts: RawForeignContractSet,
   in declarations: RawForeignModuleDeclarations,
@@ -2383,6 +2688,104 @@ export function normalizeForeignContracts(
     ) {
       throw `Z declaration for "${contract.name}" has ${contract.parameters.length} parameters but Clang reports ${declarations.overloads[overloadIndex].parameterCount}`;
     }
+    let callbacks = Array<NativeForeignCallbackContract>();
+    for (const callback of contract.callbacks) {
+      const callbackIndex = try contractParameterIndex(
+        contract.parameters,
+        callback.parameter
+      );
+      const contextIndex = try contractParameterIndex(
+        contract.parameters,
+        callback.context
+      );
+      if (callbackIndex == contextIndex) {
+        throw `native callback "${callback.parameter}" cannot also be its own context parameter`;
+      }
+      const callbackParameter = view contract.parameters[callbackIndex];
+      if (callback.thread == "any") {
+        throw `the first fixed-point native callback tier supports thread caller; thread any requires runtime-entry and atomic callback ownership`;
+      }
+      let releaseIndex = Option<usize>.none;
+      let lifetime = "call";
+      if (callback.release.byteLength > 0) {
+        const index = try contractParameterIndex(
+          contract.parameters,
+          callback.release
+        );
+        if (index == callbackIndex || index == contextIndex) {
+          throw `native callback "${callback.parameter}" requires distinct callback, context, and deinit parameters`;
+        }
+        if (callbackParameter.capability != "move") {
+          throw `escaping native callback "${callback.parameter}" requires the move capability`;
+        }
+        if (callback.thread.byteLength == 0) {
+          throw `escaping native callback "${callback.parameter}" requires an explicit thread fact`;
+        }
+        releaseIndex = Option.some(index);
+        lifetime = "escaping";
+      } else {
+        if (callbackParameter.capability != "in") {
+          throw `call-scoped native callback "${callback.parameter}" requires the in capability`;
+        }
+      }
+      const overload = view declarations.overloads[overloadIndex];
+      const rawCallback = view declarations.parameters[
+        overload.parameterStart + callbackIndex
+      ];
+      const rawCallbackType = callbackNativeType(rawCallback);
+      const callbackShape = try nativeCallbackShape(
+        declarations,
+        rawCallbackType,
+        callback.thread,
+        true
+      );
+      const rawContext = view declarations.parameters[
+        overload.parameterStart + contextIndex
+      ];
+      const rawContextType = callbackNativeType(rawContext);
+      const compactContextType = compactNativeType(rawContextType);
+      if (compactContextType != "void*") {
+        throw `native callback context "${callback.context}" must be void *, found ${rawContext.nativeType}`;
+      }
+      match (in releaseIndex) {
+        some(index) => {
+          const rawRelease = view declarations.parameters[
+            overload.parameterStart + index
+          ];
+          const rawReleaseType = callbackNativeType(rawRelease);
+          const releaseShape = try nativeCallbackShape(
+            declarations,
+            rawReleaseType,
+            "",
+            true
+          );
+          if (
+            releaseShape.returnType != "void"
+            || releaseShape.nativeParameterCount != 1
+          ) {
+            throw `native callback deinit "${callback.release}" must have C shape void (*)(void *)`;
+          }
+        }
+        none => {}
+      }
+      callbacks.push(NativeForeignCallbackContract({
+        parameterIndex: callbackIndex,
+        contextIndex,
+        releaseIndex,
+        functionType: callbackShape.functionType.copyBytes(
+          0,
+          callbackShape.functionType.byteLength
+        ),
+        lifetime,
+        thread: callback.thread.byteLength > 0
+          ? callback.thread.copyBytes(0, callback.thread.byteLength)
+          : "caller",
+        cardinality: callback.cardinality.copyBytes(
+          0,
+          callback.cardinality.byteLength
+        ),
+      }));
+    }
     let parameters = Array<NativeForeignParameterContract>();
     let parameterIndex: usize = 0;
     while (parameterIndex < contract.parameters.length) {
@@ -2396,6 +2799,108 @@ export function normalizeForeignContracts(
           }
         }
         none => {}
+      }
+      match (nativeCallbackIndexForParameter(callbacks, parameterIndex)) {
+        some(callbackIndex) => {
+          const callback = view callbacks[callbackIndex];
+          parameters.push(NativeForeignParameterContract({
+            name: contract.parameters[parameterIndex].name.copyBytes(
+              0,
+              contract.parameters[parameterIndex].name.byteLength
+            ),
+            capability: contract.parameters[parameterIndex]
+              .capability.copyBytes(
+                0,
+                contract.parameters[parameterIndex].capability.byteLength
+              ),
+            abiMode: "callback",
+            typeName: callback.functionType.copyBytes(
+              0,
+              callback.functionType.byteLength
+            ),
+            nullOnly: false,
+            fixedValue: "",
+          }));
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        none => {}
+      }
+      match (nativeCallbackIndexForContext(callbacks, parameterIndex)) {
+        some(callbackIndex) => {
+          parameters.push(NativeForeignParameterContract({
+            name: contract.parameters[parameterIndex].name.copyBytes(
+              0,
+              contract.parameters[parameterIndex].name.byteLength
+            ),
+            capability: "value",
+            abiMode: "callbackContext",
+            typeName: callbacks[callbackIndex].functionType.copyBytes(
+              0,
+              callbacks[callbackIndex].functionType.byteLength
+            ),
+            nullOnly: false,
+            fixedValue: "",
+          }));
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        none => {}
+      }
+      match (nativeCallbackIndexForRelease(callbacks, parameterIndex)) {
+        some(callbackIndex) => {
+          parameters.push(NativeForeignParameterContract({
+            name: contract.parameters[parameterIndex].name.copyBytes(
+              0,
+              contract.parameters[parameterIndex].name.byteLength
+            ),
+            capability: "value",
+            abiMode: "callbackRelease",
+            typeName: callbacks[callbackIndex].functionType.copyBytes(
+              0,
+              callbacks[callbackIndex].functionType.byteLength
+            ),
+            nullOnly: false,
+            fixedValue: "",
+          }));
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        none => {}
+      }
+      const rawDirectCallback = view declarations.parameters[
+        rawParameterIndex
+      ];
+      const rawDirectCallbackType = callbackNativeType(rawDirectCallback);
+      const directCallback = attempt nativeCallbackShape(
+        declarations,
+        rawDirectCallbackType,
+        "",
+        false
+      );
+      match (directCallback) {
+        success(shape) => {
+          if (contract.parameters[parameterIndex].capability != "in") {
+            throw `direct native callback "${contract.parameters[parameterIndex].name}" requires the in capability`;
+          }
+          parameters.push(NativeForeignParameterContract({
+            name: contract.parameters[parameterIndex].name.copyBytes(
+              0,
+              contract.parameters[parameterIndex].name.byteLength
+            ),
+            capability: "in",
+            abiMode: "callbackDirect",
+            typeName: shape.functionType.copyBytes(
+              0,
+              shape.functionType.byteLength
+            ),
+            nullOnly: false,
+            fixedValue: "",
+          }));
+          parameterIndex = parameterIndex + 1;
+          continue;
+        }
+        failure(_) => {}
       }
       if (contract.parameters[parameterIndex].nullOnly) {
         if (
@@ -2865,10 +3370,86 @@ export function normalizeForeignContracts(
       errorType,
       successValues,
       parameters,
+      callbacks,
       borrowedFromParameter,
       invalidatesParameters,
       invalidatesLifetimes,
     }));
+  }
+  for (const declaration of declarations.functions) {
+    if (
+      rawContractFunctionExists(contracts, declaration.qualifiedName)
+      || declaration.overloadCount != 1
+    ) continue;
+    const overload = view declarations.overloads[declaration.overloadStart];
+    if (overload.variadic) continue;
+    let inferredParameters = Array<NativeForeignParameterContract>();
+    let representable = true;
+    let parameterIndex: usize = 0;
+    while (parameterIndex < overload.parameterCount) {
+      const rawParameter = view declarations.parameters[
+        overload.parameterStart + parameterIndex
+      ];
+      const inferredType = attempt foreignValueTypeName(
+        declarations,
+        types,
+        rawParameter.nativeType,
+        rawParameter.canonicalNativeType
+      );
+      match (inferredType) {
+        success(typeName) => {
+          let parameterName = `argument${parameterIndex}`;
+          match (in rawParameter.name) {
+            some(name) => parameterName = name.copyBytes(
+              0,
+              name.byteLength
+            );
+            none => {}
+          }
+          inferredParameters.push(NativeForeignParameterContract({
+            name: parameterName,
+            capability: "value",
+            abiMode: "value",
+            typeName,
+            nullOnly: false,
+            fixedValue: "",
+          }));
+        }
+        failure(_) => {
+          representable = false;
+          break;
+        }
+      }
+      parameterIndex = parameterIndex + 1;
+    }
+    if (!representable) continue;
+    const inferredReturn = attempt foreignValueTypeName(
+      declarations,
+      types,
+      overload.returnNativeType,
+      overload.returnCanonicalNativeType
+    );
+    match (inferredReturn) {
+      success(returnType) => functions.push(NativeForeignFunctionContract({
+        name: declaration.qualifiedName.copyBytes(
+          0,
+          declaration.qualifiedName.byteLength
+        ),
+        nativeName: overload.nativeName.copyBytes(
+          0,
+          overload.nativeName.byteLength
+        ),
+        returnType,
+        errorType: Option<String>.none,
+        successValues: Array<String>(),
+        parameters: inferredParameters,
+        callbacks: Array<NativeForeignCallbackContract>(),
+        borrowedFromParameter: Option<usize>.none,
+        invalidatesParameters: Array<usize>(),
+        invalidatesLifetimes: Array<String>(),
+      }));
+      failure(_) => {}
+    }
   }
   return NativeForeignContractSet({
     moduleSpecifier: contracts.moduleSpecifier.copyBytes(

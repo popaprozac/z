@@ -154,6 +154,7 @@ export struct LoweredParameter {
 export enum LoweredExpressionKind {
   localValue,
   foreignValue,
+  foreignCallbackValue,
   parameterValue,
   receiverValue,
   integerValue,
@@ -8479,7 +8480,21 @@ function lowerExpression(
     let argument: usize = 1;
     while (argument < tree.nodes[index].children.length) {
       const argumentInput = tree.nodes[index].children[argument];
-      let value = try lowerExpression(
+      let value: usize = 0;
+      if (
+        parameterTypes.length >= argument
+        && tree.nodes[argumentInput].kind
+          == ExpressionKind.closureExpression
+      ) value = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        parameterTypes[argument - 1],
+        inout output
+      );
+      else value = try lowerExpression(
         program,
         importedTypes,
         evidence,
@@ -8600,6 +8615,43 @@ function lowerExpression(
         }
         if (nativeArgument.source + 1 >= children.length) {
           throw "native foreign argument plan references a missing source argument";
+        }
+        if (
+          nativeArgument.kind == "callbackAdapter"
+          || nativeArgument.kind == "callbackContext"
+          || nativeArgument.kind == "callbackRelease"
+          || nativeArgument.kind == "callbackDirect"
+        ) {
+          const callbackType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            nativeArgument.value
+          );
+          let callbackChildren = Array<usize>();
+          if (
+            nativeArgument.kind == "callbackContext"
+            || nativeArgument.kind == "callbackDirect"
+          ) callbackChildren.push(
+            children[nativeArgument.source + 1]
+          );
+          let callbackLabels = Array<String>();
+          callbackLabels.push(nativeArgument.kind.copyBytes(
+            0,
+            nativeArgument.kind.byteLength
+          ));
+          callbackLabels.push(nativeArgument.mode.copyBytes(
+            0,
+            nativeArgument.mode.byteLength
+          ));
+          nativeChildren.push(pushExpression(
+            inout output,
+            LoweredExpressionKind.foreignCallbackValue,
+            callbackType.name,
+            callbackChildren,
+            callbackLabels
+          ));
+          nativeLabels.push("value");
+          continue;
         }
         nativeChildren.push(children[nativeArgument.source + 1]);
         nativeLabels.push(nativeArgument.mode.copyBytes(
@@ -17076,6 +17128,16 @@ function collectProgramFunctionTypes(
       expression.typeName,
       inout functionTypes
     );
+  }
+  for (const call of evidence.callResolutions) {
+    for (const parameterType of call.parameterTypes) {
+      try collectProgramFunctionTypeName(
+        program,
+        importedTypes,
+        parameterType,
+        inout functionTypes
+      );
+    }
   }
   for (const declaration of program.functions) {
     try collectFunctionDeclarationTypes(

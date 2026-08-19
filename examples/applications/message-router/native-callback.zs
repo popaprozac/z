@@ -15,15 +15,17 @@ readonly class RouteState {
   readonly offset: i32;
 }
 
+function routeNative(in router: Router, value: i32): i32 {
+  const message = Message({ operation: "offset", value });
+  const routed = attempt router.dispatch(in message);
+  return match (routed) {
+    success(output) => output;
+    failure(_) => -1;
+  };
+}
+
 function installNativeDispatch(router: Router): void {
-  retainOperation(move (value) => {
-    const message = Message({ operation: "offset", value });
-    const routed = attempt router.dispatch(in message);
-    return match (routed) {
-      success(output) => output;
-      failure(_) => -1;
-    };
-  });
+  retainOperation(move (value) => routeNative(router, value));
 }
 
 function main(): i32 {

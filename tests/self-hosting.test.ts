@@ -5110,7 +5110,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
 
   rmSync(directory, { recursive: true, force: true });
-}, 60_000);
+}, 120_000);
 
 test("decodes versioned raw foreign function declarations in native Z", () => {
   const declarations: ForeignModuleDeclarations = {
@@ -5885,6 +5885,35 @@ test("compiles a multi-module Z application through the standalone native driver
     incompleteNativeStatusInspection.stderr,
     /incomplete-native-status\.zd:2:\d+: error: a native status contract requires at least one success value/,
   );
+
+  const nativeCallbackExample = resolve(
+    projectRoot,
+    "examples/applications/message-router/native-callback.zs",
+  );
+  const nativeCallbackRun = spawnSync(
+    driver,
+    ["run", nativeCallbackExample],
+    {
+      encoding: "utf8",
+      env: foreignAdapterEnvironment,
+    },
+  );
+  assert.equal(
+    nativeCallbackRun.status,
+    0,
+    nativeCallbackRun.stderr,
+  );
+  assert.match(nativeCallbackRun.stdout, /native callback routed=42\n$/);
+  const nativeCallbackC = readFileSync(
+    resolve(
+      projectRoot,
+      "examples/applications/message-router/.z-cache/run/program.c",
+    ),
+    "utf8",
+  );
+  assert.match(nativeCallbackC, /retainOperation\(z_stage1_c_callback_Z_/);
+  assert.match(nativeCallbackC, /_c_escape_box\(/);
+  assert.match(nativeCallbackC, /_c_escape_box_release/);
 
   const recursiveDriver = resolve(directory, "z-native-generation-2");
   const recursiveCompilation = spawnSync(

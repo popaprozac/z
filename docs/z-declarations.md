@@ -210,8 +210,11 @@ ported; this is a bootstrap implementation boundary, not a restriction of the
 
 These normalized tiers also reach native semantic analysis and C emission.
 Selective aliases and namespace calls use the same signature/effect
-checker as ordinary Z functions, and a selected native function absent from the
-checked contract is rejected. A fixed `const char *` parameter written with
+checker as ordinary Z functions. An adjacent `.zd` augments the safe
+header-inferred surface rather than replacing it: functions whose ABI is
+already representable remain available without being restated, while a symbol
+that is neither safely inferred nor described by the checked contract is
+rejected. A fixed `const char *` parameter written with
 inferred `_` becomes an intrinsically borrowed `cstring`; an owned Z `String`
 may supply that argument for one call without being moved or copied. Native
 lowering passes its existing NUL-terminated storage and keeps ordinary Z cleanup
