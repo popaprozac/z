@@ -377,13 +377,15 @@ Extra elements are ignored unless captured by rest. Assignment, parameter,
 match, nested, default, and owned `copy`/`move` collection patterns remain later
 tiers.
 
-The fixed-point native compiler currently executes the fixed-position
-`Array<T>` subset. It evaluates the collection once, performs one length check,
-then projects every requested position under that proof. Cleanup-bearing
-elements require `view source` and remain tied to the named Array owner, so a
-reallocating mutation is rejected until every destructured view's last use.
-Native fixed-array, `Slice<T>`, and rest lowering await the native Slice
-representation; the Stage-0 compiler remains authoritative for those forms.
+The fixed-point native compiler currently executes the `Array<T>` source tier,
+including rest. It evaluates the collection once, performs one length check,
+then projects every requested position under that proof. Rest becomes a
+two-word pointer/length descriptor and does not allocate or retain. A rest-only
+pattern on an empty Array preserves a null data pointer without performing
+pointer arithmetic. Cleanup-bearing elements require `view source` and remain
+tied to the named Array owner, so a reallocating mutation is rejected until
+every destructured element or Slice view's last use. Native fixed-array and
+existing-`Slice<T>` positional sources remain Stage-0-authoritative.
 
 ## Type vocabulary
 

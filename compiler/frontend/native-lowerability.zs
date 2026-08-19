@@ -1,6 +1,5 @@
 import {
   AggregateDeclaration,
-  ArrayBindingKind,
   DeclarationKind,
   ExpressionKind,
   ExpressionSyntax,
@@ -1190,16 +1189,6 @@ function validateNativeBody(
             statement.column,
             5
           );
-        for (const binding of statement.arrayBindings) {
-          if (binding.kind == ArrayBindingKind.rest) throw loweringBoundary(
-              path,
-              "Z1000",
-              "array rest destructuring requires the future native Slice<T> representation",
-              binding.line,
-              binding.column,
-              3
-            );
-        }
       }
     }
     if (

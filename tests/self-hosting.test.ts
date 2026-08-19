@@ -774,7 +774,7 @@ test("copies and moves owned fields through native object destructuring", () => 
   assert.match(invalidResult.stderr, /use of moved value "record"/);
 }, 240_000);
 
-test("reads fixed Array positions through native destructuring", () => {
+test("reads fixed Array positions and zero-copy rest through native destructuring", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-array-destructure.zs",
@@ -807,6 +807,30 @@ test("reads fixed Array positions through native destructuring", () => {
   assert.match(
     emission.stdout,
     /const Z_Document \* const current = &\(\(\*Z___z_Array_Document_at_unchecked\(_z_array_destructure_\d+, 0\)\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /typedef struct Z___z_Slice_i32 \{\s+void \*data;\s+size_t length;\s+\} Z___z_Slice_i32;/,
+  );
+  assert.match(
+    emission.stdout,
+    /const Z___z_Slice_i32 remaining = Z___z_Array_i32_slice_unchecked\(_z_array_destructure_\d+, 1\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\*Z___z_Slice_i32_at\(&\(remaining\), 1\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /const Z___z_Slice_i32 nothing = Z___z_Array_i32_slice_unchecked\(_z_array_destructure_\d+, 0\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /const Z___z_Slice_Document remainingDocuments = Z___z_Array_Document_slice_unchecked\(_z_array_destructure_\d+, 1\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\*Z___z_Slice_Document_at\(&\(remainingDocuments\), 0\)/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-array-destructure-");
@@ -6713,22 +6737,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^^^^^^^^^^",
       code: "Z1000",
       summary: 'generator type "Generator<i32>" is not executable in the native compiler yet',
-    },
-    {
-      name: "array-destructuring",
-      source: [
-        "function main(): i32 {",
-        "  const values = Array<i32>(20, 22);",
-        "  const [left, ...remaining] = view values;",
-        "  return left + i32(remaining.length) - 21;",
-        "}",
-        "",
-      ].join("\n"),
-      line: 3,
-      column: 16,
-      marker: "^^^",
-      code: "Z1000",
-      summary: "array rest destructuring requires the future native Slice<T> representation",
     },
     {
       name: "async-scope",

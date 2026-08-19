@@ -64,6 +64,7 @@ export enum LoweredTypeKind {
   stringType,
   cstringType,
   arrayType,
+  sliceType,
   mapType,
   setType,
   structType,
@@ -105,6 +106,7 @@ export struct LoweredStruct {
 
 export struct LoweredArray {
   name: String;
+  sliceName: String;
   elementType: LoweredType;
 }
 
@@ -223,6 +225,7 @@ export enum LoweredExpressionKind {
   arrayLength,
   arrayIndex,
   arrayMutableIndex,
+  arraySlice,
   arrayPush,
   mapEmpty,
   mapLength,
@@ -679,6 +682,11 @@ function intrinsicArrayName(in elementType: LoweredType): String {
   return `__z_Array_${identity}`;
 }
 
+function intrinsicSliceName(in elementType: LoweredType): String {
+  const identity = loweredTypeIdentity(elementType);
+  return `__z_Slice_${identity}`;
+}
+
 function intrinsicMapName(
   in keyType: LoweredType,
   in valueType: LoweredType
@@ -954,6 +962,13 @@ function lowerTypeName(
           name: intrinsicArrayName(elementType),
         });
       }
+      if (generic.base == "Slice" && generic.arguments.length == 1) {
+        const elementType = try lowerTypeName(program, generic.arguments[0]);
+        return LoweredType({
+          kind: LoweredTypeKind.sliceType,
+          name: intrinsicSliceName(elementType),
+        });
+      }
       if (generic.base == "Map" && generic.arguments.length == 2) {
         const keyType = try lowerTypeName(program, generic.arguments[0]);
         const valueType = try lowerTypeName(program, generic.arguments[1]);
@@ -1137,6 +1152,17 @@ function lowerModuleTypeName(
         return LoweredType({
           kind: LoweredTypeKind.arrayType,
           name: intrinsicArrayName(elementType),
+        });
+      }
+      if (generic.base == "Slice" && generic.arguments.length == 1) {
+        const elementType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        return LoweredType({
+          kind: LoweredTypeKind.sliceType,
+          name: intrinsicSliceName(elementType),
         });
       }
       if (generic.base == "Map" && generic.arguments.length == 2) {
@@ -2034,6 +2060,7 @@ function intrinsicArrayDeclaration(
       );
       return Option.some(LoweredArray({
         name: intrinsicArrayName(elementType),
+        sliceName: intrinsicSliceName(elementType),
         elementType,
       }));
     }
@@ -8917,7 +8944,10 @@ function lowerExpression(
       importedTypes,
       receiverValueTypeName
     );
-    if (receiverType.kind != LoweredTypeKind.arrayType) {
+    if (
+      receiverType.kind != LoweredTypeKind.arrayType
+      && receiverType.kind != LoweredTypeKind.sliceType
+    ) {
       throw `native lowering does not support indexing ${receiverTypeName} yet`;
     }
     const receiver = try lowerExpression(
@@ -9080,7 +9110,10 @@ function lowerExpression(
             importedTypes,
             receiverValueTypeName
           );
-          if (receiverType.kind == LoweredTypeKind.arrayType) {
+          if (
+            receiverType.kind == LoweredTypeKind.arrayType
+            || receiverType.kind == LoweredTypeKind.sliceType
+          ) {
             const receiver = try lowerExpression(
               program,
               importedTypes,
@@ -12988,44 +13021,43 @@ function lowerStatementCore(
                 requiredLength = requiredLength + 1;
               }
             }
-            const lengthReceiver = pushExpression(
-              inout expressions,
-              LoweredExpressionKind.localValue,
-              temporaryName,
-              Array<usize>(),
-              Array<String>()
-            );
-            let lengthChildren = Array<usize>();
-            lengthChildren.push(lengthReceiver);
-            const requireLength = pushExpression(
-              inout expressions,
-              LoweredExpressionKind.arrayRequireLength,
-              `${requiredLength}`,
-              move lengthChildren,
-              Array<String>()
-            );
-            const lengthStatement = statements.length;
-            statements.push(LoweredStatement({
-              kind: LoweredStatementKind.expressionStatement,
-              mutableBinding: false,
-              name: "",
-              type: Option<LoweredType>.none,
-              expression: Option.some(requireLength),
-              secondExpression: Option<usize>.none,
-              children: Array<usize>(),
-              cleanups: Array<LoweredCleanup>(),
-              liveFlag: "",
-              labels: Array<String>(),
-              matchConsumesSubject: false,
-              matchBindingNeedsCleanup: false,
-            }));
-            flattened.push(lengthStatement);
+            if (requiredLength > 0) {
+              const lengthReceiver = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.localValue,
+                temporaryName,
+                Array<usize>(),
+                Array<String>()
+              );
+              let lengthChildren = Array<usize>();
+              lengthChildren.push(lengthReceiver);
+              const requireLength = pushExpression(
+                inout expressions,
+                LoweredExpressionKind.arrayRequireLength,
+                `${requiredLength}`,
+                move lengthChildren,
+                Array<String>()
+              );
+              const lengthStatement = statements.length;
+              statements.push(LoweredStatement({
+                kind: LoweredStatementKind.expressionStatement,
+                mutableBinding: false,
+                name: "",
+                type: Option<LoweredType>.none,
+                expression: Option.some(requireLength),
+                secondExpression: Option<usize>.none,
+                children: Array<usize>(),
+                cleanups: Array<LoweredCleanup>(),
+                liveFlag: "",
+                labels: Array<String>(),
+                matchConsumesSubject: false,
+                matchBindingNeedsCleanup: false,
+              }));
+              flattened.push(lengthStatement);
+            }
 
             let elementIndex: usize = 0;
             for (const binding of arena.nodes[index].arrayBindings) {
-              if (binding.kind == ArrayBindingKind.rest) {
-                throw "native array rest lowering remains deferred";
-              }
               if (binding.kind == ArrayBindingKind.discard) {
                 elementIndex = elementIndex + 1;
                 continue;
@@ -13062,6 +13094,46 @@ function lowerStatementCore(
                 Array<usize>(),
                 Array<String>()
               );
+              if (binding.kind == ArrayBindingKind.rest) {
+                let sliceChildren = Array<usize>();
+                sliceChildren.push(receiver);
+                sliceChildren.push(offset);
+                const sliceValue = pushExpression(
+                  inout expressions,
+                  LoweredExpressionKind.arraySlice,
+                  sourceType.name,
+                  move sliceChildren,
+                  Array<String>()
+                );
+                let bindingLabels = Array<String>();
+                bindingLabels.push("array-destructure-binding");
+                const local = statements.length;
+                statements.push(LoweredStatement({
+                  kind: LoweredStatementKind.localStatement,
+                  mutableBinding: false,
+                  name: binding.bindingName.copyBytes(
+                    0,
+                    binding.bindingName.byteLength
+                  ),
+                  type: Option.some(LoweredType({
+                    kind: bindingType.kind,
+                    name: bindingType.name.copyBytes(
+                      0,
+                      bindingType.name.byteLength
+                    ),
+                  })),
+                  expression: Option.some(sliceValue),
+                  secondExpression: Option<usize>.none,
+                  children: Array<usize>(),
+                  cleanups: Array<LoweredCleanup>(),
+                  liveFlag: "",
+                  labels: move bindingLabels,
+                  matchConsumesSubject: false,
+                  matchBindingNeedsCleanup: false,
+                }));
+                flattened.push(local);
+                continue;
+              }
               let elementChildren = Array<usize>();
               elementChildren.push(receiver);
               elementChildren.push(offset);

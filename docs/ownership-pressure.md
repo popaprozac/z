@@ -2888,15 +2888,15 @@ custom-`deinit` structs, foreign RAII values, nested/rest patterns, mutable
 patterns, and object-rest patterns need separate ownership rules rather than
 inheriting this transfer mechanically.
 
-## Fixed-position Array destructuring in the fixed-point compiler
+## Array positional destructuring in the fixed-point compiler
 
-The native frontend now closes the fixed-position `Array<T>` part of the local
-positional-pattern design. Lowering borrows the source into one generated local,
-proves the full requested prefix with one runtime length check, and then emits
-unchecked element projections under that compiler-owned proof. Discards still
-contribute to the required prefix but generate no binding. This avoids repeated
-source evaluation and repeated bounds checks without weakening safe indexing
-elsewhere.
+The native frontend now closes the `Array<T>` source part of the local
+positional-pattern design, including zero-copy rest. Lowering borrows the source
+into one generated local, proves the full requested prefix with one runtime
+length check, and then emits unchecked element projections under that
+compiler-owned proof. Discards still contribute to the required prefix but
+generate no binding. This avoids repeated source evaluation and repeated bounds
+checks without weakening safe indexing elsewhere.
 
 Cleanup-free elements load by value. An Array whose element graph needs cleanup
 must be destructured from an explicit named `view`; each selected element is an
@@ -2907,12 +2907,15 @@ live-view mutation rejection. The executable fixture compiles under strict
 Clang warnings, runs in the differential corpus, and the compiler itself now
 uses view Array destructuring while resolving `Once<T>` intrinsics.
 
-Rest stays intentionally outside native emission. Stage 0 represents
-`...remaining` as a non-owning `Slice<T>`, while the fixed-point runtime does not
-yet have an honest native Slice descriptor. Reusing owning Array layout would
-make the example pass by lying about ownership, so native preflight reports a
-source-mapped `Z1000` until that representation lands. Fixed-array and existing
-`Slice<T>` positional sources remain part of the same later composition slice.
+Rest uses a distinct non-owning native `Slice<T>` descriptor containing only a
+data pointer and length. It borrows the Array at the current positional offset;
+it never reuses owning Array layout, allocates storage, or gains cleanup. The
+runtime proof covers the offset before projection, while a rest-only empty
+pattern avoids null-pointer arithmetic. The fixture exercises scalar Slice
+indexing and cleanup-bearing `Slice<Document>` field access before releasing the
+owner loan and mutating the Array. Declared Slice parameters and positional
+patterns whose source is a fixed array or existing Slice still receive the
+source-mapped native boundary until those representations compose end to end.
 
 ## Not tested yet
 
