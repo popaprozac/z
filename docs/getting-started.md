@@ -247,7 +247,10 @@ type index before becoming semantic local or block contracts.
 Stage zero independently verifies each contract. Direct generic functions,
 methods on generic owners, separately generic instance methods, separately
 generic static methods on non-generic owners, and generic constructors now share
-the native resolver's concrete substitution evidence. Native failures are held
+the native resolver's concrete substitution evidence. The fixed-point emitter
+also demand-specializes direct generic free-function calls, deduplicating
+inferred and explicit demands across imports and recursively propagating calls
+dependent on an enclosing generic-function specialization. Native failures are held
 until stage zero succeeds, so enabling the hybrid does not displace the existing
 diagnostic.
 

@@ -2033,11 +2033,16 @@ not create a default generic argument.
 An instance of a generic owner may also call a separately generic instance
 method. A static method whose owner and method both introduce independent type
 parameters is deliberately deferred until that two-level specialization syntax
-is designed. The fixed-point compiler executes independently generic instance
-methods on concrete generic value structs and independently generic static or
-instance methods on non-generic owners. It keeps the owner's substitutions
-separate from the method's own inferred or explicit substitutions, including
-ownership-bearing returns and typed `throws`.
+is designed. The fixed-point compiler demand-specializes direct generic free
+functions and executes independently generic instance methods on concrete
+generic value structs plus independently generic static or instance methods on
+non-generic owners. Inferred and explicit calls share one concrete body;
+cross-module aliases preserve the declaring module's identity, and ordinary
+ownership-bearing results and typed `throws` keep their existing semantics.
+Calls from one generic free-function body into another recursively propagate
+their concrete demand, including across module boundaries. Method lowering keeps
+the owner's substitutions separate from the method's own inferred or explicit
+substitutions.
 
 `|` is reserved for union-like type composition; it is not the spelling for
 requiring multiple trait conformances.

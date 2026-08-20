@@ -3007,9 +3007,18 @@ the declaring module, and cleanup-bearing `String` arguments/results plus typed
 throwing methods reuse the ordinary ownership and `Result` paths. Static and
 instance generic methods on non-generic owners use the same mechanism.
 
-Generic free functions, generic classes, the deliberately undesigned two-level
-static specialization of a generic owner, and custom constructors remain
-source-mapped boundaries. Concrete generic
+The next direct-call tier now demand-specializes generic free functions. Inferred
+and explicit calls deduplicate by the same lowered type identity used for
+generic methods, including cleanup-bearing `String` values, typed `throws`, and
+generic value-struct parameters. Selective-import aliases call one implementation
+in the declaring module, while colliding private helper names receive stable
+module-qualified bases before their specialization suffix. Calls whose type
+arguments depend on an enclosing specialization recursively add their concrete
+callee demands; recursion terminates through canonical specialization
+deduplication.
+
+Generic classes, the deliberately undesigned two-level static specialization of
+a generic owner, and custom constructors remain source-mapped boundaries. Concrete generic
 value-field defaults now specialize into
 defining-module helpers. Each omitted field invokes its helper independently,
 including cleanup-bearing `Array<T>` defaults; an explicit initializer or

@@ -1222,20 +1222,6 @@ function validateNativeFunction(
       5
     );
   }
-  if (
-    declaration.typeParameters.length > 0
-    && owner.byteLength == 0
-  ) {
-    const subject = `generic function "${declaration.name}"`;
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `${subject} is not executable in the native compiler yet`,
-      declaration.line,
-      declaration.column,
-      8
-    );
-  }
   if (owner.byteLength > 0 && declaration.asynchronous) {
     match (in declaration.errorType) {
       some(_) => throw loweringBoundary(

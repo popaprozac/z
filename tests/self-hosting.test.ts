@@ -1078,6 +1078,70 @@ test("specializes independently generic aggregate methods natively", () => {
   }
 }, 240_000);
 
+test("specializes demand-driven generic free functions natively", () => {
+  const inputs = [
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-functions.zs",
+    ),
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-functions-modules/main.zs",
+    ),
+  ];
+  const directory = mkdtempSync("/tmp/z-native-generic-functions-");
+  try {
+    for (const [index, input] of inputs.entries()) {
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(
+        emission.stdout,
+        /[A-Za-z0-9_]+__Function_[A-Za-z0-9_]+\(/,
+      );
+      assert.doesNotMatch(emission.stdout, /identity<i32>|preserve<String>/);
+      if (index === 0) {
+        const i32IdentityDefinitions = emission.stdout.match(
+          /int32_t identity__Function_[A-Za-z0-9_]+\(int32_t value\) \{/g,
+        ) ?? [];
+        assert.equal(i32IdentityDefinitions.length, 1);
+        assert.match(
+          emission.stdout,
+          /Z___z_Result_String_GenericFunctionError require__Function_[A-Za-z0-9_]+\(Z_String value, bool fail\)/,
+        );
+        assert.match(emission.stdout, /Z_String_deinit\(&value\)/);
+      } else {
+        assert.match(
+          emission.stdout,
+          /__z_module_[0-9]+_identity__Function_[A-Za-z0-9_]+/,
+        );
+      }
+
+      const executable = resolve(directory, `program-${index}`);
+      const compilation = spawnSync(
+        "clang",
+        ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("emits static struct and class methods as direct native calls", () => {
   const input = resolve(
     projectRoot,
