@@ -3017,8 +3017,8 @@ arguments depend on an enclosing specialization recursively add their concrete
 callee demands; recursion terminates through canonical specialization
 deduplication.
 
-Generic classes, the deliberately undesigned two-level static specialization of
-a generic owner, and custom constructors remain source-mapped boundaries. Concrete generic
+The deliberately undesigned two-level static specialization of
+a generic owner and custom constructors remain source-mapped boundaries. Concrete generic
 value-field defaults now specialize into
 defining-module helpers. Each omitted field invokes its helper independently,
 including cleanup-bearing `Array<T>` defaults; an explicit initializer or
@@ -3036,6 +3036,33 @@ specializations so custom behavior cannot accidentally replace automatic field
 destruction. Capability derivation remains conservative: a custom generic
 `deinit` is neither thread-shareable nor worker-destructible, matching ordinary
 value structs with user cleanup.
+
+The next concrete demand tier materializes generic ARC classes. A demanded
+`Cell<i32>` or `Cell<String>` receives the same canonical, module-qualified
+identity as a generic value struct, but its concrete layout is heap allocated
+and begins with the ordinary ARC reference count. Synthesized object
+initialization, ordinary specialized instance methods, atomic retain/release,
+custom `deinit`, and reverse owned-field cleanup all reuse the non-generic class
+runtime rather than introducing a parallel ownership model.
+
+The first generated-code probe exposed a broader native bug before this tier
+could be called safe: `const shared = owner` copied a class pointer without a
+retain even though both local cleanups released it. Local initialization now
+recognizes borrowed class identity, retains it once, and releases both owners;
+newly allocated or returned class identities still transfer directly. The
+regression covers ordinary and generic class identities through that shared
+path. Direct specializations exercise cleanup-free and `String` fields, mutable
+field replacement, alias use from both owners, and exact-once reverse cleanup.
+A multi-module fixture proves selective-import aliases share one specialization
+while an unrelated private generic class with the same source name receives a
+distinct nominal C identity.
+
+This is deliberately not a claim that every generic class composition is done.
+Custom generic constructors, class-field defaults, fixed-point `Weak<T>`
+construction/upgrade, and broader executor/sendability derivation remain
+separate slices. The ARC foundation is executable; those features must compose
+against it rather than being inferred from the existence of `_retain` and
+`_release` symbols.
 
 ## Not tested yet
 

@@ -18,6 +18,14 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-fixed-array-modules/main.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-struct.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-struct-modules/main.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-generic-class.zs",
+    expectedStdout: "drop 2\ndrop 1\n",
+  },
+  {
+    entry: "tests/fixtures/self-host-emit-generic-class-modules/main.zs",
+    expectedStdout: "private drop 7\nmodule drop 3\n",
+  },
   { entry: "tests/fixtures/self-host-emit-generic-defaults.zs" },
   { entry: "tests/fixtures/self-host-emit-generic-defaults-modules/main.zs" },
   {
@@ -92,6 +100,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-fixed-array.zs": differential,
   "self-host-emit-fixed-array-owned.zs": differential,
   "self-host-emit-generic-struct.zs": differential,
+  "self-host-emit-generic-class.zs": differential,
   "self-host-emit-generic-defaults.zs": differential,
   "self-host-emit-generic-deinit.zs": differential,
   "self-host-emit-generic-methods.zs": differential,

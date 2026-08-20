@@ -538,6 +538,8 @@ struct LoweredGenericStructUse {
   typeArguments: Array<String>;
   fields: Array<LoweredGenericStructField>;
   customDeinit: boolean;
+  referenceType: boolean;
+  executorBound: boolean;
 }
 
 struct LoweredGenericMethodUse {
@@ -1042,7 +1044,10 @@ function collectGenericStructUseFromType(
           const symbol = view graph.modules[identity.targetModuleIndex].symbols[
             identity.targetSymbolIndex
           ];
-          if (symbol.kind != ModuleSymbolKind.structSymbol) return;
+          if (
+            symbol.kind != ModuleSymbolKind.structSymbol
+            && symbol.kind != ModuleSymbolKind.classSymbol
+          ) return;
           match (in symbol.typeSignature) {
             some(signature) => {
               let unsettledArgument = false;
@@ -1105,6 +1110,9 @@ function collectGenericStructUseFromType(
                 typeArguments: copyStrings(generic.arguments),
                 fields,
                 customDeinit: signature.customDeinit,
+                referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
+                executorBound: symbol.kind == ModuleSymbolKind.classSymbol
+                  && signature.executorAffinity.byteLength > 0,
               }));
               let ownerArguments = Array<String>();
               for (const argument of generic.arguments) {
@@ -1156,6 +1164,9 @@ function collectGenericStructUseFromType(
                   typeArguments: move ownerArguments,
                   fields: move ownerFields,
                   customDeinit: signature.customDeinit,
+                  referenceType: symbol.kind == ModuleSymbolKind.classSymbol,
+                  executorBound: symbol.kind == ModuleSymbolKind.classSymbol
+                    && signature.executorAffinity.byteLength > 0,
                 }));
               }
             }
@@ -16351,6 +16362,24 @@ function lowerStatementCore(
                 expectedTypeName,
                 inout expressions
               );
+              if (arena.nodes[index].kind == StatementKind.variableStatement) {
+                const bindingType = try lowerModuleTypeName(
+                  program,
+                  importedTypes,
+                  expectedTypeName
+                );
+                if (bindingType.kind == LoweredTypeKind.classType) {
+                  loweredValue = try wrapOwnedStorage(
+                    program,
+                    importedTypes,
+                    tree,
+                    root,
+                    expectedTypeName,
+                    loweredValue,
+                    inout expressions
+                  );
+                }
+              }
             }
             none => throw "native lowering cannot lower an opaque expression";
           }
@@ -19370,10 +19399,10 @@ function appendConcreteGenericStructs(
     }
     if (present) continue;
     let fields = Array<LoweredField>();
-    let needsDeinit = use.customDeinit;
-    let threadShareable = !use.customDeinit;
-    let workerDestructible = !use.customDeinit;
-    let executorBound = false;
+    let needsDeinit = use.customDeinit || use.referenceType;
+    let threadShareable = !use.customDeinit && !use.referenceType;
+    let workerDestructible = !use.customDeinit && !use.referenceType;
+    let executorBound = use.executorBound;
     for (const sourceField of use.fields) {
       const type = try lowerModuleTypeName(
         program,
@@ -19433,7 +19462,7 @@ function appendConcreteGenericStructs(
         name: use.emittedName.copyBytes(0, use.emittedName.byteLength),
         nativeCName: "",
         fields: move concreteFields,
-        referenceType: false,
+        referenceType: use.referenceType,
         executorBound,
         threadShareable,
         workerDestructible,
@@ -19445,7 +19474,9 @@ function appendConcreteGenericStructs(
       localName: use.sourceName.copyBytes(0, use.sourceName.byteLength),
       targetName: use.emittedName.copyBytes(0, use.emittedName.byteLength),
       nativeTypeName: "",
-      kind: LoweredTypeKind.structType,
+      kind: use.referenceType
+        ? LoweredTypeKind.classType
+        : LoweredTypeKind.structType,
       executorBound,
       threadShareable,
       workerDestructible,
@@ -20928,7 +20959,9 @@ function appendLoweredProgram(
         : use.emittedName.copyBytes(0, use.emittedName.byteLength);
       const methodReceiverKind = method.staticMethod
         ? LoweredTypeKind.voidType
-        : LoweredTypeKind.structType;
+        : aggregate.kind == DeclarationKind.classDeclaration
+          ? LoweredTypeKind.classType
+          : LoweredTypeKind.structType;
       const loweredMethodOutcome = attempt lowerFunction(
         program,
         methodImportedTypes,

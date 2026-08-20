@@ -239,7 +239,7 @@ Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
-generic classes and independently generic methods,
+custom constructors on generic aggregates and independently generic methods,
 traits, generators,
 value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
@@ -262,8 +262,13 @@ specialized in the defining module under that same nominal C identity.
 Immutable, `inout`, and `move this` receivers reuse ordinary method ownership,
 including replacement cleanup and owned-field transfer. Static factories infer
 the owner specialization from their arguments and lower to direct calls with no
-synthetic receiver. Generic classes, independently generic methods, custom
-constructors remain source-mapped `Z1000` boundaries.
+synthetic receiver. Demand-driven generic ARC classes reuse the same canonical
+specialization identity for synthesized allocation, instance methods, atomic
+retain/release, custom `deinit`, and automatic owned-field cleanup. Local ARC
+aliases retain before both owners are released, and cross-module aliases plus
+same-spelled private classes remain nominally distinct. Custom constructors on
+generic aggregates remain a source-mapped `Z1000` boundary; fixed-point weak
+references and generic class-field defaults remain later composition slices.
 Concrete generic value fields do carry ordinary Z defaults: lowering emits one
 specialization-specific helper per defaulted field, invokes it for every omitted
 field, and suppresses it for explicit initializers or same-type spreads. This

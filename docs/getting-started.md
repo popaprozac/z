@@ -250,7 +250,10 @@ generic static methods on non-generic owners, and generic constructors now share
 the native resolver's concrete substitution evidence. The fixed-point emitter
 also demand-specializes direct generic free-function calls, deduplicating
 inferred and explicit demands across imports and recursively propagating calls
-dependent on an enclosing generic-function specialization. Native failures are held
+dependent on an enclosing generic-function specialization. It likewise
+materializes demanded generic ARC classes with synthesized allocation,
+specialized instance methods, atomic retain/release, custom cleanup, and
+ownership-bearing fields. Native failures are held
 until stage zero succeeds, so enabling the hybrid does not displace the existing
 diagnostic.
 

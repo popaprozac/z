@@ -907,6 +907,90 @@ test("materializes concrete generic value structs through native ownership", () 
   }
 }, 240_000);
 
+test("materializes demand-driven generic ARC classes natively", () => {
+  const cases = [
+    {
+      input: resolve(
+        projectRoot,
+        "tests/fixtures/self-host-emit-generic-class.zs",
+      ),
+      expectedStdout: "drop 2\ndrop 1\n",
+      specializationCount: 2,
+    },
+    {
+      input: resolve(
+        projectRoot,
+        "tests/fixtures/self-host-emit-generic-class-modules/main.zs",
+      ),
+      expectedStdout: "private drop 7\nmodule drop 3\n",
+      specializationCount: 2,
+    },
+  ];
+  const directory = mkdtempSync("/tmp/z-native-generic-class-");
+  try {
+    for (const [index, testCase] of cases.entries()) {
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", testCase.input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", testCase.input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.equal(
+        [...emission.stdout.matchAll(
+          /typedef struct Z___z_mono_[A-Za-z0-9_]+ \{\s+size_t _z_refcount;/g,
+        )].length,
+        testCase.specializationCount,
+      );
+      assert.equal(
+        [...emission.stdout.matchAll(
+          /static inline __attribute__\(\(unused\)\) Z___z_mono_[A-Za-z0-9_]+ \*Z___z_mono_[A-Za-z0-9_]+_retain\(/g,
+        )].length,
+        testCase.specializationCount,
+      );
+      assert.equal(
+        [...emission.stdout.matchAll(
+          /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_release\(/g,
+        )].length,
+        testCase.specializationCount,
+      );
+      assert.match(
+        emission.stdout,
+        /const shared(?:Number|Words)? = Z___z_mono_[A-Za-z0-9_]+_retain\(/,
+      );
+      if (index === 0) {
+        assert.match(
+          emission.stdout,
+          /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_replace\(Z___z_mono_[A-Za-z0-9_]+ \*self, Z_String value\)/,
+        );
+        assert.match(
+          emission.stdout,
+          /Z_String_deinit\(&self->value\)/,
+        );
+      }
+
+      const executable = resolve(directory, `program-${index}`);
+      const compilation = spawnSync(
+        "clang",
+        ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+      assert.equal(execution.stdout, testCase.expectedStdout);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("evaluates generic value-struct defaults per native construction", () => {
   const inputs = [
     resolve(
@@ -7118,17 +7202,20 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'async throwing method "Decoder.decode" is not executable in the native compiler yet',
     },
     {
-      name: "generic-class",
+      name: "generic-class-custom-constructor",
       source: [
-        "class Box<T> { value: T; }",
+        "class Box<T> {",
+        "  value: T;",
+        "  constructor(value: T) { this.value = value; }",
+        "}",
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
-      line: 1,
-      column: 1,
-      marker: "^^^^^",
+      line: 3,
+      column: 3,
+      marker: "^^^^^^^^^^^",
       code: "Z1000",
-      summary: 'generic class "Box" is not executable in the native compiler yet',
+      summary: 'constructor for generic class "Box" is not executable in the native compiler yet',
     },
     {
       name: "trait",

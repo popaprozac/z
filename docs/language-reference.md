@@ -2036,7 +2036,11 @@ parameters is deliberately deferred until that two-level specialization syntax
 is designed. The fixed-point compiler demand-specializes direct generic free
 functions and executes independently generic instance methods on concrete
 generic value structs plus independently generic static or instance methods on
-non-generic owners. Inferred and explicit calls share one concrete body;
+non-generic owners. It also materializes demand-driven generic ARC classes with
+synthesized object initialization, specialized ordinary instance methods,
+atomic retain/release, custom `deinit`, and automatic cleanup of concrete owned
+fields. Custom constructors, weak-reference lowering, and class-field defaults
+for those specializations remain staged. Inferred and explicit calls share one concrete body;
 cross-module aliases preserve the declaring module's identity, and ordinary
 ownership-bearing results and typed `throws` keep their existing semantics.
 Calls from one generic free-function body into another recursively propagate

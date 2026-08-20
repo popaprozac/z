@@ -1269,21 +1269,11 @@ function validateNativeAggregate(
 ): void throws ModuleResolveError {
   if (aggregate.typeParameters.length > 0) {
     const kind = aggregateKindName(aggregate);
-    if (aggregate.kind == DeclarationKind.classDeclaration) {
-      throw loweringBoundary(
-        path,
-        "Z1000",
-        `generic ${kind} "${aggregate.name}" is not executable in the native compiler yet`,
-        aggregate.line,
-        aggregate.column,
-        kind.byteLength
-      );
-    }
     match (in aggregate.constructorDeclaration) {
       some(initializer) => throw loweringBoundary(
         path,
         "Z1000",
-        `constructor for generic struct "${aggregate.name}" is not executable in the native compiler yet`,
+        `constructor for generic ${kind} "${aggregate.name}" is not executable in the native compiler yet`,
         initializer.line,
         initializer.column,
         11
