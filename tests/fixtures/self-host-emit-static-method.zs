@@ -25,6 +25,14 @@ struct Range {
   }
 }
 
+class NumberPolicy {
+  static function clamp(value: i32, minimum: i32, maximum: i32): i32 {
+    if (value < minimum) return minimum;
+    if (value > maximum) return maximum;
+    return value;
+  }
+}
+
 function main(): i32 {
   const normalized = Range.normalized(9, 2);
   const checked = attempt Range.checked(20, 22);
@@ -32,5 +40,6 @@ function main(): i32 {
     success(value) => value.width();
     failure(error) => error.code;
   };
-  return normalized.width() + checkedWidth - 9;
+  const clamped = NumberPolicy.clamp(50, 0, 10);
+  return normalized.width() + checkedWidth + clamped - 19;
 }

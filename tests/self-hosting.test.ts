@@ -907,7 +907,7 @@ test("materializes concrete generic value structs through native ownership", () 
   }
 }, 240_000);
 
-test("emits static value-struct methods as direct native calls", () => {
+test("emits static struct and class methods as direct native calls", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-static-method.zs",
@@ -935,11 +935,19 @@ test("emits static value-struct methods as direct native calls", () => {
   );
   assert.match(
     emission.stdout,
+    /int32_t Z_NumberPolicy_clamp\(int32_t value, int32_t minimum, int32_t maximum\)/,
+  );
+  assert.match(
+    emission.stdout,
     /\.payload\.success = Z_Range_normalized\(left, right\)/,
   );
   assert.match(
     emission.stdout,
     /Z_Range normalized = Z_Range_normalized\(9, 2\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /int32_t clamped = Z_NumberPolicy_clamp\(50, 0, 10\);/,
   );
   assert.doesNotMatch(
     emission.stdout,
