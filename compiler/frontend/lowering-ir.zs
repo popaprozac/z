@@ -535,6 +535,7 @@ struct LoweredGenericStructUse {
   typeParameters: Array<String>;
   typeArguments: Array<String>;
   fields: Array<LoweredGenericStructField>;
+  customDeinit: boolean;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -1062,6 +1063,7 @@ function collectGenericStructUseFromType(
                 typeParameters: copyStrings(signature.typeParameters),
                 typeArguments: copyStrings(generic.arguments),
                 fields,
+                customDeinit: signature.customDeinit,
               }));
               let ownerArguments = Array<String>();
               for (const argument of generic.arguments) {
@@ -1112,6 +1114,7 @@ function collectGenericStructUseFromType(
                   typeParameters: copyStrings(signature.typeParameters),
                   typeArguments: move ownerArguments,
                   fields: move ownerFields,
+                  customDeinit: signature.customDeinit,
                 }));
               }
             }
@@ -18813,9 +18816,9 @@ function appendConcreteGenericStructs(
     }
     if (present) continue;
     let fields = Array<LoweredField>();
-    let needsDeinit = false;
-    let threadShareable = true;
-    let workerDestructible = true;
+    let needsDeinit = use.customDeinit;
+    let threadShareable = !use.customDeinit;
+    let workerDestructible = !use.customDeinit;
     let executorBound = false;
     for (const sourceField of use.fields) {
       const type = try lowerModuleTypeName(
@@ -20192,12 +20195,68 @@ function appendLoweredProgram(
         none => {}
       }
     }
-    if (aggregate.methods.length == 0 && !hasDefaults) continue;
+    let hasDeinitializer = false;
+    match (in aggregate.deinitializer) {
+      some(_) => hasDeinitializer = true;
+      none => {}
+    }
+    if (
+      aggregate.methods.length == 0
+      && !hasDefaults
+      && !hasDeinitializer
+    ) continue;
     const methodImportedTypes = try genericMethodImportedTypes(
       program,
       importedTypes,
       use
     );
+    match (in aggregate.deinitializer) {
+      some(source) => {
+        try collectArenaIntrinsicEnums(
+          program,
+          methodImportedTypes,
+          source.body,
+          inout fixedArrays,
+          inout arrays,
+          inout slices,
+          inout maps,
+          inout sets,
+          inout enums
+        );
+        let loweredDeinitializer = try lowerDeinitializer(
+          program,
+          methodImportedTypes,
+          evidence,
+          aggregate.name,
+          source.body
+        );
+        loweredDeinitializer.name = `${use.emittedName}.deinit`;
+        rewritePrivateCallTargets(
+          program,
+          privateFunctionCollisionNames,
+          moduleIndex,
+          entryIndex,
+          inout loweredDeinitializer
+        );
+        let structIndex: usize = 0;
+        let installed = false;
+        while (structIndex < structs.length) {
+          if (structs[structIndex].name == use.emittedName) {
+            structs[structIndex].needsDeinit = true;
+            structs[structIndex].deinitializer = Option.some(
+              move loweredDeinitializer
+            );
+            installed = true;
+            break;
+          }
+          structIndex = structIndex + 1;
+        }
+        if (!installed) {
+          throw `native generic deinit lowering lost ${use.sourceName}`;
+        }
+      }
+      none => {}
+    }
     for (const field of aggregate.fields) {
       match (in field.defaultValue) {
         some(_) => {

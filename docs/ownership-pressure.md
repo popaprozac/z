@@ -2998,8 +2998,8 @@ generic templates from ordinary local aggregate emission.
 
 This tier deliberately stops before independently generic behavior. Generic
 classes, methods with their own type parameters, custom
-constructors, and custom `deinit` bodies remain source-mapped `Z1000`
-boundaries. Concrete generic value-field defaults now specialize into
+constructors remain source-mapped `Z1000` boundaries. Concrete generic
+value-field defaults now specialize into
 defining-module helpers. Each omitted field invokes its helper independently,
 including cleanup-bearing `Array<T>` defaults; an explicit initializer or
 same-type spread suppresses it. Local and selective-import construction use the
@@ -3007,6 +3007,15 @@ same canonical helper symbols, so defaults create fresh ownership without
 duplicating template ASTs across consumers. The remaining behavior requires
 additional call-demand or ownership rules and should be closed as separate
 composition slices.
+
+Generic value-struct `deinit` uses the same specialization identity and owner
+module as its methods and defaults. The custom body runs once before automatic
+reverse field cleanup, and cross-module aliases reuse that implementation. The
+executable pressure fixture covers both cleanup-free and owned `String`
+specializations so custom behavior cannot accidentally replace automatic field
+destruction. Capability derivation remains conservative: a custom generic
+`deinit` is neither thread-shareable nor worker-destructible, matching ordinary
+value structs with user cleanup.
 
 ## Not tested yet
 

@@ -263,12 +263,18 @@ Immutable, `inout`, and `move this` receivers reuse ordinary method ownership,
 including replacement cleanup and owned-field transfer. Static factories infer
 the owner specialization from their arguments and lower to direct calls with no
 synthetic receiver. Generic classes, independently generic methods, custom
-constructors, and custom `deinit` remain source-mapped `Z1000` boundaries.
+constructors remain source-mapped `Z1000` boundaries.
 Concrete generic value fields do carry ordinary Z defaults: lowering emits one
 specialization-specific helper per defaulted field, invokes it for every omitted
 field, and suppresses it for explicit initializers or same-type spreads. This
 keeps cleanup-bearing defaults fresh and lets selective-import aliases share the
 same defining-module implementation.
+Custom value-struct `deinit` bodies specialize in the defining module under the
+same concrete identity. They execute before reverse field cleanup, including
+for ownership-bearing fields and selective-import aliases, exactly as on an
+ordinary value struct. As with every custom `deinit`, the specialization stays
+non-shareable and non-worker-destructible until an explicit destruction-thread
+contract exists.
 
 Two nearby findings remain explicitly separate from ordinary `Z1000`
 representation gaps, and both now fail at their proper boundary. Native flow

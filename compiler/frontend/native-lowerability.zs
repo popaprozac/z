@@ -1304,13 +1304,13 @@ function validateNativeAggregate(
       none => {}
     }
     match (in aggregate.deinitializer) {
-      some(deinitializer) => throw loweringBoundary(
+      some(deinitializer) => try validateNativeBody(
         path,
-        "Z1000",
-        `custom deinit for generic struct "${aggregate.name}" is not executable in the native compiler yet`,
-        deinitializer.line,
-        deinitializer.column,
-        6
+        moduleIndex,
+        modules,
+        graph,
+        deinitializer.body,
+        false
       );
       none => {}
     }
