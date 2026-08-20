@@ -477,6 +477,8 @@ function appendCallResolution(
   output.appendAscii(9);
   appendHexText(inout output, resolution.errorType);
   output.appendAscii(9);
+  appendHexUsize(inout output, resolution.callableTypeParameterCount);
+  output.appendAscii(9);
   appendHexUsize(inout output, resolution.typeParameters.length);
   output.appendAscii(9);
   appendHexUsize(inout output, resolution.parameterTypes.length);

@@ -1023,6 +1023,61 @@ test("specializes generic value-struct deinit through native cleanup", () => {
   }
 }, 240_000);
 
+test("specializes independently generic aggregate methods natively", () => {
+  const inputs = [
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-methods.zs",
+    ),
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-methods-modules/main.zs",
+    ),
+  ];
+  const directory = mkdtempSync("/tmp/z-native-generic-methods-");
+  try {
+    for (const [index, input] of inputs.entries()) {
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(
+        emission.stdout,
+        /Z_[A-Za-z0-9_]+_[A-Za-z0-9_]+__Function_[A-Za-z0-9_]+\(/,
+      );
+      assert.doesNotMatch(emission.stdout, /preserve<i32>/);
+      if (index === 0) {
+        assert.match(
+          emission.stdout,
+          /Z_String Z_[A-Za-z0-9_]+_choose__Function_[A-Za-z0-9_]+\(/,
+        );
+        assert.match(emission.stdout, /Z_String_deinit\(&selected\)/);
+      }
+
+      const executable = resolve(directory, `program-${index}`);
+      const compilation = spawnSync(
+        "clang",
+        ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("emits static struct and class methods as direct native calls", () => {
   const input = resolve(
     projectRoot,
@@ -11574,7 +11629,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     + "module\t2f612e7a73\n"
     + "symbol\t0000000000000000\tfunction\t6964656e74697479\t1\t0\t-\t6964656e74697479\t0000000000000000\t0000000000000001\t0000000000000001\n"
     + "signature\t0000000000000000\t0000000000000000\t0\t54\t\t\t\t0000000000000001\t0000000000000001\t54\t76616c7565\t54\n"
-    + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
+    + "callResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t0000000000000000\t0000000000000000\t66756e6374696f6e\t6964656e74697479\t0\t\t693332\t\t0000000000000001\t0000000000000001\t0000000000000001\t54\t693332\t76616c7565\t693332\n"
     + "bindingResolution\t0000000000000000\t000000000000001e\t0000000000000002\t0000000000000007\t76616c7565\t0\t693332\t0000000000000000\n"
     + "expressionResolution\t0000000000000000\t000000000000002a\t0000000000000002\t000000000000000a\t693332\t\t0000000000000000\n"
     + "order\t0000000000000000\n",
@@ -11589,6 +11644,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     targetName: "identity",
     asynchronous: false,
     receiverMode: "",
+    callableTypeParameterCount: 1,
     returnType: "i32",
     errorType: null,
     typeParameters: ["T"],
@@ -11729,6 +11785,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
           targetName: "value",
           asynchronous: true,
           receiverMode: "",
+          callableTypeParameterCount: 1,
           typeParameters: ["T"],
           typeArguments: ["i32"],
           parameterModes: ["in"],
@@ -11867,6 +11924,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     targetName: "value",
     asynchronous: true,
     receiverMode: "",
+    callableTypeParameterCount: 1,
     typeParameters: ["T"],
     typeArguments: ["i32"],
     parameterModes: ["in"],

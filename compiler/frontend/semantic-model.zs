@@ -120,6 +120,7 @@ export struct ModuleCallResolution {
   targetName: String;
   asynchronous: boolean;
   receiverMode: String;
+  callableTypeParameterCount: usize;
   typeParameters: Array<String>;
   typeArguments: Array<String>;
   parameterModes: Array<String>;

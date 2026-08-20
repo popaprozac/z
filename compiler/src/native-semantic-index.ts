@@ -52,6 +52,9 @@ export class NativeSemanticIndex {
         if (resolution.typeParameters.length !== resolution.typeArguments.length) {
           throw new Error(`native frontend returned an unbalanced generic substitution at offset ${resolution.offset} in ${module.path}`);
         }
+        if (resolution.callableTypeParameterCount > resolution.typeParameters.length) {
+          throw new Error(`native frontend returned an invalid callable generic arity at offset ${resolution.offset} in ${module.path}`);
+        }
         if (resolution.parameterModes.length !== resolution.parameterTypes.length) {
           throw new Error(`native frontend returned an unbalanced parameter contract at offset ${resolution.offset} in ${module.path}`);
         }

@@ -2056,6 +2056,35 @@ function recordInferredOutBinding(
   }
 }
 
+function declaredCallableTypeParameterCount(
+  in modules: Array<ResolvedModule>,
+  targetModuleIndex: usize,
+  targetSymbolIndex: usize,
+  in callKind: String,
+  in functionName: String,
+  fallback: usize
+): usize {
+  if (
+    callKind != "method"
+    && callKind != "staticMethod"
+  ) return fallback;
+  if (
+    targetModuleIndex >= modules.length
+    || targetSymbolIndex >= modules[targetModuleIndex].symbols.length
+  ) return fallback;
+  const symbol = view modules[targetModuleIndex].symbols[targetSymbolIndex];
+  match (in symbol.typeSignature) {
+    some(owner) => {
+      for (const method of owner.methods) {
+        const target = `${symbol.name}.${method.name}`;
+        if (target == functionName) return method.signature.typeParameters.length;
+      }
+    }
+    none => {}
+  }
+  return fallback;
+}
+
 function inferSignatureCallType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -2570,6 +2599,14 @@ function inferSignatureCallType(
     }
   }
   if (callKind != "value") {
+    const callableTypeParameterCount = declaredCallableTypeParameterCount(
+      modules,
+      targetModuleIndex,
+      targetSymbolIndex,
+      callKind,
+      functionName,
+      signature.typeParameters.length
+    );
     recordCallResolution(
       tree,
       callIndex,
@@ -2578,6 +2615,7 @@ function inferSignatureCallType(
       callKind,
       functionName,
       signature,
+      callableTypeParameterCount,
       substitutions,
       receiverMode,
       returnType,

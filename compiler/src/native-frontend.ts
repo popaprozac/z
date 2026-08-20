@@ -1355,7 +1355,7 @@ export function resolveWithNativeFrontendLibrary(
         library.symbols.z_stage1_resolve_call_resolution_item_count(responsePointer),
         "call-resolution item count",
       );
-      const callResolutionRecordWidth = 20 * 8;
+      const callResolutionRecordWidth = 21 * 8;
       const callResolutionRecords = Buffer.alloc(
         Math.max(1, summary.callResolutionCount * callResolutionRecordWidth),
       );
@@ -1405,8 +1405,12 @@ export function resolveWithNativeFrontendLibrary(
           field(17, "error-type length"),
           "call-resolution error type",
         );
-        const typeCount = field(18, "type count");
-        const parameterCount = field(19, "parameter count");
+        const callableTypeParameterCount = field(18, "callable type-parameter count");
+        const typeCount = field(19, "type count");
+        const parameterCount = field(20, "parameter count");
+        if (callableTypeParameterCount > typeCount) {
+          throw new Error("the native frontend returned an invalid callable type-parameter count");
+        }
         const resolution = {
           offset: field(2, "offset"),
           line: field(3, "line"),
@@ -1425,6 +1429,7 @@ export function resolveWithNativeFrontendLibrary(
             field(13, "receiver-mode length"),
             "call-resolution receiver mode",
           ),
+          callableTypeParameterCount,
           typeParameters: new Array<string>(typeCount),
           typeArguments: new Array<string>(typeCount),
           parameterModes: new Array<"value" | "in" | "inout" | "out" | "inValue" | "move">(parameterCount),

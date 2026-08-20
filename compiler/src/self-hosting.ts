@@ -117,6 +117,7 @@ export type Stage1ModuleCallResolution = {
   readonly targetName: string;
   readonly asynchronous: boolean;
   readonly receiverMode: string;
+  readonly callableTypeParameterCount: number;
   readonly typeParameters: readonly string[];
   readonly typeArguments: readonly string[];
   readonly parameterModes: readonly ("value" | "in" | "inout" | "out" | "inValue" | "move")[];
@@ -308,6 +309,7 @@ function copyStage1CallResolution(
     targetName: resolution.targetName,
     asynchronous: resolution.asynchronous,
     receiverMode: resolution.receiverMode,
+    callableTypeParameterCount: resolution.callableTypeParameterCount,
     typeParameters: [...resolution.typeParameters],
     typeArguments: [...resolution.typeArguments],
     parameterModes: [...resolution.parameterModes],
@@ -429,13 +431,17 @@ export function decodeStage1ModuleGraphStream(
       if (encodedText.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))) {
         throw new Error(`malformed stage-1 call resolution text: ${line}`);
       }
-      const typeCount = parseProtocolHexInteger(fields[13], "call resolution type count");
-      const parameterCount = parseProtocolHexInteger(fields[14], "call resolution parameter count");
-      if (fields.length !== 15 + (typeCount * 2) + (parameterCount * 2)) {
+      const callableTypeParameterCount = parseProtocolHexInteger(fields[13], "call resolution callable type-parameter count");
+      const typeCount = parseProtocolHexInteger(fields[14], "call resolution type count");
+      const parameterCount = parseProtocolHexInteger(fields[15], "call resolution parameter count");
+      if (callableTypeParameterCount > typeCount) {
+        throw new Error(`malformed stage-1 callable type-parameter count: ${line}`);
+      }
+      if (fields.length !== 16 + (typeCount * 2) + (parameterCount * 2)) {
         throw new Error(`malformed stage-1 call resolution arity: ${line}`);
       }
-      const encodedTypes = fields.slice(15, 15 + (typeCount * 2));
-      const encodedParameters = fields.slice(15 + (typeCount * 2));
+      const encodedTypes = fields.slice(16, 16 + (typeCount * 2));
+      const encodedParameters = fields.slice(16 + (typeCount * 2));
       if (
         encodedTypes.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
         || encodedParameters.some((field) => !/^(?:[0-9a-f]{2})*$/.test(field))
@@ -457,6 +463,7 @@ export function decodeStage1ModuleGraphStream(
         targetName: Buffer.from(fields[8], "hex").toString("utf8"),
         asynchronous: fields[9] === "1",
         receiverMode: Buffer.from(fields[10], "hex").toString("utf8"),
+        callableTypeParameterCount,
         returnType: Buffer.from(fields[11], "hex").toString("utf8"),
         errorType: fields[12].length === 0 ? null : Buffer.from(fields[12], "hex").toString("utf8"),
         typeParameters: encodedTypes.filter((_, index) => index % 2 === 0)

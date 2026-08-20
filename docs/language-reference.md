@@ -2033,7 +2033,11 @@ not create a default generic argument.
 An instance of a generic owner may also call a separately generic instance
 method. A static method whose owner and method both introduce independent type
 parameters is deliberately deferred until that two-level specialization syntax
-is designed.
+is designed. The fixed-point compiler executes independently generic instance
+methods on concrete generic value structs and independently generic static or
+instance methods on non-generic owners. It keeps the owner's substitutions
+separate from the method's own inferred or explicit substitutions, including
+ownership-bearing returns and typed `throws`.
 
 `|` is reserved for union-like type composition; it is not the spelling for
 requiring multiple trait conformances.

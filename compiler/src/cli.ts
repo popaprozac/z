@@ -2106,6 +2106,7 @@ typedef struct {
   uint64_t return_type_length;
   uint64_t error_type_data;
   uint64_t error_type_length;
+  uint64_t callable_type_parameter_count;
   uint64_t type_count;
   uint64_t parameter_count;
 } Z_Stage1CallResolutionRecord;
@@ -3535,6 +3536,9 @@ Z_STAGE1_EXPORT uintptr_t z_stage1_resolve_copy_call_resolution_records(
         .error_type_length = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].semanticEvidence
           .callResolutions.data[resolution_index].errorType.length,
+        .callable_type_parameter_count = (uint64_t)response->result.graph.resolved
+          .modules.data[module_index].semanticEvidence
+          .callResolutions.data[resolution_index].callableTypeParameterCount,
         .type_count = (uint64_t)response->result.graph.resolved
           .modules.data[module_index].semanticEvidence
           .callResolutions.data[resolution_index].typeParameters.length,

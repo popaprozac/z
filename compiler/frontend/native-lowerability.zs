@@ -1222,10 +1222,11 @@ function validateNativeFunction(
       5
     );
   }
-  if (declaration.typeParameters.length > 0) {
-    const subject = owner.byteLength > 0
-      ? `generic method "${owner}.${declaration.name}"`
-      : `generic function "${declaration.name}"`;
+  if (
+    declaration.typeParameters.length > 0
+    && owner.byteLength == 0
+  ) {
+    const subject = `generic function "${declaration.name}"`;
     throw loweringBoundary(
       path,
       "Z1000",

@@ -2996,9 +2996,20 @@ generated C even though semantic demand already found the right layout. Native
 lowering now carries that context into construction and explicitly excludes
 generic templates from ordinary local aggregate emission.
 
-This tier deliberately stops before independently generic behavior. Generic
-classes, methods with their own type parameters, custom
-constructors remain source-mapped `Z1000` boundaries. Concrete generic
+The next demand tier activates independently generic methods without changing
+their settled source syntax. Call evidence now records the callable's own
+generic arity separately from the complete substitution list, so lowering can
+split `Holder<T>` owner arguments from `choose<U>` method arguments without a
+name-based guess. Concrete owner and method substitutions select one canonical
+direct C symbol; inferred and explicit calls deduplicate to that same body.
+Local and selectively imported generic owners execute the implementation in
+the declaring module, and cleanup-bearing `String` arguments/results plus typed
+throwing methods reuse the ordinary ownership and `Result` paths. Static and
+instance generic methods on non-generic owners use the same mechanism.
+
+Generic free functions, generic classes, the deliberately undesigned two-level
+static specialization of a generic owner, and custom constructors remain
+source-mapped boundaries. Concrete generic
 value-field defaults now specialize into
 defining-module helpers. Each omitted field invokes its helper independently,
 including cleanup-bearing `Array<T>` defaults; an explicit initializer or
