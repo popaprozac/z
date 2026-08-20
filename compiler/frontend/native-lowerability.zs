@@ -1316,13 +1316,13 @@ function validateNativeAggregate(
     }
     for (const field of aggregate.fields) {
       match (in field.defaultValue) {
-        some(_) => throw loweringBoundary(
+        some(expression) => try validateNativeExpression(
           path,
-          "Z1000",
-          `default value for generic field "${aggregate.name}.${field.name}" is not executable in the native compiler yet`,
-          field.line,
-          field.column,
-          field.name.byteLength
+          moduleIndex,
+          modules,
+          graph,
+          expression,
+          true
         );
         none => {}
       }

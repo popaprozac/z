@@ -907,6 +907,65 @@ test("materializes concrete generic value structs through native ownership", () 
   }
 }, 240_000);
 
+test("evaluates generic value-struct defaults per native construction", () => {
+  const inputs = [
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-defaults.zs",
+    ),
+    resolve(
+      projectRoot,
+      "tests/fixtures/self-host-emit-generic-defaults-modules/main.zs",
+    ),
+  ];
+  const directory = mkdtempSync("/tmp/z-native-generic-defaults-");
+  try {
+    for (const [index, input] of inputs.entries()) {
+      const parity = spawnSync(
+        process.execPath,
+        [cli, "check", input, "--native-frontend"],
+        { encoding: "utf8" },
+      );
+      assert.equal(parity.status, 0, parity.stderr);
+
+      const emission = spawnSync(
+        process.execPath,
+        [cli, "self-host-emit", input],
+        { encoding: "utf8" },
+      );
+      assert.equal(emission.status, 0, emission.stderr);
+      assert.match(
+        emission.stdout,
+        /Z___z_mono_[A-Za-z0-9_]+___default_attempts\(void\)/,
+      );
+      assert.match(
+        emission.stdout,
+        /Z___z_mono_[A-Za-z0-9_]+___default_history\(void\)/,
+      );
+      assert.match(
+        emission.stdout,
+        /\.attempts = Z___z_mono_[A-Za-z0-9_]+___default_attempts\(\)/,
+      );
+      assert.match(
+        emission.stdout,
+        /\.history = Z___z_mono_[A-Za-z0-9_]+___default_history\(\)/,
+      );
+
+      const executable = resolve(directory, `program-${index}`);
+      const compilation = spawnSync(
+        "clang",
+        ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+        { encoding: "utf8", input: emission.stdout },
+      );
+      assert.equal(compilation.status, 0, compilation.stderr);
+      const execution = spawnSync(executable, [], { encoding: "utf8" });
+      assert.equal(execution.status, 0, execution.stderr);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("emits static struct and class methods as direct native calls", () => {
   const input = resolve(
     projectRoot,

@@ -11,6 +11,7 @@ import {
   ExpressionKind,
   ExpressionSyntax,
   ExpressionTree,
+  FieldDeclaration,
   FunctionDeclaration,
   ModuleConstantDeclaration,
   ParameterMode,
@@ -101,6 +102,7 @@ export struct LoweredField {
   type: LoweredType;
   optionalField: boolean;
   borrowedView: boolean;
+  defaultTarget: String;
 }
 
 export struct LoweredStruct {
@@ -865,6 +867,69 @@ function typeContainsGenericParameter(
       ) return true;
     }
     none => {}
+  }
+  return false;
+}
+
+function typeContainsNamedGenericParameter(
+  in typeName: String,
+  in parameter: String
+): boolean {
+  if (typeName == parameter) return true;
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        if (typeContainsNamedGenericParameter(argument, parameter)) {
+          return true;
+        }
+      }
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    return typeContainsNamedGenericParameter(nullable, parameter);
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    return typeContainsNamedGenericParameter(target, parameter);
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeContainsNamedGenericParameter(target, parameter);
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeContainsNamedGenericParameter(
+      array.elementType,
+      parameter
+    );
+    none => {}
+  }
+  return false;
+}
+
+function genericParameterHasNominalShadow(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in parameter: String
+): boolean {
+  match (structIndex(program, parameter)) {
+    some(_) => return true;
+    none => {}
+  }
+  match (classIndex(program, parameter)) {
+    some(_) => return true;
+    none => {}
+  }
+  match (enumIndex(program, parameter)) {
+    some(_) => return true;
+    none => {}
+  }
+  for (const imported of importedTypes) {
+    if (
+      imported.localName == parameter
+      || imported.targetName == parameter
+    ) return true;
   }
   return false;
 }
@@ -9222,6 +9287,7 @@ function lowerExpressionContextual(
                       type: move overriddenType,
                       optionalField: field.optionalField,
                       borrowedView: false,
+                      defaultTarget: "",
                     }));
                   }
                 }
@@ -9383,6 +9449,7 @@ function lowerExpressionContextual(
                       }),
                       optionalField: field.optionalField,
                       borrowedView: field.borrowedView,
+                      defaultTarget: "",
                     }));
                   }
                   continue;
@@ -9462,24 +9529,41 @@ function lowerExpressionContextual(
             none => {}
           }
         }
-        if (!localConstruction) {
+        if (!localConstruction && !hasSpread) {
           for (const imported of importedTypes) {
             if (
               imported.localName != constructionName
               && imported.targetName != constructionName
             ) continue;
             for (const field of imported.fields) {
-              if (
-                !field.optionalField
-                || containsString(labels, field.name)
-              ) continue;
-              const optionalTypeName = loweredTypeIdentity(field.type);
-              const value = try lowerOptionalFieldNone(
-                program,
-                importedTypes,
-                optionalTypeName,
-                inout output
-              );
+              if (containsString(labels, field.name)) continue;
+              let value: usize = 0;
+              if (field.defaultTarget.byteLength > 0) {
+                const callee = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.localValue,
+                  field.defaultTarget,
+                  Array<usize>(),
+                  Array<String>()
+                );
+                let callChildren = Array<usize>();
+                callChildren.push(callee);
+                value = pushExpression(
+                  inout output,
+                  LoweredExpressionKind.directCall,
+                  "",
+                  move callChildren,
+                  Array<String>()
+                );
+              } else if (field.optionalField) {
+                const optionalTypeName = loweredTypeIdentity(field.type);
+                value = try lowerOptionalFieldNone(
+                  program,
+                  importedTypes,
+                  optionalTypeName,
+                  inout output
+                );
+              } else continue;
               children.push(value);
               labels.push(field.name.copyBytes(
                 0,
@@ -17707,6 +17791,67 @@ function lowerDeinitializer(
   });
 }
 
+function lowerGenericFieldDefault(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in sourcePath: String,
+  in targetName: String,
+  in field: FieldDeclaration
+): LoweredFunction throws String {
+  match (in field.defaultValue) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        let expressions = Array<LoweredExpression>();
+        const root = tree.root;
+        let value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root,
+          field.type.name,
+          inout expressions
+        );
+        value = wrapImplicitOwnedTransfer(
+          tree,
+          root,
+          value,
+          inout expressions
+        );
+        const returnType = try lowerModuleType(
+          program,
+          importedTypes,
+          field.type
+        );
+        return LoweredFunction({
+          name: targetName.copyBytes(0, targetName.byteLength),
+          testName: "",
+          sourcePath: sourcePath.copyBytes(0, sourcePath.byteLength),
+          nativeCExportName: "",
+          asynchronous: false,
+          mainDelaySegments: Array<LoweredMainDelaySegment>(),
+          mainDelayIfs: Array<LoweredMainDelayIf>(),
+          mainDelayMatches: Array<LoweredMainDelayMatch>(),
+          mainDelayLoops: Array<LoweredMainDelayLoop>(),
+          receiverType: Option<LoweredType>.none,
+          receiverMode: LoweredParameterMode.value,
+          parameters: Array<LoweredParameter>(),
+          returnType,
+          fallthroughExpression: Option.some(value),
+          expressions,
+          statements: Array<LoweredStatement>(),
+          roots: Array<usize>(),
+          fallthroughCleanups: Array<LoweredCleanup>(),
+          liveFlags: Array<LoweredLiveFlag>(),
+        });
+      }
+      none => throw `native generic default helper could not project ${field.name}`;
+    }
+    none => throw `native generic default helper lost ${field.name}`;
+  }
+}
+
 function containsLoweredEnum(
   in enums: Array<LoweredEnum>,
   in name: String
@@ -18079,6 +18224,42 @@ function collectIntrinsicTypeName(
   inout sets: Array<LoweredSet>,
   inout enums: Array<LoweredEnum>
 ): void throws String {
+  for (const aggregate of program.aggregates) {
+    for (const parameter of aggregate.typeParameters) {
+      if (
+        typeContainsNamedGenericParameter(name, parameter.name)
+        && !genericParameterHasNominalShadow(
+          program,
+          importedTypes,
+          parameter.name
+        )
+      ) return;
+    }
+    for (const method of aggregate.methods) {
+      for (const parameter of method.typeParameters) {
+        if (
+          typeContainsNamedGenericParameter(name, parameter.name)
+          && !genericParameterHasNominalShadow(
+            program,
+            importedTypes,
+            parameter.name
+          )
+        ) return;
+      }
+    }
+  }
+  for (const declaration of program.functions) {
+    for (const parameter of declaration.typeParameters) {
+      if (
+        typeContainsNamedGenericParameter(name, parameter.name)
+        && !genericParameterHasNominalShadow(
+          program,
+          importedTypes,
+          parameter.name
+        )
+      ) return;
+    }
+  }
   const fixedArray = try intrinsicFixedArrayDeclaration(
     program,
     importedTypes,
@@ -18567,6 +18748,10 @@ function loweredStructFields(
         }),
         optionalField: field.optionalField,
         borrowedView: field.borrowedView,
+        defaultTarget: field.defaultTarget.copyBytes(
+          0,
+          field.defaultTarget.byteLength
+        ),
       }));
     }
   }
@@ -18633,9 +18818,6 @@ function appendConcreteGenericStructs(
     let workerDestructible = true;
     let executorBound = false;
     for (const sourceField of use.fields) {
-      if (sourceField.hasDefault && !sourceField.optionalField) {
-        throw `native generic struct ${use.sourceName} does not support field defaults yet`;
-      }
       const type = try lowerModuleTypeName(
         program,
         importedTypes,
@@ -18668,6 +18850,9 @@ function appendConcreteGenericStructs(
         type,
         optionalField: sourceField.optionalField,
         borrowedView: sourceField.borrowedView,
+        defaultTarget: sourceField.hasDefault && !sourceField.optionalField
+          ? `Z_${use.emittedName}___default_${sourceField.name}`
+          : "",
       }));
     }
     if (!containsLoweredStruct(structs, use.emittedName)) {
@@ -18681,6 +18866,10 @@ function appendConcreteGenericStructs(
           }),
           optionalField: field.optionalField,
           borrowedView: field.borrowedView,
+          defaultTarget: field.defaultTarget.copyBytes(
+            0,
+            field.defaultTarget.byteLength
+          ),
         }));
       }
       structs.push(LoweredStruct({
@@ -18848,6 +19037,10 @@ function copyImportedTypeAlias(
       }),
       optionalField: field.optionalField,
       borrowedView: field.borrowedView,
+      defaultTarget: field.defaultTarget.copyBytes(
+        0,
+        field.defaultTarget.byteLength
+      ),
     }));
   }
   let variants = Array<LoweredVariant>();
@@ -19013,6 +19206,7 @@ function importedTypesForModule(
                 type: fieldType,
                 optionalField: false,
                 borrowedView: false,
+                defaultTarget: "",
               }));
             }
             types.push(LoweredImportedType({
@@ -19832,6 +20026,7 @@ function appendLoweredProgram(
         type: move fieldType,
         optionalField: field.optionalField,
         borrowedView: stringStartsWith(field.type.name, "view "),
+        defaultTarget: "",
       }));
     }
     let deinitializer = Option<LoweredFunction>.none;
@@ -19944,6 +20139,23 @@ function appendLoweredProgram(
     }
   }
 
+  for (const use of genericStructUses) {
+    if (use.consumerModuleIndex != moduleIndex) continue;
+    for (const field of use.fields) {
+      try collectIntrinsicTypeName(
+        program,
+        importedTypes,
+        field.typeName,
+        inout fixedArrays,
+        inout arrays,
+        inout slices,
+        inout maps,
+        inout sets,
+        inout enums
+      );
+    }
+  }
+
   try appendConcreteGenericStructs(
     program,
     genericStructUses,
@@ -19973,12 +20185,43 @@ function appendLoweredProgram(
       throw `native generic method lowering lost owner ${use.ownerName}`;
     }
     const aggregate = view program.aggregates[aggregateIndex];
-    if (aggregate.methods.length == 0) continue;
+    let hasDefaults = false;
+    for (const field of aggregate.fields) {
+      match (in field.defaultValue) {
+        some(_) => hasDefaults = true;
+        none => {}
+      }
+    }
+    if (aggregate.methods.length == 0 && !hasDefaults) continue;
     const methodImportedTypes = try genericMethodImportedTypes(
       program,
       importedTypes,
       use
     );
+    for (const field of aggregate.fields) {
+      match (in field.defaultValue) {
+        some(_) => {
+          const target = `Z_${use.emittedName}___default_${field.name}`;
+          let loweredDefault = try lowerGenericFieldDefault(
+            program,
+            methodImportedTypes,
+            evidence,
+            sourcePath,
+            target,
+            field
+          );
+          rewritePrivateCallTargets(
+            program,
+            privateFunctionCollisionNames,
+            moduleIndex,
+            entryIndex,
+            inout loweredDefault
+          );
+          functions.push(move loweredDefault);
+        }
+        none => {}
+      }
+    }
     for (const method of aggregate.methods) {
       if (method.typeParameters.length > 0) {
         throw `native lowering does not support generic method ${aggregate.name}.${method.name} yet`;

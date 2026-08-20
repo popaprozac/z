@@ -2998,9 +2998,15 @@ generic templates from ordinary local aggregate emission.
 
 This tier deliberately stops before independently generic behavior. Generic
 classes, methods with their own type parameters, custom
-constructors, non-optional field defaults, and custom `deinit` bodies remain
-source-mapped `Z1000` boundaries. Those require additional call-demand or
-behavior ownership rules and should be closed as separate composition slices.
+constructors, and custom `deinit` bodies remain source-mapped `Z1000`
+boundaries. Concrete generic value-field defaults now specialize into
+defining-module helpers. Each omitted field invokes its helper independently,
+including cleanup-bearing `Array<T>` defaults; an explicit initializer or
+same-type spread suppresses it. Local and selective-import construction use the
+same canonical helper symbols, so defaults create fresh ownership without
+duplicating template ASTs across consumers. The remaining behavior requires
+additional call-demand or ownership rules and should be closed as separate
+composition slices.
 
 ## Not tested yet
 
