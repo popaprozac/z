@@ -92,6 +92,7 @@ function cType(in type: LoweredType): String throws String {
     return type.name.copyBytes(0, type.name.byteLength);
   }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
+  if (type.kind == LoweredTypeKind.weakType) return "Z_Weak";
   if (
     type.kind == LoweredTypeKind.onceType
     || type.kind == LoweredTypeKind.onceLifetimeType
@@ -433,6 +434,14 @@ function loweredTypeForIdentity(
   if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
   if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
+  if (
+    identity.byteLength > 5
+    && identity.copyBytes(identity.byteLength - 5, identity.byteLength)
+      == "_weak"
+  ) return LoweredType({
+    kind: LoweredTypeKind.weakType,
+    name: identity.copyBytes(0, identity.byteLength),
+  });
   for (const declaration of program.fixedArrays) {
     if (declaration.name == identity) return LoweredType({
       kind: LoweredTypeKind.fixedArrayType,
@@ -729,12 +738,38 @@ function appendModuleConstants(
   if (program.constants.length > 0) output.append("\n");
 }
 
+function appendWeakRuntime(inout output: TextBuffer): void {
+  output.append("typedef struct Z_WeakControl {\n");
+  output.append("  void *value;\n");
+  output.append("  size_t weak_count;\n");
+  output.append("} Z_WeakControl;\n\n");
+  output.append("typedef struct Z_Weak {\n");
+  output.append("  Z_WeakControl *control;\n");
+  output.append("} Z_Weak;\n\n");
+  output.append("typedef struct Z_WeakExpired {\n");
+  output.append("  unsigned char _z_empty;\n");
+  output.append("} Z_WeakExpired;\n\n");
+  output.append("static inline __attribute__((unused)) Z_Weak z_weak_retain(Z_Weak value) {\n");
+  output.append("  if (value.control != NULL) value.control->weak_count += 1;\n");
+  output.append("  return value;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_weak_release(Z_Weak value) {\n");
+  output.append("  if (value.control == NULL) return;\n");
+  output.append("  value.control->weak_count -= 1;\n");
+  output.append("  if (value.control->weak_count == 0) free(value.control);\n");
+  output.append("}\n\n");
+}
+
 function appendClassFinalizationBody(
   inout output: TextBuffer,
   in program: LoweredProgram,
   in aggregate: LoweredStruct,
   depth: usize
 ): void throws String {
+  appendIndent(inout output, depth);
+  output.append("Z_WeakControl *_z_stage1_weak_control = self->_z_weak;\n");
+  appendIndent(inout output, depth);
+  output.append("if (_z_stage1_weak_control != NULL) _z_stage1_weak_control->value = NULL;\n");
   match (in aggregate.deinitializer) {
     some(deinitializer) => {
       for (const root of deinitializer.roots) {
@@ -768,6 +803,14 @@ function appendClassFinalizationBody(
       output.append(");\n");
     }
   }
+  appendIndent(inout output, depth);
+  output.append("if (_z_stage1_weak_control != NULL) {\n");
+  appendIndent(inout output, depth + 1);
+  output.append("_z_stage1_weak_control->weak_count -= 1;\n");
+  appendIndent(inout output, depth + 1);
+  output.append("if (_z_stage1_weak_control->weak_count == 0) free(_z_stage1_weak_control);\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
   appendIndent(inout output, depth);
   output.append("free(self);\n");
 }
@@ -826,6 +869,7 @@ function appendClassAndOnceRuntime(
     output.append(aggregate.name);
     output.append("));\n  if (_z_stage1_instance == NULL) abort();\n");
     output.append("  _z_stage1_instance->_z_refcount = 1;\n");
+    output.append("  _z_stage1_instance->_z_weak = NULL;\n");
     for (const item of aggregate.fields) {
       output.append("  _z_stage1_instance->");
       output.append(item.name);
@@ -841,6 +885,43 @@ function appendClassAndOnceRuntime(
     output.append("_retain(Z_");
     output.append(aggregate.name);
     output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n  return value;\n}\n\n");
+    output.append("static inline __attribute__((unused)) Z_Weak Z_");
+    output.append(aggregate.name);
+    output.append("_weak_retain(Z_Weak value) {\n  return z_weak_retain(value);\n}\n\n");
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(aggregate.name);
+    output.append("_weak_deinit(const Z_Weak *value) {\n  if (value == NULL) return;\n  z_weak_release(*value);\n}\n\n");
+    output.append("static __attribute__((unused)) Z_Weak Z_");
+    output.append(aggregate.name);
+    output.append("_weak(Z_");
+    output.append(aggregate.name);
+    output.append(" *value) {\n  if (value == NULL) abort();\n  if (value->_z_weak == NULL) {\n    value->_z_weak = (Z_WeakControl *)malloc(sizeof(Z_WeakControl));\n    if (value->_z_weak == NULL) abort();\n    value->_z_weak->value = value;\n    value->_z_weak->weak_count = 1;\n  }\n  Z_Weak weak = { .control = value->_z_weak };\n  weak.control->weak_count += 1;\n  return weak;\n}\n\n");
+    const weakResultName = `__z_Result_${aggregate.name}_WeakExpired`;
+    let emitsWeakUpgrade = false;
+    for (const enumeration of program.enums) {
+      if (enumeration.name == weakResultName) emitsWeakUpgrade = true;
+    }
+    if (emitsWeakUpgrade) {
+      output.append("static __attribute__((unused)) Z_");
+      output.append(weakResultName);
+      output.append(" Z_");
+      output.append(aggregate.name);
+      output.append("_weak_upgrade(Z_Weak weak) {\n  if (weak.control == NULL || weak.control->value == NULL) {\n    return (Z_");
+      output.append(weakResultName);
+      output.append("){ .tag = Z_");
+      output.append(weakResultName);
+      output.append("Tag_failure, .payload.failure = (Z_WeakExpired){0} };\n  }\n  Z_");
+      output.append(aggregate.name);
+      output.append(" *value = (Z_");
+      output.append(aggregate.name);
+      output.append(" *)weak.control->value;\n  return (Z_");
+      output.append(weakResultName);
+      output.append("){ .tag = Z_");
+      output.append(weakResultName);
+      output.append("Tag_success, .payload.success = Z_");
+      output.append(aggregate.name);
+      output.append("_retain(value) };\n}\n\n");
+    }
     if (aggregate.executorBound) {
       output.append("static void Z_");
       output.append(aggregate.name);
@@ -1832,6 +1913,40 @@ function appendExpression(
     output.append(declaration.expressions[index].value);
     output.append("_retain(");
     try appendExpression(inout output, declaration, operand);
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.weakValue) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed weak expression";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_weak(");
+    const targetExpressionIndex: usize =
+      declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      targetExpressionIndex
+    );
+    output.append(")");
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.weakUpgrade) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received a malformed weak upgrade";
+    }
+    output.append("Z_");
+    output.append(declaration.expressions[index].value);
+    output.append("_weak_upgrade(");
+    const observerExpressionIndex: usize =
+      declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      observerExpressionIndex
+    );
     output.append(")");
     return;
   }
@@ -8519,6 +8634,7 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.weakType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
@@ -9246,6 +9362,7 @@ function appendStructDefinition(
   output.append(" {\n");
   if (program.structs[index].referenceType) {
     output.append("  size_t _z_refcount;\n");
+    output.append("  Z_WeakControl *_z_weak;\n");
   }
   for (const field of program.structs[index].fields) {
     const fieldType = try cType(field.type);
@@ -11562,6 +11679,7 @@ function emitLoweredC(
     output.append(";\n");
   }
   if (program.foreignResources.length > 0) output.append("\n");
+  appendWeakRuntime(inout output);
   try appendTypeDefinitions(inout output, program);
   try appendCopyHelpers(inout output, program);
   for (const declaration of program.enums) {

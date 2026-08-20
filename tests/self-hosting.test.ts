@@ -991,6 +991,148 @@ test("materializes demand-driven generic ARC classes natively", () => {
   }
 }, 240_000);
 
+test("zeroes and upgrades ARC weak references in fixed-point output", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-weak.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /typedef struct Z_WeakControl/);
+  assert.match(emission.stdout, /Z_WeakControl \*_z_weak;/);
+  assert.match(emission.stdout, /_z_stage1_weak_control->value = NULL;/);
+  assert.match(emission.stdout, /Z_Session_weak_upgrade\(Z_Weak weak\)/);
+  assert.match(emission.stdout, /Z_Session_weak_retain\(observer\)/);
+  assert.match(
+    emission.stdout,
+    /copyObserver\(Z_Session_weak_retain\(sharedObserver\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_SessionObserver_new\(Z_Session_weak_retain\(observer\)\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-weak-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      "released session 42\nreleased controller 9\nreleased session 7\n",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("preserves weak identity for generic ARC class specializations", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-generic-weak.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+_weak_upgrade\(Z_Weak weak\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+_weak\(Z___z_mono_[A-Za-z0-9_]+ \*value\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-generic-weak-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      "released cell 1\nreleased cell 2\n",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("preserves weak generic class identity across modules", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-generic-weak-modules/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+_weak_upgrade\(Z_Weak weak\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-module-generic-weak-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      "released module cell 1\nreleased module cell 2\n",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("evaluates generic value-struct defaults per native construction", () => {
   const inputs = [
     resolve(

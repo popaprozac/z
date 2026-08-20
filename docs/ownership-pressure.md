@@ -3057,12 +3057,24 @@ A multi-module fixture proves selective-import aliases share one specialization
 while an unrelated private generic class with the same source name receives a
 distinct nominal C identity.
 
+Fixed-point `Weak<T>` now composes with that ARC foundation rather than adding a
+parallel generic runtime. Every ordinary or demand-specialized class carries a
+lazy zeroing-control pointer. `weak owner` increments only the weak control,
+copying a weak handle retains that control, final strong release clears its
+value before custom `deinit`, and `upgrade()` returns the existing native
+`Result<T, WeakExpired>` while retaining the recovered class on success.
+Focused executables cover ordinary classes, `try`/`attempt`, strong-owner
+replacement, owned closure capture, direct generic classes, and selective
+cross-module generic aliases. A copied weak value also crosses an owned function
+parameter and enters a class field without consuming the caller's handle.
+Registering concrete generic identities before intrinsic wrappers also closes
+the broader `Wrapper<Generic<T>>` lowering seam that this pressure test exposed.
+
 This is deliberately not a claim that every generic class composition is done.
-Custom generic constructors, class-field defaults, fixed-point `Weak<T>`
-construction/upgrade, and broader executor/sendability derivation remain
-separate slices. The ARC foundation is executable; those features must compose
-against it rather than being inferred from the existence of `_retain` and
-`_release` symbols.
+Custom generic constructors, class-field defaults, concurrent weak upgrade,
+and broader executor/sendability derivation remain separate slices. The ARC
+foundation is executable; those features must compose against it rather than
+being inferred from the existence of `_retain` and `_release` symbols.
 
 ## Not tested yet
 

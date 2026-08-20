@@ -267,8 +267,10 @@ specialization identity for synthesized allocation, instance methods, atomic
 retain/release, custom `deinit`, and automatic owned-field cleanup. Local ARC
 aliases retain before both owners are released, and cross-module aliases plus
 same-spelled private classes remain nominally distinct. Custom constructors on
-generic aggregates remain a source-mapped `Z1000` boundary; fixed-point weak
-references and generic class-field defaults remain later composition slices.
+generic aggregates remain a source-mapped `Z1000` boundary; generic
+class-field defaults remain a later composition slice. Fixed-point weak
+references now reuse the ordinary and generic class identities described
+above.
 Concrete generic value fields do carry ordinary Z defaults: lowering emits one
 specialization-specific helper per defaulted field, invokes it for every omitted
 field, and suppresses it for explicit initializers or same-type spreads. This
@@ -603,9 +605,13 @@ native-thread throwing-closure programs therefore remain native-authoritative
 without requiring foreign thread metadata in the native source graph.
 Compiler-provided weak references are native as well: `WeakExpired` is an
 intrinsic type, `weak value` validates a class target without consuming its
-owner, and `Weak<T>.upgrade()` yields `T throws WeakExpired`. The existing
-weak-reference and weak-capture application therefore remains fully
-native-authoritative.
+owner, and `Weak<T>.upgrade()` yields `T throws WeakExpired`. Fixed-point C
+emission now gives each ARC class a lazily allocated zeroing control, retains
+copied weak handles independently of strong identity, and upgrades through the
+ordinary `Result<T, WeakExpired>` path. Executable fixtures cover ordinary and
+demand-specialized generic classes, cross-module generic identity, strong-owner
+replacement, `try`/`attempt`, owned value-parameter calls, weak class-field
+storage, and a weak handle moved into an owned closure.
 Recursive cleanup and explicit-copy analysis also stay in each aggregate's
 defining module. Concrete generic arguments are rebased there before
 substitution, preserving ownership through exported aggregates whose nested

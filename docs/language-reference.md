@@ -1033,6 +1033,10 @@ resource shutdown belongs in an explicit operation such as `close()`.
 `weak value` creates a non-owning `Weak<T>` for a class. `upgrade()` either
 returns a strong reference or throws `WeakExpired`. Weak references are the
 cycle-breaking tool; cycle collection remains a separate runtime concern.
+The fixed-point runtime uses a zeroing control shared by copied `Weak<T>`
+handles: final strong release clears the control before `deinit`, while a
+successful upgrade creates a new strong owner. Ordinary and concrete generic
+class identities use the same mechanism.
 
 ## Functions, errors, and results
 

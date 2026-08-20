@@ -83,6 +83,7 @@ export enum LoweredTypeKind {
   setType,
   structType,
   classType,
+  weakType,
   onceType,
   onceLifetimeType,
   mutexType,
@@ -209,6 +210,8 @@ export enum LoweredExpressionKind {
   copyValue,
   emptyValue,
   retainValue,
+  weakValue,
+  weakUpgrade,
   viewProjection,
   borrowedTemporary,
   unaryOperation,
@@ -1815,6 +1818,11 @@ function intrinsicMutexName(in valueType: LoweredType): String {
   return `Mutex_${identity}`;
 }
 
+function intrinsicWeakName(in targetType: LoweredType): String {
+  const identity = loweredTypeIdentity(targetType);
+  return `${identity}_weak`;
+}
+
 function intrinsicTaskName(in resultType: LoweredType): String {
   const identity = loweredTypeIdentity(resultType);
   return `Task_${identity}`;
@@ -2007,6 +2015,12 @@ function lowerTypeName(
       name: "cstring",
     });
   }
+  if (name == "WeakExpired") {
+    return LoweredType({
+      kind: LoweredTypeKind.structType,
+      name: "WeakExpired",
+    });
+  }
   match (fixedArrayShape(name)) {
     some(shape) => {
       const elementType = try lowerTypeName(program, shape.elementType);
@@ -2069,6 +2083,16 @@ function lowerTypeName(
           name: stringStartsWith(generic.arguments[0], "view ")
             ? intrinsicViewOptionName(payload)
             : intrinsicOptionName(payload),
+        });
+      }
+      if (generic.base == "Weak" && generic.arguments.length == 1) {
+        const targetType = try lowerTypeName(program, generic.arguments[0]);
+        if (targetType.kind != LoweredTypeKind.classType) {
+          throw `native Weak<T> lowering expected a class, found ${generic.arguments[0]}`;
+        }
+        return LoweredType({
+          kind: LoweredTypeKind.weakType,
+          name: intrinsicWeakName(targetType),
         });
       }
       if (generic.base == "Array" && generic.arguments.length == 1) {
@@ -2237,6 +2261,12 @@ function lowerModuleTypeName(
       targetName
     );
   }
+  if (name == "WeakExpired") {
+    return LoweredType({
+      kind: LoweredTypeKind.structType,
+      name: "WeakExpired",
+    });
+  }
   match (fixedArrayShape(name)) {
     some(shape) => {
       const elementType = try lowerModuleTypeName(
@@ -2278,6 +2308,20 @@ function lowerModuleTypeName(
           name: stringStartsWith(generic.arguments[0], "view ")
             ? intrinsicViewOptionName(payload)
             : intrinsicOptionName(payload),
+        });
+      }
+      if (generic.base == "Weak" && generic.arguments.length == 1) {
+        const targetType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          generic.arguments[0]
+        );
+        if (targetType.kind != LoweredTypeKind.classType) {
+          throw `native Weak<T> lowering expected a class, found ${generic.arguments[0]}`;
+        }
+        return LoweredType({
+          kind: LoweredTypeKind.weakType,
+          name: intrinsicWeakName(targetType),
         });
       }
       if (generic.base == "Array" && generic.arguments.length == 1) {
@@ -2630,6 +2674,7 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.weakType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
@@ -2819,6 +2864,7 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.stringType
     || type.kind == LoweredTypeKind.fsLockType
     || type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.weakType
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
@@ -5023,7 +5069,10 @@ function wrapOwnedStorage(
     payloadTypeName
   );
   if (
-    payloadType.kind == LoweredTypeKind.classType
+    (
+      payloadType.kind == LoweredTypeKind.classType
+      || payloadType.kind == LoweredTypeKind.weakType
+    )
     && expressionBorrowsStoredReference(tree, input)
   ) {
     let children = Array<usize>();
@@ -6975,6 +7024,72 @@ function lowerExpressionContextual(
     none => {}
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.weakExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const targetInput: usize = tree.nodes[index].children[0];
+    let targetTypeName = match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      targetInput
+    )) {
+      some(name) => name;
+      none => "";
+    };
+    if (targetTypeName.byteLength == 0) {
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      )) {
+        some(weakTypeName) => match (genericTypeShape(weakTypeName)) {
+          some(generic) => {
+            if (generic.base == "Weak" && generic.arguments.length == 1) {
+              targetTypeName = generic.arguments[0].copyBytes(
+                0,
+                generic.arguments[0].byteLength
+              );
+            }
+          }
+          none => {}
+        }
+        none => {}
+      }
+    }
+    if (targetTypeName.byteLength == 0) {
+      throw "native weak lowering could not resolve its class target";
+    }
+    const targetType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      targetTypeName
+    );
+    if (targetType.kind != LoweredTypeKind.classType) {
+      throw `native weak lowering expected a class, found ${targetTypeName}`;
+    }
+    const targetExpressionIndex: usize = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      targetInput,
+      inout output
+    );
+    let children = Array<usize>();
+    children.push(targetExpressionIndex);
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.weakValue,
+      targetType.name,
+      move children,
+      Array<String>()
+    );
+  }
+  if (
     tree.nodes[index].kind
       == ExpressionKind.executorPlacementExpression
   ) {
@@ -7400,9 +7515,12 @@ function lowerExpressionContextual(
         fieldType,
         inout output
       );
-      value = wrapImplicitOwnedTransfer(
+      value = try wrapOwnedStorage(
+        program,
+        importedTypes,
         tree,
         valueInput,
+        fieldType,
         value,
         inout output
       );
@@ -7827,6 +7945,56 @@ function lowerExpressionContextual(
       throw "native lowering requires an explicit supported placement for async function calls";
     }
     const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "upgrade"
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[index].children.length == 1
+    ) {
+      const receiverInput: usize = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      match (genericTypeShape(receiverTypeName)) {
+        some(generic) => {
+          if (generic.base == "Weak" && generic.arguments.length == 1) {
+            const targetType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              generic.arguments[0]
+            );
+            if (targetType.kind != LoweredTypeKind.classType) {
+              throw `native Weak<T>.upgrade lowering expected a class, found ${generic.arguments[0]}`;
+            }
+            const receiver: usize = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput,
+              inout output
+            );
+            let children = Array<usize>();
+            children.push(receiver);
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.weakUpgrade,
+              targetType.name,
+              move children,
+              Array<String>()
+            );
+          }
+        }
+        none => {}
+      }
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].value == "spawn"
@@ -9784,12 +9952,24 @@ function lowerExpressionContextual(
                 inout output
               );
             }
-            value = wrapImplicitOwnedTransfer(
-              tree,
-              valueInput,
-              value,
-              inout output
-            );
+            if (expectedTypeName.byteLength > 0) {
+              value = try wrapOwnedStorage(
+                program,
+                importedTypes,
+                tree,
+                valueInput,
+                expectedTypeName,
+                value,
+                inout output
+              );
+            } else {
+              value = wrapImplicitOwnedTransfer(
+                tree,
+                valueInput,
+                value,
+                inout output
+              );
+            }
             children.push(value);
             labels.push(fieldName.copyBytes(
               0,
@@ -10598,12 +10778,24 @@ function lowerExpressionContextual(
         parameterModes.length >= argument
         && parameterModes[argument - 1] == "value"
       ) {
-        value = wrapImplicitOwnedTransfer(
-          tree,
-          argumentInput,
-          value,
-          inout output
-        );
+        if (parameterTypes.length >= argument) {
+          value = try wrapOwnedStorage(
+            program,
+            importedTypes,
+            tree,
+            argumentInput,
+            parameterTypes[argument - 1],
+            value,
+            inout output
+          );
+        } else {
+          value = wrapImplicitOwnedTransfer(
+            tree,
+            argumentInput,
+            value,
+            inout output
+          );
+        }
       }
       if (
         parameterModes.length >= argument
@@ -12201,6 +12393,36 @@ function directThrowingCallResult(
     tree.nodes[index].kind != ExpressionKind.callExpression
     || tree.nodes[index].children.length == 0
   ) return Option<LoweredEnum>.none;
+  const intrinsicCallee = tree.nodes[index].children[0];
+  if (
+    tree.nodes[intrinsicCallee].kind == ExpressionKind.memberExpression
+    && tree.nodes[intrinsicCallee].value == "upgrade"
+    && tree.nodes[intrinsicCallee].children.length == 1
+    && tree.nodes[index].children.length == 1
+  ) {
+    const receiver = tree.nodes[intrinsicCallee].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiver
+    )) {
+      some(receiverTypeName) => match (genericTypeShape(receiverTypeName)) {
+        some(generic) => {
+          if (generic.base == "Weak" && generic.arguments.length == 1) {
+            return try intrinsicResultDeclaration(
+              program,
+              importedTypes,
+              `Result<${generic.arguments[0]}, WeakExpired>`
+            );
+          }
+        }
+        none => {}
+      }
+      none => {}
+    }
+  }
   for (const resolution of evidence.callResolutions) {
     if (
       resolution.offset != tree.nodes[index].offset
@@ -16368,7 +16590,10 @@ function lowerStatementCore(
                   importedTypes,
                   expectedTypeName
                 );
-                if (bindingType.kind == LoweredTypeKind.classType) {
+                if (
+                  bindingType.kind == LoweredTypeKind.classType
+                  || bindingType.kind == LoweredTypeKind.weakType
+                ) {
                   loweredValue = try wrapOwnedStorage(
                     program,
                     importedTypes,
@@ -16561,12 +16786,24 @@ function lowerStatementCore(
             );
           }
           if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
-            loweredExpression = wrapImplicitOwnedTransfer(
-              tree,
-              sourceRoot,
-              loweredExpression,
-              inout expressions
-            );
+            if (expectedTypeName.byteLength > 0) {
+              loweredExpression = try wrapOwnedStorage(
+                program,
+                importedTypes,
+                tree,
+                sourceRoot,
+                expectedTypeName,
+                loweredExpression,
+                inout expressions
+              );
+            } else {
+              loweredExpression = wrapImplicitOwnedTransfer(
+                tree,
+                sourceRoot,
+                loweredExpression,
+                inout expressions
+              );
+            }
           }
           secondExpression = Option.some(loweredExpression);
         }
@@ -20540,6 +20777,18 @@ function appendLoweredProgram(
     }));
   }
 
+  // Register concrete generic aggregate identities before lowering function
+  // signatures and intrinsic wrappers such as Weak<Cell<i32>>. The concrete
+  // fields only require lowered type identities; their intrinsic runtime
+  // declarations are still collected below.
+  try appendConcreteGenericStructs(
+    program,
+    genericStructUses,
+    moduleIndex,
+    inout importedTypes,
+    inout structs
+  );
+
   try collectProgramFunctionTypes(
     program,
     importedTypes,
@@ -20811,14 +21060,6 @@ function appendLoweredProgram(
       );
     }
   }
-
-  try appendConcreteGenericStructs(
-    program,
-    genericStructUses,
-    moduleIndex,
-    inout importedTypes,
-    inout structs
-  );
 
   for (const use of genericStructUses) {
     if (
