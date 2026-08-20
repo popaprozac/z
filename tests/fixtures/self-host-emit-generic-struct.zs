@@ -10,6 +10,10 @@ struct Box<T> {
 struct Cell<T> {
   value: T;
 
+  static function create(value: T): Cell<T> {
+    return Cell({ value });
+  }
+
   function occupied(): boolean {
     return true;
   }
@@ -33,11 +37,11 @@ function main(): i32 {
   const copied = Pair({ copy ...words, second: "layout" });
   const moved = Pair({ move ...copied, first: "owned" });
   const { first: movedFirst, second: movedSecond } = move moved;
-  let number = Cell({ value: 20 });
+  let number = Cell.create(20);
   number.replace(22);
   if (!number.occupied()) return 1;
   const numberValue = number.take();
-  let word = Cell({ value: "old" });
+  let word = Cell.create("old");
   word.replace("native");
   const wordValue = word.take();
 

@@ -239,7 +239,7 @@ Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
 source-mapped lowerability preflight now reports ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
-generic classes, independently generic or static generic-struct methods,
+generic classes and independently generic methods,
 traits, generators,
 value-producing loops, `async scope`,
 unsafe expressions, and the syntactically decidable optional-chain boundaries
@@ -257,12 +257,14 @@ orders nested specializations before their owners, and derives cleanup and
 thread capabilities from the concrete field graph. Inferred or explicit local
 and cross-module construction, field access, cleanup, `copy`/`move` spread, and
 object destructuring therefore use the same ordinary value-struct machinery.
-Declared instance methods without their own type parameters are specialized in
-the defining module under that same nominal C identity. Immutable, `inout`,
-and `move this` receivers reuse ordinary method ownership, including
-replacement cleanup and owned-field transfer. Generic classes, static or
-independently generic methods, custom constructors, field defaults, and custom
-`deinit` remain source-mapped `Z1000` boundaries.
+Declared instance and static methods without their own type parameters are
+specialized in the defining module under that same nominal C identity.
+Immutable, `inout`, and `move this` receivers reuse ordinary method ownership,
+including replacement cleanup and owned-field transfer. Static factories infer
+the owner specialization from their arguments and lower to direct calls with no
+synthetic receiver. Generic classes, independently generic methods, custom
+constructors, field defaults, and custom `deinit` remain source-mapped `Z1000`
+boundaries.
 
 Two nearby findings remain explicitly separate from ordinary `Z1000`
 representation gaps, and both now fail at their proper boundary. Native flow

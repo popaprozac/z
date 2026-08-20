@@ -1222,16 +1222,6 @@ function validateNativeFunction(
       5
     );
   }
-  if (owner.byteLength > 0 && declaration.staticMethod) {
-    throw loweringBoundary(
-      path,
-      "Z1000",
-      `static method "${owner}.${declaration.name}" is not executable in the native compiler yet`,
-      declaration.line,
-      declaration.column,
-      8
-    );
-  }
   if (declaration.typeParameters.length > 0) {
     const subject = owner.byteLength > 0
       ? `generic method "${owner}.${declaration.name}"`

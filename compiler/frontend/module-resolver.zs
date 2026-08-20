@@ -7225,7 +7225,7 @@ function inferExpressionNodeType(
             );
             const callableSignature = methodCallableSignature(method);
             const argumentNodes = callArgumentNodes(children);
-            let callKind = "method";
+            let callKind = staticMethod ? "staticMethod" : "method";
             if (
               modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind
               == ModuleSymbolKind.traitSymbol

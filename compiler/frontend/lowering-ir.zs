@@ -49,6 +49,7 @@ import {
 } from "./semantic-flow-state.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
 import { rebaseTypeName } from "./semantic-type-identities.zs";
+import { typeExpressionName } from "./semantic-member-lookups.zs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 
@@ -813,6 +814,61 @@ function copyStrings(in values: Array<String>): Array<String> {
   return copied;
 }
 
+function typeContainsGenericParameter(
+  in typeName: String,
+  in parameters: Array<String>
+): boolean {
+  for (const parameter of parameters) {
+    if (typeName == parameter) return true;
+  }
+  match (genericTypeShape(typeName)) {
+    some(generic) => {
+      for (const argument of generic.arguments) {
+        if (typeContainsGenericParameter(argument, parameters)) return true;
+      }
+      return false;
+    }
+    none => {}
+  }
+  const nullable = nullableTargetType(typeName);
+  if (nullable.byteLength > 0) {
+    return typeContainsGenericParameter(nullable, parameters);
+  }
+  if (stringStartsWith(typeName, "view ")) {
+    const target = typeName.copyBytes(5, typeName.byteLength);
+    return typeContainsGenericParameter(target, parameters);
+  }
+  if (stringStartsWith(typeName, "readonly ")) {
+    const target = typeName.copyBytes(9, typeName.byteLength);
+    return typeContainsGenericParameter(target, parameters);
+  }
+  match (fixedArrayShape(typeName)) {
+    some(array) => return typeContainsGenericParameter(
+      array.elementType,
+      parameters
+    );
+    none => {}
+  }
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => {
+      for (const parameterType of signature.parameterTypes) {
+        if (typeContainsGenericParameter(parameterType, parameters)) {
+          return true;
+        }
+      }
+      if (typeContainsGenericParameter(signature.returnType, parameters)) {
+        return true;
+      }
+      if (
+        signature.errorType.byteLength > 0
+        && typeContainsGenericParameter(signature.errorType, parameters)
+      ) return true;
+    }
+    none => {}
+  }
+  return false;
+}
+
 function genericStructFields(
   in graph: ModuleGraph,
   ownerModuleIndex: usize,
@@ -882,9 +938,17 @@ function collectGenericStructUseFromType(
           if (symbol.kind != ModuleSymbolKind.structSymbol) return;
           match (in symbol.typeSignature) {
             some(signature) => {
+              let unsettledArgument = false;
+              for (const argument of generic.arguments) {
+                if (typeContainsGenericParameter(
+                  argument,
+                  signature.typeParameters
+                )) unsettledArgument = true;
+              }
               if (
                 signature.typeParameters.length == 0
                 || signature.typeParameters.length != generic.arguments.length
+                || unsettledArgument
                 || containsGenericStructUse(
                   uses,
                   consumerModuleIndex,
@@ -4486,6 +4550,62 @@ function resolvedCallKind(
     ) return resolution.kind.copyBytes(0, resolution.kind.byteLength);
   }
   return "";
+}
+
+function resolvedStaticMethodOwnerType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): Option<LoweredType> throws String {
+  if (
+    resolvedCallKind(evidence, tree, index) != "staticMethod"
+    || tree.nodes[index].children.length == 0
+  ) return Option<LoweredType>.none;
+  const callee = tree.nodes[index].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].children.length != 1
+  ) throw "native static-method lowering requires a member call";
+  const ownerInput = tree.nodes[callee].children[0];
+  const sourceOwner = typeExpressionName(tree, ownerInput);
+  if (sourceOwner.byteLength == 0) {
+    throw "native static-method lowering lost its source owner type";
+  }
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[index].offset
+      || resolution.line != tree.nodes[index].line
+      || resolution.column != tree.nodes[index].column
+    ) continue;
+    if (resolution.typeArguments.length > 0) {
+      const concreteOwner = concreteGenericTypeName(
+        sourceOwner,
+        resolution.typeArguments
+      );
+      const concrete = attempt lowerModuleTypeName(
+        program,
+        importedTypes,
+        concreteOwner
+      );
+      match (concrete) {
+        success(type) => return Option.some(type);
+        failure(_) => {
+          const message =
+            `native static-method lowering could not materialize owner ${concreteOwner}`;
+          throw message;
+        }
+      }
+    }
+    const ownerType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      sourceOwner
+    );
+    return Option.some(ownerType);
+  }
+  throw "native static-method lowering lost semantic call evidence";
 }
 
 function resolvedCallIsAsynchronous(
@@ -9379,6 +9499,26 @@ function lowerExpressionContextual(
         );
       }
     }
+    let staticMethodTarget = "";
+    const staticMethodOwner = try resolvedStaticMethodOwnerType(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index
+    );
+    match (staticMethodOwner) {
+      some(ownerType) => {
+        if (
+          ownerType.kind != LoweredTypeKind.structType
+          && ownerType.kind != LoweredTypeKind.classType
+        ) throw "native static-method lowering requires a concrete struct or class owner";
+        const target =
+          `Z_${ownerType.name}_${tree.nodes[calleeInput].value}`;
+        staticMethodTarget = move target;
+      }
+      none => {}
+    }
     if (
       resolvedCallKind(evidence, tree, index) == "method"
       && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
@@ -9547,7 +9687,15 @@ function lowerExpressionContextual(
       some(target) => foreignTarget = move target;
       none => {}
     }
-    if (standardTarget.byteLength > 0) {
+    if (staticMethodTarget.byteLength > 0) {
+      callee = pushExpression(
+        inout output,
+        LoweredExpressionKind.localValue,
+        staticMethodTarget,
+        Array<usize>(),
+        Array<String>()
+      );
+    } else if (standardTarget.byteLength > 0) {
       callee = pushExpression(
         inout output,
         LoweredExpressionKind.localValue,
@@ -19832,9 +19980,6 @@ function appendLoweredProgram(
       use
     );
     for (const method of aggregate.methods) {
-      if (method.staticMethod) {
-        throw `native lowering does not support static method ${aggregate.name}.${method.name} yet`;
-      }
       if (method.typeParameters.length > 0) {
         throw `native lowering does not support generic method ${aggregate.name}.${method.name} yet`;
       }
@@ -19853,7 +19998,15 @@ function appendLoweredProgram(
         aggregate.name,
         method.name
       );
-      const methodReceiverMode = method.receiverMode;
+      const methodReceiverMode = method.staticMethod
+        ? ReceiverMode.none
+        : method.receiverMode;
+      const methodReceiverName = method.staticMethod
+        ? ""
+        : use.emittedName.copyBytes(0, use.emittedName.byteLength);
+      const methodReceiverKind = method.staticMethod
+        ? LoweredTypeKind.voidType
+        : LoweredTypeKind.structType;
       const loweredMethodOutcome = attempt lowerFunction(
         program,
         methodImportedTypes,
@@ -19861,8 +20014,8 @@ function appendLoweredProgram(
         method,
         ownerName,
         sourcePath,
-        use.emittedName,
-        LoweredTypeKind.structType,
+        methodReceiverName,
+        methodReceiverKind,
         methodReceiverMode
       );
       let loweredMethod = match (loweredMethodOutcome) {
@@ -19900,9 +20053,6 @@ function appendLoweredProgram(
         aggregate.name,
         method.name
       );
-      if (method.staticMethod) {
-        throw `native lowering does not support static method ${aggregate.name}.${method.name} yet`;
-      }
       if (method.typeParameters.length > 0) {
         throw `native lowering does not support generic method ${aggregate.name}.${method.name} yet`;
       }
@@ -19910,7 +20060,15 @@ function appendLoweredProgram(
         some(_) => throw `native lowering does not support async throwing method ${aggregate.name}.${method.name} yet`;
         none => {}
       }
-      const methodReceiverMode = method.receiverMode;
+      const methodReceiverMode = method.staticMethod
+        ? ReceiverMode.none
+        : method.receiverMode;
+      const methodReceiverName = method.staticMethod
+        ? ""
+        : emittedName.copyBytes(0, emittedName.byteLength);
+      const methodReceiverKind = method.staticMethod
+        ? LoweredTypeKind.voidType
+        : receiverKind;
       const loweredMethodOutcome = attempt lowerFunction(
         program,
         importedTypes,
@@ -19918,8 +20076,8 @@ function appendLoweredProgram(
         method,
         ownerName,
         sourcePath,
-        emittedName,
-        receiverKind,
+        methodReceiverName,
+        methodReceiverKind,
         methodReceiverMode
       );
       let loweredMethod = match (loweredMethodOutcome) {

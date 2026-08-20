@@ -2969,7 +2969,7 @@ destructuring all operate on the concrete layout. The executable fixture is
 compiled with strict Clang warnings and is also part of the Stage-0/native
 differential corpus together with a multi-module fixture.
 
-Declared instance methods now specialize alongside that layout. Lowering adds
+Declared instance and static methods now specialize alongside that layout. Lowering adds
 temporary local aliases from each aggregate type parameter to its demanded
 concrete argument, then sends the method through the ordinary value-struct
 method path. This keeps immutable, `inout`, and `move this` semantics identical to
@@ -2980,6 +2980,15 @@ cleanup. A specialization demanded only through an importing module still
 emits its method in the declaring module under the same canonical nominal C
 identity, so selective-import aliases cannot create a second ABI.
 
+Static methods carry no receiver in source or generated C. Their semantic call
+evidence is explicitly tagged as static, and lowering turns the call into the
+same direct owner-qualified symbol from local, selective-import, and
+cross-module alias spellings. A factory such as `Cell.create(20)` uses its
+settled owner substitutions to demand and return `Cell<i32>`; cleanup-bearing
+arguments likewise select a separate owned specialization. Template-internal
+references such as `Cell<T>` are kept out of the runnable demand list until `T`
+is concrete.
+
 The contextual constructor path matters for correctness. A nested
 `Box({ value: 20 })` inside a field expected to be `Box<i32>` must receive that
 concrete expected type; otherwise an unspecialized template name can leak into
@@ -2988,7 +2997,7 @@ lowering now carries that context into construction and explicitly excludes
 generic templates from ordinary local aggregate emission.
 
 This tier deliberately stops before independently generic behavior. Generic
-classes, static methods, methods with their own type parameters, custom
+classes, methods with their own type parameters, custom
 constructors, non-optional field defaults, and custom `deinit` bodies remain
 source-mapped `Z1000` boundaries. Those require additional call-demand or
 behavior ownership rules and should be closed as separate composition slices.

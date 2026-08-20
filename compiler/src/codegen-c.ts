@@ -90,6 +90,7 @@ type GenerationContext = {
   readonly liveFlags: Map<string, string>;
   readonly liveFlagCounter: { value: number };
   readonly expressionOverrides: ReadonlyMap<number, string>;
+  readonly objectTypeOverrides: ReadonlyMap<number, string>;
   readonly semanticInfo: SemanticInfo;
   readonly constructorSelf?: string;
   readonly constructorFieldFlags?: ReadonlyMap<string, string>;
@@ -4138,6 +4139,7 @@ function generateUserClassConstructor(
     liveFlags,
     liveFlagCounter,
     expressionOverrides: new Map(),
+    objectTypeOverrides: new Map(),
     semanticInfo,
     constructorSelf: "self",
     constructorFieldFlags: fieldFlags,
@@ -4500,6 +4502,7 @@ function generateGeneratorFunction(
     liveFlags,
     liveFlagCounter: { value: 0 },
     expressionOverrides: new Map(),
+    objectTypeOverrides: new Map(),
     semanticInfo,
     generatorFrame: { storage, fields, liveFlags, stateCounter: { value: 1 } },
   };
@@ -4650,6 +4653,7 @@ function generateFunction(
     liveFlags,
     liveFlagCounter,
     expressionOverrides: new Map(),
+    objectTypeOverrides: new Map(),
     semanticInfo,
   };
   const bodyParts = [
@@ -4780,6 +4784,7 @@ function generateDeinit(
     liveFlags: new Map(),
     liveFlagCounter: { value: 0 },
     expressionOverrides: new Map(),
+    objectTypeOverrides: new Map(),
     semanticInfo,
   };
   const body = ["  (void)self;", ...owner.body.map((statement) => {
@@ -6511,6 +6516,20 @@ function withExpressionOverrides(
   };
 }
 
+function withObjectTypeOverride(
+  context: GenerationContext,
+  offset: number,
+  typeName: string,
+): GenerationContext {
+  return {
+    ...context,
+    objectTypeOverrides: new Map([
+      ...context.objectTypeOverrides,
+      [offset, typeName],
+    ]),
+  };
+}
+
 function temporaryValueType(expression: Expression, context: GenerationContext): string {
   return context.semanticInfo.numericLiteralTypes.get(expression.location.offset)
     ?? context.semanticInfo.expressionTypes.get(expression.location.offset)
@@ -8204,6 +8223,26 @@ function statementListTerminates(statements: Statement[]): boolean {
   return statements.length > 0 && statementTerminates(statements.at(-1)!);
 }
 
+function generateObjectExpressionAs(
+  expression: Extract<Expression, { kind: "objectExpression" }>,
+  typeName: string,
+  context: GenerationContext,
+): string {
+  const declaration = context.structs.get(typeName);
+  if (declaration?.kind === "class") {
+    const provided = new Map(expression.fields.map((field) => [field.name, field.expression]));
+    const fields = declaration.fields.map((field) => generateExpression(provided.get(field.name)!, context));
+    return `${constructorName(typeName)}(${fields.join(", ")})`;
+  }
+  const fields = expression.fields
+    .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
+    .join(", ");
+  const mapped = context.semanticInfo.foreignNamedTypes.has(typeName)
+    ? mapType(typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+    : structName(typeName);
+  return `(${mapped}){ ${fields} }`;
+}
+
 function generateExpression(expression: Expression, context: GenerationContext): string {
   const override = context.expressionOverrides.get(expression.location.offset);
   let value = override ?? generateExpressionInner(expression, context);
@@ -8263,7 +8302,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       return `(Z_String){ .data = ${JSON.stringify(expression.value)}, .length = sizeof(${JSON.stringify(expression.value)}) - 1, .capacity = 0 }`;
     case "template":
-      throw new Error("template literal must be lowered by a console method");
+      throw new Error(
+        `${expression.location.fileName ?? "<source>"}:${expression.location.line}:${expression.location.column}: `
+          + "template literal must be lowered through a value-producing context",
+      );
     case "boolean":
       return expression.value ? "true" : "false";
     case "null":
@@ -8521,20 +8563,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       if (context.semanticInfo.structSpreads.has(expression.location.offset)) {
         throw new Error("struct spread must be lowered through generateDirectValue");
       }
-      const typeName = context.semanticInfo.expressionTypes.get(expression.location.offset)!;
-      const declaration = context.structs.get(typeName);
-      if (declaration?.kind === "class") {
-        const provided = new Map(expression.fields.map((field) => [field.name, field.expression]));
-        const fields = declaration.fields.map((field) => generateExpression(provided.get(field.name)!, context));
-        return `${constructorName(typeName)}(${fields.join(", ")})`;
-      }
-      const fields = expression.fields
-        .map((field) => `.${field.name} = ${generateExpression(field.expression, context)}`)
-        .join(", ");
-      const mapped = context.semanticInfo.foreignNamedTypes.has(typeName)
-        ? mapType(typeName, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
-        : structName(typeName);
-      return `(${mapped}){ ${fields} }`;
+      const typeName = context.objectTypeOverrides.get(expression.location.offset)
+        ?? context.semanticInfo.expressionTypes.get(expression.location.offset)!;
+      return generateObjectExpressionAs(expression, typeName, context);
     }
     case "variantExpression": {
       const declaration = context.enums.get(expression.enumName);
@@ -8826,7 +8857,18 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           return `z_arena_new(${capacity ? `(uintptr_t)(${generateExpression(capacity, context)})` : "0"})`;
         }
         if (context.structs.get(expression.callee.name)?.kind === "struct") {
-          return generateExpression(expression.arguments[0], context);
+          const initializer = expression.arguments[0];
+          if (initializer?.kind === "objectExpression") {
+            return generateExpression(
+              initializer,
+              withObjectTypeOverride(
+                context,
+                initializer.location.offset,
+                expression.callee.name,
+              ),
+            );
+          }
+          return generateExpression(initializer, context);
         }
         if (expression.arguments[0]?.kind === "objectExpression") {
           const objectType = context.semanticInfo.expressionTypes.get(expression.arguments[0].location.offset);

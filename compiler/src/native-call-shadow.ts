@@ -520,7 +520,7 @@ export function createNativeSemanticBridge(
         const target = targetModule?.symbols[resolution.targetSymbol];
         const expectedTargetName = `${resolved.source.declaration.name}.${resolved.sourceMethod.name}`;
         if (
-          resolution.kind !== "method"
+          resolution.kind !== (resolved.method.staticMethod ? "staticMethod" : "method")
           || targetModule?.path !== resolved.source.modulePath
           || (target?.kind !== "struct" && target?.kind !== "class")
           || target.name !== resolved.source.declaration.name

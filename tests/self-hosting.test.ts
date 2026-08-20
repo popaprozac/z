@@ -814,6 +814,18 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.match(
     emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ Z___z_mono_[A-Za-z0-9_]+_create\(int32_t value\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ Z___z_mono_[A-Za-z0-9_]+_create\(Z_String value\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ number = Z___z_mono_[A-Za-z0-9_]+_create\(20\);/,
+  );
+  assert.match(
+    emission.stdout,
     /static __attribute__\(\(unused\)\) void Z___z_mono_[A-Za-z0-9_]+_replace\(Z___z_mono_[A-Za-z0-9_]+ \*self, Z_String next\)/,
   );
   assert.match(
@@ -843,6 +855,14 @@ test("materializes concrete generic value structs through native ownership", () 
     [...moduleEmission.stdout.matchAll(/typedef struct Z___z_mono_/g)].length,
     1,
     "one nominal specialization must cross the module ABI under every local spelling",
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ Z___z_mono_[A-Za-z0-9_]+_create\(int32_t first, int32_t second\)/,
+  );
+  assert.match(
+    moduleEmission.stdout,
+    /Z___z_mono_[A-Za-z0-9_]+ pair = Z___z_mono_[A-Za-z0-9_]+_create\(20, 22\);/,
   );
   assert.match(
     moduleEmission.stdout,
@@ -882,6 +902,61 @@ test("materializes concrete generic value structs through native ownership", () 
     assert.equal(moduleCompilation.status, 0, moduleCompilation.stderr);
     const moduleExecution = spawnSync(moduleExecutable, [], { encoding: "utf8" });
     assert.equal(moduleExecution.status, 0, moduleExecution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("emits static value-struct methods as direct native calls", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-static-method.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_Range Z_Range_normalized\(int32_t left, int32_t right\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z___z_Result_Range_InvalidRange Z_Range_checked\(int32_t left, int32_t right\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\.payload\.success = Z_Range_normalized\(left, right\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Range normalized = Z_Range_normalized\(9, 2\);/,
+  );
+  assert.doesNotMatch(
+    emission.stdout,
+    /Z_Range_normalized\([^)]*self/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-native-static-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
