@@ -65,8 +65,10 @@ not be mistaken for implemented Z semantics:
   fixed-layout value-struct field paths and lets both semantic frontends
   distinguish a direct field view from safe sibling mutation. Both lower to
   ordinary addresses with no lifetime syntax or runtime checks. Flow-sensitive
-  provenance through arbitrary calls, stored or captured aliases, dynamic
-  indexing, and class-field projections remain experiments;
+  provenance through arbitrary calls, stored aliases, aggregate-hidden
+  identities, dynamic indexing, and class-field projections remain
+  experiments. Direct inline closure captures now participate in the same call
+  loan set, closing the first callback-shaped exclusivity hole;
   the recursive compiler AST plus Zapp-state probes decide how far they should
   go.
   Cross-thread mutation still requires `Mutex<T>` or executor isolation because

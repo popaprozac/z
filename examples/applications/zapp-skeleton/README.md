@@ -44,6 +44,15 @@ The example combines the four framework foundations:
    move-out, typed failure, and cancellation. Borrowed cleanup-bearing subjects,
    loops, and deeper nested control flow remain deliberately fail-closed.
 
+`publishApplicationStatus` also retains two local bindings for the same
+`Application` identity. `current.publish(ticket)` receives bounded synchronous
+exclusive access, and the second alias reads the result immediately after that
+call returns. Passing a callback that captures the alias into that same
+exclusive call is rejected: inline closure captures participate in the same
+ARC-identity loan set as ordinary arguments. This preserves the convenient
+shared application root without permitting a callback to observe it during an
+`inout` operation.
+
 The move-only `OnceLifetime<Application>` remains owned by `main`, so the
 published root is removed deterministically after all structured work joins.
 Atomic affine ARC and executor-routed final release keep `Application.deinit`

@@ -5345,6 +5345,10 @@ function renderConsoleValue(
   if (type === "cstring") return [`fputs((${value}) != NULL ? (${value}) : "null", ${stream});`];
   if (type === "String") return [`if ((${value}).length > 0) fwrite((${value}).data, 1, (${value}).length, ${stream});`];
   if (type === "null") return [`fputs("null", ${stream});`];
+  const view = parseViewType(type);
+  if (view) {
+    return renderConsoleValue(`(*(${value}))`, view.target, stream, context);
+  }
 
   const foreign = context.semanticInfo.foreignNamedTypes.get(type);
   if (foreign?.kind === "scalar" || foreign?.kind === "enum") {

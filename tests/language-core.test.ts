@@ -3393,6 +3393,37 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
     viewedFieldDiagnostic.message,
     /cannot mutate "document\.title" while view "title" is live/,
   );
+
+  const compilerPressure = resolve(
+    projectRoot,
+    "examples/applications/source-inspector/shape-stability-smoke.zs",
+  );
+  const compilerResult = spawnSync(
+    process.execPath,
+    [cli, "run", compilerPressure],
+    { encoding: "utf8" },
+  );
+  assert.equal(compilerResult.status, 0, compilerResult.stderr);
+  assert.equal(
+    compilerResult.stdout,
+    "functionDeclaration visits=1 bytes=20\n",
+  );
+  const compilerGenerated = compileToC(
+    readFileSync(compilerPressure, "utf8"),
+    compilerPressure,
+  );
+  assert.match(
+    compilerGenerated,
+    /increment\(&\(\(\(node\)\.analysis\)\.visits\)\)/,
+  );
+  assert.match(
+    compilerGenerated,
+    /advance\(&\(\(\(\(node\)\.metadata\)\.span\)\.end\)\)/,
+  );
+  assert.match(
+    compilerGenerated,
+    /const Z_String \* const _z_console_\d+ = name;/,
+  );
 });
 
 test("initializes native out parameters with flow-sensitive checking", () => {
@@ -3758,6 +3789,79 @@ test("tracks direct ARC aliases through bounded exclusive class loans", () => {
   assert.throws(
     () => compileToC(overlappingReceiver, "class-alias-receiver-overlap.zs"),
     /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+  );
+
+  const capturedAlias = `
+    class Counter {
+      value: i32;
+      function increment(inout this): void { this.value = this.value + 1; }
+    }
+    function updateAndInspect(
+      inout updated: Counter,
+      in inspect: () => i32
+    ): i32 {
+      updated.increment();
+      return inspect();
+    }
+    function main(): i32 {
+      let primary = new Counter({ value: 41 });
+      const alias = primary;
+      return updateAndInspect(
+        inout primary,
+        (): i32 => alias.value
+      );
+    }
+  `;
+  const capturedAliasDiagnostic = diagnostics(
+    capturedAlias,
+    "class-captured-alias-overlap.zs",
+  )[0];
+  assert.equal(capturedAliasDiagnostic.code, "Z0306");
+  assert.match(
+    capturedAliasDiagnostic.message,
+    /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+  );
+
+  const capturedMutation = `
+    class Counter {
+      value: i32;
+      function increment(inout this): void { this.value = this.value + 1; }
+    }
+    function observe(in value: Counter, in update: () => void): i32 {
+      update();
+      return value.value;
+    }
+    function main(): i32 {
+      const primary = new Counter({ value: 41 });
+      let alias = primary;
+      return observe(primary, (): void => {
+        if (true) alias.increment();
+      });
+    }
+  `;
+  assert.throws(
+    () => compileToC(capturedMutation, "class-captured-mutation-overlap.zs"),
+    /overlapping in and inout uses of ARC aliases "primary" and "alias"/,
+  );
+
+  const sequentialCapturedAliases = `
+    class Counter {
+      value: i32;
+      function increment(inout this): void { this.value = this.value + 1; }
+    }
+    function inspect(in operation: () => i32): i32 { return operation(); }
+    function main(): i32 {
+      let primary = new Counter({ value: 41 });
+      const alias = primary;
+      return inspect((): i32 => {
+        primary.increment();
+        return alias.value;
+      }) - 42;
+    }
+  `;
+  assert.deepEqual(
+    diagnostics(sequentialCapturedAliases, "class-sequential-captured-aliases.zs"),
+    [],
   );
 });
 

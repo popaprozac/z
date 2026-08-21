@@ -11107,6 +11107,81 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
 
   writeFileSync(
     bindingState,
+    "class Counter { value: i32; }\n"
+      + "function updateAndInspect(inout updated: Counter, in inspect: () => i32): i32 {\n"
+      + "  updated.value = updated.value + 1;\n"
+      + "  return inspect();\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  let primary = new Counter({ value: 41 });\n"
+      + "  const alias = primary;\n"
+      + "  return updateAndInspect(inout primary, (): i32 => alias.value);\n"
+      + "}\n",
+  );
+  const capturedClassAlias = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(capturedClassAlias.status, 1);
+  assert.match(
+    capturedClassAlias.stderr,
+    /overlapping inout and in uses of ARC aliases "primary" and "alias" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "class Counter {\n"
+      + "  value: i32;\n"
+      + "  function increment(inout this): void { this.value = this.value + 1; }\n"
+      + "}\n"
+      + "function observe(in value: Counter, in update: () => void): i32 {\n"
+      + "  update();\n"
+      + "  return value.value;\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  const primary = new Counter({ value: 41 });\n"
+      + "  let alias = primary;\n"
+      + "  return observe(primary, (): void => { if (true) alias.increment(); });\n"
+      + "}\n",
+  );
+  const capturedClassMutation = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(capturedClassMutation.status, 1);
+  assert.match(
+    capturedClassMutation.stderr,
+    /overlapping in and inout uses of ARC aliases "primary" and "alias" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "class Counter {\n"
+      + "  value: i32;\n"
+      + "  function increment(inout this): void { this.value = this.value + 1; }\n"
+      + "}\n"
+      + "function inspect(in operation: () => i32): i32 { return operation(); }\n"
+      + "function valid(): i32 {\n"
+      + "  let primary = new Counter({ value: 41 });\n"
+      + "  const alias = primary;\n"
+      + "  return inspect((): i32 => { primary.increment(); return alias.value; });\n"
+      + "}\n",
+  );
+  const sequentialCapturedAliases = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    sequentialCapturedAliases.status,
+    0,
+    sequentialCapturedAliases.stderr,
+  );
+
+  writeFileSync(
+    bindingState,
     "struct Resource {\n"
       + "  id: i32;\n"
       + "  function merge(inout this, other: Resource): void {}\n"

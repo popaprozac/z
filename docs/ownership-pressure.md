@@ -3110,11 +3110,20 @@ The useful case remains accepted: an alias may coexist with the owner, an
 usable immediately after the synchronous call. This is the smallest practical
 form of local uniqueness rather than a general stable-reference claim.
 
-The evidence deliberately stops at direct local copies and assignments.
-Arbitrary function results, fields that hide aliases, closure environments,
-flow-sensitive identity sets, suspension, and shape-stable disjoint field
-projections need separate probes. Cross-thread mutation still requires a mutex
-or executor isolation.
+The Zapp-state pressure pass found that ordinary inline closures must be part of
+the same proof. A callback passed beside `inout application` could capture a
+second application alias and run before the enclosing call returned. Both
+frontends now summarize direct inline closure captures as `in` or `inout` call
+uses and reject the overlap with `Z0306`; branch-local mutation joins
+conservatively. An alias that is not used by the callback remains available
+immediately after the exclusive call, which the Zapp skeleton exercises on its
+main-isolated `Application` identity.
+
+The evidence deliberately stops at direct local copies, assignments, and
+direct inline closures. Arbitrary function results, aliases hidden in aggregate
+fields or previously stored function values, flow-sensitive identity sets,
+suspension, and class-field projection need separate probes. Cross-thread
+mutation still requires a mutex or executor isolation.
 
 ## Shape-stable value-field projections
 
@@ -3149,6 +3158,15 @@ it from future uses, and joins it conservatively across branches and loops.
 The self-hosted C emitter's nested indexed views and later loop uses provide the
 real-program pressure evidence for that separation.
 
+The readable source-inspector probe now models the same shape with a recursive
+`SyntaxNode`. While `view node.metadata.name` remains live, analysis counters
+and a sibling nested source-span field mutate independently. Generated C passes
+their exact addresses and formats the borrowed String without copying. After
+the name's last use, the node replaces that field and moves the complete
+recursive value into `Array<SyntaxNode>`. This also closed a Stage-0 console
+lowering gap: semantic analysis had accepted `view String` interpolation while
+the emitter recognized only owned `String`.
+
 This experiment simplified user code by making the checker more precise. It
 did not change what `in` or `inout` means, add a runtime mechanism, or permit
 shared mutation across threads.
@@ -3162,7 +3180,7 @@ shared mutation across threads.
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
 - broader mutable shared ARC identity beyond direct local alias evidence,
-  class/dynamic shape stability,
+  stored or aggregate-hidden alias provenance, class/dynamic shape stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

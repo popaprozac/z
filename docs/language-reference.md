@@ -785,10 +785,13 @@ console.log(inspector.title);  // the alias is available again afterward
 
 Passing `inspector` into that same call as another `in`, `inout`, value, or
 `move` use is rejected because both bindings name one ARC object. This first
-local-uniqueness tier follows direct local copies and assignments. Provenance
-through arbitrary function results, stored fields, and captured closure graphs
-remains conservative work; cross-thread mutation continues to require
-`Mutex<T>` or executor isolation.
+local-uniqueness tier follows direct local copies and assignments. A direct
+inline closure passed to the call also contributes its captured ARC identities:
+capturing `inspector` in a callback beside `inout document` is rejected because
+the callback may run before the synchronous call returns. Provenance through
+arbitrary function results, aggregate fields, and previously stored callable
+environments remains conservative work; cross-thread mutation continues to
+require `Mutex<T>` or executor isolation.
 
 Fixed-layout value structs also permit capabilities to project through direct
 field paths:
@@ -894,8 +897,9 @@ there is no value copy, allocation, retain, or cleanup.
 Read-only operations preserve that representation for intrinsic containers.
 A local `view Array<T>` supports checked indexing, `length`, and `for...of`
 iteration without copying the growable buffer. A `view String` supports
-comparison, interpolation, `byteLength`, `isEmpty`, `byteAt`, and the explicit
-owned `copyBytes` operation. These operations do not create a second lifetime:
+comparison, interpolation and typed console formatting, `byteLength`,
+`isEmpty`, `byteAt`, and the explicit owned `copyBytes` operation. These
+operations do not create a second lifetime:
 the container or string view remains tied to the original named owner until its
 last use, and mutation through the view remains invalid.
 

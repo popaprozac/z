@@ -65,6 +65,10 @@ export async function publishApplicationStatus(
     throw -1;
   }
   const current = currentApplication();
+  const presentation = current;
+
+  // Both bindings retain one ARC identity. The synchronous mutable receiver
+  // gets bounded exclusive access, then the alias is immediately usable again.
   current.publish(ticket);
-  return current.currentStatus();
+  return presentation.currentStatus();
 }

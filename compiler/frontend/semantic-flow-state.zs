@@ -10,6 +10,20 @@ export enum NativeOwnershipState {
   maybeMoved,
 }
 
+function bindingNameHasPrefix(in name: String, in prefix: String): boolean {
+  if (name.byteLength < prefix.byteLength) return false;
+  let index: usize = 0;
+  while (index < prefix.byteLength) {
+    if (name.byteAt(index) != prefix.byteAt(index)) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
+function bindingIsClosureCaptureMode(in name: String): boolean {
+  return bindingNameHasPrefix(name, "__z_native_closure_capture_mode_");
+}
+
 export function ownerlessViewOwner(): String {
   return "__z_native_ownerless_view_owner";
 }
@@ -915,7 +929,13 @@ export function mergeBindingFlowStates(
       index = index + 1;
       continue;
     }
-    if (left[index].typeName == right[index].typeName) {
+    if (bindingIsClosureCaptureMode(target[index].name)) {
+      const mergedCaptureMode = left[index].typeName == "inout"
+        || right[index].typeName == "inout"
+        ? "inout"
+        : "in";
+      replaceBindingType(inout target, index, mergedCaptureMode);
+    } else if (left[index].typeName == right[index].typeName) {
       replaceBindingType(inout target, index, left[index].typeName);
     }
     const mergedAlias: usize = left[index].classAliasIdentity

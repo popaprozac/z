@@ -12369,39 +12369,14 @@ function checkArguments(
     const argument = args[index];
     const storage = directFieldStoragePath(argument);
     if (!storage) continue;
-    const conflict = registerAccessLoan(callLoans, {
+    registerCheckedCallLoan(callLoans, {
       root: storage.root,
       fields: classAliasIdentitiesForRoot(storage.root, state) ? [] : storage.fields,
       aliasIdentities: classAliasIdentitiesForRoot(storage.root, state),
       capability: useMode,
       lifetime: { kind: "call" },
       location: argument.location,
-    });
-    if (conflict) {
-      const aliases = conflict.root !== storage.root;
-      const leftPath = [conflict.root, ...(conflict.fields ?? [])].join(".");
-      const rightPath = [storage.root, ...storage.fields].join(".");
-      const samePath = leftPath === rightPath;
-      throw new DiagnosticError(
-        fileName,
-        argument.location,
-        aliases
-          ? `overlapping ${conflict.capability} and ${useMode} uses of ARC aliases ${JSON.stringify(conflict.root)} and ${JSON.stringify(storage.root)} in one call are not allowed`
-          : samePath
-            ? `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(leftPath)} in one call are not allowed`
-            : `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(leftPath)} and ${JSON.stringify(rightPath)} in one call are not allowed`,
-        aliases ? {
-          code: "Z0306",
-          labels: [{
-            location: conflict.location,
-            message: `${JSON.stringify(conflict.root)} is another binding for this class identity`,
-            length: conflict.root.length,
-          }],
-          notes: ["an inout or move use temporarily requires exclusive access to the ARC class identity"],
-          helps: ["finish the exclusive call before inspecting or mutating the object through another alias"],
-        } : undefined,
-      );
-    }
+    }, fileName);
   }
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
@@ -12652,6 +12627,23 @@ function checkArguments(
         state,
         parameter.mode === "in",
       );
+      const closure = state.closures.get(argument.location.offset)!;
+      for (const capture of closure.captures) {
+        const aliases = classAliasIdentitiesForRoot(capture.name, state);
+        if (!aliases) continue;
+        // Captures must conflict with direct accesses held by the enclosing
+        // call. They are not simultaneous with each other: the closure body
+        // retains its own statement- and call-scoped exclusivity analysis.
+        const captureLoans: AccessLoanSet = new Map(callLoans);
+        registerCheckedCallLoan(captureLoans, {
+          root: capture.name,
+          fields: [],
+          aliasIdentities: aliases,
+          capability: capture.mode === "value" ? "in" : capture.mode,
+          lifetime: { kind: "call" },
+          location: capture.location,
+        }, fileName, true);
+      }
       if (parameter.mode === "in") state.nativeArgumentAccesses.set(argument.location.offset, "in");
       continue;
     }
@@ -13083,6 +13075,46 @@ function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan 
   const active = loans.get(loan.root) ?? [];
   loans.set(loan.root, [...active, loan]);
   return null;
+}
+
+function registerCheckedCallLoan(
+  loans: AccessLoanSet,
+  loan: AccessLoan,
+  fileName: string,
+  throughClosure = false,
+): void {
+  const conflict = registerAccessLoan(loans, loan);
+  if (!conflict) return;
+  const aliases = conflict.root !== loan.root;
+  const leftPath = [conflict.root, ...(conflict.fields ?? [])].join(".");
+  const rightPath = [loan.root, ...(loan.fields ?? [])].join(".");
+  const samePath = leftPath === rightPath;
+  throw new DiagnosticError(
+    fileName,
+    loan.location,
+    aliases
+      ? `overlapping ${conflict.capability} and ${loan.capability} uses of ARC aliases ${JSON.stringify(conflict.root)} and ${JSON.stringify(loan.root)} in one call are not allowed`
+      : samePath
+        ? `overlapping ${conflict.capability} and ${loan.capability} uses of ${JSON.stringify(leftPath)} in one call are not allowed`
+        : `overlapping ${conflict.capability} and ${loan.capability} uses of ${JSON.stringify(leftPath)} and ${JSON.stringify(rightPath)} in one call are not allowed`,
+    aliases ? {
+      code: "Z0306",
+      labels: [{
+        location: conflict.location,
+        message: `${JSON.stringify(conflict.root)} is another binding for this class identity`,
+        length: conflict.root.length,
+      }],
+      notes: [
+        "an inout or move use temporarily requires exclusive access to the ARC class identity",
+        ...(throughClosure
+          ? ["the inline closure may run before the enclosing synchronous call returns"]
+          : []),
+      ],
+      helps: [throughClosure
+        ? "do not capture another alias in a callback passed to the same exclusive call"
+        : "finish the exclusive call before inspecting or mutating the object through another alias"],
+    } : undefined,
+  );
 }
 
 function activeAccessLoanForRoot(

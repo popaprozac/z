@@ -481,6 +481,81 @@ function copyIndices(in indices: Array<usize>): Array<usize> {
   return copied;
 }
 
+function closureCaptureNames(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): Array<String> {
+  let localNames = Array<String>();
+  for (const child of tree.nodes[index].children) {
+    if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) {
+      localNames.push(tree.nodes[child].value.copyBytes(
+        0,
+        tree.nodes[child].value.byteLength
+      ));
+    }
+  }
+  let captures = Array<String>();
+  let bodyKind = "expression";
+  if (tree.nodes[index].labels.length > 2) {
+    bodyKind = tree.nodes[index].labels[2].copyBytes(
+      0,
+      tree.nodes[index].labels[2].byteLength
+    );
+  }
+  if (bodyKind == "block") {
+    let bodyNames = copyBindings(localNames);
+    const statements = copyIndices(tree.nodes[index].statements);
+    collectClosureStatementCaptures(
+      arena,
+      tree,
+      statements,
+      bindings,
+      inout bodyNames,
+      inout captures
+    );
+  } else {
+    for (const child of tree.nodes[index].children) {
+      if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) {
+        continue;
+      }
+      collectClosureExpressionCaptures(
+        arena,
+        tree,
+        child,
+        bindings,
+        localNames,
+        inout captures
+      );
+    }
+  }
+  return captures;
+}
+
+function closureCaptureModeBindingName(in capture: String): String {
+  return `__z_native_closure_capture_mode_${capture}`;
+}
+
+function closureCaptureEvidenceBindingName(
+  offset: usize,
+  in capture: String
+): String {
+  return `__z_native_closure_capture_evidence_${offset}_${capture}`;
+}
+
+function markClosureCaptureMutation(
+  inout bindings: Array<NativeValueBinding>,
+  in root: String
+): void {
+  if (root.byteLength == 0) return;
+  const marker = closureCaptureModeBindingName(root);
+  const existing = valueBindingType(bindings, marker);
+  if (existing.byteLength > 0) {
+    setValueBindingType(inout bindings, marker, "inout");
+  }
+}
+
 function contextualExpectedBindingName(offset: usize): String {
   return `__z_native_contextual_expected:${offset}`;
 }
@@ -2343,6 +2418,7 @@ function inferSignatureCallType(
     const receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
     const receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
     if (receiverMode == "inout" || receiverMode == "out" || receiverMode == "move") {
+      markClosureCaptureMutation(inout bindings, receiverRoot);
       const liveView = liveViewBindingForOwner(bindings, receiverRoot);
       if (liveView.byteLength > 0) {
         const action = receiverMode == "move" ? "move" : "mutate";
@@ -2386,6 +2462,7 @@ function inferSignatureCallType(
       root.byteLength > 0
       && (capability == "inout" || capability == "out" || capability == "move")
     ) {
+      markClosureCaptureMutation(inout bindings, root);
       const mutationPath = capability == "inout"
         ? accessPath.copyBytes(0, accessPath.byteLength)
         : root.copyBytes(0, root.byteLength);
@@ -2646,6 +2723,31 @@ function inferSignatureCallType(
           if (acceptsView) inferenceExpectedType = move inferredBindingType;
         }
       }
+      let inlineClosureCaptures = Array<String>();
+      if (tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression) {
+        inlineClosureCaptures = closureCaptureNames(
+          arena,
+          tree,
+          nodeIndex,
+          bindings
+        );
+        // Expected-type inference runs against a copied flow-state array.
+        // Predeclare capture evidence so its updated mode is copied back into
+        // the enclosing call's bindings after the closure body is checked.
+        for (const capture of inlineClosureCaptures) {
+          const captureEvidenceName = closureCaptureEvidenceBindingName(
+            tree.nodes[nodeIndex].offset,
+            capture
+          );
+          const captureEvidence = valueBindingType(
+            bindings,
+            captureEvidenceName
+          );
+          if (captureEvidence.byteLength == 0) {
+            addValueBinding(inout bindings, captureEvidenceName, "in");
+          }
+        }
+      }
       const argumentType = try inferExpressionNodeTypeExpected(
         module,
         modules,
@@ -2657,6 +2759,49 @@ function inferSignatureCallType(
         inout bindings,
         inout evidence
       );
+      if (tree.nodes[nodeIndex].kind == ExpressionKind.closureExpression) {
+        for (const capture of inlineClosureCaptures) {
+          const captureIdentity = valueBindingClassAlias(bindings, capture);
+          if (captureIdentity == 0) continue;
+          const captureEvidenceName = closureCaptureEvidenceBindingName(
+            tree.nodes[nodeIndex].offset,
+            capture
+          );
+          let captureMode = valueBindingType(
+            bindings,
+            captureEvidenceName
+          );
+          if (captureMode.byteLength == 0) captureMode = "in";
+          let captureAccesses = Array<NativeCallAccess>();
+          for (const existingAccess of accesses) {
+            captureAccesses.push(NativeCallAccess({
+              root: existingAccess.root.copyBytes(
+                0,
+                existingAccess.root.byteLength
+              ),
+              path: existingAccess.path.copyBytes(
+                0,
+                existingAccess.path.byteLength
+              ),
+              aliasIdentity: existingAccess.aliasIdentity,
+              capability: existingAccess.capability.copyBytes(
+                0,
+                existingAccess.capability.byteLength
+              ),
+            }));
+          }
+          try registerCallAccess(
+            module,
+            tree,
+            nodeIndex,
+            inout captureAccesses,
+            capture,
+            capture,
+            captureIdentity,
+            captureMode
+          );
+        }
+      }
       if (
         mode == "value"
         && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
@@ -4952,40 +5097,15 @@ function inferExpressionNodeType(
       0,
       closureSignature.returnType.byteLength
     );
-    const localNames = copyBindings(closureSignature.parameterNames);
-    let captures = Array<String>();
-    if (bodyKind == "block") {
-      let bodyNames = copyBindings(localNames);
-      const statements = copyIndices(node.statements);
-      collectClosureStatementCaptures(
-        arena,
-        tree,
-        statements,
-        bindings,
-        inout bodyNames,
-        inout captures
+    const captures = closureCaptureNames(arena, tree, index, bindings);
+    if (bodyKind == "block" && returnType.byteLength == 0) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a block-bodied closure requires an explicit or contextual return type",
+        node.line,
+        node.column
       );
-      if (returnType.byteLength == 0) {
-        throw resolutionError(
-          ModuleResolveErrorKind.typeMismatch,
-          module.path,
-          "a block-bodied closure requires an explicit or contextual return type",
-          node.line,
-          node.column
-        );
-      }
-    } else {
-      for (const child of children) {
-        if (tree.nodes[child].kind == ExpressionKind.closureParameterExpression) continue;
-        collectClosureExpressionCaptures(
-          arena,
-          tree,
-          child,
-          bindings,
-          localNames,
-          inout captures
-        );
-      }
     }
     let closureBindings = copyValueBindings(bindings);
     const closureRegionControlFlow = regionControlFlowBindingName();
@@ -5026,6 +5146,14 @@ function inferExpressionNodeType(
       "__z_native_executor_context",
       closureExecutorContext
     );
+    for (const capture of captures) {
+      const captureModeName = closureCaptureModeBindingName(capture);
+      addValueBinding(
+        inout closureBindings,
+        captureModeName,
+        "in"
+      );
+    }
     for (const capture of captures) {
       const initialization = valueBindingInitialization(bindings, capture);
       if (initialization != NativeInitializationState.initialized) {
@@ -5200,6 +5328,23 @@ function inferExpressionNodeType(
           false,
           inout closureBindings
         );
+      }
+    }
+    for (const capture of captures) {
+      const captureModeName = closureCaptureModeBindingName(capture);
+      const mode = valueBindingType(
+        closureBindings,
+        captureModeName
+      );
+      const evidenceName = closureCaptureEvidenceBindingName(
+        node.offset,
+        capture
+      );
+      const existingEvidence = valueBindingType(bindings, evidenceName);
+      if (existingEvidence.byteLength > 0) {
+        setValueBindingType(inout bindings, evidenceName, mode);
+      } else {
+        addValueBinding(inout bindings, evidenceName, mode);
       }
     }
     return nativeClosureFunctionType(
@@ -8332,6 +8477,7 @@ function inferStatement(
             const mutationRoot = expressionStorageRootName(tree, root);
             const mutationPath = expressionDirectFieldPath(tree, root);
             if (mutationRoot.byteLength > 0) {
+              markClosureCaptureMutation(inout bindings, mutationRoot);
               const liveView = liveViewBindingForStoragePath(
                 bindings,
                 mutationRoot,

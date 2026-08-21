@@ -45,6 +45,18 @@ metadata. Run it from the repository root:
 bun run z run examples/applications/source-inspector/arena-smoke.zs
 ```
 
+[`shape-stability-smoke.zs`](shape-stability-smoke.zs) uses a recursive
+compiler-style `SyntaxNode` with nested metadata, source-span, analysis, and
+child storage. A live `view node.metadata.name` coexists with direct `inout`
+updates to `node.analysis.visits` and `node.metadata.span.end`; the generated C
+passes those disjoint fields by address with no runtime alias check. The view is
+formatted directly by `console`, then its proven final use permits replacing
+the name and moving the complete recursive node into an `Array<SyntaxNode>`:
+
+```sh
+bun run z run examples/applications/source-inspector/shape-stability-smoke.zs
+```
+
 [`token-stream.zs`](token-stream.zs) is the first stage-1 bridge. It emits a stable
 tab-separated token stream with fixed-width hexadecimal locations and
 hexadecimal token text. It buffers the complete stream and performs one native
