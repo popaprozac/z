@@ -493,6 +493,7 @@ export type TestFailurePlan = {
 
 type ViewOriginSource = {
   readonly owner: string;
+  readonly fields?: readonly string[];
   readonly location: SourceLocation;
 };
 
@@ -672,6 +673,7 @@ type ClosureInferenceOptions = {
 
 type AccessLoan = {
   readonly root: string;
+  readonly fields?: readonly string[];
   readonly aliasIdentities?: ReadonlySet<string>;
   readonly capability: AccessCapability;
   readonly lifetime:
@@ -680,6 +682,14 @@ type AccessLoan = {
     | { readonly kind: "connection"; readonly binding: string }
     | { readonly kind: "task"; readonly spawnOffset: number };
   readonly location: SourceLocation;
+};
+
+type CapabilityStoragePath = {
+  readonly access: "in" | "out" | "inout";
+  readonly root: string;
+  readonly rootLocation: SourceLocation;
+  readonly fields: readonly string[];
+  readonly target: Expression;
 };
 
 type AccessLoanSet = Map<string, readonly AccessLoan[]>;
@@ -4543,7 +4553,14 @@ function analyzeStatement(
           helps: ["initialize the field during construction, or remove `readonly` if shared mutation is intended"],
         });
       }
-      rejectOwnerMutationWhileViewed(root.name, statement.target.location, fileName, state);
+      rejectOwnerMutationWhileViewed(
+        root.name,
+        statement.target.location,
+        fileName,
+        state,
+        "mutate",
+        directFieldStoragePath(statement.target)?.fields ?? [],
+      );
       const rootDeclaration = structs.get(underlyingType(stored));
       const mutatesThroughClassReference = statement.target.kind !== "identifier"
         && rootDeclaration?.kind === "class"
@@ -8356,7 +8373,13 @@ function inferExpressionInner(
             helps: ["use a fixed array, Array<T>, or Slice<T> source"],
           });
         }
-        const ownerOrigin = viewOriginForRoot(root.name, expression.operand.location, state);
+        const projectedPath = directFieldStoragePath(expression.operand);
+        const ownerOrigin = state.viewOrigins.get(root.name)
+          ?? directViewOrigin(
+            root.name,
+            expression.operand.location,
+            projectedPath?.fields ?? [],
+          );
         const projectionOrigin = parseDynamicArrayType(rootValueType)
           && state.viewOrigins.has(root.name)
           ? mergeViewOrigins([
@@ -12022,7 +12045,14 @@ function inferExpressionInner(
             );
           }
           const storedReceiver = locals.get(mutableReceiverRoot.name);
-          rejectOwnerMutationWhileViewed(mutableReceiverRoot.name, expression.callee.object.location, fileName, state);
+          rejectOwnerMutationWhileViewed(
+            mutableReceiverRoot.name,
+            expression.callee.object.location,
+            fileName,
+            state,
+            "mutate",
+            [],
+          );
           const unavailableClassBorrow = declaration.kind === "class"
             && storedReceiver
             && isBorrowedBinding(storedReceiver)
@@ -12050,9 +12080,17 @@ function inferExpressionInner(
           expression.location,
           state,
           mutableReceiverRoot
-            ? { name: mutableReceiverRoot.name, mode: "inout" }
+            ? {
+                name: mutableReceiverRoot.name,
+                fields: [],
+                mode: "inout",
+              }
             : consumingReceiverRoot
-              ? { name: consumingReceiverRoot.name, mode: "move" }
+              ? {
+                  name: consumingReceiverRoot.name,
+                  fields: [],
+                  mode: "move",
+                }
               : null,
         );
         registerAsyncCall(callable, expression.location, fileName, state);
@@ -12301,7 +12339,11 @@ function checkArguments(
   fileName: string,
   location: SourceLocation,
   state: AnalysisState,
-  receiverUse: { readonly name: string; readonly mode: "inout" | "move" } | null = null,
+  receiverUse: {
+    readonly name: string;
+    readonly fields: readonly string[];
+    readonly mode: "inout" | "move";
+  } | null = null,
 ): void {
   if (target.parameters.length !== args.length) {
     throw new DiagnosticError(
@@ -12314,6 +12356,7 @@ function checkArguments(
   if (receiverUse) {
     registerAccessLoan(callLoans, {
       root: receiverUse.name,
+      fields: classAliasIdentitiesForRoot(receiverUse.name, state) ? [] : receiverUse.fields,
       aliasIdentities: classAliasIdentitiesForRoot(receiverUse.name, state),
       capability: receiverUse.mode,
       lifetime: { kind: "call" },
@@ -12324,25 +12367,29 @@ function checkArguments(
     const parameter = target.parameters[index];
     const useMode = parseSliceType(parameter.type.name) && parameter.mode === "value" ? "in" : parameter.mode;
     const argument = args[index];
-    const root = argument.kind === "argumentReference"
-      ? argument.name
-      : storageRoot(argument)?.name ?? null;
-    if (!root) continue;
+    const storage = directFieldStoragePath(argument);
+    if (!storage) continue;
     const conflict = registerAccessLoan(callLoans, {
-      root,
-      aliasIdentities: classAliasIdentitiesForRoot(root, state),
+      root: storage.root,
+      fields: classAliasIdentitiesForRoot(storage.root, state) ? [] : storage.fields,
+      aliasIdentities: classAliasIdentitiesForRoot(storage.root, state),
       capability: useMode,
       lifetime: { kind: "call" },
       location: argument.location,
     });
     if (conflict) {
-      const aliases = conflict.root !== root;
+      const aliases = conflict.root !== storage.root;
+      const leftPath = [conflict.root, ...(conflict.fields ?? [])].join(".");
+      const rightPath = [storage.root, ...storage.fields].join(".");
+      const samePath = leftPath === rightPath;
       throw new DiagnosticError(
         fileName,
         argument.location,
         aliases
-          ? `overlapping ${conflict.capability} and ${useMode} uses of ARC aliases ${JSON.stringify(conflict.root)} and ${JSON.stringify(root)} in one call are not allowed`
-          : `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+          ? `overlapping ${conflict.capability} and ${useMode} uses of ARC aliases ${JSON.stringify(conflict.root)} and ${JSON.stringify(storage.root)} in one call are not allowed`
+          : samePath
+            ? `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(leftPath)} in one call are not allowed`
+            : `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(leftPath)} and ${JSON.stringify(rightPath)} in one call are not allowed`,
         aliases ? {
           code: "Z0306",
           labels: [{
@@ -12359,6 +12406,7 @@ function checkArguments(
   for (let index = 0; index < target.parameters.length; index += 1) {
     const parameter = target.parameters[index];
     const argument = args[index];
+    const capabilityPath = capabilityStoragePath(argument);
     if (state.unsafeDepth > 0 && containsUnsafeUnverifiedValue(argument, state)) {
       throw new DiagnosticError(fileName, argument.location, "an unsafe native value cannot cross an ordinary Z call boundary", {
         code: "Z0822",
@@ -12383,7 +12431,11 @@ function checkArguments(
       }
     }
     if (parameter.mode === "out") {
-      if (argument.kind !== "argumentReference" || argument.access !== "out") {
+      if (
+        !capabilityPath
+        || capabilityPath.access !== "out"
+        || capabilityPath.fields.length > 0
+      ) {
         const binding = argument.kind === "identifier" ? argument.name : "value";
         throw new DiagnosticError(
           fileName,
@@ -12397,14 +12449,15 @@ function checkArguments(
           },
         );
       }
-      const stored = locals.get(argument.name);
-      rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
-      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      const bindingName = capabilityPath.root;
+      const stored = locals.get(bindingName);
+      rejectOwnerMutationWhileViewed(bindingName, argument.location, fileName, state);
+      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(bindingName)}`);
       if (!isMutableBinding(stored)) {
-        throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
+        throw new DiagnosticError(fileName, argument.location, `out argument ${JSON.stringify(bindingName)} requires a mutable let binding`, {
           code: "Z0302",
-          length: argument.name.length,
-          helps: [`declare ${JSON.stringify(argument.name)} with \`let\` before passing it as \`out\``],
+          length: bindingName.length,
+          helps: [`declare ${JSON.stringify(bindingName)} with \`let\` before passing it as \`out\``],
         });
       }
       requireAssignable(
@@ -12416,23 +12469,23 @@ function checkArguments(
         enums,
         state,
       );
-      locals.set(argument.name, initializedAvailableBinding(stored));
-      state.moveOrigins.delete(argument.name);
+      locals.set(bindingName, initializedAvailableBinding(stored));
+      state.moveOrigins.delete(bindingName);
       state.nativeArgumentAccesses.set(argument.location.offset, "out");
       state.expressionTypes.set(argument.location.offset, String(underlyingType(stored)));
-      state.expressionTypes.set(argument.nameLocation.offset, String(underlyingType(stored)));
+      state.expressionTypes.set(capabilityPath.rootLocation.offset, String(underlyingType(stored)));
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
-        throw new DiagnosticError(fileName, argument.location, `child-task output borrow of ${JSON.stringify(argument.name)} is not supported`, {
+        throw new DiagnosticError(fileName, argument.location, `child-task output borrow of ${JSON.stringify(bindingName)} is not supported`, {
           code: "Z0704",
           notes: ["direct await suspends the caller until initialization finishes; a child-task output would leave caller storage concurrently observable"],
-          helps: [`use \`await ${target.name}(out ${argument.name})\`, or return an owned result from the child task`],
+          helps: [`use \`await ${target.name}(out ${bindingName})\`, or return an owned result from the child task`],
         });
       }
       continue;
     }
     if (parameter.mode === "inout") {
-      if (argument.kind !== "argumentReference" || argument.access !== "inout") {
+      if (!capabilityPath || capabilityPath.access !== "inout") {
         const binding = argument.kind === "identifier" ? argument.name : "value";
         throw new DiagnosticError(
           fileName,
@@ -12446,36 +12499,81 @@ function checkArguments(
           },
         );
       }
-      const stored = locals.get(argument.name);
+      const bindingName = capabilityPath.root;
+      const projected = capabilityPath.fields.length > 0;
+      const stored = locals.get(bindingName);
       const asyncContext = state.asyncCallContexts.at(-1);
       const spawnedAsyncBorrow = Boolean(target.async && asyncContext?.mode === "spawn");
-      if (!spawnedAsyncBorrow) {
-        rejectOwnerMutationWhileViewed(argument.name, argument.location, fileName, state);
+      if (projected && target.async) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          "projected inout cannot cross an async suspension in this shape-stability tier",
+          {
+            code: "Z0704",
+            notes: ["the first projected-access tier proves disjoint storage only for one synchronous call"],
+            helps: ["mutate the field synchronously, or pass and await an owned result before assigning it"],
+          },
+        );
       }
-      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(argument.name)}`);
+      if (!spawnedAsyncBorrow) {
+        rejectOwnerMutationWhileViewed(
+          bindingName,
+          argument.location,
+          fileName,
+          state,
+          "mutate",
+          capabilityPath.fields,
+        );
+      }
+      if (!stored) throw new DiagnosticError(fileName, argument.location, `unknown name ${JSON.stringify(bindingName)}`);
       if (initializationState(stored) === "uninitialized") {
-        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} must be initialized before the call`);
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(bindingName)} must be initialized before the call`);
       }
       if (initializationState(stored) === "maybeUninitialized") {
-        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} may be uninitialized on another control-flow path`);
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(bindingName)} may be uninitialized on another control-flow path`);
       }
       if (ownershipState(stored) === "moved") {
-        throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, false);
+        throw movedValueError(fileName, {
+          kind: "identifier",
+          name: bindingName,
+          location: capabilityPath.rootLocation,
+        }, state, false);
       }
       if (ownershipState(stored) === "maybeMoved") {
-        throw movedValueError(fileName, { ...argument, kind: "identifier" }, state, true);
+        throw movedValueError(fileName, {
+          kind: "identifier",
+          name: bindingName,
+          location: capabilityPath.rootLocation,
+        }, state, true);
       }
+      const readonlyField = readonlyFieldOnPath(capabilityPath.target, structs, state);
+      if (readonlyField) {
+        throw new DiagnosticError(fileName, argument.location, `cannot pass readonly field ${JSON.stringify(readonlyField.name)} as inout`, {
+          code: "Z0214",
+        });
+      }
+      const projectedType = projected
+        ? inferExpression(capabilityPath.target, locals, globals, structs, enums, fileName, state)
+        : underlyingType(stored);
+      validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
       if (!isMutableBinding(stored)) {
-        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(argument.name)} requires a mutable let binding`, {
+        throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(bindingName)} requires a mutable let binding`, {
           code: "Z0301",
-          length: argument.name.length,
-          helps: [`declare ${JSON.stringify(argument.name)} with \`let\` before passing it as \`inout\``],
+          length: bindingName.length,
+          helps: [`declare ${JSON.stringify(bindingName)} with \`let\` before passing it as \`inout\``],
         });
       }
       const expectedSlice = parseSliceType(parameter.type.name);
-      const storedType = underlyingType(stored);
+      const storedType = projectedType;
       const storedArray = parseFixedArrayType(storedType);
       const storedDynamic = parseDynamicArrayType(storedType);
+      if (projected && expectedSlice) {
+        throw new DiagnosticError(fileName, argument.location, "projected array-to-Slice inout remains deferred", {
+          code: "Z0301",
+          helps: ["pass the complete array binding, or mutate the projected field through a synchronous helper that accepts its exact type"],
+        });
+      }
       if (expectedSlice && (storedArray ?? storedDynamic)?.elementType === expectedSlice.elementType) {
         state.sliceConversions.set(argument.location.offset, { sourceType: storedType, targetType: parameter.type.name });
       } else {
@@ -12491,25 +12589,25 @@ function checkArguments(
       }
       state.nativeArgumentAccesses.set(argument.location.offset, "inout");
       state.expressionTypes.set(argument.location.offset, String(storedType));
-      state.expressionTypes.set(argument.nameLocation.offset, String(storedType));
+      state.expressionTypes.set(capabilityPath.rootLocation.offset, String(underlyingType(stored)));
       if (target.async && asyncContext?.mode === "spawn") {
         if (state.asyncScopeDepth === 0) {
-          throw new DiagnosticError(fileName, argument.location, `child-task mutable borrow of ${JSON.stringify(argument.name)} requires an explicit async scope`, {
+          throw new DiagnosticError(fileName, argument.location, `child-task mutable borrow of ${JSON.stringify(bindingName)} requires an explicit async scope`, {
             code: "Z0704",
             notes: ["the scope join bounds exclusive child access before caller storage can be read, mutated, moved, or destroyed"],
             helps: ["place the task inside `async scope { ... }`, use direct `await`, or transfer ownership into the child task"],
           });
         }
-        recordAsyncSpawnBorrow(argument.name, argument.location, "inout", asyncContext.spawnOffset!, fileName, state);
+        recordAsyncSpawnBorrow(bindingName, argument.location, "inout", asyncContext.spawnOffset!, fileName, state);
       }
       continue;
     }
-    if (argument.kind === "argumentReference") {
-      if (argument.access !== "in") {
+    if (capabilityPath) {
+      if (capabilityPath.access !== "in") {
         throw new DiagnosticError(
           fileName,
           argument.location,
-          `${argument.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
+          `${capabilityPath.access} is not valid for ${parameter.mode === "in" ? "an immutable borrow" : "an owned value parameter"}`,
         );
       }
       if (parameter.mode !== "in") {
@@ -12519,7 +12617,7 @@ function checkArguments(
           `${JSON.stringify(target.name)} expects an owned value, not an explicit in borrow`,
           {
             code: "Z0300",
-            helps: [`pass \`${argument.name}\` directly to transfer ownership`],
+            helps: [`pass \`${[capabilityPath.root, ...capabilityPath.fields].join(".")}\` directly to transfer ownership`],
           },
         );
       }
@@ -12558,13 +12656,21 @@ function checkArguments(
       continue;
     }
     if (parameter.mode === "in") {
-      const borrowedArgument = argument.kind === "argumentReference"
-        ? {
-            kind: "identifier" as const,
-            name: argument.name,
-            location: argument.nameLocation,
-          }
-        : argument;
+      const borrowedArgument = capabilityPath?.target ?? argument;
+      if (capabilityPath && capabilityPath.fields.length > 0) {
+        validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
+      }
+      if (capabilityPath && capabilityPath.fields.length > 0 && target.async) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          "a projected field borrow cannot cross an async suspension in this shape-stability tier",
+          {
+            code: "Z0704",
+            helps: ["copy an independent value when supported, or finish the projected borrow in synchronous code"],
+          },
+        );
+      }
       const aggregateTemporary = argument.kind === "call"
         && argument.callee.kind === "identifier"
         && structs.has(argument.callee.name)
@@ -12597,13 +12703,16 @@ function checkArguments(
       }
       requireAssignable(parameter.type.name, borrowedActual, argument, fileName, structs, enums, state);
       state.nativeArgumentAccesses.set(argument.location.offset, "in");
-      if (argument.kind === "argumentReference") {
+      if (capabilityPath) {
         state.expressionTypes.set(argument.location.offset, String(actual));
-        state.expressionTypes.set(argument.nameLocation.offset, String(actual));
+        state.expressionTypes.set(
+          capabilityPath.rootLocation.offset,
+          String(underlyingType(locals.get(capabilityPath.root) ?? actual)),
+        );
       }
       const asyncContext = state.asyncCallContexts.at(-1);
       if (target.async && asyncContext?.mode === "spawn") {
-        const borrowedRoot = storageRoot(argument)?.name ?? null;
+        const borrowedRoot = storageRoot(borrowedArgument)?.name ?? null;
         if (state.asyncScopeDepth === 0) {
           throw new DiagnosticError(fileName, argument.location, `child-task borrow of ${JSON.stringify(borrowedRoot ?? "value")} requires an explicit async scope`, {
             code: "Z0704",
@@ -12894,6 +13003,18 @@ function aliasIdentitySetsOverlap(
   return false;
 }
 
+function accessFieldPathsOverlap(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  if (!left || !right) return true;
+  const shared = Math.min(left.length, right.length);
+  for (let index = 0; index < shared; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
 function classAliasIdentitiesForRoot(
   root: string,
   state: AnalysisState,
@@ -12949,7 +13070,13 @@ function recordClassAliasBinding(
 
 function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan | null {
   const conflict = [...loans.values()].flat().find((candidate) => (
-    (candidate.root === loan.root || aliasIdentitySetsOverlap(candidate.aliasIdentities, loan.aliasIdentities))
+    (
+      aliasIdentitySetsOverlap(candidate.aliasIdentities, loan.aliasIdentities)
+      || (
+        candidate.root === loan.root
+        && accessFieldPathsOverlap(candidate.fields, loan.fields)
+      )
+    )
     && accessCapabilitiesConflict(candidate.capability, loan.capability)
   ));
   if (conflict) return conflict;
@@ -12971,8 +13098,12 @@ function activeAccessLoanForRoot(
   ));
 }
 
-function directViewOrigin(owner: string, location: SourceLocation): ViewOrigin {
-  return { sources: [{ owner, location }] };
+function directViewOrigin(
+  owner: string,
+  location: SourceLocation,
+  fields: readonly string[] = [],
+): ViewOrigin {
+  return { sources: [{ owner, fields, location }] };
 }
 
 function ownerlessViewOrigin(): ViewOrigin {
@@ -13004,7 +13135,18 @@ function mergeViewOrigins(origins: readonly ViewOrigin[]): ViewOrigin {
   const sources: ViewOriginSource[] = [];
   for (const origin of origins) {
     for (const source of origin.sources) {
-      if (sources.some((candidate) => candidate.owner === source.owner)) continue;
+      const existing = sources.findIndex((candidate) => candidate.owner === source.owner);
+      if (existing >= 0) {
+        const candidate = sources[existing];
+        const sameFields = (candidate.fields ?? []).length === (source.fields ?? []).length
+          && (candidate.fields ?? []).every((field, index) => field === (source.fields ?? [])[index]);
+        if (!sameFields) sources[existing] = {
+          owner: source.owner,
+          fields: [],
+          location: candidate.location,
+        };
+        continue;
+      }
       sources.push(source);
     }
   }
@@ -13266,6 +13408,8 @@ function bindViewOrigin(
   unbindViewOrigin(binding, state);
   for (const source of origin.sources) {
     const conflict = (state.activeLoans.get(source.owner) ?? []).find((loan) => (
+      accessFieldPathsOverlap(loan.fields, source.fields)
+      &&
       accessCapabilitiesConflict(loan.capability, "in")
     ));
     if (conflict) {
@@ -13280,6 +13424,7 @@ function bindViewOrigin(
   for (const source of origin.sources) {
     registerAccessLoan(state.activeLoans, {
       root: source.owner,
+      fields: source.fields,
       capability: "in",
       lifetime: { kind: "view", binding },
       location: source.location,
@@ -13463,6 +13608,7 @@ function rejectOwnerMutationWhileViewed(
   fileName: string,
   state: AnalysisState,
   action = "mutate",
+  fields: readonly string[] = [],
 ): void {
   const asyncBorrow = activeAccessLoanForRoot(
     state.activeLoans,
@@ -13495,10 +13641,14 @@ function rejectOwnerMutationWhileViewed(
       helps: [`place ${JSON.stringify(connection.lifetime.binding)} in a narrower block so it is cleaned up first`],
     });
   }
-  const active = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "view");
+  const active = state.activeLoans.get(owner)?.find((loan) => (
+    loan.lifetime.kind === "view"
+    && accessFieldPathsOverlap(loan.fields, fields)
+  ));
   if (!active || active.lifetime.kind !== "view") return;
   const viewName = active.lifetime.binding;
-  throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while view ${JSON.stringify(viewName)} is live`, {
+  const target = [owner, ...fields].join(".");
+  throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(target)} while view ${JSON.stringify(viewName)} is live`, {
     code: "Z0205",
     labels: [{ location: active.location, message: `view ${JSON.stringify(viewName)} begins here`, length: owner.length }],
     notes: ["an owner-tied view reads directly from its owner's storage"],
@@ -13587,6 +13737,101 @@ function storageRoot(expression: Expression): Extract<Expression, { kind: "ident
   let current: Expression = expression;
   while (current.kind === "member" || current.kind === "index") current = current.object;
   return current.kind === "identifier" ? current : null;
+}
+
+function capabilityStoragePath(expression: Expression): CapabilityStoragePath | null {
+  if (expression.kind === "argumentReference") {
+    return {
+      access: expression.access,
+      root: expression.name,
+      rootLocation: expression.nameLocation,
+      fields: [],
+      target: {
+        kind: "identifier",
+        name: expression.name,
+        location: expression.nameLocation,
+      },
+    };
+  }
+  if (expression.kind !== "member" || expression.optional) return null;
+  const owner = capabilityStoragePath(expression.object);
+  if (!owner) return null;
+  return {
+    ...owner,
+    fields: [...owner.fields, expression.property],
+    target: {
+      ...expression,
+      object: owner.target,
+    },
+  };
+}
+
+function directFieldStoragePath(expression: Expression): {
+  readonly root: string;
+  readonly fields: readonly string[];
+} | null {
+  const capability = capabilityStoragePath(expression);
+  const target = capability?.target ?? expression;
+  const root = storageRoot(target);
+  if (!root) return null;
+  const fields: string[] = [];
+  let current = target;
+  while (current.kind === "member" && !current.optional) {
+    fields.unshift(current.property);
+    current = current.object;
+  }
+  if (current.kind !== "identifier") return { root: root.name, fields: [] };
+  return { root: root.name, fields };
+}
+
+function validateProjectedCapabilityPath(
+  path: CapabilityStoragePath,
+  locals: ReadonlyMap<string, ValueType>,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (path.fields.length === 0) return;
+  let ownerType = String(underlyingType(locals.get(path.root) ?? "unknown"));
+  let current: Expression = path.target;
+  const members: Extract<Expression, { kind: "member" }>[] = [];
+  while (current.kind === "member") {
+    members.unshift(current);
+    current = current.object;
+  }
+  for (const member of members) {
+    const owner = structs.get(ownerType);
+    if (!owner || owner.kind !== "struct") {
+      throw new DiagnosticError(
+        fileName,
+        member.location,
+        "projected capability access currently crosses fixed-layout value-struct fields only",
+        {
+          code: "Z0301",
+          notes: ["ARC class fields and dynamically addressed storage require alias provenance beyond this first shape-stability tier"],
+          helps: ["borrow or mutate the complete class binding, or keep this operation on a value-struct field path"],
+        },
+      );
+    }
+    ownerType = String(
+      underlyingType(
+        state.expressionTypes.get(member.location.offset)
+          ?? owner.fields.find((field) => field.name === member.property)?.type.name
+          ?? "unknown",
+      ),
+    );
+  }
+  if (structs.get(ownerType)?.kind === "class") {
+    throw new DiagnosticError(
+      fileName,
+      path.target.location,
+      "projected capability access cannot borrow ARC class identity in this shape-stability tier",
+      {
+        code: "Z0301",
+        helps: ["borrow or mutate the complete class binding so alias identity remains visible"],
+      },
+    );
+  }
 }
 
 function namedStoragePath(expression: Expression): string | null {

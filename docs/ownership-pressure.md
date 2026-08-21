@@ -3116,6 +3116,42 @@ flow-sensitive identity sets, suspension, and shape-stable disjoint field
 projections need separate probes. Cross-thread mutation still requires a mutex
 or executor isolation.
 
+## Shape-stable value-field projections
+
+The next Ante-inspired probe reused Z's existing capability vocabulary rather
+than adding `uniq`, annotations, reference symbols, or a new borrow type:
+
+```z
+let point = Point({ x: 20, y: 22 });
+adjust(inout point.x, inout point.y);
+```
+
+Both semantic frontends now identify the complete fixed-layout field path for
+one synchronous call. Sibling paths are disjoint; an exact duplicate or a
+parent/child pair overlaps. `out` deliberately remains a whole-binding
+initialization capability. ARC traversal, dynamic indexing, Slice projection,
+and suspension fail conservatively. Generated C passes `&(point.x)` and
+`&(point.y)` directly, confirming zero allocation, retain, or runtime alias
+check.
+
+Stage 0 additionally carries a direct value-field path on a local view. This
+accepts mutation of `document.revision` while `view document.title` is live,
+but still rejects replacement of `title` or `document`. Array indexing remains
+whole-owner conservative because growth may invalidate element addresses.
+
+Attempting to enable that same direct-local-view evidence immediately in the
+native resolver was a useful compiler pressure test. The self-hosted C emitter
+contains several long aggregate views spanning branches and loops; native view
+liveness has not yet modeled all of those paths. Native local-view path
+enforcement therefore remains staged rather than being claimed from partial
+evidence; the emitter refactor and native flow work should land together as a
+dedicated follow-up. Hybrid compilation still runs the trusted Stage 0 safety
+check before using native semantic contracts.
+
+This experiment simplified user code by making the checker more precise. It
+did not change what `in` or `inout` means, add a runtime mechanism, or permit
+shared mutation across threads.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
@@ -3125,6 +3161,7 @@ or executor isolation.
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
 - broader mutable shared ARC identity beyond direct local alias evidence,
+  native local-view field-path parity, class/dynamic shape stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

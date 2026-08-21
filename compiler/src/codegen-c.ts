@@ -9193,6 +9193,20 @@ function maybeRetainClass(expression: Expression, value: string, context: Genera
   return `${retainName(type)}(${value})`;
 }
 
+function capabilityStorageTargetExpression(expression: Expression): Expression | null {
+  if (expression.kind === "argumentReference") {
+    return {
+      kind: "identifier",
+      name: expression.name,
+      location: expression.nameLocation,
+    };
+  }
+  if (expression.kind !== "member" || expression.optional) return null;
+  const owner = capabilityStorageTargetExpression(expression.object);
+  if (!owner) return null;
+  return { ...expression, object: owner };
+}
+
 function generateCallArgument(expression: Expression, context: GenerationContext): string {
   const callbackTarget = context.semanticInfo.foreignCallbackTargets.get(expression.location.offset);
   if (callbackTarget) return callbackTarget;
@@ -9219,9 +9233,16 @@ function generateCallArgument(expression: Expression, context: GenerationContext
       ? generateStoredValue(expression.name, context)
       : generateExpression(expression, context);
   }
+  const nativeAccess = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset);
+  const capabilityTarget = nativeAccess && expression.kind !== "argumentReference"
+    ? capabilityStorageTargetExpression(expression)
+    : null;
+  if (capabilityTarget) {
+    return `&(${generateExpression(capabilityTarget, context)})`;
+  }
   const value = generateExpression(expression, context);
   if (context.semanticInfo.objcBlockArguments.has(expression.location.offset)) return value;
-  const nativeIn = context.semanticInfo.nativeArgumentAccesses.get(expression.location.offset) === "in";
+  const nativeIn = nativeAccess === "in";
   const foreignIn = context.semanticInfo.foreignArgumentAccesses.get(expression.location.offset) === "in";
   if (nativeIn && expression.kind === "argumentReference") return value;
   if (foreignIn && expression.kind === "argumentReference") return value;

@@ -233,6 +233,90 @@ test("keeps explicit immutable call-site borrows in native frontend parity", () 
   );
 });
 
+test("emits disjoint projected inout field paths natively", () => {
+  const directory = mkdtempSync("/tmp/z-native-projected-inout-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(
+    input,
+    "struct Point { x: i32; y: i32; }\n"
+      + "function adjust(inout x: i32, inout y: i32): void {\n"
+      + "  x = x + 1;\n"
+      + "  y = y - 1;\n"
+      + "}\n"
+      + "function main(): i32 {\n"
+      + "  let point = Point({ x: 20, y: 22 });\n"
+      + "  adjust(inout point.x, inout point.y);\n"
+      + "  return point.x - point.y;\n"
+      + "}\n",
+  );
+
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /adjust\(&\(point\.x\), &\(point\.y\)\);/);
+
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  writeFileSync(
+    input,
+    readFileSync(input, "utf8").replace(
+      "adjust(inout point.x, inout point.y);",
+      "adjust(inout point.x, inout point.x);",
+    ),
+  );
+  const duplicate = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(duplicate.status, 1);
+  assert.match(
+    duplicate.stderr,
+    /overlapping inout and inout uses of "point\.x" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    input,
+    "class Counter { value: i32; }\n"
+      + "struct Holder { counter: Counter; }\n"
+      + "function inspect(in counter: Counter): void {}\n"
+      + "function main(): i32 {\n"
+      + "  let holder = Holder({ counter: new Counter({ value: 42 }) });\n"
+      + "  inspect(in holder.counter);\n"
+      + "  return 0;\n"
+      + "}\n",
+  );
+  const hiddenClassAlias = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(hiddenClassAlias.status, 1);
+  assert.match(
+    hiddenClassAlias.stderr,
+    /projected capability access cannot borrow ARC class identity/,
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
 test("keeps optional struct fields ownership-safe through native parsing and emission", () => {
   const directory = mkdtempSync("/tmp/z-native-optional-fields-");
   const input = resolve(directory, "main.zs");

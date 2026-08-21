@@ -76,6 +76,7 @@ application-shaped pressure test such as Z Notes.
 - [`deinit.zs`](language/ownership/deinit.zs) and [`replacement.zs`](language/ownership/replacement.zs)
 - [`mutex-state.zs`](language/ownership/mutex-state.zs): blocking exclusive access through synchronous non-escaping `in` and `inout` closures
 - [`local-views.zs`](language/ownership/local-views.zs): name a zero-copy field/index projection until its last use
+- [`shape-stable-fields.zs`](language/ownership/shape-stable-fields.zs): borrow disjoint fixed-layout value-struct fields independently with existing `in`, `inout`, and `view` vocabulary
 - [`optional-views.zs`](language/ownership/optional-views.zs): zero-copy fallible lookup with `Option<view T>` and proven nonescaping inline capture
 - [`arena.zs`](language/ownership/arena.zs): stable region allocation, synchronous `in` views, reset, and reverse cleanup
 - [`owned-closures.zs`](language/ownership/owned-closures.zs), [`owned-enums.zs`](language/ownership/owned-enums.zs), and [`weak-references.zs`](language/ownership/weak-references.zs)

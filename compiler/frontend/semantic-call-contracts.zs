@@ -12,8 +12,17 @@ import {
 
 export struct NativeCallAccess {
   root: String;
+  path: String;
   aliasIdentity: usize;
   capability: String;
+}
+
+function callAccessPathsOverlap(in left: String, in right: String): boolean {
+  if (left == right) return true;
+  const rightPrefix = `${right}.`;
+  const leftPrefix = `${left}.`;
+  return stringStartsWith(left, rightPrefix)
+    || stringStartsWith(right, leftPrefix);
 }
 
 export struct NativeThrowingCallShape {
@@ -39,6 +48,7 @@ export function registerCallAccess(
   nodeIndex: usize,
   inout accesses: Array<NativeCallAccess>,
   in root: String,
+  in path: String,
   aliasIdentity: usize,
   in capability: String
 ): void throws ModuleResolveError {
@@ -46,7 +56,10 @@ export function registerCallAccess(
   for (const access of accesses) {
     if (
       (
-        access.root == root
+        (
+          access.root == root
+          && callAccessPathsOverlap(access.path, path)
+        )
         || (
           access.aliasIdentity > 0
           && access.aliasIdentity == aliasIdentity
@@ -55,7 +68,9 @@ export function registerCallAccess(
       && callCapabilitiesConflict(access.capability, capability)
     ) {
       const message = access.root == root
-        ? `overlapping ${access.capability} and ${capability} uses of "${root}" in one call are not allowed`
+        ? access.path == path
+          ? `overlapping ${access.capability} and ${capability} uses of "${path}" in one call are not allowed`
+          : `overlapping ${access.capability} and ${capability} uses of "${access.path}" and "${path}" in one call are not allowed`
         : `overlapping ${access.capability} and ${capability} uses of ARC aliases "${access.root}" and "${root}" in one call are not allowed`;
       throw moduleResolutionError(
         ModuleResolveErrorKind.typeMismatch,
@@ -68,6 +83,7 @@ export function registerCallAccess(
   }
   accesses.push(NativeCallAccess({
     root: root.copyBytes(0, root.byteLength),
+    path: path.copyBytes(0, path.byteLength),
     aliasIdentity,
     capability: capability.copyBytes(0, capability.byteLength),
   }));

@@ -790,6 +790,36 @@ through arbitrary function results, stored fields, and captured closure graphs
 remains conservative work; cross-thread mutation continues to require
 `Mutex<T>` or executor isolation.
 
+Fixed-layout value structs also permit capabilities to project through direct
+field paths:
+
+```z
+struct Point {
+  x: i32;
+  y: i32;
+}
+
+function adjust(inout x: i32, inout y: i32): void {
+  x = x + 1;
+  y = y - 1;
+}
+
+let point = Point({ x: 20, y: 22 });
+adjust(inout point.x, inout point.y);
+```
+
+The two writable loans are accepted because `x` and `y` are disjoint stored
+fields. Repeating `point.x`, or combining `inout point` with
+`inout point.x`, is rejected. The same projection is available to explicit
+`in` calls. It does not allocate, construct a reference object, or insert a
+runtime alias check; C lowering passes the two field addresses directly.
+
+This first projection tier is synchronous and follows named fields through
+value structs only. `out` still initializes a complete binding. ARC class
+fields and mutable method receivers, dynamic indexes, array-to-Slice projection,
+and any borrow that crosses async suspension remain conservative because their
+address or alias stability needs stronger proof.
+
 ### Callable thread contracts
 
 An ordinary function value is executor-local. When a callable may be stored in
@@ -846,6 +876,13 @@ const node = view tree.nodes[index];
 inspect(node);
 tree.append(next); // valid after node's last use
 ```
+
+For a direct fixed-layout value-struct field, Stage 0 also records the selected
+field path. A live `view document.title` blocks replacement of `title` or the
+whole `document`, while mutation of the disjoint `document.revision` field is
+safe. Dynamic indexes and any path through ARC identity remain whole-owner
+loans. Native semantic enforcement of this field-specific local-view rule is
+still staged; the trusted Stage 0 check remains authoritative in hybrid builds.
 
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from

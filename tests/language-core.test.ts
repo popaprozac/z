@@ -3290,6 +3290,111 @@ test("enforces native parameter capabilities at declaration and call sites", () 
   );
 });
 
+test("borrows disjoint fixed-layout value-struct fields independently", () => {
+  const example = resolve(projectRoot, "examples/language/ownership/shape-stable-fields.zs");
+  const source = readFileSync(example, "utf8");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "point 21,21 delta 0\ntitle bytes 5 revision 1\n");
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /adjust\(&\(\(point\)\.x\), &\(\(point\)\.y\)\);/);
+  assert.match(generated, /difference\(&\(\(point\)\.x\), &\(\(point\)\.y\)\)/);
+
+  const duplicate = source.replace(
+    "adjust(inout point.x, inout point.y);",
+    "adjust(inout point.x, inout point.x);",
+  );
+  assert.throws(
+    () => compileToC(duplicate, "projected-inout-duplicate.zs"),
+    /overlapping inout and inout uses of "point\.x" in one call are not allowed/,
+  );
+
+  const parentAndChild = `
+    struct Point { x: i32; y: i32; }
+    function overlap(inout whole: Point, in value: i32): void {}
+    function main(): i32 {
+      let point = Point({ x: 20, y: 22 });
+      overlap(inout point, in point.x);
+      return 0;
+    }
+  `;
+  assert.throws(
+    () => compileToC(parentAndChild, "projected-inout-parent.zs"),
+    /overlapping inout and in uses of "point" and "point\.x" in one call are not allowed/,
+  );
+
+  const classProjection = `
+    class Counter { value: i32; }
+    function increment(inout value: i32): void { value = value + 1; }
+    function main(): i32 {
+      const counter = new Counter({ value: 41 });
+      increment(inout counter.value);
+      return counter.value;
+    }
+  `;
+  const classDiagnostic = diagnostics(classProjection, "projected-class-inout.zs")[0];
+  assert.equal(classDiagnostic.code, "Z0301");
+  assert.match(classDiagnostic.message, /fixed-layout value-struct fields only/);
+
+  const storedClassProjection = `
+    class Counter { value: i32; }
+    struct Holder { counter: Counter; other: i32; }
+    function inspect(inout counter: Counter): void {}
+    function main(): i32 {
+      let holder = Holder({
+        counter: new Counter({ value: 41 }),
+        other: 1,
+      });
+      inspect(inout holder.counter);
+      return holder.other;
+    }
+  `;
+  const storedClassDiagnostic = diagnostics(
+    storedClassProjection,
+    "projected-stored-class-inout.zs",
+  )[0];
+  assert.equal(storedClassDiagnostic.code, "Z0301");
+  assert.match(storedClassDiagnostic.message, /cannot borrow ARC class identity/);
+
+  const storedClassInProjection = storedClassProjection
+    .replace("function inspect(inout counter: Counter): void {}", "function inspect(in counter: Counter): void {}")
+    .replace("inspect(inout holder.counter);", "inspect(in holder.counter);");
+  const storedClassInDiagnostic = diagnostics(
+    storedClassInProjection,
+    "projected-stored-class-in.zs",
+  )[0];
+  assert.equal(storedClassInDiagnostic.code, "Z0301");
+  assert.match(storedClassInDiagnostic.message, /cannot borrow ARC class identity/);
+
+  const asyncProjection = `
+    struct Point { x: i32; }
+    async function increment(inout value: i32): void { value = value + 1; }
+    async function main(): i32 {
+      let point = Point({ x: 41 });
+      await increment(inout point.x);
+      return point.x;
+    }
+  `;
+  const asyncDiagnostic = diagnostics(asyncProjection, "projected-async-inout.zs")[0];
+  assert.equal(asyncDiagnostic.code, "Z0704");
+  assert.match(asyncDiagnostic.message, /projected inout cannot cross an async suspension/);
+
+  const viewedFieldMutation = source.replace(
+    "document.revision = document.revision + 1;",
+    'document.title = "Published";',
+  );
+  const viewedFieldDiagnostic = diagnostics(
+    viewedFieldMutation,
+    "shape-stable-viewed-field-mutation.zs",
+  )[0];
+  assert.equal(viewedFieldDiagnostic.code, "Z0205");
+  assert.match(
+    viewedFieldDiagnostic.message,
+    /cannot mutate "document\.title" while view "title" is live/,
+  );
+});
+
 test("initializes native out parameters with flow-sensitive checking", () => {
   const example = resolve(projectRoot, "examples/interop/c/native-out.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

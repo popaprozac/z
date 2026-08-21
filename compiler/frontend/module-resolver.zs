@@ -311,6 +311,165 @@ function expressionClassAliasIdentity(
   };
 }
 
+function expressionCapabilityAccess(
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const kind = tree.nodes[index].kind;
+  if (kind == ExpressionKind.argumentReferenceExpression) {
+    return tree.nodes[index].value.copyBytes(0, tree.nodes[index].value.byteLength);
+  }
+  if (
+    kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const child = tree.nodes[index].children[0];
+    return expressionCapabilityAccess(tree, child);
+  }
+  return "";
+}
+
+function expressionCapabilityBindingIndex(
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  const kind = tree.nodes[index].kind;
+  if (
+    kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+  ) return tree.nodes[index].children[0];
+  if (
+    kind == ExpressionKind.memberExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const child = tree.nodes[index].children[0];
+    return expressionCapabilityBindingIndex(tree, child);
+  }
+  return index;
+}
+
+function expressionDirectFieldPath(
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  const root = expressionStorageRootName(tree, index);
+  if (root.byteLength == 0) return "";
+  let reversed = Array<String>();
+  let current = index;
+  while (
+    tree.nodes[current].kind == ExpressionKind.memberExpression
+    && tree.nodes[current].children.length == 1
+  ) {
+    reversed.push(tree.nodes[current].value.copyBytes(
+      0,
+      tree.nodes[current].value.byteLength
+    ));
+    current = tree.nodes[current].children[0];
+  }
+  if (tree.nodes[current].kind == ExpressionKind.argumentReferenceExpression) {
+    if (tree.nodes[current].children.length != 1) return root;
+    current = tree.nodes[current].children[0];
+  }
+  if (
+    tree.nodes[current].kind != ExpressionKind.identifierExpression
+    && tree.nodes[current].kind != ExpressionKind.argumentBindingExpression
+  ) return root;
+  let path = root.copyBytes(0, root.byteLength);
+  let fieldIndex = reversed.length;
+  while (fieldIndex > 0) {
+    fieldIndex = fieldIndex - 1;
+    path = `${path}.${reversed[fieldIndex]}`;
+  }
+  return path;
+}
+
+function projectedFieldCount(in tree: ExpressionTree, index: usize): usize {
+  let count: usize = 0;
+  let current = index;
+  while (
+    tree.nodes[current].kind == ExpressionKind.memberExpression
+    && tree.nodes[current].children.length == 1
+  ) {
+    count = count + 1;
+    current = tree.nodes[current].children[0];
+  }
+  return count;
+}
+
+function requireProjectedCapabilityValuePath(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>,
+  mutableAccess: boolean
+): void throws ModuleResolveError {
+  if (projectedFieldCount(tree, index) == 0) return;
+  const root = expressionStorageRootName(tree, index);
+  let ownerType = valueBindingType(bindings, root);
+  let reversed = Array<String>();
+  let current = index;
+  while (
+    tree.nodes[current].kind == ExpressionKind.memberExpression
+    && tree.nodes[current].children.length == 1
+  ) {
+    reversed.push(tree.nodes[current].value.copyBytes(
+      0,
+      tree.nodes[current].value.byteLength
+    ));
+    current = tree.nodes[current].children[0];
+  }
+  let fieldIndex = reversed.length;
+  while (fieldIndex > 0) {
+    fieldIndex = fieldIndex - 1;
+    if (typeIsClassReference(module, modules, moduleIndex, ownerType)) {
+      throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "projected capability access currently crosses fixed-layout value-struct fields only",
+        tree.nodes[index].line,
+        tree.nodes[index].column
+      );
+    }
+    match (aggregateFieldShape(
+      modules,
+      moduleIndex,
+      ownerType,
+      reversed[fieldIndex]
+    )) {
+      some(field) => {
+        if (mutableAccess && field.readonlyField) throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `cannot pass readonly field "${field.name}" as inout`,
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+        ownerType = field.typeName.copyBytes(0, field.typeName.byteLength);
+      }
+      none => {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "projected capability access currently crosses fixed-layout value-struct fields only",
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+      }
+    }
+  }
+  if (typeIsClassReference(module, modules, moduleIndex, ownerType)) {
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      "projected capability access cannot borrow ARC class identity in this shape-stability tier",
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
+}
+
 function copyIndices(in indices: Array<usize>): Array<usize> {
   let copied = Array<usize>();
   for (const index of indices) {
@@ -2178,6 +2337,8 @@ function inferSignatureCallType(
   }
   let accesses = Array<NativeCallAccess>();
   if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
+    const receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
+    const receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
     if (receiverMode == "inout" || receiverMode == "out" || receiverMode == "move") {
       const liveView = liveViewBindingForOwner(bindings, receiverRoot);
       if (liveView.byteLength > 0) {
@@ -2191,13 +2352,13 @@ function inferSignatureCallType(
         );
       }
     }
-    const receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
     try registerCallAccess(
       module,
       tree,
       calleeIndex,
       inout accesses,
       receiverRoot,
+      receiverPath,
       receiverIdentity,
       receiverMode
     );
@@ -2231,12 +2392,16 @@ function inferSignatureCallType(
       }
     }
     const accessIdentity = valueBindingClassAlias(bindings, root);
+    const accessPath = accessIdentity > 0
+      ? root.copyBytes(0, root.byteLength)
+      : expressionDirectFieldPath(tree, nodeIndex);
     try registerCallAccess(
       module,
       tree,
       nodeIndex,
       inout accesses,
       root,
+      accessPath,
       accessIdentity,
       capability
     );
@@ -2298,20 +2463,17 @@ function inferSignatureCallType(
       0,
       signature.parameterModes[argumentIndex].byteLength
     );
-    const argumentKind = tree.nodes[nodeIndex].kind;
-    let access = "";
+    const access = expressionCapabilityAccess(tree, nodeIndex);
     let bindingName = "";
-    let bindingIndex = nodeIndex;
-    if (
-      argumentKind == ExpressionKind.argumentReferenceExpression
-      && tree.nodes[nodeIndex].children.length == 1
-    ) {
-      access = tree.nodes[nodeIndex].value.copyBytes(0, tree.nodes[nodeIndex].value.byteLength);
-      bindingIndex = tree.nodes[nodeIndex].children[0];
+    const bindingIndex = expressionCapabilityBindingIndex(tree, nodeIndex);
+    if (access.byteLength > 0) {
       bindingName = identifierLookupName(tree.nodes[bindingIndex].value);
     }
     if (mode == "out" || mode == "inout") {
-      if (access != mode) {
+      if (
+        access != mode
+        || (mode == "out" && projectedFieldCount(tree, nodeIndex) > 0)
+      ) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -2330,6 +2492,24 @@ function inferSignatureCallType(
         );
       }
       if (mode == "inout") {
+        if (projectedFieldCount(tree, nodeIndex) > 0) {
+          if (signature.asynchronous) throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            "projected inout cannot cross an async suspension in this shape-stability tier",
+            tree.nodes[nodeIndex].line,
+            tree.nodes[nodeIndex].column
+          );
+          try requireProjectedCapabilityValuePath(
+            module,
+            modules,
+            moduleIndex,
+            tree,
+            nodeIndex,
+            bindings,
+            true
+          );
+        }
         const initialization = valueBindingInitialization(bindings, bindingName);
         if (initialization != NativeInitializationState.initialized) {
           const message = initialization == NativeInitializationState.uninitialized
@@ -2358,6 +2538,19 @@ function inferSignatureCallType(
         }
       }
       let bindingType = valueBindingType(bindings, bindingName);
+      if (mode == "inout" && projectedFieldCount(tree, nodeIndex) > 0) {
+        bindingType = try inferExpressionNodeTypeExpected(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          nodeIndex,
+          signature.parameterTypes[argumentIndex],
+          inout bindings,
+          inout evidence
+        );
+      }
       if (mode == "out" && bindingType.byteLength == 0) {
         bindingType = settledContextualType(
           signature.parameterTypes[argumentIndex],
@@ -2394,7 +2587,31 @@ function inferSignatureCallType(
         signature.typeParameters,
         substitutions
       );
-      const inferredNode = access == "in" ? bindingIndex : nodeIndex;
+      const inferredNode = access == "in" && projectedFieldCount(tree, nodeIndex) == 0
+        ? bindingIndex
+        : nodeIndex;
+      if (
+        access == "in"
+        && projectedFieldCount(tree, nodeIndex) > 0
+        && signature.asynchronous
+      ) throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "a projected field borrow cannot cross an async suspension in this shape-stability tier",
+        tree.nodes[nodeIndex].line,
+        tree.nodes[nodeIndex].column
+      );
+      if (access == "in" && projectedFieldCount(tree, nodeIndex) > 0) {
+        try requireProjectedCapabilityValuePath(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          nodeIndex,
+          bindings,
+          false
+        );
+      }
       let inferenceExpectedType = expectedArgumentType.copyBytes(
         0,
         expectedArgumentType.byteLength
