@@ -3601,6 +3601,61 @@ test("keeps class binding immutability separate from instance mutation", () => {
   );
 });
 
+test("tracks direct ARC aliases through bounded exclusive class loans", () => {
+  const example = resolve(projectRoot, "examples/language/ownership/local-uniqueness.zs");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "Published revision 1\n");
+
+  const overlappingArguments = `
+    class Counter { value: i32; }
+    function combine(inout updated: Counter, in observed: Counter): i32 {
+      updated.value = updated.value + 1;
+      return observed.value;
+    }
+    function main(): i32 {
+      let primary = new Counter({ value: 41 });
+      const alias = primary;
+      return combine(inout primary, alias);
+    }
+  `;
+  const diagnostic = diagnostics(overlappingArguments, "class-alias-overlap.zs")[0];
+  assert.equal(diagnostic.code, "Z0306");
+  assert.match(
+    diagnostic.message,
+    /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+  );
+  assert.match(diagnostic.message, /temporarily requires exclusive access/);
+
+  const assignedAlias = overlappingArguments.replace(
+    "const alias = primary;",
+    "let alias = new Counter({ value: 0 });\n      alias = primary;",
+  );
+  assert.throws(
+    () => compileToC(assignedAlias, "class-assigned-alias-overlap.zs"),
+    /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+  );
+
+  const overlappingReceiver = `
+    class Counter {
+      value: i32;
+      function combine(inout this, in observed: Counter): i32 {
+        this.value = this.value + 1;
+        return observed.value;
+      }
+    }
+    function main(): i32 {
+      const primary = new Counter({ value: 41 });
+      const alias = primary;
+      return primary.combine(alias);
+    }
+  `;
+  assert.throws(
+    () => compileToC(overlappingReceiver, "class-alias-receiver-overlap.zs"),
+    /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+  );
+});
+
 test("exposes Z classes and traits to editor services", () => {
   const source = `
     trait Counted { function value(): i32; }

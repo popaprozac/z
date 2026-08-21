@@ -10882,6 +10882,30 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
 
   writeFileSync(
     bindingState,
+    "class Counter { value: i32; }\n"
+      + "function combine(inout updated: Counter, in observed: Counter): i32 {\n"
+      + "  updated.value = updated.value + 1;\n"
+      + "  return observed.value;\n"
+      + "}\n"
+      + "function invalid(): i32 {\n"
+      + "  let primary = new Counter({ value: 41 });\n"
+      + "  const alias = primary;\n"
+      + "  return combine(inout primary, alias);\n"
+      + "}\n",
+  );
+  const overlappingClassAliases = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(overlappingClassAliases.status, 1);
+  assert.match(
+    overlappingClassAliases.stderr,
+    /overlapping inout and in uses of ARC aliases "primary" and "alias" in one call are not allowed/,
+  );
+
+  writeFileSync(
+    bindingState,
     "struct Resource {\n"
       + "  id: i32;\n"
       + "  function merge(inout this, other: Resource): void {}\n"

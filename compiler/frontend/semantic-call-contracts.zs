@@ -12,6 +12,7 @@ import {
 
 export struct NativeCallAccess {
   root: String;
+  aliasIdentity: usize;
   capability: String;
 }
 
@@ -38,18 +39,28 @@ export function registerCallAccess(
   nodeIndex: usize,
   inout accesses: Array<NativeCallAccess>,
   in root: String,
+  aliasIdentity: usize,
   in capability: String
 ): void throws ModuleResolveError {
   if (root.byteLength == 0) return;
   for (const access of accesses) {
     if (
-      access.root == root
+      (
+        access.root == root
+        || (
+          access.aliasIdentity > 0
+          && access.aliasIdentity == aliasIdentity
+        )
+      )
       && callCapabilitiesConflict(access.capability, capability)
     ) {
+      const message = access.root == root
+        ? `overlapping ${access.capability} and ${capability} uses of "${root}" in one call are not allowed`
+        : `overlapping ${access.capability} and ${capability} uses of ARC aliases "${access.root}" and "${root}" in one call are not allowed`;
       throw moduleResolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
-        `overlapping ${access.capability} and ${capability} uses of "${root}" in one call are not allowed`,
+        message,
         tree.nodes[nodeIndex].line,
         tree.nodes[nodeIndex].column
       );
@@ -57,6 +68,7 @@ export function registerCallAccess(
   }
   accesses.push(NativeCallAccess({
     root: root.copyBytes(0, root.byteLength),
+    aliasIdentity,
     capability: capability.copyBytes(0, capability.byteLength),
   }));
 }

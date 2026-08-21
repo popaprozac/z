@@ -772,6 +772,24 @@ callee may use the argument:
 Function declarations and function types include the same capabilities. This
 keeps callbacks and ordinary functions substitutable.
 
+For ARC classes, `inout` applies to the shared object identity rather than only
+to one variable spelling. Direct aliases are tracked without a runtime check:
+
+```z
+let document = new Document({ title: "Draft" });
+const inspector = document;
+
+publish(inout document);       // bounded exclusive operation
+console.log(inspector.title);  // the alias is available again afterward
+```
+
+Passing `inspector` into that same call as another `in`, `inout`, value, or
+`move` use is rejected because both bindings name one ARC object. This first
+local-uniqueness tier follows direct local copies and assignments. Provenance
+through arbitrary function results, stored fields, and captured closure graphs
+remains conservative work; cross-thread mutation continues to require
+`Mutex<T>` or executor isolation.
+
 ### Callable thread contracts
 
 An ordinary function value is executor-local. When a callable may be stored in

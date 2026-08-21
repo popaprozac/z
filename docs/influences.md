@@ -57,16 +57,16 @@ not be mistaken for implemented Z semantics:
 
 - [Ante](https://antelang.org/blog/stable_mutable_refs/) and the analysis of
   [borrowing combined with reference counting](https://verdagon.dev/blog/ante-blending-borrowing-rc)
-  motivate a future spike around local uniqueness, ARC borrowing, and
-  shape-stable mutation. Z currently remains more conservative about
-  overlapping mutable access. The intended checkpoint is after fixed-point
-  class/closure/weak composition and before broadening `view`, shared mutation,
-  or cross-thread weak upgrade. The first experiment adds no syntax: existing
-  `inout` temporarily suspends competing ARC aliases, shape-stable field updates
-  are distinguished from enum replacement and collection reallocation, and
-  recursive compiler AST plus Zapp-state probes decide whether the analysis is
-  predictably useful. Cross-thread mutation still requires `Mutex<T>` or
-  executor isolation because shape stability does not prevent data races.
+  motivated Z's local-uniqueness and shape-stability experiments. The first
+  shipped slice adds no syntax: direct local ARC aliases carry identity evidence,
+  so existing `inout` temporarily excludes a second alias from the same call and
+  releases that restriction immediately when the synchronous call returns.
+  This closes the former name-based exclusivity hole without lifetime syntax or
+  runtime checks. Flow-sensitive provenance through arbitrary calls, stored or
+  captured aliases, and shape-stable field projections remain experiments; the
+  recursive compiler AST plus Zapp-state probes decide how far they should go.
+  Cross-thread mutation still requires `Mutex<T>` or executor isolation because
+  shape stability does not prevent data races.
 - Structured-concurrency work across Swift, Kotlin, Trio, and related systems
   provides the conceptual basis for parent-owned child lifetime. Z's exact
   `async scope` and `TaskScope` APIs remain its own evolving composition.

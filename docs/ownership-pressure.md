@@ -3088,6 +3088,34 @@ and broader executor/sendability derivation remain separate slices. The ARC
 foundation is executable; those features must compose against it rather than
 being inferred from the existence of `_retain` and `_release` symbols.
 
+## Direct ARC aliases and bounded local uniqueness
+
+The first Ante-inspired experiment found a concrete hole in Z's existing
+exclusivity rule. The call checker keyed access by local name, so this compiled:
+
+```z
+let primary = new Counter({ value: 41 });
+const alias = primary;
+combine(inout primary, alias);
+```
+
+Both arguments carry one class identity, but the checker saw two roots. Stage 0
+and the fixed-point native resolver now retain direct local alias evidence and
+compare identity as well as spelling. The call receives `Z0306`; a mutable
+receiver plus an aliased argument is rejected by the same rule. No runtime
+check, lifetime annotation, or new source syntax was introduced.
+
+The useful case remains accepted: an alias may coexist with the owner, an
+`inout` operation temporarily receives exclusive access, and the alias becomes
+usable immediately after the synchronous call. This is the smallest practical
+form of local uniqueness rather than a general stable-reference claim.
+
+The evidence deliberately stops at direct local copies and assignments.
+Arbitrary function results, fields that hide aliases, closure environments,
+flow-sensitive identity sets, suspension, and shape-stable disjoint field
+projections need separate probes. Cross-thread mutation still requires a mutex
+or executor isolation.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
@@ -3096,7 +3124,8 @@ being inferred from the existence of `_retain` and `_release` symbols.
   last-use, method, forwarding, `in` consumer, object-destructuring, and
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
-- mutable shared ARC identity, concurrent weak upgrade, native sendability
+- broader mutable shared ARC identity beyond direct local alias evidence,
+  concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;
 - cyclic application graphs under ORC;

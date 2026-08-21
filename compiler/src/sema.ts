@@ -635,6 +635,7 @@ type AnalysisState = {
     readonly kind: "closure" | "iteration" | "match" | "ownedMatch";
   }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
+  readonly classAliasIdentities: Map<string, ReadonlySet<string>>;
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
   readonly asyncTaskBorrowSpawns: Map<string, number>;
@@ -671,6 +672,7 @@ type ClosureInferenceOptions = {
 
 type AccessLoan = {
   readonly root: string;
+  readonly aliasIdentities?: ReadonlySet<string>;
   readonly capability: AccessCapability;
   readonly lifetime:
     | { readonly kind: "call" }
@@ -1004,6 +1006,7 @@ export function analyze(
     moveOrigins: new Map(),
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
+    classAliasIdentities: new Map(),
     activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
     asyncTaskBorrowSpawns: new Map(),
@@ -3147,6 +3150,7 @@ function analyzeFunction(
   state.moveOrigins.clear();
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
+  state.classAliasIdentities.clear();
   state.activeLoans.clear();
   state.asyncSpawnBorrowRoots.clear();
   state.asyncTaskBorrowSpawns.clear();
@@ -3164,6 +3168,9 @@ function analyzeFunction(
     const borrowed = declaration.receiverMode === "move" || ownedAsyncClassReceiver ? "" : borrowedPrefix;
     const mutable = declaration.receiverMode === "inout" || declaration.receiverMode === "move" ? mutablePrefix : "";
     locals.set("this", `${borrowed}${mutable}${receiver.name}`);
+    if (receiver.kind === "class") {
+      state.classAliasIdentities.set("this", new Set(["parameter:this"]));
+    }
   }
 
   for (const parameter of declaration.parameters) {
@@ -3174,6 +3181,9 @@ function analyzeFunction(
     const mutable = parameter.mode === "inout" || parameter.mode === "out" ? mutablePrefix : "";
     const uninitialized = parameter.mode === "out" ? uninitializedPrefix : "";
     locals.set(parameter.name, `${uninitialized}${borrowed}${mutable}${parameter.type.name}`);
+    if (structs.get(parameter.type.name)?.kind === "class") {
+      state.classAliasIdentities.set(parameter.name, new Set([`parameter:${parameter.name}`]));
+    }
     state.bindingTypes.set(parameter.location.offset, parameter.type.name);
   }
 
@@ -4166,6 +4176,13 @@ function analyzeStatement(
         storedVariableType = callTargetBinding(storedVariableType, statement.initializer.name);
       }
       locals.set(statement.name, storedVariableType);
+      recordClassAliasBinding(
+        statement.name,
+        statement.initializer,
+        variableType,
+        structs,
+        state,
+      );
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       if (state.unsafeDepth > 0) {
         state.unsafeLocalBindingScopes.at(-1)?.add(statement.name);
@@ -4590,6 +4607,15 @@ function analyzeStatement(
       } else if (statement.target.kind === "identifier") {
         locals.set(root.name, initializedAvailableBinding(stored));
         state.moveOrigins.delete(root.name);
+      }
+      if (statement.target.kind === "identifier") {
+        recordClassAliasBinding(
+          root.name,
+          statement.expression,
+          expected,
+          structs,
+          state,
+        );
       }
       return;
     }
@@ -8439,8 +8465,12 @@ function inferExpressionInner(
     case "identifier": {
       const local = locals.get(expression.name);
       if (local) {
-        const asyncBorrow = state.activeLoans.get(expression.name)
-          ?.find((loan) => loan.lifetime.kind === "task" && loan.capability === "inout");
+        const asyncBorrow = activeAccessLoanForRoot(
+          state.activeLoans,
+          expression.name,
+          state,
+          (loan) => loan.lifetime.kind === "task" && loan.capability === "inout",
+        );
         if (asyncBorrow) {
           throw new DiagnosticError(fileName, expression.location, `cannot read ${JSON.stringify(expression.name)} while a child task mutably borrows it`, {
             code: "Z0704",
@@ -12284,6 +12314,7 @@ function checkArguments(
   if (receiverUse) {
     registerAccessLoan(callLoans, {
       root: receiverUse.name,
+      aliasIdentities: classAliasIdentitiesForRoot(receiverUse.name, state),
       capability: receiverUse.mode,
       lifetime: { kind: "call" },
       location,
@@ -12299,15 +12330,29 @@ function checkArguments(
     if (!root) continue;
     const conflict = registerAccessLoan(callLoans, {
       root,
+      aliasIdentities: classAliasIdentitiesForRoot(root, state),
       capability: useMode,
       lifetime: { kind: "call" },
       location: argument.location,
     });
     if (conflict) {
+      const aliases = conflict.root !== root;
       throw new DiagnosticError(
         fileName,
         argument.location,
-        `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+        aliases
+          ? `overlapping ${conflict.capability} and ${useMode} uses of ARC aliases ${JSON.stringify(conflict.root)} and ${JSON.stringify(root)} in one call are not allowed`
+          : `overlapping ${conflict.capability} and ${useMode} uses of ${JSON.stringify(root)} in one call are not allowed`,
+        aliases ? {
+          code: "Z0306",
+          labels: [{
+            location: conflict.location,
+            message: `${JSON.stringify(conflict.root)} is another binding for this class identity`,
+            length: conflict.root.length,
+          }],
+          notes: ["an inout or move use temporarily requires exclusive access to the ARC class identity"],
+          helps: ["finish the exclusive call before inspecting or mutating the object through another alias"],
+        } : undefined,
       );
     }
   }
@@ -12840,14 +12885,90 @@ function accessCapabilitiesConflict(left: AccessCapability, right: AccessCapabil
   return !((left === "in" && right === "in") || (left === "value" && right === "value"));
 }
 
+function aliasIdentitySetsOverlap(
+  left: ReadonlySet<string> | undefined,
+  right: ReadonlySet<string> | undefined,
+): boolean {
+  if (!left || !right) return false;
+  for (const identity of left) if (right.has(identity)) return true;
+  return false;
+}
+
+function classAliasIdentitiesForRoot(
+  root: string,
+  state: AnalysisState,
+): ReadonlySet<string> | undefined {
+  return state.classAliasIdentities.get(root);
+}
+
+function classAliasIdentitiesForExpression(
+  expression: Expression,
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): ReadonlySet<string> | null {
+  if (structs.get(String(underlyingType(type)))?.kind !== "class") return null;
+  if (expression.kind === "identifier") {
+    return state.classAliasIdentities.get(expression.name)
+      ?? new Set([`binding:${expression.name}`]);
+  }
+  if (expression.kind === "argumentReference") {
+    return state.classAliasIdentities.get(expression.name)
+      ?? new Set([`binding:${expression.name}`]);
+  }
+  if (expression.kind === "unary" && expression.operator === "move") {
+    return classAliasIdentitiesForExpression(expression.operand, type, structs, state);
+  }
+  if (expression.kind === "conditional") {
+    const identities = new Set<string>();
+    for (const identity of classAliasIdentitiesForExpression(expression.thenExpression, type, structs, state) ?? []) {
+      identities.add(identity);
+    }
+    for (const identity of classAliasIdentitiesForExpression(expression.elseExpression, type, structs, state) ?? []) {
+      identities.add(identity);
+    }
+    return identities;
+  }
+  return new Set([`expression:${expression.location.offset}`]);
+}
+
+function recordClassAliasBinding(
+  binding: string,
+  expression: Expression,
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): void {
+  const identities = classAliasIdentitiesForExpression(expression, type, structs, state);
+  if (!identities) {
+    state.classAliasIdentities.delete(binding);
+    return;
+  }
+  state.classAliasIdentities.set(binding, new Set(identities));
+}
+
 function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan | null {
-  const active = loans.get(loan.root) ?? [];
-  const conflict = active.find((candidate) => (
-    accessCapabilitiesConflict(candidate.capability, loan.capability)
+  const conflict = [...loans.values()].flat().find((candidate) => (
+    (candidate.root === loan.root || aliasIdentitySetsOverlap(candidate.aliasIdentities, loan.aliasIdentities))
+    && accessCapabilitiesConflict(candidate.capability, loan.capability)
   ));
   if (conflict) return conflict;
+  const active = loans.get(loan.root) ?? [];
   loans.set(loan.root, [...active, loan]);
   return null;
+}
+
+function activeAccessLoanForRoot(
+  loans: AccessLoanSet,
+  root: string,
+  state: AnalysisState,
+  predicate: (loan: AccessLoan) => boolean,
+): AccessLoan | undefined {
+  const aliases = classAliasIdentitiesForRoot(root, state);
+  return [...loans.values()].flat().find((loan) => (
+    (loan.root === root || aliasIdentitySetsOverlap(loan.aliasIdentities, aliases))
+    && predicate(loan)
+  ));
 }
 
 function directViewOrigin(owner: string, location: SourceLocation): ViewOrigin {
@@ -13282,6 +13403,7 @@ function recordAsyncSpawnBorrow(
   if (!duplicate) {
     const conflict = registerAccessLoan(state.activeLoans, {
       root,
+      aliasIdentities: classAliasIdentitiesForRoot(root, state),
       capability: mode,
       lifetime: { kind: "task", spawnOffset },
       location,
@@ -13342,7 +13464,12 @@ function rejectOwnerMutationWhileViewed(
   state: AnalysisState,
   action = "mutate",
 ): void {
-  const asyncBorrow = state.activeLoans.get(owner)?.find((loan) => loan.lifetime.kind === "task");
+  const asyncBorrow = activeAccessLoanForRoot(
+    state.activeLoans,
+    owner,
+    state,
+    (loan) => loan.lifetime.kind === "task",
+  );
   if (asyncBorrow) {
     throw new DiagnosticError(fileName, location, `cannot ${action} ${JSON.stringify(owner)} while a child task borrows it`, {
       code: "Z0704",

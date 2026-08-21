@@ -85,10 +85,12 @@ import {
   setExpressionViewOrigin,
   mergeBindingFlowStates,
   setValueBindingInitialization,
+  setValueBindingClassAlias,
   setValueBindingOwnership,
   setValueBindingType,
   setValueBindingViewOwner,
   valueBindingInitialization,
+  valueBindingClassAlias,
   valueBindingIsBorrowed,
   valueBindingIsMatchBorrowed,
   valueBindingIsMutable,
@@ -255,6 +257,58 @@ function copyBindings(in bindings: Array<String>): Array<String> {
 function copiedString(in value: String): String {
   const length = value.byteLength;
   return value.copyBytes(0, length);
+}
+
+function typeIsClassReference(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  for (const aggregate of module.program.aggregates) {
+    if (
+      aggregate.kind == DeclarationKind.classDeclaration
+      && aggregate.name == typeName
+    ) return true;
+  }
+  const location = typeSymbolLocation(modules, moduleIndex, typeName);
+  return match (in location) {
+    some(location) => modules[location.moduleIndex].symbols[location.symbolIndex].kind
+      == ModuleSymbolKind.classSymbol;
+    none => false;
+  };
+}
+
+function expressionClassAliasIdentity(
+  in expression: ExpressionSyntax,
+  in bindings: Array<NativeValueBinding>
+): usize {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (tree.nodes[root].kind == ExpressionKind.identifierExpression) {
+        const name = identifierLookupName(tree.nodes[root].value);
+        const existing = valueBindingClassAlias(bindings, name);
+        return existing > 0
+          ? existing
+          : tree.nodes[root].offset + 1;
+      }
+      if (
+        tree.nodes[root].kind == ExpressionKind.argumentReferenceExpression
+        && tree.nodes[root].children.length == 1
+      ) {
+        const name = identifierLookupName(
+          tree.nodes[tree.nodes[root].children[0]].value
+        );
+        const existing = valueBindingClassAlias(bindings, name);
+        return existing > 0
+          ? existing
+          : tree.nodes[root].offset + 1;
+      }
+      return tree.nodes[root].offset + 1;
+    }
+    none => expression.offset + 1;
+  };
 }
 
 function copyIndices(in indices: Array<usize>): Array<usize> {
@@ -2137,12 +2191,14 @@ function inferSignatureCallType(
         );
       }
     }
+    const receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
     try registerCallAccess(
       module,
       tree,
       calleeIndex,
       inout accesses,
       receiverRoot,
+      receiverIdentity,
       receiverMode
     );
   }
@@ -2174,12 +2230,14 @@ function inferSignatureCallType(
         );
       }
     }
+    const accessIdentity = valueBindingClassAlias(bindings, root);
     try registerCallAccess(
       module,
       tree,
       nodeIndex,
       inout accesses,
       root,
+      accessIdentity,
       capability
     );
     accessIndex = accessIndex + 1;
@@ -7710,6 +7768,19 @@ function inferStatement(
     } else {
       addValueBinding(inout bindings, arena.nodes[index].name, stored);
     }
+    if (typeIsClassReference(module, modules, moduleIndex, stored)) {
+      match (in arena.nodes[index].expression) {
+        some(expression) => {
+          const identity = expressionClassAliasIdentity(expression, bindings);
+          setValueBindingClassAlias(
+            inout bindings,
+            arena.nodes[index].name,
+            identity
+          );
+        }
+        none => {}
+      }
+    }
     return true;
   }
   if (kind == StatementKind.destructureStatement) {
@@ -7954,12 +8025,17 @@ function inferStatement(
   }
   if (kind == StatementKind.assignmentStatement) {
     let expected = "";
+    let assignmentBinding = "";
     match (in arena.nodes[index].expression) {
       some(target) => {
         match (in target.tree) {
           some(tree) => {
             const root = tree.root;
             if (tree.nodes[root].kind == ExpressionKind.identifierExpression) {
+              assignmentBinding = tree.nodes[root].value.copyBytes(
+                0,
+                tree.nodes[root].value.byteLength
+              );
               expected = valueBindingType(bindings, tree.nodes[root].value);
               if (!valueBindingIsMutable(bindings, tree.nodes[root].value)) {
                 throw resolutionError(
@@ -8063,6 +8139,17 @@ function inferStatement(
           consumedType,
           inout bindings
         );
+        if (
+          assignmentBinding.byteLength > 0
+          && typeIsClassReference(module, modules, moduleIndex, consumedType)
+        ) {
+          const identity = expressionClassAliasIdentity(value, bindings);
+          setValueBindingClassAlias(
+            inout bindings,
+            assignmentBinding,
+            identity
+          );
+        }
       }
       none => {}
     }
@@ -8764,6 +8851,19 @@ function inferFunctionExpressions(
     inheritedTypeParameters,
     inout bindings
   );
+  for (const parameter of declaration.parameters) {
+    if (typeIsClassReference(module, modules, moduleIndex, parameter.type.name)) {
+      setValueBindingClassAlias(
+        inout bindings,
+        parameter.name,
+        parameter.offset + 1
+      );
+    }
+  }
+  if (
+    ownerType.byteLength > 0
+    && typeIsClassReference(module, modules, moduleIndex, ownerType)
+  ) setValueBindingClassAlias(inout bindings, "this", declaration.offset + 1);
   try inferStatementSequence(
     module,
     modules,
@@ -8812,6 +8912,9 @@ function validateExpressionTypesAndLocals(
           none => {}
         }
         addMutableValueBinding(inout bindings, "this", aggregate.name);
+        if (aggregate.kind == DeclarationKind.classDeclaration) {
+          setValueBindingClassAlias(inout bindings, "this", initializer.offset + 1);
+        }
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
         let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
@@ -8870,6 +8973,9 @@ function validateExpressionTypesAndLocals(
         addValueBinding(inout bindings, "__z_native_function_name", "deinit");
         addValueBinding(inout bindings, "__z_native_return_type", "void");
         addValueBinding(inout bindings, "this", aggregate.name);
+        if (aggregate.kind == DeclarationKind.classDeclaration) {
+          setValueBindingClassAlias(inout bindings, "this", deinitializer.offset + 1);
+        }
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(
           0,
