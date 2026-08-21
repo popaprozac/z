@@ -637,6 +637,7 @@ type AnalysisState = {
   }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly classAliasIdentities: Map<string, ReadonlySet<string>>;
+  readonly locallyContainedClassAliases: Set<string>;
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
   readonly asyncTaskBorrowSpawns: Map<string, number>;
@@ -1017,6 +1018,7 @@ export function analyze(
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
     classAliasIdentities: new Map(),
+    locallyContainedClassAliases: new Set(),
     activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
     asyncTaskBorrowSpawns: new Map(),
@@ -3161,6 +3163,7 @@ function analyzeFunction(
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
   state.classAliasIdentities.clear();
+  state.locallyContainedClassAliases.clear();
   state.activeLoans.clear();
   state.asyncSpawnBorrowRoots.clear();
   state.asyncTaskBorrowSpawns.clear();
@@ -4580,6 +4583,18 @@ function analyzeStatement(
       actual = contextualSwiftStringToZ(expected, actual, statement.expression, state) ?? actual;
       rejectBorrowedNativeResourceEscape(actual, statement.expression, locals, fileName, state, "assigned into storage");
       requireAssignable(expected, actual, statement.expression, fileName, structs, enums, state);
+      if (
+        statement.target.kind !== "identifier"
+        && structs.get(String(underlyingType(expected)))?.kind === "class"
+      ) {
+        invalidateLocallyContainedClassExpression(
+          statement.expression,
+          expected,
+          structs,
+          fileName,
+          state,
+        );
+      }
       if (state.unsafeDepth > 0 && isUnsafeUnverifiedValue(statement.expression, state)) {
         const localBindings = state.unsafeLocalBindingScopes.at(-1);
         if (!localBindings?.has(root.name)) {
@@ -5758,6 +5773,15 @@ function finalizeClosureFunctionValue(
     closure = state.closures.get(expression.location.offset)!;
   }
   for (const capture of closure.owned ? closure.captures : []) {
+    if (structs.get(String(underlyingType(capture.type)))?.kind === "class") {
+      invalidateLocallyContainedClassExpression(
+        { kind: "identifier", name: capture.name, location: capture.location },
+        capture.type,
+        structs,
+        fileName,
+        state,
+      );
+    }
     if (!hasOwnershipType(capture.type, structs, enums, state)) continue;
     // Shared identities are retained explicitly when codegen stores them in
     // the owned environment. Marking the capture's source location as a
@@ -9162,6 +9186,15 @@ function inferExpressionInner(
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
         rejectBorrowedNativeResourceEscape(actual, initializer.expression, locals, fileName, state, "stored in a struct field");
         requireAssignable(fieldType, actual, initializer.expression, fileName, structs, enums, state);
+        if (structs.get(String(underlyingType(fieldType)))?.kind === "class") {
+          invalidateLocallyContainedClassExpression(
+            initializer.expression,
+            fieldType,
+            structs,
+            fileName,
+            state,
+          );
+        }
         if (containsStoredViewType(fieldType, structs, enums)) {
           const origin = storedViewOriginForExpression(initializer.expression, state);
           if (!origin) {
@@ -9211,11 +9244,29 @@ function inferExpressionInner(
         throw new DiagnosticError(fileName, expression.elements[0].location, "cannot infer a fixed array element type from this expression");
       }
       rejectBorrowedNativeResourceEscape(elementType, expression.elements[0], locals, fileName, state, "stored in an array");
+      if (structs.get(String(underlyingType(elementType)))?.kind === "class") {
+        invalidateLocallyContainedClassExpression(
+          expression.elements[0],
+          elementType,
+          structs,
+          fileName,
+          state,
+        );
+      }
       consumeOwnedValue(expression.elements[0], elementType, locals, structs, enums, fileName, state);
       for (const element of expression.elements.slice(1)) {
         const actual = inferExpression(element, locals, globals, structs, enums, fileName, state);
         rejectBorrowedNativeResourceEscape(actual, element, locals, fileName, state, "stored in an array");
         requireAssignable(elementType, actual, element, fileName, structs, enums, state);
+        if (structs.get(String(underlyingType(elementType)))?.kind === "class") {
+          invalidateLocallyContainedClassExpression(
+            element,
+            elementType,
+            structs,
+            fileName,
+            state,
+          );
+        }
         consumeOwnedValue(element, elementType, locals, structs, enums, fileName, state);
       }
       return fixedArrayTypeName(String(elementType), expression.elements.length);
@@ -9254,6 +9305,15 @@ function inferExpressionInner(
           enums,
           state,
         );
+        if (structs.get(String(underlyingType(expression.elementType)))?.kind === "class") {
+          invalidateLocallyContainedClassExpression(
+            element,
+            expression.elementType,
+            structs,
+            fileName,
+            state,
+          );
+        }
         if (storedViewElement) {
           const origin = storedViewOriginForExpression(element, state);
           if (!origin) {
@@ -9345,6 +9405,15 @@ function inferExpressionInner(
       actual = contextualCStringLiteral(variant.payload.name, expression.payload, state) ?? actual;
       rejectBorrowedNativeResourceEscape(actual, expression.payload, locals, fileName, state, "stored in an enum payload");
       requireAssignable(variant.payload.name, actual, expression.payload, fileName, structs, enums, state);
+      if (structs.get(String(underlyingType(variant.payload.name)))?.kind === "class") {
+        invalidateLocallyContainedClassExpression(
+          expression.payload,
+          variant.payload.name,
+          structs,
+          fileName,
+          state,
+        );
+      }
       const storedViewPayload = containsStoredViewType(variant.payload.name, structs, enums);
       if (storedViewPayload) {
         const origin = storedViewOriginForExpression(expression.payload, state);
@@ -9970,6 +10039,15 @@ function inferExpressionInner(
               helps: [`write \`Mutex(move ${storageRoot(argument)?.name ?? "value"})\``],
             });
           }
+          if (structs.get(String(underlyingType(mutex.valueType)))?.kind === "class") {
+            invalidateLocallyContainedClassExpression(
+              argument,
+              mutex.valueType,
+              structs,
+              fileName,
+              state,
+            );
+          }
           consumeOwnedValue(argument, mutex.valueType, locals, structs, enums, fileName, state);
           state.mutexConstructors.set(expression.location.offset, mutex.valueType);
           return mutexTypeName(mutex.valueType);
@@ -10527,6 +10605,15 @@ function inferExpressionInner(
               }
               for (const { capture, kind } of captureTransfers) {
                 const capturedClass = structs.get(String(underlyingType(capture.type)));
+                if (capturedClass?.kind === "class") {
+                  invalidateLocallyContainedClassExpression(
+                    { kind: "identifier", name: capture.name, location: capture.location },
+                    capture.type,
+                    structs,
+                    fileName,
+                    state,
+                  );
+                }
                 if (kind === "share" && capturedClass?.kind === "class") {
                   state.threadSharedClassUses.set(capturedClass.name, capture.location);
                 }
@@ -10977,6 +11064,15 @@ function inferExpressionInner(
               enums,
               state,
             );
+            if (structs.get(String(underlyingType(once.valueType)))?.kind === "class") {
+              invalidateLocallyContainedClassExpression(
+                argument,
+                once.valueType,
+                structs,
+                fileName,
+                state,
+              );
+            }
             if (isNamedStorageExpression(argument)) {
               throw new DiagnosticError(fileName, argument.location, "initializing Once from an existing owner requires an explicit move", {
                 code: "Z0218",
@@ -11191,6 +11287,15 @@ function inferExpressionInner(
             }
             if (operation.async) {
               for (const capture of closure.captures) {
+                if (structs.get(String(underlyingType(capture.type)))?.kind === "class") {
+                  invalidateLocallyContainedClassExpression(
+                    { kind: "identifier", name: capture.name, location: capture.location },
+                    capture.type,
+                    structs,
+                    fileName,
+                    state,
+                  );
+                }
                 if (
                   capture.type === "TaskScope"
                   || capture.type === "TaskControl"
@@ -11453,6 +11558,24 @@ function inferExpressionInner(
             const value = expression.arguments[1];
             const actualValue = inferExpression(value, locals, globals, structs, enums, fileName, state);
             requireAssignable(map.valueType, actualValue, value, fileName, structs, enums, state);
+            if (structs.get(String(underlyingType(map.keyType)))?.kind === "class") {
+              invalidateLocallyContainedClassExpression(
+                key,
+                map.keyType,
+                structs,
+                fileName,
+                state,
+              );
+            }
+            if (structs.get(String(underlyingType(map.valueType)))?.kind === "class") {
+              invalidateLocallyContainedClassExpression(
+                value,
+                map.valueType,
+                structs,
+                fileName,
+                state,
+              );
+            }
             const storedViewValue = containsStoredViewType(map.valueType, structs, enums);
             if (storedViewValue) {
               const valueOrigin = storedViewOriginForExpression(value, state);
@@ -11555,6 +11678,15 @@ function inferExpressionInner(
           const actual = inferExpression(value, locals, globals, structs, enums, fileName, state);
           requireAssignable(set.elementType, actual, value, fileName, structs, enums, state);
           if (method === "add") {
+            if (structs.get(String(underlyingType(set.elementType)))?.kind === "class") {
+              invalidateLocallyContainedClassExpression(
+                value,
+                set.elementType,
+                structs,
+                fileName,
+                state,
+              );
+            }
             const storedViewElement = containsStoredViewType(set.elementType, structs, enums);
             if (storedViewElement) {
               const elementOrigin = storedViewOriginForExpression(value, state);
@@ -11773,6 +11905,15 @@ function inferExpressionInner(
           }
           const actual = inferExpression(expression.arguments[0], locals, globals, structs, enums, fileName, state);
           requireAssignable(dynamic.elementType, actual, expression.arguments[0], fileName, structs, enums, state);
+          if (structs.get(String(underlyingType(dynamic.elementType)))?.kind === "class") {
+            invalidateLocallyContainedClassExpression(
+              expression.arguments[0],
+              dynamic.elementType,
+              structs,
+              fileName,
+              state,
+            );
+          }
           const storedViewElement = containsStoredViewType(dynamic.elementType, structs, enums);
           if (storedViewElement) {
             const elementOrigin = storedViewOriginForExpression(expression.arguments[0], state);
@@ -12831,6 +12972,15 @@ function checkArguments(
       continue;
     }
     requireAssignable(parameter.type.name, actual, argument, fileName, structs, enums, state);
+    if (structs.get(String(underlyingType(parameter.type.name)))?.kind === "class") {
+      invalidateLocallyContainedClassExpression(
+        argument,
+        parameter.type.name,
+        structs,
+        fileName,
+        state,
+      );
+    }
     consumeOwnedValue(argument, parameter.type.name, locals, structs, enums, fileName, state);
   }
 }
@@ -13088,6 +13238,17 @@ function classAliasIdentitiesForRoot(
   return state.classAliasIdentities.get(root);
 }
 
+function classAliasIdentityIsLocallyContained(
+  identities: ReadonlySet<string> | undefined,
+  state: AnalysisState,
+): boolean {
+  if (!identities || identities.size === 0) return false;
+  for (const identity of identities) {
+    if (!state.locallyContainedClassAliases.has(identity)) return false;
+  }
+  return true;
+}
+
 function classAliasIdentitiesForExpression(
   expression: Expression,
   type: ValueType,
@@ -13132,6 +13293,64 @@ function recordClassAliasBinding(
     return;
   }
   state.classAliasIdentities.set(binding, new Set(identities));
+  const classDeclaration = expression.kind === "new"
+    ? structs.get(expression.typeName)
+    : null;
+  if (
+    expression.kind === "new"
+    && classDeclaration?.kind === "class"
+    && !classDeclaration.constructor
+  ) {
+    for (const identity of identities) {
+      state.locallyContainedClassAliases.add(identity);
+    }
+  }
+}
+
+function rejectClassAliasEscapeWhileViewed(
+  identities: ReadonlySet<string>,
+  location: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  for (const [root, rootIdentities] of state.classAliasIdentities) {
+    if (!aliasIdentitySetsOverlap(identities, rootIdentities)) continue;
+    const conflict = activeAccessLoanForRoot(
+      state.activeLoans,
+      root,
+      state,
+      (loan) => loan.lifetime.kind === "view",
+    );
+    if (!conflict || conflict.lifetime.kind !== "view") continue;
+    throw new DiagnosticError(
+      fileName,
+      location,
+      `cannot let ARC class identity ${JSON.stringify(root)} escape while view ${JSON.stringify(conflict.lifetime.binding)} is live`,
+      {
+        code: "Z0205",
+        labels: [{
+          location: conflict.location,
+          message: "class-field view begins here",
+          length: root.length,
+        }],
+        notes: ["an escaped alias could replace the projected field without passing through this lexical exclusivity proof"],
+        helps: ["finish using the view before storing, capturing, or passing the class identity as an owned value"],
+      },
+    );
+  }
+}
+
+function invalidateLocallyContainedClassExpression(
+  expression: Expression,
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  const identities = classAliasIdentitiesForExpression(expression, type, structs, state);
+  if (!identities || !classAliasIdentityIsLocallyContained(identities, state)) return;
+  rejectClassAliasEscapeWhileViewed(identities, expression.location, fileName, state);
+  for (const identity of identities) state.locallyContainedClassAliases.delete(identity);
 }
 
 function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan | null {
@@ -13919,6 +14138,27 @@ function validateProjectedCapabilityPath(
     current = current.object;
   }
   const rootIsDirectClass = structs.get(ownerType)?.kind === "class";
+  if (
+    rootIsDirectClass
+    && !classAliasIdentityIsLocallyContained(
+      classAliasIdentitiesForRoot(path.root, state),
+      state,
+    )
+  ) {
+    throw new DiagnosticError(
+      fileName,
+      path.rootLocation,
+      `class-field projection requires locally contained ARC identity ${JSON.stringify(path.root)}`,
+      {
+        code: "Z0301",
+        notes: [
+          "a class returned by a function or exposed through hidden storage may have aliases outside this lexical proof",
+          "only a fresh local class and its direct named aliases qualify in this tier",
+        ],
+        helps: ["use a class method that keeps mutation inside the shared owner, or create an explicitly owned snapshot"],
+      },
+    );
+  }
   for (let index = 0; index < members.length; index += 1) {
     const member = members[index];
     const owner = structs.get(ownerType);

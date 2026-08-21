@@ -51,8 +51,10 @@ function main(): i32 {
   document.revision = document.revision + 1;
   console.log(`title bytes ${title.byteLength} revision ${document.revision}`);
 
-  // A local class-field view protects the same storage through every known
-  // alias while leaving disjoint fixed-layout fields available.
+  // Synthesized new construction starts a locally contained class identity.
+  // Its direct aliases share one field-view proof while disjoint fixed-layout
+  // fields remain available. Function-returned or escaped identities do not
+  // qualify for this local-only projection tier.
   const shared = new SharedDocument({
     title: "Shared draft",
     revision: 0,

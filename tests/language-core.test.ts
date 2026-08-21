@@ -3410,7 +3410,93 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
   `;
   assert.throws(
     () => compileToC(borrowedClassProjection, "borrowed-class-field-inout.zs"),
-    /inout argument "document" requires a mutable let binding/,
+    /class-field projection requires locally contained ARC identity "document"/,
+  );
+
+  const sharedResultProjection = `
+    class Document { title: String; revision: i32; }
+    function currentApplication(): Document {
+      return new Document({ title: "Shared", revision: 0 });
+    }
+    function main(): i32 {
+      const document = currentApplication();
+      const title = view document.title;
+      return i32(title.byteLength);
+    }
+  `;
+  const sharedResultDiagnostic = diagnostics(
+    sharedResultProjection,
+    "shared-result-class-view.zs",
+  )[0];
+  assert.equal(sharedResultDiagnostic.code, "Z0301");
+  assert.match(
+    sharedResultDiagnostic.message,
+    /class-field projection requires locally contained ARC identity "document"/,
+  );
+
+  const customConstructorProjection = `
+    class Document {
+      title: String;
+      constructor(title: String) { this.title = title; }
+    }
+    function main(): i32 {
+      const document = new Document("Constructed");
+      const title = view document.title;
+      return i32(title.byteLength);
+    }
+  `;
+  assert.throws(
+    () => compileToC(customConstructorProjection, "custom-constructor-class-view.zs"),
+    /class-field projection requires locally contained ARC identity "document"/,
+  );
+
+  const escapedLocalProjection = `
+    class Document { title: String; revision: i32; }
+    function publish(document: Document): void {}
+    function inspect(in document: Document): void {}
+    function main(): i32 {
+      const document = new Document({ title: "Draft", revision: 0 });
+      inspect(in document);
+      publish(document);
+      const title = view document.title;
+      return i32(title.byteLength);
+    }
+  `;
+  const escapedLocalDiagnostic = diagnostics(
+    escapedLocalProjection,
+    "escaped-local-class-view.zs",
+  )[0];
+  assert.equal(escapedLocalDiagnostic.code, "Z0301");
+  assert.match(
+    escapedLocalDiagnostic.message,
+    /class-field projection requires locally contained ARC identity "document"/,
+  );
+
+  const storedLocalProjection = `
+    class Document { title: String; revision: i32; }
+    struct Holder { document: Document; }
+    function main(): i32 {
+      const document = new Document({ title: "Draft", revision: 0 });
+      const holder = Holder({ document });
+      const title = view document.title;
+      return i32(title.byteLength) + holder.document.revision;
+    }
+  `;
+  assert.throws(
+    () => compileToC(storedLocalProjection, "stored-local-class-view.zs"),
+    /class-field projection requires locally contained ARC identity "document"/,
+  );
+
+  const escapeWhileViewed = escapedLocalProjection
+    .replace("publish(document);\n      const title = view document.title;", "const title = view document.title;\n      publish(document);");
+  const escapeWhileViewedDiagnostic = diagnostics(
+    escapeWhileViewed,
+    "class-escape-while-viewed.zs",
+  )[0];
+  assert.equal(escapeWhileViewedDiagnostic.code, "Z0205");
+  assert.match(
+    escapeWhileViewedDiagnostic.message,
+    /cannot let ARC class identity "document" escape while view "title" is live/,
   );
 
   const storedClassProjection = `

@@ -82,16 +82,19 @@ import {
   liveViewBindingForOwner,
   liveViewBindingForStoragePath,
   mergeViewOwners,
+  invalidateContainedClassAlias,
   ownerlessViewOwner,
   setExpressionViewOrigin,
   mergeBindingFlowStates,
   setValueBindingInitialization,
   setValueBindingClassAlias,
+  setValueBindingClassAliasContained,
   setValueBindingOwnership,
   setValueBindingType,
   setValueBindingViewOwner,
   valueBindingInitialization,
   valueBindingClassAlias,
+  valueBindingClassAliasIsContained,
   valueBindingIsBorrowed,
   valueBindingIsMatchBorrowed,
   valueBindingIsMutable,
@@ -313,6 +316,117 @@ function expressionClassAliasIdentity(
   };
 }
 
+function expressionNodeClassAliasIsContained(
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): boolean {
+  if (tree.nodes[index].kind == ExpressionKind.newExpression) return true;
+  if (tree.nodes[index].kind == ExpressionKind.identifierExpression) {
+    const name = identifierLookupName(tree.nodes[index].value);
+    return valueBindingClassAliasIsContained(
+      bindings,
+      name
+    );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.argumentReferenceExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const name = identifierLookupName(
+      tree.nodes[tree.nodes[index].children[0]].value
+    );
+    return valueBindingClassAliasIsContained(
+      bindings,
+      name
+    );
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.unaryExpression
+    && tree.nodes[index].value == "move"
+    && tree.nodes[index].children.length == 1
+  ) {
+    const child = tree.nodes[index].children[0];
+    return expressionNodeClassAliasIsContained(
+      tree,
+      child,
+      bindings
+    );
+  }
+  return false;
+}
+
+function expressionClassAliasIsContained(
+  in expression: ExpressionSyntax,
+  in bindings: Array<NativeValueBinding>,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (tree.nodes[root].kind == ExpressionKind.newExpression) {
+        match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+          some(location) => match (
+            in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
+          ) {
+            some(signature) => match (in signature.constructorSignature) {
+              some(_) => return false;
+              none => {}
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
+      return expressionNodeClassAliasIsContained(tree, root, bindings);
+    }
+    none => false;
+  };
+}
+
+function invalidateLocallyContainedClassBinding(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in root: String,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  if (
+    root.byteLength == 0
+    || !valueBindingClassAliasIsContained(bindings, root)
+  ) return;
+  const view = liveViewBindingForOwner(bindings, root);
+  if (view.byteLength > 0) throw resolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    module.path,
+    `cannot let ARC class identity "${root}" escape while view "${view}" is live`,
+    tree.nodes[index].line,
+    tree.nodes[index].column
+  );
+  invalidateContainedClassAlias(
+    inout bindings,
+    valueBindingClassAlias(bindings, root)
+  );
+}
+
+function invalidateLocallyContainedClassNode(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  inout bindings: Array<NativeValueBinding>
+): void throws ModuleResolveError {
+  const root = expressionStorageRootName(tree, index);
+  try invalidateLocallyContainedClassBinding(
+    module,
+    tree,
+    index,
+    root,
+    inout bindings
+  );
+}
+
 function expressionCapabilityAccess(
   in tree: ExpressionTree,
   index: usize
@@ -430,6 +544,15 @@ function requireProjectedCapabilityValuePath(
     moduleIndex,
     ownerType
   );
+  if (rootIsDirectClass && !valueBindingClassAliasIsContained(bindings, root)) {
+    throw resolutionError(
+      ModuleResolveErrorKind.typeMismatch,
+      module.path,
+      `class-field projection requires locally contained ARC identity "${root}"`,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
   while (fieldIndex > 0) {
     fieldIndex = fieldIndex - 1;
     const directClassField = fieldIndex + 1 == reversed.length
@@ -1726,6 +1849,19 @@ function inferContextualObjectExpressionNode(
           consumedFieldType,
           actual
         );
+        if (typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          consumedFieldType
+        )) {
+          try invalidateLocallyContainedClassNode(
+            module,
+            tree,
+            children[childIndex],
+            inout bindings
+          );
+        }
         let viewVisiting = Array<String>();
         if (typeContainsStoredView(
           modules,
@@ -2831,6 +2967,19 @@ function inferSignatureCallType(
         mode == "value"
         && !stringStartsWith(signature.parameterTypes[argumentIndex], "Slice<")
       ) {
+        if (typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          argumentType
+        )) {
+          try invalidateLocallyContainedClassNode(
+            module,
+            tree,
+            nodeIndex,
+            inout bindings
+          );
+        }
         try consumeOwnedExpressionNode(
           module,
           modules,
@@ -3997,6 +4146,19 @@ function inferExpressionNodeType(
               requiredPayload,
               actual
             );
+            if (typeIsClassReference(
+              module,
+              modules,
+              moduleIndex,
+              requiredPayload
+            )) {
+              try invalidateLocallyContainedClassNode(
+                module,
+                tree,
+                children[1],
+                inout bindings
+              );
+            }
             let storedViewVisiting = Array<String>();
             const storedViewPayload = typeContainsStoredView(
               modules,
@@ -5007,6 +5169,14 @@ function inferExpressionNodeType(
     let elementType = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], elementType);
     if (elementType.byteLength == 0) return "";
+    if (typeIsClassReference(module, modules, moduleIndex, elementType)) {
+      try invalidateLocallyContainedClassNode(
+        module,
+        tree,
+        children[0],
+        inout bindings
+      );
+    }
     try consumeOwnedExpressionNode(
       module,
       modules,
@@ -5023,6 +5193,14 @@ function inferExpressionNodeType(
       try requireSettledExpressionType(module, tree, children[childIndex], candidate);
       if (candidate.byteLength == 0) return "";
       try requireExpressionType(module, modules, moduleIndex, tree, children[childIndex], elementType, candidate);
+      if (typeIsClassReference(module, modules, moduleIndex, elementType)) {
+        try invalidateLocallyContainedClassNode(
+          module,
+          tree,
+          children[childIndex],
+          inout bindings
+        );
+      }
       try consumeOwnedExpressionNode(
         module,
         modules,
@@ -5255,6 +5433,23 @@ function inferExpressionNodeType(
           `borrowed native resource "${capture}" cannot escape into a closure`,
           node.line,
           node.column
+        );
+      }
+      if (
+        value == "move"
+        && typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          captureType
+        )
+      ) {
+        try invalidateLocallyContainedClassBinding(
+          module,
+          tree,
+          index,
+          capture,
+          inout bindings
         );
       }
       if (value == "move") {
@@ -8271,6 +8466,17 @@ function inferStatement(
             arena.nodes[index].name,
             identity
           );
+          setValueBindingClassAliasContained(
+            inout bindings,
+            arena.nodes[index].name,
+            expressionClassAliasIsContained(
+              expression,
+              bindings,
+              modules,
+              moduleIndex,
+              stored
+            )
+          );
         }
         none => {}
       }
@@ -8644,6 +8850,28 @@ function inferStatement(
         if (consumedType.byteLength == 0) {
           consumedType = actual.copyBytes(0, actual.byteLength);
         }
+        if (
+          assignmentBinding.byteLength == 0
+          && typeIsClassReference(
+            module,
+            modules,
+            moduleIndex,
+            consumedType
+          )
+        ) {
+          match (in value.tree) {
+            some(valueTree) => {
+              const valueRoot = valueTree.root;
+              try invalidateLocallyContainedClassNode(
+                module,
+                valueTree,
+                valueRoot,
+                inout bindings
+              );
+            }
+            none => {}
+          }
+        }
         try consumeOwnedExpressionSyntax(
           module,
           modules,
@@ -8661,6 +8889,17 @@ function inferStatement(
             inout bindings,
             assignmentBinding,
             identity
+          );
+          setValueBindingClassAliasContained(
+            inout bindings,
+            assignmentBinding,
+            expressionClassAliasIsContained(
+              value,
+              bindings,
+              modules,
+              moduleIndex,
+              consumedType
+            )
           );
         }
       }

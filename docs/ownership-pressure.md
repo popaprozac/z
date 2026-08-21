@@ -3165,12 +3165,25 @@ named local ARC class. Its known local aliases share one identity proof, so
 an `inout` call argument. After the view's last use, the alias can replace
 `title` or invoke the whole-instance mutating method.
 
-This class tier remains local and synchronous. An immutable `in` class
-parameter cannot manufacture mutable field access; class identity stored inside
-another aggregate, traversal through a nested class field, foreign reference
-identity, dynamic indexing, escape, and suspension remain rejected. Array
-indexing remains whole-owner conservative because growth may invalidate element
-addresses.
+This class tier remains local and synchronous. Crucially, a local binding alone
+is not proof that all aliases are local: `const app = currentApplication()` may
+refer to a global `Once<Application>` identity. Both frontends therefore carry
+separate containment evidence. Synthesized `new Class({ ... })` construction
+starts contained and direct named aliases preserve it. Arbitrary function
+results and user-defined constructors do not. Passing the identity to an owned
+parameter, storing it in aggregate or collection storage, or placing it in an
+owned closure environment invalidates containment for every known alias. An
+escape attempted while a field view remains live is rejected before a hidden
+alias can be created.
+
+An immutable `in` class parameter cannot manufacture mutable field access;
+class identity stored inside another aggregate, traversal through a nested
+class field, foreign reference identity, dynamic indexing, escape, and
+suspension remain rejected. Array indexing remains whole-owner conservative
+because growth may invalidate element addresses. Transparent accessor
+provenance is intentionally deferred rather than inferred from a return type:
+adding it will require an auditable contract, not a guess that a function named
+`currentApplication` is safe.
 
 The native parity work exposed an important internal modeling error in real
 compiler code: the resolver had used a view binding's ownership state to mark

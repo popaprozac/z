@@ -1164,11 +1164,17 @@ caller conservatively loans every possible source owner until the result's last
 use; the runtime result remains one pointer and carries no provenance tag. The
 compiler ties each read-only view to its named value-storage owner or owners and
 prevents invalidating mutation until last use.
-The local-only form also permits a direct fixed-layout field of a named Z ARC
-class owner. Known local aliases share the same field loan: an overlapping field
-or whole-instance mutation is rejected while a sibling field remains available.
-This does not extend to returned class-field views, aggregate-hidden class
-identity, nested class traversal, foreign references, escape, or suspension.
+The local-only form also permits a direct fixed-layout field of a locally
+contained Z ARC class owner. The first containment proof begins at synthesized
+`new Class({ ... })` construction and follows direct named aliases. A class
+returned by a function, constructed by user code that can publish `this`, or
+previously passed as an owned value does not qualify. Storing, owned passing,
+or move-capturing the identity invalidates the proof for every known alias;
+doing so while a field view is live is rejected. Known contained aliases share
+the same field loan: an overlapping field or whole-instance mutation is
+rejected while a sibling field remains available. This does not extend to
+returned class-field views, aggregate-hidden class identity, nested class
+traversal, foreign references, escape, or suspension.
 One module function may also directly construct and return a named value struct
 whose direct `view` fields all project from the same immutable input. The
 aggregate lowers to an ordinary C value struct containing borrowed pointers;

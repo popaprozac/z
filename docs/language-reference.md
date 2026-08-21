@@ -887,7 +887,12 @@ tree.append(next); // valid after node's last use
 ```
 
 For a direct fixed-layout field, both semantic frontends record the selected
-field path. The owner may be a value struct or a named local Z class reference.
+field path. The owner may be a value struct or a locally contained named Z
+class reference. A synthesized `new Class({ ... })` identity and its direct
+named aliases qualify. Arbitrary function results and classes created by a
+user-defined constructor do not, because aliases may have been published
+outside the lexical proof. Passing the class as an owned value, storing it, or
+move-capturing it invalidates containment for every known alias.
 A live `view document.title` blocks replacement of `title` or mutation of the
 whole `document`, while mutation of the disjoint `document.revision` field is
 safe. Known local aliases of a class share the same proof: an alias cannot
@@ -899,9 +904,10 @@ borrow.
 
 Class identity hidden inside another aggregate, a projection through a nested
 class field, foreign reference identity, dynamic indexing, escape, and
-suspension remain conservative boundaries. A view remains a usable borrowed
-value after control-flow joins; its owner loan ends independently at the
-view's proven last use.
+suspension remain conservative boundaries. Attempting to escape a contained
+identity while one of its field views is live is rejected before the alias can
+be hidden. A view remains a usable borrowed value after control-flow joins; its
+owner loan ends independently at the view's proven last use.
 
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from

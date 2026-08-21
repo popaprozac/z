@@ -12785,6 +12785,27 @@ test("rejects executor-affinity violations in the native resolver", () => {
   }
 });
 
+test("rejects class-field views from identities with hidden aliases natively", () => {
+  for (const fixture of [
+    "self-host-reject-shared-class-field-view.zs",
+    "self-host-reject-escaped-class-field-view.zs",
+    "self-host-reject-stored-class-field-view.zs",
+    "self-host-reject-custom-constructor-class-field-view.zs",
+  ]) {
+    const input = resolve(projectRoot, "tests/fixtures", fixture);
+    const result = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1, `${fixture}\n${result.stderr}`);
+    assert.match(
+      result.stderr,
+      /class-field projection requires locally contained ARC identity "document"/,
+    );
+  }
+});
+
 test("keeps native semantic authority composable across a representative Z corpus", () => {
   const entries = [
     "compiler/frontend/parser-library.zs",

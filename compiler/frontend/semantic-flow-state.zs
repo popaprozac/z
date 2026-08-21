@@ -82,6 +82,7 @@ export struct NativeValueBinding {
   borrowedBinding: boolean;
   matchBorrowedBinding: boolean;
   classAliasIdentity: usize = 0;
+  classAliasContained: boolean = false;
   viewOwner: String = "";
   viewPath: String = "";
   viewLive: boolean = false;
@@ -103,6 +104,7 @@ export function copyValueBindings(
       borrowedBinding: binding.borrowedBinding,
       matchBorrowedBinding: binding.matchBorrowedBinding,
       classAliasIdentity: binding.classAliasIdentity,
+      classAliasContained: binding.classAliasContained,
       viewOwner: binding.viewOwner.copyBytes(0, binding.viewOwner.byteLength),
       viewPath: binding.viewPath.copyBytes(0, binding.viewPath.byteLength),
       viewLive: binding.viewLive,
@@ -438,6 +440,20 @@ export function valueBindingClassAlias(
   return 0;
 }
 
+export function valueBindingClassAliasIsContained(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): boolean {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      return bindings[index].classAliasContained;
+    }
+  }
+  return false;
+}
+
 export function setValueBindingClassAlias(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
@@ -454,6 +470,7 @@ export function setValueBindingClassAlias(
       borrowedBinding: bindings[index].borrowedBinding,
       matchBorrowedBinding: bindings[index].matchBorrowedBinding,
       classAliasIdentity: identity,
+      classAliasContained: bindings[index].classAliasContained,
       viewOwner: bindings[index].viewOwner.copyBytes(
         0,
         bindings[index].viewOwner.byteLength
@@ -472,6 +489,63 @@ export function setValueBindingClassAlias(
       outputParameter: bindings[index].outputParameter,
     });
     return;
+  }
+}
+
+function replaceBindingClassAliasContained(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  contained: boolean
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: contained,
+    viewOwner: bindings[index].viewOwner.copyBytes(0, bindings[index].viewOwner.byteLength),
+    viewPath: bindings[index].viewPath.copyBytes(0, bindings[index].viewPath.byteLength),
+    viewLive: bindings[index].viewLive,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
+    initialization: bindings[index].initialization,
+    ownership: bindings[index].ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
+export function setValueBindingClassAliasContained(
+  inout bindings: Array<NativeValueBinding>,
+  in name: String,
+  contained: boolean
+): void {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name != name) continue;
+    replaceBindingClassAliasContained(inout bindings, index, contained);
+    return;
+  }
+}
+
+export function invalidateContainedClassAlias(
+  inout bindings: Array<NativeValueBinding>,
+  identity: usize
+): void {
+  if (identity == 0) return;
+  let index: usize = 0;
+  while (index < bindings.length) {
+    if (
+      bindings[index].classAliasIdentity == identity
+      && bindings[index].classAliasContained
+    ) {
+      replaceBindingClassAliasContained(inout bindings, index, false);
+    }
+    index = index + 1;
   }
 }
 
@@ -585,6 +659,7 @@ function replaceBindingInitialization(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: bindings[index].viewOwner.copyBytes(
       0,
       bindings[index].viewOwner.byteLength
@@ -616,6 +691,7 @@ function replaceBindingType(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: bindings[index].viewOwner.copyBytes(
       0,
       bindings[index].viewOwner.byteLength
@@ -647,6 +723,7 @@ function replaceBindingViewOwner(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: viewOwner.copyBytes(0, viewOwner.byteLength),
     viewPath: bindings[index].viewPath.copyBytes(
       0,
@@ -675,6 +752,7 @@ function replaceBindingViewPath(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: bindings[index].viewOwner.copyBytes(
       0,
       bindings[index].viewOwner.byteLength
@@ -703,6 +781,7 @@ function replaceBindingViewLive(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: bindings[index].viewOwner.copyBytes(
       0,
       bindings[index].viewOwner.byteLength
@@ -789,6 +868,7 @@ function replaceBindingOwnership(
     borrowedBinding: bindings[index].borrowedBinding,
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
+    classAliasContained: bindings[index].classAliasContained,
     viewOwner: bindings[index].viewOwner.copyBytes(
       0,
       bindings[index].viewOwner.byteLength
@@ -838,6 +918,7 @@ export function borrowValueBindingInPlace(
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
         classAliasIdentity: bindings[index].classAliasIdentity,
+        classAliasContained: bindings[index].classAliasContained,
         viewOwner: bindings[index].viewOwner.copyBytes(
           0,
           bindings[index].viewOwner.byteLength
@@ -875,6 +956,7 @@ export function borrowMatchValueBindingInPlace(
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
         classAliasIdentity: bindings[index].classAliasIdentity,
+        classAliasContained: bindings[index].classAliasContained,
         viewOwner: bindings[index].viewOwner.copyBytes(
           0,
           bindings[index].viewOwner.byteLength
@@ -909,6 +991,7 @@ export function borrowClosureBindingInPlace(
         borrowedBinding: true,
         matchBorrowedBinding: bindings[index].matchBorrowedBinding,
         classAliasIdentity: bindings[index].classAliasIdentity,
+        classAliasContained: bindings[index].classAliasContained,
         viewOwner: bindings[index].viewOwner.copyBytes(
           0,
           bindings[index].viewOwner.byteLength
@@ -969,6 +1052,11 @@ export function copyBindingFlowStates(
       bindingName,
       source[index].classAliasIdentity
     );
+    setValueBindingClassAliasContained(
+      inout target,
+      bindingName,
+      source[index].classAliasContained
+    );
     replaceBindingViewOwner(inout target, index, source[index].viewOwner);
     replaceBindingViewPath(inout target, index, source[index].viewPath);
     replaceBindingViewLive(inout target, index, source[index].viewLive);
@@ -1012,6 +1100,13 @@ export function mergeBindingFlowStates(
       inout target,
       bindingName,
       mergedAlias
+    );
+    setValueBindingClassAliasContained(
+      inout target,
+      bindingName,
+      mergedAlias > 0
+        && left[index].classAliasContained
+        && right[index].classAliasContained
     );
     const mergedOwner = mergeViewOwners(
       left[index].viewOwner,
