@@ -14,13 +14,7 @@ class Controller {
 
   function install(inout this): void {
     const owner = weak this;
-    const handler: () => i32 = move (): i32 => {
-      const upgraded = attempt owner.upgrade();
-      return match (upgraded) {
-        success(controller) => controller.id;
-        failure(expired) => -1;
-      };
-    };
+    const handler: () => i32 = move (): i32 => readController(owner);
     this.handler = handler;
   }
 
@@ -31,6 +25,14 @@ class Controller {
 
 function emptyHandler(): i32 {
   return 0;
+}
+
+function readController(in owner: Weak<Controller>): i32 {
+  const upgraded = attempt owner.upgrade();
+  return match (upgraded) {
+    success(controller) => controller.id;
+    failure(expired) => -1;
+  };
 }
 
 function read(in observer: Weak<Session>): i32 {

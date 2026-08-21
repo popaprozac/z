@@ -652,9 +652,15 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    ordinary and demand-specialized generic ARC classes. Executable fixtures
    prove copied weak-handle retention, clearing before class `deinit`, strong
    retention on successful upgrade, `WeakExpired` after owner replacement,
-   `try`/`attempt`, owned closure capture, and canonical generic identity across
-   selective module imports. Concurrent upgrade remains intentionally outside
-   this single-executor tier.
+   `try`/`attempt`, canonical generic identity across selective module imports,
+   and a complete class-to-owned-closure-to-weak-class cycle. Function-valued
+   field reads retain their closure environment, class cleanup releases its
+   stored handle, and an independently retained handler observes expiration
+   after the class owner is destroyed. Callable layouts now precede aggregates
+   that store them while helpers follow complete payload types, and canonical
+   synchronization/task identities remain resolvable across compiler helper and
+   module boundaries. Concurrent upgrade remains intentionally outside this
+   single-executor tier.
    Recursive cleanup and explicit-copy analysis now remain in an aggregate's
    defining module. Only concrete generic arguments are rebased into that
    module before substitution, so an exported struct cannot lose ownership

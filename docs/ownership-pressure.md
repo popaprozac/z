@@ -3064,9 +3064,21 @@ copying a weak handle retains that control, final strong release clears its
 value before custom `deinit`, and `upgrade()` returns the existing native
 `Result<T, WeakExpired>` while retaining the recovered class on success.
 Focused executables cover ordinary classes, `try`/`attempt`, strong-owner
-replacement, owned closure capture, direct generic classes, and selective
-cross-module generic aliases. A copied weak value also crosses an owned function
-parameter and enters a class field without consuming the caller's handle.
+replacement, a class-owned closure with a weak back-edge, direct generic
+classes, and selective cross-module generic aliases. The cycle fixture keeps an
+independently retained handler alive after its controller is destroyed, proves
+the class field releases its copy exactly once, and observes `WeakExpired`
+through the captured weak handle. A copied weak value also crosses an owned
+function parameter and enters a class field without consuming the caller's
+handle. Closing that fixture additionally required function-handle definitions
+to split layout from behavior: the handle layout precedes aggregates that store
+it, while `_call` helpers follow complete `Result` and payload definitions.
+Function-valued field projections retain their closure environment. Moving that
+emission logic across an ordinary compiler helper also exposed canonical
+`Mutex_`, `Task_`, `Once_`, and `OnceLifetime_` identities that could previously
+be resolved only through their source generic spelling; local and cross-module
+lowering now preserve both forms. Null-only native arguments bypass owned-value
+projection rather than pretending `null` is a storable Z type.
 Registering concrete generic identities before intrinsic wrappers also closes
 the broader `Wrapper<Generic<T>>` lowering seam that this pressure test exposed.
 

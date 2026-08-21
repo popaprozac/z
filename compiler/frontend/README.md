@@ -611,7 +611,14 @@ copied weak handles independently of strong identity, and upgrades through the
 ordinary `Result<T, WeakExpired>` path. Executable fixtures cover ordinary and
 demand-specialized generic classes, cross-module generic identity, strong-owner
 replacement, `try`/`attempt`, owned value-parameter calls, weak class-field
-storage, and a weak handle moved into an owned closure.
+storage, and a class-owned closure whose captured `Weak<Controller>` forms a
+real non-owning back-edge. Function handles are defined before aggregates that
+store them, while call helpers follow complete payload types. Field reads retain
+the closure environment, and class cleanup releases the stored handler exactly
+once; the retained handler observes `WeakExpired` after its controller is
+destroyed. Canonical `Mutex_`, `Task_`, `Once_`, and `OnceLifetime_` identities
+also survive helper and module boundaries instead of requiring their original
+source spelling.
 Recursive cleanup and explicit-copy analysis also stay in each aggregate's
 defining module. Concrete generic arguments are rebased there before
 substitution, preserving ownership through exported aggregates whose nested

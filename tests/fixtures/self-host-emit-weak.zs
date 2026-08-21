@@ -10,6 +10,13 @@ class Session {
 
 class Controller {
   id: i32;
+  handler: () => i32;
+
+  function install(inout this): void {
+    const owner = weak this;
+    const installed: () => i32 = move (): i32 => readController(owner);
+    this.handler = installed;
+  }
 
   deinit {
     console.log(`released controller ${this.id}`);
@@ -74,10 +81,9 @@ function main(): i32 {
 
   let handler: () => i32 = emptyHandler;
   {
-    let controller = new Controller({ id: 9 });
-    const owner = weak controller;
-    const installed: () => i32 = move (): i32 => readController(owner);
-    handler = installed;
+    let controller = new Controller({ id: 9, handler: emptyHandler });
+    controller.install();
+    handler = controller.handler;
     if (handler() != 9) return 2;
   }
   if (handler() != -1) return 3;

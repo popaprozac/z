@@ -1965,6 +1965,30 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (stringStartsWith(name, "Mutex_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.mutexType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "Task_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.taskType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "OnceLifetime_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.onceLifetimeType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "Once_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.onceType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
   if (name == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
   if (name == "boolean") {
     return LoweredType({ kind: LoweredTypeKind.booleanType, name: "" });
@@ -2238,6 +2262,30 @@ function lowerModuleTypeName(
   if (stringStartsWith(name, "Function_")) {
     return LoweredType({
       kind: LoweredTypeKind.functionType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "Mutex_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.mutexType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "Task_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.taskType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "OnceLifetime_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.onceLifetimeType,
+      name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (stringStartsWith(name, "Once_")) {
+    return LoweredType({
+      kind: LoweredTypeKind.onceType,
       name: name.copyBytes(0, name.byteLength),
     });
   }
@@ -5063,6 +5111,7 @@ function wrapOwnedStorage(
   value: usize,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (payloadTypeName == "null") return value;
   const payloadType = try lowerModuleTypeName(
     program,
     importedTypes,
@@ -11835,6 +11884,25 @@ function lowerExpressionExpected(
           target,
           Array<usize>(),
           labels
+        );
+      }
+      if (expressionBorrowsStoredReference(tree, index)) {
+        const borrowed = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          index,
+          inout output
+        );
+        let retainedChildren = Array<usize>();
+        retainedChildren.push(borrowed);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.retainValue,
+          functionType.name,
+          move retainedChildren,
+          Array<String>()
         );
       }
     }

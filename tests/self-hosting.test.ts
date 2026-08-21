@@ -852,7 +852,11 @@ test("materializes concrete generic value structs through native ownership", () 
   );
   assert.equal(moduleEmission.status, 0, moduleEmission.stderr);
   assert.equal(
-    [...moduleEmission.stdout.matchAll(/typedef struct Z___z_mono_/g)].length,
+    [
+      ...moduleEmission.stdout.matchAll(
+        /typedef struct Z___z_mono_[A-Za-z0-9_]+ \{/g,
+      ),
+    ].length,
     1,
     "one nominal specialization must cross the module ABI under every local spelling",
   );
@@ -1021,6 +1025,26 @@ test("zeroes and upgrades ARC weak references in fixed-point output", () => {
   assert.match(
     emission.stdout,
     /Z_SessionObserver_new\(Z_Session_weak_retain\(observer\)\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /typedef struct Z_(Function_[A-Za-z0-9_]+) \{[\s\S]*?typedef struct Z_Controller \{[\s\S]*?Z_\1 handler;/,
+  );
+  assert.match(
+    emission.stdout,
+    /typedef struct z_stage1_callable_Z_Controller_install_[0-9]+_environment \{[\s\S]*?Z_Weak owner;/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Controller_weak_deinit\(&environment->owner\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /Z_Function_[A-Za-z0-9_]+_deinit\(&self->handler\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /_z_stage1_assignment_[0-9]+ = Z_Function_[A-Za-z0-9_]+_retain\(controller->handler\)/,
   );
 
   const directory = mkdtempSync("/tmp/z-native-weak-");
@@ -12626,9 +12650,9 @@ test("preserves weak-reference construction and upgrade effects natively", () =>
   const authoritativeExpressions = result.stdout.match(
     /uses (\d+) expression native-authoritative contracts/,
   )?.[1];
-  assert.equal(observedBindings, "10");
+  assert.equal(observedBindings, "11");
   assert.equal(authoritativeBindings, observedBindings);
-  assert.equal(observedExpressions, "80");
+  assert.equal(observedExpressions, "82");
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 

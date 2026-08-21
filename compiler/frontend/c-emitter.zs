@@ -9392,16 +9392,83 @@ function appendStructDefinition(
   structStates[index] = 2;
 }
 
-function enumContainsFunctionPayload(in declaration: LoweredEnum): boolean {
-  for (const variant of declaration.variants) {
-    match (in variant.payload) {
-      some(type) => {
-        if (type.kind == LoweredTypeKind.functionType) return true;
-      }
-      none => {}
-    }
+function appendFunctionTypeLayout(
+  inout output: TextBuffer,
+  in declaration: LoweredFunctionType
+): void throws String {
+  const returnType = try cType(declaration.returnType);
+  output.append("typedef struct Z_");
+  output.append(declaration.name);
+  output.append(" {\n  ");
+  output.append(returnType);
+  output.append(" (*call)(void *context");
+  for (const parameter of declaration.parameters) {
+    output.append(", ");
+    const parameterType = try cType(parameter.type);
+    if (
+      parameter.mode == LoweredParameterMode.input
+      && parameter.type.kind != LoweredTypeKind.classType
+    ) output.append("const ");
+    output.append(parameterType);
+    if (
+      parameter.mode == LoweredParameterMode.input
+      && parameter.type.kind == LoweredTypeKind.classType
+    ) output.append(" const *");
+    else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
   }
-  return false;
+  output.append(");\n  void *context;\n  void (*retain)(void *context);\n  void (*release)(void *context);\n} Z_");
+  output.append(declaration.name);
+  output.append(";\n\n");
+}
+
+function appendFunctionTypeHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunctionType
+): void throws String {
+  const returnType = try cType(declaration.returnType);
+  output.append("static inline __attribute__((unused)) Z_");
+  output.append(declaration.name);
+  output.append(" Z_");
+  output.append(declaration.name);
+  output.append("_retain(Z_");
+  output.append(declaration.name);
+  output.append(" value) {\n  if (value.retain != NULL) value.retain(value.context);\n  return value;\n}\n\n");
+  output.append("static inline __attribute__((unused)) ");
+  output.append(returnType);
+  output.append(" Z_");
+  output.append(declaration.name);
+  output.append("_call(Z_");
+  output.append(declaration.name);
+  output.append(" value");
+  let parameterIndex: usize = 0;
+  while (parameterIndex < declaration.parameters.length) {
+    output.append(", ");
+    try appendCallableParameterDeclaration(
+      inout output,
+      declaration.parameters[parameterIndex],
+      declaration.parameters[parameterIndex].name
+    );
+    parameterIndex = parameterIndex + 1;
+  }
+  output.append(") {\n  ");
+  if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+    output.append("return ");
+  }
+  output.append("value.call(value.context");
+  for (const parameter of declaration.parameters) {
+    output.append(", ");
+    appendCBindingName(inout output, parameter.name);
+  }
+  output.append(");\n}\n\n");
+  output.append("static inline __attribute__((unused)) void Z_");
+  output.append(declaration.name);
+  output.append("_deinit(Z_");
+  output.append(declaration.name);
+  output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n  value->call = NULL;\n  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
+  if (programUsesForeignCallbackType(program, declaration.name)) {
+    try appendForeignCallbackHelpers(inout output, declaration);
+  }
 }
 
 function appendTypeDefinitions(
@@ -9441,6 +9508,24 @@ function appendTypeDefinitions(
     output.append(mutexName);
     output.append(";\n\n");
   }
+  const onceNames = programOnceTypeNames(program);
+  for (const onceName of onceNames) {
+    const prefix = "Once_";
+    const valueName = onceName.copyBytes(
+      prefix.byteLength,
+      onceName.byteLength
+    );
+    output.append("typedef struct Z_");
+    output.append(onceName);
+    output.append(" Z_");
+    output.append(onceName);
+    output.append(";\ntypedef struct Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(" Z_OnceLifetime_");
+    output.append(valueName);
+    output.append(";\n");
+  }
+  if (onceNames.length > 0) output.append("\n");
   for (const declaration of program.slices) {
     output.append("typedef struct Z_");
     output.append(declaration.name);
@@ -9549,9 +9634,76 @@ function appendTypeDefinitions(
     enumStates.push(0);
     stateIndex = stateIndex + 1;
   }
+  for (const declaration of program.structs) {
+    if (declaration.nativeCName.byteLength > 0) {
+      output.append("typedef struct ");
+      output.append(declaration.nativeCName);
+      output.append(" ");
+      output.append(declaration.nativeCName);
+      output.append(";\ntypedef ");
+      output.append(declaration.nativeCName);
+      output.append(" Z_");
+      output.append(declaration.name);
+      output.append(";\n");
+    } else {
+      output.append("typedef struct Z_");
+      output.append(declaration.name);
+      output.append(" Z_");
+      output.append(declaration.name);
+      output.append(";\n");
+    }
+  }
+  for (const declaration of program.fixedArrays) {
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append(";\n");
+  }
+  for (const declaration of program.enums) {
+    if (
+      !declaration.payloadBearing
+      || isNicheViewOption(declaration.name)
+    ) continue;
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append(";\n");
+  }
+  for (const declaration of program.functionTypes) {
+    output.append("typedef struct Z_");
+    output.append(declaration.name);
+    output.append(" Z_");
+    output.append(declaration.name);
+    output.append(";\n");
+  }
+  if (
+    program.structs.length > 0
+    || program.fixedArrays.length > 0
+    || program.enums.length > 0
+    || program.functionTypes.length > 0
+  ) output.append("\n");
   let enumIndex: usize = 0;
   while (enumIndex < program.enums.length) {
-    if (!enumContainsFunctionPayload(program.enums[enumIndex])) {
+    if (!program.enums[enumIndex].payloadBearing) {
+      try appendEnumDefinition(
+        inout output,
+        program,
+        enumIndex,
+        inout fixedArrayStates,
+        inout structStates,
+        inout enumStates
+      );
+    }
+    enumIndex = enumIndex + 1;
+  }
+  for (const declaration of program.functionTypes) {
+    try appendFunctionTypeLayout(inout output, declaration);
+  }
+  enumIndex = 0;
+  while (enumIndex < program.enums.length) {
+    if (program.enums[enumIndex].payloadBearing) {
       try appendEnumDefinition(
         inout output,
         program,
@@ -9588,85 +9740,7 @@ function appendTypeDefinitions(
     fixedArrayIndex = fixedArrayIndex + 1;
   }
   for (const declaration of program.functionTypes) {
-    const returnType = try cType(declaration.returnType);
-    output.append("typedef struct Z_");
-    output.append(declaration.name);
-    output.append(" {\n  ");
-    output.append(returnType);
-    output.append(" (*call)(void *context");
-    for (const parameter of declaration.parameters) {
-      output.append(", ");
-      const parameterType = try cType(parameter.type);
-      if (
-        parameter.mode == LoweredParameterMode.input
-        && parameter.type.kind != LoweredTypeKind.classType
-      ) output.append("const ");
-      output.append(parameterType);
-      if (
-        parameter.mode == LoweredParameterMode.input
-        && parameter.type.kind == LoweredTypeKind.classType
-      ) output.append(" const *");
-      else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
-    }
-    output.append(");\n  void *context;\n  void (*retain)(void *context);\n  void (*release)(void *context);\n} Z_");
-    output.append(declaration.name);
-    output.append(";\n\n");
-    output.append("static inline __attribute__((unused)) Z_");
-    output.append(declaration.name);
-    output.append(" Z_");
-    output.append(declaration.name);
-    output.append("_retain(Z_");
-    output.append(declaration.name);
-    output.append(" value) {\n  if (value.retain != NULL) value.retain(value.context);\n  return value;\n}\n\n");
-    output.append("static inline __attribute__((unused)) ");
-    output.append(returnType);
-    output.append(" Z_");
-    output.append(declaration.name);
-    output.append("_call(Z_");
-    output.append(declaration.name);
-    output.append(" value");
-    let parameterIndex: usize = 0;
-    while (parameterIndex < declaration.parameters.length) {
-      output.append(", ");
-      try appendCallableParameterDeclaration(
-        inout output,
-        declaration.parameters[parameterIndex],
-        declaration.parameters[parameterIndex].name
-      );
-      parameterIndex = parameterIndex + 1;
-    }
-    output.append(") {\n  ");
-    if (declaration.returnType.kind != LoweredTypeKind.voidType) {
-      output.append("return ");
-    }
-    output.append("value.call(value.context");
-    for (const parameter of declaration.parameters) {
-      output.append(", ");
-      appendCBindingName(inout output, parameter.name);
-    }
-    output.append(");\n}\n\n");
-    output.append("static inline __attribute__((unused)) void Z_");
-    output.append(declaration.name);
-    output.append("_deinit(Z_");
-    output.append(declaration.name);
-    output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n  value->call = NULL;\n  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
-    if (programUsesForeignCallbackType(program, declaration.name)) {
-      try appendForeignCallbackHelpers(inout output, declaration);
-    }
-  }
-  enumIndex = 0;
-  while (enumIndex < program.enums.length) {
-    if (enumContainsFunctionPayload(program.enums[enumIndex])) {
-      try appendEnumDefinition(
-        inout output,
-        program,
-        enumIndex,
-        inout fixedArrayStates,
-        inout structStates,
-        inout enumStates
-      );
-    }
-    enumIndex = enumIndex + 1;
+    try appendFunctionTypeHelpers(inout output, program, declaration);
   }
   for (const declaration of program.maps) {
     const keyType = try cType(declaration.keyType);
@@ -9697,7 +9771,6 @@ function appendTypeDefinitions(
     output.append(nativeValueType);
     output.append(" value;\n};\n\n");
   }
-  const onceNames = programOnceTypeNames(program);
   for (const onceName of onceNames) {
     const prefix = "Once_";
     const valueName = onceName.copyBytes(
