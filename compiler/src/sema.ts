@@ -5489,12 +5489,25 @@ function inferClosureExpression(
         helps: ["use the borrowed resource directly in its lexical scope, or acquire an explicitly owned native copy"],
       });
     }
-    if (capture.mutated && !isMutableBinding(stored) && structs.get(type)?.kind !== "class") {
+    const capturedClass = structs.get(type)?.kind === "class";
+    const immutableCapturedBorrow = capturedClass
+      && isBorrowedBinding(stored)
+      && !isMutableBinding(stored);
+    if (
+      (capture.reassigned && !isMutableBinding(stored))
+      || (capture.mutated
+        && !isMutableBinding(stored)
+        && (!capturedClass || immutableCapturedBorrow))
+    ) {
       throw new DiagnosticError(fileName, capture.location, `closure cannot mutate immutable capture ${JSON.stringify(capture.name)}`, {
         code: "Z0210",
         length: capture.name.length,
-        notes: ["capturing a const binding does not make that binding mutable"],
-        helps: [`declare ${JSON.stringify(capture.name)} with \`let\` if mutation is intended`],
+        notes: [capture.reassigned
+          ? "capturing a const binding does not make that binding assignable"
+          : "capturing an immutable borrow does not grant mutable access to its class identity"],
+        helps: [immutableCapturedBorrow
+          ? `receive ${JSON.stringify(capture.name)} through \`inout\` if mutation is intended`
+          : `declare ${JSON.stringify(capture.name)} with \`let\` if reassignment is intended`],
       });
     }
     if (containsStoredViewType(type, structs, enums)) {
@@ -5920,17 +5933,40 @@ function collectClosureCaptures(
   structs: ReadonlyMap<string, StructDeclaration>,
   foreignNamedTypes: ReadonlyMap<string, ForeignNamedType>,
   parameterNames: ReadonlySet<string>,
-): Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }> {
+): Map<string, {
+  readonly name: string;
+  readonly location: SourceLocation;
+  mutated: boolean;
+  reassigned: boolean;
+}> {
   const outerNames = new Set(outerLocals.keys());
-  const captures = new Map<string, { readonly name: string; readonly location: SourceLocation; mutated: boolean }>();
-  const record = (name: string, location: SourceLocation, mutated = false, localNames: ReadonlySet<string>): void => {
+  const captures = new Map<string, {
+    readonly name: string;
+    readonly location: SourceLocation;
+    mutated: boolean;
+    reassigned: boolean;
+  }>();
+  const record = (
+    name: string,
+    location: SourceLocation,
+    mutated = false,
+    reassigned = false,
+    localNames: ReadonlySet<string>,
+  ): void => {
     if (!outerNames.has(name) || localNames.has(name)) return;
     const previous = captures.get(name);
-    if (previous) previous.mutated ||= mutated;
-    else captures.set(name, { name, location, mutated });
+    if (previous) {
+      previous.mutated ||= mutated;
+      previous.reassigned ||= reassigned;
+    } else captures.set(name, { name, location, mutated, reassigned });
   };
 
-  const walkExpression = (expression: Expression, localNames: ReadonlySet<string>, mutated = false): void => {
+  const walkExpression = (
+    expression: Expression,
+    localNames: ReadonlySet<string>,
+    mutated = false,
+    reassigned = false,
+  ): void => {
     switch (expression.kind) {
       case "number":
       case "string":
@@ -5944,7 +5980,13 @@ function collectClosureCaptures(
         return;
       case "raw":
         for (const capture of expression.captures) {
-          record(capture.name, capture.nameLocation, capture.mode !== "in", localNames);
+          record(
+            capture.name,
+            capture.nameLocation,
+            capture.mode !== "in",
+            capture.mode !== "in",
+            localNames,
+          );
         }
         return;
       case "template":
@@ -5953,10 +5995,16 @@ function collectClosureCaptures(
         }
         return;
       case "identifier":
-        record(expression.name, expression.location, mutated, localNames);
+        record(expression.name, expression.location, mutated, reassigned, localNames);
         return;
       case "argumentReference":
-        record(expression.name, expression.location, true, localNames);
+        record(
+          expression.name,
+          expression.location,
+          expression.access !== "in",
+          expression.access !== "in",
+          localNames,
+        );
         return;
       case "unary":
         walkExpression(expression.operand, localNames);
@@ -5992,7 +6040,13 @@ function collectClosureCaptures(
           const receiver = receiverType ? structs.get(String(underlyingType(receiverType))) : null;
           const method = receiver?.methods.find((candidate) => candidate.name === expression.callee.property);
           if (method?.receiverMode === "inout") {
-            record(expression.callee.object.name, expression.callee.object.location, true, localNames);
+            record(
+              expression.callee.object.name,
+              expression.callee.object.location,
+              true,
+              false,
+              localNames,
+            );
           } else {
             walkExpression(expression.callee, localNames);
           }
@@ -6006,9 +6060,9 @@ function collectClosureCaptures(
           const stored = outerLocals.get(expression.object.name);
           const type = stored ? String(underlyingType(stored)) : null;
           const foreignReferenceIdentity = type && foreignNamedTypes.get(type)?.kind === "object";
-          walkExpression(expression.object, localNames, !foreignReferenceIdentity);
+          walkExpression(expression.object, localNames, !foreignReferenceIdentity, false);
         } else {
-          walkExpression(expression.object, localNames, mutated);
+          walkExpression(expression.object, localNames, mutated, false);
         }
         return;
       case "index":
@@ -6101,7 +6155,12 @@ function collectClosureCaptures(
         }
         return;
       case "assignment":
-        walkExpression(statement.target, localNames, true);
+        walkExpression(
+          statement.target,
+          localNames,
+          true,
+          statement.target.kind === "identifier",
+        );
         walkExpression(statement.expression, localNames);
         return;
       case "return":

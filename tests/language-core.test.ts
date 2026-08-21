@@ -3863,6 +3863,70 @@ test("tracks direct ARC aliases through bounded exclusive class loans", () => {
     diagnostics(sequentialCapturedAliases, "class-sequential-captured-aliases.zs"),
     [],
   );
+
+  const capturedClassMutationCapabilities = `
+    class Counter {
+      value: i32;
+      function increment(inout this): void { this.value = this.value + 1; }
+    }
+    function inspect(in operation: () => i32): i32 { return operation(); }
+    function mutateBorrow(inout counter: Counter): i32 {
+      return inspect((): i32 => {
+        counter.increment();
+        return counter.value;
+      });
+    }
+    function main(): i32 {
+      const counter = new Counter({ value: 41 });
+      return inspect((): i32 => {
+        counter.increment();
+        return counter.value;
+      }) - 42;
+    }
+    function nested(): i32 {
+      const counter = new Counter({ value: 41 });
+      return inspect((): i32 => inspect((): i32 => {
+        counter.increment();
+        return counter.value;
+      })) - 42;
+    }
+  `;
+  assert.deepEqual(
+    diagnostics(capturedClassMutationCapabilities, "class-captured-mutation-capabilities.zs"),
+    [],
+  );
+
+  const capturedImmutableClassBorrow = capturedClassMutationCapabilities
+    .replace("function mutateBorrow(inout counter: Counter): i32", "function mutateBorrow(in counter: Counter): i32");
+  const immutableBorrowDiagnostic = diagnostics(
+    capturedImmutableClassBorrow,
+    "class-captured-immutable-borrow.zs",
+  )[0];
+  assert.equal(immutableBorrowDiagnostic.code, "Z0210");
+  assert.match(
+    immutableBorrowDiagnostic.message,
+    /closure cannot mutate immutable capture "counter"/,
+  );
+
+  const capturedConstReassignment = `
+    class Counter { value: i32; }
+    function inspect(in operation: () => void): void { operation(); }
+    function invalid(): void {
+      const counter = new Counter({ value: 41 });
+      inspect((): void => {
+        counter = new Counter({ value: 42 });
+      });
+    }
+  `;
+  const reassignmentDiagnostic = diagnostics(
+    capturedConstReassignment,
+    "class-captured-const-reassignment.zs",
+  )[0];
+  assert.equal(reassignmentDiagnostic.code, "Z0210");
+  assert.match(
+    reassignmentDiagnostic.message,
+    /closure cannot mutate immutable capture "counter"/,
+  );
 });
 
 test("exposes Z classes and traits to editor services", () => {

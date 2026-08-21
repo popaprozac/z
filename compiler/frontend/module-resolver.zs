@@ -537,6 +537,10 @@ function closureCaptureModeBindingName(in capture: String): String {
   return `__z_native_closure_capture_mode_${capture}`;
 }
 
+function closureCaptureClassMutationBindingName(in capture: String): String {
+  return `__z_native_closure_class_mutation_${capture}`;
+}
+
 function closureCaptureEvidenceBindingName(
   offset: usize,
   in capture: String
@@ -5153,6 +5157,31 @@ function inferExpressionNodeType(
         captureModeName,
         "in"
       );
+      const captureType = valueBindingType(bindings, capture);
+      const classMutationName = closureCaptureClassMutationBindingName(
+        capture
+      );
+      const inheritedClassMutation = valueBindingType(
+        bindings,
+        classMutationName
+      );
+      const mutableClassIdentity = typeIsClassReference(
+        module,
+        modules,
+        moduleIndex,
+        captureType
+      ) && (
+        inheritedClassMutation == "true"
+        ||
+        !valueBindingIsBorrowed(bindings, capture)
+        || valueBindingIsMutable(bindings, capture)
+      );
+      const classMutationAccess = mutableClassIdentity ? "true" : "false";
+      addValueBinding(
+        inout closureBindings,
+        classMutationName,
+        classMutationAccess
+      );
     }
     for (const capture of captures) {
       const initialization = valueBindingInitialization(bindings, capture);
@@ -7671,6 +7700,13 @@ function inferExpressionNodeType(
                 );
               }
               const ownerKind = modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind;
+              const capturedClassMutationName = closureCaptureClassMutationBindingName(
+                receiverRoot
+              );
+              const capturedClassMutation = valueBindingType(
+                bindings,
+                capturedClassMutationName
+              );
               if (
                 (
                   ownerKind == ModuleSymbolKind.structSymbol
@@ -7680,6 +7716,7 @@ function inferExpressionNodeType(
                   ownerKind == ModuleSymbolKind.classSymbol
                   && valueBindingIsBorrowed(bindings, receiverRoot)
                   && !valueBindingIsMutable(bindings, receiverRoot)
+                  && capturedClassMutation != "true"
                 )
               ) {
                 throw resolutionError(

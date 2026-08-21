@@ -793,6 +793,12 @@ arbitrary function results, aggregate fields, and previously stored callable
 environments remains conservative work; cross-thread mutation continues to
 require `Mutex<T>` or executor isolation.
 
+Closure capture preserves the distinction between a class binding and its
+instance. An owned `const` class reference may still invoke an `inout this`
+method from a synchronous closure because the reference itself is not replaced.
+An immutable `in` borrow may not gain mutable instance access by being captured,
+and assigning a new reference to a captured binding still requires `let`.
+
 Fixed-layout value structs also permit capabilities to project through direct
 field paths:
 

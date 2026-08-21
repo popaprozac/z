@@ -3125,13 +3125,14 @@ fields or previously stored function values, flow-sensitive identity sets,
 suspension, and class-field projection need separate probes. Cross-thread
 mutation still requires a mutex or executor isolation.
 
-This probe also exposed an adjacent frontend-parity question without deciding
-it accidentally: Stage 0 permits an `inout this` method through a captured
-`const` class binding, while the native resolver currently requires that
-captured binding to be `let`. Direct class calls keep binding immutability
-separate from instance mutation, but a closure adds a borrow boundary. A focused
-follow-up must decide and document whether that boundary preserves the direct
-class rule or deliberately requires an explicit mutable capture.
+The focused capture follow-up resolved an adjacent frontend mismatch without
+adding syntax. Both frontends now preserve the direct class rule through a
+synchronous closure: an owned `const` class reference may invoke `inout this`
+because its binding is not replaced. Capturing an immutable `in` class borrow
+does not manufacture mutable access, while assigning a new class reference to a
+captured binding still requires `let`. Stage 0 now records binding reassignment
+separately from instance mutation so those cases cannot collapse into one
+coarse "mutated capture" flag.
 
 ## Shape-stable value-field projections
 

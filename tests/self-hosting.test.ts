@@ -11182,6 +11182,78 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
 
   writeFileSync(
     bindingState,
+    "class Counter {\n"
+      + "  value: i32;\n"
+      + "  function increment(inout this): void { this.value = this.value + 1; }\n"
+      + "}\n"
+      + "function inspect(in operation: () => i32): i32 { return operation(); }\n"
+      + "function mutateBorrow(inout counter: Counter): i32 {\n"
+      + "  return inspect((): i32 => { counter.increment(); return counter.value; });\n"
+      + "}\n"
+      + "function valid(): i32 {\n"
+      + "  const counter = new Counter({ value: 41 });\n"
+      + "  return inspect((): i32 => { counter.increment(); return counter.value; });\n"
+      + "}\n"
+      + "function nested(): i32 {\n"
+      + "  const counter = new Counter({ value: 41 });\n"
+      + "  return inspect((): i32 => inspect((): i32 => { counter.increment(); return counter.value; }));\n"
+      + "}\n",
+  );
+  const capturedClassMutationCapabilities = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    capturedClassMutationCapabilities.status,
+    0,
+    capturedClassMutationCapabilities.stderr,
+  );
+
+  writeFileSync(
+    bindingState,
+    "class Counter {\n"
+      + "  value: i32;\n"
+      + "  function increment(inout this): void { this.value = this.value + 1; }\n"
+      + "}\n"
+      + "function inspect(in operation: () => void): void { operation(); }\n"
+      + "function invalid(in counter: Counter): void {\n"
+      + "  inspect((): void => { counter.increment(); });\n"
+      + "}\n",
+  );
+  const capturedImmutableClassBorrow = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(capturedImmutableClassBorrow.status, 1);
+  assert.match(
+    capturedImmutableClassBorrow.stderr,
+    /mutable method "increment" cannot be called through immutable binding "counter"/,
+  );
+
+  writeFileSync(
+    bindingState,
+    "class Counter { value: i32; }\n"
+      + "function inspect(in operation: () => void): void { operation(); }\n"
+      + "function invalid(): void {\n"
+      + "  const counter = new Counter({ value: 41 });\n"
+      + "  inspect((): void => { counter = new Counter({ value: 42 }); });\n"
+      + "}\n",
+  );
+  const capturedConstReassignment = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", bindingState],
+    { encoding: "utf8" },
+  );
+  assert.equal(capturedConstReassignment.status, 1);
+  assert.match(
+    capturedConstReassignment.stderr,
+    /cannot assign to immutable binding "counter"/,
+  );
+
+  writeFileSync(
+    bindingState,
     "struct Resource {\n"
       + "  id: i32;\n"
       + "  function merge(inout this, other: Resource): void {}\n"
