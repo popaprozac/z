@@ -42,8 +42,10 @@ TypeScript-shaped language; Rust, Hylo, Swift, Objective-C, Nim, Zig, C++, and
 the ML family supply major parts of the ownership, value-semantics, ARC,
 interop, error, pattern-matching, and explicit-cost design landscape. Zen-C
 informed the raw-native escape-hatch discussion. Ante's reference-counting and
-shape-stability experiments are relevant future research, not accepted Z
-semantics.
+shape-stability work motivates bounded Z experiments. The implemented guarantee
+is deliberately narrower: known local class aliases and fixed-layout field
+paths refine existing `in`, `inout`, and `view` checks without new syntax or
+runtime alias tests.
 
 These influences do not imply semantic compatibility. Z intentionally combines
 and changes ideas: it does not adopt JavaScript's runtime model, Rust's explicit
@@ -1162,6 +1164,11 @@ caller conservatively loans every possible source owner until the result's last
 use; the runtime result remains one pointer and carries no provenance tag. The
 compiler ties each read-only view to its named value-storage owner or owners and
 prevents invalidating mutation until last use.
+The local-only form also permits a direct fixed-layout field of a named Z ARC
+class owner. Known local aliases share the same field loan: an overlapping field
+or whole-instance mutation is rejected while a sibling field remains available.
+This does not extend to returned class-field views, aggregate-hidden class
+identity, nested class traversal, foreign references, escape, or suspension.
 One module function may also directly construct and return a named value struct
 whose direct `view` fields all project from the same immutable input. The
 aggregate lowers to an ordinary C value struct containing borrowed pointers;
@@ -1178,7 +1185,8 @@ an explicit `copyBytes` remains the operation that produces an owned String.
 This is intrinsic composition over the existing owner loan, not a general
 stored-borrow or lifetime mechanism. The
 first slice intentionally omits removal, reservation, fallible allocation,
-escaping slices, subslices, class-owned views, and general lifetime parameters.
+escaping slices, subslices, stored class-owned views, and general lifetime
+parameters.
 Allocation failure currently traps. `T[]` remains unassigned until those
 broader contracts are proven.
 
@@ -2517,10 +2525,11 @@ stored, returned again, or held across owner mutation or suspension. It can
 enter a synchronous `in T` call
 or be read by an inline closure whose `in` destination proves it cannot escape;
 neither form extends provenance beyond that call. Stored, owned, and escaping
-captures remain rejected. ARC class
-owners are excluded because aliases could invalidate projected growable
-storage. This does not introduce general lifetime parameters or views that
-survive backing-array reallocation.
+captures remain rejected. ARC class owners are excluded from this returned-view
+tier because aliases outside the callee could invalidate projected growable
+storage. The separate local-only class-field tier can track known aliases in
+one lexical scope. This does not introduce general lifetime parameters or views
+that survive backing-array reallocation.
 
 Imported Objective-C block parameters contextually type Z closures. An escaping
 block requires an owned `move` closure; a generated Objective-C ARC box retains

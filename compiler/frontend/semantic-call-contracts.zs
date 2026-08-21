@@ -25,6 +25,60 @@ function callAccessPathsOverlap(in left: String, in right: String): boolean {
     || stringStartsWith(right, leftPrefix);
 }
 
+function callAccessRelativeStart(in root: String, in path: String): usize {
+  if (path == root) return path.byteLength;
+  if (
+    path.byteLength > root.byteLength
+    && stringStartsWith(path, root)
+    && path.byteAt(root.byteLength) == 46
+  ) return root.byteLength + 1;
+  return 0;
+}
+
+function callAccessRelativeContains(
+  in parent: String,
+  parentStart: usize,
+  in child: String,
+  childStart: usize
+): boolean {
+  const parentLength = parent.byteLength - parentStart;
+  const childLength = child.byteLength - childStart;
+  if (parentLength >= childLength) return false;
+  let index: usize = 0;
+  while (index < parentLength) {
+    if (parent.byteAt(parentStart + index) != child.byteAt(childStart + index)) {
+      return false;
+    }
+    index = index + 1;
+  }
+  return child.byteAt(childStart + parentLength) == 46;
+}
+
+function callAccessAliasPathsOverlap(
+  in leftRoot: String,
+  in left: String,
+  in rightRoot: String,
+  in right: String
+): boolean {
+  const leftStart = callAccessRelativeStart(leftRoot, left);
+  const rightStart = callAccessRelativeStart(rightRoot, right);
+  const leftLength = left.byteLength - leftStart;
+  const rightLength = right.byteLength - rightStart;
+  if (leftLength == 0 || rightLength == 0) return true;
+  if (leftLength == rightLength) {
+    let index: usize = 0;
+    while (index < leftLength) {
+      if (left.byteAt(leftStart + index) != right.byteAt(rightStart + index)) {
+        return false;
+      }
+      index = index + 1;
+    }
+    return true;
+  }
+  return callAccessRelativeContains(left, leftStart, right, rightStart)
+    || callAccessRelativeContains(right, rightStart, left, leftStart);
+}
+
 export struct NativeThrowingCallShape {
   successType: String;
   errorType: String;
@@ -63,6 +117,12 @@ export function registerCallAccess(
         || (
           access.aliasIdentity > 0
           && access.aliasIdentity == aliasIdentity
+          && callAccessAliasPathsOverlap(
+            access.root,
+            access.path,
+            root,
+            path
+          )
         )
       )
       && callCapabilitiesConflict(access.capability, capability)

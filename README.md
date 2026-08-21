@@ -95,8 +95,10 @@ Z also draws on the broader ML-family lineage of algebraic data types and
 pattern matching, C++ RAII, structured-concurrency work across several
 ecosystems, Clang/Swift API metadata, and Zen-C's exploration of direct header
 imports and raw native escape hatches. Ante's work on blending borrowing with
-reference counting and shape-stable mutation informs a future research spike;
-it is not an implemented Z guarantee.
+reference counting and shape-stable mutation informs bounded Z experiments.
+Known local ARC aliases and direct fixed-layout field projections are now
+implemented without new syntax or runtime checks; broader stable-reference
+semantics remain research rather than a general Z guarantee.
 
 See [Influences and lineage](docs/influences.md) for a feature-by-feature account,
 deliberate divergences, links to upstream work, and the distinction between

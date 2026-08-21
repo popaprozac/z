@@ -73,9 +73,12 @@ nonescape. Stored, owned, and escaping captures remain rejected, and source
 owner mutation is rejected until the view's last use. `Option<view T>` currently
 carries receiver provenance
 through a constrained local enum shape without admitting general borrowed enum
-storage. ARC class owners remain excluded because an alias could mutate the same
-storage. Callers needing aliasing or survival across reallocation must use an
-owned snapshot or a future stable reference model.
+storage. ARC class owners remain excluded from this returned-view tier because
+aliases outside the callee could mutate the same storage. The later local-only
+class-field tier tracks direct named aliases and is described below; it does not
+make a class field view returnable or storable. Callers needing survival across
+reallocation or a function boundary must use an owned snapshot or a future
+stable reference model.
 
 A later compiler-frontend pressure test established one deliberate exception to
 the “borrow stays borrowed” rule: when `T` is already cleanup-free and copyable,
@@ -3134,7 +3137,7 @@ captured binding still requires `let`. Stage 0 now records binding reassignment
 separately from instance mutation so those cases cannot collapse into one
 coarse "mutated capture" flag.
 
-## Shape-stable value-field projections
+## Shape-stable value and direct ARC field projections
 
 The next Ante-inspired probe reused Z's existing capability vocabulary rather
 than adding `uniq`, annotations, reference symbols, or a new borrow type:
@@ -3147,16 +3150,27 @@ adjust(inout point.x, inout point.y);
 Both semantic frontends now identify the complete fixed-layout field path for
 one synchronous call. Sibling paths are disjoint; an exact duplicate or a
 parent/child pair overlaps. `out` deliberately remains a whole-binding
-initialization capability. ARC traversal, dynamic indexing, Slice projection,
-and suspension fail conservatively. Generated C passes `&(point.x)` and
-`&(point.y)` directly, confirming zero allocation, retain, or runtime alias
-check.
+initialization capability. Aggregate-hidden ARC traversal, dynamic indexing,
+Slice projection, and suspension fail conservatively. Generated C passes
+`&(point.x)` and `&(point.y)` directly, confirming zero allocation, retain, or
+runtime alias check.
 
-Both frontends additionally carry a direct value-field path on a local view.
-This accepts mutation of `document.revision` while
-`view document.title` is live, but still rejects replacement of `title` or
-`document`. Array indexing remains whole-owner conservative because growth may
-invalidate element addresses.
+Both frontends additionally carry a direct field path on a local view. This
+accepts mutation of `document.revision` while `view document.title` is live,
+but still rejects replacement of `title` or `document`. The owner may now be a
+named local ARC class. Its known local aliases share one identity proof, so
+`view document.title` also blocks `alias.title = replacement` and
+`alias.refresh()` when `refresh` takes `inout this`. A sibling such as
+`alias.revision` or a nested value-struct field remains available, including as
+an `inout` call argument. After the view's last use, the alias can replace
+`title` or invoke the whole-instance mutating method.
+
+This class tier remains local and synchronous. An immutable `in` class
+parameter cannot manufacture mutable field access; class identity stored inside
+another aggregate, traversal through a nested class field, foreign reference
+identity, dynamic indexing, escape, and suspension remain rejected. Array
+indexing remains whole-owner conservative because growth may invalidate element
+addresses.
 
 The native parity work exposed an important internal modeling error in real
 compiler code: the resolver had used a view binding's ownership state to mark
@@ -3189,7 +3203,8 @@ shared mutation across threads.
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
 - broader mutable shared ARC identity beyond direct local alias evidence,
-  stored or aggregate-hidden alias provenance, class/dynamic shape stability,
+  stored or aggregate-hidden alias provenance, nested-class/dynamic shape
+  stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

@@ -8393,14 +8393,13 @@ function inferExpressionInner(
         const rootType = String(underlyingType(storedRoot));
         const rootValueType = parseViewType(rootType)?.target ?? rootType;
         if (
-          structs.get(rootValueType)?.kind === "class"
-          || state.foreignNamedTypes.get(rootValueType)?.kind === "object"
+          state.foreignNamedTypes.get(rootValueType)?.kind === "object"
           || rootValueType.startsWith("__z_objc:")
         ) {
           throw new DiagnosticError(fileName, expression.operand.location, "`view` local owners must have value storage", {
             code: "Z0206",
-            notes: ["class aliases could mutate the projected storage without passing through this binding"],
-            helps: ["use a borrowed class method or an owned snapshot instead"],
+            notes: ["foreign reference aliases do not yet carry the field provenance required by local views"],
+            helps: ["use a borrowed foreign method or an owned snapshot instead"],
           });
         }
         const sourceType = inferExpression(expression.operand, locals, globals, structs, enums, fileName, state);
@@ -8433,6 +8432,19 @@ function inferExpressionInner(
           });
         }
         const projectedPath = directFieldStoragePath(expression.operand);
+        if (
+          !parseViewType(rootType)
+          && projectedPath
+          && projectedPath.fields.length > 0
+        ) {
+          validateProjectedCapabilityPath({
+            access: "in",
+            root: projectedPath.root,
+            rootLocation: root.location,
+            fields: projectedPath.fields,
+            target: expression.operand,
+          }, locals, structs, fileName, state);
+        }
         const ownerOrigin = state.viewOrigins.get(root.name)
           ?? directViewOrigin(
             root.name,
@@ -12415,7 +12427,7 @@ function checkArguments(
   if (receiverUse) {
     registerAccessLoan(callLoans, {
       root: receiverUse.name,
-      fields: classAliasIdentitiesForRoot(receiverUse.name, state) ? [] : receiverUse.fields,
+      fields: receiverUse.fields,
       aliasIdentities: classAliasIdentitiesForRoot(receiverUse.name, state),
       capability: receiverUse.mode,
       lifetime: { kind: "call" },
@@ -12430,7 +12442,7 @@ function checkArguments(
     if (!storage) continue;
     registerCheckedCallLoan(callLoans, {
       root: storage.root,
-      fields: classAliasIdentitiesForRoot(storage.root, state) ? [] : storage.fields,
+      fields: storage.fields,
       aliasIdentities: classAliasIdentitiesForRoot(storage.root, state),
       capability: useMode,
       lifetime: { kind: "call" },
@@ -12591,7 +12603,10 @@ function checkArguments(
         ? inferExpression(capabilityPath.target, locals, globals, structs, enums, fileName, state)
         : underlyingType(stored);
       validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
-      if (!isMutableBinding(stored)) {
+      const ownedClassProjection = projected
+        && structs.get(String(underlyingType(stored)))?.kind === "class"
+        && !isBorrowedBinding(stored);
+      if (!isMutableBinding(stored) && !ownedClassProjection) {
         throw new DiagnosticError(fileName, argument.location, `inout argument ${JSON.stringify(bindingName)} requires a mutable let binding`, {
           code: "Z0301",
           length: bindingName.length,
@@ -13122,7 +13137,10 @@ function recordClassAliasBinding(
 function registerAccessLoan(loans: AccessLoanSet, loan: AccessLoan): AccessLoan | null {
   const conflict = [...loans.values()].flat().find((candidate) => (
     (
-      aliasIdentitySetsOverlap(candidate.aliasIdentities, loan.aliasIdentities)
+      (
+        aliasIdentitySetsOverlap(candidate.aliasIdentities, loan.aliasIdentities)
+        && accessFieldPathsOverlap(candidate.fields, loan.fields)
+      )
       || (
         candidate.root === loan.root
         && accessFieldPathsOverlap(candidate.fields, loan.fields)
@@ -13498,11 +13516,15 @@ function bindViewOrigin(
 ): void {
   unbindViewOrigin(binding, state);
   for (const source of origin.sources) {
-    const conflict = (state.activeLoans.get(source.owner) ?? []).find((loan) => (
-      accessFieldPathsOverlap(loan.fields, source.fields)
-      &&
-      accessCapabilitiesConflict(loan.capability, "in")
-    ));
+    const conflict = activeAccessLoanForRoot(
+      state.activeLoans,
+      source.owner,
+      state,
+      (loan) => (
+        accessFieldPathsOverlap(loan.fields, source.fields)
+        && accessCapabilitiesConflict(loan.capability, "in")
+      ),
+    );
     if (conflict) {
       throw new DiagnosticError(fileName, source.location, `cannot create view ${JSON.stringify(binding)} while ${JSON.stringify(source.owner)} has an active ${conflict.capability} loan`, {
         code: conflict.lifetime.kind === "task" ? "Z0704" : "Z0205",
@@ -13516,6 +13538,7 @@ function bindViewOrigin(
     registerAccessLoan(state.activeLoans, {
       root: source.owner,
       fields: source.fields,
+      aliasIdentities: classAliasIdentitiesForRoot(source.owner, state),
       capability: "in",
       lifetime: { kind: "view", binding },
       location: source.location,
@@ -13732,10 +13755,15 @@ function rejectOwnerMutationWhileViewed(
       helps: [`place ${JSON.stringify(connection.lifetime.binding)} in a narrower block so it is cleaned up first`],
     });
   }
-  const active = state.activeLoans.get(owner)?.find((loan) => (
-    loan.lifetime.kind === "view"
-    && accessFieldPathsOverlap(loan.fields, fields)
-  ));
+  const active = activeAccessLoanForRoot(
+    state.activeLoans,
+    owner,
+    state,
+    (loan) => (
+      loan.lifetime.kind === "view"
+      && accessFieldPathsOverlap(loan.fields, fields)
+    ),
+  );
   if (!active || active.lifetime.kind !== "view") return;
   const viewName = active.lifetime.binding;
   const target = [owner, ...fields].join(".");
@@ -13890,17 +13918,20 @@ function validateProjectedCapabilityPath(
     members.unshift(current);
     current = current.object;
   }
-  for (const member of members) {
+  const rootIsDirectClass = structs.get(ownerType)?.kind === "class";
+  for (let index = 0; index < members.length; index += 1) {
+    const member = members[index];
     const owner = structs.get(ownerType);
-    if (!owner || owner.kind !== "struct") {
+    const directClassField = index === 0 && rootIsDirectClass && owner?.kind === "class";
+    if (!owner || (owner.kind !== "struct" && !directClassField)) {
       throw new DiagnosticError(
         fileName,
         member.location,
         "projected capability access currently crosses fixed-layout value-struct fields only",
         {
           code: "Z0301",
-          notes: ["ARC class fields and dynamically addressed storage require alias provenance beyond this first shape-stability tier"],
-          helps: ["borrow or mutate the complete class binding, or keep this operation on a value-struct field path"],
+          notes: ["a direct field of a named ARC class owner is supported; class identity hidden inside another aggregate and dynamically addressed storage remain conservative"],
+          helps: ["keep the ARC owner in a named local binding, or use a value-struct field path"],
         },
       );
     }

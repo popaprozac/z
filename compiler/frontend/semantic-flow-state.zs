@@ -306,21 +306,58 @@ export function closeArenaViewBindings(
   }
 }
 
-function storagePathContains(in parent: String, in child: String): boolean {
-  if (parent.byteLength >= child.byteLength) return false;
-  let index: usize = 0;
-  while (index < parent.byteLength) {
-    if (parent.byteAt(index) != child.byteAt(index)) return false;
-    index = index + 1;
-  }
-  return child.byteAt(parent.byteLength) == 46;
+function storagePathRelativeStart(in path: String, in root: String): usize {
+  if (path == root) return path.byteLength;
+  if (
+    path.byteLength > root.byteLength
+    && bindingNameHasPrefix(path, root)
+    && path.byteAt(root.byteLength) == 46
+  ) return root.byteLength + 1;
+  return 0;
 }
 
-function storagePathsOverlap(in left: String, in right: String): boolean {
-  if (left.byteLength == 0 || right.byteLength == 0) return true;
-  if (left == right) return true;
-  return storagePathContains(left, right)
-    || storagePathContains(right, left);
+function storagePathRelativeContains(
+  in parent: String,
+  parentStart: usize,
+  in child: String,
+  childStart: usize
+): boolean {
+  const parentLength = parent.byteLength - parentStart;
+  const childLength = child.byteLength - childStart;
+  if (parentLength >= childLength) return false;
+  let index: usize = 0;
+  while (index < parentLength) {
+    if (parent.byteAt(parentStart + index) != child.byteAt(childStart + index)) {
+      return false;
+    }
+    index = index + 1;
+  }
+  return child.byteAt(childStart + parentLength) == 46;
+}
+
+function storagePathsOverlapForOwners(
+  in left: String,
+  in leftRoot: String,
+  in right: String,
+  in rightRoot: String
+): boolean {
+  const leftStart = storagePathRelativeStart(left, leftRoot);
+  const rightStart = storagePathRelativeStart(right, rightRoot);
+  const leftLength = left.byteLength - leftStart;
+  const rightLength = right.byteLength - rightStart;
+  if (leftLength == 0 || rightLength == 0) return true;
+  if (leftLength == rightLength) {
+    let index: usize = 0;
+    while (index < leftLength) {
+      if (left.byteAt(leftStart + index) != right.byteAt(rightStart + index)) {
+        return false;
+      }
+      index = index + 1;
+    }
+    return true;
+  }
+  return storagePathRelativeContains(left, leftStart, right, rightStart)
+    || storagePathRelativeContains(right, rightStart, left, leftStart);
 }
 
 export function liveViewBindingForStoragePath(
@@ -328,12 +365,37 @@ export function liveViewBindingForStoragePath(
   in owner: String,
   in path: String
 ): String {
+  const ownerAliasIdentity = valueBindingClassAlias(bindings, owner);
   let index = bindings.length;
   while (index > 0) {
     index = index - 1;
+    let matchedOwner = "";
+    if (viewOwnerContains(bindings[index].viewOwner, owner)) {
+      matchedOwner = owner.copyBytes(0, owner.byteLength);
+    } else if (ownerAliasIdentity > 0) {
+      let candidateIndex = bindings.length;
+      while (candidateIndex > 0 && matchedOwner.byteLength == 0) {
+        candidateIndex = candidateIndex - 1;
+        if (
+          bindings[candidateIndex].classAliasIdentity == ownerAliasIdentity
+          && viewOwnerContains(
+            bindings[index].viewOwner,
+            bindings[candidateIndex].name
+          )
+        ) matchedOwner = bindings[candidateIndex].name.copyBytes(
+          0,
+          bindings[candidateIndex].name.byteLength
+        );
+      }
+    }
     if (
-      viewOwnerContains(bindings[index].viewOwner, owner)
-      && storagePathsOverlap(bindings[index].viewPath, path)
+      matchedOwner.byteLength > 0
+      && storagePathsOverlapForOwners(
+        bindings[index].viewPath,
+        matchedOwner,
+        path,
+        owner
+      )
       && bindings[index].viewLive
       && bindings[index].ownership == NativeOwnershipState.available
     ) return bindings[index].name.copyBytes(0, bindings[index].name.byteLength);

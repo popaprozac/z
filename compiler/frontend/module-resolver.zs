@@ -424,9 +424,20 @@ function requireProjectedCapabilityValuePath(
     current = tree.nodes[current].children[0];
   }
   let fieldIndex = reversed.length;
+  const rootIsDirectClass = typeIsClassReference(
+    module,
+    modules,
+    moduleIndex,
+    ownerType
+  );
   while (fieldIndex > 0) {
     fieldIndex = fieldIndex - 1;
-    if (typeIsClassReference(module, modules, moduleIndex, ownerType)) {
+    const directClassField = fieldIndex + 1 == reversed.length
+      && rootIsDirectClass;
+    if (
+      typeIsClassReference(module, modules, moduleIndex, ownerType)
+      && !directClassField
+    ) {
       throw resolutionError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
@@ -2459,9 +2470,7 @@ function inferSignatureCallType(
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
     const accessIdentity = valueBindingClassAlias(bindings, root);
-    const accessPath = accessIdentity > 0
-      ? root.copyBytes(0, root.byteLength)
-      : expressionDirectFieldPath(tree, nodeIndex);
+    const accessPath = expressionDirectFieldPath(tree, nodeIndex);
     if (
       root.byteLength > 0
       && (capability == "inout" || capability == "out" || capability == "move")
@@ -2573,7 +2582,19 @@ function inferSignatureCallType(
           tree.nodes[nodeIndex].column
         );
       }
-      if (!valueBindingIsMutable(bindings, bindingName)) {
+      const capabilityOwnerType = valueBindingType(bindings, bindingName);
+      const ownedClassProjection = projectedFieldCount(tree, nodeIndex) > 0
+        && typeIsClassReference(
+          module,
+          modules,
+          moduleIndex,
+          capabilityOwnerType
+        )
+        && !valueBindingIsBorrowed(bindings, bindingName);
+      if (
+        !valueBindingIsMutable(bindings, bindingName)
+        && !ownedClassProjection
+      ) {
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -4370,20 +4391,15 @@ function inferExpressionNodeType(
       const owner = inheritedOwner.byteLength > 0
         ? inheritedOwner.copyBytes(0, inheritedOwner.byteLength)
         : localRoot.copyBytes(0, localRoot.byteLength);
-      let ownerType = valueBindingType(bindings, localRoot);
-      if (stringStartsWith(ownerType, "view ")) {
-        ownerType = ownerType.copyBytes(5, ownerType.byteLength);
+      if (typeIsClassReference(module, modules, moduleIndex, operand)) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "`view` projects value storage rather than ARC class identity",
+          tree.nodes[operandIndex].line,
+          tree.nodes[operandIndex].column
+        );
       }
-      if (
-        typeIsClassReference(module, modules, moduleIndex, ownerType)
-        || typeIsClassReference(module, modules, moduleIndex, operand)
-      ) throw resolutionError(
-        ModuleResolveErrorKind.typeMismatch,
-        module.path,
-        "`view` projects value storage rather than ARC class identity",
-        tree.nodes[operandIndex].line,
-        tree.nodes[operandIndex].column
-      );
       const projectedPath = expressionDirectFieldPath(tree, operandIndex);
       if (inheritedOwner.byteLength == 0 && projectedPath != localRoot) {
         try requireProjectedCapabilityValuePath(

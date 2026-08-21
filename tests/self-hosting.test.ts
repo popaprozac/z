@@ -314,6 +314,47 @@ test("emits disjoint projected inout field paths natively", () => {
     hiddenClassAlias.stderr,
     /projected capability access cannot borrow ARC class identity/,
   );
+
+  writeFileSync(
+    input,
+    "struct Stats { visits: i32; }\n"
+      + "class Document { title: String; revision: i32; stats: Stats; }\n"
+      + "function adjust(inout first: i32, inout second: i32): void { first = first + 1; second = second + 1; }\n"
+      + "function main(): i32 {\n"
+      + "  const document = new Document({ title: \"Draft\", revision: 0, stats: Stats({ visits: 0 }) });\n"
+      + "  const alias = document;\n"
+      + "  const title = view document.title;\n"
+      + "  alias.revision = alias.revision + 1;\n"
+      + "  adjust(inout document.revision, inout alias.stats.visits);\n"
+      + "  const length = i32(title.byteLength);\n"
+      + "  alias.title = \"Published\";\n"
+      + "  return length + document.revision + alias.stats.visits - 9;\n"
+      + "}\n",
+  );
+  const classProjection = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(classProjection.status, 0, classProjection.stderr);
+
+  writeFileSync(
+    input,
+    readFileSync(input, "utf8").replace(
+      "alias.revision = alias.revision + 1;",
+      "alias.title = \"Changed too early\";",
+    ),
+  );
+  const aliasedViewMutation = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(aliasedViewMutation.status, 1);
+  assert.match(
+    aliasedViewMutation.stderr,
+    /cannot mutate "alias\.title" while view "title" is live/,
+  );
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 

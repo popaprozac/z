@@ -886,17 +886,26 @@ inspect(node);
 tree.append(next); // valid after node's last use
 ```
 
-For a direct fixed-layout value-struct field, both semantic frontends record the
-selected field path. A live `view document.title` blocks replacement of `title`
-or the whole `document`, while mutation of the disjoint
-`document.revision` field is safe. Dynamic indexes and any path through ARC
-identity remain whole-owner loans. A view remains a usable borrowed value after
-control-flow joins; its owner loan ends independently at the view's proven last
-use.
+For a direct fixed-layout field, both semantic frontends record the selected
+field path. The owner may be a value struct or a named local Z class reference.
+A live `view document.title` blocks replacement of `title` or mutation of the
+whole `document`, while mutation of the disjoint `document.revision` field is
+safe. Known local aliases of a class share the same proof: an alias cannot
+replace the viewed field or call an `inout this` method while the view is live,
+but it may mutate a disjoint direct field. A `const` class binding fixes the
+reference rather than freezing the instance, so it may pass a mutable direct
+field as `inout` unless the class itself was received through an immutable `in`
+borrow.
+
+Class identity hidden inside another aggregate, a projection through a nested
+class field, foreign reference identity, dynamic indexing, escape, and
+suspension remain conservative boundaries. A view remains a usable borrowed
+value after control-flow joins; its owner loan ends independently at the
+view's proven last use.
 
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from
-named value storage. Hover reports both
+named value storage or a direct field from a named Z ARC owner. Hover reports both
 the projected `view T` and its owner. It creates a `const T *` in generated C;
 there is no value copy, allocation, retain, or cleanup.
 

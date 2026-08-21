@@ -3295,11 +3295,18 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
   const source = readFileSync(example, "utf8");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "point 21,21 delta 0\ntitle bytes 5 revision 1\n");
+  assert.equal(
+    result.stdout,
+    "point 21,21 delta 0\n"
+      + "title bytes 5 revision 1\n"
+      + "shared bytes 12 revision 1 visits 1\n"
+      + "shared Published revision 2\n",
+  );
 
   const generated = compileToC(source, example);
   assert.match(generated, /adjust\(&\(\(point\)\.x\), &\(\(point\)\.y\)\);/);
   assert.match(generated, /difference\(&\(\(point\)\.x\), &\(\(point\)\.y\)\)/);
+  assert.match(generated, /increment\(&\(\(\(alias\)->stats\)\.visits\)\)/);
 
   const duplicate = source.replace(
     "adjust(inout point.x, inout point.y);",
@@ -3325,17 +3332,86 @@ test("borrows disjoint fixed-layout value-struct fields independently", () => {
   );
 
   const classProjection = `
-    class Counter { value: i32; }
-    function increment(inout value: i32): void { value = value + 1; }
+    struct Stats { visits: i32; }
+    class Counter { title: String; value: i32; stats: Stats; }
+    function adjust(inout first: i32, inout second: i32): void {
+      first = first + 1;
+      second = second + 1;
+    }
     function main(): i32 {
-      const counter = new Counter({ value: 41 });
-      increment(inout counter.value);
-      return counter.value;
+      const counter = new Counter({ title: "count", value: 41, stats: Stats({ visits: 0 }) });
+      const alias = counter;
+      adjust(inout counter.value, inout alias.stats.visits);
+      return counter.value + alias.stats.visits;
     }
   `;
-  const classDiagnostic = diagnostics(classProjection, "projected-class-inout.zs")[0];
-  assert.equal(classDiagnostic.code, "Z0301");
-  assert.match(classDiagnostic.message, /fixed-layout value-struct fields only/);
+  assert.doesNotThrow(() => compileToC(classProjection, "projected-class-inout.zs"));
+
+  const overlappingAliasFields = classProjection.replace(
+    "adjust(inout counter.value, inout alias.stats.visits);",
+    "adjust(inout counter.value, inout alias.value);",
+  );
+  assert.throws(
+    () => compileToC(overlappingAliasFields, "overlapping-class-field-aliases.zs"),
+    /overlapping inout and inout uses of ARC aliases "counter" and "alias" in one call are not allowed/,
+  );
+
+  const aliasedViewMutation = `
+    class Document { title: String; revision: i32; }
+    function main(): i32 {
+      const document = new Document({ title: "Draft", revision: 0 });
+      const alias = document;
+      const title = view document.title;
+      alias.title = "Published";
+      return i32(title.byteLength);
+    }
+  `;
+  const aliasedViewDiagnostic = diagnostics(
+    aliasedViewMutation,
+    "aliased-class-view-mutation.zs",
+  )[0];
+  assert.equal(aliasedViewDiagnostic.code, "Z0205");
+  assert.match(
+    aliasedViewDiagnostic.message,
+    /cannot mutate "alias\.title" while view "title" is live/,
+  );
+
+  const aliasedWholeMutation = `
+    class Document {
+      title: String;
+      revision: i32;
+      function refresh(inout this): void { this.revision = this.revision + 1; }
+    }
+    function main(): i32 {
+      const document = new Document({ title: "Draft", revision: 0 });
+      const alias = document;
+      const title = view document.title;
+      alias.refresh();
+      return i32(title.byteLength);
+    }
+  `;
+  const aliasedWholeDiagnostic = diagnostics(
+    aliasedWholeMutation,
+    "aliased-class-view-whole-mutation.zs",
+  )[0];
+  assert.equal(aliasedWholeDiagnostic.code, "Z0205");
+  assert.match(
+    aliasedWholeDiagnostic.message,
+    /cannot mutate "alias" while view "title" is live/,
+  );
+
+  const borrowedClassProjection = `
+    class Document { revision: i32; }
+    function increment(inout value: i32): void { value = value + 1; }
+    function update(in document: Document): void {
+      increment(inout document.revision);
+    }
+    function main(): i32 { return 0; }
+  `;
+  assert.throws(
+    () => compileToC(borrowedClassProjection, "borrowed-class-field-inout.zs"),
+    /inout argument "document" requires a mutable let binding/,
+  );
 
   const storedClassProjection = `
     class Counter { value: i32; }

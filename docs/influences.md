@@ -63,11 +63,14 @@ not be mistaken for implemented Z semantics:
   releases that restriction immediately when the synchronous call returns.
   The second slice extends the same `in`/`inout` spelling through disjoint,
   fixed-layout value-struct field paths and lets both semantic frontends
-  distinguish a direct field view from safe sibling mutation. Both lower to
-  ordinary addresses with no lifetime syntax or runtime checks. Flow-sensitive
-  provenance through arbitrary calls, stored aliases, aggregate-hidden
-  identities, dynamic indexing, and class-field projections remain
-  experiments. Direct inline closure captures now participate in the same call
+  distinguish a direct field view from safe sibling mutation. A third local-only
+  slice admits direct fields of a named ARC class: known aliases protect the
+  viewed field and whole-instance mutation while leaving disjoint fixed-layout
+  fields available. These lower to ordinary addresses with no lifetime syntax
+  or runtime checks. Flow-sensitive provenance through arbitrary calls, stored
+  aliases, aggregate-hidden identities, nested class traversal, dynamic
+  indexing, returned class-field views, and suspension remain experiments.
+  Direct inline closure captures now participate in the same call
   loan set, closing the first callback-shaped exclusivity hole;
   the recursive compiler AST plus Zapp-state probes decide how far they should
   go.
