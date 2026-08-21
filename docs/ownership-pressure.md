@@ -3134,19 +3134,20 @@ and suspension fail conservatively. Generated C passes `&(point.x)` and
 `&(point.y)` directly, confirming zero allocation, retain, or runtime alias
 check.
 
-Stage 0 additionally carries a direct value-field path on a local view. This
-accepts mutation of `document.revision` while `view document.title` is live,
-but still rejects replacement of `title` or `document`. Array indexing remains
-whole-owner conservative because growth may invalidate element addresses.
+Both frontends additionally carry a direct value-field path on a local view.
+This accepts mutation of `document.revision` while
+`view document.title` is live, but still rejects replacement of `title` or
+`document`. Array indexing remains whole-owner conservative because growth may
+invalidate element addresses.
 
-Attempting to enable that same direct-local-view evidence immediately in the
-native resolver was a useful compiler pressure test. The self-hosted C emitter
-contains several long aggregate views spanning branches and loops; native view
-liveness has not yet modeled all of those paths. Native local-view path
-enforcement therefore remains staged rather than being claimed from partial
-evidence; the emitter refactor and native flow work should land together as a
-dedicated follow-up. Hybrid compilation still runs the trusted Stage 0 safety
-check before using native semantic contracts.
+The native parity work exposed an important internal modeling error in real
+compiler code: the resolver had used a view binding's ownership state to mark
+whether its owner loan remained live. A loop could therefore report that the
+view itself may have moved, even though views never own their targets. Native
+flow state now carries loan liveness separately from value ownership, recomputes
+it from future uses, and joins it conservatively across branches and loops.
+The self-hosted C emitter's nested indexed views and later loop uses provide the
+real-program pressure evidence for that separation.
 
 This experiment simplified user code by making the checker more precise. It
 did not change what `in` or `inout` means, add a runtime mechanism, or permit
@@ -3161,7 +3162,7 @@ shared mutation across threads.
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
 - broader mutable shared ARC identity beyond direct local alias evidence,
-  native local-view field-path parity, class/dynamic shape stability,
+  class/dynamic shape stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

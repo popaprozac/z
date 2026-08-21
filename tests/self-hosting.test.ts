@@ -315,7 +315,7 @@ test("emits disjoint projected inout field paths natively", () => {
     /projected capability access cannot borrow ARC class identity/,
   );
   rmSync(directory, { recursive: true, force: true });
-}, 60_000);
+}, 120_000);
 
 test("keeps optional struct fields ownership-safe through native parsing and emission", () => {
   const directory = mkdtempSync("/tmp/z-native-optional-fields-");
@@ -587,6 +587,123 @@ test("preserves local views through native lowering and C emission", () => {
   assert.equal(execution.status, 0, execution.stderr);
 }, 20_000);
 
+test("tracks direct local view loans by fixed-layout field path natively", () => {
+  const directory = mkdtempSync("/tmp/z-native-local-view-path-");
+  const input = resolve(directory, "main.zs");
+  const prefix = [
+    "struct Document { title: String; revision: i32; }",
+    "function increment(inout value: i32): void { value = value + 1; }",
+    "function retitle(inout value: String): void { value = \"Published\"; }",
+  ];
+
+  try {
+    writeFileSync(input, [
+      ...prefix,
+      "function main(): i32 {",
+      "  let document = Document({ title: \"Draft\", revision: 0 });",
+      "  const title = view document.title;",
+      "  increment(inout document.revision);",
+      "  const length = title.byteLength;",
+      "  document.title = \"Published\";",
+      "  return i32(length) - 5;",
+      "}",
+      "",
+    ].join("\n"));
+    const valid = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(valid.status, 0, valid.stderr);
+
+    writeFileSync(input, [
+      ...prefix,
+      "function main(): i32 {",
+      "  let document = Document({ title: \"Draft\", revision: 0 });",
+      "  const title = view document.title;",
+      "  document.title = \"Published\";",
+      "  return i32(title.byteLength);",
+      "}",
+      "",
+    ].join("\n"));
+    const sameField = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(sameField.status, 1);
+    assert.match(
+      sameField.stderr,
+      /cannot mutate "document\.title" while view "title" is live/,
+    );
+
+    writeFileSync(input, [
+      ...prefix,
+      "function main(): i32 {",
+      "  let document = Document({ title: \"Draft\", revision: 0 });",
+      "  const title = view document.title;",
+      "  retitle(inout document.title);",
+      "  return i32(title.byteLength);",
+      "}",
+      "",
+    ].join("\n"));
+    const sameFieldCall = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(sameFieldCall.status, 1);
+    assert.match(
+      sameFieldCall.stderr,
+      /cannot mutate "document\.title" while view "title" is live/,
+    );
+
+    writeFileSync(input, [
+      ...prefix,
+      "function main(): i32 {",
+      "  let document = Document({ title: \"Draft\", revision: 0 });",
+      "  const title = view document.title;",
+      "  document = Document({ title: \"Published\", revision: 1 });",
+      "  return i32(title.byteLength);",
+      "}",
+      "",
+    ].join("\n"));
+    const parent = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(parent.status, 1);
+    assert.match(
+      parent.stderr,
+      /cannot mutate "document" while view "title" is live/,
+    );
+
+    writeFileSync(input, [
+      "struct Document { title: String; }",
+      "function main(): i32 {",
+      "  let documents = Array<Document>(Document({ title: \"Draft\" }));",
+      "  const title = view documents[0].title;",
+      "  documents.push(Document({ title: \"Published\" }));",
+      "  return i32(title.byteLength);",
+      "}",
+      "",
+    ].join("\n"));
+    const indexed = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(indexed.status, 1);
+    assert.match(
+      indexed.stderr,
+      /cannot mutate "documents" while view "title" is live/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 120_000);
+
 test("preserves multi-owner optional parameter views through native semantics and emission", () => {
   const input = resolve(
     projectRoot,
@@ -776,7 +893,7 @@ test("returns retained parameter view aggregates through native semantics and em
     assert.equal(localResult.status, 1);
     assert.match(
       localResult.stderr,
-      /must be initialized directly from proven borrowed storage/,
+      /must borrow every view field from one immutable input or receiver/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

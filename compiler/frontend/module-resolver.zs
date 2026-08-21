@@ -80,6 +80,7 @@ import {
   closeArenaViewBindings,
   expressionViewOrigin,
   liveViewBindingForOwner,
+  liveViewBindingForStoragePath,
   mergeViewOwners,
   ownerlessViewOwner,
   setExpressionViewOrigin,
@@ -97,6 +98,7 @@ import {
   valueBindingOwnership,
   valueBindingType,
   valueBindingViewOwner,
+  valueBindingViewPath,
   viewOwnerIsOwnerless,
 } from "./semantic-flow-state.zs";
 import {
@@ -360,6 +362,7 @@ function expressionDirectFieldPath(
     tree.nodes[current].kind == ExpressionKind.memberExpression
     && tree.nodes[current].children.length == 1
   ) {
+    if (tree.nodes[current].optionalAccess) return root;
     reversed.push(tree.nodes[current].value.copyBytes(
       0,
       tree.nodes[current].value.byteLength
@@ -2375,26 +2378,33 @@ function inferSignatureCallType(
       capability == "value"
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
+    const accessIdentity = valueBindingClassAlias(bindings, root);
+    const accessPath = accessIdentity > 0
+      ? root.copyBytes(0, root.byteLength)
+      : expressionDirectFieldPath(tree, nodeIndex);
     if (
       root.byteLength > 0
       && (capability == "inout" || capability == "out" || capability == "move")
     ) {
-      const liveView = liveViewBindingForOwner(bindings, root);
+      const mutationPath = capability == "inout"
+        ? accessPath.copyBytes(0, accessPath.byteLength)
+        : root.copyBytes(0, root.byteLength);
+      const liveView = liveViewBindingForStoragePath(
+        bindings,
+        root,
+        mutationPath
+      );
       if (liveView.byteLength > 0) {
         const action = capability == "move" ? "move" : "mutate";
         throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
-          `cannot ${action} "${root}" while view "${liveView}" is live`,
+          `cannot ${action} "${mutationPath}" while view "${liveView}" is live`,
           tree.nodes[nodeIndex].line,
           tree.nodes[nodeIndex].column
         );
       }
     }
-    const accessIdentity = valueBindingClassAlias(bindings, root);
-    const accessPath = accessIdentity > 0
-      ? root.copyBytes(0, root.byteLength)
-      : expressionDirectFieldPath(tree, nodeIndex);
     try registerCallAccess(
       module,
       tree,
@@ -4197,6 +4207,52 @@ function inferExpressionNodeType(
       value,
       operand
     );
+    if (value == "view" && result.byteLength > 0) {
+      const operandIndex = children[0];
+      const localRoot = expressionStorageRootName(tree, operandIndex);
+      if (localRoot.byteLength == 0) throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "`view` requires a named local owner",
+        tree.nodes[operandIndex].line,
+        tree.nodes[operandIndex].column
+      );
+      const inheritedOwner = valueBindingViewOwner(bindings, localRoot);
+      const owner = inheritedOwner.byteLength > 0
+        ? inheritedOwner.copyBytes(0, inheritedOwner.byteLength)
+        : localRoot.copyBytes(0, localRoot.byteLength);
+      let ownerType = valueBindingType(bindings, localRoot);
+      if (stringStartsWith(ownerType, "view ")) {
+        ownerType = ownerType.copyBytes(5, ownerType.byteLength);
+      }
+      if (
+        typeIsClassReference(module, modules, moduleIndex, ownerType)
+        || typeIsClassReference(module, modules, moduleIndex, operand)
+      ) throw resolutionError(
+        ModuleResolveErrorKind.typeMismatch,
+        module.path,
+        "`view` projects value storage rather than ARC class identity",
+        tree.nodes[operandIndex].line,
+        tree.nodes[operandIndex].column
+      );
+      const projectedPath = expressionDirectFieldPath(tree, operandIndex);
+      if (inheritedOwner.byteLength == 0 && projectedPath != localRoot) {
+        try requireProjectedCapabilityValuePath(
+          module,
+          modules,
+          moduleIndex,
+          tree,
+          operandIndex,
+          bindings,
+          false
+        );
+      }
+      setExpressionViewOrigin(
+        inout bindings,
+        tree.nodes[index].offset,
+        owner
+      );
+    }
     if (value == "move" && result.byteLength > 0) {
       try consumeOwnedExpressionNode(
         module,
@@ -7765,6 +7821,7 @@ function inferStatement(
     }
     let stored = inferred.copyBytes(0, inferred.byteLength);
     let viewOwner = "";
+    let viewPath = "";
     let directArenaView = false;
     match (in arena.nodes[index].expression) {
       some(expression) => match (in expression.tree) {
@@ -7773,6 +7830,27 @@ function inferStatement(
             bindings,
             tree.nodes[tree.root].offset
           );
+          if (
+            viewOwner.byteLength > 0
+            && tree.nodes[tree.root].kind == ExpressionKind.unaryExpression
+            && tree.nodes[tree.root].value == "view"
+            && tree.nodes[tree.root].children.length == 1
+          ) {
+            const operand = tree.nodes[tree.root].children[0];
+            const operandRoot = expressionStorageRootName(tree, operand);
+            const inheritedOwner = valueBindingViewOwner(
+              bindings,
+              operandRoot
+            );
+            if (inheritedOwner.byteLength > 0) {
+              viewPath = valueBindingViewPath(bindings, operandRoot);
+            } else {
+              const candidatePath = expressionDirectFieldPath(tree, operand);
+              if (candidatePath != viewOwner) {
+                viewPath = move candidatePath;
+              }
+            }
+          }
           if (
             viewOwner.byteLength > 0
             && tree.nodes[tree.root].kind == ExpressionKind.callExpression
@@ -7973,7 +8051,8 @@ function inferStatement(
         inout bindings,
         arena.nodes[index].name,
         stored,
-        viewOwner
+        viewOwner,
+        viewPath
       );
     } else if (borrowedForeignResource) {
       addBorrowedValueBinding(
@@ -8189,7 +8268,8 @@ function inferStatement(
             inout bindings,
             bindingName,
             bindingType,
-            viewOwner
+            viewOwner,
+            ""
           );
         } else {
           addValueBinding(inout bindings, bindingName, bindingType);
@@ -8230,7 +8310,8 @@ function inferStatement(
           inout bindings,
           bindingName,
           fieldType,
-          retainedViewOwner
+          retainedViewOwner,
+          ""
         );
       } else if (mutableBinding) {
         addMutableValueBinding(inout bindings, bindingName, fieldType);
@@ -8248,6 +8329,22 @@ function inferStatement(
         match (in target.tree) {
           some(tree) => {
             const root = tree.root;
+            const mutationRoot = expressionStorageRootName(tree, root);
+            const mutationPath = expressionDirectFieldPath(tree, root);
+            if (mutationRoot.byteLength > 0) {
+              const liveView = liveViewBindingForStoragePath(
+                bindings,
+                mutationRoot,
+                mutationPath
+              );
+              if (liveView.byteLength > 0) throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `cannot mutate "${mutationPath}" while view "${liveView}" is live`,
+                tree.nodes[root].line,
+                tree.nodes[root].column
+              );
+            }
             if (tree.nodes[root].kind == ExpressionKind.identifierExpression) {
               assignmentBinding = tree.nodes[root].value.copyBytes(
                 0,
@@ -9029,8 +9126,6 @@ function releaseUnusedViewBindings(
   while (bindingIndex < bindings.length) {
     if (
       bindings[bindingIndex].viewOwner.byteLength > 0
-      && bindings[bindingIndex].ownership
-        == NativeOwnershipState.available
     ) {
       let usedLater = false;
       let remaining = position;
@@ -9042,9 +9137,7 @@ function releaseUnusedViewBindings(
         );
         remaining = remaining + 1;
       }
-      if (!usedLater) {
-        bindings[bindingIndex].ownership = NativeOwnershipState.moved;
-      }
+      bindings[bindingIndex].viewLive = usedLater;
     }
     bindingIndex = bindingIndex + 1;
   }

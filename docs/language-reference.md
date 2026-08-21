@@ -877,12 +877,13 @@ inspect(node);
 tree.append(next); // valid after node's last use
 ```
 
-For a direct fixed-layout value-struct field, Stage 0 also records the selected
-field path. A live `view document.title` blocks replacement of `title` or the
-whole `document`, while mutation of the disjoint `document.revision` field is
-safe. Dynamic indexes and any path through ARC identity remain whole-owner
-loans. Native semantic enforcement of this field-specific local-view rule is
-still staged; the trusted Stage 0 check remains authoritative in hybrid builds.
+For a direct fixed-layout value-struct field, both semantic frontends record the
+selected field path. A live `view document.title` blocks replacement of `title`
+or the whole `document`, while mutation of the disjoint
+`document.revision` field is safe. Dynamic indexes and any path through ARC
+identity remain whole-owner loans. A view remains a usable borrowed value after
+control-flow joins; its owner loan ends independently at the view's proven last
+use.
 
 `view expression` must directly initialize an inferred `const` local or a
 direct retained-result field, and must project a field or indexed element from

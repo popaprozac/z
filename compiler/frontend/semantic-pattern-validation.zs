@@ -169,7 +169,8 @@ export function addMatchArmValueBindings(
         inout bindings,
         tree.nodes[patterns[0]].value,
         variant.payloadType,
-        payloadOwner
+        payloadOwner,
+        ""
       );
     } else if (borrowedMatch && storedViewPayload) {
       let payloadOwner = valueBindingViewOwner(bindings, subjectRoot);
@@ -180,7 +181,8 @@ export function addMatchArmValueBindings(
         inout bindings,
         tree.nodes[patterns[0]].value,
         variant.payloadType,
-        payloadOwner
+        payloadOwner,
+        ""
       );
     } else if (
       borrowedMatch

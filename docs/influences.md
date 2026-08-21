@@ -62,11 +62,11 @@ not be mistaken for implemented Z semantics:
   so existing `inout` temporarily excludes a second alias from the same call and
   releases that restriction immediately when the synchronous call returns.
   The second slice extends the same `in`/`inout` spelling through disjoint,
-  fixed-layout value-struct field paths and lets Stage 0 distinguish a direct
-  field view from safe sibling mutation. Both lower to ordinary addresses with
-  no lifetime syntax or runtime checks. Native local-view path parity,
-  flow-sensitive provenance through arbitrary calls, stored or captured
-  aliases, dynamic indexing, and class-field projections remain experiments;
+  fixed-layout value-struct field paths and lets both semantic frontends
+  distinguish a direct field view from safe sibling mutation. Both lower to
+  ordinary addresses with no lifetime syntax or runtime checks. Flow-sensitive
+  provenance through arbitrary calls, stored or captured aliases, dynamic
+  indexing, and class-field projections remain experiments;
   the recursive compiler AST plus Zapp-state probes decide how far they should
   go.
   Cross-thread mutation still requires `Mutex<T>` or executor isolation because

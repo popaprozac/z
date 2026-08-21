@@ -69,6 +69,8 @@ export struct NativeValueBinding {
   matchBorrowedBinding: boolean;
   classAliasIdentity: usize = 0;
   viewOwner: String = "";
+  viewPath: String = "";
+  viewLive: boolean = false;
   suspensionBorrowRoot: String;
   initialization: NativeInitializationState;
   ownership: NativeOwnershipState;
@@ -88,6 +90,8 @@ export function copyValueBindings(
       matchBorrowedBinding: binding.matchBorrowedBinding,
       classAliasIdentity: binding.classAliasIdentity,
       viewOwner: binding.viewOwner.copyBytes(0, binding.viewOwner.byteLength),
+      viewPath: binding.viewPath.copyBytes(0, binding.viewPath.byteLength),
+      viewLive: binding.viewLive,
       suspensionBorrowRoot: binding.suspensionBorrowRoot.copyBytes(
         0,
         binding.suspensionBorrowRoot.byteLength
@@ -200,7 +204,8 @@ export function addViewValueBinding(
   inout bindings: Array<NativeValueBinding>,
   in name: String,
   in typeName: String,
-  in owner: String
+  in owner: String,
+  in path: String
 ): void {
   bindings.push(NativeValueBinding({
     name: name.copyBytes(0, name.byteLength),
@@ -209,6 +214,8 @@ export function addViewValueBinding(
     borrowedBinding: true,
     matchBorrowedBinding: false,
     viewOwner: owner.copyBytes(0, owner.byteLength),
+    viewPath: path.copyBytes(0, path.byteLength),
+    viewLive: true,
     suspensionBorrowRoot: "",
     initialization: NativeInitializationState.initialized,
     ownership: NativeOwnershipState.available,
@@ -277,24 +284,54 @@ export function closeArenaViewBindings(
     if (
       bindings[index].viewOwner == owner
       && bindings[index].ownership == NativeOwnershipState.available
-    ) bindings[index].ownership = NativeOwnershipState.moved;
+    ) {
+      bindings[index].viewLive = false;
+      bindings[index].ownership = NativeOwnershipState.moved;
+    }
     index = index + 1;
   }
 }
 
-export function liveViewBindingForOwner(
+function storagePathContains(in parent: String, in child: String): boolean {
+  if (parent.byteLength >= child.byteLength) return false;
+  let index: usize = 0;
+  while (index < parent.byteLength) {
+    if (parent.byteAt(index) != child.byteAt(index)) return false;
+    index = index + 1;
+  }
+  return child.byteAt(parent.byteLength) == 46;
+}
+
+function storagePathsOverlap(in left: String, in right: String): boolean {
+  if (left.byteLength == 0 || right.byteLength == 0) return true;
+  if (left == right) return true;
+  return storagePathContains(left, right)
+    || storagePathContains(right, left);
+}
+
+export function liveViewBindingForStoragePath(
   in bindings: Array<NativeValueBinding>,
-  in owner: String
+  in owner: String,
+  in path: String
 ): String {
   let index = bindings.length;
   while (index > 0) {
     index = index - 1;
     if (
       viewOwnerContains(bindings[index].viewOwner, owner)
+      && storagePathsOverlap(bindings[index].viewPath, path)
+      && bindings[index].viewLive
       && bindings[index].ownership == NativeOwnershipState.available
     ) return bindings[index].name.copyBytes(0, bindings[index].name.byteLength);
   }
   return "";
+}
+
+export function liveViewBindingForOwner(
+  in bindings: Array<NativeValueBinding>,
+  in owner: String
+): String {
+  return liveViewBindingForStoragePath(bindings, owner, "");
 }
 
 export function valueBindingType(
@@ -345,6 +382,11 @@ export function setValueBindingClassAlias(
         0,
         bindings[index].viewOwner.byteLength
       ),
+      viewPath: bindings[index].viewPath.copyBytes(
+        0,
+        bindings[index].viewPath.byteLength
+      ),
+      viewLive: bindings[index].viewLive,
       suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
         0,
         bindings[index].suspensionBorrowRoot.byteLength
@@ -392,6 +434,23 @@ export function valueBindingViewOwner(
       return bindings[index].viewOwner.copyBytes(
         0,
         bindings[index].viewOwner.byteLength
+      );
+    }
+  }
+  return "";
+}
+
+export function valueBindingViewPath(
+  in bindings: Array<NativeValueBinding>,
+  in name: String
+): String {
+  let index = bindings.length;
+  while (index > 0) {
+    index = index - 1;
+    if (bindings[index].name == name) {
+      return bindings[index].viewPath.copyBytes(
+        0,
+        bindings[index].viewPath.byteLength
       );
     }
   }
@@ -454,6 +513,11 @@ function replaceBindingInitialization(
       0,
       bindings[index].viewOwner.byteLength
     ),
+    viewPath: bindings[index].viewPath.copyBytes(
+      0,
+      bindings[index].viewPath.byteLength
+    ),
+    viewLive: bindings[index].viewLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -480,6 +544,11 @@ function replaceBindingType(
       0,
       bindings[index].viewOwner.byteLength
     ),
+    viewPath: bindings[index].viewPath.copyBytes(
+      0,
+      bindings[index].viewPath.byteLength
+    ),
+    viewLive: bindings[index].viewLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -503,6 +572,70 @@ function replaceBindingViewOwner(
     matchBorrowedBinding: bindings[index].matchBorrowedBinding,
     classAliasIdentity: bindings[index].classAliasIdentity,
     viewOwner: viewOwner.copyBytes(0, viewOwner.byteLength),
+    viewPath: bindings[index].viewPath.copyBytes(
+      0,
+      bindings[index].viewPath.byteLength
+    ),
+    viewLive: bindings[index].viewLive,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
+    initialization: bindings[index].initialization,
+    ownership: bindings[index].ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
+function replaceBindingViewPath(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  in viewPath: String
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    classAliasIdentity: bindings[index].classAliasIdentity,
+    viewOwner: bindings[index].viewOwner.copyBytes(
+      0,
+      bindings[index].viewOwner.byteLength
+    ),
+    viewPath: viewPath.copyBytes(0, viewPath.byteLength),
+    viewLive: bindings[index].viewLive,
+    suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
+      0,
+      bindings[index].suspensionBorrowRoot.byteLength
+    ),
+    initialization: bindings[index].initialization,
+    ownership: bindings[index].ownership,
+    outputParameter: bindings[index].outputParameter,
+  });
+}
+
+function replaceBindingViewLive(
+  inout bindings: Array<NativeValueBinding>,
+  index: usize,
+  viewLive: boolean
+): void {
+  bindings[index] = NativeValueBinding({
+    name: bindings[index].name.copyBytes(0, bindings[index].name.byteLength),
+    typeName: bindings[index].typeName.copyBytes(0, bindings[index].typeName.byteLength),
+    mutableBinding: bindings[index].mutableBinding,
+    borrowedBinding: bindings[index].borrowedBinding,
+    matchBorrowedBinding: bindings[index].matchBorrowedBinding,
+    classAliasIdentity: bindings[index].classAliasIdentity,
+    viewOwner: bindings[index].viewOwner.copyBytes(
+      0,
+      bindings[index].viewOwner.byteLength
+    ),
+    viewPath: bindings[index].viewPath.copyBytes(
+      0,
+      bindings[index].viewPath.byteLength
+    ),
+    viewLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -584,6 +717,11 @@ function replaceBindingOwnership(
       0,
       bindings[index].viewOwner.byteLength
     ),
+    viewPath: bindings[index].viewPath.copyBytes(
+      0,
+      bindings[index].viewPath.byteLength
+    ),
+    viewLive: bindings[index].viewLive,
     suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
       0,
       bindings[index].suspensionBorrowRoot.byteLength
@@ -628,6 +766,11 @@ export function borrowValueBindingInPlace(
           0,
           bindings[index].viewOwner.byteLength
         ),
+        viewPath: bindings[index].viewPath.copyBytes(
+          0,
+          bindings[index].viewPath.byteLength
+        ),
+        viewLive: bindings[index].viewLive,
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength
@@ -660,6 +803,11 @@ export function borrowMatchValueBindingInPlace(
           0,
           bindings[index].viewOwner.byteLength
         ),
+        viewPath: bindings[index].viewPath.copyBytes(
+          0,
+          bindings[index].viewPath.byteLength
+        ),
+        viewLive: bindings[index].viewLive,
         suspensionBorrowRoot: name.copyBytes(0, name.byteLength),
         initialization: bindings[index].initialization,
         ownership: bindings[index].ownership,
@@ -689,6 +837,11 @@ export function borrowClosureBindingInPlace(
           0,
           bindings[index].viewOwner.byteLength
         ),
+        viewPath: bindings[index].viewPath.copyBytes(
+          0,
+          bindings[index].viewPath.byteLength
+        ),
+        viewLive: bindings[index].viewLive,
         suspensionBorrowRoot: bindings[index].suspensionBorrowRoot.copyBytes(
           0,
           bindings[index].suspensionBorrowRoot.byteLength
@@ -741,6 +894,8 @@ export function copyBindingFlowStates(
       source[index].classAliasIdentity
     );
     replaceBindingViewOwner(inout target, index, source[index].viewOwner);
+    replaceBindingViewPath(inout target, index, source[index].viewPath);
+    replaceBindingViewLive(inout target, index, source[index].viewLive);
     replaceBindingInitialization(inout target, index, source[index].initialization);
     replaceBindingOwnership(inout target, index, source[index].ownership);
     index = index + 1;
@@ -781,6 +936,21 @@ export function mergeBindingFlowStates(
       right[index].viewOwner
     );
     replaceBindingViewOwner(inout target, index, mergedOwner);
+    let mergedPath = "";
+    if (
+      mergedOwner == left[index].viewOwner
+      && mergedOwner == right[index].viewOwner
+      && left[index].viewPath == right[index].viewPath
+    ) mergedPath = left[index].viewPath.copyBytes(
+      0,
+      left[index].viewPath.byteLength
+    );
+    replaceBindingViewPath(inout target, index, mergedPath);
+    replaceBindingViewLive(
+      inout target,
+      index,
+      left[index].viewLive || right[index].viewLive
+    );
     replaceBindingInitialization(
       inout target,
       index,
