@@ -3125,6 +3125,14 @@ fields or previously stored function values, flow-sensitive identity sets,
 suspension, and class-field projection need separate probes. Cross-thread
 mutation still requires a mutex or executor isolation.
 
+This probe also exposed an adjacent frontend-parity question without deciding
+it accidentally: Stage 0 permits an `inout this` method through a captured
+`const` class binding, while the native resolver currently requires that
+captured binding to be `let`. Direct class calls keep binding immutability
+separate from instance mutation, but a closure adds a borrow boundary. A focused
+follow-up must decide and document whether that boundary preserves the direct
+class rule or deliberately requires an explicit mutable capture.
+
 ## Shape-stable value-field projections
 
 The next Ante-inspired probe reused Z's existing capability vocabulary rather
