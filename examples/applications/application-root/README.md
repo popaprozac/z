@@ -23,6 +23,8 @@ Read the source in this order:
    initialization and retrieval functions. Its mutex-backed state is usable
    anywhere while `windowId` remains main-only. The public initialization
    function returns the non-constructible `OnceLifetime<Application>` guard.
+   The retrieval function's exact direct-return body also exports the private
+   cell's canonical ARC identity to the capability checker.
 2. [`status.zs`](status.zs) demonstrates that another module can retrieve the
    current identity and use its unrestricted synchronized method.
 3. [`main.zs`](main.zs) constructs and publishes the application, retains the

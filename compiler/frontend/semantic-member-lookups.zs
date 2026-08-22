@@ -478,6 +478,10 @@ export function rebaseModuleFunctionSignature(
     parameterTypes,
     viewParameter: signature.viewParameter,
     viewParameters,
+    classIdentitySource: signature.classIdentitySource.copyBytes(
+      0,
+      signature.classIdentitySource.byteLength
+    ),
     invalidatesParameters,
     invalidatesLifetimes,
     returnType: rebaseTypeName(
@@ -747,6 +751,10 @@ export function methodCallableSignature(
     parameterTypes,
     viewParameter: method.signature.viewParameter,
     viewParameters,
+    classIdentitySource: method.signature.classIdentitySource.copyBytes(
+      0,
+      method.signature.classIdentitySource.byteLength
+    ),
     invalidatesParameters,
     invalidatesLifetimes,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),

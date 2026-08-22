@@ -89,6 +89,22 @@ already closed. Reinitializing a closed cell remains invalid.
 `OnceLifetime<T>` is exported from `std/sync` so a public startup wrapper may
 name its return, but it has no user-callable constructor.
 
+Repeated `get()` calls carry one canonical ARC identity into Z's synchronous
+`in`/`inout` exclusivity checker. The same is true through a transparent
+zero-argument accessor whose complete body is the direct return:
+
+```z
+export function currentApplication(): Application {
+  return application.get();
+}
+```
+
+This summary crosses source-module imports and requires no annotation. It does
+not make the globally published identity locally contained: a class-field
+`view` still requires a synthesized local `new` owner with no hidden aliases.
+Functions with additional control flow or another return source are not
+silently classified as transparent.
+
 The value expression is evaluated before `initialize`:
 
 ```z

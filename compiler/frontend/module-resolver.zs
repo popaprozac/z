@@ -159,6 +159,7 @@ import {
   unaryOperatorType,
 } from "./semantic-operators.zs";
 import {
+  ModuleSymbolLocation,
   equivalentTypes,
   rebaseTypeName,
   semanticTypeIdentity,
@@ -286,17 +287,76 @@ function typeIsClassReference(
 
 function expressionClassAliasIdentity(
   in expression: ExpressionSyntax,
-  in bindings: Array<NativeValueBinding>
+  in bindings: Array<NativeValueBinding>,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize
 ): usize {
   return match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
+      if (
+        tree.nodes[root].kind == ExpressionKind.callExpression
+        && tree.nodes[root].children.length > 0
+      ) {
+        const callee = tree.nodes[root].children[0];
+        if (
+          tree.nodes[callee].kind == ExpressionKind.memberExpression
+          && tree.nodes[callee].value == "get"
+          && tree.nodes[callee].children.length == 1
+        ) {
+          const receiver = tree.nodes[callee].children[0];
+          match (foreignValueSymbolLocation(
+            modules,
+            moduleIndex,
+            tree,
+            receiver
+          )) {
+            some(location) => match (genericTypeShape(
+              modules[location.moduleIndex].symbols[location.symbolIndex].valueType
+            )) {
+              some(generic) => {
+                if (generic.base == "Once" && generic.arguments.length == 1) {
+                  return moduleClassAliasIdentity(modules, location);
+                }
+              }
+              none => {}
+            }
+            none => {}
+          }
+        }
+        match (callableSymbolLocation(modules, moduleIndex, tree, callee)) {
+          some(location) => match (in modules[location.moduleIndex]
+            .symbols[location.symbolIndex].functionSignature) {
+            some(signature) => {
+              if (signature.classIdentitySource.byteLength > 0) {
+                const sourceIndex = moduleSymbolIndex(
+                  modules[location.moduleIndex],
+                  signature.classIdentitySource
+                );
+                if (
+                  sourceIndex < modules[location.moduleIndex].symbols.length
+                  && modules[location.moduleIndex].symbols[sourceIndex].kind
+                    == ModuleSymbolKind.constantSymbol
+                ) return moduleClassAliasIdentity(
+                  modules,
+                  ModuleSymbolLocation({
+                    moduleIndex: location.moduleIndex,
+                    symbolIndex: sourceIndex,
+                  })
+                );
+              }
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
       if (tree.nodes[root].kind == ExpressionKind.identifierExpression) {
         const name = identifierLookupName(tree.nodes[root].value);
         const existing = valueBindingClassAlias(bindings, name);
         return existing > 0
           ? existing
-          : tree.nodes[root].offset + 1;
+          : localClassAliasIdentity(tree.nodes[root].offset);
       }
       if (
         tree.nodes[root].kind == ExpressionKind.argumentReferenceExpression
@@ -308,12 +368,31 @@ function expressionClassAliasIdentity(
         const existing = valueBindingClassAlias(bindings, name);
         return existing > 0
           ? existing
-          : tree.nodes[root].offset + 1;
+          : localClassAliasIdentity(tree.nodes[root].offset);
       }
-      return tree.nodes[root].offset + 1;
+      return localClassAliasIdentity(tree.nodes[root].offset);
     }
-    none => expression.offset + 1;
+    none => localClassAliasIdentity(expression.offset);
   };
+}
+
+function localClassAliasIdentity(offset: usize): usize {
+  // Lexical identities are even; canonical module-cell identities are odd.
+  // That makes the two namespaces disjoint without carrying runtime metadata.
+  return (offset + 1) * 2;
+}
+
+function moduleClassAliasIdentity(
+  in modules: Array<ResolvedModule>,
+  in location: ModuleSymbolLocation
+): usize {
+  let ordinal: usize = 0;
+  let index: usize = 0;
+  while (index < location.moduleIndex) {
+    ordinal = ordinal + modules[index].symbols.length;
+    index = index + 1;
+  }
+  return (ordinal + location.symbolIndex) * 2 + 1;
 }
 
 function expressionNodeClassAliasIsContained(
@@ -8460,7 +8539,12 @@ function inferStatement(
     if (typeIsClassReference(module, modules, moduleIndex, stored)) {
       match (in arena.nodes[index].expression) {
         some(expression) => {
-          const identity = expressionClassAliasIdentity(expression, bindings);
+          const identity = expressionClassAliasIdentity(
+            expression,
+            bindings,
+            modules,
+            moduleIndex
+          );
           setValueBindingClassAlias(
             inout bindings,
             arena.nodes[index].name,
@@ -8884,7 +8968,12 @@ function inferStatement(
           assignmentBinding.byteLength > 0
           && typeIsClassReference(module, modules, moduleIndex, consumedType)
         ) {
-          const identity = expressionClassAliasIdentity(value, bindings);
+          const identity = expressionClassAliasIdentity(
+            value,
+            bindings,
+            modules,
+            moduleIndex
+          );
           setValueBindingClassAlias(
             inout bindings,
             assignmentBinding,
@@ -9604,14 +9693,18 @@ function inferFunctionExpressions(
       setValueBindingClassAlias(
         inout bindings,
         parameter.name,
-        parameter.offset + 1
+        localClassAliasIdentity(parameter.offset)
       );
     }
   }
   if (
     ownerType.byteLength > 0
     && typeIsClassReference(module, modules, moduleIndex, ownerType)
-  ) setValueBindingClassAlias(inout bindings, "this", declaration.offset + 1);
+  ) setValueBindingClassAlias(
+    inout bindings,
+    "this",
+    localClassAliasIdentity(declaration.offset)
+  );
   try inferStatementSequence(
     module,
     modules,
@@ -9661,7 +9754,11 @@ function validateExpressionTypesAndLocals(
         }
         addMutableValueBinding(inout bindings, "this", aggregate.name);
         if (aggregate.kind == DeclarationKind.classDeclaration) {
-          setValueBindingClassAlias(inout bindings, "this", initializer.offset + 1);
+          setValueBindingClassAlias(
+            inout bindings,
+            "this",
+            localClassAliasIdentity(initializer.offset)
+          );
         }
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         addValueBinding(inout bindings, "__z_native_constructor_type", aggregate.name);
@@ -9722,7 +9819,11 @@ function validateExpressionTypesAndLocals(
         addValueBinding(inout bindings, "__z_native_return_type", "void");
         addValueBinding(inout bindings, "this", aggregate.name);
         if (aggregate.kind == DeclarationKind.classDeclaration) {
-          setValueBindingClassAlias(inout bindings, "this", deinitializer.offset + 1);
+          setValueBindingClassAlias(
+            inout bindings,
+            "this",
+            localClassAliasIdentity(deinitializer.offset)
+          );
         }
         addValueBinding(inout bindings, "__z_native_owner_type", aggregate.name);
         let lifecycleExecutorAffinity = aggregate.executorAffinity.copyBytes(

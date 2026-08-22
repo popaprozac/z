@@ -571,6 +571,86 @@ test("retrieves a mixed-affinity Once identity on a worker and routes final clea
   }
 });
 
+test("tracks one canonical ARC identity through a transparent Once accessor", () => {
+  const directory = mkdtempSync("/tmp/z-once-accessor-identity-");
+  const stateFile = resolve(directory, "state.zs");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    writeFileSync(stateFile, `
+      import { Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      export class Application {
+        value: i32;
+        marker: i32 on thread.main;
+
+        function increment(inout this): void on thread.main {
+          this.value = this.value + 1;
+        }
+
+        function read(): i32 on thread.main {
+          return this.value;
+        }
+      }
+
+      const application = Once<Application>();
+      const previewApplicationCell = Once<Application>();
+
+      export function currentApplication(): Application {
+        return application.get();
+      }
+
+      export function previewApplication(): Application {
+        return previewApplicationCell.get();
+      }
+    `);
+    const source = `
+      import { thread } from "std/thread";
+      import {
+        Application,
+        currentApplication,
+        previewApplication,
+      } from "./state.zs";
+
+      function updateAndInspect(
+        inout updated: Application,
+        in observed: Application
+      ): i32 on thread.main {
+        updated.increment();
+        return observed.read();
+      }
+
+      function main(): i32 on thread.main {
+        let primary = currentApplication();
+        const alias = currentApplication();
+        return updateAndInspect(inout primary, alias);
+      }
+    `;
+    writeFileSync(mainFile, source);
+
+    const diagnostic = diagnostics(source, mainFile)[0];
+    assert.equal(diagnostic?.code, "Z0306");
+    assert.match(
+      diagnostic?.message ?? "",
+      /overlapping inout and in uses of ARC aliases "primary" and "alias"/,
+    );
+
+    const sequential = source.replace(
+      "return updateAndInspect(inout primary, alias);",
+      "primary.increment();\n        return alias.read();",
+    );
+    assert.doesNotThrow(() => compileToC(sequential, mainFile));
+
+    const distinctCells = source.replace(
+      "const alias = currentApplication();",
+      "const alias = previewApplication();",
+    );
+    assert.doesNotThrow(() => compileToC(distinctCells, mainFile));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("keeps Once cell identity confined to its declaring module constant", () => {
   const prelude = `
     import { Once } from "std/sync";

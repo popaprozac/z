@@ -165,8 +165,9 @@ bun run z run examples/async/async-delay.zs
 generic module-owned identity mechanism behind the desktop-framework discussion.
 Its `Application` class is user code. A statically empty `Once<Application>`
 publishes one strong main-lifecycle ARC root, another source module reads it
-through an ordinary exported function, and a native worker retrieves the same
-identity directly. The worker can call its unrestricted mutex-backed method but
+through an ordinary exported function whose direct return preserves the cell's
+canonical compiler identity, and a native worker retrieves the same identity
+directly. The worker can call its unrestricted mutex-backed method but
 cannot touch the main-only UI member. The move-only lifetime guard removes the
 root deterministically when `main` exits.
 

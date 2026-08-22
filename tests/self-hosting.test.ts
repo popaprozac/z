@@ -12806,6 +12806,34 @@ test("rejects class-field views from identities with hidden aliases natively", (
   }
 });
 
+test("tracks one canonical ARC identity through a transparent Once accessor natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-once-accessor-alias/main.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /overlapping inout and in uses of ARC aliases "primary" and "alias" in one call are not allowed/,
+  );
+
+  const valid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-once-accessor-alias/valid.zs",
+  );
+  const validResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", valid],
+    { encoding: "utf8" },
+  );
+  assert.equal(validResult.status, 0, validResult.stderr);
+});
+
 test("keeps native semantic authority composable across a representative Z corpus", () => {
   const entries = [
     "compiler/frontend/parser-library.zs",

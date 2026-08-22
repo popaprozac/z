@@ -20,7 +20,10 @@ Zapp: Ready after background job 1
 The example combines the four framework foundations:
 
 1. `Once<Application>` publishes one long-lived identity and
-   `currentApplication()` retrieves it from any Z-managed thread.
+   `currentApplication()` retrieves it from any Z-managed thread. Its exact
+   one-line `return application.get();` body also carries the cell's canonical
+   ARC identity across the module boundary, so overlapping synchronous
+   capabilities cannot treat two lookups as unrelated objects.
 2. `Mutex<RuntimeState>` makes selected state readable and writable from a
    worker without making the whole class freely mutable.
 3. `status: String on thread.main` makes presentation and lifecycle

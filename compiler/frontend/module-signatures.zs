@@ -20,6 +20,7 @@ import {
   ModuleTypeSignature,
   ModuleVariantSignature,
 } from "./semantic-model.zs";
+import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 function parameterModeName(mode: ParameterMode): String {
   return match (mode) {
@@ -90,6 +91,10 @@ function functionDeclarationSignature(
     parameterTypes,
     viewParameter: Option<usize>.none,
     viewParameters: functionDeclarationViewParameters(program, declaration),
+    classIdentitySource: functionDeclarationClassIdentitySource(
+      program,
+      declaration
+    ),
     invalidatesParameters: Array<usize>(),
     invalidatesLifetimes: Array<String>(),
     returnType: declaration.returnType.name.copyBytes(
@@ -98,6 +103,83 @@ function functionDeclarationSignature(
     ),
     errorType,
   });
+}
+
+function functionDeclarationClassIdentitySource(
+  in program: Program,
+  in declaration: FunctionDeclaration
+): String {
+  if (
+    declaration.asynchronous
+    || declaration.parameters.length != 0
+    || declaration.body.roots.length != 1
+  ) return "";
+  match (in declaration.errorType) {
+    some(_) => return "";
+    none => {}
+  }
+  const statementIndex = declaration.body.roots[0];
+  if (statementIndex >= declaration.body.nodes.length) return "";
+  const statement = view declaration.body.nodes[statementIndex];
+  if (statement.kind != StatementKind.returnStatement) return "";
+  match (in statement.expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const call = tree.root;
+        if (
+          tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 1
+        ) return "";
+        const callee = tree.nodes[call].children[0];
+        if (
+          tree.nodes[callee].kind != ExpressionKind.memberExpression
+          || tree.nodes[callee].value != "get"
+          || tree.nodes[callee].children.length != 1
+        ) return "";
+        const receiver = tree.nodes[callee].children[0];
+        if (
+          tree.nodes[receiver].kind != ExpressionKind.identifierExpression
+        ) return "";
+        const source = copy tree.nodes[receiver].value;
+        for (const constant of program.constants) {
+          if (constant.name != source) continue;
+          let typeName = match (in constant.typeAnnotation) {
+            some(type) => copy type.name;
+            none => "";
+          };
+          if (typeName.byteLength == 0) match (in constant.initializer.tree) {
+            some(initializer) => {
+              const root = initializer.root;
+              if (
+                initializer.nodes[root].kind == ExpressionKind.callExpression
+                && initializer.nodes[root].children.length == 1
+              ) {
+                const initializerCallee = initializer.nodes[root].children[0];
+                if (
+                  initializer.nodes[initializerCallee].kind
+                    == ExpressionKind.identifierExpression
+                ) typeName = copy initializer.nodes[initializerCallee].value;
+              }
+            }
+            none => {}
+          }
+          match (genericTypeShape(typeName)) {
+            some(generic) => {
+              if (
+                generic.base == "Once"
+                && generic.arguments.length == 1
+                && generic.arguments[0] == declaration.returnType.name
+              ) return source.copyBytes(0, source.byteLength);
+            }
+            none => {}
+          }
+        }
+      }
+      none => {}
+    }
+    none => {}
+  }
+  return "";
 }
 
 function retainedReturnViewFieldNames(

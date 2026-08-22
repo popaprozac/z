@@ -637,6 +637,8 @@ type AnalysisState = {
   }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly classAliasIdentities: Map<string, ReadonlySet<string>>;
+  readonly classAliasExpressionIdentities: Map<number, string>;
+  readonly functionClassAliasIdentities: Map<string, string>;
   readonly locallyContainedClassAliases: Set<string>;
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
@@ -1018,6 +1020,8 @@ export function analyze(
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
     classAliasIdentities: new Map(),
+    classAliasExpressionIdentities: new Map(),
+    functionClassAliasIdentities: new Map(),
     locallyContainedClassAliases: new Set(),
     activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
@@ -1515,6 +1519,15 @@ export function analyze(
   for (const declaration of program.functions) {
     if (declaration.testName) continue;
     declareGlobal(globals, declaration.name, { kind: "function", declaration }, declaration.location, fileName);
+  }
+
+  for (const declaration of program.functions) {
+    const identity = transparentOnceClassAliasIdentity(
+      declaration,
+      program.constants,
+      structs,
+    );
+    if (identity) state.functionClassAliasIdentities.set(declaration.name, identity);
   }
 
   for (const declaration of program.typeAliases) {
@@ -11034,6 +11047,13 @@ function inferExpressionInner(
               throw new DiagnosticError(fileName, expression.location, `Once.get expects 0 arguments, received ${expression.arguments.length}`);
             }
             state.onceGetCalls.set(expression.location.offset, once.valueType);
+            const storage = storageRoot(expression.callee.object);
+            if (storage) {
+              state.classAliasExpressionIdentities.set(
+                expression.location.offset,
+                `once:${storage.name}`,
+              );
+            }
             return once.valueType;
           }
           if (expression.callee.property === "initialize") {
@@ -12462,6 +12482,13 @@ function inferExpressionInner(
       checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(callable, expression.location, fileName, state);
       state.observer?.onFunctionCall?.(functionResolution);
+      const classAliasIdentity = state.functionClassAliasIdentities.get(callable.name);
+      if (classAliasIdentity) {
+        state.classAliasExpressionIdentities.set(
+          expression.location.offset,
+          classAliasIdentity,
+        );
+      }
       if (
         callable.errorType
         && !isGeneratorFunction(callable)
@@ -13256,6 +13283,10 @@ function classAliasIdentitiesForExpression(
   state: AnalysisState,
 ): ReadonlySet<string> | null {
   if (structs.get(String(underlyingType(type)))?.kind !== "class") return null;
+  const expressionIdentity = state.classAliasExpressionIdentities.get(
+    expression.location.offset,
+  );
+  if (expressionIdentity) return new Set([expressionIdentity]);
   if (expression.kind === "identifier") {
     return state.classAliasIdentities.get(expression.name)
       ?? new Set([`binding:${expression.name}`]);
@@ -13278,6 +13309,45 @@ function classAliasIdentitiesForExpression(
     return identities;
   }
   return new Set([`expression:${expression.location.offset}`]);
+}
+
+function transparentOnceClassAliasIdentity(
+  declaration: FunctionDeclaration,
+  constants: readonly Program["constants"][number][],
+  structs: ReadonlyMap<string, StructDeclaration>,
+): string | null {
+  if (
+    declaration.parameters.length !== 0
+    || declaration.async
+    || declaration.errorType
+    || declaration.rawBody
+    || declaration.body.length !== 1
+    || structs.get(declaration.returnType.name)?.kind !== "class"
+  ) return null;
+  const statement = declaration.body[0];
+  const expression = statement?.kind === "return" ? statement.expression : null;
+  if (
+    !expression
+    || expression.kind !== "call"
+    || expression.arguments.length !== 0
+    || expression.callee.kind !== "member"
+    || expression.callee.property !== "get"
+    || expression.callee.object.kind !== "identifier"
+  ) return null;
+  const cell = constants.find((candidate) => (
+    candidate.name === expression.callee.object.name
+  ));
+  const once = cell?.type
+    ? parseOnceType(cell.type.name)
+    : cell?.initializer.kind === "call"
+      && cell.initializer.callee.kind === "identifier"
+      ? parseOnceType(cell.initializer.callee.name)
+      : null;
+  if (
+    !once
+    || once.valueType !== declaration.returnType.name
+  ) return null;
+  return `once:${cell!.name}`;
 }
 
 function recordClassAliasBinding(

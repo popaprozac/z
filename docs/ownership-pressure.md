@@ -3122,11 +3122,22 @@ conservatively. An alias that is not used by the callback remains available
 immediately after the exclusive call, which the Zapp skeleton exercises on its
 main-isolated `Application` identity.
 
-The evidence deliberately stops at direct local copies, assignments, and
-direct inline closures. Arbitrary function results, aliases hidden in aggregate
-fields or previously stored function values, flow-sensitive identity sets,
-suspension, and class-field projection need separate probes. Cross-thread
-mutation still requires a mutex or executor isolation.
+The first audited call boundary now carries the same evidence without new
+syntax. A synchronous, nonthrowing, zero-argument function whose complete body
+is `return cell.get();` transparently exports the canonical identity of that
+module-private `Once<T>` cell. Repeated `currentApplication()` calls therefore
+conflict when passed as overlapping `inout`/`in` aliases, including when the
+accessor and cell live in another source module. Stage 0 uses the linker's
+canonical private-cell name; the native resolver uses the defining module and
+constant symbol. Distinct cells remain distinct.
+
+This is intentionally an audited structural summary, not a name-based guess or
+a general effect system. Adding a statement, branch, parameter, throw, or other
+return source makes the function opaque again. Arbitrary function results,
+aliases hidden in aggregate fields or previously stored function values,
+flow-sensitive identity sets, suspension, and broader factory summaries need
+separate probes. Cross-thread mutation still requires a mutex or executor
+isolation.
 
 The focused capture follow-up resolved an adjacent frontend mismatch without
 adding syntax. Both frontends now preserve the direct class rule through a
@@ -3180,10 +3191,12 @@ An immutable `in` class parameter cannot manufacture mutable field access;
 class identity stored inside another aggregate, traversal through a nested
 class field, foreign reference identity, dynamic indexing, escape, and
 suspension remain rejected. Array indexing remains whole-owner conservative
-because growth may invalidate element addresses. Transparent accessor
-provenance is intentionally deferred rather than inferred from a return type:
-adding it will require an auditable contract, not a guess that a function named
-`currentApplication` is safe.
+because growth may invalidate element addresses. The transparent `Once<T>`
+accessor summary above supplies alias identity only; it does not manufacture
+local containment. A value returned by `currentApplication()` therefore still
+cannot back a class-field `view`, since the module cell is itself a hidden
+alias. Broader accessor provenance remains deferred rather than inferred from a
+return type or function name.
 
 The native parity work exposed an important internal modeling error in real
 compiler code: the resolver had used a view binding's ownership state to mark

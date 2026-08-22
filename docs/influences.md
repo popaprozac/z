@@ -71,7 +71,10 @@ not be mistaken for implemented Z semantics:
   aliases, aggregate-hidden identities, nested class traversal, dynamic
   indexing, returned class-field views, and suspension remain experiments.
   Direct inline closure captures now participate in the same call
-  loan set, closing the first callback-shaped exclusivity hole;
+  loan set, closing the first callback-shaped exclusivity hole. A narrowly
+  audited transparent `Once<T>.get()` accessor also carries the module cell's
+  canonical identity through a source-module call without new syntax; it does
+  not grant local class-field containment.
   the recursive compiler AST plus Zapp-state probes decide how far they should
   go.
   Cross-thread mutation still requires `Mutex<T>` or executor isolation because

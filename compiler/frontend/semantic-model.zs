@@ -260,6 +260,9 @@ export struct ModuleFunctionSignature {
   viewParameter: Option<usize>;
   // Z view returns may conservatively borrow from several immutable inputs.
   viewParameters: Array<usize> = Array<usize>();
+  // A transparent zero-argument accessor may return the ARC identity retained
+  // by this Once<T> module cell in the signature's defining module.
+  classIdentitySource: String = "";
   // Foreign calls may invalidate outstanding views derived from these inputs.
   invalidatesParameters: Array<usize>;
   invalidatesLifetimes: Array<String>;

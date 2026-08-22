@@ -1684,6 +1684,16 @@ workers that may call `get()` must therefore join before the lifetime closes.
 return type, but user code cannot construct one independently of
 `Once<T>.initialize`.
 
+Direct `get()` results carry the module cell's canonical ARC identity into the
+synchronous capability checker. A synchronous, nonthrowing, zero-argument
+accessor whose entire body is `return cell.get();` transparently exports the
+same identity across source-module imports. This is structural compiler
+evidence rather than new syntax or a function-name convention. It lets
+overlapping `inout`/`in` uses of two `currentApplication()` results fail as
+aliases, while distinct `Once` cells remain distinct. The identity is still
+globally published and therefore does not satisfy the stronger local
+containment proof required for class-field `view` projection.
+
 Argument evaluation happens before `initialize`. A fallible construction is
 first bound through ordinary propagation, then that named value moves into the
 cell:
