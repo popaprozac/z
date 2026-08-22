@@ -70,6 +70,10 @@ export function isDefinitelyNonMatchable(
   moduleIndex: usize,
   in subjectType: String
 ): boolean {
+  if (stringStartsWith(subjectType, "view ") && subjectType.byteLength > 5) {
+    const target = subjectType.copyBytes(5, subjectType.byteLength);
+    return isDefinitelyNonMatchable(modules, moduleIndex, target);
+  }
   const elementType = arrayElementType(subjectType);
   if (
     isNumericTypeName(subjectType)

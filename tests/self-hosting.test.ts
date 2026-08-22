@@ -1949,6 +1949,31 @@ test("emits and runs source-backed std/json through the native Z AST", () => {
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 
+test("emits nested value-producing matches through the native Z AST", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-nested-value-match.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+
+  const directory = mkdtempSync("/tmp/z-self-host-nested-value-match-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 120_000);
+
 test("emits and runs the first program directly from the native Z AST", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs");
   const emission = spawnSync(
@@ -6295,6 +6320,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(existsSync(`${executable}.c`), true);
   assert.equal(existsSync(`${executable}.pending`), false);
   assert.equal(existsSync(`${executable}.c.pending`), false);
+  assert.equal(existsSync(resolve(directory, "stdlib/json.zs")), true);
   const foreignAdapter = resolve(
     directory,
     process.platform === "win32"
@@ -6317,6 +6343,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 1 Z modules/);
+
+  const jsonRun = spawnSync(
+    executable,
+    ["run", resolve(projectRoot, "tests/fixtures/std-json-smoke.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(jsonRun.status, 0, jsonRun.stderr);
 
   const nonTailChecking = spawnSync(
     executable,
@@ -7816,7 +7849,7 @@ test("compiles a multi-module Z application through the standalone native driver
       column: 24,
       marker: "^^^^^",
       code: "Z1000",
-      summary: 'template interpolation of "isize" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize',
+      summary: 'template interpolation of "isize" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, i64, u8, u64, usize, and f64',
     },
     {
       name: "template-unresolved-evidence",

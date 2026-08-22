@@ -3344,6 +3344,30 @@ This experiment simplified user code by making the checker more precise. It
 did not change what `in` or `inout` means, add a runtime mechanism, or permit
 shared mutation across threads.
 
+## Zapp typed JSON bridge through the fixed-point compiler
+
+Zapp's first Z-owned message router now parses its real `{ t, id, m, a }`
+envelope with source-backed `std/json`, preserves `u64.max` request identity,
+routes a typed method, and returns UTF-8 JSON through a strict C host callback.
+The bridge is compiled by the bootstrapped native `z`, archived as a static
+library, linked into an ordinary C host, and exercised end to end.
+
+That small application exposed four fixed-point composition gaps that isolated
+language fixtures had not combined: the published native compiler did not carry
+source-backed standard modules beside the executable; nested value-producing
+matches were not lowered in every destination; imported enum identity was lost
+through a `view`; and contextual `u64` literals reached strict C as unsuffixed
+integers. The bootstrap now packages the standard library, the native driver
+loads those modules recursively, enum views retain their nominal imported
+identity through matching, and C emission uses the exact contextual unsigned
+width. None of these fixes is Zapp-specific.
+
+The resulting boundary remains intentionally narrow: Z owns parsing, typed
+dispatch, exact request IDs, errors, and response construction, while the C
+host owns only ABI delivery. This is stronger evidence for self-hosting than a
+standalone JSON sample because the same source-backed module now composes with
+exports, archive generation, foreign callbacks, and a real consumer repository.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

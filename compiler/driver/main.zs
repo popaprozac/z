@@ -27,6 +27,7 @@ import {
   isLocalModuleHeader,
   isStandardModuleHeader,
   normalizedModulePath,
+  sourceStandardModuleRelativePath,
 } from "../frontend/module-paths.zs";
 import {
   resolveParsedModulesWithForeignContracts,
@@ -136,6 +137,28 @@ function resolveCommandInput(
   });
 }
 
+function sourceStandardModulePath(in header: String): Option<String> {
+  const relative = match (sourceStandardModuleRelativePath(header)) {
+    some(relative) => relative;
+    none => return Option<String>.none;
+  };
+  const executablePath = match (attempt process.executablePath()) {
+    success(path) => path;
+    failure(_) => return Option<String>.none;
+  };
+  const executableDirectory = directoryName(executablePath);
+  let roots = Array<String>();
+  roots.push(normalizedModulePath(`${executableDirectory}/stdlib`));
+  roots.push(normalizedModulePath(`${executableDirectory}/../stdlib`));
+  for (const root of roots) {
+    const candidate = normalizedModulePath(`${root}/${relative}`);
+    if (fs.exists(candidate) && !fs.isDirectory(candidate)) {
+      return Option.some(candidate);
+    }
+  }
+  return Option<String>.none;
+}
+
 function loadModule(
   in path: String,
   in config: NativeProjectConfig,
@@ -166,7 +189,13 @@ function loadModule(
       dependencies.push(importedModulePath(canonical, declaration.header));
       continue;
     }
-    if (isStandardModuleHeader(declaration.header)) continue;
+    if (isStandardModuleHeader(declaration.header)) {
+      match (sourceStandardModulePath(declaration.header)) {
+        some(path) => dependencies.push(path);
+        none => {}
+      }
+      continue;
+    }
     const header = copy declaration.header;
     const line = declaration.line;
     const column = declaration.column;

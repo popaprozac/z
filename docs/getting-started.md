@@ -195,9 +195,10 @@ strict-compiles it, then asks that native compiler to build generation two in
 release mode. It refuses publication unless generation-two C is byte-identical
 to the seed emission. The resulting executable is named `z`, retains its
 generated `.c` sidecar for inspection, and packages a standalone
-`z-foreign-adapter` beside it. `z` discovers that adapter relative to its own
-executable path, so ordinary commands and currently supported native-header
-imports do not require Bun on `PATH`.
+`z-foreign-adapter` plus the source-backed standard library beside it. `z`
+discovers both relative to its own executable path, so modules such as
+`std/json`, ordinary commands, and currently supported native-header imports do
+not require Bun on `PATH`.
 
 This is a reproducible local bootstrap procedure, not a versioned compiler
 distribution. Bun remains necessary to create the first generation and package

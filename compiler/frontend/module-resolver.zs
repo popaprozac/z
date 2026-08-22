@@ -2401,8 +2401,16 @@ function inferMatchExpressionNodeType(
       "match (in ...) requires stored enum storage"
     );
   }
+  let matchSubjectType = subjectType.copyBytes(0, subjectType.byteLength);
+  if (
+    stringStartsWith(matchSubjectType, "view ")
+    && matchSubjectType.byteLength > 5
+  ) matchSubjectType = matchSubjectType.copyBytes(
+    5,
+    matchSubjectType.byteLength
+  );
   let storedViewEnum = false;
-  match (typeSymbolLocation(modules, moduleIndex, subjectType)) {
+  match (typeSymbolLocation(modules, moduleIndex, matchSubjectType)) {
     some(location) => {
       if (
         modules[location.moduleIndex].symbols[location.symbolIndex].kind

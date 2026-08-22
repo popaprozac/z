@@ -8,7 +8,10 @@ import {
   rebaseTypeName,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
-import { genericTypeShape } from "./semantic-type-shapes.zs";
+import {
+  genericTypeShape,
+  stringStartsWith,
+} from "./semantic-type-shapes.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
@@ -95,6 +98,10 @@ export function matchShape(
   moduleIndex: usize,
   in subjectType: String
 ): Option<NativeMatchShape> {
+  if (stringStartsWith(subjectType, "view ") && subjectType.byteLength > 5) {
+    const target = subjectType.copyBytes(5, subjectType.byteLength);
+    return matchShape(modules, moduleIndex, target);
+  }
   match (genericTypeShape(subjectType)) {
     some(generic) => {
       if (generic.base == "Option" && generic.arguments.length == 1) {

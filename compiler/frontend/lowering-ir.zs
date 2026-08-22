@@ -6180,6 +6180,7 @@ function importedEnumDeclaration(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): Option<LoweredEnum> {
+  const qualifiedMember = qualifiedTypeMember(name);
   let importedIndex = importedTypes.length;
   while (importedIndex > 0) {
     importedIndex = importedIndex - 1;
@@ -6188,6 +6189,13 @@ function importedEnumDeclaration(
       || (
         importedTypes[importedIndex].localName != name
         && importedTypes[importedIndex].targetName != name
+        && (
+          qualifiedMember.byteLength == 0
+          || (
+            importedTypes[importedIndex].localName != qualifiedMember
+            && importedTypes[importedIndex].targetName != qualifiedMember
+          )
+        )
       )
     ) continue;
     let variants = Array<LoweredVariant>();
@@ -7062,6 +7070,39 @@ function lowerPlacedDirectCall(
   );
 }
 
+function lowerExpressionUsingNumericPeerType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in peerType: Option<String>,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
+    match (in peerType) {
+      some(expected) => return try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index,
+        expected,
+        inout output
+      );
+      none => {}
+    }
+  }
+  return try lowerExpression(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index,
+    inout output
+  );
+}
+
 function lowerExpression(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -7384,12 +7425,23 @@ function lowerExpressionContextual(
     return lowered;
   }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
+    let labels = Array<String>();
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      index
+    )) {
+      some(typeName) => labels.push(move typeName);
+      none => {}
+    }
     return pushExpression(
       inout output,
       LoweredExpressionKind.integerValue,
       tree.nodes[index].value,
       Array<usize>(),
-      Array<String>()
+      move labels
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.stringExpression) {
@@ -7734,12 +7786,13 @@ function lowerExpressionContextual(
       );
       if (
         operandType.kind != LoweredTypeKind.structType
+        && operandType.kind != LoweredTypeKind.enumType
         && operandType.kind != LoweredTypeKind.fixedArrayType
         && operandType.kind != LoweredTypeKind.arrayType
         && operandType.kind != LoweredTypeKind.sliceType
         && operandType.kind != LoweredTypeKind.stringType
       ) {
-        throw `native view lowering currently supports value-struct, fixed-array, Array, Slice, and String projections, found ${operandTypeName}`;
+        throw `native view lowering currently supports value-struct, enum, fixed-array, Array, Slice, and String projections, found ${operandTypeName}`;
       }
       kind = LoweredExpressionKind.viewProjection;
     }
@@ -7789,23 +7842,6 @@ function lowerExpressionContextual(
     }
     const leftInput = tree.nodes[index].children[0];
     const rightInput = tree.nodes[index].children[1];
-    const left = try lowerExpression(
-      program,
-      importedTypes,
-      evidence,
-      tree,
-      leftInput,
-      inout output
-    );
-    const right = try lowerExpression(
-      program,
-      importedTypes,
-      evidence,
-      tree,
-      rightInput,
-      inout output
-    );
-    let kind = LoweredExpressionKind.binaryOperation;
     const leftType = resolvedExpressionTypeName(
       evidence,
       tree,
@@ -7816,6 +7852,25 @@ function lowerExpressionContextual(
       tree,
       rightInput
     );
+    const left = try lowerExpressionUsingNumericPeerType(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      leftInput,
+      rightType,
+      inout output
+    );
+    const right = try lowerExpressionUsingNumericPeerType(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      rightInput,
+      leftType,
+      inout output
+    );
+    let kind = LoweredExpressionKind.binaryOperation;
     let comparesString = false;
     let usesFloatingPoint = false;
     match (in leftType) {
@@ -11696,6 +11751,17 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
+    let labels = Array<String>();
+    labels.push(expectedTypeName.copyBytes(0, expectedTypeName.byteLength));
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.integerValue,
+      tree.nodes[index].value,
+      Array<usize>(),
+      move labels
+    );
+  }
   if (tree.nodes[index].kind == ExpressionKind.arrayExpression) {
     match (fixedArrayShape(expectedTypeName)) {
       some(shape) => {
@@ -13049,6 +13115,7 @@ function lowerValueDestination(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
   in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
   in ownerName: String,
   in expression: ExpressionSyntax,
   returnValue: boolean,
@@ -13059,6 +13126,21 @@ function lowerValueDestination(
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;
+      if (tree.nodes[root].kind == ExpressionKind.matchExpression) {
+        return try lowerMatchTree(
+          program,
+          importedTypes,
+          evidence,
+          arena,
+          ownerName,
+          tree,
+          root,
+          returnValue,
+          valueBinding,
+          inout expressions,
+          inout statements
+        );
+      }
       if (
         tree.nodes[root].kind == ExpressionKind.tryExpression
         && tree.nodes[root].children.length == 1
@@ -13251,6 +13333,30 @@ function lowerValueArmStatement(
   inout expressions: Array<LoweredExpression>,
   inout statements: Array<LoweredStatement>
 ): usize throws String {
+  if (arena.nodes[index].kind == StatementKind.matchStatement) {
+    return match (in arena.nodes[index].expression) {
+      some(expression) => match (in expression.tree) {
+        some(tree) => {
+          const root = tree.root;
+          select try lowerMatchTree(
+            program,
+            importedTypes,
+            evidence,
+            arena,
+            ownerName,
+            tree,
+            root,
+            returnValue,
+            valueBinding,
+            inout expressions,
+            inout statements
+          );
+        }
+        none => throw "native value-match lowering received an empty nested match";
+      }
+      none => throw "native value-match lowering received an empty nested match";
+    };
+  }
   if (
     arena.nodes[index].kind == StatementKind.returnStatement
     || arena.nodes[index].kind == StatementKind.throwStatement
@@ -13275,6 +13381,7 @@ function lowerValueArmStatement(
         program,
         importedTypes,
         evidence,
+        arena,
         ownerName,
         expression,
         returnValue,

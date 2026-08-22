@@ -32,13 +32,46 @@ export function isStandardModuleHeader(in header: String): boolean {
   );
 }
 
+export function sourceStandardModuleRelativePath(
+  in header: String
+): Option<String> {
+  if (!isStandardModuleHeader(header) || header == "std") {
+    return Option<String>.none;
+  }
+  let index: usize = 4;
+  let segmentLength: usize = 0;
+  while (index < header.byteLength) {
+    const byte = header.byteAt(index);
+    if (isSlash(byte)) {
+      if (segmentLength == 0) return Option<String>.none;
+      segmentLength = 0;
+    } else {
+      const alphaNumeric = (
+        (byte >= 48 && byte <= 57)
+        || (byte >= 65 && byte <= 90)
+        || (byte >= 97 && byte <= 122)
+      );
+      if (!alphaNumeric && byte != 45 && byte != 95) {
+        return Option<String>.none;
+      }
+      segmentLength = segmentLength + 1;
+    }
+    index = index + 1;
+  }
+  if (segmentLength == 0) return Option<String>.none;
+  const relative = header.copyBytes(4, header.byteLength);
+  return Option.some(`${relative}.zs`);
+}
+
 export function sourceStandardModulePathMatches(
   in path: String,
   in header: String
 ): boolean {
-  if (!isStandardModuleHeader(header) || header == "std") return false;
-  const relative = header.copyBytes(4, header.byteLength);
-  const suffix = `stdlib/${relative}.zs`;
+  const relative = match (sourceStandardModuleRelativePath(header)) {
+    some(relative) => relative;
+    none => return false;
+  };
+  const suffix = `stdlib/${relative}`;
   if (path.byteLength < suffix.byteLength) return false;
   const start = path.byteLength - suffix.byteLength;
   if (start > 0 && !isSlash(path.byteAt(start - 1))) return false;

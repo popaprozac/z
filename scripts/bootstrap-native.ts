@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  cpSync,
   copyFileSync,
   mkdirSync,
   mkdtempSync,
@@ -26,8 +27,13 @@ const outputPath = requestedOutput
   ? resolve(requestedOutput)
   : join(projectRoot, ".z-cache", "bootstrap", executableName("z"));
 const outputDirectory = dirname(outputPath);
+const standardLibraryPath = join(outputDirectory, "stdlib");
 const stageDirectory = (() => {
   mkdirSync(outputDirectory, { recursive: true });
+  cpSync(join(projectRoot, "stdlib"), standardLibraryPath, {
+    recursive: true,
+    force: true,
+  });
   return mkdtempSync(join(outputDirectory, ".z-bootstrap-"));
 })();
 

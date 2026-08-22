@@ -1247,10 +1247,20 @@ function appendExpression(
     } else output.append("_value");
     return;
   }
-  if (
-    declaration.expressions[index].kind == LoweredExpressionKind.integerValue
-    || declaration.expressions[index].kind == LoweredExpressionKind.booleanValue
-  ) {
+  if (declaration.expressions[index].kind == LoweredExpressionKind.integerValue) {
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "u64"
+    ) {
+      output.append("UINT64_C(");
+      output.append(declaration.expressions[index].value);
+      output.append(")");
+      return;
+    }
+    output.append(declaration.expressions[index].value);
+    return;
+  }
+  if (declaration.expressions[index].kind == LoweredExpressionKind.booleanValue) {
     output.append(declaration.expressions[index].value);
     return;
   }

@@ -139,6 +139,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-match-try.zs": focusedPositive,
   "self-host-emit-move.zs": focusedPositive,
   "self-host-emit-mutex-field.zs": differential,
+  "self-host-emit-nested-value-match.zs": focusedPositive,
   "self-host-emit-option.zs": differential,
   "self-host-emit-optional-chain.zs": differential,
   "self-host-emit-optional-field-direct.zs": differential,

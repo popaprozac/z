@@ -42,7 +42,8 @@ CLI, but the standalone Z driver can already discover, compile, and rebuild its
 own 39-module source graph to byte-identical C without Bun in the recursive
 compilation path. `bun run bootstrap` turns that fixed-point proof into a local
 native executable named `z` and packages its foreign-metadata adapter beside
-it. The native compiler currently accepts the deliberately constrained Z
+it, together with source-backed standard-library modules such as `std/json`.
+The native compiler currently accepts the deliberately constrained Z
 subset used by its frontend and demonstrated native applications; Stage 0
 remains authoritative for the complete language. A versioned trusted bootstrap
 artifact is not shipped yet. TypeScript is not Z's runtime model.
