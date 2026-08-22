@@ -1233,6 +1233,14 @@ function nativeTypeHasMainLifecycle(
           field.typeName
         )) {
           some(location) => {
+            // ARC class fields store executor-routed handles rather than
+            // inline executor-affine values. The class keeps its own lifecycle
+            // and member contracts, but a containing value aggregate may
+            // transport the reference without inheriting whole-value affinity.
+            if (
+              modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              == ModuleSymbolKind.classSymbol
+            ) continue;
             if (nativeTypeHasMainLifecycle(
               modules,
               location.moduleIndex,

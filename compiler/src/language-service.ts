@@ -896,7 +896,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     .flatMap((declaration) => declaration.fields)
     .find((field) => field.location.offset === word.start && field.name === word.text);
   if (declaredField) {
-    return markdownHover(fieldDetail(declaredField, context.typeDisplayNames, true), source, word.start, word.end);
+    return markdownHover(
+      `${fieldDetail(declaredField, context.typeDisplayNames, true)}${executorBoundClassTransportHover(
+        declaredField.type.name,
+        context,
+      )}`,
+      source,
+      word.start,
+      word.end,
+    );
   }
   const declaredMethod = context.sourceProgram.structs
     .flatMap((declaration) => declaration.methods)
@@ -1260,7 +1268,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
           ? context.semanticInfo.aggregateExecutorAffinities.get(resolved.declaration.name)
           : context.semanticInfo.fieldExecutorAffinities.get(`${resolved.declaration.name}.${field.name}`);
         return markdownHover(
-          `${fieldDetail(field, context.typeDisplayNames)}${executorAffinityHover(affinity)}`,
+          `${fieldDetail(field, context.typeDisplayNames)}${executorAffinityHover(affinity)}${
+            affinity ? "" : executorBoundClassTransportHover(field.type.name, context)
+          }`,
           source,
           word.start,
           word.end,
@@ -5229,6 +5239,10 @@ function sourceProgramExecutorAffinity(
         fieldPath: [field.name],
       };
     }
+    const fieldDeclaration = program.structs.find((candidate) => (
+      candidate.name === field.type.name
+    ));
+    if (fieldDeclaration?.kind === "class") continue;
     const inherited = sourceProgramExecutorAffinity(program, field.type.name, visiting);
     if (!inherited) continue;
     visiting.delete(name);
@@ -6645,6 +6659,24 @@ function methodDetail(
     : "";
   const executor = method.executorAffinity ? " on thread.main" : "";
   return `${visibility}${staticPrefix}${asyncPrefix} function ${method.name}${generic}(${parameters.join(", ")}): ${result}${throws}${executor}`;
+}
+
+function executorBoundClassTransportHover(
+  typeName: string,
+  context: AnalyzedSource,
+): string {
+  const internalName = [...context.typeDisplayNames]
+    .find(([, displayName]) => displayName === typeName)?.[0] ?? typeName;
+  const declaration = context.program.structs.find((candidate) => (
+    candidate.name === internalName || candidate.name === typeName
+  ));
+  const affinity = context.semanticInfo.aggregateExecutorAffinities.get(internalName)
+    ?? context.semanticInfo.aggregateExecutorAffinities.get(typeName);
+  if (declaration?.kind !== "class" || !affinity) return "";
+  return `\n// transportable ARC handle; isolated ${displayType(
+    internalName,
+    context.typeDisplayNames,
+  )} members still require thread.main`;
 }
 
 function executorAffinityHover(info: ExecutorAffinityInfo | undefined): string {

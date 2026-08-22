@@ -336,7 +336,7 @@ test("diagnoses throwing synchronous direct placement before async lowering", ()
   );
 });
 
-test("enforces declaration-header executor affinity and surfaces inherited isolation", () => {
+test("enforces declaration-header executor affinity and surfaces ARC handle transport", () => {
   const source = `
     import { thread } from "std/thread";
 
@@ -371,23 +371,29 @@ test("enforces declaration-header executor affinity and surfaces inherited isola
     fieldPath: [],
   });
   const modelAffinity = analysis.semanticInfo.aggregateExecutorAffinities.get("WindowModel");
-  assert.deepEqual(modelAffinity, {
-    executor: "main",
-    declared: false,
-    originType: "Controller",
-    fieldPath: ["controller"],
-  });
+  assert.equal(modelAffinity, undefined);
 
   const controllerOffset = source.indexOf("Controller on") + 1;
   assert.match(hover(source, "executor-affinity.zs", controllerOffset)?.contents.value ?? "", /class Controller on thread\.main/);
   const modelTypeOffset = source.indexOf("WindowModel {") + 1;
   const modelTypeHover = hover(source, "executor-affinity.zs", modelTypeOffset)?.contents.value ?? "";
-  assert.match(modelTypeHover, /struct WindowModel on thread\.main/);
-  assert.match(modelTypeHover, /inherited from Controller through controller/);
+  assert.match(modelTypeHover, /struct WindowModel/);
+  assert.doesNotMatch(modelTypeHover, /on thread\.main/);
+  const controllerFieldOffset = source.indexOf("controller: Controller") + 1;
+  const controllerFieldHover = hover(
+    source,
+    "executor-affinity.zs",
+    controllerFieldOffset,
+  )?.contents.value ?? "";
+  assert.match(controllerFieldHover, /transportable ARC handle/);
+  assert.match(controllerFieldHover, /isolated Controller members still require thread\.main/);
   const functionOffset = source.indexOf("readModel") + 1;
   assert.match(hover(source, "executor-affinity.zs", functionOffset)?.contents.value ?? "", /function readModel.*on thread\.main/);
   const bindingOffset = source.indexOf("model =") + 1;
-  assert.match(hover(source, "executor-affinity.zs", bindingOffset)?.contents.value ?? "", /executor-isolated to thread\.main/);
+  assert.doesNotMatch(
+    hover(source, "executor-affinity.zs", bindingOffset)?.contents.value ?? "",
+    /executor-isolated to thread\.main/,
+  );
 
   const offMain = source.replace(
     "function readModel(in model: WindowModel): i32 on thread.main",
@@ -486,8 +492,8 @@ test("preserves executor affinity across Z module boundaries", () => {
     assert.match(hover(source, entry, imported)?.contents.value ?? "", /on thread\.main/);
     const importedModel = source.indexOf("WindowModel") + 1;
     const importedModelHover = hover(source, entry, importedModel)?.contents.value ?? "";
-    assert.match(importedModelHover, /struct WindowModel on thread\.main/);
-    assert.match(importedModelHover, /inherited from Controller through controller/);
+    assert.match(importedModelHover, /struct WindowModel/);
+    assert.doesNotMatch(importedModelHover, /on thread\.main/);
 
     const offMain = source.replace(
       "function main(): i32",

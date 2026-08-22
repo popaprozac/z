@@ -12,6 +12,12 @@ native worker both dispatch through that one immutable table. One worker route
 also throws a typed `RouteError`; `attempt` proves the error remains ordinary Z
 control flow even when the table is shared across executors.
 
+Both paths also use the same ordinary Z `contextFor` factory. It matches a
+payload-bearing `RouteRequest`, constructs the corresponding `Message`, and
+returns a `RouteContext` containing the caller's `Application` identity. The
+compiler preserves that field's ARC provenance through every exhaustive arm
+and across the module boundary; no runtime ownership tag or wrapper is added.
+
 Run it from the repository root:
 
 ```sh

@@ -2516,7 +2516,10 @@ function generateFunctionTypeDefinition(
     : functionType.returnType;
   const result = mapType(returnType, structs, enums, foreignNamedTypes);
   const name = functionTypeCName(functionType);
-  const callParameters = ["void *context", ...parameters].join(", ");
+  const callParameters = [
+    `void *${functionTypeContextParameterName(functionType)}`,
+    ...parameters,
+  ].join(", ");
   return `typedef struct ${name} ${name};
 struct ${name} {
   ${result} (*call)(${callParameters});
@@ -2693,6 +2696,15 @@ function functionTypeReleaseName(functionType: FunctionType): string {
   return `${functionTypeCName(functionType)}_release`;
 }
 
+function functionTypeContextParameterName(functionType: FunctionType): string {
+  const occupied = new Set(functionType.parameters.map((parameter) => (
+    cBindingName(parameter.name)
+  )));
+  let candidate = "context";
+  while (occupied.has(candidate)) candidate = `_${candidate}`;
+  return candidate;
+}
+
 function declarationFunctionType(declaration: FunctionDeclaration, skipParameters = 0): FunctionType {
   return {
     parameters: declaration.parameters.slice(skipParameters).map((parameter) => ({
@@ -2783,8 +2795,9 @@ function generateFunctionAdapter(
   const result = mapType(effectiveReturnType, structs, enums, foreignNamedTypes);
   const invoke = `${cFunctionName(declaration.name)}(${names.join(", ") || ""})`;
   const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
-  return `static __attribute__((unused)) ${result} ${functionAdapterName(declaration.name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
-  (void)context;
+  const contextName = functionTypeContextParameterName(type);
+  return `static __attribute__((unused)) ${result} ${functionAdapterName(declaration.name)}(void *${contextName}${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  (void)${contextName};
   ${returned}
 }`;
 }
@@ -2813,8 +2826,9 @@ function generateStandardFunctionAdapter(
     ? resultTypeName(signature.returnType, signature.errorType)
     : signature.returnType;
   const returned = effectiveReturnType === "void" ? `${invoke};\n  return;` : `return ${invoke};`;
-  return `static __attribute__((unused)) ${mapType(effectiveReturnType, structs, enums, foreignNamedTypes)} ${standardFunctionAdapterName(name)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
-  (void)context;
+  const contextName = functionTypeContextParameterName(functionType);
+  return `static __attribute__((unused)) ${mapType(effectiveReturnType, structs, enums, foreignNamedTypes)} ${standardFunctionAdapterName(name)}(void *${contextName}${parameters.length ? `, ${parameters.join(", ")}` : ""}) {
+  (void)${contextName};
   ${returned}
 }`;
 }
@@ -2827,6 +2841,7 @@ function generateClosureAdapter(
 ): string {
   const type = closureFunctionType(closure);
   const parameters = generateFunctionTypeParameters(type, structs, enums, foreignNamedTypes);
+  const contextName = functionTypeContextParameterName(type);
   const visible = type.parameters.map((parameter) => cBindingName(parameter.name));
   const prefix: string[] = [];
   const hidden = closure.captures.map((capture) => {
@@ -2837,9 +2852,9 @@ function generateClosureAdapter(
     return `&(${stored})`;
   });
   if (closure.captures.length > 0) {
-    prefix.push(`${closureEnvironmentName(closure)} *environment = (${closureEnvironmentName(closure)} *)context;`);
+    prefix.push(`${closureEnvironmentName(closure)} *environment = (${closureEnvironmentName(closure)} *)${contextName};`);
   } else {
-    prefix.push("(void)context;");
+    prefix.push(`(void)${contextName};`);
   }
   const invoke = `${cFunctionName(closure.declaration.name)}(${[...hidden, ...visible].join(", ")})`;
   const effectiveReturnType = type.errorType
@@ -2863,7 +2878,8 @@ function generateClosureAdapterSignature(
   const returnType = type.errorType
     ? resultTypeName(type.returnType, type.errorType)
     : type.returnType;
-  return `static ${mapType(returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *context${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
+  const contextName = functionTypeContextParameterName(type);
+  return `static ${mapType(returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *${contextName}${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
 }
 
 function generateClosureEnvironmentDefinition(
@@ -6505,7 +6521,7 @@ function generateOwnedClosureCaptureValue(
 }
 
 function isStableStorageExpression(expression: Expression): boolean {
-  if (expression.kind === "identifier") return true;
+  if (expression.kind === "identifier" || expression.kind === "argumentReference") return true;
   return (expression.kind === "member" || expression.kind === "index")
     && isStableStorageExpression(expression.object);
 }

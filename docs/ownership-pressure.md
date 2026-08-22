@@ -1928,6 +1928,25 @@ yet executable in an async frame. Main-bound synchronous
 `createApplication()` performs native setup while preserving exactly the same
 executor proof, and the async task composes the resulting Z identity normally.
 
+The route-context follow-up exposed a distinction hidden by the original
+global lookup. Both the AppKit callback and native worker now call one
+payload-matching `contextFor` factory that returns `RouteContext({ application,
+message })`. Treating the returned value as transitively main-bound made a
+worker unable to package an identity it was already allowed to retain and use
+through synchronized methods. Stage 0 and the native resolver now stop
+lifecycle-affinity inheritance at a stored Z ARC class reference: the field is
+an atomic retained handle whose final release already routes to its executor,
+not inline AppKit storage. Direct native fields and isolated value aggregates
+remain transitive. Access through `context.application` still checks the
+referenced member and rejects main-only UI work with `Z0711`.
+
+This gives the new audited aggregate-return summary a real composition probe.
+The imported exhaustive statement `match` maps every `RouteRequest` arm back
+to the same `Application` parameter, preserves that precise identity through
+the returned field, and adds neither a runtime provenance tag nor an interop
+wrapper. Whole-aggregate capture across a new OS-thread boundary remains a
+separate graph-transfer tier.
+
 The subsequent pthread callback probe closes the corresponding checked-import
 gap. A `.zd` callback declared `thread any` now captures the active Z runtime in
 its escaping callback box. Generated invoke and release adapters enter that
@@ -3222,6 +3241,36 @@ does not manufacture mutable access, while assigning a new class reference to a
 captured binding still requires `let`. Stage 0 now records binding reassignment
 separately from instance mutation so those cases cannot collapse into one
 coarse "mutated capture" flag.
+
+## Executor-bound ARC handles inside transportable values
+
+The real Zapp AppKit route-context factory exposed that executor affinity must
+not be inferred transitively through every class field. A Z ARC class reference
+is a transportable identity handle; the class's individual members continue to
+enforce their own executor contracts. Both frontends now allow an ordinary
+value struct such as `RouteContext` to store `Application` and move through
+off-main routing code, while an off-main call to an `on thread.main` member on
+that stored handle still receives `Z0711`. Directly embedding an executor-bound
+value struct or native value remains transitively isolated because its storage
+and destruction occur inline.
+
+The Zapp probe now constructs route contexts for action, background, and
+rejection requests in an imported module, dispatches through the stored
+`Application`, and performs AppKit publication only through its isolated
+member. Hover describes the distinction as a transportable ARC handle whose
+isolated members still require `thread.main`. `Once<Application>` remains
+rejected when the class itself owns main-affine destruction, but merely storing
+another executor-bound ARC handle no longer invents that lifecycle.
+
+Actually building the application, rather than stopping at semantic checks,
+found two independent lowering seams. Callable adapters used a hidden C
+parameter named `context`, which collided with a perfectly valid Z callback
+parameter of the same name. Both emitters now choose a fresh compiler-owned
+name, and the executable callable corpus fixes `context` as a regression case.
+An explicit nested borrow such as `inspect(in context.request)` also arrived in
+Stage 0 as an `argumentReference`; recognizing that node as stable storage
+prevents an invalid address-of temporary in generated C. Neither fix changes Z
+syntax or adds runtime work.
 
 ## Shape-stable value and direct ARC field projections
 

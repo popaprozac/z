@@ -14,8 +14,12 @@ import {
 } from "./application.zs";
 import { refreshProject } from "./background.zs";
 import {
+  RouteRequest,
+  contextFor,
+  dispatchContext,
+} from "./route-context.zs";
+import {
   Handler,
-  Message,
   RouteError,
   createRouteRegistry,
 } from "../message-router/router.zs";
@@ -64,13 +68,13 @@ function createApplication(): Application on thread.main {
   routes.register("reject-action", rejectAction);
   const router = routes.finish();
   const actionConnection = objc.connect(actionButton, move (): void => {
-    const message = Message({ operation: "appkit-action", value: 41 });
-    const routed = attempt router.dispatch(in message);
+    const current = currentApplication();
+    const context = contextFor(current, RouteRequest.action(41));
+    const routed = attempt dispatchContext(in context);
     match (routed) {
       success(ticket) => {
-        const current = currentApplication();
         current.recordAction(ticket);
-        current.publish(ticket);
+        context.application.publish(ticket);
         console.log(`routed AppKit action ${ticket} on main`);
       }
       failure(error) => {

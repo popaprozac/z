@@ -446,7 +446,7 @@ test("restricts Once to main-lifecycle classes while allowing synchronized retri
     /Once<T>.*class.*thread\.main/i,
   );
 
-  const inheritedAffinitySource = `
+  const storedHandleSource = `
     import { Once } from "std/sync";
     import { thread } from "std/thread";
 
@@ -461,10 +461,33 @@ test("restricts Once to main-lifecycle classes while allowing synchronized retri
     const application = Once<Application>();
     function main(): i32 { return 0; }
   `;
+  assert.match(
+    diagnostics(
+      storedHandleSource,
+      "/tmp/z-once-stored-handle.zs",
+    )[0]?.message ?? "",
+    /Once<T>.*class.*thread\.main/i,
+  );
+
+  const inheritedValueAffinitySource = `
+    import { Once } from "std/sync";
+    import { thread } from "std/thread";
+
+    struct WindowState {
+      id: i32 on thread.main;
+    }
+
+    class Application {
+      readonly state: WindowState;
+    }
+
+    const application = Once<Application>();
+    function main(): i32 { return 0; }
+  `;
   assert.equal(
     diagnostics(
-      inheritedAffinitySource,
-      "/tmp/z-once-inherited-affinity.zs",
+      inheritedValueAffinitySource,
+      "/tmp/z-once-inherited-value-affinity.zs",
     ).length,
     0,
   );

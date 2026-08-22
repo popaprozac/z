@@ -12771,6 +12771,10 @@ test("rejects executor-affinity violations in the native resolver", () => {
       fixture: "self-host-reject-thread-affinity-function.zs",
       diagnostic: 'function "publishedValue" requires thread.main executor context',
     },
+    {
+      fixture: "self-host-reject-executor-handle-member.zs",
+      diagnostic: 'method "Application.windowValue" requires thread.main executor context',
+    },
   ] as const;
 
   for (const testCase of cases) {
@@ -12783,6 +12787,17 @@ test("rejects executor-affinity violations in the native resolver", () => {
     assert.equal(result.status, 1, `${testCase.fixture}\n${result.stderr}`);
     assert.ok(result.stderr.includes(testCase.diagnostic), result.stderr);
   }
+
+  const transportable = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-executor-handle-aggregate-valid.zs",
+  );
+  const transportableResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", transportable],
+    { encoding: "utf8" },
+  );
+  assert.equal(transportableResult.status, 0, transportableResult.stderr);
 });
 
 test("rejects class-field views from identities with hidden aliases natively", () => {

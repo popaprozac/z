@@ -2202,6 +2202,11 @@ function collectAggregateExecutorAffinities(
     if (weak) return typeAffinity(weak.target, path);
     const declaration = structs.get(type);
     if (declaration) {
+      // A stored ARC class reference is an executor-routed handle, not inline
+      // executor-affine storage. Retaining or releasing the handle may happen
+      // away from its lifecycle executor; member access still consults the
+      // referenced class's own field and method contracts.
+      if (declaration.kind === "class") return null;
       const inherited = aggregateAffinity(type);
       return inherited ? { ...inherited, fieldPath: [...path, ...inherited.fieldPath] } : null;
     }

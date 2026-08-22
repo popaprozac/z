@@ -533,11 +533,20 @@ function displayError(in error: SaveError): void on thread.main {
 ```
 
 Methods, construction, stored-field access, cleanup, and deinitialization of an
-isolated aggregate require the named executor. Affinity is transitive through
-stored fields: `WindowModel` above is inferred as main-isolated because it owns
-`controller`. Hover reports whether affinity was declared or inherited and
-shows the field path that introduced it. Explicit spelling remains recommended
-for exported API contracts.
+isolated aggregate require the named executor. Affinity remains transitive
+through inline value and native storage. ARC class fields are the deliberate
+exception: `WindowModel` stores a retained, executor-routed handle, so the
+model may carry that identity without inheriting whole-value isolation.
+`controller.refresh()` still requires main proof, and constructing or finally
+destroying `NotesController` still belongs to main. Hover identifies the field
+as a transportable ARC handle and preserves the referenced class's member
+contract.
+
+This does not make every containing aggregate automatically transferable
+between OS threads; ordinary `thread.spawn` capture and ownership rules still
+apply to the complete value graph. It permits construction, return, storage,
+and cleanup of the ARC handle on a registered worker because atomic retain and
+executor-routed final release already preserve its lifecycle.
 
 The current executable tier requires both synchronous and async isolated calls
 to occur under statically proven main context. Automatic scheduling when an

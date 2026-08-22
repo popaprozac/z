@@ -636,6 +636,147 @@ test("shares mixed-affinity class identity while isolating selected members", ()
   }
 }, 30_000);
 
+test("transports executor-bound ARC handles through value aggregates", () => {
+  const directory = mkdtempSync("/tmp/z-executor-handle-aggregate-");
+  const file = resolve(directory, "main.zs");
+  try {
+    const source = `
+      import { Mutex, Once } from "std/sync";
+      import { thread } from "std/thread";
+
+      struct State {
+        count: i32;
+      }
+
+      class Application {
+        readonly state: Mutex<State>;
+        windowId: i32 on thread.main;
+
+        function count(): i32 {
+          return this.state.withLock(
+            (in value): i32 => value.count
+          );
+        }
+
+        function windowValue(): i32 on thread.main {
+          return this.windowId;
+        }
+      }
+
+      struct WorkRequest {
+        name: String;
+        expected: i32;
+      }
+
+      struct WorkContext {
+        application: Application;
+        request: WorkRequest;
+      }
+
+      const applicationRoot = Once<Application>();
+
+      function contextFor(
+        in application: Application,
+        expected: i32
+      ): WorkContext {
+        return WorkContext({
+          application,
+          request: WorkRequest({ name: "count", expected }),
+        });
+      }
+
+      function expected(in request: WorkRequest): i32 {
+        return request.expected;
+      }
+
+      function inspect(in context: WorkContext): i32 {
+        return context.application.count() - expected(in context.request);
+      }
+
+      async function main(): i32 on thread.main {
+        const application = new Application({
+          state: Mutex(State({ count: 42 })),
+          windowId: 7,
+        });
+        const lifetime = applicationRoot.initialize(move application);
+        const worker = thread.spawn(move (): i32 => {
+          const current = applicationRoot.get();
+          const context = contextFor(current, 42);
+          return inspect(in context);
+        });
+        return await worker;
+      }
+    `;
+    writeFileSync(file, source);
+
+    const generated = compileToC(source, file);
+    assert.match(generated, /Z_WorkContext/);
+    assert.match(generated, /Z_Application_retain/);
+    assert.match(
+      generated,
+      /__z_function_adapter_inspect\(void \*_context, const Z_WorkContext \*context\)/,
+    );
+
+    const result = spawnSync(process.execPath, [cli, "run", file], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", file, "--native-frontend"],
+      { encoding: "utf8" },
+    );
+    assert.equal(native.status, 0, native.stderr);
+
+    const declarationHover = hover(
+      source,
+      file,
+      source.indexOf("application: Application;") + 1,
+    )?.contents.value ?? "";
+    assert.match(declarationHover, /transportable ARC handle/);
+    assert.match(declarationHover, /isolated Application members still require thread\.main/);
+
+    const isolatedUse = source.replace(
+      "context.application.count()",
+      "context.application.windowValue()",
+    );
+    const isolatedDiagnostic = diagnostics(isolatedUse, file)[0];
+    assert.equal(isolatedDiagnostic?.code, "Z0711");
+    assert.match(
+      isolatedDiagnostic?.message ?? "",
+      /Application.*windowValue.*requires thread\.main executor context/,
+    );
+
+    const inlineAffinity = `
+      import { thread } from "std/thread";
+
+      struct MainValue {
+        value: i32 on thread.main;
+      }
+
+      struct Envelope {
+        value: MainValue;
+      }
+
+      function wrap(in value: MainValue): Envelope {
+        return Envelope({ value });
+      }
+    `;
+    const inlineDiagnostic = diagnostics(
+      inlineAffinity,
+      "/tmp/z-inline-executor-value.zs",
+    )[0];
+    assert.equal(inlineDiagnostic?.code, "Z0711");
+    assert.match(
+      inlineDiagnostic?.message ?? "",
+      /Envelope.*requires thread\.main executor context/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 120_000);
+
 test("retains Mutex identity in an ordinary owned closure environment", () => {
   const directory = mkdtempSync("/tmp/z-mutex-owned-closure-");
   const file = resolve(directory, "main.zs");

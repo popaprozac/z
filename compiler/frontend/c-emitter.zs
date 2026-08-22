@@ -257,6 +257,32 @@ function appendCallableParameterDeclaration(
   appendCBindingName(inout output, name);
 }
 
+function callableContextParameterName(
+  in functionType: LoweredFunctionType,
+  in expression: LoweredExpression,
+  parameterLabelStart: usize
+): String {
+  let candidate = "context";
+  let occupied = true;
+  while (occupied) {
+    occupied = false;
+    let parameter: usize = 0;
+    while (parameter < functionType.parameters.length) {
+      if (
+        expression.kind == LoweredExpressionKind.closureValue
+        && expression.labels[parameterLabelStart + parameter] == candidate
+      ) occupied = true;
+      else if (
+        expression.kind != LoweredExpressionKind.closureValue
+        && functionType.parameters[parameter].name == candidate
+      ) occupied = true;
+      parameter = parameter + 1;
+    }
+    if (occupied) candidate = `_${candidate}`;
+  }
+  return candidate;
+}
+
 function appendThreadSpawnHelperName(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -4487,6 +4513,11 @@ function appendCallableHelpers(
         && expression.labels.length
           != captureLabelStart + expression.captureTypes.length
       ) throw "native callable helper lost its closure labels";
+      const contextName = callableContextParameterName(
+        in functionType,
+        in expression,
+        parameterLabelStart
+      );
       if (expression.captureTypes.length > 0) {
         output.append("typedef struct ");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -4563,7 +4594,8 @@ function appendCallableHelpers(
       output.append(returnType);
       output.append(" ");
       appendCallableHelperName(inout output, owner, expressionIndex);
-      output.append("_call(void *context");
+      output.append("_call(void *");
+      appendCBindingName(inout output, contextName);
       let parameter: usize = 0;
       while (parameter < functionType.parameters.length) {
         output.append(", ");
@@ -4584,13 +4616,17 @@ function appendCallableHelpers(
       }
       output.append(") {\n");
       if (expression.captureTypes.length == 0) {
-        output.append("  (void)context;\n");
+        output.append("  (void)");
+        appendCBindingName(inout output, contextName);
+        output.append(";\n");
       } else {
         output.append("  ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_environment *environment = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_environment *)context;\n");
+        output.append("_environment *)");
+        appendCBindingName(inout output, contextName);
+        output.append(";\n");
         let capture: usize = 0;
         while (capture < expression.captureTypes.length) {
           output.append("  ");

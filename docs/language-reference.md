@@ -147,6 +147,25 @@ the owning executor so `deinit` remains on main. Arbitrary foreign-created
 threads will require an executor-registration contract before they receive the
 same cleanup guarantee.
 
+A value aggregate may store that ARC identity without inheriting its lifecycle
+affinity merely from the reference field:
+
+```z
+struct RouteContext {
+  application: Application;
+  message: Message;
+}
+```
+
+The context may be constructed, returned, and cleaned up on a registered
+worker. Access through `context.application` still checks each `Application`
+member: synchronized unrestricted methods remain available, while `window` or
+another main-only member still produces `Z0711`. Directly stored AppKit values,
+main-isolated value structs, and other inline executor-affine storage continue
+to make the containing aggregate main-bound. Moving the complete context across
+an OS-thread boundary remains subject to its ordinary whole-graph transfer
+contract.
+
 `get()` and lifetime cleanup are synchronized. If `get()` wins, its retained
 identity remains valid after the module root is removed; if cleanup wins, the
 later `get()` traps as a closed-lifetime access. Code must therefore join
