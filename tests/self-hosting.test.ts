@@ -6275,6 +6275,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   );
   assert.equal(existsSync(foreignAdapter), true);
 
+  const version = spawnSync(executable, ["version"], { encoding: "utf8" });
+  assert.equal(version.status, 0, version.stderr);
+  assert.equal(
+    version.stdout,
+    "z 0.1.0-dev revision 2026-08-22 compiler-api 1\n",
+  );
+
   const checking = spawnSync(
     executable,
     ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs")],

@@ -45,7 +45,21 @@ import {
   type Stage1TypeShape,
 } from "./self-hosting.ts";
 
+const Z_LANGUAGE_VERSION = "0.1.0-dev";
+const Z_COMPILER_REVISION = "2026-08-22";
+const Z_COMPILER_API_REVISION = 1;
+
 const [command, ...commandArguments] = process.argv.slice(2);
+if (command === "version") {
+  if (commandArguments.length > 0) {
+    console.error("usage: z version");
+    process.exit(2);
+  }
+  console.log(
+    `z ${Z_LANGUAGE_VERSION} revision ${Z_COMPILER_REVISION} compiler-api ${Z_COMPILER_API_REVISION}`,
+  );
+  process.exit(0);
+}
 const projectAwareCommands = new Set(["build", "check", "emit", "run", "test"]);
 const projectAware = command ? projectAwareCommands.has(command) : false;
 const suppliedInputArgument = commandArguments[0];

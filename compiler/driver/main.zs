@@ -1073,11 +1073,19 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1) {
-    console.error("usage: z <check|test|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
+    console.error("usage: z <version|check|test|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
     return 2;
   }
 
   const command = copy arguments[0];
+  if (command == "version") {
+    if (arguments.length != 1) {
+      console.error("usage: z version");
+      return 2;
+    }
+    console.log("z 0.1.0-dev revision 2026-08-22 compiler-api 1");
+    return 0;
+  }
   if (command == "check") {
     if (arguments.length > 2) {
       console.error("usage: z check [entry.zs|project]");
