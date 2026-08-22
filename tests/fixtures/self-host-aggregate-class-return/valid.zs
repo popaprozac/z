@@ -1,4 +1,4 @@
-import { Application, wrap } from "./factory.zs";
+import { Application, wrapBranch } from "./factory.zs";
 
 function updateAndInspect(
   inout updated: Application,
@@ -11,6 +11,6 @@ function updateAndInspect(
 function main(): i32 {
   let application = new Application({ value: 41 });
   const preview = new Application({ value: 1 });
-  const context = wrap(preview);
+  const context = wrapBranch(preview, true);
   return updateAndInspect(inout application, context.application) - 1;
 }

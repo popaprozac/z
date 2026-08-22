@@ -9,6 +9,7 @@ import {
   Program,
   ReceiverMode,
   StatementKind,
+  StatementArena,
   Visibility,
 } from "./parser.zs";
 import {
@@ -125,7 +126,6 @@ function appendFunctionDeclarationAggregateClassIdentityFields(
     declaration.asynchronous
     || declaration.typeParameters.length > 0
     || declaration.receiverMode != ReceiverMode.none
-    || declaration.body.roots.length != 1
   ) return;
   match (in declaration.errorType) {
     some(_) => return;
@@ -147,28 +147,165 @@ function appendFunctionDeclarationAggregateClassIdentityFields(
   if (aggregateIndex >= program.aggregates.length) {
     return;
   }
-  const statementIndex = declaration.body.roots[0];
-  if (statementIndex >= declaration.body.nodes.length) {
-    return;
+  if (!statementArenaDefinitelyReturns(declaration.body)) return;
+  let joinedNames = Array<String>();
+  let joinedParameterIndices = Array<usize>();
+  let initialized = false;
+  if (!collectAggregateClassIdentityReturns(
+    program,
+    declaration,
+    declaration.body,
+    declaration.body.roots,
+    aggregateIndex,
+    inout joinedNames,
+    inout joinedParameterIndices,
+    inout initialized
+  )) return;
+  for (const name of joinedNames) {
+    names.push(name.copyBytes(0, name.byteLength));
   }
-  const statement = view declaration.body.nodes[statementIndex];
-  if (statement.kind != StatementKind.returnStatement) {
-    return;
+  for (const parameterIndex of joinedParameterIndices) {
+    parameterIndices.push(parameterIndex);
   }
-  match (in statement.expression) {
-    some(expression) => match (in expression.tree) {
-      some(tree) => appendAggregateClassIdentityFieldsFromTree(
+}
+
+function statementArenaDefinitelyReturns(in arena: StatementArena): boolean {
+  if (arena.roots.length == 0) return false;
+  const root = arena.roots[arena.roots.length - 1];
+  return statementNodeDefinitelyReturns(
+    arena,
+    root
+  );
+}
+
+function statementNodeDefinitelyReturns(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (index >= arena.nodes.length) return false;
+  const statement = view arena.nodes[index];
+  if (
+    statement.kind == StatementKind.returnStatement
+    || statement.kind == StatementKind.throwStatement
+  ) return true;
+  if (statement.kind == StatementKind.blockStatement) {
+    if (statement.children.length == 0) return false;
+    const child = statement.children[statement.children.length - 1];
+    return statementNodeDefinitelyReturns(
+      arena,
+      child
+    );
+  }
+  if (
+    statement.kind == StatementKind.ifStatement
+    && statement.children.length == 2
+  ) {
+    const thenBranch = statement.children[0];
+    const elseBranch = statement.children[1];
+    return statementNodeDefinitelyReturns(arena, thenBranch)
+      && statementNodeDefinitelyReturns(arena, elseBranch);
+  }
+  return false;
+}
+
+function collectAggregateClassIdentityReturns(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  in arena: StatementArena,
+  in roots: Array<usize>,
+  aggregateIndex: usize,
+  inout names: Array<String>,
+  inout parameterIndices: Array<usize>,
+  inout initialized: boolean
+): boolean {
+  for (const statementIndex of roots) {
+    if (statementIndex >= arena.nodes.length) return false;
+    const statement = view arena.nodes[statementIndex];
+    if (statement.kind == StatementKind.returnStatement) {
+      let returnedNames = Array<String>();
+      let returnedParameterIndices = Array<usize>();
+      let direct = false;
+      match (in statement.expression) {
+        some(expression) => match (in expression.tree) {
+          some(tree) => direct = appendAggregateClassIdentityFieldsFromTree(
+            program,
+            declaration,
+            tree,
+            aggregateIndex,
+            inout returnedNames,
+            inout returnedParameterIndices
+          );
+          none => {}
+        }
+        none => {}
+      }
+      if (!direct) return false;
+      if (!initialized) {
+        for (const name of returnedNames) {
+          names.push(name.copyBytes(0, name.byteLength));
+        }
+        for (const parameterIndex of returnedParameterIndices) {
+          parameterIndices.push(parameterIndex);
+        }
+        initialized = true;
+      } else if (!aggregateClassIdentitySourcesEqual(
+        names,
+        parameterIndices,
+        returnedNames,
+        returnedParameterIndices
+      )) return false;
+      continue;
+    }
+    if (
+      statement.kind == StatementKind.blockStatement
+      || statement.kind == StatementKind.ifStatement
+    ) {
+      if (!collectAggregateClassIdentityReturns(
         program,
         declaration,
-        tree,
+        arena,
+        statement.children,
         aggregateIndex,
         inout names,
-        inout parameterIndices
-      );
-      none => {}
+        inout parameterIndices,
+        inout initialized
+      )) return false;
+      continue;
     }
-    none => {}
+    return false;
   }
+  return true;
+}
+
+function aggregateClassIdentitySourcesEqual(
+  in leftNames: Array<String>,
+  in leftParameterIndices: Array<usize>,
+  in rightNames: Array<String>,
+  in rightParameterIndices: Array<usize>
+): boolean {
+  if (
+    leftNames.length != leftParameterIndices.length
+    || rightNames.length != rightParameterIndices.length
+    || leftNames.length != rightNames.length
+  ) return false;
+  let leftIndex: usize = 0;
+  while (leftIndex < leftNames.length) {
+    let found = false;
+    let rightIndex: usize = 0;
+    while (rightIndex < rightNames.length) {
+      if (
+        leftNames[leftIndex] == rightNames[rightIndex]
+        && leftParameterIndices[leftIndex] == rightParameterIndices[rightIndex]
+      ) {
+        found = true;
+        break;
+      }
+      rightIndex = rightIndex + 1;
+    }
+    if (!found) return false;
+    leftIndex = leftIndex + 1;
+  }
+  return true;
 }
 
 function appendAggregateClassIdentityFieldsFromTree(
@@ -178,24 +315,24 @@ function appendAggregateClassIdentityFieldsFromTree(
   aggregateIndex: usize,
   inout names: Array<String>,
   inout parameterIndices: Array<usize>
-): void {
+): boolean {
   const root = tree.root;
   if (
     tree.nodes[root].kind != ExpressionKind.callExpression
     || tree.nodes[root].children.length != 2
-  ) return;
+  ) return false;
   const callee = tree.nodes[root].children[0];
   if (
     tree.nodes[callee].kind != ExpressionKind.identifierExpression
     || tree.nodes[callee].value != declaration.returnType.name
-  ) return;
+  ) return false;
   const object = tree.nodes[root].children[1];
   if (tree.nodes[object].kind != ExpressionKind.objectExpression) {
-    return;
+    return false;
   }
   for (const label of tree.nodes[object].labels) {
     if (label == "...") {
-      return;
+      return false;
     }
   }
   let fieldIndex: usize = 0;
@@ -246,6 +383,7 @@ function appendAggregateClassIdentityFieldsFromTree(
     }
     fieldIndex = fieldIndex + 1;
   }
+  return true;
 }
 
 function functionDeclarationClassIdentitySource(

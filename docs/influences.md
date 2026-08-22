@@ -70,8 +70,9 @@ not be mistaken for implemented Z semantics:
   in an explicitly initialized value-struct class field and restores it on
   direct projection for bounded call exclusivity; it does not grant class-field
   view containment. A fifth audited slice carries a same-typed class parameter
-  through a synchronous free function whose entire body directly returns that
-  value struct, including across source modules. These lower to ordinary
+  through a synchronous free function whose body directly returns that value
+  struct, including across source modules and agreeing exhaustive `if` joins.
+  These lower to ordinary
   addresses and retained class pointers with no lifetime syntax or runtime
   checks. Flow-sensitive provenance
   through arbitrary calls, broader stored or returned aggregates, nested class

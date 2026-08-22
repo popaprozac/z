@@ -814,11 +814,11 @@ replacing a mutable direct field updates the evidence. A context holding a
 different class instance remains valid. This is compile-time call-exclusivity
 evidence only: it adds no runtime metadata and does not make the stored class
 locally contained for class-field `view` projection. Spread, nested aggregate
-paths, collections, general returned aggregates, branch joins, and suspension
-remain conservative boundaries except for one audited direct-return shape. A
-synchronous, nonthrowing, nongeneric free function whose complete body is one
-direct value-struct construction preserves class parameters placed into direct
-class fields:
+paths, collections, general returned aggregates, and suspension remain
+conservative boundaries except for one audited direct-return shape. A
+synchronous, nonthrowing, nongeneric free function whose body contains only
+blocks, `if` branches, and direct value-struct returns preserves class
+parameters placed into direct class fields when every reachable return agrees:
 
 ```z
 function contextFor(in application: Application): Context {
@@ -832,14 +832,16 @@ publishAndInspect(inout application, context.application); // distinct: accepted
 ```
 
 Calling `contextFor(application)` instead preserves the shared identity and the
-same exclusive call is rejected. The summary crosses source-module boundaries
-and adds no source syntax or runtime provenance. A local statement, branch,
-spread, throw, async effect, generic parameter, different return source, or
-indirect initializer makes the result opaque again. An opaque direct class
+same exclusive call is rejected. An early `if` return followed by a final
+return, or an exhaustive `if`/`else if`/`else`, receives the same summary when
+all returns map each field to the same parameter. The summary crosses
+source-module boundaries and adds no source syntax or runtime provenance. A
+local statement, disagreeing branch, spread, throw, async effect, generic
+parameter, different return source, or indirect initializer makes the result
+opaque again. An opaque direct class
 field is treated as potentially aliasing any other class identity in the same
 exclusive call; only precise construction evidence restores independence. A
-direct inline closure passed to
-the call also contributes its captured ARC identities:
+direct inline closure passed to the call also contributes its captured ARC identities:
 capturing `inspector` in a callback beside `inout document` is rejected because
 the callback may run before the synchronous call returns. Provenance through
 arbitrary function results, previously stored callable environments, and

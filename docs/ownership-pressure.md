@@ -3180,19 +3180,29 @@ updateAndInspect(inout application, context.application); // accepted
 
 Both frontends audit the complete declaration rather than infer from the
 function name or return type. The function must be synchronous, nonthrowing,
-nongeneric, receiver-free, and contain exactly one `return Struct({ ... });`
-statement without spread. Each direct class field initialized from a same-typed
+nongeneric, and receiver-free. The initial form required exactly one
+`return Struct({ ... });` statement without spread. Each direct class field
+initialized from a same-typed
 class parameter carries that argument's identity into the caller, including
 across a source-module import. Passing `application` to `wrap` therefore still
 rejects the overlapping call, while passing `preview` proves independence.
 
 This is exported semantic evidence, not a hidden runtime wrapper. Generated C
 still returns the ordinary value struct and performs the same ARC retains and
-releases. A branch, local temporary, spread, throw, async effect, generic
-function, indirect initializer, or different return source earns no summary;
+releases. A local temporary, spread, throw, async effect, generic function,
+indirect initializer, or different return source earns no summary;
 its direct class fields retain the wildcard unknown-alias behavior. This strict
-fallback is intentional even when a human can see two branches return the same
-parameter: the compiler does not turn partial provenance into a safety claim.
+fallback keeps partial provenance from becoming a safety claim.
+
+The first control-flow join now admits branches without broadening that trust
+boundary. The body may contain only blocks, `if`/`else if`/`else`, and direct
+struct returns; it must return on every path, and every return must map each
+class field to the same parameter. This accepts both an early `if` return plus
+a final fallthrough return and an exhaustive conditional, including through an
+imported function signature. If one branch maps `application` from `primary`
+and another maps it from `alternate`, the whole result remains opaque. Locals,
+assignments, loops, `match`, and indirect constructors remain deliberately
+outside this first join.
 
 The focused capture follow-up resolved an adjacent frontend mismatch without
 adding syntax. Both frontends now preserve the direct class rule through a

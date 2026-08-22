@@ -4091,7 +4091,7 @@ test("tracks direct ARC aliases through bounded exclusive class loans", () => {
   );
 });
 
-test("tracks ARC identities stored in direct local value-struct fields", () => {
+test("tracks ARC identities through direct fields and audited struct returns", () => {
   const prefix = `
     class Application { value: i32; }
     struct Context { application: Application; }
@@ -4187,7 +4187,7 @@ test("tracks ARC identities stored in direct local value-struct fields", () => {
     [],
   );
 
-  const opaqueBranch = `${prefix}
+  const agreeingBranch = `${prefix}
     function wrap(in application: Application, condition: boolean): Context {
       if (condition) return Context({ application });
       return Context({ application });
@@ -4199,8 +4199,29 @@ test("tracks ARC identities stored in direct local value-struct fields", () => {
       return updateAndInspect(inout application, context.application);
     }
   `;
+  assert.deepEqual(
+    diagnostics(agreeingBranch, "aggregate-agreeing-branch-class-alias.zs"),
+    [],
+  );
+
+  const disagreeingBranch = `${prefix}
+    function wrap(
+      in primary: Application,
+      in alternate: Application,
+      condition: boolean
+    ): Context {
+      if (condition) return Context({ application: primary });
+      return Context({ application: alternate });
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, application, true);
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
   assert.throws(
-    () => compileToC(opaqueBranch, "aggregate-opaque-branch-class-alias.zs"),
+    () => compileToC(disagreeingBranch, "aggregate-disagreeing-branch-class-alias.zs"),
     /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
   );
 });

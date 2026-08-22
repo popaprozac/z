@@ -23,5 +23,5 @@ function main(): i32 {
   let application = new Application({ value: 41 });
   const preview = new Application({ value: 1 });
   const context = wrap(preview, true);
-  return updateAndInspect(inout application, context.application);
+  return updateAndInspect(inout application, context.application) - 1;
 }

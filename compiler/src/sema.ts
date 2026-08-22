@@ -13476,14 +13476,97 @@ function transparentAggregateClassAliasFields(
     declaration.async
     || declaration.errorType
     || declaration.rawBody
-    || declaration.body.length !== 1
     || (declaration.typeParameters?.length ?? 0) > 0
   ) return [];
   const aggregate = structs.get(declaration.returnType.name);
   if (aggregate?.kind !== "struct") return [];
-  const statement = declaration.body[0];
-  const returned = statement?.kind === "return" ? statement.expression : null;
-  if (!returned) return [];
+  if (
+    declaration.body.length === 0
+    || !statementReturns(declaration.body.at(-1))
+  ) return [];
+  const returns: AggregateClassAliasFieldSource[][] = [];
+  if (!collectAggregateClassAliasReturns(
+    declaration.body,
+    declaration,
+    aggregate,
+    structs,
+    returns,
+  ) || returns.length === 0) return [];
+  const joined = returns[0];
+  if (!returns.every((sources) => aggregateClassAliasSourcesEqual(joined, sources))) {
+    return [];
+  }
+  return joined;
+}
+
+function collectAggregateClassAliasReturns(
+  statements: readonly Statement[],
+  declaration: FunctionDeclaration,
+  aggregate: StructDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  returns: AggregateClassAliasFieldSource[][],
+): boolean {
+  for (const statement of statements) {
+    if (statement.kind === "return") {
+      if (!statement.expression) return false;
+      const sources = aggregateClassAliasFieldsForReturn(
+        statement.expression,
+        declaration,
+        aggregate,
+        structs,
+      );
+      if (!sources) return false;
+      returns.push([...sources]);
+      continue;
+    }
+    if (statement.kind === "block") {
+      if (!collectAggregateClassAliasReturns(
+        statement.statements,
+        declaration,
+        aggregate,
+        structs,
+        returns,
+      )) return false;
+      continue;
+    }
+    if (statement.kind === "if") {
+      if (!collectAggregateClassAliasReturns(
+        statement.thenBranch.statements,
+        declaration,
+        aggregate,
+        structs,
+        returns,
+      )) return false;
+      if (statement.elseBranch?.kind === "block") {
+        if (!collectAggregateClassAliasReturns(
+          statement.elseBranch.statements,
+          declaration,
+          aggregate,
+          structs,
+          returns,
+        )) return false;
+      } else if (statement.elseBranch?.kind === "if") {
+        if (!collectAggregateClassAliasReturns(
+          [statement.elseBranch],
+          declaration,
+          aggregate,
+          structs,
+          returns,
+        )) return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function aggregateClassAliasFieldsForReturn(
+  returned: Expression,
+  declaration: FunctionDeclaration,
+  aggregate: StructDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
+): readonly AggregateClassAliasFieldSource[] | null {
   const initializer = returned.kind === "structExpression"
     && returned.typeName === aggregate.name
     ? returned
@@ -13494,7 +13577,7 @@ function transparentAggregateClassAliasFields(
       && returned.arguments[0].kind === "objectExpression"
       ? returned.arguments[0]
       : null;
-  if (!initializer || initializer.spread) return [];
+  if (!initializer || initializer.spread) return null;
   const sources: AggregateClassAliasFieldSource[] = [];
   for (const fieldInitializer of initializer.fields) {
     const field = aggregate.fields.find((candidate) => (
@@ -13518,6 +13601,18 @@ function transparentAggregateClassAliasFields(
     }
   }
   return sources;
+}
+
+function aggregateClassAliasSourcesEqual(
+  left: readonly AggregateClassAliasFieldSource[],
+  right: readonly AggregateClassAliasFieldSource[],
+): boolean {
+  return left.length === right.length && left.every((source) => (
+    right.some((candidate) => (
+      candidate.field === source.field
+      && candidate.parameterIndex === source.parameterIndex
+    ))
+  ));
 }
 
 function recordClassAliasBinding(

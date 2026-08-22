@@ -12834,7 +12834,7 @@ test("tracks one canonical ARC identity through a transparent Once accessor nati
   assert.equal(validResult.status, 0, validResult.stderr);
 });
 
-test("tracks ARC identities stored in direct local value-struct fields natively", () => {
+test("tracks ARC identities through direct fields and audited struct returns natively", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-reject-aggregate-class-alias/main.zs",
@@ -12854,7 +12854,7 @@ test("tracks ARC identities stored in direct local value-struct fields natively"
     ["projected.zs", /ARC aliases "application" and "observed"/],
     ["assigned.zs", /ARC aliases "application" and "context\.application"/],
     ["opaque.zs", /ARC aliases "application" and "context\.application"/],
-    ["opaque-branch.zs", /ARC aliases "application" and "context\.application"/],
+    ["branch-disagreement.zs", /ARC aliases "application" and "context\.application"/],
   ] as const) {
     const rejected = spawnSync(
       process.execPath,
@@ -12894,6 +12894,17 @@ test("tracks ARC identities stored in direct local value-struct fields natively"
     { encoding: "utf8" },
   );
   assert.equal(transparentValidResult.status, 0, transparentValidResult.stderr);
+
+  const branchValid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-aggregate-class-alias/branch-valid.zs",
+  );
+  const branchValidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", branchValid],
+    { encoding: "utf8" },
+  );
+  assert.equal(branchValidResult.status, 0, branchValidResult.stderr);
 
   const moduleValid = resolve(
     projectRoot,
