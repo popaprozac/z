@@ -6889,6 +6889,9 @@ function emitFrameExpressionInner(
           if (expression.callee.property === "appendAscii") {
             return `z_text_buffer_append_ascii(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
           }
+          if (expression.callee.property === "appendCodePoint") {
+            return `z_text_buffer_append_code_point(&(${receiver}), ${emitFrameExpression(expression.arguments[0], plan, fileName)})`;
+          }
           if (expression.callee.property === "finish") return receiver;
         }
         if (parseDynamicArrayType(receiverType) && expression.callee.property === "push") {

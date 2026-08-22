@@ -2350,6 +2350,32 @@ Unicode scalar value, rejects surrogate and out-of-range values, and encodes it
 as UTF-8. The explicit import keeps this specialized construction API out of
 the language prelude.
 
+## JSON values
+
+JSON is an explicit source-backed standard module rather than a compiler-global
+object:
+
+```z
+import json from "std/json";
+
+function read(in source: String): String throws json.JsonError {
+  const value = try json.parse(source);
+  return json.stringify(in value);
+}
+```
+
+`JsonValue` is an owned recursive enum with `nullValue`, `boolean`, `number`,
+`string`, `array`, and `object` variants. Arrays own their elements and objects
+own `Map<String, JsonValue>` entries, so ordinary `move`, `in`, matching, and
+deterministic cleanup rules apply. `parse` accepts exactly one JSON value,
+decodes Unicode escapes into UTF-8, limits nesting, and throws `JsonError` with
+zero-based byte `offset` plus one-based `line` and `column`. `stringify` emits
+compact JSON and borrows the complete value graph.
+
+The DOM uses `f64` for untyped JSON numbers. The planned compiler-derived
+`decode<T>` tier parses integer fields directly into their requested Z types;
+it must not route `u64` through `f64` and lose precision.
+
 ## Files, processes, and program arguments
 
 System facilities are explicit standard-module imports. File operations and

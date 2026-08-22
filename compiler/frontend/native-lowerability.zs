@@ -82,7 +82,8 @@ function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
     || name == "boolean"
     || name == "i32"
     || name == "u8"
-    || name == "usize";
+    || name == "usize"
+    || name == "f64";
 }
 
 function nativeExplicitCopyTypeSupported(
@@ -677,7 +678,7 @@ function validateNativeExpressionTree(
           throw loweringBoundary(
             path,
             "Z1000",
-            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, and usize`,
+            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, usize, and f64`,
             tree.nodes[child].line,
             tree.nodes[child].column,
             length
@@ -1180,6 +1181,7 @@ function validateNativeBody(
             if (
               iterableType.byteLength > 0
               && !typeUsesGeneric(iterableType, "Array")
+              && !typeUsesGeneric(iterableType, "Map")
               && !nativeFixedArrayTypeSupported(iterableType)
             ) {
               throw loweringBoundary(

@@ -1317,6 +1317,8 @@ function appendExpression(
         output.append("Z_TEMPLATE_U8, .value.u8_value = ");
       } else if (declaration.expressions[index].labels[part] == "usize") {
         output.append("Z_TEMPLATE_USIZE, .value.usize_value = ");
+      } else if (declaration.expressions[index].labels[part] == "f64") {
+        output.append("Z_TEMPLATE_F64, .value.f64_value = ");
       } else {
         throw "native C emission cannot format this template value type";
       }
@@ -4194,6 +4196,10 @@ function appendStatement(
       declaration.statements[index].labels,
       "fixed"
     );
+    const mapIterable = labelsContain(
+      declaration.statements[index].labels,
+      "map"
+    );
     if (
       fixedIterable
       && declaration.statements[index].labels.length < 3
@@ -4237,22 +4243,39 @@ function appendStatement(
     output.append(elementType);
     output.append(" ");
     appendCBindingName(inout output, declaration.statements[index].name);
-    output.append(" = *Z_");
-    output.append(declaration.statements[index].labels[0]);
-    output.append("_at(&(");
-    if (viewIterable) output.append("(*(");
-    match (in declaration.statements[index].expression) {
-      some(iterable) => try appendExpression(
-        inout output,
-        declaration,
-        iterable
-      );
-      none => throw "native C emission received a for without an iterable";
+    if (mapIterable) {
+      output.append(" = (");
+      if (viewIterable) output.append("(*(");
+      match (in declaration.statements[index].expression) {
+        some(iterable) => try appendExpression(
+          inout output,
+          declaration,
+          iterable
+        );
+        none => throw "native C emission received a for without an iterable";
+      }
+      if (viewIterable) output.append("))");
+      output.append(").entries[");
+      output.append(position);
+      output.append("];\n");
+    } else {
+      output.append(" = *Z_");
+      output.append(declaration.statements[index].labels[0]);
+      output.append("_at(&(");
+      if (viewIterable) output.append("(*(");
+      match (in declaration.statements[index].expression) {
+        some(iterable) => try appendExpression(
+          inout output,
+          declaration,
+          iterable
+        );
+        none => throw "native C emission received a for without an iterable";
+      }
+      if (viewIterable) output.append("))");
+      output.append("), ");
+      output.append(position);
+      output.append(");\n");
     }
-    if (viewIterable) output.append("))");
-    output.append("), ");
-    output.append(position);
-    output.append(");\n");
     const body = declaration.statements[index].children[0];
     try appendBranch(inout output, declaration, body, depth + 1);
     appendIndent(inout output, depth);
@@ -9874,8 +9897,21 @@ function appendMapRuntime(
     const ownedFunctionGet = declaration.valueType.kind
       == LoweredTypeKind.functionType;
     let supportsRemove = false;
+    let hasViewOption = false;
     for (const enumeration of program.enums) {
       if (enumeration.name == ownedOptionName) supportsRemove = true;
+      if (enumeration.name == optionName) hasViewOption = true;
+    }
+    if (!ownedFunctionGet && !hasViewOption) {
+      output.append("typedef ");
+      output.append(valueType);
+      if (
+        declaration.valueType.kind != LoweredTypeKind.cstringType
+        && declaration.valueType.kind != LoweredTypeKind.foreignHandleType
+      ) output.append(" const *");
+      output.append(" Z_");
+      output.append(optionName);
+      output.append(";\n\n");
     }
     output.append("static inline __attribute__((unused)) size_t Z_");
     output.append(declaration.name);
@@ -11360,7 +11396,7 @@ function emitLoweredC(
   ) {
     output.append("#if !defined(_WIN32) && !defined(__APPLE__) && !defined(_POSIX_C_SOURCE)\n#define _POSIX_C_SOURCE 200809L\n#endif\n");
   }
-  output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdlib.h>\n#include <string.h>\n");
+  output.append("#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n");
   output.append("#ifndef Z_API\n#define Z_API\n#endif\n");
   for (const header of program.foreignHeaders) {
     output.append("#include \"");
@@ -11381,17 +11417,6 @@ function emitLoweredC(
     || usesMainDelay
   ) {
     output.append("#include <errno.h>\n");
-  }
-  if (
-    usesReadBytes
-    || usesReadText
-    || usesWriteText
-    || usesReplace
-    || usesConsole
-    || usesOnce
-    || testCount > 0
-  ) {
-    output.append("#include <stdio.h>\n");
   }
   if (
     usesExists
@@ -11601,7 +11626,8 @@ function emitLoweredC(
   output.append("  Z_TEMPLATE_BOOLEAN,\n");
   output.append("  Z_TEMPLATE_I32,\n");
   output.append("  Z_TEMPLATE_U8,\n");
-  output.append("  Z_TEMPLATE_USIZE\n");
+  output.append("  Z_TEMPLATE_USIZE,\n");
+  output.append("  Z_TEMPLATE_F64\n");
   output.append("} Z_TemplatePartKind;\n\n");
   output.append("typedef struct Z_TemplatePart {\n");
   output.append("  Z_TemplatePartKind kind;\n");
@@ -11611,6 +11637,7 @@ function emitLoweredC(
   output.append("    int32_t i32_value;\n");
   output.append("    uint8_t u8_value;\n");
   output.append("    size_t usize_value;\n");
+  output.append("    double f64_value;\n");
   output.append("  } value;\n");
   output.append("} Z_TemplatePart;\n\n");
   output.append("#define Z_STRING_LITERAL(value) ((Z_String){ .data = (value), .length = sizeof(value) - 1, .capacity = 0 })\n\n");
@@ -11803,6 +11830,11 @@ function emitLoweredC(
   output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.u8_value);\n");
   output.append("    } else if (part.kind == Z_TEMPLATE_USIZE) {\n");
   output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.usize_value);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_F64) {\n");
+  output.append("      char buffer[64];\n");
+  output.append("      const int length = snprintf(buffer, sizeof(buffer), \"%.17g\", part.value.f64_value);\n");
+  output.append("      if (length < 0) abort();\n");
+  output.append("      z_string_append_bytes(&result, buffer, (size_t)length);\n");
   output.append("    }\n");
   output.append("  }\n");
   output.append("  return result;\n");

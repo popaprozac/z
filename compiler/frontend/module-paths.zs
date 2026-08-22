@@ -32,6 +32,28 @@ export function isStandardModuleHeader(in header: String): boolean {
   );
 }
 
+export function sourceStandardModulePathMatches(
+  in path: String,
+  in header: String
+): boolean {
+  if (!isStandardModuleHeader(header) || header == "std") return false;
+  const relative = header.copyBytes(4, header.byteLength);
+  const suffix = `stdlib/${relative}.zs`;
+  if (path.byteLength < suffix.byteLength) return false;
+  const start = path.byteLength - suffix.byteLength;
+  if (start > 0 && !isSlash(path.byteAt(start - 1))) return false;
+  let index: usize = 0;
+  while (index < suffix.byteLength) {
+    const expected = suffix.byteAt(index);
+    const actual = path.byteAt(start + index);
+    if (expected == 47) {
+      if (!isSlash(actual)) return false;
+    } else if (actual != expected) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
 export function directoryName(in path: String): String {
   let index = path.byteLength;
   while (index > 0) {

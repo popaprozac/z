@@ -45,6 +45,7 @@ import {
   genericTypeShape,
   nativeFunctionSignature,
   nullableTargetType,
+  qualifiedTypeMember,
 } from "./semantic-type-shapes.zs";
 import {
   NativeValueBinding,
@@ -2142,6 +2143,15 @@ function lowerTypeName(
           name: intrinsicMapName(keyType, valueType),
         });
       }
+      if (generic.base == "Map.Entry" && generic.arguments.length == 2) {
+        const keyType = try lowerTypeName(program, generic.arguments[0]);
+        const valueType = try lowerTypeName(program, generic.arguments[1]);
+        const mapName = intrinsicMapName(keyType, valueType);
+        return LoweredType({
+          kind: LoweredTypeKind.structType,
+          name: `${mapName}_Entry`,
+        });
+      }
       if (generic.base == "Set" && generic.arguments.length == 1) {
         const elementType = try lowerTypeName(program, generic.arguments[0]);
         return LoweredType({
@@ -2562,6 +2572,23 @@ function lowerModuleTypeName(
         importedTypes[importedIndex].targetName.byteLength
       ),
     });
+  }
+  const qualifiedMember = qualifiedTypeMember(name);
+  if (qualifiedMember.byteLength > 0) {
+    importedIndex = importedTypes.length;
+    while (importedIndex > 0) {
+      importedIndex = importedIndex - 1;
+      if (
+        importedTypes[importedIndex].localName == qualifiedMember
+        || importedTypes[importedIndex].targetName == qualifiedMember
+      ) return LoweredType({
+        kind: importedTypes[importedIndex].kind,
+        name: importedTypes[importedIndex].targetName.copyBytes(
+          0,
+          importedTypes[importedIndex].targetName.byteLength
+        ),
+      });
+    }
   }
   const local = attempt lowerTypeName(program, name);
   match (local) {
@@ -7435,6 +7462,7 @@ function lowerExpressionContextual(
         && typeName != "i32"
         && typeName != "u8"
         && typeName != "usize"
+        && typeName != "f64"
       ) {
         const childKind = expressionKindName(tree.nodes[childInput].kind);
         throw `native template lowering does not support ${childKind} interpolation of ${typeName} at ${tree.nodes[childInput].line}:${tree.nodes[childInput].column}`;
@@ -7632,7 +7660,15 @@ function lowerExpressionContextual(
     );
     let kind = LoweredExpressionKind.unaryOperation;
     if (tree.nodes[index].value == "-") {
-      kind = LoweredExpressionKind.checkedNegateInteger;
+      const operandTypeName = match (
+        resolvedExpressionTypeName(evidence, tree, operandInput)
+      ) {
+        some(name) => name;
+        none => "";
+      };
+      if (operandTypeName != "f32" && operandTypeName != "f64") {
+        kind = LoweredExpressionKind.checkedNegateInteger;
+      }
     }
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
     else if (tree.nodes[index].value == "copy") {
@@ -7779,13 +7815,20 @@ function lowerExpressionContextual(
       rightInput
     );
     let comparesString = false;
+    let usesFloatingPoint = false;
     match (in leftType) {
-      some(name) => comparesString = name == "String";
+      some(name) => {
+        comparesString = name == "String";
+        usesFloatingPoint = name == "f32" || name == "f64";
+      }
       none => {}
     }
     if (!comparesString) {
       match (in rightType) {
-        some(name) => comparesString = name == "String";
+        some(name) => {
+          comparesString = name == "String";
+          if (name == "f32" || name == "f64") usesFloatingPoint = true;
+        }
         none => {}
       }
     }
@@ -7801,13 +7844,13 @@ function lowerExpressionContextual(
         || tree.nodes[rightInput].kind == ExpressionKind.stringExpression
       )
     ) kind = LoweredExpressionKind.stringEqual;
-    else if (tree.nodes[index].value == "+") {
+    else if (tree.nodes[index].value == "+" && !usesFloatingPoint) {
       kind = LoweredExpressionKind.checkedAddInteger;
-    } else if (tree.nodes[index].value == "-") {
+    } else if (tree.nodes[index].value == "-" && !usesFloatingPoint) {
       kind = LoweredExpressionKind.checkedSubtractInteger;
-    } else if (tree.nodes[index].value == "*") {
+    } else if (tree.nodes[index].value == "*" && !usesFloatingPoint) {
       kind = LoweredExpressionKind.checkedMultiplyInteger;
-    } else if (tree.nodes[index].value == "/") {
+    } else if (tree.nodes[index].value == "/" && !usesFloatingPoint) {
       kind = LoweredExpressionKind.checkedDivideInteger;
     } else if (tree.nodes[index].value == "%") {
       kind = LoweredExpressionKind.checkedRemainderInteger;
@@ -7819,6 +7862,11 @@ function lowerExpressionContextual(
     else if (
       tree.nodes[index].value != "=="
       && tree.nodes[index].value != "!="
+      && tree.nodes[index].value != "+"
+      && tree.nodes[index].value != "-"
+      && tree.nodes[index].value != "*"
+      && tree.nodes[index].value != "/"
+      && tree.nodes[index].value != "%"
       && tree.nodes[index].value != "<"
       && tree.nodes[index].value != "<="
       && tree.nodes[index].value != ">"
@@ -10577,6 +10625,33 @@ function lowerExpressionContextual(
         Array<usize>(),
         Array<String>()
       );
+    } else if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+    ) {
+      const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      );
+      match (resolvedCallTarget(evidence, tree, index)) {
+        some(target) => callee = pushExpression(
+          inout output,
+          LoweredExpressionKind.localValue,
+          `${target}${genericFunctionSuffix}`,
+          Array<usize>(),
+          Array<String>()
+        );
+        none => callee = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          calleeInput,
+          inout output
+        );
+      }
     } else if (
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
     ) {
@@ -16960,8 +17035,9 @@ function lowerStatementCore(
           if (
             iterableType.kind != LoweredTypeKind.arrayType
             && iterableType.kind != LoweredTypeKind.fixedArrayType
+            && iterableType.kind != LoweredTypeKind.mapType
           ) {
-            throw `native lowering only supports Array and fixed arrays for iteration, found ${typeName}`;
+            throw `native lowering only supports Array, fixed arrays, and Map for iteration, found ${typeName}`;
           }
           const missingElementType = match (in type) {
             some(_) => false;
@@ -16992,6 +17068,26 @@ function lowerStatementCore(
                   );
                   type = Option.some(move elementType);
                 }
+                if (
+                  generic.base == "Map"
+                  && generic.arguments.length == 2
+                ) {
+                  const keyType = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    generic.arguments[0]
+                  );
+                  const valueType = try lowerModuleTypeName(
+                    program,
+                    importedTypes,
+                    generic.arguments[1]
+                  );
+                  const mapName = intrinsicMapName(keyType, valueType);
+                  type = Option.some(LoweredType({
+                    kind: LoweredTypeKind.structType,
+                    name: `${mapName}_Entry`,
+                  }));
+                }
               }
               none => {}
             }
@@ -17021,6 +17117,9 @@ function lowerStatementCore(
               labels.push(shape.length.copyBytes(0, shape.length.byteLength));
             }
             none => {}
+          }
+          if (iterableType.kind == LoweredTypeKind.mapType) {
+            labels.push("map");
           }
           if (viewIterable) labels.push("view");
         }

@@ -4,7 +4,6 @@ import {
   parseProgram,
 } from "./parser.zs";
 import {
-  importedModulePath,
   isLocalModuleHeader,
   normalizedModulePath,
 } from "./module-paths.zs";
@@ -14,6 +13,7 @@ import {
   buildModuleSymbolIndices,
   buildModuleSymbols,
   findModule,
+  importTarget,
   moduleExports,
   validateModuleBindings,
 } from "./module-symbols.zs";
@@ -111,12 +111,11 @@ function resolveDependencies(
 ): Array<usize> throws ModuleResolveError {
   let dependencies = Array<usize>();
   for (const declaration of module.program.imports) {
-    if (!isLocalModuleHeader(declaration.header)) continue;
-    const targetPath = importedModulePath(module.path, declaration.header);
-    const target = findModule(modules, targetPath);
+    const target = importTarget(modules, module, declaration);
     const dependency = match (target) {
       some(dependency) => dependency;
       none => {
+        if (!isLocalModuleHeader(declaration.header)) continue;
         const line = declaration.line;
         const column = declaration.column;
         throw moduleResolutionError(

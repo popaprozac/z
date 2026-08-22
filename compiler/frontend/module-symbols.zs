@@ -10,6 +10,7 @@ import {
 import {
   importedModulePath,
   isLocalModuleHeader,
+  sourceStandardModulePathMatches,
 } from "./module-paths.zs";
 import {
   declarationSymbolKind,
@@ -183,14 +184,24 @@ function importedSymbol(
   });
 }
 
-function importTarget(
+export function importTarget(
   in modules: Array<ParsedModule>,
   in module: ParsedModule,
   in declaration: ImportDeclaration
 ): Option<usize> {
-  if (!isLocalModuleHeader(declaration.header)) return Option<usize>.none;
-  const targetPath = importedModulePath(module.path, declaration.header);
-  return findModule(modules, targetPath);
+  if (isLocalModuleHeader(declaration.header)) {
+    const targetPath = importedModulePath(module.path, declaration.header);
+    return findModule(modules, targetPath);
+  }
+  let index: usize = 0;
+  while (index < modules.length) {
+    if (sourceStandardModulePathMatches(
+      modules[index].path,
+      declaration.header
+    )) return Option.some(index);
+    index = index + 1;
+  }
+  return Option<usize>.none;
 }
 
 export function buildModuleSymbols(

@@ -18,6 +18,7 @@ export const testTiers: Readonly<Record<string, TestTier>> = {
       "tests/module-constants.test.ts",
       "tests/stdlib-sync.test.ts",
       "tests/stdlib-collections.test.ts",
+      "tests/stdlib-json.test.ts",
       "tests/generators-errors.test.ts",
       "tests/testing.test.ts",
       "tests/documentation.test.ts",

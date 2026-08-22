@@ -1923,6 +1923,31 @@ test("owns Mutex fields through native aggregate lowering", () => {
   rmSync(directory, { recursive: true, force: true });
 }, 30_000);
 
+test("emits and runs source-backed std/json through the native Z AST", () => {
+  const input = resolve(projectRoot, "tests/fixtures/std-json-smoke.zs");
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /const Z___z_Map_6_StringJsonValue_Entry entry = .*?\.entries\[/);
+  assert.match(emission.stdout, /Z_TEMPLATE_F64/);
+  assert.doesNotMatch(emission.stdout, /json\.(?:parse|stringify)/);
+
+  const directory = mkdtempSync("/tmp/z-self-host-json-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 120_000);
+
 test("emits and runs the first program directly from the native Z AST", () => {
   const input = resolve(projectRoot, "tests/fixtures/self-host-emit-input.zs");
   const emission = spawnSync(

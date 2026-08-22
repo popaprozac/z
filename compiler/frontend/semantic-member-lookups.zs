@@ -270,6 +270,35 @@ export function aggregateFieldShape(
       for (const argument of generic.arguments) {
         arguments.push(argument.copyBytes(0, argument.byteLength));
       }
+      if (generic.base == "Map.Entry" && generic.arguments.length == 2) {
+        let fieldType = "";
+        if (fieldName == "key") {
+          fieldType = generic.arguments[0].copyBytes(
+            0,
+            generic.arguments[0].byteLength
+          );
+        } else if (fieldName == "value") {
+          fieldType = generic.arguments[1].copyBytes(
+            0,
+            generic.arguments[1].byteLength
+          );
+        }
+        if (fieldType.byteLength > 0) {
+          return Option.some(NativeFieldShape({
+            name: fieldName.copyBytes(0, fieldName.byteLength),
+            ownerName: ownerType.copyBytes(0, ownerType.byteLength),
+            ownerModuleIndex: moduleIndex,
+            ownerSymbolIndex: 0,
+            typeName: move fieldType,
+            executorAffinity: "",
+            visibility: "public",
+            readonlyField: true,
+            optionalField: false,
+            foreignUnion: false,
+            viewLifetime: "",
+          }));
+        }
+      }
     }
     none => {}
   }

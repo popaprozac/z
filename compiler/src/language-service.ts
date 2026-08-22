@@ -346,13 +346,12 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   const nativeNamespaceBindings = foreignNamespaceBindings(context);
   const localNamespaces = new Map(
     context.sourceProgram.imports
-      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings)
       .map((declaration) => [declaration.moduleName, localSourceModule(context, declaration)] as const)
-      .filter((entry): entry is [string, SourceModuleInfo] => Boolean(entry[1])),
+      .filter((entry): entry is [string, SourceModuleInfo] => Boolean(entry[0] && entry[1])),
   );
   const localBindings = new Map(
     context.sourceProgram.imports
-      .filter((declaration) => isLocalSourceModuleSpecifier(declaration.header) && declaration.bindings)
+      .filter((declaration) => declaration.bindings)
       .flatMap((declaration) => declaration.bindings!.map((binding) => [binding.localName, {
         module: localSourceModule(context, declaration),
         importedName: binding.importedName,
@@ -977,7 +976,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     );
   }
   const sourceNamespace = context.sourceProgram.imports.find((declaration) => (
-    isLocalSourceModuleSpecifier(declaration.header) && !declaration.bindings && declaration.moduleName === word.text
+    !declaration.bindings
+    && declaration.moduleName === word.text
+    && localSourceModule(context, declaration)
   ));
   const sourceNamespaceShadowed = sourceNameIsShadowed(context, word.text, word.start, fileName);
   if (sourceNamespace && !sourceNamespaceShadowed) {
@@ -1232,9 +1233,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       );
     }
     const sourceImport = context.sourceProgram.imports.find((declaration) => (
-      isLocalSourceModuleSpecifier(declaration.header)
-      && !declaration.bindings
+      !declaration.bindings
       && declaration.moduleName === memberPrefix[1]
+      && localSourceModule(context, declaration)
     ));
     const sourceModule = sourceImport ? localSourceModule(context, sourceImport) : null;
     if (sourceModule?.exports.has(word.text)
@@ -1521,9 +1522,9 @@ export function definition(source: string, uri: string, offset: number): Locatio
     const memberNamespace = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const namespaceImport = memberNamespace
       ? context.sourceProgram.imports.find((declaration) => (
-        isLocalSourceModuleSpecifier(declaration.header)
-        && !declaration.bindings
+        !declaration.bindings
         && declaration.moduleName === memberNamespace
+        && localSourceModule(context, declaration)
       ))
       : null;
     const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;
@@ -1850,13 +1851,12 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
     return [];
   }
   const declaration = context.sourceProgram.imports[0];
-  if (isLocalSourceModuleSpecifier(specifier)) {
-    const module = declaration ? localSourceModule(context, declaration) : null;
-    if (!module) return [];
-    return [...module.exports.keys()].map((name) => ({
+  const sourceModule = declaration ? localSourceModule(context, declaration) : null;
+  if (sourceModule) {
+    return [...sourceModule.exports.keys()].map((name) => ({
       label: name,
-      kind: sourceExportCompletionKind(module, name),
-      detail: sourceExportDetail(module, name, context.typeDisplayNames),
+      kind: sourceExportCompletionKind(sourceModule, name),
+      detail: sourceExportDetail(sourceModule, name, context.typeDisplayNames),
     }));
   }
   const module = context.foreignModules.get(alias);
@@ -2410,7 +2410,6 @@ function symbolCompletions(
     }
   }
   for (const declaration of context.sourceProgram.imports) {
-    if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
     const module = localSourceModule(context, declaration);
     if (!module) continue;
     if (!declaration.bindings) {
@@ -4076,9 +4075,9 @@ function sourceAliasDisplayType(context: AnalyzedSource, typeName: string): stri
   const namespace = typeName.slice(0, separator);
   const member = typeName.slice(separator + 1);
   const declaration = context.sourceProgram.imports.find((candidate) => (
-    isLocalSourceModuleSpecifier(candidate.header)
-    && !candidate.bindings
+    !candidate.bindings
     && candidate.moduleName === namespace
+    && localSourceModule(context, candidate)
   ));
   const module = declaration ? localSourceModule(context, declaration) : null;
   return module && sourceExportDeclaration(module, member)?.kind === "type" ? typeName : null;
@@ -4532,9 +4531,9 @@ function memberCompletions(
     }), prefix, 100);
   }
   const sourceImport = importContext.sourceProgram.imports.find((declaration) => (
-    isLocalSourceModuleSpecifier(declaration.header)
-    && !declaration.bindings
+    !declaration.bindings
     && declaration.moduleName === receiverText
+    && localSourceModule(importContext, declaration)
   ));
   const sourceModule = sourceImport ? localSourceModule(importContext, sourceImport) : null;
   if (sourceModule) {
@@ -5104,6 +5103,21 @@ function consoleMethodDetail(name: string): string | null {
 function localSourceModule(context: AnalyzedSource, declaration: Program["imports"][number]): SourceModuleInfo | null {
   const importer = declaration.location.fileName;
   if (!importer) return null;
+  const canonicalImporter = existsSync(importer) ? realpathSync(importer) : resolve(importer);
+  const batchModule = context.sourceModuleBatch.modules.find((module) => (
+    module.fileName === canonicalImporter
+    || resolve(module.fileName) === resolve(importer)
+  ));
+  const dependency = batchModule?.dependencies.get(declaration.location.offset);
+  if (dependency) {
+    const canonicalDependency = existsSync(dependency) ? realpathSync(dependency) : resolve(dependency);
+    const sourceModule = context.sourceModules.get(canonicalDependency)
+      ?? context.sourceModules.get(dependency)
+      ?? [...context.sourceModules.values()].find((module) => (
+        resolve(module.fileName) === canonicalDependency
+      ));
+    if (sourceModule) return sourceModule;
+  }
   const target = resolve(dirname(importer), declaration.header);
   const canonical = existsSync(target) ? realpathSync(target) : target;
   return context.sourceModules.get(canonical)
@@ -5122,7 +5136,7 @@ function localSourceBinding(
   readonly specifier: string;
 } | null {
   for (const declaration of context.sourceProgram.imports) {
-    if (!isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    if (!declaration.bindings) continue;
     const binding = declaration.bindings.find((item) => item.localName === localName);
     if (!binding) continue;
     const module = localSourceModule(context, declaration);
@@ -5858,7 +5872,9 @@ function sourceAggregateForType(
   const namespaceParts = base.split(".");
   const namespaceImport = namespaceParts.length === 2
     ? context.sourceProgram.imports.find((item) => (
-      isLocalSourceModuleSpecifier(item.header) && !item.bindings && item.moduleName === namespaceParts[0]
+      !item.bindings
+      && item.moduleName === namespaceParts[0]
+      && localSourceModule(context, item)
     ))
     : null;
   const namespaceModule = namespaceImport ? localSourceModule(context, namespaceImport) : null;

@@ -220,6 +220,13 @@ export function collectionMethodSignature(
       parameterModes.push("value");
       parameterTypes.push("u8");
       returnType = "void";
+    } else if (
+      ownerType == "TextBuffer"
+      && methodName == "appendCodePoint"
+    ) {
+      parameterModes.push("value");
+      parameterTypes.push("u32");
+      returnType = "void";
     } else if (ownerType == "TextBuffer" && methodName == "finish") {
       returnType = "String";
     }

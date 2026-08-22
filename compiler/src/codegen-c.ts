@@ -3281,7 +3281,7 @@ static Z_UNUSED_FUNCTION inline void z_string_append_unsigned(Z_String *self, un
 
 static Z_UNUSED_FUNCTION inline void z_string_append_float(Z_String *self, double value) {
   char buffer[64];
-  int length = snprintf(buffer, sizeof(buffer), "%g", value);
+  int length = snprintf(buffer, sizeof(buffer), "%.17g", value);
   if (length < 0) abort();
   z_string_append_bytes(self, buffer, (uintptr_t)length);
 }
