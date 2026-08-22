@@ -1,8 +1,15 @@
 import { dynamicArrayTypeName, sliceTypeName } from "./array-types.ts";
 import type { ImportDeclaration } from "./ast.ts";
 
+const sourceStandardModulePattern = /^std\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
+
 export function isStandardModuleSpecifier(specifier: string): boolean {
   return specifier === "std" || specifier.startsWith("std/");
+}
+
+export function sourceStandardModuleRelativePath(specifier: string): string | null {
+  if (!sourceStandardModulePattern.test(specifier)) return null;
+  return `${specifier.slice("std/".length)}.zs`;
 }
 
 export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "objc";

@@ -279,6 +279,7 @@ export enum LoweredExpressionKind {
   textBufferAppend,
   textBufferAppendBytes,
   textBufferAppendAscii,
+  textBufferAppendCodePoint,
   hasherAdd,
 }
 
@@ -9574,6 +9575,7 @@ function lowerExpressionContextual(
         tree.nodes[calleeInput].value == "append"
         || tree.nodes[calleeInput].value == "appendBytes"
         || tree.nodes[calleeInput].value == "appendAscii"
+        || tree.nodes[calleeInput].value == "appendCodePoint"
         || tree.nodes[calleeInput].value == "finish"
       )
     ) {
@@ -9616,6 +9618,8 @@ function lowerExpressionContextual(
         kind = LoweredExpressionKind.textBufferAppendBytes;
       } else if (tree.nodes[calleeInput].value == "appendAscii") {
         kind = LoweredExpressionKind.textBufferAppendAscii;
+      } else if (tree.nodes[calleeInput].value == "appendCodePoint") {
+        kind = LoweredExpressionKind.textBufferAppendCodePoint;
       }
       return pushExpression(
         inout output,

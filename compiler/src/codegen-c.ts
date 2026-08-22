@@ -3236,6 +3236,35 @@ static Z_UNUSED_FUNCTION inline void z_text_buffer_append_ascii(Z_String *self, 
   z_string_append_bytes(self, &value, 1);
 }
 
+static Z_UNUSED_FUNCTION inline void z_text_buffer_append_code_point(Z_String *self, uint32_t code_point) {
+  char bytes[4];
+  uintptr_t length = 0;
+  if (code_point <= 0x7Fu) {
+    bytes[0] = (char)code_point;
+    length = 1;
+  } else if (code_point <= 0x7FFu) {
+    bytes[0] = (char)(0xC0u | (code_point >> 6));
+    bytes[1] = (char)(0x80u | (code_point & 0x3Fu));
+    length = 2;
+  } else if (code_point >= 0xD800u && code_point <= 0xDFFFu) {
+    abort();
+  } else if (code_point <= 0xFFFFu) {
+    bytes[0] = (char)(0xE0u | (code_point >> 12));
+    bytes[1] = (char)(0x80u | ((code_point >> 6) & 0x3Fu));
+    bytes[2] = (char)(0x80u | (code_point & 0x3Fu));
+    length = 3;
+  } else if (code_point <= 0x10FFFFu) {
+    bytes[0] = (char)(0xF0u | (code_point >> 18));
+    bytes[1] = (char)(0x80u | ((code_point >> 12) & 0x3Fu));
+    bytes[2] = (char)(0x80u | ((code_point >> 6) & 0x3Fu));
+    bytes[3] = (char)(0x80u | (code_point & 0x3Fu));
+    length = 4;
+  } else {
+    abort();
+  }
+  z_string_append_bytes(self, bytes, length);
+}
+
 static Z_UNUSED_FUNCTION inline void z_string_append_signed(Z_String *self, long long value) {
   char buffer[32];
   int length = snprintf(buffer, sizeof(buffer), "%lld", value);
@@ -9156,6 +9185,9 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
           }
           if (expression.callee.property === "appendAscii") {
             return `z_text_buffer_append_ascii(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
+          }
+          if (expression.callee.property === "appendCodePoint") {
+            return `z_text_buffer_append_code_point(&(${receiver}), ${generateExpression(expression.arguments[0], context)})`;
           }
           if (expression.callee.property === "finish") return receiver;
         }

@@ -2258,6 +2258,8 @@ function appendExpression(
       == LoweredExpressionKind.textBufferAppendBytes
     || declaration.expressions[index].kind
       == LoweredExpressionKind.textBufferAppendAscii
+    || declaration.expressions[index].kind
+      == LoweredExpressionKind.textBufferAppendCodePoint
   ) {
     let expected: usize = 2;
     if (
@@ -2275,7 +2277,11 @@ function appendExpression(
       declaration.expressions[index].kind
         == LoweredExpressionKind.textBufferAppendBytes
     ) output.append("z_text_buffer_append_bytes(&(");
-    else output.append("z_text_buffer_append_ascii(&(");
+    else if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.textBufferAppendAscii
+    ) output.append("z_text_buffer_append_ascii(&(");
+    else output.append("z_text_buffer_append_code_point(&(");
     const receiver = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, receiver);
     output.append(")");
@@ -11741,6 +11747,30 @@ function emitLoweredC(
   output.append("  if (byte > 0x7Fu) abort();\n");
   output.append("  const char value = (char)byte;\n");
   output.append("  z_string_append_bytes(self, &value, 1);\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) void z_text_buffer_append_code_point(Z_String *self, uint32_t code_point) {\n");
+  output.append("  char bytes[4];\n");
+  output.append("  size_t length = 0;\n");
+  output.append("  if (code_point <= 0x7Fu) {\n");
+  output.append("    bytes[0] = (char)code_point; length = 1;\n");
+  output.append("  } else if (code_point <= 0x7FFu) {\n");
+  output.append("    bytes[0] = (char)(0xC0u | (code_point >> 6));\n");
+  output.append("    bytes[1] = (char)(0x80u | (code_point & 0x3Fu)); length = 2;\n");
+  output.append("  } else if (code_point >= 0xD800u && code_point <= 0xDFFFu) {\n");
+  output.append("    abort();\n");
+  output.append("  } else if (code_point <= 0xFFFFu) {\n");
+  output.append("    bytes[0] = (char)(0xE0u | (code_point >> 12));\n");
+  output.append("    bytes[1] = (char)(0x80u | ((code_point >> 6) & 0x3Fu));\n");
+  output.append("    bytes[2] = (char)(0x80u | (code_point & 0x3Fu)); length = 3;\n");
+  output.append("  } else if (code_point <= 0x10FFFFu) {\n");
+  output.append("    bytes[0] = (char)(0xF0u | (code_point >> 18));\n");
+  output.append("    bytes[1] = (char)(0x80u | ((code_point >> 12) & 0x3Fu));\n");
+  output.append("    bytes[2] = (char)(0x80u | ((code_point >> 6) & 0x3Fu));\n");
+  output.append("    bytes[3] = (char)(0x80u | (code_point & 0x3Fu)); length = 4;\n");
+  output.append("  } else {\n");
+  output.append("    abort();\n");
+  output.append("  }\n");
+  output.append("  z_string_append_bytes(self, bytes, length);\n");
   output.append("}\n\n");
   output.append("static inline __attribute__((unused)) void z_string_append_unsigned_decimal(Z_String *self, uint64_t value) {\n");
   output.append("  char digits[20];\n");

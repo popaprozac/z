@@ -2401,8 +2401,9 @@ test("emits and runs the first program directly from the native Z AST", () => {
       + "function build(): String {\n"
       + "  let output = TextBuffer();\n"
       + "  output.append(\"he\");\n"
-      + "  output.appendBytes(\"llo!\", 0, 2);\n"
-      + "  output.appendAscii(111);\n"
+      + "  output.appendBytes(\"llo!\", 0, 1);\n"
+      + "  output.appendAscii(108);\n"
+      + "  output.appendCodePoint(111);\n"
       + "  return output.finish();\n"
       + "}\n"
       + "function main(): i32 {\n"
@@ -2446,8 +2447,9 @@ test("emits and runs the first program directly from the native Z AST", () => {
     /borrowedLength\(&\(Z_STRING_LITERAL\("ok"\)\)\)/,
   );
   assert.match(nativeStringEmission.stdout, /z_text_buffer_append\(&\(output\), Z_STRING_LITERAL\("he"\)\)/);
-  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), 0, 2\)/);
-  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_ascii\(&\(output\), 111\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_bytes\(&\(output\), Z_STRING_LITERAL\("llo!"\), 0, 1\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_ascii\(&\(output\), 108\)/);
+  assert.match(nativeStringEmission.stdout, /z_text_buffer_append_code_point\(&\(output\), 111\)/);
   assert.doesNotMatch(
     nativeStringEmission.stdout,
     /Z_String_deinit\(&output\)/,

@@ -11829,6 +11829,7 @@ function inferExpressionInner(
             append: { parameters: ["String"], result: "void" },
             appendBytes: { parameters: ["String", "usize", "usize"], result: "void" },
             appendAscii: { parameters: ["u8"], result: "void" },
+            appendCodePoint: { parameters: ["u32"], result: "void" },
             finish: { parameters: [], result: "String" },
           };
           const signature = signatures[expression.callee.property];

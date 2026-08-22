@@ -1406,6 +1406,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       if (word.text === "appendAscii") {
         return markdownHover("appendAscii(byte: u8): void", source, word.start, word.end);
       }
+      if (word.text === "appendCodePoint") {
+        return markdownHover("appendCodePoint(codePoint: u32): void  // checked Unicode scalar encoded as UTF-8", source, word.start, word.end);
+      }
       if (word.text === "finish") {
         return markdownHover("finish(): String  // consumes the TextBuffer", source, word.start, word.end);
       }
@@ -4904,6 +4907,12 @@ function memberCompletions(
         insertText: "appendBytes()",
       },
       { label: "appendAscii", kind: completionKinds.method, detail: "appendAscii(byte: u8): void", insertText: "appendAscii()" },
+      {
+        label: "appendCodePoint",
+        kind: completionKinds.method,
+        detail: "appendCodePoint(codePoint: u32): void  // checked Unicode scalar encoded as UTF-8",
+        insertText: "appendCodePoint()",
+      },
       { label: "finish", kind: completionKinds.method, detail: "finish(): String  // consumes the TextBuffer", insertText: "finish()" },
     ], prefix, 1000);
   }

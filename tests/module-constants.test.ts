@@ -5,6 +5,7 @@ import {
   completions,
   diagnostics,
   hover,
+  mkdirSync,
   mkdtempSync,
   resolve,
   rmSync,
@@ -12,6 +13,39 @@ import {
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+import { lex } from "../compiler/src/lexer.ts";
+import { linkSourceModules } from "../compiler/src/modules.ts";
+import { parse } from "../compiler/src/parser.ts";
+
+test("links bundled source-backed standard modules as ordinary Z source", () => {
+  const directory = mkdtempSync("/tmp/z-source-stdlib-");
+  const entryFile = resolve(directory, "main.zs");
+  const standardLibraryRoot = resolve(directory, "stdlib");
+  const standardModule = resolve(standardLibraryRoot, "math.zs");
+  try {
+    mkdirSync(standardLibraryRoot, { recursive: true });
+    writeFileSync(standardModule, "export function answer(): i32 { return 42; }");
+    const source = `
+      import { answer } from "std/math";
+      function main(): i32 { return answer() - 42; }
+    `;
+    writeFileSync(entryFile, source);
+    const program = parse(lex(source, entryFile), entryFile);
+    const linked = linkSourceModules(source, program, entryFile, {
+      standardLibraryRoot,
+    });
+
+    assert.equal(linked.sourceBatch.modules.length, 2);
+    assert.equal(linked.program.imports.length, 0);
+    assert.ok(linked.program.functions.some((declaration) => declaration.name === "main"));
+    assert.ok(linked.program.functions.some((declaration) => (
+      declaration.name.startsWith("__z_module_")
+      && declaration.name.endsWith("_answer")
+    )));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("runs local, namespace-imported, and selectively aliased module constants", () => {
   const directory = mkdtempSync("/tmp/z-module-constants-");

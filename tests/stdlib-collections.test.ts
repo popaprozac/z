@@ -567,6 +567,8 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
       let output = TextBuffer();
       output.append("alpha");
       output.appendAscii(10);
+      output.appendCodePoint(937);
+      output.appendCodePoint(128640);
       output.appendBytes("éZ", 0, 2);
       output.append(\`=\${40 + 2}\`);
       const text = output.finish();
@@ -578,12 +580,13 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
 
   const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.stdout, "alpha\né=42\n");
+  assert.equal(result.stdout, "alpha\nΩ🚀é=42\n");
 
   const generated = compileToC(source, fileName);
   assert.match(generated, /Z_String output = z_string_new\(\);/);
   assert.match(generated, /z_text_buffer_append\(&\(output\)/);
   assert.match(generated, /z_text_buffer_append_ascii\(&\(output\), 10/);
+  assert.match(generated, /z_text_buffer_append_code_point\(&\(output\), 937/);
   assert.match(generated, /z_text_buffer_append_bytes\(&\(output\)/);
   assert.match(generated, /Z_String text = \(_z_live_output_\d+ = false, output\);/);
 
@@ -653,6 +656,14 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
   const invalidAscii = spawnSync(process.execPath, [cli, "run", invalidAsciiFile], { encoding: "utf8" });
   assert.notEqual(invalidAscii.status, 0);
 
+  const invalidCodePointFile = resolve(directory, "invalid-code-point.zs");
+  writeFileSync(invalidCodePointFile, `
+    import { TextBuffer } from "std/text";
+    function main(): i32 { let text = TextBuffer(); text.appendCodePoint(55296); return 0; }
+  `);
+  const invalidCodePoint = spawnSync(process.execPath, [cli, "run", invalidCodePointFile], { encoding: "utf8" });
+  assert.notEqual(invalidCodePoint.status, 0);
+
   const importSource = `import { TextB } from "std/text"; function main(): i32 { return 0; }`;
   const importOffset = importSource.indexOf("TextB") + "TextB".length;
   assert.equal(completions(importSource, fileName, importOffset).find((item) => item.label === "TextBuffer")?.kind, 22);
@@ -665,6 +676,13 @@ test("builds owned UTF-8 String values through explicit std/text TextBuffer", ()
   const appendCompletion = memberItems.find((item) => item.label === "append");
   assert.ok(appendCompletion, JSON.stringify(memberItems));
   assert.match(appendCompletion?.detail ?? "", /append\(in text: String\): void/);
+  const codePointSource = source.replace("output.append(\"alpha\")", "output.appendCodeP");
+  const codePointOffset = codePointSource.indexOf("output.appendCodeP") + "output.appendCodeP".length;
+  const codePointCompletion = completions(codePointSource, fileName, codePointOffset)
+    .find((item) => item.label === "appendCodePoint");
+  assert.match(codePointCompletion?.detail ?? "", /checked Unicode scalar/);
+  const codePointHoverOffset = source.indexOf("appendCodePoint") + 2;
+  assert.match(hover(source, fileName, codePointHoverOffset)?.contents.value ?? "", /codePoint: u32/);
   const finishOffset = source.indexOf("finish") + 2;
   assert.match(hover(source, fileName, finishOffset)?.contents.value ?? "", /consumes the TextBuffer/);
   const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);

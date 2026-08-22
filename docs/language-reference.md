@@ -2337,6 +2337,7 @@ let output = TextBuffer();
 output.append("answer=");
 output.appendBytes(source, start, end);
 output.appendAscii(10);
+output.appendCodePoint(128640); // U+1F680 ROCKET
 const text = output.finish();
 ```
 
@@ -2344,8 +2345,10 @@ const text = output.finish();
 `let` before appending, cannot be logged as if it were completed text, and
 `finish()` consumes it into an immutable owned `String`. `appendBytes` uses a
 checked half-open byte range and requires both offsets to be UTF-8 boundaries;
-`appendAscii` accepts only the ASCII range. The explicit import keeps this
-specialized construction API out of the language prelude.
+`appendAscii` accepts only the ASCII range. `appendCodePoint` accepts a checked
+Unicode scalar value, rejects surrogate and out-of-range values, and encodes it
+as UTF-8. The explicit import keeps this specialized construction API out of
+the language prelude.
 
 ## Files, processes, and program arguments
 

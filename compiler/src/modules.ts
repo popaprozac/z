@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   Expression,
   FunctionDeclaration,
@@ -24,7 +25,10 @@ import { functionTypeName, parseFunctionType } from "./function-types.ts";
 import { isNullableObjCTypeName, nullableObjCTypeName, publicObjCTypeName } from "./objc-types.ts";
 import { lex } from "./lexer.ts";
 import { parse } from "./parser.ts";
-import type { StandardModuleName } from "./standard-library.ts";
+import {
+  sourceStandardModuleRelativePath,
+  type StandardModuleName,
+} from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
@@ -54,6 +58,10 @@ export type SourceModuleBatch = {
   readonly modules: readonly SourceModuleBatchModule[];
 };
 
+export type SourceModuleOptions = {
+  readonly standardLibraryRoot?: string;
+};
+
 type ModuleNode = {
   readonly id: number;
   readonly fileName: string;
@@ -74,8 +82,17 @@ export function isLocalSourceModuleSpecifier(specifier: string): boolean {
   return (specifier.startsWith("./") || specifier.startsWith("../")) && specifier.endsWith(".zs");
 }
 
-export function loadSourceModuleBatch(entrySource: string, entryProgram: Program, entryFileName: string): SourceModuleBatch {
+export function loadSourceModuleBatch(
+  entrySource: string,
+  entryProgram: Program,
+  entryFileName: string,
+  options: SourceModuleOptions = {},
+): SourceModuleBatch {
   const entryPath = resolve(entryFileName);
+  const standardLibraryRoot = resolve(
+    options.standardLibraryRoot
+      ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../stdlib"),
+  );
   const modules = new Map<string, SourceModuleBatchModule>();
 
   const load = (
@@ -118,8 +135,13 @@ export function loadSourceModuleBatch(entrySource: string, entryProgram: Program
     };
     modules.set(canonical, module);
     for (const declaration of program.imports) {
-      if (!isLocalSourceModuleSpecifier(declaration.header)) continue;
-      const dependencyPath = resolve(dirname(canonical), declaration.header);
+      const standardRelativePath = sourceStandardModuleRelativePath(declaration.header);
+      const dependencyPath = isLocalSourceModuleSpecifier(declaration.header)
+        ? resolve(dirname(canonical), declaration.header)
+        : standardRelativePath
+        ? resolve(standardLibraryRoot, standardRelativePath)
+        : null;
+      if (!dependencyPath || !existsSync(dependencyPath)) continue;
       const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
       dependencies.set(declaration.location.offset, dependency.fileName);
     }
@@ -130,8 +152,13 @@ export function loadSourceModuleBatch(entrySource: string, entryProgram: Program
   return { entryFileName: entry.fileName, modules: [...modules.values()] };
 }
 
-export function linkSourceModules(entrySource: string, entryProgram: Program, entryFileName: string): ModuleLinkResult {
-  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryFileName);
+export function linkSourceModules(
+  entrySource: string,
+  entryProgram: Program,
+  entryFileName: string,
+  options: SourceModuleOptions = {},
+): ModuleLinkResult {
+  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryFileName, options);
   const modulesByPath = new Map(sourceBatch.modules.map((module) => [module.fileName, module] as const));
   const nodes = new Map<string, ModuleNode>();
   let nextId = 0;
@@ -261,7 +288,7 @@ export function linkSourceModules(entrySource: string, entryProgram: Program, en
   for (const node of ordered) {
     const scope = buildScope(node);
     imports.push(...node.program.imports
-      .filter((declaration) => !isLocalSourceModuleSpecifier(declaration.header))
+      .filter((declaration) => !node.dependencies.has(declaration.location.offset))
       .map((declaration) => rewriteNativeImport(declaration, node, scope)));
     constants.push(...node.program.constants.map((declaration) => ({
       ...declaration,
