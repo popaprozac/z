@@ -55,6 +55,7 @@ import {
 import {
   fsLockTypeName,
   objcConnectionTypeName,
+  objcRegistrationTypeName,
   standardFunctionSignature,
   standardModuleFunction,
   standardModuleMemberNames,
@@ -1181,6 +1182,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         word.end,
       );
     }
+    if (standardOwner === "objc" && word.text === "register") {
+      return markdownHover(
+        "register({ add: Objective-C protocol registration call, remove: matching teardown call }): objc.Registration  // installs now and unregisters exactly once during cleanup",
+        source,
+        word.start,
+        word.end,
+      );
+    }
     if (standardOwner === "objc" && word.text === "Connection") {
       return markdownHover(
         "objc.Connection  // owned Objective-C target/action lifetime",
@@ -1192,6 +1201,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     if (standardOwner === "objc" && word.text === "Binding") {
       return markdownHover(
         "objc.Binding  // owns an Objective-C object, protocol adapters, and Z controllers",
+        source,
+        word.start,
+        word.end,
+      );
+    }
+    if (standardOwner === "objc" && word.text === "Registration") {
+      return markdownHover(
+        "objc.Registration  // owned add/remove Objective-C protocol registration lifetime",
         source,
         word.start,
         word.end,
@@ -4484,13 +4501,15 @@ function memberCompletions(
   if (standardModule) {
     return filterCompletions(standardModuleMemberNames(standardModule).map((member) => {
       const name = standardModuleFunction(standardModule, member);
-      if (standardModule === "objc" && (member === "Connection" || member === "Binding")) {
+      if (standardModule === "objc" && (member === "Connection" || member === "Binding" || member === "Registration")) {
         return {
           label: member,
           kind: completionKinds.class,
           detail: member === "Connection"
             ? "owned Objective-C target/action lifetime"
-            : "owned Objective-C protocol-binding lifetime",
+            : member === "Binding"
+              ? "owned Objective-C protocol-binding lifetime"
+              : "owned Objective-C add/remove registration lifetime",
           insertText: member,
         };
       }
@@ -4525,7 +4544,9 @@ function memberCompletions(
             ? "connect(control: Objective-C target/action object, operation: move () => void): objc.Connection"
             : standardModule === "objc" && member === "bind"
               ? "bind(object: Objective-C object, protocols: { property: ZController }): objc.Binding"
-            : standardFunctionDetail(member, name!),
+              : standardModule === "objc" && member === "register"
+                ? "register({ add: protocol registration call, remove: teardown call }): objc.Registration"
+                : standardFunctionDetail(member, name!),
         insertText: `${member}()`,
       };
     }), prefix, 100);
@@ -5491,7 +5512,9 @@ function resolveReceiver(context: AnalyzedSource, text: string, offset: number):
   if (!type) return null;
   const view = parseViewType(type);
   const receiverType = view?.target ?? type;
-  if (receiverType === objcConnectionTypeName) return { kind: "objcConnection" };
+  if (receiverType === objcConnectionTypeName || receiverType === objcRegistrationTypeName) {
+    return { kind: "objcConnection" };
+  }
   if (receiverType === "TextBuffer") return { kind: "textBuffer" };
   if (receiverType === "Arena") return { kind: "arena" };
   if (receiverType === "Hasher") return { kind: "hasher" };

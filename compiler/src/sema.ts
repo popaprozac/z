@@ -62,6 +62,7 @@ import {
   isStandardModuleSpecifier,
   objcBindingTypeName,
   objcConnectionTypeName,
+  objcRegistrationTypeName,
   objcSelectorTypeName,
   fsLockTypeName,
   nativeConnectionTypeName,
@@ -367,6 +368,18 @@ export type ObjCBindingPlan = {
   }[];
 };
 
+export type ObjCRegistrationPlan = {
+  readonly objectType: string;
+  readonly receiverExpression: Expression;
+  readonly ownerType: string;
+  readonly ownerExpression: Expression;
+  readonly addMethod: ForeignObjCMethod;
+  readonly handlerParameter: number;
+  readonly addArguments: readonly Expression[];
+  readonly removeMethod: ForeignObjCMethod;
+  readonly removeArgumentSources: readonly number[];
+};
+
 export type ThreadTransferKind = "copy" | "move" | "share" | "executorBound";
 
 export type ForeignUnionMatchPlan = {
@@ -436,6 +449,7 @@ export type SemanticInfo = {
   readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly objcProtocolConformances: ReadonlyMap<string, ObjCProtocolConformance>;
   readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
+  readonly objcRegistrationCalls: ReadonlyMap<number, ObjCRegistrationPlan>;
   readonly objcClassNames: ReadonlyMap<number, string>;
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
@@ -590,6 +604,7 @@ type AnalysisState = {
   readonly foreignProtocols: ReadonlyMap<string, ForeignObjCProtocol>;
   readonly objcProtocolConformances: Map<string, ObjCProtocolConformance>;
   readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
+  readonly objcRegistrationCalls: Map<number, ObjCRegistrationPlan>;
   readonly objcClassNames: Map<number, string>;
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
@@ -916,10 +931,35 @@ export function analyze(
       className: binding.className,
       nullable: false,
     });
+    const registrationMetadata: ForeignDeclarationMetadata = {
+      source: null,
+      availability: [],
+      executorAffinity: "main",
+    };
+    const registration: ForeignNamedType = {
+      kind: "object",
+      exportName: "Registration",
+      namespacePath: ["objc"],
+      qualifiedName: "objc.Registration",
+      typeName: objcRegistrationTypeName,
+      cName: "ZObjCRegistration *",
+      className: "ZObjCRegistration",
+      metadata: registrationMetadata,
+    };
+    foreignNamedTypes.set(objcRegistrationTypeName, registration);
+    foreignNamedTypes.set(registration.qualifiedName, registration);
+    foreignObjectTypes.set(objcRegistrationTypeName, {
+      kind: "object",
+      typeName: objcRegistrationTypeName,
+      cName: registration.cName,
+      className: registration.className,
+      nullable: false,
+    });
     typeDisplayNames = new Map([
       ...typeDisplayNames,
       [objcConnectionTypeName, "objc.Connection"],
       [objcBindingTypeName, "objc.Binding"],
+      [objcRegistrationTypeName, "objc.Registration"],
       [objcSelectorTypeName, "objc.Selector"],
     ]);
   }
@@ -996,6 +1036,7 @@ export function analyze(
     foreignProtocols,
     objcProtocolConformances: new Map(),
     objcBindingCalls: new Map(),
+    objcRegistrationCalls: new Map(),
     objcClassNames: new Map(),
     objcProperties: new Map(),
     objcCalls: new Map(),
@@ -5056,6 +5097,13 @@ function analyzeStatement(
             code: "Z0811",
             notes: ["the connection owns the native control and callback until the binding leaves scope"],
             helps: ["use `const connection = objc.connect(control, move () => operation());`"],
+          });
+        }
+        if (type === objcRegistrationTypeName) {
+          throw new DiagnosticError(fileName, statement.expression.location, "objc.Registration must be bound so its native lifetime is explicit", {
+            code: "Z0812",
+            notes: ["the registration owns the native receiver, generated protocol adapter, and Z controller until it unregisters during cleanup"],
+            helps: ["use `const registration = objc.register({ add: ..., remove: ... });`"],
           });
         }
         if (type === nativeConnectionTypeName) {
@@ -9790,6 +9838,9 @@ function inferExpressionInner(
       if (receiverValueType === objcConnectionTypeName) {
         throw new DiagnosticError(fileName, expression.location, `objc.Connection has no property ${JSON.stringify(expression.property)}`);
       }
+      if (receiverValueType === objcRegistrationTypeName) {
+        throw new DiagnosticError(fileName, expression.location, `objc.Registration has no property ${JSON.stringify(expression.property)}`);
+      }
       if (receiverValueType === "TaskControl") {
         if (expression.property === "accepted" || expression.property === "isCancellationRequested") return "boolean";
         throw new DiagnosticError(fileName, expression.location, `TaskControl has no property ${JSON.stringify(expression.property)}; call requestCancel instead`);
@@ -10419,6 +10470,27 @@ function inferExpressionInner(
           const owner = globals.get(localModuleName);
           if (owner?.kind === "standardModule") {
             if (owner.module === "objc") {
+              if (expression.callee.property === "register") {
+                rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
+                if (expression.arguments.length !== 1 || expression.arguments[0].kind !== "objectExpression") {
+                  throw new DiagnosticError(fileName, expression.location, "objc.register expects one add/remove registration object", {
+                    code: "Z0812",
+                    helps: [`use ${localModuleName}.register({ add: object.addHandler(controller, value), remove: object.removeHandler(value) })`],
+                  });
+                }
+                const plan = checkObjCRegistration(
+                  expression.arguments[0],
+                  locals,
+                  globals,
+                  structs,
+                  enums,
+                  fileName,
+                  state,
+                );
+                state.objcRegistrationCalls.set(expression.location.offset, plan);
+                state.expressionTypes.set(expression.location.offset, objcRegistrationTypeName);
+                return objcRegistrationTypeName;
+              }
               if (expression.callee.property === "bind") {
                 rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
                 if (expression.arguments.length !== 2 || expression.arguments[1].kind !== "objectExpression") {
@@ -10500,7 +10572,7 @@ function inferExpressionInner(
               }
               if (expression.callee.property !== "connect") {
                 throw new DiagnosticError(fileName, expression.callee.location, `objc has no method ${JSON.stringify(expression.callee.property)}`, {
-                  helps: [`use ${localModuleName}.connect(control, move () => operation()) or ${localModuleName}.bind(object, { delegate: controller })`],
+                  helps: [`use ${localModuleName}.connect(control, move () => operation()), ${localModuleName}.bind(object, { delegate: controller }), or ${localModuleName}.register({ add: ..., remove: ... })`],
                 });
               }
               rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
@@ -16440,6 +16512,231 @@ function foreignValueType(type: ForeignType): ValueType {
     return functionTypeName(parameters, String(returnType));
   }
   return "unknown";
+}
+
+function objcRegistrationArgumentKey(expression: Expression): string | null {
+  if (expression.kind === "identifier") return `identifier:${expression.name}`;
+  if (expression.kind === "string") return `string:${expression.value}`;
+  if (expression.kind === "number") return `number:${expression.value}`;
+  if (expression.kind === "boolean") return `boolean:${expression.value}`;
+  if (expression.kind === "null") return "null";
+  return null;
+}
+
+function checkObjCRegistration(
+  descriptor: Extract<Expression, { readonly kind: "objectExpression" }>,
+  locals: Map<string, ValueType>,
+  globals: Map<string, SymbolValue>,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  fileName: string,
+  state: AnalysisState,
+): ObjCRegistrationPlan {
+  const fields = new Map(descriptor.fields.map((field) => [field.name, field]));
+  if (
+    descriptor.fields.length !== 2
+    || fields.size !== 2
+    || !fields.has("add")
+    || !fields.has("remove")
+  ) {
+    throw new DiagnosticError(fileName, descriptor.location, "objc.register requires exactly `add` and `remove` call fields", {
+      code: "Z0812",
+      helps: ["use `objc.register({ add: object.addHandler(controller, value), remove: object.removeHandler(value) })`"],
+    });
+  }
+  const add = fields.get("add")!.expression;
+  const remove = fields.get("remove")!.expression;
+  if (add.kind !== "call" || add.callee.kind !== "member") {
+    throw new DiagnosticError(fileName, add.location, "objc.register `add` must be an Objective-C method call", {
+      code: "Z0812",
+    });
+  }
+  if (remove.kind !== "call" || remove.callee.kind !== "member") {
+    throw new DiagnosticError(fileName, remove.location, "objc.register `remove` must be an Objective-C method call", {
+      code: "Z0812",
+    });
+  }
+  if (
+    add.callee.object.kind !== "identifier"
+    || remove.callee.object.kind !== "identifier"
+    || add.callee.object.name !== remove.callee.object.name
+  ) {
+    throw new DiagnosticError(fileName, descriptor.location, "objc.register add/remove calls must use the same stored Objective-C receiver", {
+      code: "Z0812",
+      notes: ["the registration token retains one receiver and unregisters from that exact identity"],
+      helps: ["bind the native receiver to const before registering"],
+    });
+  }
+
+  const receiverType = inferExpression(
+    add.callee.object,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
+  rejectNullableObjCReceiver(receiverType, add.callee.object.location, fileName, state);
+  const receiver = objcReceiver(receiverType, state);
+  if (!receiver?.instance) {
+    throw new DiagnosticError(fileName, add.callee.object.location, "objc.register requires a non-null Objective-C instance", {
+      code: "Z0812",
+    });
+  }
+  const addSelection = findObjCMethod(
+    receiver,
+    add.callee.property,
+    add.arguments.length,
+    add.argumentLabels,
+    state,
+    fileName,
+    add.callee.location,
+  );
+  const removeSelection = findObjCMethod(
+    receiver,
+    remove.callee.property,
+    remove.arguments.length,
+    remove.argumentLabels,
+    state,
+    fileName,
+    remove.callee.location,
+  );
+  if (addSelection.projected || removeSelection.projected) {
+    throw new DiagnosticError(fileName, descriptor.location, "objc.register does not accept async-projected Objective-C methods", {
+      code: "Z0812",
+    });
+  }
+  const addMethod = addSelection.method;
+  const removeMethod = removeSelection.method;
+  if (foreignValueType(addMethod.returnType) !== "void" || foreignValueType(removeMethod.returnType) !== "void") {
+    throw new DiagnosticError(fileName, descriptor.location, "objc.register add/remove methods must both return void", {
+      code: "Z0812",
+      notes: ["the registration guard models deterministic installation and teardown, not a value-producing native operation"],
+    });
+  }
+  for (const [method, call] of [[addMethod, add], [removeMethod, remove]] as const) {
+    requireMainExecutorContext(
+      foreignInterfaceRequiresMain(receiver.declaration, state)
+        || method.metadata.executorAffinity === "main",
+      call.location,
+      `Objective-C registration method ${JSON.stringify(receiver.declaration.className)}.${JSON.stringify(method.selector)}`,
+      fileName,
+      state,
+    );
+    checkForeignAvailability(method.metadata, method.selector, call.callee.location, fileName, state);
+  }
+
+  const handlerParameters = addMethod.parameters.flatMap((parameter, index) => (
+    (parameter.protocols?.length ?? 0) > 0 ? [index] : []
+  ));
+  if (handlerParameters.length !== 1) {
+    throw new DiagnosticError(fileName, add.location, "objc.register add method must accept exactly one `id<Protocol>` parameter", {
+      code: "Z0812",
+      notes: ["Clang protocol evidence selects the generated Z controller adapter without a cast or selector string"],
+    });
+  }
+  const handlerParameter = handlerParameters[0];
+  const ownerExpression = add.arguments[handlerParameter];
+  if (ownerExpression.kind !== "identifier") {
+    throw new DiagnosticError(fileName, ownerExpression.location, "objc.register protocol owners must be stored Z class bindings", {
+      code: "Z0812",
+      helps: ["bind the controller to const before registering it"],
+    });
+  }
+  const ownerType = inferExpression(
+    ownerExpression,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
+  const ownerClass = structs.get(String(underlyingType(ownerType)));
+  const conformance = ownerClass?.kind === "class"
+    ? state.objcProtocolConformances.get(ownerClass.name)
+    : null;
+  const requiredProtocols = addMethod.parameters[handlerParameter].protocols ?? [];
+  if (!ownerClass || ownerClass.kind !== "class" || !conformance) {
+    throw new DiagnosticError(fileName, ownerExpression.location, `objc.register requires a Z class implementing ${requiredProtocols.join(" & ")}`, {
+      code: "Z0812",
+    });
+  }
+  const missing = requiredProtocols.find((protocolName) => (
+    !conformance.protocols.some((protocol) => protocol.protocolName === protocolName)
+  ));
+  if (missing) {
+    throw new DiagnosticError(fileName, ownerExpression.location, `${ownerClass.name} does not implement Objective-C protocol ${missing}`, {
+      code: "Z0812",
+    });
+  }
+
+  const addArguments = add.arguments.filter((_, index) => index !== handlerParameter);
+  checkObjCArguments(
+    {
+      ...addMethod,
+      parameters: addMethod.parameters.filter((_, index) => index !== handlerParameter),
+    },
+    addArguments,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
+  if (removeMethod.parameters.some((parameter) => (parameter.protocols?.length ?? 0) > 0)) {
+    throw new DiagnosticError(fileName, remove.location, "objc.register remove method cannot require another protocol adapter in the first tier", {
+      code: "Z0812",
+    });
+  }
+  checkObjCArguments(
+    removeMethod,
+    remove.arguments,
+    locals,
+    globals,
+    structs,
+    enums,
+    fileName,
+    state,
+  );
+
+  const addArgumentIndexes = add.arguments.flatMap((argument, index) => (
+    index === handlerParameter ? [] : [index]
+  ));
+  const removeArgumentSources = remove.arguments.map((argument, removeIndex) => {
+    const key = objcRegistrationArgumentKey(argument);
+    if (!key) {
+      throw new DiagnosticError(fileName, argument.location, "objc.register remove arguments must reuse a named or literal add argument", {
+        code: "Z0812",
+        notes: ["the token stores add-time values so teardown never re-evaluates user code"],
+      });
+    }
+    const matches = addArgumentIndexes.filter((addIndex) => (
+      objcRegistrationArgumentKey(add.arguments[addIndex]) === key
+      && addMethod.parameters[addIndex].type.cName === removeMethod.parameters[removeIndex].type.cName
+    ));
+    if (matches.length !== 1) {
+      throw new DiagnosticError(fileName, argument.location, "objc.register could not relate this remove argument to exactly one add argument", {
+        code: "Z0812",
+        notes: ["add and remove must use the same stable value with the same native ABI type"],
+      });
+    }
+    return matches[0];
+  });
+
+  return {
+    objectType: String(underlyingType(receiverType)),
+    receiverExpression: add.callee.object,
+    ownerType: ownerClass.name,
+    ownerExpression,
+    addMethod,
+    handlerParameter,
+    addArguments: add.arguments,
+    removeMethod,
+    removeArgumentSources,
+  };
 }
 
 function checkObjCArguments(

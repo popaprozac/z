@@ -16,6 +16,7 @@ export type StandardModuleName = "fs" | "process" | "thread" | "scheduler" | "ob
 
 export const objcConnectionTypeName = "__z_std_objc_Connection";
 export const objcBindingTypeName = "__z_std_objc_Binding";
+export const objcRegistrationTypeName = "__z_std_objc_Registration";
 export const objcSelectorTypeName = "__z_std_objc_Selector";
 export const nativeConnectionTypeName = "__z_native_Connection";
 export const fsLockTypeName = "__z_std_fs_Lock";
@@ -189,7 +190,14 @@ export function standardModuleFunctions(module: StandardModuleName): readonly St
 
 export function standardModuleMemberNames(module: StandardModuleName): readonly string[] {
   if (module === "thread") return ["spawn", "main", "any"];
-  if (module === "objc") return ["connect", "bind", "Connection", "Binding"];
+  if (module === "objc") return [
+    "connect",
+    "bind",
+    "register",
+    "Connection",
+    "Binding",
+    "Registration",
+  ];
   if (module === "fs") return [...Object.keys(standardModuleMembers[module]), "Lock"];
   return Object.keys(standardModuleMembers[module]);
 }

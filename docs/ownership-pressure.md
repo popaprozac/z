@@ -3399,17 +3399,18 @@ therefore lower correctly, and a fixed-point regression compiles the same shape
 through the compiler rebuilt by itself. This was a compiler ownership bug, not
 a Zapp-specific workaround or a new language rule.
 
-This pressure test made the remaining ownership boundary precise. Stage 0 can
-import and type-check AppKit and WebKit directly, but the fixed-point driver
-still normalizes only adjacent `.zd`-described C declarations; Objective-C raw
-records and normalized FIIR have not crossed together. WebKit also registers a
-strongly retained `WKScriptMessageHandler` through a method rather than a weak
-delegate property, so existing `objc.bind` is deliberately inapplicable. A
-future general retained-protocol registration token must own the native object,
-adapter, and Z controller, unregister deterministically, and diagnose the
-registration/unregistration selector pair. Zapp keeps this temporary adapter in
-Objective-C rather than weakening lifetime checks or inventing WebKit-specific
-Z syntax.
+This pressure test made a distinct ownership boundary precise. WebKit registers
+a strongly retained `WKScriptMessageHandler` through an add method rather than
+a weak delegate property, so `objc.bind` is deliberately inapplicable. Stage 0
+now preserves `id<Protocol>` evidence on method parameters and provides the
+general `objc.register({ add, remove })` guard. It validates the native pair and
+Z protocol conformance, owns the receiver, generated adapter, and controller,
+and unregisters exactly once during cleanup. A runtime fixture proves
+add/callback/remove ordering, while a real WebKit example proves the SDK shape.
+The remaining boundary is fixed-point carry: Objective-C raw records and
+normalized FIIR have not yet crossed together, so Zapp retains its temporary
+Objective-C adapter until that compiler seam lands rather than weakening the
+lifetime model.
 
 The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
 WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do

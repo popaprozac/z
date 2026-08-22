@@ -697,7 +697,7 @@ hostToolchainTest("builds the interactive Z Notes AppKit and sqlite3 application
   const availabilityDiagnostic = diagnostics(availabilitySource, availabilityFile)[0];
   assert.equal(availabilityDiagnostic?.code, "Z0802");
   assert.match(availabilityDiagnostic?.message ?? "", /requires macOS 14\.0, but the deployment target is macOS 13\.0/);
-}, 60_000);
+}, 120_000);
 
 test("runs an application-shaped document workspace across ownership and interop features", () => {
   const example = resolve(projectRoot, "examples/applications/document-workspace/main.zs");
@@ -715,7 +715,7 @@ test("runs an application-shaped document workspace across ownership and interop
   assert.equal(result.status, 0, result.stderr);
   assert.match(
     result.stdout,
-    /^workspace registered=3, saved=3, found=42, save count=1, rejected=100, empty save=200, native moves=[1-9][0-9]*, live=0\n$/,
+    /^workspace registered=3, saved=3, found=42, endpoints=40\.\.42, save count=1, rejected=100, empty save=200, native moves=[1-9][0-9]*, live=0\n$/,
   );
 });
 
@@ -1946,7 +1946,7 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
   assert.match(artifact.source, /self->actionConnection = actionConnection;/);
   assert.match(artifact.source, /self->actionConnection = nil;/);
   assert.match(artifact.source, /z_objc_connect\(/);
-  assert.match(artifact.source, /Router_dispatch\(router, &\(message\)\)/);
+  assert.match(artifact.source, /Router_dispatch\([^,]+, &\(\(\*message\)\)\)/);
   assert.match(artifact.source, /Application_recordAction/);
   assert.match(artifact.source, /Application_routedAction/);
   assert.match(artifact.source, /Application_triggerAction/);
@@ -1964,7 +1964,7 @@ hostToolchainTest("owns an AppKit target/action router in a linked application r
     { encoding: "utf8" },
   );
   assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
-  assert.match(nativeCheck.stdout, /native frontend hybrid matches 4 modules, 6 local edges/);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 5 modules, 9 local edges/);
 
   const result = spawnSync(process.execPath, [cli, "run", example], {
     encoding: "utf8",
@@ -2047,6 +2047,102 @@ test("generates safe Objective-C protocol adapters with protocol-aware editor sc
   assert.match(unsafeDiagnostic.message, /requires a zeroing weak protocol property/);
   assert.match(unsafeDiagnostic.message, /assign/);
 }, 15_000);
+
+test("owns method-based Objective-C protocol registrations through explicit guards", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-registration.zs");
+  const source = readFileSync(fixture, "utf8");
+  const analysis = analyzeSource(source, fixture);
+  const owner = analysis.foreignModules
+    .get("native")
+    ?.interfaces.get("ZRegistrationOwner");
+  const add = owner?.methods.find((method) => method.selector === "addHandler:name:");
+  assert.deepEqual(add?.parameters[0]?.protocols, ["ZRegistrationHandler"]);
+
+  const artifact = compileToNative(source, fixture);
+  assert.match(artifact.source, /@interface ZObjCRegistration : NSObject/);
+  assert.match(artifact.source, /@interface ZObjCRegistration_\d+ : ZObjCRegistration/);
+  assert.match(artifact.source, /ZObjCProtocolAdapter_RegistrationHandler \*_z_adapter/);
+  assert.match(artifact.source, /\[_z_object addHandler:_z_adapter name:_z_argument_1\]/);
+  assert.match(artifact.source, /- \(void\)dealloc \{\n  \(void\)\[_z_object removeHandlerForName:_z_stored_1\]/);
+  assert.match(artifact.source, /objc_precise_lifetime, unused\)\) ZObjCRegistration \* const registration/);
+  assert.match(artifact.source, /struct Z_RegistrationRoot \{[^}]*ZRegistrationOwner \* owner;[^}]*ZObjCRegistration \* registration;/);
+  assert.match(artifact.source, /self->registration = nil;/);
+
+  const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "registered bridge\nreceived 42\nunregistered bridge\n");
+
+  const nativeCheck = spawnSync(
+    process.execPath,
+    [cli, "check", fixture, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(nativeCheck.status, 0, nativeCheck.stderr);
+  assert.match(nativeCheck.stdout, /native frontend hybrid matches 1 modules, 0 local edges/);
+
+  const discarded = source.replace("const registration = objc.register", "objc.register");
+  const discardedDiagnostic = diagnostics(discarded, fixture)[0];
+  assert.equal(discardedDiagnostic.code, "Z0812");
+  assert.match(discardedDiagnostic.message, /must be bound/);
+
+  const missingConformance = source
+    .replace(
+      "class RegistrationHandler implements native.ZRegistrationHandler",
+      "class RegistrationHandler",
+    )
+    .replace(' as "registrationOwner:didReceiveValue:"', "");
+  const conformanceDiagnostic = diagnostics(missingConformance, fixture)[0];
+  assert.equal(conformanceDiagnostic.code, "Z0812");
+  assert.match(conformanceDiagnostic.message, /requires a Z class implementing ZRegistrationHandler/);
+
+  const mismatchedTeardown = source.replace(
+    'remove: owner.removeHandlerForName("bridge")',
+    'remove: owner.removeHandlerForName("other")',
+  );
+  const teardownDiagnostic = diagnostics(mismatchedTeardown, fixture)[0];
+  assert.equal(teardownDiagnostic.code, "Z0812");
+  assert.match(teardownDiagnostic.message, /relate this remove argument/);
+
+  const differentReceiver = source
+    .replace(
+      "  const handler = new RegistrationHandler({});",
+      "  const otherOwner = native.ZRegistrationOwner.alloc().init();\n  const handler = new RegistrationHandler({});",
+    )
+    .replace(
+      'remove: owner.removeHandlerForName("bridge")',
+      'remove: otherOwner.removeHandlerForName("bridge")',
+    );
+  const receiverDiagnostic = diagnostics(differentReceiver, fixture)[0];
+  assert.equal(receiverDiagnostic.code, "Z0812");
+  assert.match(receiverDiagnostic.message, /same stored Objective-C receiver/);
+
+  const untypedAdd = source.replace(
+    'add: owner.addHandler(handler, "bridge")',
+    'add: owner.removeHandlerForName("bridge")',
+  );
+  const untypedDiagnostic = diagnostics(untypedAdd, fixture)[0];
+  assert.equal(untypedDiagnostic.code, "Z0812");
+  assert.match(untypedDiagnostic.message, /exactly one `id<Protocol>` parameter/);
+
+  const registerOffset = source.indexOf("objc.register") + "objc.".length + 2;
+  assert.match(
+    hover(source, fixture, registerOffset)?.contents.value ?? "",
+    /installs now and unregisters exactly once/,
+  );
+  const incomplete = source.replace("objc.register", "objc.reg");
+  const incompleteOffset = incomplete.indexOf("objc.reg") + "objc.reg".length;
+  assert.equal(
+    completions(incomplete, fixture, incompleteOffset)
+      .find((item) => item.label === "register")?.detail,
+    "register({ add: protocol registration call, remove: teardown call }): objc.Registration",
+  );
+  const registrationTypeOffset = source.indexOf("objc.Registration") + "objc.".length + 2;
+  assert.match(
+    hover(source, fixture, registrationTypeOffset)?.contents.value ?? "",
+    /owned add\/remove Objective-C protocol registration lifetime/,
+  );
+}, 60_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;

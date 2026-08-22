@@ -3173,6 +3173,24 @@ The current adapter rejects `assign` and `unsafe_unretained` properties:
 releasing their adapter would otherwise leave a dangling native pointer because
 those storage conventions do not zero themselves.
 
+Retained method-based protocol registrations use `objc.register`:
+
+```zs
+const registration = objc.register({
+  add: contentController.addScriptMessageHandler(handler, "zapp"),
+  remove: contentController.removeScriptMessageHandlerForName("zapp"),
+});
+```
+
+Both fields are checked imported Objective-C method calls on the same stored
+receiver. The add method must contain exactly one `id<Protocol>` parameter, and
+the supplied stored Z class must implement that imported protocol. Registration
+is immediate. `objc.Registration` then owns the receiver, generated adapter,
+and Z controller; during cleanup it invokes the remove method exactly once
+before releasing the adapter. The token must be bound or stored. In the first
+tier, remove arguments must reuse stable add-time names or literals with the
+same native ABI type, preventing teardown from evaluating arbitrary source.
+
 Adjacent `.zd` contracts can safely restrict native pointer surfaces without
 introducing a raw pointer into Z. `parameter: null` permits only the native null
 value for that parameter. A `view cstring | null` result denotes borrowed,

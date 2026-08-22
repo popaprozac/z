@@ -86,6 +86,7 @@ Currently structured codes include:
 | `Z0805` | a typed native status result is called without `try` or `attempt` |
 | `Z0810` | Objective-C protocol adaptation or protocol-property binding is invalid |
 | `Z0811` | a native callback connection is malformed or its ownership-bearing token is discarded |
+| `Z0812` | an Objective-C retained protocol registration is malformed or its ownership-bearing token is discarded |
 | `Z0820` | raw native source uses an unsupported declaration, context, or operand capability |
 | `Z0821` | a value representation cannot cross the first raw native boundary |
 | `Z0822` | an unsafe block is nested, asynchronous, suspending, or captures an escaping environment |

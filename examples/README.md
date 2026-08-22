@@ -107,6 +107,10 @@ support or producing language-server diagnostics from hypothetical imports.
   and main-executor delivery. Its
   [`README.md`](applications/z-notes/README.md) documents the ownership domains
   and current composition boundaries.
+- [`protocol-registration.zs`](interop/objc/protocol-registration.zs): a real
+  WebKit retained-handler registration where `objc.Registration` owns the
+  receiver, generated protocol adapter, and Z controller and removes the
+  handler during deterministic cleanup.
 - [`document-workspace`](applications/document-workspace): a readable,
   multi-module native application model combining document registration,
   domain errors, move-only C++ leases, dynamic arrays, optional views, saving,

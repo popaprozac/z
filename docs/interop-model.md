@@ -244,6 +244,7 @@ boundary**, not a claim that every bridge operation is free:
 | `objc.connect` target/action bridge | One ARC connection allocation, indirect closure call, and an owned environment allocation only when the closure captures; the connection retains the native control |
 | Z-defined Objective-C protocol conformance | One ARC adapter allocation per distinct bound Z controller; selector dispatch forwards directly to generated Z method functions |
 | `objc.bind` weak protocol properties | One ARC binding token plus adapter array; retains the native object, adapters, and Z controllers for the token lifetime |
+| `objc.register` method registration | One ARC registration token plus one protocol adapter; retains the receiver and Z controller, calls the native add method once, and calls its checked remove method once during cleanup |
 | Plain C++/Swift-C++ value or method | Native construction, copy, destruction, and member-call rules; no Z wrapper dispatch |
 | Non-capturing call-only callback | Function pointer or small adapter indirection; no environment allocation |
 | Escaping capturing closure / Objective-C block | Owned closure environment plus a native lifetime adapter, retains/releases, and indirect invocation |
@@ -863,6 +864,26 @@ adapters, and Z controllers alive. The current adapter rejects `assign` and
 dangling native pointer. This closes the common delegate/data-source lifetime
 seam without forcing ordinary Objective-C calls through `std/objc`.
 
+Some frameworks register a retained protocol handler through an add method and
+require a matching remove method rather than exposing a weak property. Use
+`objc.register` to make that pair one deterministic lifetime:
+
+```zs
+const registration = objc.register({
+  add: contentController.addScriptMessageHandler(handler, "zapp"),
+  remove: contentController.removeScriptMessageHandlerForName("zapp"),
+});
+```
+
+The add call executes immediately. The returned `objc.Registration` retains the
+native receiver, generated protocol adapter, and Z controller. Its cleanup
+invokes the checked remove call exactly once before releasing the adapter. The
+token must be bound or stored, and a long-lived application root may own it as a
+field. The first tier requires both calls to use the same stored receiver and
+requires remove arguments to reuse stable add-time names or literals, so
+teardown never re-evaluates user code. Method-parameter `id<Protocol>` evidence
+selects and verifies the adapter; no cast or selector string is inferred.
+
 | Native surface | Ordinary header import | `std/objc` bridge |
 | --- | --- | --- |
 | `NSApplication.sharedApplication`, `NSWindow.alloc()`, methods/properties | Yes | No |
@@ -870,6 +891,7 @@ seam without forcing ordinary Objective-C calls through `std/objc`.
 | Typed block parameters and observer tokens | Yes | No |
 | Target object plus selector pair | Header exposes the raw convention | `objc.connect` owns the control and closure, installs target/action, and returns an explicit lifetime token |
 | Protocol/delegate synthesis | Protocol and weak property declarations remain visible | `implements`, `as "selector:"`, and `objc.bind` generate and own the native adapter |
+| Retained protocol add/remove methods | Header exposes both calls and the `id<Protocol>` parameter | `objc.register` checks the pair, owns the receiver/adapter/controller, and unregisters during deterministic cleanup |
 
 This module is not a prerequisite for Objective-C interop and is not a generic
 escape hatch for message sending. If Clang can import a declaration with enough

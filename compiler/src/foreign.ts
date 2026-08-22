@@ -1521,6 +1521,7 @@ function collectObjCInterfaces(
           .map((parameter) => ({
             name: parameter.name ?? null,
             type: mapObjCType(parameter.type!, className, "parameter", namedTypes, typeNames, objectType),
+            protocols: objcProtocolQualifiers(parameter.type!.qualType ?? ""),
           })),
         metadata: foreignDeclarationMetadata(method),
         asyncCallbackParameter: null,
@@ -1633,6 +1634,7 @@ function collectObjCProtocols(
           .map((parameter) => ({
             name: parameter.name ?? null,
             type: mapObjCType(parameter.type!, "", "parameter", namedTypes, typeNames, objectType),
+            protocols: objcProtocolQualifiers(parameter.type!.qualType ?? ""),
           })),
         required: objcProtocolMethodRequired(declaration, method),
         metadata: foreignDeclarationMetadata(method),

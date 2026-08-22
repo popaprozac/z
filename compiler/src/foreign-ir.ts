@@ -303,6 +303,8 @@ export type ForeignReferenceType = {
 export type ForeignParameter = {
   readonly name: string | null;
   readonly type: ForeignType;
+  /** Objective-C protocol qualifiers carried by an `id<...>` parameter. */
+  readonly protocols?: readonly string[];
   /** A header constant that must appear at this source argument position. */
   readonly literal?: string;
   /** Exact C ABI type required for a projected variadic argument. */

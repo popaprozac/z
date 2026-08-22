@@ -24,6 +24,7 @@ import type {
   IntegerOperation,
   MutexWithLockCallInfo,
   ObjCBindingPlan,
+  ObjCRegistrationPlan,
   ObjCProtocolConformance,
   OptionalChainPlan,
   RawExpressionPlan,
@@ -41,7 +42,9 @@ import {
   isStandardModuleSpecifier,
   fsLockTypeName,
   nativeConnectionTypeName,
+  objcBindingTypeName,
   objcConnectionTypeName,
+  objcRegistrationTypeName,
   objcSelectorTypeName,
   standardFunctionSignature,
   type StandardFunctionName,
@@ -405,7 +408,11 @@ export function generateC(
     includedHeaders.add("string.h");
   }
 
-  if (semanticInfo.objcConnectionCalls.size > 0 || semanticInfo.objcBindingCalls.size > 0) {
+  if (
+    semanticInfo.objcConnectionCalls.size > 0
+    || semanticInfo.objcBindingCalls.size > 0
+    || semanticInfo.objcRegistrationCalls.size > 0
+  ) {
     lines.push("#import <Foundation/Foundation.h>");
     includedHeaders.add("Foundation/Foundation.h");
   }
@@ -600,6 +607,9 @@ export function generateC(
   if (semanticInfo.objcBindingCalls.size > 0) {
     lines.push(generateObjCBindingRuntime(), "");
   }
+  if (semanticInfo.objcRegistrationCalls.size > 0) {
+    lines.push(generateObjCRegistrationRuntime(), "");
+  }
   for (const helper of foreignEscapeHelpers) {
     lines.push(generateForeignEscapeHelpers(helper, usesForeignRuntimeEntry), "");
   }
@@ -784,6 +794,9 @@ export function generateC(
   }
   for (const [offset, plan] of semanticInfo.objcBindingCalls) {
     lines.push(generateObjCBindingHelper(offset, plan, semanticInfo), "");
+  }
+  for (const [offset, plan] of semanticInfo.objcRegistrationCalls) {
+    lines.push(generateObjCRegistrationHelper(offset, plan, semanticInfo), "");
   }
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");
@@ -2617,6 +2630,14 @@ function generateObjCBindingRuntime(): string {
 @end`;
 }
 
+function generateObjCRegistrationRuntime(): string {
+  return `@interface ZObjCRegistration : NSObject
+@end
+
+@implementation ZObjCRegistration
+@end`;
+}
+
 function objcBindingHelperName(offset: number): string {
   return `z_objc_bind_${offset}`;
 }
@@ -2656,6 +2677,83 @@ function generateObjCBindingHelper(
   lines.push(`return [[ZObjCBinding alloc] initWithObject:object adapters:@[${[...adapters.values()].join(", ")}]];`);
   return `static ZObjCBinding *${objcBindingHelperName(offset)}(${parameters.join(", ")}) {
 ${indent(lines.join("\n"), 2)}
+}`;
+}
+
+function objcRegistrationHelperName(offset: number): string {
+  return `z_objc_register_${offset}`;
+}
+
+function objcRegistrationClassName(offset: number): string {
+  return `ZObjCRegistration_${offset}`;
+}
+
+function generateObjCRegistrationHelper(
+  offset: number,
+  plan: ObjCRegistrationPlan,
+  semanticInfo: SemanticInfo,
+): string {
+  const object = semanticInfo.foreignObjectTypes.get(plan.objectType);
+  if (!object) throw new Error(`missing Objective-C object type ${JSON.stringify(plan.objectType)} for objc.register`);
+  const registration = objcRegistrationClassName(offset);
+  const adapter = objcProtocolAdapterName(plan.ownerType);
+  const ownerType = structName(plan.ownerType);
+  const addIndexes = plan.addArguments.flatMap((_, index) => (
+    index === plan.handlerParameter ? [] : [index]
+  ));
+  const storedIndexes = [...new Set(plan.removeArgumentSources)];
+  const parameterName = (index: number) => `_z_argument_${index}`;
+  const storedName = (index: number) => `_z_stored_${index}`;
+  const fields = [
+    `${object.cName} _z_object;`,
+    `${adapter} *_z_adapter;`,
+    ...storedIndexes.map((index) => (
+      `${foreignCType(plan.addMethod.parameters[index].type)} ${storedName(index)};`
+    )),
+  ];
+  const parameters = [
+    `${object.cName}object`,
+    `${ownerType} *owner`,
+    ...addIndexes.map((index) => (
+      `${foreignCType(plan.addMethod.parameters[index].type)} ${parameterName(index)}`
+    )),
+  ];
+  const addArguments = plan.addArguments.map((_, index) => (
+    index === plan.handlerParameter ? "_z_adapter" : parameterName(index)
+  ));
+  const removeArguments = plan.removeArgumentSources.map((index) => storedName(index));
+  const initialize = [
+    "self = [super init];",
+    "if (self != nil) {",
+    "  _z_object = object;",
+    `  _z_adapter = [[${adapter} alloc] initWithOwner:owner];`,
+    ...storedIndexes.map((index) => `  ${storedName(index)} = ${parameterName(index)};`),
+    `  (void)${generateObjCMessage("_z_object", plan.addMethod.selector, addArguments)};`,
+    "}",
+    "return self;",
+  ];
+  return `@interface ${registration} : ZObjCRegistration {
+${indent(fields.join("\n"), 2)}
+}
+- (instancetype)initWithObject:(${object.cName})object
+                         owner:(${ownerType} *)owner${addIndexes.map((index) => `
+                    argument${index}:(${foreignCType(plan.addMethod.parameters[index].type)})${parameterName(index)}`).join("")};
+@end
+
+@implementation ${registration}
+- (instancetype)initWithObject:(${object.cName})object
+                         owner:(${ownerType} *)owner${addIndexes.map((index) => `
+                    argument${index}:(${foreignCType(plan.addMethod.parameters[index].type)})${parameterName(index)}`).join("")} {
+${indent(initialize.join("\n"), 2)}
+}
+
+- (void)dealloc {
+  (void)${generateObjCMessage("_z_object", plan.removeMethod.selector, removeArguments)};
+}
+@end
+
+static ZObjCRegistration *${objcRegistrationHelperName(offset)}(${parameters.join(", ")}) {
+  return [[${registration} alloc] initWithObject:object owner:owner${addIndexes.map((index) => ` argument${index}:${parameterName(index)}`).join("")}];
 }`;
 }
 
@@ -8250,7 +8348,11 @@ function generateLocalDeclaration(
   foreignNamedTypes: SemanticInfo["foreignNamedTypes"],
 ): string {
   name = cBindingName(name);
-  if (type === objcConnectionTypeName) {
+  if (
+    type === objcConnectionTypeName
+    || type === objcBindingTypeName
+    || type === objcRegistrationTypeName
+  ) {
     const cType = mapType(type, structs, enums, foreignNamedTypes);
     const declaration = mutable ? `${cType}${name}` : `${cType} const ${name}`;
     return `__attribute__((objc_precise_lifetime, unused)) ${declaration}`;
@@ -9576,6 +9678,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         return `${objcBindingHelperName(expression.location.offset)}(${[
           generateExpression(expression.arguments[0], context),
           ...[...owners.values()].map((owner) => generateExpression(owner, context)),
+        ].join(", ")})`;
+      }
+      const objcRegistration = context.semanticInfo.objcRegistrationCalls.get(expression.location.offset);
+      if (objcRegistration) {
+        const arguments_ = objcRegistration.addArguments.flatMap((argument, index) => (
+          index === objcRegistration.handlerParameter
+            ? []
+            : [generateCallArgument(argument, context)]
+        ));
+        return `${objcRegistrationHelperName(expression.location.offset)}(${[
+          generateExpression(objcRegistration.receiverExpression, context),
+          generateExpression(objcRegistration.ownerExpression, context),
+          ...arguments_,
         ].join(", ")})`;
       }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
