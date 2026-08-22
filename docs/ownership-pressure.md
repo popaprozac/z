@@ -3368,6 +3368,34 @@ host owns only ABI delivery. This is stronger evidence for self-hosting than a
 standalone JSON sample because the same source-backed module now composes with
 exports, archive generation, foreign callbacks, and a real consumer repository.
 
+## Zapp's first visible WebKit round trip
+
+Zapp now builds the fixed-point archive into a visible AppKit/WebKit process.
+The generated embedding runtime initializes a main-bound
+`OnceLifetime<Application>` before admitting exports and destroys it during
+shutdown. A WebKit message crosses into the exported owned-String boundary,
+uses the Z JSON router, returns typed response fields, updates the page, stops
+the AppKit run loop, and releases the runtime root. The strict C regression and
+the visible Objective-C host consume the same archive and generated header.
+
+This pressure test made the remaining ownership boundary precise. Stage 0 can
+import and type-check AppKit and WebKit directly, but the fixed-point driver
+still normalizes only adjacent `.zd`-described C declarations; Objective-C raw
+records and normalized FIIR have not crossed together. WebKit also registers a
+strongly retained `WKScriptMessageHandler` through a method rather than a weak
+delegate property, so existing `objc.bind` is deliberately inapplicable. A
+future general retained-protocol registration token must own the native object,
+adapter, and Z controller, unregister deterministically, and diagnose the
+registration/unregistration selector pair. Zapp keeps this temporary adapter in
+Objective-C rather than weakening lifetime checks or inventing WebKit-specific
+Z syntax.
+
+The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
+WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do
+not currently unify at a cross-framework call. Constructing `WebKit.CGRect`
+works, while passing `AppKit.NSMakeRect(...)` does not. Canonical Clang type
+identity should eventually make that source-header choice irrelevant.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
