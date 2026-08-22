@@ -263,6 +263,10 @@ export struct ModuleFunctionSignature {
   // A transparent zero-argument accessor may return the ARC identity retained
   // by this Once<T> module cell in the signature's defining module.
   classIdentitySource: String = "";
+  // A narrowly audited direct value-struct return may preserve which class
+  // parameter supplied each direct class field.
+  classIdentityFieldNames: Array<String> = Array<String>();
+  classIdentityParameterIndices: Array<usize> = Array<usize>();
   // Foreign calls may invalidate outstanding views derived from these inputs.
   invalidatesParameters: Array<usize>;
   invalidatesLifetimes: Array<String>;

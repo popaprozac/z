@@ -468,6 +468,14 @@ export function rebaseModuleFunctionSignature(
   for (const parameter of signature.viewParameters) {
     viewParameters.push(parameter);
   }
+  let classIdentityFieldNames = Array<String>();
+  for (const field of signature.classIdentityFieldNames) {
+    classIdentityFieldNames.push(field.copyBytes(0, field.byteLength));
+  }
+  let classIdentityParameterIndices = Array<usize>();
+  for (const parameter of signature.classIdentityParameterIndices) {
+    classIdentityParameterIndices.push(parameter);
+  }
   return ModuleFunctionSignature({
     asynchronous: signature.asynchronous,
     executorAffinity: signature.executorAffinity.copyBytes(0, signature.executorAffinity.byteLength),
@@ -482,6 +490,8 @@ export function rebaseModuleFunctionSignature(
       0,
       signature.classIdentitySource.byteLength
     ),
+    classIdentityFieldNames,
+    classIdentityParameterIndices,
     invalidatesParameters,
     invalidatesLifetimes,
     returnType: rebaseTypeName(
@@ -741,6 +751,14 @@ export function methodCallableSignature(
   for (const parameter of method.signature.viewParameters) {
     viewParameters.push(parameter);
   }
+  let classIdentityFieldNames = Array<String>();
+  for (const field of method.signature.classIdentityFieldNames) {
+    classIdentityFieldNames.push(field.copyBytes(0, field.byteLength));
+  }
+  let classIdentityParameterIndices = Array<usize>();
+  for (const parameter of method.signature.classIdentityParameterIndices) {
+    classIdentityParameterIndices.push(parameter);
+  }
   return ModuleFunctionSignature({
     asynchronous: method.signature.asynchronous,
     executorAffinity: method.signature.executorAffinity.copyBytes(0, method.signature.executorAffinity.byteLength),
@@ -755,6 +773,8 @@ export function methodCallableSignature(
       0,
       method.signature.classIdentitySource.byteLength
     ),
+    classIdentityFieldNames,
+    classIdentityParameterIndices,
     invalidatesParameters,
     invalidatesLifetimes,
     returnType: method.signature.returnType.copyBytes(0, method.signature.returnType.byteLength),

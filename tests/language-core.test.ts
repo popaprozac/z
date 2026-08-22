@@ -4156,7 +4156,7 @@ test("tracks ARC identities stored in direct local value-struct fields", () => {
     /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
   );
 
-  const opaqueResult = `${prefix}
+  const transparentResult = `${prefix}
     function wrap(in application: Application): Context {
       return Context({ application });
     }
@@ -4167,10 +4167,42 @@ test("tracks ARC identities stored in direct local value-struct fields", () => {
     }
   `;
   assert.throws(
-    () => compileToC(opaqueResult, "aggregate-opaque-class-alias.zs"),
+    () => compileToC(transparentResult, "aggregate-transparent-class-alias.zs"),
     /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
   );
 
+  const transparentDistinct = `${prefix}
+    function wrap(in application: Application): Context {
+      return Context({ application });
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview);
+      return updateAndInspect(inout application, context.application) - 1;
+    }
+  `;
+  assert.deepEqual(
+    diagnostics(transparentDistinct, "aggregate-transparent-distinct-class-alias.zs"),
+    [],
+  );
+
+  const opaqueBranch = `${prefix}
+    function wrap(in application: Application, condition: boolean): Context {
+      if (condition) return Context({ application });
+      return Context({ application });
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, true);
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(opaqueBranch, "aggregate-opaque-branch-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
 });
 
 test("exposes Z classes and traits to editor services", () => {

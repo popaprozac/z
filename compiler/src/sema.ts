@@ -643,6 +643,14 @@ type AnalysisState = {
   >;
   readonly classAliasExpressionIdentities: Map<number, string>;
   readonly functionClassAliasIdentities: Map<string, string>;
+  readonly aggregateClassAliasExpressionFields: Map<
+    number,
+    ReadonlyMap<string, ReadonlySet<string>>
+  >;
+  readonly functionAggregateClassAliasFields: Map<
+    string,
+    readonly AggregateClassAliasFieldSource[]
+  >;
   readonly locallyContainedClassAliases: Set<string>;
   readonly activeLoans: AccessLoanSet;
   readonly asyncSpawnBorrowRoots: Map<number, readonly string[]>;
@@ -668,6 +676,11 @@ type AnalysisState = {
 type AccessCapability = "value" | "in" | "inout" | "out" | "move";
 
 type ClosureExecutionContext = "inherit" | "main" | "unknown";
+
+type AggregateClassAliasFieldSource = {
+  readonly field: string;
+  readonly parameterIndex: number;
+};
 
 type ClosureInferenceOptions = {
   readonly expectedFunction?: FunctionType | null;
@@ -1027,6 +1040,8 @@ export function analyze(
     aggregateClassAliasFields: new Map(),
     classAliasExpressionIdentities: new Map(),
     functionClassAliasIdentities: new Map(),
+    aggregateClassAliasExpressionFields: new Map(),
+    functionAggregateClassAliasFields: new Map(),
     locallyContainedClassAliases: new Set(),
     activeLoans: new Map(),
     asyncSpawnBorrowRoots: new Map(),
@@ -1533,6 +1548,10 @@ export function analyze(
       structs,
     );
     if (identity) state.functionClassAliasIdentities.set(declaration.name, identity);
+    const fields = transparentAggregateClassAliasFields(declaration, structs);
+    if (fields.length > 0) {
+      state.functionAggregateClassAliasFields.set(declaration.name, fields);
+    }
   }
 
   for (const declaration of program.typeAliases) {
@@ -7749,6 +7768,7 @@ function inferExpression(
   state: AnalysisState,
   allowThrowingCall = false,
 ): ValueType {
+  state.aggregateClassAliasExpressionFields.delete(expression.location.offset);
   const inferred = inferExpressionInner(
     expression,
     locals,
@@ -12525,6 +12545,30 @@ function inferExpressionInner(
           classAliasIdentity,
         );
       }
+      const aggregateClassAliasFields = state.functionAggregateClassAliasFields.get(
+        callable.name,
+      );
+      if (aggregateClassAliasFields) {
+        const fields = new Map<string, ReadonlySet<string>>();
+        for (const source of aggregateClassAliasFields) {
+          const parameter = callable.parameters[source.parameterIndex];
+          const argument = expression.arguments[source.parameterIndex];
+          if (!parameter || !argument) continue;
+          const identities = classAliasIdentitiesForExpression(
+            argument,
+            parameter.type.name,
+            structs,
+            state,
+          );
+          if (identities) fields.set(source.field, new Set(identities));
+        }
+        if (fields.size > 0) {
+          state.aggregateClassAliasExpressionFields.set(
+            expression.location.offset,
+            fields,
+          );
+        }
+      }
       if (
         callable.errorType
         && !isGeneratorFunction(callable)
@@ -13424,6 +13468,58 @@ function transparentOnceClassAliasIdentity(
   return `once:${cell!.name}`;
 }
 
+function transparentAggregateClassAliasFields(
+  declaration: FunctionDeclaration,
+  structs: ReadonlyMap<string, StructDeclaration>,
+): readonly AggregateClassAliasFieldSource[] {
+  if (
+    declaration.async
+    || declaration.errorType
+    || declaration.rawBody
+    || declaration.body.length !== 1
+    || (declaration.typeParameters?.length ?? 0) > 0
+  ) return [];
+  const aggregate = structs.get(declaration.returnType.name);
+  if (aggregate?.kind !== "struct") return [];
+  const statement = declaration.body[0];
+  const returned = statement?.kind === "return" ? statement.expression : null;
+  if (!returned) return [];
+  const initializer = returned.kind === "structExpression"
+    && returned.typeName === aggregate.name
+    ? returned
+    : returned.kind === "call"
+      && returned.callee.kind === "identifier"
+      && returned.callee.name === aggregate.name
+      && returned.arguments.length === 1
+      && returned.arguments[0].kind === "objectExpression"
+      ? returned.arguments[0]
+      : null;
+  if (!initializer || initializer.spread) return [];
+  const sources: AggregateClassAliasFieldSource[] = [];
+  for (const fieldInitializer of initializer.fields) {
+    const field = aggregate.fields.find((candidate) => (
+      candidate.name === fieldInitializer.name
+    ));
+    if (
+      !field
+      || structs.get(String(underlyingType(field.type.name)))?.kind !== "class"
+      || (
+        fieldInitializer.expression.kind !== "identifier"
+        && fieldInitializer.expression.kind !== "argumentReference"
+      )
+    ) continue;
+    const parameterIndex = declaration.parameters.findIndex((parameter) => (
+      parameter.name === fieldInitializer.expression.name
+      && String(underlyingType(parameter.type.name))
+        === String(underlyingType(field.type.name))
+    ));
+    if (parameterIndex >= 0) {
+      sources.push({ field: field.name, parameterIndex });
+    }
+  }
+  return sources;
+}
+
 function recordClassAliasBinding(
   binding: string,
   expression: Expression,
@@ -13490,6 +13586,24 @@ function recordAggregateClassAliasBinding(
   }
   if (unknownFields.size > 0) {
     state.aggregateClassAliasFields.set(binding, unknownFields);
+  }
+  const returnedFields = state.aggregateClassAliasExpressionFields.get(
+    expression.location.offset,
+  );
+  if (returnedFields) {
+    for (const [field, identities] of returnedFields) {
+      const declarationField = declaration.fields.find((candidate) => (
+        candidate.name === field
+      ));
+      if (
+        declarationField
+        && structs.get(String(underlyingType(declarationField.type.name)))?.kind === "class"
+      ) unknownFields.set(field, new Set(identities));
+    }
+    if (unknownFields.size > 0) {
+      state.aggregateClassAliasFields.set(binding, unknownFields);
+    }
+    return;
   }
   const initializer = expression.kind === "structExpression"
     ? expression

@@ -516,6 +516,63 @@ function recordAggregateClassAliasFields(
     some(tree) => {
       const root = tree.root;
       if (
+        tree.nodes[root].kind == ExpressionKind.callExpression
+        && tree.nodes[root].children.length > 0
+      ) {
+        const callee = tree.nodes[root].children[0];
+        match (callableSymbolLocation(modules, moduleIndex, tree, callee)) {
+          some(location) => match (in modules[location.moduleIndex]
+            .symbols[location.symbolIndex].functionSignature) {
+            some(signature) => {
+              let sourceIndex: usize = 0;
+              while (
+                sourceIndex < signature.classIdentityFieldNames.length
+                && sourceIndex < signature.classIdentityParameterIndices.length
+              ) {
+                const fieldName = view signature.classIdentityFieldNames[sourceIndex];
+                const parameterIndex = signature.classIdentityParameterIndices[sourceIndex];
+                const argumentIndex = parameterIndex + 1;
+                if (argumentIndex < tree.nodes[root].children.length) {
+                  const argumentNode = tree.nodes[root].children[argumentIndex];
+                  match (aggregateFieldShape(
+                    modules,
+                    moduleIndex,
+                    storedType,
+                    fieldName
+                  )) {
+                    some(field) => {
+                      if (typeIsClassReference(
+                        module,
+                        modules,
+                        moduleIndex,
+                        field.typeName
+                      )) setAggregateClassAliasField(
+                        inout bindings,
+                        bindingName,
+                        fieldName,
+                        field.typeName,
+                        expressionNodeClassAliasIdentity(
+                          tree,
+                          argumentNode,
+                          bindings,
+                          modules,
+                          moduleIndex
+                        )
+                      );
+                    }
+                    none => {}
+                  }
+                }
+                sourceIndex = sourceIndex + 1;
+              }
+              if (signature.classIdentityFieldNames.length > 0) return;
+            }
+            none => {}
+          }
+          none => {}
+        }
+      }
+      if (
         tree.nodes[root].kind != ExpressionKind.callExpression
         || tree.nodes[root].children.length != 2
       ) return;

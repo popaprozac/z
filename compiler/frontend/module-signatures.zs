@@ -81,6 +81,14 @@ function functionDeclarationSignature(
     some(error) => errorType = error.name.copyBytes(0, error.name.byteLength);
     none => {}
   }
+  let classIdentityFieldNames = Array<String>();
+  let classIdentityParameterIndices = Array<usize>();
+  appendFunctionDeclarationAggregateClassIdentityFields(
+    program,
+    declaration,
+    inout classIdentityFieldNames,
+    inout classIdentityParameterIndices
+  );
   return ModuleFunctionSignature({
     asynchronous: declaration.asynchronous,
     executorAffinity: declaration.executorAffinity.copyBytes(0, declaration.executorAffinity.byteLength),
@@ -95,6 +103,8 @@ function functionDeclarationSignature(
       program,
       declaration
     ),
+    classIdentityFieldNames: move classIdentityFieldNames,
+    classIdentityParameterIndices: move classIdentityParameterIndices,
     invalidatesParameters: Array<usize>(),
     invalidatesLifetimes: Array<String>(),
     returnType: declaration.returnType.name.copyBytes(
@@ -103,6 +113,139 @@ function functionDeclarationSignature(
     ),
     errorType,
   });
+}
+
+function appendFunctionDeclarationAggregateClassIdentityFields(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  inout names: Array<String>,
+  inout parameterIndices: Array<usize>
+): void {
+  if (
+    declaration.asynchronous
+    || declaration.typeParameters.length > 0
+    || declaration.receiverMode != ReceiverMode.none
+    || declaration.body.roots.length != 1
+  ) return;
+  match (in declaration.errorType) {
+    some(_) => return;
+    none => {}
+  }
+  let aggregateIndex = program.aggregates.length;
+  let candidateIndex: usize = 0;
+  while (candidateIndex < program.aggregates.length) {
+    if (
+      program.aggregates[candidateIndex].kind == DeclarationKind.structDeclaration
+      && program.aggregates[candidateIndex].name == declaration.returnType.name
+      && program.aggregates[candidateIndex].typeParameters.length == 0
+    ) {
+      aggregateIndex = candidateIndex;
+      break;
+    }
+    candidateIndex = candidateIndex + 1;
+  }
+  if (aggregateIndex >= program.aggregates.length) {
+    return;
+  }
+  const statementIndex = declaration.body.roots[0];
+  if (statementIndex >= declaration.body.nodes.length) {
+    return;
+  }
+  const statement = view declaration.body.nodes[statementIndex];
+  if (statement.kind != StatementKind.returnStatement) {
+    return;
+  }
+  match (in statement.expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => appendAggregateClassIdentityFieldsFromTree(
+        program,
+        declaration,
+        tree,
+        aggregateIndex,
+        inout names,
+        inout parameterIndices
+      );
+      none => {}
+    }
+    none => {}
+  }
+}
+
+function appendAggregateClassIdentityFieldsFromTree(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  in tree: ExpressionTree,
+  aggregateIndex: usize,
+  inout names: Array<String>,
+  inout parameterIndices: Array<usize>
+): void {
+  const root = tree.root;
+  if (
+    tree.nodes[root].kind != ExpressionKind.callExpression
+    || tree.nodes[root].children.length != 2
+  ) return;
+  const callee = tree.nodes[root].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.identifierExpression
+    || tree.nodes[callee].value != declaration.returnType.name
+  ) return;
+  const object = tree.nodes[root].children[1];
+  if (tree.nodes[object].kind != ExpressionKind.objectExpression) {
+    return;
+  }
+  for (const label of tree.nodes[object].labels) {
+    if (label == "...") {
+      return;
+    }
+  }
+  let fieldIndex: usize = 0;
+  while (
+    fieldIndex < tree.nodes[object].children.length
+    && fieldIndex < tree.nodes[object].labels.length
+  ) {
+    const fieldName = view tree.nodes[object].labels[fieldIndex];
+    let fieldType = "";
+    for (const field of program.aggregates[aggregateIndex].fields) {
+      if (field.name == fieldName) {
+        fieldType = field.type.name.copyBytes(0, field.type.name.byteLength);
+        break;
+      }
+    }
+    const value = tree.nodes[object].children[fieldIndex];
+    let parameterName = "";
+    if (tree.nodes[value].kind == ExpressionKind.identifierExpression) {
+      parameterName = tree.nodes[value].value.copyBytes(
+        0,
+        tree.nodes[value].value.byteLength
+      );
+    } else if (
+      tree.nodes[value].kind == ExpressionKind.argumentReferenceExpression
+      && tree.nodes[value].children.length == 1
+    ) {
+      const binding = tree.nodes[value].children[0];
+      if (tree.nodes[binding].kind == ExpressionKind.identifierExpression) {
+        parameterName = tree.nodes[binding].value.copyBytes(
+          0,
+          tree.nodes[binding].value.byteLength
+        );
+      }
+    }
+    if (fieldType.byteLength > 0 && parameterName.byteLength > 0) {
+      let parameterIndex: usize = 0;
+      while (parameterIndex < declaration.parameters.length) {
+        if (
+          declaration.parameters[parameterIndex].name == parameterName
+          && declaration.parameters[parameterIndex].type.name == fieldType
+        ) {
+          names.push(fieldName.copyBytes(0, fieldName.byteLength));
+          parameterIndices.push(parameterIndex);
+          break;
+        }
+        parameterIndex = parameterIndex + 1;
+      }
+    }
+    fieldIndex = fieldIndex + 1;
+  }
 }
 
 function functionDeclarationClassIdentitySource(

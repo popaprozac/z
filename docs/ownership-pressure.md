@@ -3164,6 +3164,36 @@ remain outside this direct local tier. A direct class field on an opaque local
 context is treated as an unknown alias and therefore conflicts with another
 exclusive class use; missing provenance never means proven independence.
 
+The next refinement exports that evidence through one deliberately small
+function boundary:
+
+```z
+function wrap(in application: Application): Context {
+  return Context({ application });
+}
+
+let application = new Application({ value: 41 });
+const preview = new Application({ value: 1 });
+const context = wrap(preview);
+updateAndInspect(inout application, context.application); // accepted
+```
+
+Both frontends audit the complete declaration rather than infer from the
+function name or return type. The function must be synchronous, nonthrowing,
+nongeneric, receiver-free, and contain exactly one `return Struct({ ... });`
+statement without spread. Each direct class field initialized from a same-typed
+class parameter carries that argument's identity into the caller, including
+across a source-module import. Passing `application` to `wrap` therefore still
+rejects the overlapping call, while passing `preview` proves independence.
+
+This is exported semantic evidence, not a hidden runtime wrapper. Generated C
+still returns the ordinary value struct and performs the same ARC retains and
+releases. A branch, local temporary, spread, throw, async effect, generic
+function, indirect initializer, or different return source earns no summary;
+its direct class fields retain the wildcard unknown-alias behavior. This strict
+fallback is intentional even when a human can see two branches return the same
+parameter: the compiler does not turn partial provenance into a safety claim.
+
 The focused capture follow-up resolved an adjacent frontend mismatch without
 adding syntax. Both frontends now preserve the direct class rule through a
 synchronous closure: an owned `const` class reference may invoke `inout this`
@@ -3253,8 +3283,9 @@ shared mutation across threads.
   last-use, method, forwarding, `in` consumer, object-destructuring, and
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
-- broader mutable shared ARC identity beyond direct local and direct
-  value-struct-field alias evidence, nested/stored/returned aggregate
+- broader mutable shared ARC identity beyond direct local, direct
+  value-struct-field, and audited one-return aggregate alias evidence;
+  nested/stored/general returned aggregate
   provenance, nested-class/dynamic shape stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner

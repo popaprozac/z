@@ -814,10 +814,31 @@ replacing a mutable direct field updates the evidence. A context holding a
 different class instance remains valid. This is compile-time call-exclusivity
 evidence only: it adds no runtime metadata and does not make the stored class
 locally contained for class-field `view` projection. Spread, nested aggregate
-paths, collections, returned aggregates, branch joins, and suspension remain
-conservative boundaries. An opaque direct class field is treated as potentially
-aliasing any other class identity in the same exclusive call; only precise
-construction evidence restores independence. A direct inline closure passed to
+paths, collections, general returned aggregates, branch joins, and suspension
+remain conservative boundaries except for one audited direct-return shape. A
+synchronous, nonthrowing, nongeneric free function whose complete body is one
+direct value-struct construction preserves class parameters placed into direct
+class fields:
+
+```z
+function contextFor(in application: Application): Context {
+  return Context({ application });
+}
+
+let application = new Application({ name: "Primary" });
+const preview = new Application({ name: "Preview" });
+const context = contextFor(preview);
+publishAndInspect(inout application, context.application); // distinct: accepted
+```
+
+Calling `contextFor(application)` instead preserves the shared identity and the
+same exclusive call is rejected. The summary crosses source-module boundaries
+and adds no source syntax or runtime provenance. A local statement, branch,
+spread, throw, async effect, generic parameter, different return source, or
+indirect initializer makes the result opaque again. An opaque direct class
+field is treated as potentially aliasing any other class identity in the same
+exclusive call; only precise construction evidence restores independence. A
+direct inline closure passed to
 the call also contributes its captured ARC identities:
 capturing `inspector` in a callback beside `inout document` is rejected because
 the callback may run before the synchronous call returns. Provenance through

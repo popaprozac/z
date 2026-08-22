@@ -12854,6 +12854,7 @@ test("tracks ARC identities stored in direct local value-struct fields natively"
     ["projected.zs", /ARC aliases "application" and "observed"/],
     ["assigned.zs", /ARC aliases "application" and "context\.application"/],
     ["opaque.zs", /ARC aliases "application" and "context\.application"/],
+    ["opaque-branch.zs", /ARC aliases "application" and "context\.application"/],
   ] as const) {
     const rejected = spawnSync(
       process.execPath,
@@ -12882,6 +12883,43 @@ test("tracks ARC identities stored in direct local value-struct fields natively"
     { encoding: "utf8" },
   );
   assert.equal(validResult.status, 0, validResult.stderr);
+
+  const transparentValid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-aggregate-class-alias/opaque-valid.zs",
+  );
+  const transparentValidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", transparentValid],
+    { encoding: "utf8" },
+  );
+  assert.equal(transparentValidResult.status, 0, transparentValidResult.stderr);
+
+  const moduleValid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-aggregate-class-return/valid.zs",
+  );
+  const moduleValidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", moduleValid],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleValidResult.status, 0, moduleValidResult.stderr);
+
+  const moduleOverlap = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-aggregate-class-return/overlap.zs",
+  );
+  const moduleOverlapResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", moduleOverlap],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleOverlapResult.status, 1, moduleOverlapResult.stderr);
+  assert.match(
+    moduleOverlapResult.stderr,
+    /ARC aliases "application" and "context\.application"/,
+  );
 }, 120_000);
 
 test("keeps native semantic authority composable across a representative Z corpus", () => {
