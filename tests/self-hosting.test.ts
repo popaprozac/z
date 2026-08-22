@@ -6344,6 +6344,18 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(checking.status, 0, checking.stderr);
   assert.match(checking.stdout, /checked 1 Z modules/);
 
+  const contextualOptionChecking = spawnSync(
+    executable,
+    ["check", resolve(projectRoot, "tests/fixtures/self-host-emit-option.zs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    contextualOptionChecking.status,
+    0,
+    contextualOptionChecking.stderr,
+  );
+  assert.match(contextualOptionChecking.stdout, /checked 1 Z modules/);
+
   const jsonRun = spawnSync(
     executable,
     ["run", resolve(projectRoot, "tests/fixtures/std-json-smoke.zs")],

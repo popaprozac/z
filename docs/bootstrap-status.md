@@ -770,7 +770,12 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    propagate a direct throwing call through the existing typed `Result`
    representation. Checked integer division/remainder, ordinary imported-call
    contracts, discarded non-void `try`, nested assignment targets, and
-   contextual `Option` returns now compose as well. The unchanged
+   contextual `Option` returns now compose as well. Value-producing `match`
+   lowering propagates that destination context into every arm, including
+   payload-free `Option.none`, while owned contextual type-name storage is
+   copied before consumed parser temporaries are destroyed. A fixed-point
+   regression exercises this exact path through a rebuilt native compiler.
+   The unchanged
    compiler graph lowers completely to a 2.3 MB C translation unit and that
    unit compiles and links under strict C11 with Clang
    `-Wall -Wextra -Werror`. Contextual `usize` arithmetic, deterministic

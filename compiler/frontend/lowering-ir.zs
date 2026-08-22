@@ -3722,6 +3722,40 @@ function semanticMethodOwnerMatches(
   return true;
 }
 
+function ownerReturnTypeName(
+  in program: Program,
+  in ownerName: String
+): Option<String> {
+  for (const declaration of program.functions) {
+    if (declaration.name == ownerName) {
+      return Option.some(declaration.returnType.name.copyBytes(
+        0,
+        declaration.returnType.name.byteLength
+      ));
+    }
+  }
+  let resolved = "";
+  for (const aggregate of program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (!semanticMethodOwnerMatches(
+        ownerName,
+        aggregate.name,
+        method.name
+      )) continue;
+      if (resolved.byteLength == 0) {
+        resolved = method.returnType.name.copyBytes(
+          0,
+          method.returnType.name.byteLength
+        );
+      } else if (resolved != method.returnType.name) {
+        return Option<String>.none;
+      }
+    }
+  }
+  if (resolved.byteLength > 0) return Option.some(move resolved);
+  return Option<String>.none;
+}
+
 function throwingFunctionResult(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -6096,7 +6130,10 @@ function contextualIntrinsicTypeName(
     some(name) => {
       match (genericTypeShape(name)) {
         some(generic) => {
-          if (generic.base == "Option") return name;
+          if (generic.base == "Option") return name.copyBytes(
+            0,
+            name.byteLength
+          );
         }
         none => {}
       }
@@ -13238,13 +13275,51 @@ function lowerValueDestination(
     }
     none => {}
   }
-  let value = try lowerExpressionSyntax(
-    program,
-    importedTypes,
-    evidence,
-    expression,
-    inout expressions
-  );
+  let expectedTypeName = "";
+  if (returnValue) {
+    match (ownerReturnTypeName(program, ownerName)) {
+      some(name) => expectedTypeName = move name;
+      none => {}
+    }
+  } else if (valueBinding.byteLength > 0) {
+    match (namedValueTypeName(
+      program,
+      evidence,
+      ownerName,
+      valueBinding,
+      expression.offset
+    )) {
+      some(name) => expectedTypeName = move name;
+      none => {}
+    }
+  }
+  let value: usize = 0;
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (expectedTypeName.byteLength > 0) {
+        value = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root,
+          expectedTypeName,
+          inout expressions
+        );
+      } else {
+        value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          root,
+          inout expressions
+        );
+      }
+    }
+    none => throw "native lowering cannot lower an opaque expression";
+  }
   match (in expression.tree) {
     some(tree) => {
       const root = tree.root;

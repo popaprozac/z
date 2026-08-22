@@ -12,12 +12,24 @@ class User {
   id: i32;
 }
 
+enum Selection {
+  present,
+  absent,
+}
+
 function present(value: i32): Option<i32> {
   return Option<i32>.some(value);
 }
 
 function absent(): Option<i32> {
   return Option<i32>.none;
+}
+
+function optionFromMatch(selection: Selection): Option<i32> {
+  return match (in selection) {
+    present => Option.some(42);
+    absent => Option.none;
+  };
 }
 
 function inspect(option: Option<i32>): i32 {
@@ -91,6 +103,12 @@ function nativeOptionProbe(): i32 {
   const noUser: Option<User> = Option.none;
   if (userId(noUser) != -1) {
     return 4;
+  }
+  if (
+    inspect(optionFromMatch(Selection.present)) != 42
+    || inspect(optionFromMatch(Selection.absent)) != 0
+  ) {
+    return 5;
   }
   return 0;
 }

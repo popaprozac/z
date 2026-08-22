@@ -3373,10 +3373,31 @@ exports, archive generation, foreign callbacks, and a real consumer repository.
 Zapp now builds the fixed-point archive into a visible AppKit/WebKit process.
 The generated embedding runtime initializes a main-bound
 `OnceLifetime<Application>` before admitting exports and destroys it during
-shutdown. A WebKit message crosses into the exported owned-String boundary,
+shutdown. The host bundles Zapp's canonical `bootstrap/webview.ts`, installs it
+as a `WKUserScript` at document start, and exercises its public
+`bridge.invoke()`/`_onInvokeResult()` promise path rather than a demo-only
+transport. A WebKit message crosses into the exported owned-String boundary,
 uses the Z JSON router, returns typed response fields, updates the page, stops
 the AppKit run loop, and releases the runtime root. The strict C regression and
 the visible Objective-C host consume the same archive and generated header.
+
+The production bootstrap immediately exposed a useful protocol distinction:
+its `ready` action is fire-and-forget, while an invocation expects exactly one
+response. The Z router now expresses that distinction as
+`Option<BridgeResponse>`—`some(response)` for request/response traffic and
+`none` for actions—rather than fabricating a response for every message kind.
+This keeps protocol cardinality in the type model without adding a special
+bridge primitive.
+
+That change also found a generic fixed-point compiler defect. Returning an
+intrinsic `Option<T>` from a value-producing `match` could transfer a borrowed
+contextual type-name String out of a consumed temporary and then destroy it,
+causing an invalid free during native lowering. Native lowering now copies the
+contextual type name it owns and propagates the enclosing destination type into
+each match arm. Contextual payload-free constructors such as `Option.none`
+therefore lower correctly, and a fixed-point regression compiles the same shape
+through the compiler rebuilt by itself. This was a compiler ownership bug, not
+a Zapp-specific workaround or a new language rule.
 
 This pressure test made the remaining ownership boundary precise. Stage 0 can
 import and type-check AppKit and WebKit directly, but the fixed-point driver
