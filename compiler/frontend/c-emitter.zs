@@ -1313,8 +1313,12 @@ function appendExpression(
         output.append("Z_TEMPLATE_BOOLEAN, .value.boolean_value = ");
       } else if (declaration.expressions[index].labels[part] == "i32") {
         output.append("Z_TEMPLATE_I32, .value.i32_value = ");
+      } else if (declaration.expressions[index].labels[part] == "i64") {
+        output.append("Z_TEMPLATE_I64, .value.i64_value = ");
       } else if (declaration.expressions[index].labels[part] == "u8") {
         output.append("Z_TEMPLATE_U8, .value.u8_value = ");
+      } else if (declaration.expressions[index].labels[part] == "u64") {
+        output.append("Z_TEMPLATE_U64, .value.u64_value = ");
       } else if (declaration.expressions[index].labels[part] == "usize") {
         output.append("Z_TEMPLATE_USIZE, .value.usize_value = ");
       } else if (declaration.expressions[index].labels[part] == "f64") {
@@ -11490,6 +11494,34 @@ function emitLoweredC(
   output.append("  if (__builtin_sub_overflow(0, value, &result)) abort();\n");
   output.append("  return result;\n");
   output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_add_i64(int64_t left, int64_t right) {\n");
+  output.append("  int64_t result;\n");
+  output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_subtract_i64(int64_t left, int64_t right) {\n");
+  output.append("  int64_t result;\n");
+  output.append("  if (__builtin_sub_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_multiply_i64(int64_t left, int64_t right) {\n");
+  output.append("  int64_t result;\n");
+  output.append("  if (__builtin_mul_overflow(left, right, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_divide_i64(int64_t left, int64_t right) {\n");
+  output.append("  if (right == 0 || (left == INT64_MIN && right == -1)) abort();\n");
+  output.append("  return left / right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_remainder_i64(int64_t left, int64_t right) {\n");
+  output.append("  if (right == 0 || (left == INT64_MIN && right == -1)) abort();\n");
+  output.append("  return left % right;\n");
+  output.append("}\n\n");
+  output.append("static inline __attribute__((unused)) int64_t z_stage1_checked_negate_i64(int64_t value) {\n");
+  output.append("  int64_t result;\n");
+  output.append("  if (__builtin_sub_overflow((int64_t)0, value, &result)) abort();\n");
+  output.append("  return result;\n");
+  output.append("}\n\n");
   output.append("static inline __attribute__((unused)) uint8_t z_stage1_checked_add_u8(uint8_t left, uint8_t right) {\n");
   output.append("  uint8_t result;\n");
   output.append("  if (__builtin_add_overflow(left, right, &result)) abort();\n");
@@ -11625,7 +11657,9 @@ function emitLoweredC(
   output.append("  Z_TEMPLATE_STRING,\n");
   output.append("  Z_TEMPLATE_BOOLEAN,\n");
   output.append("  Z_TEMPLATE_I32,\n");
+  output.append("  Z_TEMPLATE_I64,\n");
   output.append("  Z_TEMPLATE_U8,\n");
+  output.append("  Z_TEMPLATE_U64,\n");
   output.append("  Z_TEMPLATE_USIZE,\n");
   output.append("  Z_TEMPLATE_F64\n");
   output.append("} Z_TemplatePartKind;\n\n");
@@ -11635,7 +11669,9 @@ function emitLoweredC(
   output.append("    Z_String string_value;\n");
   output.append("    bool boolean_value;\n");
   output.append("    int32_t i32_value;\n");
+  output.append("    int64_t i64_value;\n");
   output.append("    uint8_t u8_value;\n");
+  output.append("    uint64_t u64_value;\n");
   output.append("    size_t usize_value;\n");
   output.append("    double f64_value;\n");
   output.append("  } value;\n");
@@ -11826,8 +11862,16 @@ function emitLoweredC(
   output.append("        z_string_append_bytes(&result, \"-\", 1);\n");
   output.append("        z_string_append_unsigned_decimal(&result, (uint64_t)(-(int64_t)value));\n");
   output.append("      } else z_string_append_unsigned_decimal(&result, (uint64_t)value);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_I64) {\n");
+  output.append("      const int64_t value = part.value.i64_value;\n");
+  output.append("      if (value < 0) {\n");
+  output.append("        z_string_append_bytes(&result, \"-\", 1);\n");
+  output.append("        z_string_append_unsigned_decimal(&result, (uint64_t)(-(value + 1)) + 1u);\n");
+  output.append("      } else z_string_append_unsigned_decimal(&result, (uint64_t)value);\n");
   output.append("    } else if (part.kind == Z_TEMPLATE_U8) {\n");
   output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.u8_value);\n");
+  output.append("    } else if (part.kind == Z_TEMPLATE_U64) {\n");
+  output.append("      z_string_append_unsigned_decimal(&result, part.value.u64_value);\n");
   output.append("    } else if (part.kind == Z_TEMPLATE_USIZE) {\n");
   output.append("      z_string_append_unsigned_decimal(&result, (uint64_t)part.value.usize_value);\n");
   output.append("    } else if (part.kind == Z_TEMPLATE_F64) {\n");

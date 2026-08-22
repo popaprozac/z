@@ -37,6 +37,11 @@ import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
+const attemptedInferencePrefix = "__z_inferred_attempt:";
+const attemptedInferenceType = (success: string): string => `${attemptedInferencePrefix}${success}`;
+const parseAttemptedInferenceType = (type: string | null): string | null => (
+  type?.startsWith(attemptedInferencePrefix) ? type.slice(attemptedInferencePrefix.length) : null
+);
 const numericTypeConstructors = new Set([
   "i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "f32", "f64",
 ]);
@@ -571,15 +576,18 @@ export function inferGenericCalls(
         return { expression, type: expression.returnType.name };
       case "identifier":
         const genericIdentifier = parseGenericType(expression.name);
+        const localType = environment.get(expression.name) ?? null;
         return {
           expression,
-          type: environment.get(expression.name)
+          type: parseAttemptedInferenceType(localType)
+            ?? localType
             ?? selectiveValues.get(expression.name)
             ?? standardTypeConstructors.get(genericIdentifier?.base ?? expression.name)
             ?? null,
         };
       case "argumentReference":
-        return { expression, type: environment.get(expression.name) ?? null };
+        const argumentType = environment.get(expression.name) ?? null;
+        return { expression, type: parseAttemptedInferenceType(argumentType) ?? argumentType };
       case "unary": {
         const operand = rewriteExpression(expression.operand, environment);
         return { expression: { ...expression, operand: operand.expression }, type: expression.operator === "!" ? "boolean" : operand.type };
@@ -922,7 +930,19 @@ export function inferGenericCalls(
       }
       case "matchExpression": {
         const matched = rewriteExpression(expression.expression, environment);
-        const arms = expression.arms.map((arm) => rewriteArm(arm, environment, matched.type, null, expectedType));
+        const attemptedSuccessType = expression.expression.kind === "attempt"
+          ? matched.type
+          : expression.expression.kind === "identifier"
+            ? parseAttemptedInferenceType(environment.get(expression.expression.name) ?? null)
+            : null;
+        const arms = expression.arms.map((arm) => rewriteArm(
+          arm,
+          environment,
+          matched.type,
+          null,
+          expectedType,
+          attemptedSuccessType,
+        ));
         return { expression: { ...expression, expression: matched.expression, arms }, type: armValueType(arms, environment) };
       }
       case "ifExpression": {
@@ -1510,12 +1530,15 @@ export function inferGenericCalls(
     matchedType: string | null,
     returnType: string | null = null,
     selectedType: string | null = null,
+    attemptedSuccessType: string | null = null,
   ): MatchArm => {
     const armEnvironment = new Map(environment);
     if (arm.binding && matchedType) {
       const variant = enums.get(matchedType)?.variants.find((item) => item.name === arm.variantName);
       const option = parseGenericType(matchedType);
-      if (variant?.payload) armEnvironment.set(arm.binding, variant.payload.name);
+      if (attemptedSuccessType && arm.variantName === "success") {
+        armEnvironment.set(arm.binding, attemptedSuccessType);
+      } else if (variant?.payload) armEnvironment.set(arm.binding, variant.payload.name);
       else if (option?.base === "Option" && arm.variantName === "some") armEnvironment.set(arm.binding, option.arguments[0]);
     }
     if (arm.objectBindings && matchedType) {
@@ -1557,7 +1580,14 @@ export function inferGenericCalls(
             },
           };
         }
-        if (type) environment.set(statement.name, type);
+        if (type) {
+          environment.set(
+            statement.name,
+            !statement.type && initializer?.expression.kind === "attempt"
+              ? attemptedInferenceType(type)
+              : type,
+          );
+        }
         return { ...statement, initializer: initializer?.expression ?? null };
       }
       case "destructure": {
@@ -1655,10 +1685,22 @@ export function inferGenericCalls(
       }
       case "match": {
         const matched = rewriteExpression(statement.expression, environment);
+        const attemptedSuccessType = statement.expression.kind === "attempt"
+          ? matched.type
+          : statement.expression.kind === "identifier"
+            ? parseAttemptedInferenceType(environment.get(statement.expression.name) ?? null)
+            : null;
         return {
           ...statement,
           expression: matched.expression,
-          arms: statement.arms.map((arm) => rewriteArm(arm, environment, matched.type, returnType, selectedType)),
+          arms: statement.arms.map((arm) => rewriteArm(
+            arm,
+            environment,
+            matched.type,
+            returnType,
+            selectedType,
+            attemptedSuccessType,
+          )),
         };
       }
       case "asyncScope":

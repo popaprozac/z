@@ -1,10 +1,62 @@
 import { Map } from "std/collections";
 import { TextBuffer } from "std/text";
 
+export struct JsonNumberError {
+  message: String;
+}
+
+export readonly struct JsonNumber {
+  private raw: String;
+
+  static function parse(in text: String): JsonNumber throws JsonNumberError {
+    try validateJsonNumber(in text);
+    return JsonNumber({ raw: copy text });
+  }
+
+  static function fromU64(value: u64): JsonNumber {
+    return JsonNumber({ raw: `${value}` });
+  }
+
+  static function fromI64(value: i64): JsonNumber {
+    return JsonNumber({ raw: `${value}` });
+  }
+
+  static function fromF64(value: f64): JsonNumber throws JsonNumberError {
+    if (
+      value != value
+      || value > 1.7976931348623157e308
+      || value < -1.7976931348623157e308
+    ) {
+      throw numberError("JSON numbers must be finite");
+    }
+    return try JsonNumber.parse(`${value}`);
+  }
+
+  function text(): String {
+    return copy this.raw;
+  }
+
+  function appendTo(inout output: TextBuffer): void {
+    output.append(this.raw);
+  }
+
+  function toU64(): u64 throws JsonNumberError {
+    return try jsonNumberToU64(this.raw);
+  }
+
+  function toI64(): i64 throws JsonNumberError {
+    return try jsonNumberToI64(this.raw);
+  }
+
+  function toF64(): f64 throws JsonNumberError {
+    return try jsonNumberToF64(this.raw);
+  }
+}
+
 export enum JsonValue {
   nullValue,
   boolean boolean,
-  number f64,
+  number JsonNumber,
   string String,
   array Array<JsonValue>,
   object Map<String, JsonValue>,
@@ -64,6 +116,111 @@ function isDigit(byte: u8): boolean {
   return byte >= 48 && byte <= 57;
 }
 
+function numberError(message: String): JsonNumberError {
+  return JsonNumberError({ message: move message });
+}
+
+function validateJsonNumber(in text: String): void throws JsonNumberError {
+  if (text.isEmpty) throw numberError("expected a JSON number");
+  let offset: usize = 0;
+  if (text.byteAt(offset) == 45) {
+    offset = offset + 1;
+    if (offset >= text.byteLength) {
+      throw numberError("expected a digit after the minus sign");
+    }
+  }
+
+  if (text.byteAt(offset) == 48) {
+    offset = offset + 1;
+    if (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+      throw numberError("a JSON number cannot contain a leading zero");
+    }
+  } else {
+    if (!isDigit(text.byteAt(offset))) throw numberError("expected a JSON number");
+    while (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+      offset = offset + 1;
+    }
+  }
+
+  if (offset < text.byteLength && text.byteAt(offset) == 46) {
+    offset = offset + 1;
+    if (offset >= text.byteLength || !isDigit(text.byteAt(offset))) {
+      throw numberError("expected a digit after the decimal point");
+    }
+    while (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+      offset = offset + 1;
+    }
+  }
+
+  if (
+    offset < text.byteLength
+    && (text.byteAt(offset) == 101 || text.byteAt(offset) == 69)
+  ) {
+    offset = offset + 1;
+    if (
+      offset < text.byteLength
+      && (text.byteAt(offset) == 43 || text.byteAt(offset) == 45)
+    ) {
+      offset = offset + 1;
+    }
+    if (offset >= text.byteLength || !isDigit(text.byteAt(offset))) {
+      throw numberError("expected an exponent digit");
+    }
+    while (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+      offset = offset + 1;
+    }
+  }
+
+  if (offset != text.byteLength) {
+    throw numberError("unexpected trailing content after JSON number");
+  }
+}
+
+function jsonNumberToU64(in text: String): u64 throws JsonNumberError {
+  if (text.byteAt(0) == 45) {
+    throw numberError("a negative JSON number cannot convert to u64");
+  }
+  let value: u64 = 0;
+  let maximum: u64 = 1844674407370955161;
+  maximum = maximum * 10 + 5;
+  let offset: usize = 0;
+  while (offset < text.byteLength) {
+    const byte = text.byteAt(offset);
+    if (!isDigit(byte)) throw numberError("a non-integer JSON number cannot convert to u64");
+    const digit = decimalDigitU64(byte);
+    if (value > (maximum - digit) / 10) {
+      throw numberError("JSON number is outside the u64 range");
+    }
+    value = value * 10 + digit;
+    offset = offset + 1;
+  }
+  return value;
+}
+
+function jsonNumberToI64(in text: String): i64 throws JsonNumberError {
+  const negative = text.byteAt(0) == 45;
+  let offset: usize = negative ? usize(1) : usize(0);
+  let value: i64 = 0;
+  let maximum: i64 = 9223372036854775807;
+  let minimum = -maximum;
+  minimum = minimum - 1;
+  while (offset < text.byteLength) {
+    const byte = text.byteAt(offset);
+    if (!isDigit(byte)) throw numberError("a non-integer JSON number cannot convert to i64");
+    const digit = decimalDigitI64(byte);
+    if (negative && value < (minimum + digit) / 10) {
+      throw numberError("JSON number is outside the i64 range");
+    }
+    if (!negative && value > (maximum - digit) / 10) {
+      throw numberError("JSON number is outside the i64 range");
+    }
+    if (negative) value = value * 10 - digit;
+    else value = value * 10 + digit;
+    offset = offset + 1;
+  }
+  return value;
+}
+
 function decimalDigit(byte: u8): f64 {
   if (byte == 48) return 0.0;
   if (byte == 49) return 1.0;
@@ -88,6 +245,88 @@ function decimalDigitUsize(byte: u8): usize {
   if (byte == 55) return 7;
   if (byte == 56) return 8;
   return 9;
+}
+
+function decimalDigitU64(byte: u8): u64 {
+  if (byte == 48) return 0;
+  if (byte == 49) return 1;
+  if (byte == 50) return 2;
+  if (byte == 51) return 3;
+  if (byte == 52) return 4;
+  if (byte == 53) return 5;
+  if (byte == 54) return 6;
+  if (byte == 55) return 7;
+  if (byte == 56) return 8;
+  return 9;
+}
+
+function decimalDigitI64(byte: u8): i64 {
+  if (byte == 48) return 0;
+  if (byte == 49) return 1;
+  if (byte == 50) return 2;
+  if (byte == 51) return 3;
+  if (byte == 52) return 4;
+  if (byte == 53) return 5;
+  if (byte == 54) return 6;
+  if (byte == 55) return 7;
+  if (byte == 56) return 8;
+  return 9;
+}
+
+function jsonNumberToF64(in text: String): f64 throws JsonNumberError {
+  let offset: usize = 0;
+  let negative = false;
+  if (text.byteAt(offset) == 45) {
+    negative = true;
+    offset = offset + 1;
+  }
+
+  let value = 0.0;
+  while (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+    value = value * 10.0 + decimalDigit(text.byteAt(offset));
+    offset = offset + 1;
+  }
+
+  if (offset < text.byteLength && text.byteAt(offset) == 46) {
+    offset = offset + 1;
+    let scale = 0.1;
+    while (offset < text.byteLength && isDigit(text.byteAt(offset))) {
+      value = value + decimalDigit(text.byteAt(offset)) * scale;
+      scale = scale * 0.1;
+      offset = offset + 1;
+    }
+  }
+
+  if (
+    offset < text.byteLength
+    && (text.byteAt(offset) == 101 || text.byteAt(offset) == 69)
+  ) {
+    offset = offset + 1;
+    let exponentNegative = false;
+    if (text.byteAt(offset) == 43) {
+      offset = offset + 1;
+    } else if (text.byteAt(offset) == 45) {
+      exponentNegative = true;
+      offset = offset + 1;
+    }
+    let exponent: usize = 0;
+    while (offset < text.byteLength) {
+      if (exponent > 400) throw numberError("JSON number is outside the finite f64 range");
+      exponent = exponent * 10 + decimalDigitUsize(text.byteAt(offset));
+      offset = offset + 1;
+    }
+    while (exponent > 0) {
+      if (exponentNegative) value = value / 10.0;
+      else value = value * 10.0;
+      exponent = exponent - 1;
+    }
+  }
+
+  if (value > 1.7976931348623157e308) {
+    throw numberError("JSON number is outside the finite f64 range");
+  }
+  if (negative) return -value;
+  return value;
 }
 
 function hexDigit(byte: u8, in cursor: JsonCursor): u32 throws JsonError {
@@ -225,17 +464,15 @@ function consumeLiteral(
   }
 }
 
-function parseNumber(in source: String, inout cursor: JsonCursor): f64 throws JsonError {
-  let negative = false;
+function parseNumber(in source: String, inout cursor: JsonCursor): JsonNumber throws JsonError {
+  const start = cursor.offset;
   if (source.byteAt(cursor.offset) == 45) {
-    negative = true;
     try advance(in source, inout cursor);
     if (cursor.offset >= source.byteLength) {
       throw parseError(cursor, "expected a digit after the minus sign");
     }
   }
 
-  let value = 0.0;
   if (source.byteAt(cursor.offset) == 48) {
     try advance(in source, inout cursor);
     if (cursor.offset < source.byteLength && isDigit(source.byteAt(cursor.offset))) {
@@ -246,8 +483,7 @@ function parseNumber(in source: String, inout cursor: JsonCursor): f64 throws Js
       throw parseError(cursor, "expected a JSON number");
     }
     while (cursor.offset < source.byteLength && isDigit(source.byteAt(cursor.offset))) {
-      const digit = try advance(in source, inout cursor);
-      value = value * 10.0 + decimalDigit(digit);
+      try advance(in source, inout cursor);
     }
   }
 
@@ -256,11 +492,8 @@ function parseNumber(in source: String, inout cursor: JsonCursor): f64 throws Js
     if (cursor.offset >= source.byteLength || !isDigit(source.byteAt(cursor.offset))) {
       throw parseError(cursor, "expected a digit after the decimal point");
     }
-    let scale = 0.1;
     while (cursor.offset < source.byteLength && isDigit(source.byteAt(cursor.offset))) {
-      const digit = try advance(in source, inout cursor);
-      value = value + decimalDigit(digit) * scale;
-      scale = scale * 0.1;
+      try advance(in source, inout cursor);
     }
   }
 
@@ -269,36 +502,25 @@ function parseNumber(in source: String, inout cursor: JsonCursor): f64 throws Js
     && (source.byteAt(cursor.offset) == 101 || source.byteAt(cursor.offset) == 69)
   ) {
     try advance(in source, inout cursor);
-    let exponentNegative = false;
     if (cursor.offset < source.byteLength && source.byteAt(cursor.offset) == 43) {
       try advance(in source, inout cursor);
     } else if (cursor.offset < source.byteLength && source.byteAt(cursor.offset) == 45) {
-      exponentNegative = true;
       try advance(in source, inout cursor);
     }
     if (cursor.offset >= source.byteLength || !isDigit(source.byteAt(cursor.offset))) {
       throw parseError(cursor, "expected an exponent digit");
     }
-    let exponent: usize = 0;
     while (cursor.offset < source.byteLength && isDigit(source.byteAt(cursor.offset))) {
-      if (exponent > 400) {
-        throw parseError(cursor, "JSON number exponent is outside the f64 range");
-      }
-      const digit = try advance(in source, inout cursor);
-      exponent = exponent * 10 + decimalDigitUsize(digit);
-    }
-    while (exponent > 0) {
-      if (exponentNegative) value = value / 10.0;
-      else value = value * 10.0;
-      exponent = exponent - 1;
+      try advance(in source, inout cursor);
     }
   }
 
-  if (value > 1.7976931348623157e308) {
-    throw parseError(cursor, "JSON number is outside the finite f64 range");
-  }
-  if (negative) return -value;
-  return value;
+  const raw = source.copyBytes(start, cursor.offset);
+  const parsed = attempt JsonNumber.parse(in raw);
+  return match (parsed) {
+    success(number) => move number;
+    failure(error) => throw parseError(cursor, copy error.message);
+  };
 }
 
 function parseArray(
@@ -458,12 +680,7 @@ function appendJsonValue(in value: JsonValue, inout output: TextBuffer): void {
     nullValue => output.append("null");
     boolean(flag) => output.append(flag ? "true" : "false");
     number(number) => {
-      if (
-        number != number
-        || number > 1.7976931348623157e308
-        || number < -1.7976931348623157e308
-      ) output.append("null");
-      else output.append(`${number}`);
+      number.appendTo(inout output);
     }
     string(text) => appendJsonString(in text, inout output);
     array(items) => {
@@ -495,4 +712,19 @@ export function stringify(in value: JsonValue): String {
   let output = TextBuffer();
   appendJsonValue(in value, inout output);
   return output.finish();
+}
+
+// These generic bodies are compile-time derivation hooks. A concrete call is
+// replaced with a codec synthesized from T's ordinary Z type graph.
+export function decode<T>(in source: String): T throws JsonError {
+  throw JsonError({
+    message: "the compiler did not materialize json.decode<T>",
+    offset: 0,
+    line: 1,
+    column: 1,
+  });
+}
+
+export function encode<T>(in value: T): String {
+  return "";
 }

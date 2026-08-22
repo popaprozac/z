@@ -159,6 +159,14 @@ export function linkSourceModules(
   options: SourceModuleOptions = {},
 ): ModuleLinkResult {
   const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryFileName, options);
+  const standardLibraryRoot = resolve(
+    options.standardLibraryRoot
+      ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../stdlib"),
+  );
+  const jsonStandardModuleCandidate = resolve(standardLibraryRoot, "json.zs");
+  const jsonStandardModuleFileName = existsSync(jsonStandardModuleCandidate)
+    ? realpathSync(jsonStandardModuleCandidate)
+    : jsonStandardModuleCandidate;
   const modulesByPath = new Map(sourceBatch.modules.map((module) => [module.fileName, module] as const));
   const nodes = new Map<string, ModuleNode>();
   let nextId = 0;
@@ -311,7 +319,22 @@ export function linkSourceModules(
         payload: variant.payload ? renameTypeReference(variant.payload, scope, new Set()) : null,
       })),
     })));
-    functions.push(...node.program.functions.map((declaration) => transformFunction(declaration, node, scope, null)));
+    functions.push(...node.program.functions.map((declaration) => {
+      const transformed = transformFunction(declaration, node, scope, null);
+      if (
+        node.fileName === jsonStandardModuleFileName
+        && (declaration.name === "decode" || declaration.name === "encode")
+      ) {
+        return {
+          ...transformed,
+          compilerIntrinsic: {
+            kind: declaration.name === "decode" ? "jsonDecode" as const : "jsonEncode" as const,
+            requestLocation: declaration.location,
+          },
+        };
+      }
+      return transformed;
+    }));
   }
 
   const linkedProgram: Program = {

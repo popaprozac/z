@@ -19,7 +19,7 @@ smoke programs.
 | --- | --- | --- |
 | First native program | [`first.zs`](../examples/language/basics/first.zs) | Functions, inference, direct C import |
 | Console and strings | [`console.zs`](../examples/language/basics/console.zs) | Explicit standard import, interpolation, typed formatting |
-| JSON values | [`json.zs`](../examples/language/data/json.zs) | Source-backed `std/json`, positioned typed errors, recursive owned values, and compact stringification |
+| JSON values | [`json.zs`](../examples/language/data/json.zs) | Compiler-derived struct codecs, exact `u64`, field defaults, inferred encoding, positioned typed errors, and a source-backed lossless dynamic DOM |
 | Numeric conversion | [`numeric-conversions.zs`](../examples/language/basics/numeric-conversions.zs) | Explicit target-type construction, check-free widening, and checked narrowing/native-width adaptation |
 | Modules | [`modules/main.zs`](../examples/language/modules/main.zs) | Functions, types, and immutable configuration values through namespace imports and selective aliases |
 | Construction | [`construction.zs`](../examples/language/basics/construction.zs) | Struct object construction and class-only `new` |

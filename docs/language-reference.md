@@ -2365,16 +2365,50 @@ function read(in source: String): String throws json.JsonError {
 ```
 
 `JsonValue` is an owned recursive enum with `nullValue`, `boolean`, `number`,
-`string`, `array`, and `object` variants. Arrays own their elements and objects
-own `Map<String, JsonValue>` entries, so ordinary `move`, `in`, matching, and
-deterministic cleanup rules apply. `parse` accepts exactly one JSON value,
-decodes Unicode escapes into UTF-8, limits nesting, and throws `JsonError` with
-zero-based byte `offset` plus one-based `line` and `column`. `stringify` emits
-compact JSON and borrows the complete value graph.
+`string`, `array`, and `object` variants. Its number payload is the nominal
+`JsonNumber`, not `f64`: parsing preserves the validated source spelling, and
+stringification therefore forwards arbitrarily large integers, decimals, and
+exponents without rounding. Dynamic consumers choose an explicit checked
+conversion through `toU64()`, `toI64()`, or `toF64()`; `text()` returns an owned
+exact spelling. Validated construction is available through `JsonNumber.parse`,
+`fromU64`, `fromI64`, and finite `fromF64`. The stored spelling is private, so
+ordinary Z code cannot manufacture an invalid number representation.
 
-The DOM uses `f64` for untyped JSON numbers. The planned compiler-derived
-`decode<T>` tier parses integer fields directly into their requested Z types;
-it must not route `u64` through `f64` and lose precision.
+Arrays own their elements and objects own `Map<String, JsonValue>` entries, so
+ordinary `move`, `in`, matching, and deterministic cleanup rules apply. `parse`
+accepts exactly one JSON value, decodes Unicode escapes into UTF-8, limits
+nesting, and throws `JsonError` with zero-based byte `offset` plus one-based
+`line` and `column`. `stringify` emits compact JSON and borrows the complete
+value graph while retaining each number's original spelling.
+
+For application data, Stage 0 can derive a codec directly from an ordinary Z
+value struct:
+
+```z
+struct User {
+  id: u64;
+  name: String;
+  active: boolean = true;
+}
+
+function readUser(in source: String): User throws json.JsonError {
+  const user = try json.decode<User>(source);
+  const encoded = json.encode(in user); // T is inferred as User
+  return user;
+}
+```
+
+The first derived tier supports public, non-optional `String`, `boolean`, and
+signed or unsigned integer fields. It parses integers directly into their requested Z
+width, so even `u64.max` does not require a dynamic intermediate value.
+Missing fields with defaults evaluate those defaults; other missing fields
+throw `JsonError`. Unknown fields are skipped recursively, duplicate known
+fields are rejected, names match exactly, and encoding follows declaration
+order. Classes, custom constructors or `deinit`, optional or floating-point
+fields, nested typed aggregates, collections, `Option`, and field-name policies remain later
+derived-codec tiers. `json.parse` / `json.stringify` remain the implemented
+dynamic route for those shapes. Native fixed-point codec materialization is
+also still staged; the DOM module itself already runs through both compilers.
 
 ## Files, processes, and program arguments
 

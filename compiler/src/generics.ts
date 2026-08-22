@@ -389,7 +389,14 @@ export function materializeGenerics(
         };
       }
       const callee = generic
-        ? { ...value.callee, name: instantiateFunction(generic.base, generic.arguments.map((arg) => substituteName(arg, substitutions))) }
+        ? {
+            ...value.callee,
+            name: instantiateFunction(
+              generic.base,
+              generic.arguments.map((arg) => substituteName(arg, substitutions)),
+              value.location,
+            ),
+          }
         : transform(value.callee, substitutions);
       return { ...value, callee, arguments: transform(value.arguments, substitutions) };
     }
@@ -661,7 +668,7 @@ export function materializeGenerics(
     return name;
   }
 
-  function instantiateFunction(base: string, args: string[]): string {
+  function instantiateFunction(base: string, args: string[], requestLocation?: FunctionDeclaration["location"]): string {
     const template = functionTemplates.get(base);
     if (!template) return monomorphizedName(base, args);
     if (args.length !== template.typeParameters!.length) {
@@ -674,7 +681,18 @@ export function materializeGenerics(
     const name = monomorphizedName(base, args);
     functionInstances.set(key, name);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
-    const concrete = transform({ ...template, name, typeParameters: [], typeParameterConstraints: [] }, substitutions) as FunctionDeclaration;
+    const concrete = transform({
+      ...template,
+      name,
+      typeParameters: [],
+      typeParameterConstraints: [],
+      compilerIntrinsic: template.compilerIntrinsic
+        ? {
+            ...template.compilerIntrinsic,
+            requestLocation: requestLocation ?? template.compilerIntrinsic.requestLocation,
+          }
+        : undefined,
+    }, substitutions) as FunctionDeclaration;
     functions.push(attachGeneratorError(concrete));
     return name;
   }

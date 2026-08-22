@@ -133,6 +133,11 @@ export type EnumVariant = {
 export type FunctionDeclaration = {
   readonly kind: "function";
   readonly name: string;
+  /** Compiler-derived implementation selected by a source-backed standard module. */
+  readonly compilerIntrinsic?: {
+    readonly kind: "jsonDecode" | "jsonEncode";
+    readonly requestLocation: SourceLocation;
+  };
   /** Human-readable name when this hidden function originated from a `test` declaration. */
   readonly testName?: string;
   /** Stable native symbol published in addition to the ordinary Z identity. */

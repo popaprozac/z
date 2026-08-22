@@ -1932,6 +1932,7 @@ test("emits and runs source-backed std/json through the native Z AST", () => {
   );
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /const Z___z_Map_6_StringJsonValue_Entry entry = .*?\.entries\[/);
+  assert.match(emission.stdout, /Z_TEMPLATE_U64/);
   assert.match(emission.stdout, /Z_TEMPLATE_F64/);
   assert.doesNotMatch(emission.stdout, /json\.(?:parse|stringify)/);
 

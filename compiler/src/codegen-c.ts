@@ -69,6 +69,7 @@ import {
 } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
 import { parseReadonlyType, readonlyTypeName, writableTypeName } from "./readonly-types.ts";
+import { DiagnosticError } from "./diagnostics.ts";
 
 type GenerationContext = {
   readonly structs: Map<string, StructDeclaration>;
@@ -166,6 +167,7 @@ export function generateC(
   const structs = new Map(program.structs.map((declaration) => [declaration.name, declaration]));
   const enums = new Map(program.enums.map((declaration) => [declaration.name, declaration]));
   const functions = new Map(program.functions.map((declaration) => [declaration.name, declaration]));
+  const usesDerivedJson = program.functions.some((declaration) => declaration.compilerIntrinsic?.kind.startsWith("json"));
   const threadClosureOffsets = new Set(semanticInfo.threadSpawnCalls.values());
   const taskScopeAsyncClosureOffsets = new Set(semanticInfo.taskScopeAsyncCalls.values());
   const closures = [...semanticInfo.closures.entries()]
@@ -448,6 +450,7 @@ export function generateC(
   }
 
   if (usesString) lines.push(generateStringRuntime(), "");
+  if (usesDerivedJson) lines.push(generateDerivedJsonRuntime(), "");
   if (semanticInfo.swiftStringsToZ.size > 0) lines.push(generateSwiftStringRuntime(), "");
   if (semanticInfo.objcStringsToNative.size > 0 || semanticInfo.objcStringsToZ.size > 0) {
     lines.push(generateObjCStringRuntime(), "");
@@ -3294,6 +3297,351 @@ static Z_UNUSED_FUNCTION inline void z_string_append_pointer(Z_String *self, con
 }`;
 }
 
+function generateDerivedJsonRuntime(): string {
+  return `typedef struct {
+  const char *data;
+  uintptr_t length;
+  uintptr_t offset;
+  uintptr_t line;
+  uintptr_t column;
+  const char *message;
+} Z_JsonDerivedReader;
+
+static Z_UNUSED_FUNCTION bool z_json_derived_fail(Z_JsonDerivedReader *reader, const char *message) {
+  if (reader->message == NULL) reader->message = message;
+  return false;
+}
+
+static Z_UNUSED_FUNCTION char z_json_derived_advance(Z_JsonDerivedReader *reader) {
+  const char value = reader->data[reader->offset++];
+  if (value == '\\n') {
+    reader->line += 1;
+    reader->column = 1;
+  } else {
+    reader->column += 1;
+  }
+  return value;
+}
+
+static Z_UNUSED_FUNCTION void z_json_derived_whitespace(Z_JsonDerivedReader *reader) {
+  while (reader->offset < reader->length) {
+    const char value = reader->data[reader->offset];
+    if (value != ' ' && value != '\\t' && value != '\\r' && value != '\\n') break;
+    (void)z_json_derived_advance(reader);
+  }
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_expect(Z_JsonDerivedReader *reader, char expected, const char *message) {
+  z_json_derived_whitespace(reader);
+  if (reader->offset >= reader->length || reader->data[reader->offset] != expected) {
+    return z_json_derived_fail(reader, message);
+  }
+  (void)z_json_derived_advance(reader);
+  return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_literal(Z_JsonDerivedReader *reader, const char *literal) {
+  z_json_derived_whitespace(reader);
+  for (uintptr_t index = 0; literal[index] != '\\0'; index += 1) {
+    if (reader->offset >= reader->length || reader->data[reader->offset] != literal[index]) {
+      return z_json_derived_fail(reader, "invalid JSON literal");
+    }
+    (void)z_json_derived_advance(reader);
+  }
+  return true;
+}
+
+static Z_UNUSED_FUNCTION int z_json_derived_hex(char value) {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+  return -1;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_hex4(Z_JsonDerivedReader *reader, uint32_t *value) {
+  uint32_t result = 0;
+  for (int index = 0; index < 4; index += 1) {
+    if (reader->offset >= reader->length) return z_json_derived_fail(reader, "unterminated Unicode escape");
+    const int digit = z_json_derived_hex(z_json_derived_advance(reader));
+    if (digit < 0) return z_json_derived_fail(reader, "invalid Unicode escape");
+    result = result * 16u + (uint32_t)digit;
+  }
+  *value = result;
+  return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_string(Z_JsonDerivedReader *reader, Z_String *output) {
+  Z_String result = z_string_new();
+  if (!z_json_derived_expect(reader, '"', "expected JSON string")) return false;
+  while (reader->offset < reader->length) {
+    const unsigned char value = (unsigned char)z_json_derived_advance(reader);
+    if (value == '"') {
+      *output = result;
+      return true;
+    }
+    if (value < 0x20u) {
+      if (result.capacity > 0) free((void *)result.data);
+      return z_json_derived_fail(reader, "unescaped control byte in JSON string");
+    }
+    if (value != '\\\\') {
+      const char byte = (char)value;
+      z_string_append_bytes(&result, &byte, 1);
+      continue;
+    }
+    if (reader->offset >= reader->length) {
+      if (result.capacity > 0) free((void *)result.data);
+      return z_json_derived_fail(reader, "unterminated JSON escape");
+    }
+    const char escape = z_json_derived_advance(reader);
+    const char escaped = escape == '"' ? '"'
+      : escape == '\\\\' ? '\\\\'
+      : escape == '/' ? '/'
+      : escape == 'b' ? '\\b'
+      : escape == 'f' ? '\\f'
+      : escape == 'n' ? '\\n'
+      : escape == 'r' ? '\\r'
+      : escape == 't' ? '\\t'
+      : '\\0';
+    if (escaped != '\\0') {
+      z_string_append_bytes(&result, &escaped, 1);
+      continue;
+    }
+    if (escape != 'u') {
+      if (result.capacity > 0) free((void *)result.data);
+      return z_json_derived_fail(reader, "invalid JSON escape");
+    }
+    uint32_t code_point = 0;
+    if (!z_json_derived_hex4(reader, &code_point)) {
+      if (result.capacity > 0) free((void *)result.data);
+      return false;
+    }
+    if (code_point >= 0xD800u && code_point <= 0xDBFFu) {
+      if (reader->offset + 2 > reader->length
+          || reader->data[reader->offset] != '\\\\'
+          || reader->data[reader->offset + 1] != 'u') {
+        if (result.capacity > 0) free((void *)result.data);
+        return z_json_derived_fail(reader, "high surrogate must be followed by a low surrogate");
+      }
+      (void)z_json_derived_advance(reader);
+      (void)z_json_derived_advance(reader);
+      uint32_t low = 0;
+      if (!z_json_derived_hex4(reader, &low) || low < 0xDC00u || low > 0xDFFFu) {
+        if (result.capacity > 0) free((void *)result.data);
+        return z_json_derived_fail(reader, "invalid low surrogate");
+      }
+      code_point = 0x10000u + (code_point - 0xD800u) * 0x400u + (low - 0xDC00u);
+    } else if (code_point >= 0xDC00u && code_point <= 0xDFFFu) {
+      if (result.capacity > 0) free((void *)result.data);
+      return z_json_derived_fail(reader, "unexpected low surrogate");
+    }
+    z_text_buffer_append_code_point(&result, code_point);
+  }
+  if (result.capacity > 0) free((void *)result.data);
+  return z_json_derived_fail(reader, "unterminated JSON string");
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_boolean(Z_JsonDerivedReader *reader, bool *output) {
+  z_json_derived_whitespace(reader);
+  if (reader->offset < reader->length && reader->data[reader->offset] == 't') {
+    if (!z_json_derived_literal(reader, "true")) return false;
+    *output = true;
+    return true;
+  }
+  if (reader->offset < reader->length && reader->data[reader->offset] == 'f') {
+    if (!z_json_derived_literal(reader, "false")) return false;
+    *output = false;
+    return true;
+  }
+  return z_json_derived_fail(reader, "expected JSON boolean");
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_u64(Z_JsonDerivedReader *reader, uint64_t *output) {
+  z_json_derived_whitespace(reader);
+  if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') {
+    return z_json_derived_fail(reader, "expected unsigned JSON integer");
+  }
+  uint64_t value = 0;
+  const bool leading_zero = reader->data[reader->offset] == '0';
+  uintptr_t digits = 0;
+  while (reader->offset < reader->length) {
+    const char byte = reader->data[reader->offset];
+    if (byte < '0' || byte > '9') break;
+    const uint64_t digit = (uint64_t)(byte - '0');
+    if (value > (UINT64_MAX - digit) / 10u) return z_json_derived_fail(reader, "JSON integer exceeds u64");
+    value = value * 10u + digit;
+    digits += 1u;
+    (void)z_json_derived_advance(reader);
+  }
+  if (leading_zero && digits > 1u) return z_json_derived_fail(reader, "leading zero in JSON number");
+  if (reader->offset < reader->length) {
+    const char suffix = reader->data[reader->offset];
+    if (suffix == '.' || suffix == 'e' || suffix == 'E') {
+      return z_json_derived_fail(reader, "expected unsigned JSON integer");
+    }
+  }
+  *output = value;
+  return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_i64(Z_JsonDerivedReader *reader, int64_t *output) {
+  z_json_derived_whitespace(reader);
+  bool negative = false;
+  if (reader->offset < reader->length && reader->data[reader->offset] == '-') {
+    negative = true;
+    (void)z_json_derived_advance(reader);
+  }
+  if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') {
+    return z_json_derived_fail(reader, "expected signed JSON integer");
+  }
+  const uint64_t limit = negative ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;
+  uint64_t magnitude = 0;
+  const bool leading_zero = reader->data[reader->offset] == '0';
+  uintptr_t digits = 0;
+  while (reader->offset < reader->length) {
+    const char byte = reader->data[reader->offset];
+    if (byte < '0' || byte > '9') break;
+    const uint64_t digit = (uint64_t)(byte - '0');
+    if (magnitude > (limit - digit) / 10u) return z_json_derived_fail(reader, "JSON integer exceeds i64");
+    magnitude = magnitude * 10u + digit;
+    digits += 1u;
+    (void)z_json_derived_advance(reader);
+  }
+  if (leading_zero && digits > 1u) return z_json_derived_fail(reader, "leading zero in JSON number");
+  if (reader->offset < reader->length) {
+    const char suffix = reader->data[reader->offset];
+    if (suffix == '.' || suffix == 'e' || suffix == 'E') return z_json_derived_fail(reader, "expected signed JSON integer");
+  }
+  *output = negative
+    ? magnitude == (uint64_t)INT64_MAX + 1u ? INT64_MIN : -(int64_t)magnitude
+    : (int64_t)magnitude;
+  return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_number(Z_JsonDerivedReader *reader) {
+  z_json_derived_whitespace(reader);
+  if (reader->offset < reader->length && reader->data[reader->offset] == '-') (void)z_json_derived_advance(reader);
+  if (reader->offset >= reader->length) return z_json_derived_fail(reader, "invalid JSON number");
+  if (reader->data[reader->offset] == '0') {
+    (void)z_json_derived_advance(reader);
+    if (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') {
+      return z_json_derived_fail(reader, "leading zero in JSON number");
+    }
+  } else {
+    if (reader->data[reader->offset] < '1' || reader->data[reader->offset] > '9') return z_json_derived_fail(reader, "invalid JSON number");
+    while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') {
+      (void)z_json_derived_advance(reader);
+    }
+  }
+  if (reader->offset < reader->length && reader->data[reader->offset] == '.') {
+    (void)z_json_derived_advance(reader);
+    if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') {
+      return z_json_derived_fail(reader, "fraction requires a digit");
+    }
+    while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') {
+      (void)z_json_derived_advance(reader);
+    }
+  }
+  if (reader->offset < reader->length && (reader->data[reader->offset] == 'e' || reader->data[reader->offset] == 'E')) {
+    (void)z_json_derived_advance(reader);
+    if (reader->offset < reader->length && (reader->data[reader->offset] == '+' || reader->data[reader->offset] == '-')) {
+      (void)z_json_derived_advance(reader);
+    }
+    if (reader->offset >= reader->length || reader->data[reader->offset] < '0' || reader->data[reader->offset] > '9') {
+      return z_json_derived_fail(reader, "exponent requires a digit");
+    }
+    while (reader->offset < reader->length && reader->data[reader->offset] >= '0' && reader->data[reader->offset] <= '9') {
+      (void)z_json_derived_advance(reader);
+    }
+  }
+  return true;
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_skip(Z_JsonDerivedReader *reader, uintptr_t depth) {
+  if (depth > 512u) return z_json_derived_fail(reader, "JSON nesting exceeds 512 levels");
+  z_json_derived_whitespace(reader);
+  if (reader->offset >= reader->length) return z_json_derived_fail(reader, "expected JSON value");
+  const char value = reader->data[reader->offset];
+  if (value == '"') {
+    Z_String ignored = z_string_new();
+    if (!z_json_derived_string(reader, &ignored)) return false;
+    if (ignored.capacity > 0) free((void *)ignored.data);
+    return true;
+  }
+  if (value == 't') return z_json_derived_literal(reader, "true");
+  if (value == 'f') return z_json_derived_literal(reader, "false");
+  if (value == 'n') return z_json_derived_literal(reader, "null");
+  if (value == '-' || (value >= '0' && value <= '9')) return z_json_derived_number(reader);
+  if (value == '[') {
+    (void)z_json_derived_advance(reader);
+    z_json_derived_whitespace(reader);
+    if (reader->offset < reader->length && reader->data[reader->offset] == ']') {
+      (void)z_json_derived_advance(reader);
+      return true;
+    }
+    while (true) {
+      if (!z_json_derived_skip(reader, depth + 1u)) return false;
+      z_json_derived_whitespace(reader);
+      if (reader->offset < reader->length && reader->data[reader->offset] == ']') {
+        (void)z_json_derived_advance(reader);
+        return true;
+      }
+      if (!z_json_derived_expect(reader, ',', "expected ',' or ']' in JSON array")) return false;
+    }
+  }
+  if (value == '{') {
+    (void)z_json_derived_advance(reader);
+    z_json_derived_whitespace(reader);
+    if (reader->offset < reader->length && reader->data[reader->offset] == '}') {
+      (void)z_json_derived_advance(reader);
+      return true;
+    }
+    while (true) {
+      Z_String key = z_string_new();
+      if (!z_json_derived_string(reader, &key)) return false;
+      if (key.capacity > 0) free((void *)key.data);
+      if (!z_json_derived_expect(reader, ':', "expected ':' after JSON object key")) return false;
+      if (!z_json_derived_skip(reader, depth + 1u)) return false;
+      z_json_derived_whitespace(reader);
+      if (reader->offset < reader->length && reader->data[reader->offset] == '}') {
+        (void)z_json_derived_advance(reader);
+        return true;
+      }
+      if (!z_json_derived_expect(reader, ',', "expected ',' or '}' in JSON object")) return false;
+    }
+  }
+  return z_json_derived_fail(reader, "expected JSON value");
+}
+
+static Z_UNUSED_FUNCTION bool z_json_derived_finish(Z_JsonDerivedReader *reader) {
+  z_json_derived_whitespace(reader);
+  if (reader->offset != reader->length) return z_json_derived_fail(reader, "unexpected trailing JSON input");
+  return true;
+}
+
+static Z_UNUSED_FUNCTION void z_json_derived_append_string(Z_String *output, Z_String value) {
+  static const char hex[] = "0123456789abcdef";
+  z_string_append_bytes(output, "\\\"", 1);
+  for (uintptr_t index = 0; index < value.length; index += 1) {
+    const unsigned char byte = (unsigned char)value.data[index];
+    if (byte == '"') z_string_append_bytes(output, "\\\\\\\"", 2);
+    else if (byte == '\\\\') z_string_append_bytes(output, "\\\\\\\\", 2);
+    else if (byte == '\\b') z_string_append_bytes(output, "\\\\b", 2);
+    else if (byte == '\\f') z_string_append_bytes(output, "\\\\f", 2);
+    else if (byte == '\\n') z_string_append_bytes(output, "\\\\n", 2);
+    else if (byte == '\\r') z_string_append_bytes(output, "\\\\r", 2);
+    else if (byte == '\\t') z_string_append_bytes(output, "\\\\t", 2);
+    else if (byte < 0x20u) {
+      char escaped[6] = { '\\\\', 'u', '0', '0', hex[byte >> 4], hex[byte & 0x0fu] };
+      z_string_append_bytes(output, escaped, 6);
+    } else {
+      const char value_byte = (char)byte;
+      z_string_append_bytes(output, &value_byte, 1);
+    }
+  }
+  z_string_append_bytes(output, "\\\"", 1);
+}`;
+}
+
 function generateObjCStringRuntime(): string {
   return `static Z_UNUSED_FUNCTION NSString *z_nsstring_from_string(Z_String value) {
   const void *bytes = value.data != NULL ? (const void *)value.data : (const void *)"";
@@ -4644,6 +4992,300 @@ ${factoryInitializers.join("\n")}
 }`;
 }
 
+const derivedJsonUnsignedLimits: Readonly<Record<string, string | null>> = {
+  u8: "UINT8_MAX",
+  u16: "UINT16_MAX",
+  u32: "UINT32_MAX",
+  u64: null,
+  usize: "UINTPTR_MAX",
+};
+
+const derivedJsonSignedLimits: Readonly<Record<string, readonly [string, string] | null>> = {
+  i8: ["INT8_MIN", "INT8_MAX"],
+  i16: ["INT16_MIN", "INT16_MAX"],
+  i32: ["INT32_MIN", "INT32_MAX"],
+  i64: null,
+  isize: ["INTPTR_MIN", "INTPTR_MAX"],
+};
+
+function derivedJsonStruct(
+  declaration: FunctionDeclaration,
+  context: GenerationContext,
+): StructDeclaration {
+  const intrinsic = declaration.compilerIntrinsic!;
+  const targetName = intrinsic.kind === "jsonDecode"
+    ? declaration.returnType.name
+    : declaration.parameters[0]?.type.name;
+  const target = targetName ? context.structs.get(targetName) : null;
+  const fail = (message: string): never => {
+    const location = intrinsic.requestLocation;
+    throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
+      notes: [
+        "derived JSON codecs currently support ordinary value structs containing String, boolean, and integer fields",
+        "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
+      ],
+    });
+  };
+  if (!target || target.kind !== "struct") {
+    return fail(`json.${intrinsic.kind === "jsonDecode" ? "decode" : "encode"} requires an ordinary value struct, received ${JSON.stringify(targetName)}`);
+  }
+  if (target.constructor) fail(`cannot derive JSON for ${JSON.stringify(targetName)} because it defines a constructor`);
+  if (target.deinitializer) fail(`cannot derive JSON for ${JSON.stringify(targetName)} because it defines deinit`);
+  for (const field of target.fields) {
+    if (field.optional) {
+      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because optional field ${JSON.stringify(field.name)} is not supported yet`);
+    }
+    if (field.visibility === "private") {
+      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because field ${JSON.stringify(field.name)} is private`);
+    }
+    if (
+      field.type.name !== "String"
+      && field.type.name !== "boolean"
+      && !(field.type.name in derivedJsonUnsignedLimits)
+      && !(field.type.name in derivedJsonSignedLimits)
+    ) {
+      fail(`cannot derive JSON for ${JSON.stringify(targetName)} because field ${JSON.stringify(field.name)} has unsupported type ${JSON.stringify(field.type.name)}`);
+    }
+  }
+  return target;
+}
+
+function derivedJsonStringLiteral(value: string): string {
+  const literal = cTestNameLiteral(value);
+  return `(Z_String){ .data = ${literal}, .length = ${Buffer.byteLength(value, "utf8")}u, .capacity = 0 }`;
+}
+
+function derivedJsonDefault(
+  field: StructDeclaration["fields"][number],
+  context: GenerationContext,
+): string {
+  const expression = field.defaultValue!;
+  if (expression.kind === "number") return generateNumericLiteral(expression.value, field.type.name);
+  return generateExpression(expression, context);
+}
+
+function derivedJsonDecodeField(
+  owner: StructDeclaration,
+  field: StructDeclaration["fields"][number],
+): string[] {
+  const destination = `value.${cBindingName(field.name)}`;
+  const failure = [
+    "      if (key_live && key.capacity > 0) free((void *)key.data);",
+    "      key_live = false;",
+    "      goto _z_json_failure;",
+  ];
+  if (field.type.name === "String") {
+    return [
+      ...(field.defaultValue
+        ? [
+            `    if (${destination}.capacity > 0) free((void *)${destination}.data);`,
+            `    ${destination} = z_string_new();`,
+          ]
+        : []),
+      `    if (!z_json_derived_string(&reader, &${destination})) {`,
+      ...failure,
+      "    }",
+    ];
+  }
+  if (field.type.name === "boolean") {
+    return [
+      `    if (!z_json_derived_boolean(&reader, &${destination})) {`,
+      ...failure,
+      "    }",
+    ];
+  }
+  const unsignedLimit = derivedJsonUnsignedLimits[field.type.name];
+  if (field.type.name in derivedJsonUnsignedLimits) {
+    const rangeCheck = unsignedLimit
+      ? [
+          `    if (_z_json_unsigned > ${unsignedLimit}) {`,
+          `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
+          ...failure,
+          "    }",
+        ]
+      : [];
+    return [
+      "    uint64_t _z_json_unsigned = 0;",
+      "    if (!z_json_derived_u64(&reader, &_z_json_unsigned)) {",
+      ...failure,
+      "    }",
+      ...rangeCheck,
+      `    ${destination} = (${mapType(field.type.name, new Map(), new Map())})_z_json_unsigned;`,
+    ];
+  }
+  const signedLimits = derivedJsonSignedLimits[field.type.name];
+  const rangeCheck = signedLimits
+    ? [
+        `    if (_z_json_signed < ${signedLimits[0]} || _z_json_signed > ${signedLimits[1]}) {`,
+        `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`JSON integer for ${owner.name}.${field.name} is out of range`)});`,
+        ...failure,
+        "    }",
+      ]
+    : [];
+  return [
+    "    int64_t _z_json_signed = 0;",
+    "    if (!z_json_derived_i64(&reader, &_z_json_signed)) {",
+    ...failure,
+    "    }",
+    ...rangeCheck,
+    `    ${destination} = (${mapType(field.type.name, new Map(), new Map())})_z_json_signed;`,
+  ];
+}
+
+function generateDerivedJsonDecode(
+  declaration: FunctionDeclaration,
+  context: GenerationContext,
+): string {
+  const target = derivedJsonStruct(declaration, context);
+  const signature = generateFunctionSignature(
+    declaration,
+    context.structs,
+    context.enums,
+    null,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  const result = resultTypeName(target.name, declaration.errorType!.name);
+  const resultC = enumName(result);
+  const errorC = structName(declaration.errorType!.name);
+  const targetC = structName(target.name);
+  const defaults = target.fields
+    .filter((field) => field.defaultValue)
+    .map((field) => `  value.${cBindingName(field.name)} = ${derivedJsonDefault(field, context)};`);
+  const seen = target.fields.map((field) => `  bool seen_${nativeSymbolPart(field.name)} = false;`);
+  const branches = target.fields.map((field, index) => {
+    const lead = index === 0 ? "if" : "else if";
+    const seenName = `seen_${nativeSymbolPart(field.name)}`;
+    return [
+      `  ${lead} (z_string_equal(key, ${derivedJsonStringLiteral(field.name)})) {`,
+      `    if (${seenName}) {`,
+      `      (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`duplicate JSON field ${field.name}`)});`,
+      "      if (key_live && key.capacity > 0) free((void *)key.data);",
+      "      key_live = false;",
+      "      goto _z_json_failure;",
+      "    }",
+      `    ${seenName} = true;`,
+      ...derivedJsonDecodeField(target, field),
+      "  }",
+    ].join("\n");
+  });
+  const required = target.fields
+    .filter((field) => !field.defaultValue && !field.optional)
+    .flatMap((field) => [
+      `  if (!seen_${nativeSymbolPart(field.name)}) {`,
+      `    (void)z_json_derived_fail(&reader, ${cTestNameLiteral(`missing required JSON field ${field.name}`)});`,
+      "    goto _z_json_failure;",
+      "  }",
+    ]);
+  const cleanup = hasSemanticCleanupType(target.name, context.structs, context.enums, context.semanticInfo)
+    ? `  ${deinitName(target.name)}(&value);`
+    : "";
+  return `${signature} {
+  (void)source;
+  Z_JsonDerivedReader reader = {
+    .data = source->data != NULL ? source->data : "",
+    .length = source->length,
+    .offset = 0,
+    .line = 1,
+    .column = 1,
+    .message = NULL
+  };
+  ${targetC} value = {0};
+  Z_String key = z_string_new();
+  bool key_live = false;
+${seen.join("\n")}
+${defaults.join("\n")}
+  if (!z_json_derived_expect(&reader, '{', "expected JSON object")) goto _z_json_failure;
+  z_json_derived_whitespace(&reader);
+  if (reader.offset < reader.length && reader.data[reader.offset] == '}') {
+    (void)z_json_derived_advance(&reader);
+  } else {
+    while (true) {
+      if (!z_json_derived_string(&reader, &key)) goto _z_json_failure;
+      key_live = true;
+      if (!z_json_derived_expect(&reader, ':', "expected ':' after JSON object key")) goto _z_json_failure;
+${branches.join("\n")}
+  else {
+    if (!z_json_derived_skip(&reader, 1u)) {
+      if (key_live && key.capacity > 0) free((void *)key.data);
+      key_live = false;
+      goto _z_json_failure;
+    }
+  }
+      if (key_live && key.capacity > 0) free((void *)key.data);
+      key = z_string_new();
+      key_live = false;
+      z_json_derived_whitespace(&reader);
+      if (reader.offset < reader.length && reader.data[reader.offset] == '}') {
+        (void)z_json_derived_advance(&reader);
+        break;
+      }
+      if (!z_json_derived_expect(&reader, ',', "expected ',' or '}' in JSON object")) goto _z_json_failure;
+    }
+  }
+  if (!z_json_derived_finish(&reader)) goto _z_json_failure;
+${required.join("\n")}
+  return (${resultC}){ .tag = ${variantTag(result, "success")}, .data = { .success = value } };
+
+_z_json_failure:
+  if (key_live && key.capacity > 0) free((void *)key.data);
+${cleanup}
+  const char *_z_json_message = reader.message != NULL ? reader.message : "invalid JSON";
+  return (${resultC}){
+    .tag = ${variantTag(result, "failure")},
+    .data = { .failure = (${errorC}){
+      .message = (Z_String){ .data = _z_json_message, .length = (uintptr_t)strlen(_z_json_message), .capacity = 0 },
+      .offset = reader.offset,
+      .line = reader.line,
+      .column = reader.column
+    } }
+  };
+}`;
+}
+
+function derivedJsonEncodeField(
+  field: StructDeclaration["fields"][number],
+): string {
+  const value = `(*value).${cBindingName(field.name)}`;
+  if (field.type.name === "String") return `  z_json_derived_append_string(&output, ${value});`;
+  if (field.type.name === "boolean") {
+    return `  z_string_append_bytes(&output, ${value} ? "true" : "false", ${value} ? 4u : 5u);`;
+  }
+  if (field.type.name in derivedJsonUnsignedLimits) {
+    return `  z_string_append_unsigned(&output, (unsigned long long)${value});`;
+  }
+  return `  z_string_append_signed(&output, (long long)${value});`;
+}
+
+function generateDerivedJsonEncode(
+  declaration: FunctionDeclaration,
+  context: GenerationContext,
+): string {
+  const target = derivedJsonStruct(declaration, context);
+  const signature = generateFunctionSignature(
+    declaration,
+    context.structs,
+    context.enums,
+    null,
+    context.semanticInfo.foreignNamedTypes,
+  );
+  const fields = target.fields.flatMap((field, index) => {
+    const prefix = `${index === 0 ? "" : ","}${JSON.stringify(field.name)}:`;
+    const literal = cTestNameLiteral(prefix);
+    return [
+      `  z_string_append_bytes(&output, ${literal}, ${Buffer.byteLength(prefix, "utf8")}u);`,
+      derivedJsonEncodeField(field),
+    ];
+  });
+  return `${signature} {
+  (void)value;
+  Z_String output = z_string_new();
+  z_string_append_bytes(&output, "{", 1u);
+${fields.join("\n")}
+  z_string_append_bytes(&output, "}", 1u);
+  return output;
+}`;
+}
+
 function generateFunction(
   declaration: FunctionDeclaration,
   structs: Map<string, StructDeclaration>,
@@ -4715,6 +5357,12 @@ function generateFunction(
     objectTypeOverrides: new Map(),
     semanticInfo,
   };
+  if (declaration.compilerIntrinsic?.kind === "jsonDecode") {
+    return generateDerivedJsonDecode(declaration, context);
+  }
+  if (declaration.compilerIntrinsic?.kind === "jsonEncode") {
+    return generateDerivedJsonEncode(declaration, context);
+  }
   const bodyParts = [
     ...(!receiver && declaration.name === "main"
       ? [

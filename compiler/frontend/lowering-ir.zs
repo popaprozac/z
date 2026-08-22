@@ -7460,7 +7460,9 @@ function lowerExpressionContextual(
         && typeName != "view String"
         && typeName != "boolean"
         && typeName != "i32"
+        && typeName != "i64"
         && typeName != "u8"
+        && typeName != "u64"
         && typeName != "usize"
         && typeName != "f64"
       ) {

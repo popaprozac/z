@@ -1,6 +1,7 @@
 import {
   assert,
   cli,
+  compileToC,
   completions,
   hover,
   mkdtempSync,
@@ -19,6 +20,56 @@ test("parses and stringifies recursive JSON values from std/json", () => {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
+});
+
+test("preserves nominal JSON numbers losslessly and converts them explicitly", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-number.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("derives exact typed JSON codecs for ordinary value structs", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/std-json-typed.zs");
+  const result = spawnSync(process.execPath, [cli, "run", fixture], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test("rejects unsupported derived JSON field types at the codec request", () => {
+  const fileName = resolve(projectRoot, "tests/fixtures/std-json-unsupported.zs");
+  assert.throws(
+    () => compileToC(`
+      import json from "std/json";
+
+      struct Measurement {
+        value: f64;
+      }
+
+      function main(): i32 {
+        const value = attempt json.decode<Measurement>("{\\\"value\\\":1.5}");
+        return 0;
+      }
+    `, fileName),
+    /field "value" has unsupported type "f64"/,
+  );
+  assert.throws(
+    () => compileToC(`
+      import json from "std/json";
+
+      struct PartialUser {
+        name?: String;
+      }
+
+      function main(): i32 {
+        const value = attempt json.decode<PartialUser>("{}");
+        return 0;
+      }
+    `, fileName),
+    /optional field "name" is not supported yet/,
+  );
 });
 
 test("reports JSON syntax failures with source positions", () => {
@@ -63,6 +114,11 @@ test("offers source-backed std/json namespace completion and hover", () => {
     .find((item) => item.label === "stringify");
   assert.ok(stringify, JSON.stringify(completions(source, fileName, completionOffset)));
   assert.match(stringify.detail ?? "", /stringify\(in value: JsonValue\): String/);
+
+  const decode = completions(source.replace("json.str", "json.dec"), fileName, completionOffset)
+    .find((item) => item.label === "decode");
+  assert.ok(decode);
+  assert.match(decode.detail ?? "", /decode<T>\(in source: String\): T throws JsonError/);
 
   const hoverSource = source.replace(
     "const encoded = json.str;",

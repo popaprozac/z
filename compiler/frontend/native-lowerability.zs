@@ -81,7 +81,9 @@ function nativeTemplateInterpolationTypeSupported(in name: String): boolean {
     || name == "view String"
     || name == "boolean"
     || name == "i32"
+    || name == "i64"
     || name == "u8"
+    || name == "u64"
     || name == "usize"
     || name == "f64";
 }
@@ -678,7 +680,7 @@ function validateNativeExpressionTree(
           throw loweringBoundary(
             path,
             "Z1000",
-            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, u8, usize, and f64`,
+            `template interpolation of "${interpolationType}" is not executable in the native compiler yet; supported native interpolation types are String (owned or viewed), boolean, i32, i64, u8, u64, usize, and f64`,
             tree.nodes[child].line,
             tree.nodes[child].column,
             length
