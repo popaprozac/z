@@ -4091,6 +4091,88 @@ test("tracks direct ARC aliases through bounded exclusive class loans", () => {
   );
 });
 
+test("tracks ARC identities stored in direct local value-struct fields", () => {
+  const prefix = `
+    class Application { value: i32; }
+    struct Context { application: Application; }
+    function updateAndInspect(
+      inout updated: Application,
+      in observed: Application
+    ): i32 {
+      updated.value = updated.value + 1;
+      return observed.value;
+    }
+  `;
+  const overlapping = `${prefix}
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const context = Context({ application });
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  const diagnostic = diagnostics(
+    overlapping,
+    "aggregate-class-alias-overlap.zs",
+  )[0];
+  assert.equal(diagnostic.code, "Z0306");
+  assert.match(
+    diagnostic.message,
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
+
+  const projectedBinding = overlapping.replace(
+    "return updateAndInspect(inout application, context.application);",
+    "const observed = context.application;\n      return updateAndInspect(inout application, observed);",
+  );
+  assert.throws(
+    () => compileToC(projectedBinding, "aggregate-projected-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "observed"/,
+  );
+
+  const distinct = `${prefix}
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = Context({ application: preview });
+      return updateAndInspect(inout application, context.application) - 1;
+    }
+  `;
+  assert.deepEqual(
+    diagnostics(distinct, "aggregate-distinct-class-alias.zs"),
+    [],
+  );
+
+  const assigned = `${prefix}
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      let context = Context({ application: preview });
+      context.application = application;
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(assigned, "aggregate-assigned-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
+
+  const opaqueResult = `${prefix}
+    function wrap(in application: Application): Context {
+      return Context({ application });
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const context = wrap(application);
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(opaqueResult, "aggregate-opaque-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
+
+});
+
 test("exposes Z classes and traits to editor services", () => {
   const source = `
     trait Counted { function value(): i32; }

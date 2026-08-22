@@ -66,10 +66,14 @@ not be mistaken for implemented Z semantics:
   distinguish a direct field view from safe sibling mutation. A third local-only
   slice admits direct fields of a named ARC class: known aliases protect the
   viewed field and whole-instance mutation while leaving disjoint fixed-layout
-  fields available. These lower to ordinary addresses with no lifetime syntax
-  or runtime checks. Flow-sensitive provenance through arbitrary calls, stored
-  aliases, aggregate-hidden identities, nested class traversal, dynamic
-  indexing, returned class-field views, and suspension remain experiments.
+  fields available. A fourth direct-local slice remembers ARC identity stored
+  in an explicitly initialized value-struct class field and restores it on
+  direct projection for bounded call exclusivity; it does not grant class-field
+  view containment. These lower to ordinary addresses and retained class
+  pointers with no lifetime syntax or runtime checks. Flow-sensitive provenance
+  through arbitrary calls, broader stored or returned aggregates, nested class
+  traversal, dynamic indexing, returned class-field views, and suspension
+  remain experiments.
   Direct inline closure captures now participate in the same call
   loan set, closing the first callback-shaped exclusivity hole. A narrowly
   audited transparent `Once<T>.get()` accessor also carries the module cell's

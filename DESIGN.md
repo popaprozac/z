@@ -1173,8 +1173,20 @@ or move-capturing the identity invalidates the proof for every known alias;
 doing so while a field view is live is rejected. Known contained aliases share
 the same field loan: an overlapping field or whole-instance mutation is
 rejected while a sibling field remains available. This does not extend to
-returned class-field views, aggregate-hidden class identity, nested class
-traversal, foreign references, escape, or suspension.
+returned class-field views, nested aggregate/class traversal, foreign
+references, escape, or suspension.
+
+For bounded synchronous call exclusivity only, a directly constructed local
+value struct may remember the identity stored in an explicit direct class
+field. Direct projection, local rebinding of that projection, and direct field
+replacement preserve or update the evidence, so `inout application` conflicts
+with `context.application` when both name one ARC object. This is compile-time
+flow evidence with no runtime representation and does not restore the stronger
+local-containment proof required by `view context.application.field`. Struct
+spread, nested aggregate paths, collection/return storage, branch joins, and
+suspension remain conservative. An opaque direct class field is an unknown
+alias for exclusivity purposes, so absent provenance cannot be mistaken for
+proof that two identities are distinct.
 One module function may also directly construct and return a named value struct
 whose direct `view` fields all project from the same immutable input. The
 aggregate lowers to an ordinary C value struct containing borrowed pointers;

@@ -3134,10 +3134,35 @@ constant symbol. Distinct cells remain distinct.
 This is intentionally an audited structural summary, not a name-based guess or
 a general effect system. Adding a statement, branch, parameter, throw, or other
 return source makes the function opaque again. Arbitrary function results,
-aliases hidden in aggregate fields or previously stored function values,
-flow-sensitive identity sets, suspension, and broader factory summaries need
-separate probes. Cross-thread mutation still requires a mutex or executor
-isolation.
+previously stored function values, flow-sensitive identity sets, suspension,
+and broader factory summaries need separate probes. Cross-thread mutation still
+requires a mutex or executor isolation.
+
+The next Zapp-shaped probe closes one common aggregate seam without broadening
+the source language:
+
+```z
+let application = currentApplication();
+const context = Context({ application });
+updateAndInspect(inout application, context.application); // Z0306
+```
+
+A directly constructed local value struct now records the ARC identity placed
+in each explicit direct class field. A direct field projection recovers that
+identity, and binding the projection to another local preserves it. Direct
+field replacement updates the evidence. Stage 0 and the fixed-point resolver
+therefore reject the same overlap while accepting a context holding a distinct
+application identity. The generated representation remains an ordinary value
+struct containing one retained class pointer; there is no provenance tag,
+runtime uniqueness check, or new syntax.
+
+This evidence is deliberately not local-containment proof. Storing a class in
+the struct invalidates the stronger proof required by `view class.field`, so a
+context field cannot manufacture a class-field view. Struct spread, nested
+aggregate paths, collections, returned contexts, branch joins, and suspension
+remain outside this direct local tier. A direct class field on an opaque local
+context is treated as an unknown alias and therefore conflicts with another
+exclusive class use; missing provenance never means proven independence.
 
 The focused capture follow-up resolved an adjacent frontend mismatch without
 adding syntax. Both frontends now preserve the direct class rule through a
@@ -3228,9 +3253,9 @@ shared mutation across threads.
   last-use, method, forwarding, `in` consumer, object-destructuring, and
   borrowed-pointer lowering evidence; nesting, multi-owner fields within one
   result, class/mutable receivers, and suspension remain open;
-- broader mutable shared ARC identity beyond direct local alias evidence,
-  stored or aggregate-hidden alias provenance, nested-class/dynamic shape
-  stability,
+- broader mutable shared ARC identity beyond direct local and direct
+  value-struct-field alias evidence, nested/stored/returned aggregate
+  provenance, nested-class/dynamic shape stability,
   concurrent weak upgrade, native sendability
   inference, and destruction-affinity protocols; Copy snapshots, unique owner
   transfer, and deeply readonly atomic ARC sharing now cross one native thread;

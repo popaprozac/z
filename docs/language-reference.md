@@ -801,13 +801,29 @@ console.log(inspector.title);  // the alias is available again afterward
 
 Passing `inspector` into that same call as another `in`, `inout`, value, or
 `move` use is rejected because both bindings name one ARC object. This first
-local-uniqueness tier follows direct local copies and assignments. A direct
-inline closure passed to the call also contributes its captured ARC identities:
+local-uniqueness tier follows direct local copies and assignments. It also
+follows an explicitly initialized direct class field of a local value struct:
+
+```z
+const context = Context({ application: document });
+publishAndInspect(inout document, context.application); // rejected
+```
+
+Projecting that field into another local preserves the same identity, and
+replacing a mutable direct field updates the evidence. A context holding a
+different class instance remains valid. This is compile-time call-exclusivity
+evidence only: it adds no runtime metadata and does not make the stored class
+locally contained for class-field `view` projection. Spread, nested aggregate
+paths, collections, returned aggregates, branch joins, and suspension remain
+conservative boundaries. An opaque direct class field is treated as potentially
+aliasing any other class identity in the same exclusive call; only precise
+construction evidence restores independence. A direct inline closure passed to
+the call also contributes its captured ARC identities:
 capturing `inspector` in a callback beside `inout document` is rejected because
 the callback may run before the synchronous call returns. Provenance through
-arbitrary function results, aggregate fields, and previously stored callable
-environments remains conservative work; cross-thread mutation continues to
-require `Mutex<T>` or executor isolation.
+arbitrary function results, previously stored callable environments, and
+broader aggregate shapes remains conservative work; cross-thread mutation
+continues to require `Mutex<T>` or executor isolation.
 
 Closure capture preserves the distinction between a class binding and its
 instance. An owned `const` class reference may still invoke an `inout this`
@@ -918,9 +934,11 @@ reference rather than freezing the instance, so it may pass a mutable direct
 field as `inout` unless the class itself was received through an immutable `in`
 borrow.
 
-Class identity hidden inside another aggregate, a projection through a nested
-class field, foreign reference identity, dynamic indexing, escape, and
-suspension remain conservative boundaries. Attempting to escape a contained
+Direct class identity stored in a local value-struct field participates in
+bounded call exclusivity, but it does not qualify as locally contained identity
+for a class-field `view`. Nested aggregate traversal, foreign reference
+identity, dynamic indexing, escape, and suspension remain conservative
+boundaries. Attempting to escape a contained
 identity while one of its field views is live is rejected before the alias can
 be hidden. A view remains a usable borrowed value after control-flow joins; its
 owner loan ends independently at the view's proven last use.

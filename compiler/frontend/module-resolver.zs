@@ -285,15 +285,79 @@ function typeIsClassReference(
   };
 }
 
-function expressionClassAliasIdentity(
-  in expression: ExpressionSyntax,
+function aggregateClassAliasFieldBindingName(
+  in owner: String,
+  in field: String
+): String {
+  return `__z_native_class_field_alias:${owner}\t${field}`;
+}
+
+function directAggregateClassAliasNodeIdentity(
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): usize {
+  if (
+    tree.nodes[index].kind != ExpressionKind.memberExpression
+    || tree.nodes[index].children.length != 1
+  ) return 0;
+  const receiver = tree.nodes[index].children[0];
+  if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression) {
+    return 0;
+  }
+  const owner = identifierLookupName(tree.nodes[receiver].value);
+  const field = identifierLookupName(tree.nodes[index].value);
+  const bindingName = aggregateClassAliasFieldBindingName(owner, field);
+  return valueBindingClassAlias(bindings, bindingName);
+}
+
+function directAggregateClassAliasNodeIsTracked(
+  in tree: ExpressionTree,
+  index: usize,
+  in bindings: Array<NativeValueBinding>
+): boolean {
+  if (
+    tree.nodes[index].kind != ExpressionKind.memberExpression
+    || tree.nodes[index].children.length != 1
+  ) return false;
+  const receiver = tree.nodes[index].children[0];
+  if (tree.nodes[receiver].kind != ExpressionKind.identifierExpression) {
+    return false;
+  }
+  const owner = identifierLookupName(tree.nodes[receiver].value);
+  const field = identifierLookupName(tree.nodes[index].value);
+  const bindingName = aggregateClassAliasFieldBindingName(owner, field);
+  const trackedType = valueBindingType(bindings, bindingName);
+  return trackedType.byteLength > 0;
+}
+
+function expressionNodeClassAliasIdentity(
+  in tree: ExpressionTree,
+  root: usize,
   in bindings: Array<NativeValueBinding>,
   in modules: Array<ResolvedModule>,
   moduleIndex: usize
 ): usize {
-  return match (in expression.tree) {
-    some(tree) => {
-      const root = tree.root;
+  const projected = directAggregateClassAliasNodeIdentity(
+    tree,
+    root,
+    bindings
+  );
+  if (projected > 0) return projected;
+  if (
+    tree.nodes[root].kind == ExpressionKind.unaryExpression
+    && tree.nodes[root].value == "move"
+    && tree.nodes[root].children.length == 1
+  ) {
+    const child = tree.nodes[root].children[0];
+    return expressionNodeClassAliasIdentity(
+      tree,
+      child,
+      bindings,
+      modules,
+      moduleIndex
+    );
+  }
       if (
         tree.nodes[root].kind == ExpressionKind.callExpression
         && tree.nodes[root].children.length > 0
@@ -371,9 +435,155 @@ function expressionClassAliasIdentity(
           : localClassAliasIdentity(tree.nodes[root].offset);
       }
       return localClassAliasIdentity(tree.nodes[root].offset);
+}
+
+function expressionClassAliasIdentity(
+  in expression: ExpressionSyntax,
+  in bindings: Array<NativeValueBinding>,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize
+): usize {
+  return match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      select expressionNodeClassAliasIdentity(
+        tree,
+        root,
+        bindings,
+        modules,
+        moduleIndex
+      );
     }
     none => localClassAliasIdentity(expression.offset);
   };
+}
+
+function setAggregateClassAliasField(
+  inout bindings: Array<NativeValueBinding>,
+  in owner: String,
+  in field: String,
+  in fieldType: String,
+  identity: usize
+): void {
+  const bindingName = aggregateClassAliasFieldBindingName(owner, field);
+  const existingType = valueBindingType(bindings, bindingName);
+  if (existingType.byteLength == 0) {
+    addValueBinding(inout bindings, bindingName, fieldType);
+  }
+  setValueBindingClassAlias(inout bindings, bindingName, identity);
+}
+
+function recordAggregateClassAliasFields(
+  in module: ParsedModule,
+  in expression: ExpressionSyntax,
+  in bindingName: String,
+  in storedType: String,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  inout bindings: Array<NativeValueBinding>
+): void {
+  match (aggregateConstructionShape(modules, moduleIndex, storedType)) {
+    some(construction) => {
+      if (!construction.valueStruct) return;
+      for (const fieldName of construction.allFields) {
+        match (aggregateFieldShape(
+          modules,
+          moduleIndex,
+          storedType,
+          fieldName
+        )) {
+          some(field) => {
+            if (typeIsClassReference(
+              module,
+              modules,
+              moduleIndex,
+              field.typeName
+            )) setAggregateClassAliasField(
+              inout bindings,
+              bindingName,
+              fieldName,
+              field.typeName,
+              0
+            );
+          }
+          none => {}
+        }
+      }
+    }
+    none => return;
+  }
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      if (
+        tree.nodes[root].kind != ExpressionKind.callExpression
+        || tree.nodes[root].children.length != 2
+      ) return;
+      const callee = tree.nodes[root].children[0];
+      const constructionType = typeExpressionName(tree, callee);
+      if (!equivalentTypes(
+        modules,
+        moduleIndex,
+        storedType,
+        constructionType
+      )) return;
+      match (typeSymbolLocation(modules, moduleIndex, constructionType)) {
+        some(location) => {
+          if (
+            modules[location.moduleIndex].symbols[location.symbolIndex].kind
+              != ModuleSymbolKind.structSymbol
+          ) return;
+        }
+        none => return;
+      }
+      const object = tree.nodes[root].children[1];
+      if (tree.nodes[object].kind != ExpressionKind.objectExpression) return;
+      let index: usize = 0;
+      while (
+        index < tree.nodes[object].children.length
+        && index < tree.nodes[object].labels.length
+      ) {
+        const fieldName = tree.nodes[object].labels[index].copyBytes(
+          0,
+          tree.nodes[object].labels[index].byteLength
+        );
+        if (fieldName == "...") return;
+        match (aggregateFieldShape(
+          modules,
+          moduleIndex,
+          storedType,
+          fieldName
+        )) {
+          some(field) => {
+            if (typeIsClassReference(
+              module,
+              modules,
+              moduleIndex,
+              field.typeName
+            )) {
+              const fieldNode = tree.nodes[object].children[index];
+              setAggregateClassAliasField(
+                inout bindings,
+                bindingName,
+                fieldName,
+                field.typeName,
+                expressionNodeClassAliasIdentity(
+                  tree,
+                  fieldNode,
+                  bindings,
+                  modules,
+                  moduleIndex
+                )
+              );
+            }
+          }
+          none => {}
+        }
+        index = index + 1;
+      }
+    }
+    none => {}
+  }
 }
 
 function localClassAliasIdentity(offset: usize): usize {
@@ -2645,8 +2855,38 @@ function inferSignatureCallType(
   }
   let accesses = Array<NativeCallAccess>();
   if (receiverRoot.byteLength > 0 && receiverMode.byteLength > 0) {
-    const receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
-    const receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
+    let receiverIdentity = valueBindingClassAlias(bindings, receiverRoot);
+    let receiverPath = receiverRoot.copyBytes(0, receiverRoot.byteLength);
+    let registeredReceiverRoot = receiverRoot.copyBytes(
+      0,
+      receiverRoot.byteLength
+    );
+    let receiverAliasUnknown = false;
+    if (
+      tree.nodes[calleeIndex].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeIndex].children.length == 1
+    ) {
+      const receiverNode = tree.nodes[calleeIndex].children[0];
+      receiverPath = expressionDirectFieldPath(tree, receiverNode);
+      const projectedIdentity = directAggregateClassAliasNodeIdentity(
+        tree,
+        receiverNode,
+        bindings
+      );
+      receiverAliasUnknown = projectedIdentity == 0
+        && directAggregateClassAliasNodeIsTracked(
+          tree,
+          receiverNode,
+          bindings
+        );
+      if (projectedIdentity > 0 || receiverAliasUnknown) {
+        receiverIdentity = projectedIdentity;
+        registeredReceiverRoot = receiverPath.copyBytes(
+          0,
+          receiverPath.byteLength
+        );
+      }
+    }
     if (receiverMode == "inout" || receiverMode == "out" || receiverMode == "move") {
       markClosureCaptureMutation(inout bindings, receiverRoot);
       const liveView = liveViewBindingForOwner(bindings, receiverRoot);
@@ -2666,9 +2906,10 @@ function inferSignatureCallType(
       tree,
       calleeIndex,
       inout accesses,
-      receiverRoot,
+      registeredReceiverRoot,
       receiverPath,
       receiverIdentity,
+      receiverAliasUnknown,
       receiverMode
     );
   }
@@ -2684,8 +2925,24 @@ function inferSignatureCallType(
       capability == "value"
       && stringStartsWith(signature.parameterTypes[accessIndex], "Slice<")
     ) capability = "in";
-    const accessIdentity = valueBindingClassAlias(bindings, root);
+    let accessIdentity = valueBindingClassAlias(bindings, root);
     const accessPath = expressionDirectFieldPath(tree, nodeIndex);
+    const projectedIdentity = directAggregateClassAliasNodeIdentity(
+      tree,
+      nodeIndex,
+      bindings
+    );
+    const accessAliasUnknown = projectedIdentity == 0
+      && directAggregateClassAliasNodeIsTracked(
+        tree,
+        nodeIndex,
+        bindings
+      );
+    let registeredRoot = root.copyBytes(0, root.byteLength);
+    if (projectedIdentity > 0 || accessAliasUnknown) {
+      accessIdentity = projectedIdentity;
+      registeredRoot = accessPath.copyBytes(0, accessPath.byteLength);
+    }
     if (
       root.byteLength > 0
       && (capability == "inout" || capability == "out" || capability == "move")
@@ -2715,9 +2972,10 @@ function inferSignatureCallType(
       tree,
       nodeIndex,
       inout accesses,
-      root,
+      registeredRoot,
       accessPath,
       accessIdentity,
+      accessAliasUnknown,
       capability
     );
     accessIndex = accessIndex + 1;
@@ -3024,6 +3282,7 @@ function inferSignatureCallType(
                 existingAccess.path.byteLength
               ),
               aliasIdentity: existingAccess.aliasIdentity,
+              aliasUnknown: existingAccess.aliasUnknown,
               capability: existingAccess.capability.copyBytes(
                 0,
                 existingAccess.capability.byteLength
@@ -3038,6 +3297,7 @@ function inferSignatureCallType(
             capture,
             capture,
             captureIdentity,
+            false,
             captureMode
           );
         }
@@ -8565,6 +8825,18 @@ function inferStatement(
         none => {}
       }
     }
+    match (in arena.nodes[index].expression) {
+      some(expression) => recordAggregateClassAliasFields(
+        module,
+        expression,
+        arena.nodes[index].name,
+        stored,
+        modules,
+        moduleIndex,
+        inout bindings
+      );
+      none => {}
+    }
     return true;
   }
   if (kind == StatementKind.destructureStatement) {
@@ -8812,6 +9084,8 @@ function inferStatement(
   if (kind == StatementKind.assignmentStatement) {
     let expected = "";
     let assignmentBinding = "";
+    let assignmentFieldOwner = "";
+    let assignmentFieldName = "";
     match (in arena.nodes[index].expression) {
       some(target) => {
         match (in target.tree) {
@@ -8877,6 +9151,15 @@ function inferStatement(
                 inout evidence
               );
               const memberName = identifierLookupName(tree.nodes[root].value);
+              if (tree.nodes[receiverIndex].kind == ExpressionKind.identifierExpression) {
+                assignmentFieldOwner = identifierLookupName(
+                  tree.nodes[receiverIndex].value
+                );
+                assignmentFieldName = memberName.copyBytes(
+                  0,
+                  memberName.byteLength
+                );
+              }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
                   const constructorType = valueBindingType(
@@ -8988,6 +9271,38 @@ function inferStatement(
               modules,
               moduleIndex,
               consumedType
+            )
+          );
+        }
+        if (assignmentBinding.byteLength > 0) {
+          recordAggregateClassAliasFields(
+            module,
+            value,
+            assignmentBinding,
+            consumedType,
+            modules,
+            moduleIndex,
+            inout bindings
+          );
+        } else if (
+          assignmentFieldOwner.byteLength > 0
+          && typeIsClassReference(
+            module,
+            modules,
+            moduleIndex,
+            consumedType
+          )
+        ) {
+          setAggregateClassAliasField(
+            inout bindings,
+            assignmentFieldOwner,
+            assignmentFieldName,
+            consumedType,
+            expressionClassAliasIdentity(
+              value,
+              bindings,
+              modules,
+              moduleIndex
             )
           );
         }

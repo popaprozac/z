@@ -637,6 +637,10 @@ type AnalysisState = {
   }>;
   readonly iterationBorrowOrigins: Map<string, SourceLocation>;
   readonly classAliasIdentities: Map<string, ReadonlySet<string>>;
+  readonly aggregateClassAliasFields: Map<
+    string,
+    ReadonlyMap<string, ReadonlySet<string>>
+  >;
   readonly classAliasExpressionIdentities: Map<number, string>;
   readonly functionClassAliasIdentities: Map<string, string>;
   readonly locallyContainedClassAliases: Set<string>;
@@ -1020,6 +1024,7 @@ export function analyze(
     borrowOrigins: new Map(),
     iterationBorrowOrigins: new Map(),
     classAliasIdentities: new Map(),
+    aggregateClassAliasFields: new Map(),
     classAliasExpressionIdentities: new Map(),
     functionClassAliasIdentities: new Map(),
     locallyContainedClassAliases: new Set(),
@@ -3176,6 +3181,7 @@ function analyzeFunction(
   state.borrowOrigins.clear();
   state.iterationBorrowOrigins.clear();
   state.classAliasIdentities.clear();
+  state.aggregateClassAliasFields.clear();
   state.locallyContainedClassAliases.clear();
   state.activeLoans.clear();
   state.asyncSpawnBorrowRoots.clear();
@@ -4209,6 +4215,13 @@ function analyzeStatement(
         structs,
         state,
       );
+      recordAggregateClassAliasBinding(
+        statement.name,
+        statement.initializer,
+        variableType,
+        structs,
+        state,
+      );
       state.bindingTypes.set(statement.nameLocation.offset, String(variableType));
       if (state.unsafeDepth > 0) {
         state.unsafeLocalBindingScopes.at(-1)?.add(statement.name);
@@ -4661,6 +4674,29 @@ function analyzeStatement(
           structs,
           state,
         );
+        recordAggregateClassAliasBinding(
+          root.name,
+          statement.expression,
+          expected,
+          structs,
+          state,
+        );
+      } else {
+        const path = directFieldStoragePath(statement.target);
+        if (
+          path
+          && path.fields.length === 1
+          && structs.get(String(underlyingType(expected)))?.kind === "class"
+        ) {
+          recordAggregateClassAliasFieldBinding(
+            path.root,
+            path.fields[0],
+            statement.expression,
+            expected,
+            structs,
+            state,
+          );
+        }
       }
       return;
     }
@@ -12593,10 +12629,18 @@ function checkArguments(
   }
   const callLoans: AccessLoanSet = new Map();
   if (receiverUse) {
+    const projectedAliases = aggregateClassAliasIdentitiesForPath(
+      receiverUse.name,
+      receiverUse.fields,
+      state,
+    );
     registerAccessLoan(callLoans, {
-      root: receiverUse.name,
-      fields: receiverUse.fields,
-      aliasIdentities: classAliasIdentitiesForRoot(receiverUse.name, state),
+      root: projectedAliases
+        ? [receiverUse.name, ...receiverUse.fields].join(".")
+        : receiverUse.name,
+      fields: projectedAliases ? [] : receiverUse.fields,
+      aliasIdentities: projectedAliases
+        ?? classAliasIdentitiesForRoot(receiverUse.name, state),
       capability: receiverUse.mode,
       lifetime: { kind: "call" },
       location,
@@ -12608,10 +12652,18 @@ function checkArguments(
     const argument = args[index];
     const storage = directFieldStoragePath(argument);
     if (!storage) continue;
+    const projectedAliases = aggregateClassAliasIdentitiesForPath(
+      storage.root,
+      storage.fields,
+      state,
+    );
     registerCheckedCallLoan(callLoans, {
-      root: storage.root,
-      fields: storage.fields,
-      aliasIdentities: classAliasIdentitiesForRoot(storage.root, state),
+      root: projectedAliases
+        ? [storage.root, ...storage.fields].join(".")
+        : storage.root,
+      fields: projectedAliases ? [] : storage.fields,
+      aliasIdentities: projectedAliases
+        ?? classAliasIdentitiesForRoot(storage.root, state),
       capability: useMode,
       lifetime: { kind: "call" },
       location: argument.location,
@@ -13242,9 +13294,15 @@ function aliasIdentitySetsOverlap(
   right: ReadonlySet<string> | undefined,
 ): boolean {
   if (!left || !right) return false;
+  if (
+    left.has(unknownAggregateClassAliasIdentity)
+    || right.has(unknownAggregateClassAliasIdentity)
+  ) return true;
   for (const identity of left) if (right.has(identity)) return true;
   return false;
 }
+
+const unknownAggregateClassAliasIdentity = "*aggregate-class-alias*";
 
 function accessFieldPathsOverlap(
   left: readonly string[] | undefined,
@@ -13263,6 +13321,15 @@ function classAliasIdentitiesForRoot(
   state: AnalysisState,
 ): ReadonlySet<string> | undefined {
   return state.classAliasIdentities.get(root);
+}
+
+function aggregateClassAliasIdentitiesForPath(
+  root: string,
+  fields: readonly string[],
+  state: AnalysisState,
+): ReadonlySet<string> | undefined {
+  if (fields.length !== 1) return undefined;
+  return state.aggregateClassAliasFields.get(root)?.get(fields[0]);
 }
 
 function classAliasIdentityIsLocallyContained(
@@ -13287,6 +13354,13 @@ function classAliasIdentitiesForExpression(
     expression.location.offset,
   );
   if (expressionIdentity) return new Set([expressionIdentity]);
+  if (expression.kind === "member" && !expression.optional) {
+    const path = directFieldStoragePath(expression);
+    const projected = path
+      ? aggregateClassAliasIdentitiesForPath(path.root, path.fields, state)
+      : undefined;
+    if (projected) return new Set(projected);
+  }
   if (expression.kind === "identifier") {
     return state.classAliasIdentities.get(expression.name)
       ?? new Set([`binding:${expression.name}`]);
@@ -13374,6 +13448,77 @@ function recordClassAliasBinding(
     for (const identity of identities) {
       state.locallyContainedClassAliases.add(identity);
     }
+  }
+}
+
+function recordAggregateClassAliasFieldBinding(
+  binding: string,
+  field: string,
+  expression: Expression,
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): void {
+  const identities = classAliasIdentitiesForExpression(
+    expression,
+    type,
+    structs,
+    state,
+  );
+  const existing = new Map(state.aggregateClassAliasFields.get(binding) ?? []);
+  if (identities) existing.set(field, new Set(identities));
+  else existing.delete(field);
+  if (existing.size === 0) state.aggregateClassAliasFields.delete(binding);
+  else state.aggregateClassAliasFields.set(binding, existing);
+}
+
+function recordAggregateClassAliasBinding(
+  binding: string,
+  expression: Expression,
+  type: ValueType,
+  structs: ReadonlyMap<string, StructDeclaration>,
+  state: AnalysisState,
+): void {
+  state.aggregateClassAliasFields.delete(binding);
+  const declaration = structs.get(String(underlyingType(type)));
+  if (declaration?.kind !== "struct") return;
+  const unknownFields = new Map<string, ReadonlySet<string>>();
+  for (const field of declaration.fields) {
+    if (structs.get(String(underlyingType(field.type.name)))?.kind === "class") {
+      unknownFields.set(field.name, new Set([unknownAggregateClassAliasIdentity]));
+    }
+  }
+  if (unknownFields.size > 0) {
+    state.aggregateClassAliasFields.set(binding, unknownFields);
+  }
+  const initializer = expression.kind === "structExpression"
+    ? expression
+    : expression.kind === "call"
+      && expression.callee.kind === "identifier"
+      && expression.callee.name === declaration?.name
+      && expression.arguments.length === 1
+      && expression.arguments[0].kind === "objectExpression"
+      ? expression.arguments[0]
+      : null;
+  if (
+    !initializer
+    || initializer.spread
+  ) return;
+  for (const fieldInitializer of initializer.fields) {
+    const field = declaration.fields.find((candidate) => (
+      candidate.name === fieldInitializer.name
+    ));
+    if (!field || structs.get(String(underlyingType(field.type.name)))?.kind !== "class") {
+      continue;
+    }
+    recordAggregateClassAliasFieldBinding(
+      binding,
+      field.name,
+      fieldInitializer.expression,
+      field.type.name,
+      structs,
+      state,
+    );
   }
 }
 

@@ -12834,6 +12834,56 @@ test("tracks one canonical ARC identity through a transparent Once accessor nati
   assert.equal(validResult.status, 0, validResult.stderr);
 });
 
+test("tracks ARC identities stored in direct local value-struct fields natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-aggregate-class-alias/main.zs",
+  );
+  const result = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application" in one call are not allowed/,
+  );
+
+  for (const [fixture, pattern] of [
+    ["projected.zs", /ARC aliases "application" and "observed"/],
+    ["assigned.zs", /ARC aliases "application" and "context\.application"/],
+    ["opaque.zs", /ARC aliases "application" and "context\.application"/],
+  ] as const) {
+    const rejected = spawnSync(
+      process.execPath,
+      [
+        cli,
+        "self-host-resolve",
+        resolve(
+          projectRoot,
+          "tests/fixtures/self-host-reject-aggregate-class-alias",
+          fixture,
+        ),
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(rejected.status, 1, rejected.stderr);
+    assert.match(rejected.stderr, pattern);
+  }
+
+  const valid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-aggregate-class-alias/valid.zs",
+  );
+  const validResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", valid],
+    { encoding: "utf8" },
+  );
+  assert.equal(validResult.status, 0, validResult.stderr);
+}, 120_000);
+
 test("keeps native semantic authority composable across a representative Z corpus", () => {
   const entries = [
     "compiler/frontend/parser-library.zs",
