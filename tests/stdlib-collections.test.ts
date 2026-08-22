@@ -2559,6 +2559,18 @@ test("owns Map keys and values with optional views and deterministic removal", (
   assert.match(diagnostics(missingImport, "map-import.zs")[0].message, /Map requires an explicit standard-library import/);
 });
 
+test("owns and cleans recursive enums through Array and Map storage", () => {
+  const fixture = resolve(projectRoot, "tests/fixtures/recursive-map-value.zs");
+  const source = readFileSync(fixture, "utf8");
+  const generated = compileToC(source, fixture);
+  assert.match(generated, /static void Z_JsonValue_deinit\(Z_JsonValue \*self\)/);
+  assert.match(generated, /Z_JsonValue_deinit\(&\(\(self->data\.arrayValue\)\.data/);
+  assert.match(generated, /Z___z_Map_6_StringJsonValue_deinit\(&\(self->data\.objectValue\)\)/);
+
+  const execution = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+});
+
 test("stores ARC-managed function values in Map and returns retained handlers", () => {
   const example = resolve(projectRoot, "examples/applications/message-router/main.zs");
   const source = readFileSync(example, "utf8");

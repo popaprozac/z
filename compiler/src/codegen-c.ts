@@ -493,6 +493,11 @@ export function generateC(
         : `typedef struct ${enumName(declaration.name)} ${enumName(declaration.name)};`);
     }
   }
+  for (const declaration of program.enums) {
+    if (enumNeedsGeneratedDeinit(declaration, structs, enums, semanticInfo)) {
+      lines.push(`Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${enumName(declaration.name)} *self);`);
+    }
+  }
   for (const type of generatorTypes) {
     lines.push(`typedef struct ${generatorCName(type)} ${generatorCName(type)};`);
   }
@@ -724,6 +729,12 @@ export function generateC(
 
   for (const type of arenaCreateTypes) {
     lines.push(generateArenaCreate(type, structs, enums, semanticInfo), "");
+  }
+
+  for (const declaration of program.enums) {
+    if (enumNeedsGeneratedDeinit(declaration, structs, enums, semanticInfo)) {
+      lines.push(generateEnumDeinit(declaration, structs, enums, semanticInfo), "");
+    }
   }
 
   // Collection helpers must precede user method bodies. A collection stored in
@@ -2997,6 +3008,9 @@ function generateOwnedEnvironmentCleanup(
       return `if (${value} != NULL) ${foreign.release}(${value});`;
     }
     if (niche) return "";
+    if (enumNeedsGeneratedDeinit(enumDeclaration, structs, enums, semanticInfo)) {
+      return `${deinitName(type)}(&(${value}));`;
+    }
     const cases = enumDeclaration.variants.flatMap((variant) => {
       if (!variant.payload || !hasSemanticCleanupType(variant.payload.name, structs, enums, semanticInfo)) return [];
       const payloadCleanup = generateOwnedEnvironmentCleanup(
@@ -4820,6 +4834,102 @@ function generateDeinit(
     }
   }
   return `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${structName(declaration.name)} *self) {\n${body.join("\n")}\n}`;
+}
+
+function typeRecursivelyReferences(
+  type: string,
+  target: string,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  visiting: Set<string>,
+): boolean {
+  if (type === target) return true;
+  if (visiting.has(type)) return false;
+  visiting.add(type);
+  const readonly = parseReadonlyType(type);
+  const dynamic = parseDynamicArrayType(type);
+  const fixed = parseFixedArrayType(type);
+  const map = parseMapType(type);
+  const set = parseSetType(type);
+  const declaration = structs.get(type);
+  const enumeration = enums.get(type);
+  const result = readonly
+    ? typeRecursivelyReferences(readonly.target, target, structs, enums, visiting)
+    : dynamic
+    ? typeRecursivelyReferences(dynamic.elementType, target, structs, enums, visiting)
+    : fixed
+    ? typeRecursivelyReferences(fixed.elementType, target, structs, enums, visiting)
+    : map
+    ? typeRecursivelyReferences(map.keyType, target, structs, enums, visiting)
+      || typeRecursivelyReferences(map.valueType, target, structs, enums, visiting)
+    : set
+    ? typeRecursivelyReferences(set.elementType, target, structs, enums, visiting)
+    : declaration?.kind === "struct"
+    ? declaration.fields.some((field) => (
+      typeRecursivelyReferences(field.type.name, target, structs, enums, visiting)
+    ))
+    : enumeration
+    ? enumeration.variants.some((variant) => (
+      variant.payload
+      && typeRecursivelyReferences(variant.payload.name, target, structs, enums, visiting)
+    ))
+    : false;
+  visiting.delete(type);
+  return Boolean(result);
+}
+
+function enumNeedsGeneratedDeinit(
+  declaration: EnumDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): boolean {
+  return declaration.nativeLayout?.language !== "c"
+    && nicheOptionPayload(declaration, semanticInfo.foreignNamedTypes) === null
+    && !requiresNativeMove(declaration.name, structs, enums, semanticInfo.foreignNamedTypes)
+    && declaration.variants.some((variant) => (
+      variant.payload
+      && typeRecursivelyReferences(
+        variant.payload.name,
+        declaration.name,
+        structs,
+        enums,
+        new Set(),
+      )
+    ));
+}
+
+function generateEnumDeinit(
+  declaration: EnumDeclaration,
+  structs: Map<string, StructDeclaration>,
+  enums: Map<string, EnumDeclaration>,
+  semanticInfo: SemanticInfo,
+): string {
+  const counter = { value: 0 };
+  const cases = declaration.variants.flatMap((variant) => {
+    if (!variant.payload || !hasSemanticCleanupType(
+      variant.payload.name,
+      structs,
+      enums,
+      semanticInfo,
+    )) return [];
+    const cleanup = generateOwnedEnvironmentCleanup(
+      `self->data.${variant.name}`,
+      variant.payload.name,
+      structs,
+      enums,
+      semanticInfo,
+      counter,
+    );
+    return [`case ${variantTag(declaration.name, variant.name)}:\n${indent(cleanup, 4)}\n    break;`];
+  });
+  return `Z_UNUSED_FUNCTION static void ${deinitName(declaration.name)}(${enumName(declaration.name)} *self) {
+  switch (self->tag) {
+${indent(cases.join("\n"), 4)}
+    default:
+      break;
+  }
+}`;
 }
 
 function generateFunctionSignature(
@@ -7258,6 +7368,10 @@ function generateValueCleanup(
       return `if (${conditions.join(" && ")}) ${foreign.release}(${value});`;
     }
     if (niche) return "";
+    if (enumNeedsGeneratedDeinit(enumDeclaration, context.structs, context.enums, context.semanticInfo)) {
+      const cleanup = `${deinitName(type)}(&(${value}));`;
+      return liveFlag ? `if (${liveFlag}) ${cleanup}` : cleanup;
+    }
     const cases = enumDeclaration.variants.flatMap((variant) => {
       if (!variant.payload || !hasSemanticCleanupType(
         variant.payload.name,

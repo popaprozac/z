@@ -2173,52 +2173,59 @@ function collectAggregateExecutorAffinities(
 ): void {
   const aliases = new Map(program.typeAliases.map((declaration) => [declaration.name, declaration.target.name]));
   const visiting = new Set<string>();
+  const visitingTypes = new Set<string>();
 
   const typeAffinity = (type: string, path: readonly string[]): ExecutorAffinityInfo | null => {
-    const alias = aliases.get(type);
-    if (alias) return typeAffinity(alias, path);
-    const foreign = foreignExecutorAffinityForTypeName(type, state);
-    if (foreign) return { ...foreign, fieldPath: [...path, ...foreign.fieldPath] };
-    const generic = parseGenericType(type);
-    if (generic) {
-      const base = aggregateAffinity(generic.base);
-      if (base) return { ...base, fieldPath: [...path, ...base.fieldPath] };
-      for (const argument of generic.arguments) {
-        const inherited = typeAffinity(argument, path);
-        if (inherited) return inherited;
+    if (visitingTypes.has(type)) return null;
+    visitingTypes.add(type);
+    try {
+      const alias = aliases.get(type);
+      if (alias) return typeAffinity(alias, path);
+      const foreign = foreignExecutorAffinityForTypeName(type, state);
+      if (foreign) return { ...foreign, fieldPath: [...path, ...foreign.fieldPath] };
+      const generic = parseGenericType(type);
+      if (generic) {
+        const base = aggregateAffinity(generic.base);
+        if (base) return { ...base, fieldPath: [...path, ...base.fieldPath] };
+        for (const argument of generic.arguments) {
+          const inherited = typeAffinity(argument, path);
+          if (inherited) return inherited;
+        }
       }
-    }
-    const dynamic = parseDynamicArrayType(type);
-    if (dynamic) return typeAffinity(dynamic.elementType, path);
-    const fixed = parseFixedArrayType(type);
-    if (fixed) return typeAffinity(fixed.elementType, path);
-    const option = parseOptionType(type);
-    if (option) return typeAffinity(option.target, path);
-    const map = parseMapType(type);
-    if (map) return typeAffinity(map.keyType, path) ?? typeAffinity(map.valueType, path);
-    const set = parseSetType(type);
-    if (set) return typeAffinity(set.elementType, path);
-    const weak = parseWeakType(type);
-    if (weak) return typeAffinity(weak.target, path);
-    const declaration = structs.get(type);
-    if (declaration) {
-      // A stored ARC class reference is an executor-routed handle, not inline
-      // executor-affine storage. Retaining or releasing the handle may happen
-      // away from its lifecycle executor; member access still consults the
-      // referenced class's own field and method contracts.
-      if (declaration.kind === "class") return null;
-      const inherited = aggregateAffinity(type);
-      return inherited ? { ...inherited, fieldPath: [...path, ...inherited.fieldPath] } : null;
-    }
-    const enumeration = enums.get(type);
-    if (enumeration) {
-      for (const variant of enumeration.variants) {
-        if (!variant.payload) continue;
-        const inherited = typeAffinity(variant.payload.name, [...path, variant.name]);
-        if (inherited) return inherited;
+      const dynamic = parseDynamicArrayType(type);
+      if (dynamic) return typeAffinity(dynamic.elementType, path);
+      const fixed = parseFixedArrayType(type);
+      if (fixed) return typeAffinity(fixed.elementType, path);
+      const option = parseOptionType(type);
+      if (option) return typeAffinity(option.target, path);
+      const map = parseMapType(type);
+      if (map) return typeAffinity(map.keyType, path) ?? typeAffinity(map.valueType, path);
+      const set = parseSetType(type);
+      if (set) return typeAffinity(set.elementType, path);
+      const weak = parseWeakType(type);
+      if (weak) return typeAffinity(weak.target, path);
+      const declaration = structs.get(type);
+      if (declaration) {
+        // A stored ARC class reference is an executor-routed handle, not inline
+        // executor-affine storage. Retaining or releasing the handle may happen
+        // away from its lifecycle executor; member access still consults the
+        // referenced class's own field and method contracts.
+        if (declaration.kind === "class") return null;
+        const inherited = aggregateAffinity(type);
+        return inherited ? { ...inherited, fieldPath: [...path, ...inherited.fieldPath] } : null;
       }
+      const enumeration = enums.get(type);
+      if (enumeration) {
+        for (const variant of enumeration.variants) {
+          if (!variant.payload) continue;
+          const inherited = typeAffinity(variant.payload.name, [...path, variant.name]);
+          if (inherited) return inherited;
+        }
+      }
+      return null;
+    } finally {
+      visitingTypes.delete(type);
     }
-    return null;
   };
 
   const aggregateAffinity = (name: string): ExecutorAffinityInfo | null => {
