@@ -12855,6 +12855,9 @@ test("tracks ARC identities through direct fields and audited struct returns nat
     ["assigned.zs", /ARC aliases "application" and "context\.application"/],
     ["opaque.zs", /ARC aliases "application" and "context\.application"/],
     ["branch-disagreement.zs", /ARC aliases "application" and "context\.application"/],
+    ["match-disagreement.zs", /ARC aliases "application" and "context\.application"/],
+    ["match-shadowing.zs", /ARC aliases "application" and "context\.application"/],
+    ["match-expression-opaque.zs", /ARC aliases "application" and "context\.application"/],
   ] as const) {
     const rejected = spawnSync(
       process.execPath,
@@ -12906,6 +12909,17 @@ test("tracks ARC identities through direct fields and audited struct returns nat
   );
   assert.equal(branchValidResult.status, 0, branchValidResult.stderr);
 
+  const matchValid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-aggregate-class-alias/match-valid.zs",
+  );
+  const matchValidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", matchValid],
+    { encoding: "utf8" },
+  );
+  assert.equal(matchValidResult.status, 0, matchValidResult.stderr);
+
   const moduleValid = resolve(
     projectRoot,
     "tests/fixtures/self-host-aggregate-class-return/valid.zs",
@@ -12916,6 +12930,17 @@ test("tracks ARC identities through direct fields and audited struct returns nat
     { encoding: "utf8" },
   );
   assert.equal(moduleValidResult.status, 0, moduleValidResult.stderr);
+
+  const moduleMatchValid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-aggregate-class-return/match-valid.zs",
+  );
+  const moduleMatchValidResult = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", moduleMatchValid],
+    { encoding: "utf8" },
+  );
+  assert.equal(moduleMatchValidResult.status, 0, moduleMatchValidResult.stderr);
 
   const moduleOverlap = resolve(
     projectRoot,

@@ -205,6 +205,45 @@ function statementNodeDefinitelyReturns(
     return statementNodeDefinitelyReturns(arena, thenBranch)
       && statementNodeDefinitelyReturns(arena, elseBranch);
   }
+  if (statement.kind == StatementKind.matchStatement) {
+    return matchStatementDefinitelyReturns(arena, index);
+  }
+  return false;
+}
+
+function matchStatementDefinitelyReturns(
+  in arena: StatementArena,
+  statementIndex: usize
+): boolean {
+  if (statementIndex >= arena.nodes.length) return false;
+  const statement = view arena.nodes[statementIndex];
+  match (in statement.expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (
+          tree.nodes[root].kind != ExpressionKind.matchExpression
+          || tree.nodes[root].children.length < 2
+        ) return false;
+        let armIndex: usize = 1;
+        while (armIndex < tree.nodes[root].children.length) {
+          const arm = tree.nodes[root].children[armIndex];
+          if (
+            tree.nodes[arm].kind != ExpressionKind.matchArmExpression
+            || tree.nodes[arm].statements.length == 0
+          ) return false;
+          const last = tree.nodes[arm].statements[
+            tree.nodes[arm].statements.length - 1
+          ];
+          if (!statementNodeDefinitelyReturns(arena, last)) return false;
+          armIndex = armIndex + 1;
+        }
+        return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
   return false;
 }
 
@@ -272,9 +311,96 @@ function collectAggregateClassIdentityReturns(
       )) return false;
       continue;
     }
+    if (statement.kind == StatementKind.matchStatement) {
+      let collected = false;
+      match (in statement.expression) {
+        some(expression) => match (in expression.tree) {
+          some(tree) => collected = collectAggregateClassIdentityMatchReturns(
+            program,
+            declaration,
+            arena,
+            tree,
+            aggregateIndex,
+            inout names,
+            inout parameterIndices,
+            inout initialized
+          );
+          none => {}
+        }
+        none => {}
+      }
+      if (!collected) return false;
+      continue;
+    }
     return false;
   }
   return true;
+}
+
+function collectAggregateClassIdentityMatchReturns(
+  in program: Program,
+  in declaration: FunctionDeclaration,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  aggregateIndex: usize,
+  inout names: Array<String>,
+  inout parameterIndices: Array<usize>,
+  inout initialized: boolean
+): boolean {
+  const root = tree.root;
+  if (
+    tree.nodes[root].kind != ExpressionKind.matchExpression
+    || tree.nodes[root].children.length < 2
+  ) return false;
+  let armIndex: usize = 1;
+  while (armIndex < tree.nodes[root].children.length) {
+    const arm = tree.nodes[root].children[armIndex];
+    if (
+      tree.nodes[arm].kind != ExpressionKind.matchArmExpression
+      || tree.nodes[arm].statements.length == 0
+    ) return false;
+    for (const pattern of tree.nodes[arm].children) {
+      if (matchPatternShadowsFunctionParameter(
+        declaration,
+        tree,
+        pattern
+      )) return false;
+    }
+    if (!collectAggregateClassIdentityReturns(
+      program,
+      declaration,
+      arena,
+      tree.nodes[arm].statements,
+      aggregateIndex,
+      inout names,
+      inout parameterIndices,
+      inout initialized
+    )) return false;
+    armIndex = armIndex + 1;
+  }
+  return true;
+}
+
+function matchPatternShadowsFunctionParameter(
+  in declaration: FunctionDeclaration,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (index >= tree.nodes.length) return false;
+  if (tree.nodes[index].kind == ExpressionKind.matchBindingExpression) {
+    for (const parameter of declaration.parameters) {
+      if (parameter.name == tree.nodes[index].value) return true;
+    }
+    return false;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (matchPatternShadowsFunctionParameter(
+      declaration,
+      tree,
+      child
+    )) return true;
+  }
+  return false;
 }
 
 function aggregateClassIdentitySourcesEqual(

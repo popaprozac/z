@@ -13556,6 +13556,26 @@ function collectAggregateClassAliasReturns(
       }
       continue;
     }
+    if (statement.kind === "match") {
+      if (statement.arms.length === 0) return false;
+      for (const arm of statement.arms) {
+        const armBindings = [
+          ...(arm.binding ? [arm.binding] : []),
+          ...(arm.objectBindings?.map((binding) => binding.bindingName) ?? []),
+        ];
+        if (armBindings.some((binding) => (
+          declaration.parameters.some((parameter) => parameter.name === binding)
+        ))) return false;
+        if (!collectAggregateClassAliasReturns(
+          [arm.body],
+          declaration,
+          aggregate,
+          structs,
+          returns,
+        )) return false;
+      }
+      continue;
+    }
     return false;
   }
   return true;

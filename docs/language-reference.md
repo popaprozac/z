@@ -817,7 +817,8 @@ locally contained for class-field `view` projection. Spread, nested aggregate
 paths, collections, general returned aggregates, and suspension remain
 conservative boundaries except for one audited direct-return shape. A
 synchronous, nonthrowing, nongeneric free function whose body contains only
-blocks, `if` branches, and direct value-struct returns preserves class
+blocks, `if` branches, exhaustive statement-form `match`, and direct
+value-struct returns preserves class
 parameters placed into direct class fields when every reachable return agrees:
 
 ```z
@@ -834,7 +835,10 @@ publishAndInspect(inout application, context.application); // distinct: accepted
 Calling `contextFor(application)` instead preserves the shared identity and the
 same exclusive call is rejected. An early `if` return followed by a final
 return, or an exhaustive `if`/`else if`/`else`, receives the same summary when
-all returns map each field to the same parameter. The summary crosses
+all returns map each field to the same parameter. Exhaustive statement matches
+follow the same rule, including arms with non-shadowing payload bindings. A
+payload binding that shadows a function parameter with the same spelling
+withholds the summary rather than confusing the two identities. The summary crosses
 source-module boundaries and adds no source syntax or runtime provenance. A
 local statement, disagreeing branch, spread, throw, async effect, generic
 parameter, different return source, or indirect initializer makes the result
@@ -847,6 +851,10 @@ the callback may run before the synchronous call returns. Provenance through
 arbitrary function results, previously stored callable environments, and
 broader aggregate shapes remains conservative work; cross-thread mutation
 continues to require `Mutex<T>` or executor isolation.
+
+This tier does not yet analyze a value-producing `return match (...) { ... }`;
+that shape composes return-expression provenance rather than statement control
+flow and remains opaque.
 
 Closure capture preserves the distinction between a class binding and its
 instance. An owned `const` class reference may still invoke an `inout this`

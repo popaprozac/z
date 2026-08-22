@@ -3201,8 +3201,18 @@ class field to the same parameter. This accepts both an early `if` return plus
 a final fallthrough return and an exhaustive conditional, including through an
 imported function signature. If one branch maps `application` from `primary`
 and another maps it from `alternate`, the whole result remains opaque. Locals,
-assignments, loops, `match`, and indirect constructors remain deliberately
+assignments, loops, and indirect constructors remain deliberately
 outside this first join.
+
+The same intersection now covers exhaustive statement-form `match`. Every arm
+must terminate through the permitted block/`if`/`match`/direct-return subset,
+and all direct returns must agree. Ordinary payload bindings are allowed, but
+an arm binding that shadows a function parameter with the same spelling makes
+the whole summary opaque; otherwise a payload could be mistaken for the
+caller's ARC identity. Disagreeing arms also fall back to the unknown alias.
+This works across source modules and adds no runtime tag. Value-producing
+`return match (...) { ... }`, locals within arms, loops, and indirect returns
+remain separate provenance problems.
 
 The focused capture follow-up resolved an adjacent frontend mismatch without
 adding syntax. Both frontends now preserve the direct class rule through a

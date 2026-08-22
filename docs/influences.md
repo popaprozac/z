@@ -71,7 +71,8 @@ not be mistaken for implemented Z semantics:
   direct projection for bounded call exclusivity; it does not grant class-field
   view containment. A fifth audited slice carries a same-typed class parameter
   through a synchronous free function whose body directly returns that value
-  struct, including across source modules and agreeing exhaustive `if` joins.
+  struct, including across source modules and agreeing exhaustive `if` and
+  statement-`match` joins.
   These lower to ordinary
   addresses and retained class pointers with no lifetime syntax or runtime
   checks. Flow-sensitive provenance

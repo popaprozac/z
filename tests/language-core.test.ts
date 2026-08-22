@@ -4224,6 +4224,99 @@ test("tracks ARC identities through direct fields and audited struct returns", (
     () => compileToC(disagreeingBranch, "aggregate-disagreeing-branch-class-alias.zs"),
     /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
   );
+
+  const agreeingMatch = `${prefix}
+    enum Selection { preferred i32, fallback, }
+    function wrap(in application: Application, selection: Selection): Context {
+      match (selection) {
+        preferred(code) => return Context({ application });
+        fallback => return Context({ application });
+      }
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, Selection.preferred(42));
+      return updateAndInspect(inout application, context.application) - 1;
+    }
+  `;
+  assert.deepEqual(
+    diagnostics(agreeingMatch, "aggregate-agreeing-match-class-alias.zs"),
+    [],
+  );
+
+  const disagreeingMatch = `${prefix}
+    enum Selection { primary, alternate, }
+    function wrap(
+      in primary: Application,
+      in alternate: Application,
+      selection: Selection
+    ): Context {
+      match (selection) {
+        primary => return Context({ application: primary });
+        alternate => return Context({ application: alternate });
+      }
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, application, Selection.primary);
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(disagreeingMatch, "aggregate-disagreeing-match-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
+
+  const shadowedMatchPayload = `${prefix}
+    enum Selection {
+      chosen Application,
+      fallback Application,
+    }
+    function wrap(
+      in application: Application,
+      selection: Selection
+    ): Context {
+      match (selection) {
+        chosen(application) => return Context({ application });
+        fallback(application) => return Context({ application });
+      }
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, Selection.chosen(application));
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(shadowedMatchPayload, "aggregate-shadowed-match-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
+
+  const valueProducingMatch = `${prefix}
+    enum Selection { preferred, fallback, }
+    function wrap(
+      in application: Application,
+      selection: Selection
+    ): Context {
+      return match (selection) {
+        preferred => Context({ application });
+        fallback => Context({ application });
+      };
+    }
+    function main(): i32 {
+      let application = new Application({ value: 41 });
+      const preview = new Application({ value: 1 });
+      const context = wrap(preview, Selection.preferred);
+      return updateAndInspect(inout application, context.application);
+    }
+  `;
+  assert.throws(
+    () => compileToC(valueProducingMatch, "aggregate-value-match-class-alias.zs"),
+    /overlapping inout and in uses of ARC aliases "application" and "context\.application"/,
+  );
 });
 
 test("exposes Z classes and traits to editor services", () => {
