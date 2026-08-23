@@ -23,7 +23,7 @@ function publish(in owner: native.ZNativeRegistrationOwner): void {
 }
 
 function main(): i32 on thread.main {
-  const owner = native.ZNativeRegistrationOwner.createOwner();
+  const owner = native.ZNativeRegistrationOwner.alloc().init();
   const handler = new NativeRegistrationHandler({});
   const registration = objc.register({
     add: owner.addHandler(handler, "bridge"),

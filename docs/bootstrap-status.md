@@ -96,7 +96,13 @@ automatically. `objc.register` now carries the selected protocol methods and
 exact add/remove argument plan through native lowering, synthesizes an owned
 Objective-C protocol adapter plus per-site ARC guard, and clears guard-bearing
 Objective-C fields during Z-class finalization. A fixed-point release fixture
-proves add/callback/remove order after storing the guard in a Z ARC root. The
+proves add/callback/remove order after storing the guard in a Z ARC root.
+Inherited selectors retain the dynamic class receiver and `instancetype`
+methods rebind their result to that receiver type, while
+namespace-qualified enum fields in imported C records retain their nominal
+identity through native lowering. Zapp's visible WebKit route now owns its
+protocol handler and registration guard in Z; the remaining host seam validates
+WebKit's dynamic `id` message body before entering an owned-String export. The
 Foreign Interface IR row above describes the fully consumed C contract tier;
 Objective-C properties, broad/header-only native-driver discovery, and
 Objective-C++ selection remain staged.

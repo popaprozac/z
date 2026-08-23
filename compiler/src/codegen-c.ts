@@ -9227,15 +9227,21 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       return generateRawExpressionCall(expression, context);
     case "argumentReference":
       if (expression.name === "this") return context.owner.receiverMode === "move" ? "&(self)" : "self";
-      if (parseSliceType(context.localTypes.get(expression.name) ?? "")) return cBindingName(expression.name);
+      const argumentType = context.localTypes.get(expression.name) ?? "";
+      if (parseSliceType(argumentType)) return cBindingName(expression.name);
       if (
         expression.access === "in"
         && (
-          parseViewType(context.localTypes.get(expression.name) ?? "")
+          parseViewType(argumentType)
           || parsePointerTypeName(
             context.owner.parameters.find((parameter) => parameter.name === expression.name)?.type.name ?? "",
           )
-          || storedPointerType(context.localTypes.get(expression.name) ?? "")
+          || storedPointerType(argumentType)
+          || closureCaptureHasReferenceIdentity(
+            argumentType,
+            context.structs,
+            context.semanticInfo.foreignNamedTypes,
+          )
         )
       ) return cBindingName(expression.name);
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return cBindingName(expression.name);
@@ -10186,9 +10192,14 @@ function generateCallArgument(expression: Expression, context: GenerationContext
     && storedPointerType(inferExpressionType(expression, context))
     && (expression.kind !== "argumentReference" || expression.access === "in")
   ) return value;
-  const classIn = nativeIn && context.structs.get(inferExpressionType(expression, context))?.kind === "class";
-  return foreignIn
-    || (nativeIn && !classIn)
+  const argumentType = inferExpressionType(expression, context);
+  const classIn = nativeIn && context.structs.get(argumentType)?.kind === "class";
+  const objectiveCIn = (
+    context.semanticInfo.foreignNamedTypes.get(argumentType)?.kind === "object"
+    || argumentType.startsWith("__z_objc:")
+  );
+  return (foreignIn && !objectiveCIn)
+    || (nativeIn && !classIn && !objectiveCIn)
     ? `&(${value})`
     : value;
 }

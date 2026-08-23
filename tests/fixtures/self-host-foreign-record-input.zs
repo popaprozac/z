@@ -7,6 +7,7 @@ function main(): i32 {
   const rect = geometry.ZRect({
     origin: translated,
     size: geometry.ZSize({ width: 640, height: 480 }),
+    direction: geometry.ZForward,
     flags: 7,
     identifier: 42,
   });

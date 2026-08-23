@@ -82,6 +82,7 @@ export struct NativeMethodCallShape {
   ownerTypeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   signature: ModuleFunctionSignature;
   objectiveCSelector: String;
+  objectiveCReturnsInstanceType: boolean;
   objectiveCNativeReturnType: String;
   objectiveCParameterNativeTypes: Array<String>;
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
@@ -691,6 +692,8 @@ export function methodCallShape(
                 0,
                 method.objectiveCSelector.byteLength
               ),
+              objectiveCReturnsInstanceType:
+                method.objectiveCReturnsInstanceType,
               objectiveCNativeReturnType: method.objectiveCNativeReturnType.copyBytes(
                 0,
                 method.objectiveCNativeReturnType.byteLength
@@ -712,7 +715,7 @@ export function methodCallShape(
               moduleIndex,
               typeSignature.foreignObjCSuperName
             );
-            return methodCallShape(
+            const inherited = methodCallShape(
               modules,
               moduleIndex,
               superType,
@@ -721,6 +724,28 @@ export function methodCallShape(
               argumentCount,
               argumentLabels
             );
+            match (inherited) {
+              some(method) => {
+                let rebound = move method;
+                const dynamicOwner = view modules[location.moduleIndex].symbols[
+                  location.symbolIndex
+                ];
+                rebound.ownerName = dynamicOwner.name.copyBytes(
+                  0,
+                  dynamicOwner.name.byteLength
+                );
+                rebound.ownerModuleIndex = location.moduleIndex;
+                rebound.ownerSymbolIndex = location.symbolIndex;
+                if (rebound.objectiveCReturnsInstanceType) {
+                  rebound.signature.returnType = ownerType.copyBytes(
+                    0,
+                    ownerType.byteLength
+                  );
+                }
+                return Option.some(move rebound);
+              }
+              none => {}
+            }
           }
         }
         none => {}

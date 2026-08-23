@@ -9212,6 +9212,7 @@ function main(): i32 {
     emittedRecordSource,
     /ZPoint translated = z_translate\(point, ZForward, 3\)/,
   );
+  assert.match(emittedRecordSource, /\.direction = ZForward/);
   assert.match(emittedRecordSource, /z_score\(translated\)/);
   assert.match(emittedRecordSource, /ZSize\)\{\.width = 640, \.height = 480\}/);
   assert.match(emittedRecordSource, /ZRect rect = \(ZRect\)/);

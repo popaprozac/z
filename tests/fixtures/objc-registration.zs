@@ -17,6 +17,10 @@ class RegistrationRoot on thread.main {
   registration: objc.Registration;
 }
 
+function publish(in owner: native.ZRegistrationOwner): void {
+  owner.emitValue(42);
+}
+
 function main(): i32 {
   const owner = native.ZRegistrationOwner.alloc().init();
   const handler = new RegistrationHandler({});
@@ -25,6 +29,6 @@ function main(): i32 {
     remove: owner.removeHandlerForName("bridge"),
   });
   const root = new RegistrationRoot({ owner, registration });
-  root.owner.emitValue(42);
+  publish(in owner);
   return 0;
 }

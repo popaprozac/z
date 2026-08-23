@@ -134,6 +134,11 @@ recursive path.
   and returns an ARC guard that sends the verified teardown selector exactly
   once. A release-mode native fixture stores that guard in a Z ARC class and
   proves add/callback/remove ordering through a freshly bootstrapped `z`.
+  Inherited Objective-C selectors retain the dynamic class receiver and
+  `instancetype` results rebind to it, so subclass `alloc().init()` chains keep
+  both the emitted receiver and source-level type. Imported
+  record fields also preserve namespace-qualified nominal enum identity through
+  lowering and C emission.
   Properties, broad SDK header discovery, and Objective-C++ remain later
   fixed-point layers.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It

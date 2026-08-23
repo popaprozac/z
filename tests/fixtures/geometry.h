@@ -25,6 +25,7 @@ typedef struct ZSize {
 typedef struct ZRect {
   ZPoint origin;
   ZSize size;
+  ZDirection direction;
   ZFlags flags;
   ZIdentifier identifier;
 } ZRect;

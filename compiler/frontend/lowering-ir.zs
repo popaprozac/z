@@ -20825,15 +20825,26 @@ function loweredForeignFieldType(
   if (name == "usize") return LoweredType({ kind: LoweredTypeKind.usizeType, name: "" });
   if (name == "f32") return LoweredType({ kind: LoweredTypeKind.f32Type, name: "" });
   if (name == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
+  const qualifiedMember = qualifiedTypeMember(name);
   for (const imported of importedTypes) {
     if (
-      imported.kind == LoweredTypeKind.foreignStructType
+      (
+        imported.kind == LoweredTypeKind.foreignStructType
+        || imported.kind == LoweredTypeKind.foreignEnumType
+      )
       && (
         imported.localName == name
         || imported.targetName == name
+        || (
+          qualifiedMember.byteLength > 0
+          && (
+            imported.localName == qualifiedMember
+            || imported.targetName == qualifiedMember
+          )
+        )
       )
     ) return LoweredType({
-      kind: LoweredTypeKind.foreignStructType,
+      kind: imported.kind,
       name: imported.targetName.copyBytes(
         0,
         imported.targetName.byteLength

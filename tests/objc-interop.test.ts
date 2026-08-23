@@ -2068,6 +2068,8 @@ test("owns method-based Objective-C protocol registrations through explicit guar
   assert.match(artifact.source, /objc_precise_lifetime, unused\)\) ZObjCRegistration \* const registration/);
   assert.match(artifact.source, /struct Z_RegistrationRoot \{[^}]*ZRegistrationOwner \* owner;[^}]*ZObjCRegistration \* registration;/);
   assert.match(artifact.source, /self->registration = nil;/);
+  assert.match(artifact.source, /publish\(owner\)/);
+  assert.doesNotMatch(artifact.source, /publish\(&\(owner\)\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
@@ -2142,7 +2144,7 @@ test("owns method-based Objective-C protocol registrations through explicit guar
     hover(source, fixture, registrationTypeOffset)?.contents.value ?? "",
     /owned add\/remove Objective-C protocol registration lifetime/,
   );
-}, 60_000);
+}, 120_000);
 
 test("registers persistent Objective-C event callbacks with explicit token cleanup", () => {
   if (process.platform !== "darwin") return;

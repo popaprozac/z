@@ -3442,12 +3442,32 @@ storage is freed, so a guard stored in long-lived application state has a
 deterministic lifetime rather than depending on a local frame. A release-mode
 fixture built by a freshly bootstrapped native `z` proves
 `registered -> callback -> unregistered` and exercises an ordinary `in`
-Objective-C argument without adding a pointer level. Zapp can now remove its
-temporary adapter at the language surface; broad AppKit/WebKit header discovery
-and native lowering remain the next practical integration pressure rather than
-adapter ownership itself.
+Objective-C argument without adding a pointer level. Zapp now uses that surface
+directly: its Z `DesktopApplication` owns the protocol handler and registration
+guard, while the Objective-C host no longer conforms to
+`WKScriptMessageHandler` or manually installs/removes itself. A visible WebKit
+message reaches the Z-owned adapter, crosses the typed JSON router, and returns
+to the page before deterministic runtime shutdown removes the handler.
 
-The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
+That real SDK integration exposed two fixed-point gaps which are now ordinary
+regressions. An inherited Objective-C method returning `instancetype` must
+rebind to the dynamic receiver type, so `Subclass.alloc().init()` remains a
+`Subclass` even when `alloc` or `init` is declared by `NSObject`. Imported C
+record fields may also name namespace-qualified nominal enums; native lowering
+now resolves that identity and emits the enum field rather than rejecting the
+record. The Zapp host retains one deliberately small dynamic seam for WebKit's
+`id`-typed `message.body`: Objective-C validates that the object is an
+`NSString` and immediately enters an owned-`String` Z export. Expressing a
+borrowed Objective-C-owned string view or an Objective-C-pointer C-function
+contract in `.zd` remains a future checked-interoperability layer; the demo does
+not weaken `view` provenance to hide that gap.
+
+The same registration fixture also runs through Stage 0. An explicit
+`publish(in owner)` call now passes an Objective-C reference directly in both
+frontends; capability lowering no longer mistakes reference identity for a
+value struct and emit `Owner **` at the call site.
+
+The probe also exposed a separate importer identity gap: AppKit's `NSRect` and
 WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do
 not currently unify at a cross-framework call. Constructing `WebKit.CGRect`
 works, while passing `AppKit.NSMakeRect(...)` does not. Canonical Clang type
