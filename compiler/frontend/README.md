@@ -123,6 +123,13 @@ recursive path.
   Clang producer exposes the matching stream operation, and the bootstrap suite
   crosses mixed headers through the real producer, Z decoder, normalizer, and
   native driver.
+- Native Objective-C method evidence is no longer semantic-only: direct
+  imported class and instance calls lower to selector-preserving message sends,
+  returned interface references use ARC storage, and `String` arguments are
+  projected when the selected native parameter is `const char *`. The
+  standalone driver detects those call resolutions, emits a `.m` translation
+  unit, and enables Clang ARC. Properties, generated protocol adapters, and
+  Objective-C++ remain later fixed-point layers.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

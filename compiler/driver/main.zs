@@ -392,18 +392,42 @@ function emitProjectStandardOutput(in entryPath: String): i32 throws String {
   return 0;
 }
 
+function projectUsesObjectiveC(in project: NativeProject): boolean {
+  for (const module of project.graph.modules) {
+    for (const resolution of module.semanticEvidence.callResolutions) {
+      if (resolution.objectiveCSelector.byteLength > 0) return true;
+    }
+  }
+  return false;
+}
+
+function projectNativeSourceExtension(in project: NativeProject): String {
+  return projectUsesObjectiveC(project) ? ".m" : ".c";
+}
+
+function appendProjectLanguageArguments(
+  in project: NativeProject,
+  inout arguments: Array<String>
+): void {
+  arguments.push("-x");
+  if (projectUsesObjectiveC(project)) {
+    arguments.push("objective-c");
+    arguments.push("-fobjc-arc");
+  } else arguments.push("c");
+  arguments.push("-std=c11");
+}
+
 function compileEmittedProject(
   in project: NativeProject,
   in emitted: String,
   in outputPath: String,
   release: boolean
 ): i32 throws String {
-  const cPath = `${outputPath}.c`;
+  const extension = projectNativeSourceExtension(project);
+  const cPath = `${outputPath}${extension}`;
   try fs.writeText(cPath, emitted);
   let compilerArguments = Array<String>();
-  compilerArguments.push("-x");
-  compilerArguments.push("c");
-  compilerArguments.push("-std=c11");
+  appendProjectLanguageArguments(project, inout compilerArguments);
   if (release) {
     compilerArguments.push("-O2");
     compilerArguments.push("-DNDEBUG");
@@ -639,16 +663,15 @@ function buildStaticLibrary(
   );
   try fs.createDirectories(outputDirectory);
   try fs.createDirectories(cacheDirectory);
-  const cPath = `${cacheDirectory}/${targetName}.c`;
+  const sourceExtension = projectNativeSourceExtension(project);
+  const cPath = `${cacheDirectory}/${targetName}${sourceExtension}`;
   const objectPath = `${cacheDirectory}/${targetName}.o`;
   const libraryPath = `${outputDirectory}/lib${targetName}.a`;
   const headerPath = `${outputDirectory}/${targetName}.h`;
   try fs.writeText(cPath, emitted);
 
   let compilerArguments = Array<String>();
-  compilerArguments.push("-x");
-  compilerArguments.push("c");
-  compilerArguments.push("-std=c11");
+  appendProjectLanguageArguments(project, inout compilerArguments);
   if (release) {
     compilerArguments.push("-O2");
     compilerArguments.push("-DNDEBUG");
@@ -745,7 +768,8 @@ function buildSharedLibrary(
   );
   try fs.createDirectories(outputDirectory);
   try fs.createDirectories(cacheDirectory);
-  const cPath = `${cacheDirectory}/${targetName}.c`;
+  const sourceExtension = projectNativeSourceExtension(project);
+  const cPath = `${cacheDirectory}/${targetName}${sourceExtension}`;
   const prefix = sharedLibraryPrefix(project.config);
   const extension = sharedLibraryExtension(project.config);
   const libraryPath = `${outputDirectory}/${prefix}${targetName}${extension}`;
@@ -753,9 +777,7 @@ function buildSharedLibrary(
   try fs.writeText(cPath, emitted);
 
   let compilerArguments = Array<String>();
-  compilerArguments.push("-x");
-  compilerArguments.push("c");
-  compilerArguments.push("-std=c11");
+  appendProjectLanguageArguments(project, inout compilerArguments);
   compilerArguments.push("-shared");
   compilerArguments.push("-fPIC");
   compilerArguments.push("-fvisibility=hidden");
@@ -1036,10 +1058,11 @@ function runProject(
   const outputDirectory = `${project.config.directory}/.z-cache/run`;
   try fs.createDirectories(outputDirectory);
   const outputPath = `${outputDirectory}/program`;
-  const cPath = `${outputPath}.c`;
+  const sourceExtension = projectNativeSourceExtension(project);
+  const cPath = `${outputPath}${sourceExtension}`;
   const metadataPath = `${outputPath}.meta`;
   const pendingOutputPath = `${outputPath}.pending`;
-  const pendingCPath = `${pendingOutputPath}.c`;
+  const pendingCPath = `${pendingOutputPath}${sourceExtension}`;
   const pendingMetadataPath = `${metadataPath}.pending`;
   const cacheLock = try fs.lock(`${outputPath}.lock`);
   const emitted = try emitProject(project, true);

@@ -1563,8 +1563,13 @@ A Z-native decoder validates the real
 attaches interfaces as reference-class contracts and protocols as trait
 contracts, preserves selector-specific facts, and makes `objc.register`
 protocol-conformance and stable-teardown rejection native-authoritative.
-Objective-C properties, header-only native-driver discovery, and
-Objective-C/Objective-C++ emission remain the next fixed-point layers.
+The next slice carried those selected method facts into lowering: fixed-point
+Z now emits direct class and instance message sends, keeps returned object
+references in ARC storage, projects owned `String` values for `const char *`
+parameters, and makes the native driver choose `.m` plus `-fobjc-arc`
+automatically. A self-contained executable probe dispatches through a real
+Objective-C class and returns `42`. Objective-C properties, generated protocol
+adapters, header-only native-driver discovery, and Objective-C++ remain staged.
 
 The following native slice crossed opaque pointer owners without pretending
 they were record values. A `.zd` `deinit` fact on a direct nullable result or
@@ -3421,14 +3426,17 @@ general `objc.register({ add, remove })` guard. It validates the native pair and
 Z protocol conformance, owns the receiver, generated adapter, and controller,
 and unregisters exactly once during cleanup. A runtime fixture proves
 add/callback/remove ordering, while a real WebKit example proves the SDK shape.
-The remaining boundary is fixed-point emission: version 9 carries Objective-C
+Version 9 carries Objective-C
 interfaces, protocols, methods, `id<Protocol>` qualifiers, and semantic type
 identity into owned native Z data, and native semantic normalization now
 consumes that graph. A fixed-point positive fixture plus protocol-owner and
 teardown negatives prove `objc.register` no longer relies on Stage 0 fallback.
-Native Objective-C emission does not yet consume those resolutions, so Zapp
-retains its temporary Objective-C adapter until that final compiler layer lands
-rather than weakening the lifetime model.
+Native direct message emission now consumes the same resolutions, including
+class and instance selectors, ARC reference storage, and C-string projection.
+Zapp still retains its temporary Objective-C adapter because the native emitter
+does not yet synthesize the owned protocol adapter and registration guard;
+removing that adapter remains the next lifetime-sensitive layer rather than a
+reason to weaken the model.
 
 The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
 WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do

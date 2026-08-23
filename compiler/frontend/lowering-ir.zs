@@ -93,6 +93,7 @@ export enum LoweredTypeKind {
   foreignEnumType,
   foreignStructType,
   foreignHandleType,
+  foreignObjCType,
   functionType,
 }
 
@@ -226,6 +227,7 @@ export enum LoweredExpressionKind {
   directFunctionValue,
   closureValue,
   methodCall,
+  objectiveCMessageCall,
   fieldValue,
   structValue,
   moveStructSpreadValue,
@@ -5240,6 +5242,42 @@ function resolvedCallKind(
   return "";
 }
 
+function resolvedObjectiveCSelector(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.objectiveCSelector.copyBytes(
+      0,
+      resolution.objectiveCSelector.byteLength
+    );
+  }
+  return "";
+}
+
+function resolvedObjectiveCReceiverNativeType(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): String {
+  for (const resolution of evidence.callResolutions) {
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolution.objectiveCReceiverNativeType.copyBytes(
+      0,
+      resolution.objectiveCReceiverNativeType.byteLength
+    );
+  }
+  return "";
+}
+
 function resolvedGenericMethodSuffix(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -5479,7 +5517,10 @@ function collectForeignLowering(
   inout functions: Array<LoweredForeignFunction>
 ): void throws String {
   for (const resolution of evidence.callResolutions) {
-    if (resolution.kind != "foreign") continue;
+    if (
+      resolution.kind != "foreign"
+      && resolution.objectiveCSelector.byteLength == 0
+    ) continue;
     try requireSafeForeignHeader(resolution.foreignHeader);
     if (!containsString(headers, resolution.foreignHeader)) {
       headers.push(resolution.foreignHeader.copyBytes(
@@ -5487,6 +5528,7 @@ function collectForeignLowering(
         resolution.foreignHeader.byteLength
       ));
     }
+    if (resolution.objectiveCSelector.byteLength > 0) continue;
     if (resolution.foreignSuccessValues.length == 0) continue;
     const wrapperName =
       `z_stage1_foreign_${resolution.targetModuleIndex}_${resolution.targetSymbolIndex}`;
@@ -6269,6 +6311,8 @@ function importedStructTarget(
         || importedTypes[importedIndex].kind
           == LoweredTypeKind.foreignHandleType
         || importedTypes[importedIndex].kind == LoweredTypeKind.classType
+        || importedTypes[importedIndex].kind
+          == LoweredTypeKind.foreignObjCType
       )
       && (
         importedTypes[importedIndex].localName == name
@@ -10521,14 +10565,150 @@ function lowerExpressionContextual(
         if (
           ownerType.kind != LoweredTypeKind.structType
           && ownerType.kind != LoweredTypeKind.classType
+          && ownerType.kind != LoweredTypeKind.foreignObjCType
         ) throw "native static-method lowering requires a concrete struct or class owner";
-        const target = `Z_${ownerType.name}_${sourceMethodName}${genericMethodSuffix}`;
-        staticMethodTarget = move target;
+        if (ownerType.kind != LoweredTypeKind.foreignObjCType) {
+          const target = `Z_${ownerType.name}_${sourceMethodName}${genericMethodSuffix}`;
+          staticMethodTarget = move target;
+        }
       }
       none => {}
     }
+    const objectiveCSelector = resolvedObjectiveCSelector(
+      evidence,
+      tree,
+      index
+    );
+    const callKind = resolvedCallKind(evidence, tree, index);
     if (
-      resolvedCallKind(evidence, tree, index) == "method"
+      objectiveCSelector.byteLength > 0
+      && (callKind == "method" || callKind == "staticMethod")
+      && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      let children = Array<usize>();
+      let labels = Array<String>();
+      if (callKind == "staticMethod") {
+        const receiverNativeType = resolvedObjectiveCReceiverNativeType(
+          evidence,
+          tree,
+          index
+        );
+        if (receiverNativeType.byteLength == 0) {
+          throw "native Objective-C lowering lost its class receiver";
+        }
+        children.push(pushExpression(
+          inout output,
+          LoweredExpressionKind.localValue,
+          receiverNativeType,
+          Array<usize>(),
+          Array<String>()
+        ));
+        labels.push("class");
+      } else {
+        const receiverInput = tree.nodes[calleeInput].children[0];
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        children.push(receiver);
+        labels.push("instance");
+      }
+      const parameterModes = resolvedCallParameterModes(
+        program,
+        evidence,
+        tree,
+        index
+      );
+      const parameterTypes = resolvedCallParameterTypes(
+        evidence,
+        tree,
+        index
+      );
+      let argument: usize = 1;
+      while (argument < tree.nodes[index].children.length) {
+        const argumentInput = tree.nodes[index].children[argument];
+        let value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          inout output
+        );
+        if (
+          parameterModes.length >= argument
+          && parameterModes[argument - 1] == "value"
+        ) value = wrapImplicitOwnedTransfer(
+          tree,
+          argumentInput,
+          value,
+          inout output
+        );
+        if (
+          parameterModes.length >= argument
+          && (
+            parameterModes[argument - 1] == "inout"
+            || parameterModes[argument - 1] == "out"
+          )
+        ) markMutableStorage(inout output, value);
+        if (
+          parameterTypes.length >= argument
+          && parameterTypes[argument - 1] == "cstring"
+        ) {
+          let requiresProjection = output[value].kind
+            == LoweredExpressionKind.stringValue
+            || tree.nodes[argumentInput].kind
+              == ExpressionKind.stringExpression
+            || tree.nodes[argumentInput].kind
+              == ExpressionKind.templateExpression;
+          match (evidenceResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput
+          )) {
+            some(argumentType) => {
+              if (argumentType == "String") requiresProjection = true;
+            }
+            none => {}
+          }
+          if (requiresProjection) {
+            let projectionChildren = Array<usize>();
+            projectionChildren.push(value);
+            value = pushExpression(
+              inout output,
+              LoweredExpressionKind.cstringProjection,
+              "cstring",
+              projectionChildren,
+              Array<String>()
+            );
+          }
+        }
+        children.push(value);
+        labels.push(parameterModes.length >= argument
+          ? parameterModes[argument - 1].copyBytes(
+            0,
+            parameterModes[argument - 1].byteLength
+          )
+          : "value");
+        argument = argument + 1;
+      }
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.objectiveCMessageCall,
+        objectiveCSelector,
+        children,
+        labels
+      );
+    }
+    if (
+      callKind == "method"
       && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].children.length == 1
     ) {
@@ -20376,12 +20556,39 @@ function importedTypesForModule(
       (
         symbol.kind == ModuleSymbolKind.enumSymbol
         || symbol.kind == ModuleSymbolKind.structSymbol
+        || symbol.kind == ModuleSymbolKind.classSymbol
       )
       && symbol.foreignHeader.byteLength > 0
     ) {
       match (in symbol.typeSignature) {
         some(signature) => {
           if (
+            symbol.kind == ModuleSymbolKind.classSymbol
+            && signature.foreignKind == "objcInterface"
+            && signature.foreignNativeName.byteLength > 0
+          ) {
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+              targetName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              nativeTypeName: signature.foreignNativeName.copyBytes(
+                0,
+                signature.foreignNativeName.byteLength
+              ),
+              kind: LoweredTypeKind.foreignObjCType,
+              executorBound: signature.executorAffinity.byteLength > 0,
+              threadShareable: false,
+              workerDestructible: false,
+              needsDeinit: false,
+              resourceRelease: "",
+              fields: Array<LoweredField>(),
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: "",
+            }));
+          } else if (
             symbol.kind == ModuleSymbolKind.enumSymbol
             &&
             signature.foreignNativeName.byteLength > 0

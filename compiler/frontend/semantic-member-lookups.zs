@@ -82,6 +82,7 @@ export struct NativeMethodCallShape {
   ownerTypeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   signature: ModuleFunctionSignature;
   objectiveCSelector: String;
+  objectiveCNativeReturnType: String;
   objectiveCParameterNativeTypes: Array<String>;
   objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
 }
@@ -689,6 +690,10 @@ export function methodCallShape(
               objectiveCSelector: method.objectiveCSelector.copyBytes(
                 0,
                 method.objectiveCSelector.byteLength
+              ),
+              objectiveCNativeReturnType: method.objectiveCNativeReturnType.copyBytes(
+                0,
+                method.objectiveCNativeReturnType.byteLength
               ),
               objectiveCParameterNativeTypes: nativeParameterTypes,
               objectiveCParameterProtocols: nativeParameterProtocols,

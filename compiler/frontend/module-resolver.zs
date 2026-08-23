@@ -48,6 +48,7 @@ import {
   recordForeignValueResolution,
   valueSymbolTargetName,
   recordForeignCallFacts,
+  recordObjCCallFacts,
   recordCallResolution,
 } from "./semantic-evidence.zs";
 import {
@@ -2927,11 +2928,63 @@ function inferObjCRegistrationMethodCall(
     "method",
     inout evidence
   );
+  if (call.method.objectiveCSelector.byteLength > 0) {
+    recordResolvedObjCCallFacts(
+      modules,
+      tree,
+      call.callIndex,
+      call.method,
+      inout evidence
+    );
+  }
   if (result != "void") throw objcRegistrationError(
     module,
     tree,
     call.callIndex,
     "objc.register add/remove methods must both return void"
+  );
+}
+
+function recordResolvedObjCCallFacts(
+  in modules: Array<ResolvedModule>,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in method: NativeMethodCallShape,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  if (
+    method.objectiveCSelector.byteLength == 0
+    || method.ownerModuleIndex >= modules.length
+    || method.ownerSymbolIndex
+      >= modules[method.ownerModuleIndex].symbols.length
+  ) return;
+  const owner = view modules[method.ownerModuleIndex].symbols[
+    method.ownerSymbolIndex
+  ];
+  let receiverNativeType = owner.importedName.copyBytes(
+    0,
+    owner.importedName.byteLength
+  );
+  match (in owner.typeSignature) {
+    some(signature) => {
+      if (signature.foreignNativeName.byteLength > 0) {
+        receiverNativeType = signature.foreignNativeName.copyBytes(
+          0,
+          signature.foreignNativeName.byteLength
+        );
+      }
+    }
+    none => {}
+  }
+  recordObjCCallFacts(
+    tree,
+    callIndex,
+    owner.foreignHeader,
+    method.objectiveCSelector,
+    receiverNativeType,
+    method.objectiveCNativeReturnType,
+    method.objectiveCParameterNativeTypes,
+    inout evidence
   );
 }
 
@@ -8878,6 +8931,15 @@ function inferExpressionNodeType(
               callKind,
               inout evidence
             );
+            if (method.objectiveCSelector.byteLength > 0) {
+              recordResolvedObjCCallFacts(
+                modules,
+                tree,
+                index,
+                method,
+                inout evidence
+              );
+            }
             if (
               !method.staticMethod
               && typeIsRetainedParameterViewAggregate(

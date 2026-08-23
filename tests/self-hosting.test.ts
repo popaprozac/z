@@ -6507,8 +6507,106 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     true,
   );
 
+  if (process.platform === "darwin") {
+    const sdk = spawnSync(
+      "xcrun",
+      ["--sdk", "macosx", "--show-sdk-path"],
+      { encoding: "utf8" },
+    );
+    assert.equal(sdk.status, 0, sdk.stderr);
+    const objcProject = resolve(directory, "objc-project");
+    const objcLibraries = resolve(directory, "objc-libraries");
+    mkdirSync(objcProject);
+    mkdirSync(objcLibraries);
+    const foundationStub = resolve(
+      sdk.stdout.trim(),
+      "System/Library/Frameworks/Foundation.framework/Foundation.tbd",
+    );
+    const foundationLink = spawnSync(
+      "ln",
+      ["-s", foundationStub, resolve(objcLibraries, "libFoundation.tbd")],
+      { encoding: "utf8" },
+    );
+    assert.equal(foundationLink.status, 0, foundationLink.stderr);
+    writeFileSync(
+      resolve(objcProject, "NativeOwner.h"),
+      [
+        "__attribute__((objc_root_class))",
+        "@interface NSObject",
+        "+ (instancetype)alloc;",
+        "- (instancetype)init;",
+        "@end",
+        "",
+        "@interface NativeOwner : NSObject",
+        "+ (instancetype)sharedOwner;",
+        "- (int)value;",
+        "@end",
+        "",
+        "@implementation NativeOwner",
+        "+ (instancetype)sharedOwner {",
+        "  return [[self alloc] init];",
+        "}",
+        "",
+        "- (int)value {",
+        "  return 42;",
+        "}",
+        "@end",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      resolve(objcProject, "NativeOwner.h.zd"),
+      'declare module "NativeOwner.h" {\n}\n',
+    );
+    writeFileSync(
+      resolve(objcProject, "main.zs"),
+      [
+        'import native from "NativeOwner.h";',
+        "",
+        "function main(): i32 {",
+        "  const owner = native.NativeOwner.sharedOwner();",
+        "  return owner.value();",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      resolve(objcProject, "z.json"),
+      JSON.stringify({
+        target: {
+          name: "native-objc-probe",
+          entry: "main.zs",
+          link: {
+            directories: [objcLibraries],
+            libraries: ["Foundation"],
+          },
+        },
+      }),
+    );
+    const objcRun = spawnSync(executable, ["run", objcProject], {
+      encoding: "utf8",
+    });
+    assert.equal(objcRun.status, 42, objcRun.stderr);
+    assert.match(objcRun.stdout, /compiled 1 Z modules/);
+    const objcEmissionPath = resolve(
+      objcProject,
+      ".z-cache/run/program.m",
+    );
+    assert.equal(existsSync(objcEmissionPath), true);
+    assert.equal(
+      existsSync(resolve(objcProject, ".z-cache/run/program.c")),
+      false,
+    );
+    const objcEmission = readFileSync(objcEmissionPath, "utf8");
+    assert.match(
+      objcEmission,
+      /NativeOwner \* const owner = \[NativeOwner sharedOwner\]/,
+    );
+    assert.match(objcEmission, /return \[owner value\]/);
+  }
+
   rmSync(directory, { recursive: true, force: true });
-}, 120_000);
+}, 300_000);
 
 test("decodes versioned raw foreign function declarations in native Z", () => {
   const declarations: ForeignModuleDeclarations = {
@@ -6720,6 +6818,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     @interface ZRegistrationOwner
     - (void)addHandler:(id<ZRegistrationHandler>)handler name:(const char *)name;
     - (void)removeHandlerForName:(const char *)name;
+    + (ZRegistrationOwner *)sharedOwner;
     @end
   `);
   const objcImport: ImportDeclaration = {
@@ -6818,6 +6917,66 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     objcContractExecution.status,
     0,
     objcContractExecution.stderr,
+  );
+  const objcDirectSourcePath = resolve(directory, "objc-direct-input.zs");
+  writeFileSync(
+    objcDirectSourcePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      "",
+      "function main(): i32 on thread.main {",
+      "  const owner = native.ZRegistrationOwner.sharedOwner();",
+      '  owner.removeHandlerForName("zapp");',
+      "  return 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcDirectEmissionPath = resolve(directory, "objc-direct.m");
+  const objcDirectExecution = spawnSync(
+    contractExecutable,
+    [
+      objcPath,
+      objcContractPath,
+      objcDirectSourcePath,
+      "objc-direct",
+      objcDirectEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(objcDirectExecution.status, 0, objcDirectExecution.stderr);
+  const objcDirectEmission = readFileSync(objcDirectEmissionPath, "utf8");
+  assert.match(
+    objcDirectEmission,
+    /#include "objc-registration-wire\.h"/,
+  );
+  assert.match(objcDirectEmission, /\[ZRegistrationOwner sharedOwner\]/);
+  assert.match(
+    objcDirectEmission,
+    /ZRegistrationOwner \* const owner = \[ZRegistrationOwner sharedOwner\]/,
+  );
+  assert.match(
+    objcDirectEmission,
+    /\[owner removeHandlerForName: z_stage1_string_cstring\(/,
+  );
+  const objcDirectCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "objective-c",
+      "-fobjc-arc",
+      "-fsyntax-only",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      objcDirectEmissionPath,
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcDirectCompilation.status,
+    0,
+    objcDirectCompilation.stderr,
   );
   const objcProtocolNegativePath = resolve(
     directory,

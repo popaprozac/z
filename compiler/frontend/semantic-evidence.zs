@@ -394,6 +394,47 @@ export function recordForeignCallFacts(
   }
 }
 
+export function recordObjCCallFacts(
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in header: String,
+  in selector: String,
+  in receiverNativeType: String,
+  in returnNativeType: String,
+  in parameterNativeTypes: Array<String>,
+  inout evidence: ModuleSemanticEvidence
+): void {
+  let resolutionIndex: usize = 0;
+  while (resolutionIndex < evidence.callResolutions.length) {
+    if (
+      evidence.callResolutions[resolutionIndex].offset
+        == tree.nodes[callIndex].offset
+      && evidence.callResolutions[resolutionIndex].line
+        == tree.nodes[callIndex].line
+      && evidence.callResolutions[resolutionIndex].column
+        == tree.nodes[callIndex].column
+    ) {
+      evidence.callResolutions[resolutionIndex].foreignHeader =
+        header.copyBytes(0, header.byteLength);
+      evidence.callResolutions[resolutionIndex].objectiveCSelector =
+        selector.copyBytes(0, selector.byteLength);
+      evidence.callResolutions[resolutionIndex].objectiveCReceiverNativeType =
+        receiverNativeType.copyBytes(0, receiverNativeType.byteLength);
+      evidence.callResolutions[resolutionIndex].objectiveCNativeReturnType =
+        returnNativeType.copyBytes(0, returnNativeType.byteLength);
+      for (const typeName of parameterNativeTypes) {
+        evidence.callResolutions[resolutionIndex]
+          .objectiveCParameterNativeTypes.push(typeName.copyBytes(
+            0,
+            typeName.byteLength
+          ));
+      }
+      return;
+    }
+    resolutionIndex = resolutionIndex + 1;
+  }
+}
+
 export function recordExpressionResolution(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,

@@ -32,7 +32,8 @@ function inspectObjC(
   in declarationPath: String,
   in contractPath: String,
   in sourcePath: String,
-  in expectedError: String
+  in expectedError: String,
+  in emittedPath: String
 ): i32 throws String {
   const declarationSource = try fs.readText(declarationPath);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
@@ -58,7 +59,7 @@ function inspectObjC(
   if (protocol.methods[0].parameters[1].typeName != "i32") return 88;
   const interface_ = view normalized.objectiveCInterfaces[1];
   if (interface_.name != "ZRegistrationOwner") return 89;
-  if (interface_.methods.length != 2) return 90;
+  if (interface_.methods.length != 3) return 90;
   if (interface_.methods[0].selector != "addHandler:name:") return 91;
   if (interface_.methods[0].parameters[0].typeName != "id") return 92;
   if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
@@ -111,6 +112,36 @@ function inspectObjC(
       error.message.byteLength
     );
   };
+  if (emittedPath.byteLength > 0) {
+    if (graph.modules[0].semanticEvidence.callResolutions.length != 2) {
+      return 111;
+    }
+    const classCall = view graph.modules[0]
+      .semanticEvidence.callResolutions[0];
+    if (classCall.kind != "staticMethod") return 112;
+    if (classCall.objectiveCSelector != "sharedOwner") return 113;
+    if (classCall.objectiveCReceiverNativeType != "ZRegistrationOwner") {
+      return 114;
+    }
+    if (classCall.objectiveCNativeReturnType != "ZRegistrationOwner *") {
+      return 115;
+    }
+    const instanceCall = view graph.modules[0]
+      .semanticEvidence.callResolutions[1];
+    if (instanceCall.kind != "method") return 116;
+    if (
+      instanceCall.objectiveCSelector != "removeHandlerForName:"
+    ) return 117;
+    if (instanceCall.objectiveCParameterNativeTypes.length != 1) {
+      return 118;
+    }
+    if (
+      instanceCall.objectiveCParameterNativeTypes[0] != "const char *"
+    ) return 119;
+    const emitted = try emitModulesC(modules, graph);
+    try fs.writeText(emittedPath, emitted);
+    return 0;
+  }
   const ownerIndex = moduleSymbolIndex(
     graph.modules[0],
     "native.ZRegistrationOwner"
@@ -124,7 +155,7 @@ function inspectObjC(
   match (in graph.modules[0].symbols[ownerIndex].typeSignature) {
     some(ownerType) => {
       if (ownerType.foreignKind != "objcInterface") return 99;
-      if (ownerType.methods.length != 2) return 100;
+      if (ownerType.methods.length != 3) return 100;
       if (ownerType.methods[0].objectiveCSelector != "addHandler:name:") {
         return 101;
       }
@@ -376,11 +407,12 @@ function inspect(
 function main(): i32 {
   const arguments = process.args();
   if (
-    arguments.length == 4
+    (arguments.length == 4 || arguments.length == 5)
     && (
       arguments[3] == "objc"
       || arguments[3] == "objc-protocol-negative"
       || arguments[3] == "objc-teardown-negative"
+      || arguments[3] == "objc-direct"
     )
   ) {
     let expectedError = "";
@@ -389,11 +421,14 @@ function main(): i32 {
     } else if (arguments[3] == "objc-teardown-negative") {
       expectedError = "objc.register remove arguments must reuse exactly one add-time named or literal value with the same native ABI type";
     }
+    let emittedPath = "";
+    if (arguments.length == 5) emittedPath = copy arguments[4];
     const outcome = attempt inspectObjC(
       arguments[0],
       arguments[1],
       arguments[2],
-      expectedError
+      expectedError,
+      emittedPath
     );
     return match (outcome) {
       success(code) => code;

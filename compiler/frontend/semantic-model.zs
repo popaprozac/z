@@ -130,6 +130,10 @@ export struct ModuleCallResolution {
   foreignHeader: String;
   foreignSuccessValues: Array<String>;
   foreignArguments: Array<ModuleForeignArgument>;
+  objectiveCSelector: String = "";
+  objectiveCReceiverNativeType: String = "";
+  objectiveCNativeReturnType: String = "";
+  objectiveCParameterNativeTypes: Array<String> = Array<String>();
 }
 
 export struct ModuleForeignArgument {

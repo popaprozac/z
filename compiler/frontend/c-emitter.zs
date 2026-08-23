@@ -91,6 +91,9 @@ function cType(in type: LoweredType): String throws String {
   if (type.kind == LoweredTypeKind.foreignHandleType) {
     return type.name.copyBytes(0, type.name.byteLength);
   }
+  if (type.kind == LoweredTypeKind.foreignObjCType) {
+    return `${type.name} *`;
+  }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
   if (type.kind == LoweredTypeKind.weakType) return "Z_Weak";
   if (
@@ -2344,6 +2347,60 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCMessageCall
+  ) {
+    if (declaration.expressions[index].children.length == 0) {
+      throw "native Objective-C emission received a malformed message send";
+    }
+    output.append("[");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    const selector = declaration.expressions[index].value.copyBytes(
+      0,
+      declaration.expressions[index].value.byteLength
+    );
+    if (declaration.expressions[index].children.length == 1) {
+      output.append(" ");
+      output.append(selector);
+    } else {
+      let selectorStart: usize = 0;
+      let argument: usize = 1;
+      while (argument < declaration.expressions[index].children.length) {
+        let separator = selectorStart;
+        while (
+          separator < selector.byteLength
+          && selector.byteAt(separator) != 58
+        ) {
+          separator = separator + 1;
+        }
+        if (separator >= selector.byteLength) {
+          throw "native Objective-C emission received a selector with too few parameters";
+        }
+        output.append(" ");
+        output.append(selector.copyBytes(selectorStart, separator));
+        output.append(": ");
+        const value = declaration.expressions[index].children[argument];
+        try appendExpression(
+          inout output,
+          declaration,
+          value
+        );
+        selectorStart = separator + 1;
+        argument = argument + 1;
+      }
+      if (selectorStart != selector.byteLength) {
+        throw "native Objective-C emission received a selector with too many parameters";
+      }
+    }
+    output.append("]");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.directCall) {
     if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received a malformed direct call";
@@ -3257,6 +3314,7 @@ function appendLocalStatementStorage(
         && storageType.kind != LoweredTypeKind.setType
         && storageType.kind != LoweredTypeKind.stringType
         && storageType.kind != LoweredTypeKind.classType
+        && storageType.kind != LoweredTypeKind.foreignObjCType
         && storageType.kind != LoweredTypeKind.onceLifetimeType
         && storageType.kind != LoweredTypeKind.mutexType
         && storageType.kind != LoweredTypeKind.taskType
@@ -3284,7 +3342,8 @@ function appendLocalStatementStorage(
     none => false;
   };
   const classStorage = match (in declaration.statements[index].type) {
-    some(storageType) => storageType.kind == LoweredTypeKind.classType;
+    some(storageType) => storageType.kind == LoweredTypeKind.classType
+      || storageType.kind == LoweredTypeKind.foreignObjCType;
     none => false;
   };
   const cstringStorage = match (in declaration.statements[index].type) {
