@@ -930,6 +930,10 @@ export function programTypeSignature(
           visibility: visibilityName(method.visibility),
           receiverMode: receiverModeName(method.receiverMode),
           signature: functionDeclarationSignature(program, method),
+          objectiveCImplementationSelector: method.objectiveCSelector.copyBytes(
+            0,
+            method.objectiveCSelector.byteLength
+          ),
         }));
       }
       let customDeinit = false;

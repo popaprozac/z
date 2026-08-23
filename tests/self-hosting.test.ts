@@ -6603,6 +6603,61 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       /NativeOwner \* const owner = \[NativeOwner sharedOwner\]/,
     );
     assert.match(objcEmission, /return \[owner value\]/);
+
+    const registrationProject = resolve(directory, "objc-registration-project");
+    mkdirSync(registrationProject);
+    for (const name of [
+      "objc-registration-native.h",
+      "objc-registration-native.h.zd",
+      "objc-registration-native.zs",
+    ]) {
+      writeFileSync(
+        resolve(registrationProject, name),
+        readFileSync(resolve(projectRoot, "tests/fixtures", name)),
+      );
+    }
+    writeFileSync(
+      resolve(registrationProject, "z.json"),
+      JSON.stringify({
+        target: {
+          name: "native-objc-registration",
+          entry: "objc-registration-native.zs",
+          link: {
+            directories: [objcLibraries],
+            libraries: ["Foundation"],
+          },
+        },
+      }),
+    );
+    const registrationRun = spawnSync(
+      executable,
+      ["run", registrationProject, "--release"],
+      { encoding: "utf8" },
+    );
+    assert.equal(registrationRun.status, 0, registrationRun.stderr);
+    assert.match(registrationRun.stdout, /^compiled 1 Z modules to /);
+    assert.match(
+      registrationRun.stdout,
+      /registered bridge\nreceived 42\nunregistered bridge\n$/,
+    );
+    const registrationEmission = readFileSync(
+      resolve(registrationProject, ".z-cache/run/program.m"),
+      "utf8",
+    );
+    assert.match(
+      registrationEmission,
+      /objc_precise_lifetime/,
+    );
+    assert.match(registrationEmission, /self->registration = nil;/);
+    assert.match(
+      registrationEmission,
+      /Z_NativeRegistrationHandler_retain\(owner\)/,
+    );
+    assert.match(registrationEmission, /publish\(owner\)/);
+    assert.match(
+      registrationEmission,
+      /\[_z_object removeHandlerForName:_z_stored_1\]/,
+    );
   }
 
   rmSync(directory, { recursive: true, force: true });
@@ -6895,6 +6950,9 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
       'import objc from "std/objc";',
       "",
       "class Handler implements native.ZRegistrationHandler {",
+      "  function receive(in owner: native.ZRegistrationOwner, value: i32): void as \"registrationOwner:didReceiveValue:\" {",
+      "    if (value == -1) owner.removeHandlerForName(\"never\");",
+      "  }",
       "}",
       "",
       "function register(in owner: native.ZRegistrationOwner): objc.Registration on thread.main {",
@@ -6910,13 +6968,75 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
   );
   const objcContractExecution = spawnSync(
     contractExecutable,
-    [objcPath, objcContractPath, objcSourcePath, "objc"],
+    [
+      objcPath,
+      objcContractPath,
+      objcSourcePath,
+      "objc",
+      resolve(directory, "objc-registration.m"),
+    ],
     { encoding: "utf8" },
   );
   assert.equal(
     objcContractExecution.status,
     0,
     objcContractExecution.stderr,
+  );
+  const objcRegistrationEmission = readFileSync(
+    resolve(directory, "objc-registration.m"),
+    "utf8",
+  );
+  assert.match(
+    objcRegistrationEmission,
+    /@interface ZObjCProtocolAdapter_Handler : NSObject <ZRegistrationHandler>/,
+  );
+  assert.match(
+    objcRegistrationEmission,
+    /_z_owner = Z_Handler_retain\(owner\)/,
+  );
+  assert.match(
+    objcRegistrationEmission,
+    /\[_z_object addHandler:_z_adapter name:argument_1\]/,
+  );
+  assert.match(
+    objcRegistrationEmission,
+    /\[_z_object removeHandlerForName:_z_stored_1\]/,
+  );
+  const objcRuntimeStub = resolve(directory, "objc-runtime-stub.h");
+  writeFileSync(
+    objcRuntimeStub,
+    [
+      "#ifndef nil",
+      "#define nil ((id)0)",
+      "#endif",
+      "__attribute__((objc_root_class))",
+      "@interface NSObject",
+      "+ (instancetype)alloc;",
+      "- (instancetype)init;",
+      "@end",
+      "",
+    ].join("\n"),
+  );
+  const objcRegistrationCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "objective-c",
+      "-fobjc-arc",
+      "-fsyntax-only",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-include",
+      objcRuntimeStub,
+      resolve(directory, "objc-registration.m"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcRegistrationCompilation.status,
+    0,
+    objcRegistrationCompilation.stderr,
   );
   const objcDirectSourcePath = resolve(directory, "objc-direct-input.zs");
   writeFileSync(

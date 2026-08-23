@@ -83,6 +83,36 @@ export struct ModuleSemanticEvidence {
   expressionResolutions: Array<ModuleExpressionResolution>;
   foreignUnionMatches: Array<ModuleForeignUnionMatch> =
     Array<ModuleForeignUnionMatch>();
+  objectiveCRegistrations: Array<ModuleObjCRegistrationResolution> =
+    Array<ModuleObjCRegistrationResolution>();
+}
+
+export struct ModuleObjCProtocolMethodResolution {
+  protocolNativeName: String;
+  targetName: String;
+  selector: String;
+  nativeReturnType: String;
+  nativeParameterTypes: Array<String>;
+}
+
+export struct ModuleObjCRegistrationResolution {
+  moduleIndex: usize;
+  offset: usize;
+  line: usize;
+  column: usize;
+  foreignHeader: String;
+  receiverNativeType: String;
+  ownerType: String;
+  ownerModuleIndex: usize;
+  ownerSymbolIndex: usize;
+  protocolNativeNames: Array<String>;
+  protocolMethods: Array<ModuleObjCProtocolMethodResolution>;
+  addSelector: String;
+  addParameterNativeTypes: Array<String>;
+  handlerParameter: usize;
+  removeSelector: String;
+  removeParameterNativeTypes: Array<String>;
+  removeArgumentSources: Array<usize>;
 }
 
 export struct ModuleExpressionResolution {
@@ -235,6 +265,7 @@ export struct ModuleMethodSignature {
   visibility: String;
   receiverMode: String;
   signature: ModuleFunctionSignature;
+  objectiveCImplementationSelector: String = "";
   objectiveCSelector: String = "";
   objectiveCNativeReturnType: String = "";
   objectiveCParameterNativeTypes: Array<String> = Array<String>();

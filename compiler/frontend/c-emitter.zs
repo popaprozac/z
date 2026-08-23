@@ -7,6 +7,8 @@ import {
   LoweredEnum,
   LoweredFunction,
   LoweredFunctionType,
+  LoweredObjCProtocolAdapter,
+  LoweredObjCRegistration,
   LoweredCleanup,
   LoweredMainDelayLoop,
   LoweredMainDelaySegment,
@@ -816,6 +818,16 @@ function appendClassFinalizationBody(
   while (cleanup > 0) {
     cleanup = cleanup - 1;
     if (aggregate.fields[cleanup].borrowedView) continue;
+    if (
+      aggregate.fields[cleanup].type.kind
+        == LoweredTypeKind.foreignObjCType
+    ) {
+      appendIndent(inout output, depth);
+      output.append("self->");
+      output.append(aggregate.fields[cleanup].name);
+      output.append(" = nil;\n");
+      continue;
+    }
     if (!loweredTypeNeedsDeinit(program, aggregate.fields[cleanup].type)) {
       continue;
     }
@@ -1274,6 +1286,20 @@ function appendExpression(
   if (
     declaration.expressions[index].kind == LoweredExpressionKind.parameterValue
   ) {
+    let foreignObjCParameter =
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "foreignObjC";
+    for (const parameter of declaration.parameters) {
+      if (
+        parameter.name == declaration.expressions[index].value
+        && parameter.mode == LoweredParameterMode.input
+        && parameter.type.kind == LoweredTypeKind.foreignObjCType
+      ) foreignObjCParameter = true;
+    }
+    if (foreignObjCParameter) {
+      appendCBindingName(inout output, declaration.expressions[index].value);
+      return;
+    }
     output.append("(*");
     appendCBindingName(inout output, declaration.expressions[index].value);
     output.append(")");
@@ -2349,6 +2375,26 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCRegistration
+  ) {
+    output.append(declaration.expressions[index].value);
+    output.append("(");
+    let argument: usize = 0;
+    while (argument < declaration.expressions[index].children.length) {
+      if (argument > 0) output.append(", ");
+      const value = declaration.expressions[index].children[argument];
+      try appendExpression(
+        inout output,
+        declaration,
+        value
+      );
+      argument = argument + 1;
+    }
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCMessageCall
   ) {
     if (declaration.expressions[index].children.length == 0) {
@@ -3350,6 +3396,11 @@ function appendLocalStatementStorage(
     some(storageType) => storageType.kind == LoweredTypeKind.cstringType;
     none => false;
   };
+  const preciseObjCRegistration = match (in declaration.statements[index].type) {
+    some(storageType) => storageType.kind == LoweredTypeKind.foreignObjCType
+      && storageType.name == "ZObjCRegistration";
+    none => false;
+  };
   match (in declaration.statements[index].expression) {
     some(initializer) => try appendBorrowedTemporaryInitializers(
       inout output,
@@ -3384,12 +3435,15 @@ function appendLocalStatementStorage(
     output.append(" ");
   }
   appendCBindingName(inout output, declaration.statements[index].name);
-  if (
-    !localNameIsUsed(
-      declaration,
-      declaration.statements[index].name
-    )
-  ) output.append(" __attribute__((unused))");
+  const unusedLocal = !localNameIsUsed(
+    declaration,
+    declaration.statements[index].name
+  );
+  if (preciseObjCRegistration) {
+    output.append(" __attribute__((objc_precise_lifetime");
+    if (unusedLocal) output.append(", unused");
+    output.append("))");
+  } else if (unusedLocal) output.append(" __attribute__((unused))");
   match (in declaration.statements[index].expression) {
     some(expression) => {
       output.append(" = ");
@@ -4414,6 +4468,15 @@ function appendFunctionSignature(
     if (!first) output.append(", ");
     first = false;
     const parameterType = try cType(parameter.type);
+    if (
+      parameter.mode == LoweredParameterMode.input
+      && parameter.type.kind == LoweredTypeKind.foreignObjCType
+    ) {
+      output.append(parameterType);
+      output.append(" ");
+      appendCBindingName(inout output, parameter.name);
+      continue;
+    }
     if (
       parameter.mode == LoweredParameterMode.input
       && parameter.type.kind != LoweredTypeKind.classType
@@ -11396,6 +11459,294 @@ function appendWrappingIntegerRuntime(
   output.append(" result;\n  (void)__builtin_mul_overflow(left, right, &result);\n  return result;\n}\n\n");
 }
 
+function appendObjCMethodDeclaration(
+  inout output: TextBuffer,
+  in selector: String,
+  in returnType: String,
+  in parameterTypes: Array<String>
+): void throws String {
+  output.append("- (");
+  if (returnType.byteLength > 0) output.append(returnType);
+  else output.append("void");
+  output.append(")");
+  if (parameterTypes.length == 0) {
+    output.append(selector);
+    return;
+  }
+  let selectorStart: usize = 0;
+  let parameterIndex: usize = 0;
+  while (parameterIndex < parameterTypes.length) {
+    let separator = selectorStart;
+    while (
+      separator < selector.byteLength
+      && selector.byteAt(separator) != 58
+    ) {
+      separator = separator + 1;
+    }
+    if (separator >= selector.byteLength) {
+      throw "native Objective-C adapter received a selector with too few parameters";
+    }
+    if (parameterIndex > 0) output.append(" ");
+    output.append(selector.copyBytes(selectorStart, separator));
+    output.append(":(");
+    output.append(parameterTypes[parameterIndex]);
+    output.append(")argument_");
+    output.append(`${parameterIndex}`);
+    selectorStart = separator + 1;
+    parameterIndex = parameterIndex + 1;
+  }
+  if (selectorStart != selector.byteLength) {
+    throw "native Objective-C adapter received a selector with too many parameters";
+  }
+}
+
+function appendObjCMessageWithNames(
+  inout output: TextBuffer,
+  in receiver: String,
+  in selector: String,
+  in arguments: Array<String>
+): void throws String {
+  output.append("[");
+  output.append(receiver);
+  if (arguments.length == 0) {
+    output.append(" ");
+    output.append(selector);
+    output.append("]");
+    return;
+  }
+  let selectorStart: usize = 0;
+  let argumentIndex: usize = 0;
+  while (argumentIndex < arguments.length) {
+    let separator = selectorStart;
+    while (
+      separator < selector.byteLength
+      && selector.byteAt(separator) != 58
+    ) {
+      separator = separator + 1;
+    }
+    if (separator >= selector.byteLength) {
+      throw "native Objective-C registration received a selector with too few parameters";
+    }
+    output.append(" ");
+    output.append(selector.copyBytes(selectorStart, separator));
+    output.append(":");
+    output.append(arguments[argumentIndex]);
+    selectorStart = separator + 1;
+    argumentIndex = argumentIndex + 1;
+  }
+  if (selectorStart != selector.byteLength) {
+    throw "native Objective-C registration received a selector with too many parameters";
+  }
+  output.append("]");
+}
+
+function appendObjCProtocolAdapter(
+  inout output: TextBuffer,
+  in adapter: LoweredObjCProtocolAdapter
+): void throws String {
+  output.append("@interface ");
+  output.append(adapter.name);
+  output.append(" : NSObject <");
+  let protocolIndex: usize = 0;
+  while (protocolIndex < adapter.protocolNativeNames.length) {
+    if (protocolIndex > 0) output.append(", ");
+    output.append(adapter.protocolNativeNames[protocolIndex]);
+    protocolIndex = protocolIndex + 1;
+  }
+  output.append("> {\n@public\n  Z_");
+  output.append(adapter.ownerType);
+  output.append(" *_z_owner;\n}\n- (instancetype)initWithOwner:(Z_");
+  output.append(adapter.ownerType);
+  output.append(" *)owner;\n");
+  for (const method of adapter.methods) {
+    try appendObjCMethodDeclaration(
+      inout output,
+      method.selector,
+      method.nativeReturnType,
+      method.nativeParameterTypes
+    );
+    output.append(";\n");
+  }
+  output.append("@end\n\n@implementation ");
+  output.append(adapter.name);
+  output.append("\n- (instancetype)initWithOwner:(Z_");
+  output.append(adapter.ownerType);
+  output.append(" *)owner {\n  self = [super init];\n  if (self != nil) {\n    _z_owner = Z_");
+  output.append(adapter.ownerType);
+  output.append("_retain(owner);\n  }\n  return self;\n}\n\n");
+  for (const method of adapter.methods) {
+    try appendObjCMethodDeclaration(
+      inout output,
+      method.selector,
+      method.nativeReturnType,
+      method.nativeParameterTypes
+    );
+    output.append(" {\n  ");
+    if (method.nativeReturnType != "void") output.append("return ");
+    output.append(method.targetName);
+    output.append("(_z_owner");
+    let argumentIndex: usize = 0;
+    while (argumentIndex < method.nativeParameterTypes.length) {
+      output.append(", argument_");
+      output.append(`${argumentIndex}`);
+      argumentIndex = argumentIndex + 1;
+    }
+    output.append(");\n");
+    if (method.nativeReturnType == "void") output.append("  return;\n");
+    output.append("}\n\n");
+  }
+  output.append("- (void)dealloc {\n  Z_");
+  output.append(adapter.ownerType);
+  output.append("_release(_z_owner);\n}\n@end\n\n");
+}
+
+function containsUsize(in values: Array<usize>, candidate: usize): boolean {
+  for (const value of values) {
+    if (value == candidate) return true;
+  }
+  return false;
+}
+
+function appendObjCRegistration(
+  inout output: TextBuffer,
+  in registration: LoweredObjCRegistration
+): void throws String {
+  const className = `ZObjCRegistration_${registration.helperName}`;
+  output.append("@interface ");
+  output.append(className);
+  output.append(" : ZObjCRegistration {\n@public\n  ");
+  output.append(registration.receiverNativeType);
+  output.append(" *_z_object;\n  ");
+  output.append(registration.adapterName);
+  output.append(" *_z_adapter;\n");
+  let addIndex: usize = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (
+      addIndex != registration.handlerParameter
+      && containsUsize(registration.removeArgumentSources, addIndex)
+    ) {
+      output.append("  ");
+      output.append(registration.addParameterNativeTypes[addIndex]);
+      output.append(" _z_stored_");
+      output.append(`${addIndex}`);
+      output.append(";\n");
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append("}\n- (instancetype)initWithObject:(");
+  output.append(registration.receiverNativeType);
+  output.append(" *)object owner:(Z_");
+  output.append(registration.ownerType);
+  output.append(" *)owner");
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (addIndex != registration.handlerParameter) {
+      output.append(" argument_");
+      output.append(`${addIndex}`);
+      output.append(":(");
+      output.append(registration.addParameterNativeTypes[addIndex]);
+      output.append(")argument_");
+      output.append(`${addIndex}`);
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append(";\n@end\n\n@implementation ");
+  output.append(className);
+  output.append("\n- (instancetype)initWithObject:(");
+  output.append(registration.receiverNativeType);
+  output.append(" *)object owner:(Z_");
+  output.append(registration.ownerType);
+  output.append(" *)owner");
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (addIndex != registration.handlerParameter) {
+      output.append(" argument_");
+      output.append(`${addIndex}`);
+      output.append(":(");
+      output.append(registration.addParameterNativeTypes[addIndex]);
+      output.append(")argument_");
+      output.append(`${addIndex}`);
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append(" {\n  self = [super init];\n  if (self != nil) {\n    _z_object = object;\n    _z_adapter = [[");
+  output.append(registration.adapterName);
+  output.append(" alloc] initWithOwner:owner];\n");
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (
+      addIndex != registration.handlerParameter
+      && containsUsize(registration.removeArgumentSources, addIndex)
+    ) {
+      output.append("    _z_stored_");
+      output.append(`${addIndex}`);
+      output.append(" = argument_");
+      output.append(`${addIndex}`);
+      output.append(";\n");
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append("    (void)");
+  let addArguments = Array<String>();
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (addIndex == registration.handlerParameter) {
+      addArguments.push("_z_adapter");
+    } else addArguments.push(`argument_${addIndex}`);
+    addIndex = addIndex + 1;
+  }
+  try appendObjCMessageWithNames(
+    inout output,
+    "_z_object",
+    registration.addSelector,
+    addArguments
+  );
+  output.append(";\n  }\n  return self;\n}\n\n- (void)dealloc {\n  (void)");
+  let removeArguments = Array<String>();
+  for (const source of registration.removeArgumentSources) {
+    removeArguments.push(`_z_stored_${source}`);
+  }
+  try appendObjCMessageWithNames(
+    inout output,
+    "_z_object",
+    registration.removeSelector,
+    removeArguments
+  );
+  output.append(";\n}\n@end\n\nstatic ZObjCRegistration *");
+  output.append(registration.helperName);
+  output.append("(");
+  output.append(registration.receiverNativeType);
+  output.append(" *object");
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    output.append(", ");
+    if (addIndex == registration.handlerParameter) {
+      output.append("Z_");
+      output.append(registration.ownerType);
+      output.append(" *owner");
+    } else {
+      output.append(registration.addParameterNativeTypes[addIndex]);
+      output.append(" argument_");
+      output.append(`${addIndex}`);
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append(") {\n  return [[");
+  output.append(className);
+  output.append(" alloc] initWithObject:object owner:owner");
+  addIndex = 0;
+  while (addIndex < registration.addParameterNativeTypes.length) {
+    if (addIndex != registration.handlerParameter) {
+      output.append(" argument_");
+      output.append(`${addIndex}`);
+      output.append(":argument_");
+      output.append(`${addIndex}`);
+    }
+    addIndex = addIndex + 1;
+  }
+  output.append("];\n}\n\n");
+}
+
 function emitLoweredC(
   in program: LoweredProgram,
   in embeddedRuntimeName: String,
@@ -11523,6 +11874,9 @@ function emitLoweredC(
     output.append("#if defined(_WIN32)\n#include <direct.h>\n#endif\n");
   }
   output.append("\n");
+  if (program.objectiveCRegistrations.length > 0) {
+    output.append("@class ZObjCRegistration;\n\n");
+  }
   if (
     embeddedRuntimeName.byteLength > 0
     || usesExecutorBoundClasses
@@ -12324,6 +12678,15 @@ function emitLoweredC(
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
   try appendCallableHelpers(inout output, program);
+  if (program.objectiveCRegistrations.length > 0) {
+    output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");
+    for (const adapter of program.objectiveCProtocolAdapters) {
+      try appendObjCProtocolAdapter(inout output, adapter);
+    }
+    for (const registration of program.objectiveCRegistrations) {
+      try appendObjCRegistration(inout output, registration);
+    }
+  }
   for (const declaration of program.arrays) {
     output.append("static __attribute__((unused)) void Z_");
     output.append(declaration.name);
@@ -12504,6 +12867,15 @@ function emitLoweredC(
         fieldIndex = fieldIndex - 1;
         if (aggregate.fields[fieldIndex].borrowedView) continue;
         if (aggregate.fields[fieldIndex].type.name == "Arena") continue;
+        if (
+          aggregate.fields[fieldIndex].type.kind
+            == LoweredTypeKind.foreignObjCType
+        ) {
+          output.append("  self->");
+          output.append(aggregate.fields[fieldIndex].name);
+          output.append(" = nil;\n");
+          continue;
+        }
         if (loweredTypeNeedsDeinit(program, aggregate.fields[fieldIndex].type)) {
           output.append("  Z_");
           output.append(aggregate.fields[fieldIndex].type.name);

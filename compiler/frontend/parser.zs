@@ -230,6 +230,7 @@ export struct FunctionDeclaration {
   errorType: Option<TypeReference>;
   executorAffinity: String;
   threadContract: String;
+  objectiveCSelector: String = "";
   body: StatementArena;
   offset: usize;
   line: usize;
@@ -3230,8 +3231,15 @@ function parseFunctionDeclaration(
   // Stage 1 does not consume Objective-C selector evidence semantically yet,
   // but it must accept the authoritative source grammar so the native frontend
   // remains usable while protocol conformance is lowered by the bootstrap.
+  let objectiveCSelector = "";
   if (takeIf(tokens, inout current, TokenKind.asKeyword)) {
-    try expectKind(tokens, inout current, TokenKind.string, "an Objective-C selector string after `as`");
+    const selector = try expect(
+      tokens,
+      inout current,
+      TokenKind.string,
+      "an Objective-C selector string after `as`"
+    );
+    objectiveCSelector = selector.text.copyBytes(0, selector.text.byteLength);
   }
   let body = StatementArena({ nodes: Array<Statement>(), roots: Array<usize>() });
   if (signatureOnly) {
@@ -3280,6 +3288,7 @@ function parseFunctionDeclaration(
     errorType,
     executorAffinity,
     threadContract,
+    objectiveCSelector,
     body,
     offset: start.offset,
     line: start.line,

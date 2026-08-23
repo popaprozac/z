@@ -247,11 +247,17 @@ discriminant contract exposes tag-only cases or cleanup-free active-member
 views; pointer-bearing payload records remain view-only and expose only safe
 fields plus reviewed lifetime-bound text projections. Without that contract,
 only producer-proven scalar or enum fields support a local unsafe active-member
-read. By-value unions, Objective-C properties, generated protocol-adapter
-lowering, and unclassified resource records still fail closed. First-tier
-native Objective-C semantic normalization and direct class/instance message
-lowering are implemented; selected selectors and exact ABI spellings survive
-through the semantic evidence consumed by the Objective-C emitter.
+read. By-value unions, Objective-C properties, and unclassified resource
+records still fail closed. First-tier native Objective-C semantic
+normalization, direct class/instance message lowering, and retained protocol
+registration are implemented. Selected selectors and exact ABI spellings
+survive through semantic evidence consumed by the Objective-C emitter. For
+`objc.register`, that evidence additionally records the native receiver, Z
+handler identity, protocol requirements, exact add/remove selectors, and
+teardown argument mapping. The emitter uses that plan to synthesize an ARC
+adapter and guard; wrong protocol or teardown pairs are rejected before
+emission, and final guard release sends the verified remove message exactly
+once.
 
 Opaque pointer ownership is represented separately from record layout. A
 nullable inferred result may declare `deinit release;`, and a nullable `out`

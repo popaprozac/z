@@ -212,6 +212,8 @@ import {
   ModuleForeignUnionMatch,
   ModuleForeignUnionMatchVariant,
   ModuleGraph,
+  ModuleObjCProtocolMethodResolution,
+  ModuleObjCRegistrationResolution,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSemanticEvidence,
@@ -3141,9 +3143,11 @@ function inferObjCRegistration(
     );
   }
   let removeArgumentIndex: usize = 0;
+  let removeArgumentSources = Array<usize>();
   while (removeArgumentIndex < remove.arguments.length) {
     const removeArgument = remove.arguments[removeArgumentIndex];
     let matchCount: usize = 0;
+    let matchedAddArgument: usize = add.arguments.length;
     let addArgumentIndex: usize = 0;
     while (addArgumentIndex < add.arguments.length) {
       if (
@@ -3159,7 +3163,10 @@ function inferObjCRegistration(
           < remove.method.objectiveCParameterNativeTypes.length
         && add.method.objectiveCParameterNativeTypes[addArgumentIndex]
           == remove.method.objectiveCParameterNativeTypes[removeArgumentIndex]
-      ) matchCount = matchCount + 1;
+      ) {
+        matchCount = matchCount + 1;
+        matchedAddArgument = addArgumentIndex;
+      }
       addArgumentIndex = addArgumentIndex + 1;
     }
     if (matchCount != 1) throw objcRegistrationError(
@@ -3168,6 +3175,7 @@ function inferObjCRegistration(
       removeArgument,
       "objc.register remove arguments must reuse exactly one add-time named or literal value with the same native ABI type"
     );
+    removeArgumentSources.push(matchedAddArgument);
     removeArgumentIndex = removeArgumentIndex + 1;
   }
   try inferObjCRegistrationMethodCall(
@@ -3195,6 +3203,168 @@ function inferObjCRegistration(
     inout bindings,
     inout evidence
   );
+  const receiverSymbol = view modules[add.method.ownerModuleIndex].symbols[
+    add.method.ownerSymbolIndex
+  ];
+  let receiverNativeType = receiverSymbol.importedName.copyBytes(
+    0,
+    receiverSymbol.importedName.byteLength
+  );
+  match (in receiverSymbol.typeSignature) {
+    some(signature) => {
+      if (signature.foreignNativeName.byteLength > 0) {
+        receiverNativeType = signature.foreignNativeName.copyBytes(
+          0,
+          signature.foreignNativeName.byteLength
+        );
+      }
+    }
+    none => {}
+  }
+  let protocolNativeNames = Array<String>();
+  let protocolMethods = Array<ModuleObjCProtocolMethodResolution>();
+  for (const protocol of add.method.objectiveCParameterProtocols) {
+    const protocolLocation = match (typeSymbolLocation(
+      modules,
+      moduleIndex,
+      protocol.protocolName
+    )) {
+      some(location) => location;
+      none => throw objcRegistrationError(
+        module,
+        tree,
+        handlerNode,
+        `objc.register lost Objective-C protocol metadata for ${protocol.protocolName}`
+      );
+    };
+    const protocolSymbol = view modules[protocolLocation.moduleIndex].symbols[
+      protocolLocation.symbolIndex
+    ];
+    match (in protocolSymbol.typeSignature) {
+      some(protocolSignature) => {
+        let protocolNativeName = protocolSymbol.importedName.copyBytes(
+          0,
+          protocolSymbol.importedName.byteLength
+        );
+        if (protocolSignature.foreignNativeName.byteLength > 0) {
+          protocolNativeName = protocolSignature.foreignNativeName.copyBytes(
+            0,
+            protocolSignature.foreignNativeName.byteLength
+          );
+        }
+        let protocolAlreadyPresent = false;
+        for (const existing of protocolNativeNames) {
+          if (existing == protocolNativeName) protocolAlreadyPresent = true;
+        }
+        if (!protocolAlreadyPresent) protocolNativeNames.push(
+          protocolNativeName.copyBytes(0, protocolNativeName.byteLength)
+        );
+        for (const requirement of protocolSignature.methods) {
+          if (
+            requirement.staticMethod
+            || requirement.objectiveCSelector.byteLength == 0
+          ) continue;
+          let targetName = "";
+          match (in modules[handlerLocation.moduleIndex].symbols[
+            handlerLocation.symbolIndex
+          ].typeSignature) {
+            some(handlerSignature) => {
+              for (const method of handlerSignature.methods) {
+                if (
+                  !method.staticMethod
+                  && (
+                    method.objectiveCImplementationSelector
+                      == requirement.objectiveCSelector
+                    || (
+                      method.objectiveCImplementationSelector.byteLength == 0
+                      && method.name == requirement.name
+                    )
+                  )
+                ) {
+                  targetName = method.name.copyBytes(0, method.name.byteLength);
+                }
+              }
+            }
+            none => {}
+          }
+          if (targetName.byteLength == 0) throw objcRegistrationError(
+            module,
+            tree,
+            handlerNode,
+            `${handlerType} does not provide Objective-C protocol method ${requirement.name}`
+          );
+          let nativeParameterTypes = Array<String>();
+          for (const nativeType of requirement.objectiveCParameterNativeTypes) {
+            nativeParameterTypes.push(nativeType.copyBytes(
+              0,
+              nativeType.byteLength
+            ));
+          }
+          protocolMethods.push(ModuleObjCProtocolMethodResolution({
+            protocolNativeName: protocolNativeName.copyBytes(
+              0,
+              protocolNativeName.byteLength
+            ),
+            targetName,
+            selector: requirement.objectiveCSelector.copyBytes(
+              0,
+              requirement.objectiveCSelector.byteLength
+            ),
+            nativeReturnType: requirement.objectiveCNativeReturnType.copyBytes(
+              0,
+              requirement.objectiveCNativeReturnType.byteLength
+            ),
+            nativeParameterTypes,
+          }));
+        }
+      }
+      none => throw objcRegistrationError(
+        module,
+        tree,
+        handlerNode,
+        `objc.register lost Objective-C protocol metadata for ${protocol.protocolName}`
+      );
+    }
+  }
+  let addParameterNativeTypes = Array<String>();
+  for (const nativeType of add.method.objectiveCParameterNativeTypes) {
+    addParameterNativeTypes.push(nativeType.copyBytes(0, nativeType.byteLength));
+  }
+  let removeParameterNativeTypes = Array<String>();
+  for (const nativeType of remove.method.objectiveCParameterNativeTypes) {
+    removeParameterNativeTypes.push(nativeType.copyBytes(
+      0,
+      nativeType.byteLength
+    ));
+  }
+  evidence.objectiveCRegistrations.push(ModuleObjCRegistrationResolution({
+    moduleIndex,
+    offset: tree.nodes[callIndex].offset,
+    line: tree.nodes[callIndex].line,
+    column: tree.nodes[callIndex].column,
+    foreignHeader: receiverSymbol.foreignHeader.copyBytes(
+      0,
+      receiverSymbol.foreignHeader.byteLength
+    ),
+    receiverNativeType,
+    ownerType: handlerType.copyBytes(0, handlerType.byteLength),
+    ownerModuleIndex: handlerLocation.moduleIndex,
+    ownerSymbolIndex: handlerLocation.symbolIndex,
+    protocolNativeNames,
+    protocolMethods,
+    addSelector: add.method.objectiveCSelector.copyBytes(
+      0,
+      add.method.objectiveCSelector.byteLength
+    ),
+    addParameterNativeTypes,
+    handlerParameter,
+    removeSelector: remove.method.objectiveCSelector.copyBytes(
+      0,
+      remove.method.objectiveCSelector.byteLength
+    ),
+    removeParameterNativeTypes,
+    removeArgumentSources,
+  }));
   return `${namespaceName}.Registration`;
 }
 

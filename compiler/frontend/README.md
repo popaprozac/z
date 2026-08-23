@@ -128,8 +128,14 @@ recursive path.
   returned interface references use ARC storage, and `String` arguments are
   projected when the selected native parameter is `const char *`. The
   standalone driver detects those call resolutions, emits a `.m` translation
-  unit, and enables Clang ARC. Properties, generated protocol adapters, and
-  Objective-C++ remain later fixed-point layers.
+  unit, and enables Clang ARC. `objc.register({ add, remove })` also exports a
+  complete registration plan into lowering: the fixed-point emitter synthesizes
+  the protocol adapter, retains the Z handler, installs the native registration,
+  and returns an ARC guard that sends the verified teardown selector exactly
+  once. A release-mode native fixture stores that guard in a Z ARC class and
+  proves add/callback/remove ordering through a freshly bootstrapped `z`.
+  Properties, broad SDK header discovery, and Objective-C++ remain later
+  fixed-point layers.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

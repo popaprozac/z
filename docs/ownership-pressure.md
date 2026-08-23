@@ -3433,10 +3433,19 @@ consumes that graph. A fixed-point positive fixture plus protocol-owner and
 teardown negatives prove `objc.register` no longer relies on Stage 0 fallback.
 Native direct message emission now consumes the same resolutions, including
 class and instance selectors, ARC reference storage, and C-string projection.
-Zapp still retains its temporary Objective-C adapter because the native emitter
-does not yet synthesize the owned protocol adapter and registration guard;
-removing that adapter remains the next lifetime-sensitive layer rather than a
-reason to weaken the model.
+The fixed-point emitter now consumes the registration plan as well. It
+synthesizes a protocol-conforming Objective-C adapter that retains the Z
+handler, plus an ARC guard that owns the receiver, adapter, and teardown
+arguments and sends the verified remove selector once during `dealloc`.
+Objective-C fields in a Z ARC class are cleared before its malloc-backed
+storage is freed, so a guard stored in long-lived application state has a
+deterministic lifetime rather than depending on a local frame. A release-mode
+fixture built by a freshly bootstrapped native `z` proves
+`registered -> callback -> unregistered` and exercises an ordinary `in`
+Objective-C argument without adding a pointer level. Zapp can now remove its
+temporary adapter at the language surface; broad AppKit/WebKit header discovery
+and native lowering remain the next practical integration pressure rather than
+adapter ownership itself.
 
 The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
 WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do

@@ -1,0 +1,2 @@
+declare module "objc-registration-native.h" {
+}

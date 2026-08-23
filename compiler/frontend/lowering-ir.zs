@@ -228,6 +228,7 @@ export enum LoweredExpressionKind {
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  objectiveCRegistration,
   fieldValue,
   structValue,
   moveStructSpreadValue,
@@ -435,6 +436,34 @@ export struct LoweredForeignResource {
   handle: boolean;
 }
 
+export struct LoweredObjCProtocolMethod {
+  selector: String;
+  nativeReturnType: String;
+  nativeParameterTypes: Array<String>;
+  targetName: String;
+}
+
+export struct LoweredObjCProtocolAdapter {
+  name: String;
+  ownerType: String;
+  protocolNativeNames: Array<String>;
+  methods: Array<LoweredObjCProtocolMethod>;
+}
+
+export struct LoweredObjCRegistration {
+  offset: usize;
+  helperName: String;
+  receiverNativeType: String;
+  adapterName: String;
+  ownerType: String;
+  addSelector: String;
+  addParameterNativeTypes: Array<String>;
+  handlerParameter: usize;
+  removeSelector: String;
+  removeParameterNativeTypes: Array<String>;
+  removeArgumentSources: Array<usize>;
+}
+
 export struct LoweredConstant {
   name: String;
   type: LoweredType;
@@ -446,6 +475,8 @@ export struct LoweredProgram {
   foreignHeaders: Array<String>;
   foreignFunctions: Array<LoweredForeignFunction>;
   foreignResources: Array<LoweredForeignResource>;
+  objectiveCProtocolAdapters: Array<LoweredObjCProtocolAdapter>;
+  objectiveCRegistrations: Array<LoweredObjCRegistration>;
   constants: Array<LoweredConstant>;
   fixedArrays: Array<LoweredFixedArray>;
   arrays: Array<LoweredArray>;
@@ -490,6 +521,123 @@ function collectForeignResources(
         imported.resourceRelease.byteLength
       ),
       handle: imported.kind == LoweredTypeKind.foreignHandleType,
+    }));
+  }
+}
+
+function objectiveCRegistrationHelperName(
+  moduleIndex: usize,
+  offset: usize
+): String {
+  return `z_stage1_objc_register_${moduleIndex}_${offset}`;
+}
+
+function collectObjectiveCRegistrations(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in privateTypeCollisionNames: Array<String>,
+  moduleIndex: usize,
+  inout adapters: Array<LoweredObjCProtocolAdapter>,
+  inout registrations: Array<LoweredObjCRegistration>
+): void throws String {
+  for (const plan of graph.modules[moduleIndex].semanticEvidence
+    .objectiveCRegistrations) {
+    if (
+      plan.ownerModuleIndex >= parsed.length
+      || plan.ownerSymbolIndex
+        >= graph.modules[plan.ownerModuleIndex].symbols.length
+    ) throw "native Objective-C registration lost its Z protocol owner";
+    const ownerSourceName = view graph.modules[plan.ownerModuleIndex].symbols[
+      plan.ownerSymbolIndex
+    ].name;
+    const ownerEmittedName = privateTypeNeedsMangle(
+      parsed[plan.ownerModuleIndex].program,
+      privateTypeCollisionNames,
+      ownerSourceName
+    )
+      ? emittedPrivateTypeName(plan.ownerModuleIndex, ownerSourceName)
+      : ownerSourceName.copyBytes(0, ownerSourceName.byteLength);
+    const adapterName = `ZObjCProtocolAdapter_${ownerEmittedName}`;
+    let hasAdapter = false;
+    for (const existing of adapters) {
+      if (existing.name == adapterName) hasAdapter = true;
+    }
+    if (!hasAdapter) {
+      let protocols = Array<String>();
+      for (const protocol of plan.protocolNativeNames) {
+        protocols.push(protocol.copyBytes(0, protocol.byteLength));
+      }
+      let methods = Array<LoweredObjCProtocolMethod>();
+      for (const method of plan.protocolMethods) {
+        let parameterTypes = Array<String>();
+        for (const parameterType of method.nativeParameterTypes) {
+          parameterTypes.push(parameterType.copyBytes(
+            0,
+            parameterType.byteLength
+          ));
+        }
+        methods.push(LoweredObjCProtocolMethod({
+          selector: method.selector.copyBytes(0, method.selector.byteLength),
+          nativeReturnType: method.nativeReturnType.copyBytes(
+            0,
+            method.nativeReturnType.byteLength
+          ),
+          nativeParameterTypes: parameterTypes,
+          targetName: `Z_${ownerEmittedName}_${method.targetName}`,
+        }));
+      }
+      adapters.push(LoweredObjCProtocolAdapter({
+        name: adapterName.copyBytes(0, adapterName.byteLength),
+        ownerType: ownerEmittedName.copyBytes(
+          0,
+          ownerEmittedName.byteLength
+        ),
+        protocolNativeNames: protocols,
+        methods,
+      }));
+    }
+    let addParameterTypes = Array<String>();
+    for (const parameterType of plan.addParameterNativeTypes) {
+      addParameterTypes.push(parameterType.copyBytes(
+        0,
+        parameterType.byteLength
+      ));
+    }
+    let removeParameterTypes = Array<String>();
+    for (const parameterType of plan.removeParameterNativeTypes) {
+      removeParameterTypes.push(parameterType.copyBytes(
+        0,
+        parameterType.byteLength
+      ));
+    }
+    let removeSources = Array<usize>();
+    for (const source of plan.removeArgumentSources) {
+      removeSources.push(source);
+    }
+    registrations.push(LoweredObjCRegistration({
+      offset: plan.offset,
+      helperName: objectiveCRegistrationHelperName(
+        plan.moduleIndex,
+        plan.offset
+      ),
+      receiverNativeType: plan.receiverNativeType.copyBytes(
+        0,
+        plan.receiverNativeType.byteLength
+      ),
+      adapterName: adapterName.copyBytes(0, adapterName.byteLength),
+      ownerType: ownerEmittedName.copyBytes(
+        0,
+        ownerEmittedName.byteLength
+      ),
+      addSelector: plan.addSelector.copyBytes(0, plan.addSelector.byteLength),
+      addParameterNativeTypes: addParameterTypes,
+      handlerParameter: plan.handlerParameter,
+      removeSelector: plan.removeSelector.copyBytes(
+        0,
+        plan.removeSelector.byteLength
+      ),
+      removeParameterNativeTypes: removeParameterTypes,
+      removeArgumentSources: removeSources,
     }));
   }
 }
@@ -1991,6 +2139,12 @@ function lowerTypeName(
     return LoweredType({
       kind: LoweredTypeKind.onceType,
       name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (name == "objc.Registration") {
+    return LoweredType({
+      kind: LoweredTypeKind.foreignObjCType,
+      name: "ZObjCRegistration",
     });
   }
   if (name == "void") return LoweredType({ kind: LoweredTypeKind.voidType, name: "" });
@@ -5067,6 +5221,9 @@ function rewriteParameterValues(
         ) {
           expressions[expressionIndex].kind =
             LoweredExpressionKind.parameterValue;
+          if (parameter.type.kind == LoweredTypeKind.foreignObjCType) {
+            expressions[expressionIndex].labels.push("foreignObjC");
+          }
         }
       }
     }
@@ -5115,6 +5272,26 @@ function pushExpression(
     labels,
   }));
   return index;
+}
+
+function objectiveCRegistrationResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  let planIndex: usize = 0;
+  while (planIndex < evidence.objectiveCRegistrations.length) {
+    if (
+      evidence.objectiveCRegistrations[planIndex].offset
+        == tree.nodes[index].offset
+      && evidence.objectiveCRegistrations[planIndex].line
+        == tree.nodes[index].line
+      && evidence.objectiveCRegistrations[planIndex].column
+        == tree.nodes[index].column
+    ) return planIndex;
+    planIndex = planIndex + 1;
+  }
+  return evidence.objectiveCRegistrations.length;
 }
 
 function wrapImplicitOwnedTransfer(
@@ -8181,6 +8358,94 @@ function lowerExpressionContextual(
       throw "native lowering requires an explicit supported placement for async function calls";
     }
     const calleeInput = tree.nodes[index].children[0];
+    const registrationPlanIndex = objectiveCRegistrationResolutionIndex(
+      evidence,
+      tree,
+      index
+    );
+    if (registrationPlanIndex < evidence.objectiveCRegistrations.length) {
+      const plan = view evidence.objectiveCRegistrations[
+        registrationPlanIndex
+      ];
+      if (tree.nodes[index].children.length != 2) {
+        throw "native Objective-C registration lowering lost its descriptor";
+      }
+      const descriptor = tree.nodes[index].children[1];
+      let addCall = tree.nodes.length;
+      let fieldIndex: usize = 0;
+      while (fieldIndex < tree.nodes[descriptor].labels.length) {
+        if (tree.nodes[descriptor].labels[fieldIndex] == "add") {
+          addCall = tree.nodes[descriptor].children[fieldIndex];
+        }
+        fieldIndex = fieldIndex + 1;
+      }
+      if (
+        addCall >= tree.nodes.length
+        || tree.nodes[addCall].kind != ExpressionKind.callExpression
+        || tree.nodes[addCall].children.length == 0
+      ) throw "native Objective-C registration lowering lost its add call";
+      const addCallee = tree.nodes[addCall].children[0];
+      if (
+        tree.nodes[addCallee].kind != ExpressionKind.memberExpression
+        || tree.nodes[addCallee].children.length != 1
+      ) throw "native Objective-C registration lowering lost its receiver";
+      let children = Array<usize>();
+      const registrationReceiverInput = tree.nodes[addCallee].children[0];
+      const registrationReceiver = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        registrationReceiverInput,
+        inout output
+      );
+      children.push(registrationReceiver);
+      const addParameterTypes = resolvedCallParameterTypes(
+        evidence,
+        tree,
+        addCall
+      );
+      let argumentIndex: usize = 0;
+      while (argumentIndex + 1 < tree.nodes[addCall].children.length) {
+        const argumentInput = tree.nodes[addCall].children[argumentIndex + 1];
+        let value = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          argumentInput,
+          inout output
+        );
+        if (
+          argumentIndex != plan.handlerParameter
+          && argumentIndex < addParameterTypes.length
+          && addParameterTypes[argumentIndex] == "cstring"
+        ) {
+          let projectionChildren = Array<usize>();
+          projectionChildren.push(value);
+          value = pushExpression(
+            inout output,
+            LoweredExpressionKind.cstringProjection,
+            "cstring",
+            projectionChildren,
+            Array<String>()
+          );
+        }
+        children.push(value);
+        argumentIndex = argumentIndex + 1;
+      }
+      const registrationHelper = objectiveCRegistrationHelperName(
+        plan.moduleIndex,
+        plan.offset
+      );
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.objectiveCRegistration,
+        registrationHelper,
+        children,
+        Array<String>()
+      );
+    }
     if (
       tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
       && tree.nodes[calleeInput].value == "upgrade"
@@ -10767,6 +11032,11 @@ function lowerExpressionContextual(
         tree,
         index
       );
+      const parameterTypes = resolvedCallParameterTypes(
+        evidence,
+        tree,
+        index
+      );
       let labels = Array<String>();
       labels.push(receiverType.kind == LoweredTypeKind.classType
         ? "class"
@@ -10808,6 +11078,19 @@ function lowerExpressionContextual(
             parameterModes[argument - 1].byteLength
           )
           : "value";
+        if (
+          argumentMode == "in"
+          && parameterTypes.length >= argument
+        ) {
+          const parameterType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            parameterTypes[argument - 1]
+          );
+          if (parameterType.kind == LoweredTypeKind.foreignObjCType) {
+            argumentMode = "foreignObjCIn";
+          }
+        }
         if (
           argumentMode == "in"
           && output[value].labels.length > 0
@@ -10989,6 +11272,23 @@ function lowerExpressionContextual(
     let callLabels = Array<String>();
     for (const mode of parameterModes) {
       callLabels.push(mode.copyBytes(0, mode.byteLength));
+    }
+    let parameterLabel: usize = 0;
+    while (
+      parameterLabel < parameterTypes.length
+      && parameterLabel < callLabels.length
+    ) {
+      if (callLabels[parameterLabel] == "in") {
+        const parameterType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          parameterTypes[parameterLabel]
+        );
+        if (parameterType.kind == LoweredTypeKind.foreignObjCType) {
+          callLabels[parameterLabel] = "foreignObjCIn";
+        }
+      }
+      parameterLabel = parameterLabel + 1;
     }
     let children = Array<usize>();
     children.push(callee);
@@ -22153,6 +22453,8 @@ function lowerProgramUnchecked(
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
+  let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
+  let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   let importedTypes = Array<LoweredImportedType>();
   const privateCollisionNames = Array<String>();
   const privateTypeCollisionNames = Array<String>();
@@ -22188,6 +22490,8 @@ function lowerProgramUnchecked(
     foreignHeaders,
     foreignFunctions,
     foreignResources,
+    objectiveCProtocolAdapters,
+    objectiveCRegistrations,
     constants,
     fixedArrays,
     arrays,
@@ -22261,6 +22565,8 @@ function lowerModulesIncludingTests(
   let foreignHeaders = Array<String>();
   let foreignFunctions = Array<LoweredForeignFunction>();
   let foreignResources = Array<LoweredForeignResource>();
+  let objectiveCProtocolAdapters = Array<LoweredObjCProtocolAdapter>();
+  let objectiveCRegistrations = Array<LoweredObjCRegistration>();
   const privateFunctionCollisionNames = collisionSafePrivateFunctionNames(
     parsed,
     includeTests
@@ -22311,7 +22617,14 @@ function lowerModulesIncludingTests(
       inout functions
     );
     match (moduleOutcome) {
-      success => {}
+      success => try collectObjectiveCRegistrations(
+        parsed,
+        graph,
+        privateTypeCollisionNames,
+        moduleIndex,
+        inout objectiveCProtocolAdapters,
+        inout objectiveCRegistrations
+      );
       failure(message) => {
         const path = parsed[moduleIndex].path.copyBytes(
           0,
@@ -22326,6 +22639,8 @@ function lowerModulesIncludingTests(
     foreignHeaders,
     foreignFunctions,
     foreignResources,
+    objectiveCProtocolAdapters,
+    objectiveCRegistrations,
     constants,
     fixedArrays,
     arrays,

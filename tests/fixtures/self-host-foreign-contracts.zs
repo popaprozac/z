@@ -112,6 +112,32 @@ function inspectObjC(
       error.message.byteLength
     );
   };
+  if (
+    emittedPath.byteLength > 0
+    && graph.modules[0].semanticEvidence.objectiveCRegistrations.length == 1
+  ) {
+    const registration = view graph.modules[0]
+      .semanticEvidence.objectiveCRegistrations[0];
+    if (registration.receiverNativeType != "ZRegistrationOwner") return 120;
+    if (registration.ownerType != "Handler") return 121;
+    if (registration.protocolNativeNames.length != 1) return 122;
+    if (registration.protocolNativeNames[0] != "ZRegistrationHandler") {
+      return 123;
+    }
+    if (registration.protocolMethods.length != 1) return 124;
+    if (
+      registration.protocolMethods[0].selector
+        != "registrationOwner:didReceiveValue:"
+    ) return 125;
+    if (registration.protocolMethods[0].targetName != "receive") return 126;
+    if (registration.addSelector != "addHandler:name:") return 127;
+    if (registration.handlerParameter != 0) return 128;
+    if (registration.removeArgumentSources.length != 1) return 129;
+    if (registration.removeArgumentSources[0] != 1) return 130;
+    const emitted = try emitModulesC(modules, graph);
+    try fs.writeText(emittedPath, emitted);
+    return 0;
+  }
   if (emittedPath.byteLength > 0) {
     if (graph.modules[0].semanticEvidence.callResolutions.length != 2) {
       return 111;
