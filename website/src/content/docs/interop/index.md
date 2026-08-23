@@ -70,6 +70,12 @@ window, WebView, configuration, content controller, protocol adapter, and
 teardown guard in a main-executor Z application object; its transitional
 Objective-C run-loop host keeps only weak access to the UI identities.
 
+Clang-proven C-record aliases compose as one native type within a header
+contract while retaining their familiar source names. A frame returned as
+AppKit `NSRect`, for example, can be passed directly where WebKit expects
+`CGRect`; unrelated structs do not become compatible merely because their
+layouts happen to match.
+
 ## 2. Add a `.zd` contract
 
 Headers cannot reliably encode ownership, cleanup, callback lifetimes, typed

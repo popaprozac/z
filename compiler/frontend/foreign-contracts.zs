@@ -133,6 +133,7 @@ export struct NativeForeignTypeContract {
   kind: String;
   name: String;
   nativeName: String;
+  canonicalNativeName: String = "";
   underlyingType: String;
   flags: boolean = false;
   layout: String;
@@ -1657,6 +1658,14 @@ function normalizedForeignType(
   fields: Array<NativeForeignFieldContract>,
   viewOnly: boolean
 ): NativeForeignTypeContract {
+  let canonicalNativeName = declaration.nativeName.copyBytes(
+    0,
+    declaration.nativeName.byteLength
+  );
+  match (in declaration.canonicalNativeName) {
+    some(name) => canonicalNativeName = name.copyBytes(0, name.byteLength);
+    none => {}
+  }
   return NativeForeignTypeContract({
     kind: declaration.kind.copyBytes(0, declaration.kind.byteLength),
     name: declaration.exportName.copyBytes(
@@ -1667,6 +1676,7 @@ function normalizedForeignType(
       0,
       declaration.nativeName.byteLength
     ),
+    canonicalNativeName,
     underlyingType: declaration.underlyingType.copyBytes(
       0,
       declaration.underlyingType.byteLength

@@ -120,6 +120,8 @@ recursive path.
   a richer header instead of letting unrelated declarations poison supported
   imports. Representable instance properties, including dynamic `id`, now
   resolve as inherited fields and lower reads through their declared getter;
+  canonical C-record identity unifies exact typedef aliases within one producer
+  contract while retaining each source spelling for hover and code generation;
   `value instanceof NativeClass` emits `isKindOfClass:` and narrows its true
   branch. Class properties, setters, and optional access remain deferred. Native type
   spellings remain on function declarations, so a `.zd`

@@ -903,6 +903,10 @@ function foreignTypeSignature(
       0,
       type.nativeName.byteLength
     ),
+    foreignCanonicalNativeName: type.canonicalNativeName.copyBytes(
+      0,
+      type.canonicalNativeName.byteLength
+    ),
     foreignUnderlyingType: type.underlyingType.copyBytes(
       0,
       type.underlyingType.byteLength

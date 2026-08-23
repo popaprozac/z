@@ -3471,6 +3471,16 @@ model. The resolver consumes that narrow verified fact before its general
 unresolved-header deferral. As a result, expressions such as
 `NSWindowStyleMaskTitled | NSWindowStyleMaskClosable` retain the nominal
 `NSWindowStyleMask` type through inference and native lowering.
+
+The same Zapp construction path exposed a distinct nominal-identity seam:
+AppKit spells a frame as `NSRect`, while WebKit accepts its canonical `CGRect`
+alias. `ZFDCL` already carried Clang's canonical record name, but native
+normalization discarded it. The owned type signature now retains both source
+and canonical spellings. Equivalence uses the canonical name only inside the
+same producer contract; lowering and hover keep the source spelling. Zapp can
+construct one frame with `NSMakeRect` and pass it directly to both
+`WKWebView.initWithFrame` and `NSWindow.initWithContentRect`, without a wrapper,
+copy, cast, or structural-layout guess.
 The fixed-point emitter now consumes the registration plan as well. It
 synthesizes a protocol-conforming Objective-C adapter that retains the Z
 handler, plus an ARC guard that owns the receiver, adapter, and teardown

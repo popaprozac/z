@@ -470,6 +470,9 @@ function symbolTypeIdentity(
           location.symbolIndex
         ].foreignHeader.byteLength > 0
       ) {
+        if (signature.foreignCanonicalNativeName.byteLength > 0) {
+          return `@foreign:${modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader}:${signature.foreignCanonicalNativeName}`;
+        }
         return `@foreign:${modules[location.moduleIndex].symbols[location.symbolIndex].foreignHeader}:${signature.foreignNativeName}`;
       }
     }

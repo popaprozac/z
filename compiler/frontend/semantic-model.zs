@@ -308,6 +308,7 @@ export struct ModuleTypeSignature {
   foreignKind: String;
   foreignLayout: String;
   foreignNativeName: String;
+  foreignCanonicalNativeName: String = "";
   foreignUnderlyingType: String;
   foreignFlags: boolean = false;
   foreignResourceRelease: String;

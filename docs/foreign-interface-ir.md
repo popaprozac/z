@@ -184,6 +184,12 @@ TypeScript object layouts or JSON as compiler architecture. An end-to-end
 fixture runs a scalar C header through Clang, the stream encoder, native Z
 decoding, strict C compilation, and execution.
 
+Normalized records keep both source and canonical identities. The source name
+drives Z spelling, hover, and emitted ABI types; exact canonical identity drives
+equivalence within the same producer contract. AppKit `NSRect` can therefore
+flow into WebKit `CGRect`, while unrelated records that only share a layout do
+not become interchangeable.
+
 The same producer/decoder seam is now exposed across standalone processes.
 Stage 0's internal command and the `z-foreign-adapter` executable share one
 header-addressed producer. The self-emitted native driver finds the adjacent
