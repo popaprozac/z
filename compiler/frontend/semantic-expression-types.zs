@@ -3,6 +3,7 @@ import { expressionStorageRootName } from "./semantic-expression-ownership.zs";
 import {
   equivalentTypes,
   isUnresolvedExternalType,
+  rebaseTypeName,
   typeSymbolLocation,
   transparentTypeName,
 } from "./semantic-type-identities.zs";
@@ -16,6 +17,7 @@ import {
   isNullableTypeName,
   isNumericTypeName,
   nativeFunctionSignature,
+  nullableTargetType,
   qualifiedTypeMember,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
@@ -176,6 +178,73 @@ function isNativeObjectiveCStringType(
   }
 }
 
+function nativeObjectiveCReferenceAssignable(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in expectedType: String,
+  in actualType: String
+): boolean {
+  const expectedNullable = isNullableTypeName(expectedType);
+  const actualNullable = isNullableTypeName(actualType);
+  if (actualNullable && !expectedNullable) return false;
+  let expected = expectedType.copyBytes(0, expectedType.byteLength);
+  let actual = actualType.copyBytes(0, actualType.byteLength);
+  const expectedTarget = nullableTargetType(expectedType);
+  if (expectedTarget.byteLength > 0) expected = move expectedTarget;
+  const actualTarget = nullableTargetType(actualType);
+  if (actualTarget.byteLength > 0) actual = move actualTarget;
+
+  match (typeSymbolLocation(modules, moduleIndex, expected)) {
+    some(location) => match (
+      in modules[location.moduleIndex].symbols[
+        location.symbolIndex
+      ].typeSignature
+    ) {
+      some(signature) => {
+        if (signature.foreignKind != "objcInterface") return false;
+      }
+      none => return false;
+    }
+    none => return false;
+  }
+
+  let current = actual.copyBytes(0, actual.byteLength);
+  let visiting = Array<String>();
+  while (current.byteLength > 0) {
+    if (equivalentTypes(modules, moduleIndex, expected, current)) return true;
+    match (typeSymbolLocation(modules, moduleIndex, current)) {
+      some(location) => {
+        const identity = `${location.moduleIndex}:${location.symbolIndex}`;
+        for (const visited of visiting) {
+          if (visited == identity) return false;
+        }
+        visiting.push(identity);
+        match (
+          in modules[location.moduleIndex].symbols[
+            location.symbolIndex
+          ].typeSignature
+        ) {
+          some(signature) => {
+            if (
+              signature.foreignKind != "objcInterface"
+              || signature.foreignObjCSuperName.byteLength == 0
+            ) return false;
+            current = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              signature.foreignObjCSuperName
+            );
+          }
+          none => return false;
+        }
+      }
+      none => return false;
+    }
+  }
+  return false;
+}
+
 export function requireExpressionType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -199,6 +268,12 @@ export function requireExpressionType(
     || actual == "__z_never"
     || equivalentTypes(modules, moduleIndex, expected, actual)
   ) return;
+  if (nativeObjectiveCReferenceAssignable(
+    modules,
+    moduleIndex,
+    expected,
+    actual
+  )) return;
   if (
     expected == "String"
     && isNativeObjectiveCStringType(modules, moduleIndex, actual)

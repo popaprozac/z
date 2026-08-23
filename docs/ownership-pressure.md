@@ -3544,6 +3544,34 @@ not currently unify at a cross-framework call. Constructing `WebKit.CGRect`
 works, while passing `AppKit.NSMakeRect(...)` does not. Canonical Clang type
 identity should eventually make that source-header choice irrelevant.
 
+Moving the next UI identities into Z exposed a more urgent native-compiler
+scalability defect. Stored-view validation recursively treated every imported
+Objective-C property as embedded value storage. AppKit and WebKit form a large,
+mutually referential object graph; one cold Zapp build spent more than four
+minutes in that traversal and reached a 55.1 GiB physical footprint before it
+was stopped. Foreign Objective-C references now terminate the traversal at
+their one-pointer identity. The same build reaches ordinary semantic
+diagnostics in seconds instead of recursively exploring the SDK graph.
+
+The migration also closed inherited Objective-C reference assignment in the
+fixed-point compiler. `WKWebView` can now populate nullable `NSView` storage,
+and a regression proves a non-null imported subclass can flow into a nullable
+superclass property while the reverse/nullability-weakening directions remain
+checked. Zapp now creates and strongly owns its content controller,
+configuration, WebView, window, registration owner, and registration guard in
+one main-executor `DesktopApplication`; the Objective-C run-loop host retains
+only weak access. The visible WebView round trip remains unchanged. Nominal
+inference for bitwise imported enum expressions and canonical `NSRect`/`CGRect`
+identity remain follow-ups surfaced by this slice.
+
+Inspecting the emitted ARC graph found a subtler fixed-point parity issue: the
+Stage 0 class allocator used zeroed storage, while the native emitter used raw
+`malloc` before assigning Objective-C strong fields. ARC strong assignment may
+release the prior slot, so an uninitialized slot is not a sound construction
+state even when fresh pages happen to be zero. Native Z class construction now
+uses `calloc` before initializing fields, and the fixed-point Objective-C
+fixture retains that generated-storage requirement.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -907,7 +907,7 @@ function appendClassAndOnceRuntime(
     output.append(aggregate.name);
     output.append(" *_z_stage1_instance = (Z_");
     output.append(aggregate.name);
-    output.append(" *)malloc(sizeof(Z_");
+    output.append(" *)calloc(1, sizeof(Z_");
     output.append(aggregate.name);
     output.append("));\n  if (_z_stage1_instance == NULL) abort();\n");
     output.append("  _z_stage1_instance->_z_refcount = 1;\n");

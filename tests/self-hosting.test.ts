@@ -6533,6 +6533,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       [
         "typedef signed char BOOL;",
         "typedef struct objc_class *Class;",
+        "#define nil ((id)0)",
         "#define NSUTF8StringEncoding 4UL",
         "",
         "__attribute__((objc_root_class))",
@@ -6559,6 +6560,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "+ (instancetype)sharedOwner;",
         "@property(nonatomic, readonly, getter=answer) int value;",
         "@property(nonatomic) int writableValue;",
+        "@property(nonatomic) NativeBase *writableBase;",
         "@property(nonatomic, readonly) NativeBase *base;",
         "@property(nonatomic, readonly) id body;",
         "@property(nonatomic, readonly) NSString *text;",
@@ -6585,6 +6587,14 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "}",
         "",
         "- (void)setWritableValue:(int)value {",
+        "  (void)value;",
+        "}",
+        "",
+        "- (NativeBase *)writableBase {",
+        "  return (NativeBase *)0;",
+        "}",
+        "",
+        "- (void)setWritableBase:(NativeBase *)value {",
         "  (void)value;",
         "}",
         "",
@@ -6616,12 +6626,18 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       [
         'import native from "NativeOwner.h";',
         "",
+        "class NativeRoot {",
+        "  owner: native.NativeOwner;",
+        "}",
+        "",
         "function main(): i32 {",
         "  const owner = native.NativeOwner.sharedOwner();",
+        "  const root = new NativeRoot({ owner });",
         "  const base = owner.base;",
         "  const body = owner.body;",
         "  const nativeText = owner.text;",
         "  owner.writableValue = 9;",
+        "  owner.writableBase = owner;",
         '  owner.title = "Native Z";',
         "  if (owner.value == 0) {",
         "    const text: String = nativeText;",
@@ -6673,6 +6689,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     assert.match(objcEmission, /id const body = \[owner body\]/);
     assert.match(objcEmission, /\[owner setWritableValue: 9\]/);
+    assert.match(objcEmission, /\[owner setWritableBase: owner\]/);
+    assert.match(
+      objcEmission,
+      /Z_NativeRoot \*_z_stage1_instance = \(Z_NativeRoot \*\)calloc\(1, sizeof\(Z_NativeRoot\)\)/,
+    );
     assert.match(
       objcEmission,
       /\[owner setTitle: z_stage1_nsstring_from_string\(Z_STRING_LITERAL\("Native Z"\)\)\]/,

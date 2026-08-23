@@ -472,6 +472,20 @@ export function typeContainsStoredView(
   }
   match (typeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
+      match (
+        in modules[location.moduleIndex].symbols[
+          location.symbolIndex
+        ].typeSignature
+      ) {
+        some(signature) => {
+          // A foreign reference stores one native object identity in Z. Its
+          // imported properties describe messages, not recursively embedded
+          // Z storage, so walking that SDK graph is both semantically wrong
+          // and potentially exponential for mutually-referential frameworks.
+          if (signature.foreignLayout == "reference") return false;
+        }
+        none => {}
+      }
       const identity = semanticTypeIdentity(modules, moduleIndex, typeName);
       if (containsString(visiting, identity)) return false;
       let nextVisiting = copyStrings(visiting);

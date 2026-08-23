@@ -262,9 +262,12 @@ one-pointer Objective-C references; a checked `instanceof` target lowers to
 writable instance-property assignments consume the preserved custom setter and
 lower to direct setter messages; `readonly` assignments remain compile-time
 errors. Contextual Z `String` values become length-aware ARC `NSString`
-arguments without truncating embedded null bytes. Class properties, optional
-property access, protocol runtime checks, and general Z-class runtime checks
-still fail closed.
+arguments without truncating embedded null bytes. Imported inheritance also
+permits a non-null Objective-C subclass where a nullable superclass reference
+is expected. Because those references store one native identity, ownership
+validation does not recursively treat their imported message properties as
+embedded Z fields. Class properties, optional property access, protocol runtime
+checks, and general Z-class runtime checks still fail closed.
 Selected selectors and exact ABI spellings
 survive through semantic evidence consumed by the Objective-C emitter. For
 `objc.register`, that evidence additionally records the native receiver, Z

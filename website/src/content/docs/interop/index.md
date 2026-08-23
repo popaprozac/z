@@ -54,6 +54,13 @@ The fixed-point compiler emits direct setter messages. Imported `readonly`
 properties remain compile-time errors, and a Z `String` assigned to an
 `NSString` property is converted with its explicit byte length.
 
+Imported Objective-C inheritance remains part of the checked type relation, so
+a non-null subclass such as `WKWebView` can populate nullable superclass
+storage such as `NSView | null`. Zapp uses these rules to construct and own its
+window, WebView, configuration, content controller, protocol adapter, and
+teardown guard in a main-executor Z application object; its transitional
+Objective-C run-loop host keeps only weak access to the UI identities.
+
 ## 2. Add a `.zd` contract
 
 Headers cannot reliably encode ownership, cleanup, callback lifetimes, typed
