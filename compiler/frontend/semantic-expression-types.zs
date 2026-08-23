@@ -16,6 +16,7 @@ import {
   isNullableTypeName,
   isNumericTypeName,
   nativeFunctionSignature,
+  qualifiedTypeMember,
   stringStartsWith,
 } from "./semantic-type-shapes.zs";
 import {
@@ -153,6 +154,28 @@ function compatibleSliceTypes(
   };
 }
 
+function isNativeObjectiveCStringType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex]
+        .symbols[location.symbolIndex];
+      match (in symbol.typeSignature) {
+        some(signature) => return signature.foreignKind == "objcInterface"
+          && signature.foreignNativeName == "NSString";
+        none => return false;
+      }
+    }
+    // Foreign namespace members are not always materialized as ordinary graph
+    // symbols. Preserve their imported native spelling without treating a
+    // local nominal NSString declaration as Foundation's NSString.
+    none => return qualifiedTypeMember(typeName) == "NSString";
+  }
+}
+
 export function requireExpressionType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -175,6 +198,10 @@ export function requireExpressionType(
     actual.byteLength == 0
     || actual == "__z_never"
     || equivalentTypes(modules, moduleIndex, expected, actual)
+  ) return;
+  if (
+    expected == "String"
+    && isNativeObjectiveCStringType(modules, moduleIndex, actual)
   ) return;
   if (
     isNumericTypeName(expected)

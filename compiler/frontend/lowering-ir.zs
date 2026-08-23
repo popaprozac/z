@@ -230,6 +230,7 @@ export enum LoweredExpressionKind {
   methodCall,
   objectiveCMessageCall,
   objectiveCInstanceOf,
+  objectiveCStringToZ,
   objectiveCRegistration,
   fieldValue,
   structValue,
@@ -2409,6 +2410,10 @@ function lowerModuleTypeName(
   if (name == "id") return LoweredType({
     kind: LoweredTypeKind.foreignObjCType,
     name: "id",
+  });
+  if (name == "objc.Selector") return LoweredType({
+    kind: LoweredTypeKind.foreignHandleType,
+    name: "SEL",
   });
   match (localTypeAliasTarget(program, name)) {
     some(target) => return try lowerModuleTypeName(
@@ -11617,6 +11622,12 @@ function lowerExpressionContextual(
         && parameterTypes.length >= argument
         && parameterTypes[argument - 1] == "cstring"
       ) {
+        let requiresProjection = output[value].kind
+          == LoweredExpressionKind.stringValue
+          || tree.nodes[argumentInput].kind
+            == ExpressionKind.stringExpression
+          || tree.nodes[argumentInput].kind
+            == ExpressionKind.templateExpression;
         match (evidenceResolvedExpressionTypeName(
           program,
           importedTypes,
@@ -11625,19 +11636,20 @@ function lowerExpressionContextual(
           argumentInput
         )) {
           some(argumentType) => {
-            if (argumentType == "String") {
-              let projectionChildren = Array<usize>();
-              projectionChildren.push(value);
-              value = pushExpression(
-                inout output,
-                LoweredExpressionKind.cstringProjection,
-                "cstring",
-                projectionChildren,
-                Array<String>()
-              );
-            }
+            if (argumentType == "String") requiresProjection = true;
           }
           none => {}
+        }
+        if (requiresProjection) {
+          let projectionChildren = Array<usize>();
+          projectionChildren.push(value);
+          value = pushExpression(
+            inout output,
+            LoweredExpressionKind.cstringProjection,
+            "cstring",
+            projectionChildren,
+            Array<String>()
+          );
         }
         callLabels[argument - 1] = "value";
       }
@@ -12379,6 +12391,38 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  if (expectedTypeName == "String") {
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(actualTypeName) => {
+        const actualType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          actualTypeName
+        );
+        if (
+          actualType.kind == LoweredTypeKind.foreignObjCType
+          && actualType.name == "NSString"
+        ) {
+          const value = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            index,
+            inout output
+          );
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.objectiveCStringToZ,
+            "",
+            Array<usize>(value),
+            Array<String>()
+          );
+        }
+      }
+      none => {}
+    }
+  }
   if (tree.nodes[index].kind == ExpressionKind.numberExpression) {
     let labels = Array<String>();
     labels.push(expectedTypeName.copyBytes(0, expectedTypeName.byteLength));

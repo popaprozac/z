@@ -31,6 +31,7 @@ import {
 } from "../../compiler/src/foreign-api-notes.ts";
 import { normalizeForeignContracts } from "../../compiler/src/foreign-contracts.ts";
 import { encodeForeignFunctionDeclarationStream } from "../../compiler/src/foreign-declaration-protocol.ts";
+import { writeForeignDeclarationArtifact } from "../../compiler/src/foreign-adapter.ts";
 import { resolveForeignFunctionDeclarationStreams } from "../../compiler/src/foreign.ts";
 import { buildStage0ModuleGraph } from "../../compiler/src/native-semantic-parity.ts";
 import { NativeFrontendDiagnosticError } from "../../compiler/src/native-frontend-diagnostics.ts";
@@ -113,6 +114,7 @@ export {
   test,
   utimesSync,
   writeFileSync,
+  writeForeignDeclarationArtifact,
 };
 
 const projectRoot = resolve(dirnameFromImportMeta(), "../..");

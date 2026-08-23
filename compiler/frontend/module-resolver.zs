@@ -9438,6 +9438,10 @@ function inferStatement(
       );
       none => {}
     }
+    if (
+      contextualExpected == "String"
+      && qualifiedTypeMember(inferred) == "NSString"
+    ) inferred = "String";
     let stored = inferred.copyBytes(0, inferred.byteLength);
     let viewOwner = "";
     let viewPath = "";

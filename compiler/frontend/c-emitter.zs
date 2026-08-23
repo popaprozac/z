@@ -2467,6 +2467,23 @@ function appendExpression(
     output.append(" class]]");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCStringToZ
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native Objective-C emission received a malformed NSString conversion";
+    }
+    output.append("z_stage1_string_from_nsstring(");
+    const value = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      value
+    );
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.directCall) {
     if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received a malformed direct call";
@@ -4550,6 +4567,11 @@ function appendFunction(
   match (in declaration.receiverType) {
     some(_) => output.append("  (void)self;\n");
     none => {}
+  }
+  for (const parameter of declaration.parameters) {
+    output.append("  (void)");
+    appendCBindingName(inout output, parameter.name);
+    output.append(";\n");
   }
   if (
     declaration.name == "main"
@@ -11811,6 +11833,14 @@ function emitLoweredC(
   const usesThreads = taskTypeNames.length > 0;
   const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
+  let usesObjectiveCStringConversion = false;
+  for (const declaration of program.functions) {
+    for (const expression of declaration.expressions) {
+      if (
+        expression.kind == LoweredExpressionKind.objectiveCStringToZ
+      ) usesObjectiveCStringConversion = true;
+    }
+  }
   let usesCStringConversion =
     usesLock
     || usesReadBytes
@@ -12183,6 +12213,17 @@ function emitLoweredC(
   output.append("  self->length += length;\n");
   output.append("  ((char *)self->data)[self->length] = '\\0';\n");
   output.append("}\n\n");
+  if (usesObjectiveCStringConversion) {
+    output.append("static inline __attribute__((unused)) Z_String z_stage1_string_from_nsstring(NSString *value) {\n");
+    output.append("  if (value == (NSString *)0) abort();\n");
+    output.append("  const unsigned long length = [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];\n");
+    output.append("  const char *bytes = [value UTF8String];\n");
+    output.append("  if (bytes == NULL && length != 0) abort();\n");
+    output.append("  Z_String result = { NULL, 0, 0 };\n");
+    output.append("  z_string_append_bytes(&result, bytes != NULL ? bytes : \"\", (size_t)length);\n");
+    output.append("  return result;\n");
+    output.append("}\n\n");
+  }
   if (usesCStringConversion) {
     output.append("static inline __attribute__((unused)) bool z_stage1_string_is_valid_utf8(const char *data, size_t length) {\n");
     output.append("  size_t index = 0;\n");

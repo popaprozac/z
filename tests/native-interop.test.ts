@@ -48,6 +48,7 @@ import {
   test,
   utimesSync,
   writeFileSync,
+  writeForeignDeclarationArtifact,
 } from "./support/bootstrap.ts";
 import type {
   ForeignFunctionDeclaration,
@@ -72,6 +73,35 @@ test("recognizes child-process buffer and decoded-string overflow failures", () 
   assert.equal(isProcessOutputOverflowError(new RangeError("Invalid string length")), true);
   assert.equal(isProcessOutputOverflowError(errorWith("ENOENT", "command not found")), false);
   assert.equal(isProcessOutputOverflowError(undefined), false);
+});
+
+test("regenerates cached foreign declarations after a protocol upgrade", () => {
+  const directory = mkdtempSync("/tmp/z-foreign-adapter-protocol-");
+  const sourcePath = resolve(directory, "main.zs");
+  const headerPath = resolve(directory, "native.h");
+  const artifactPath = resolve(directory, "native.zfdcl");
+  writeFileSync(headerPath, "int z_native_value(void);\n");
+  writeFileSync(
+    sourcePath,
+    'import native from "./native.h";\nfunction main(): i32 { return native.z_native_value(); }\n',
+  );
+
+  writeForeignDeclarationArtifact(sourcePath, "./native.h", artifactPath);
+  const current = readFileSync(artifactPath, "utf8");
+  assert.match(current, /^ZFDCL000000000000000a\n/);
+
+  writeFileSync(
+    artifactPath,
+    current.replace(
+      /^ZFDCL000000000000000a\n/,
+      "ZFDCL0000000000000009\n",
+    ),
+  );
+  writeForeignDeclarationArtifact(sourcePath, "./native.h", artifactPath);
+  assert.match(
+    readFileSync(artifactPath, "utf8"),
+    /^ZFDCL000000000000000a\n/,
+  );
 });
 
 test("compiles the shimless curl application without performing its network request", () => {

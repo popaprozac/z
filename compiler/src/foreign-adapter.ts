@@ -14,6 +14,7 @@ import {
   fingerprintForeignFunctionDeclarations,
   resolveForeignFunctionDeclarationStream,
 } from "./foreign.ts";
+import { foreignDeclarationProtocolVersion } from "./foreign-declaration-protocol.ts";
 
 function adjacentContractSource(
   sourcePath: string,
@@ -71,7 +72,7 @@ export function writeForeignDeclarationArtifact(
     project.includeDirectories,
   );
   const cacheKey = createHash("sha256")
-    .update("z-foreign-adapter-cache-v9")
+    .update(`z-foreign-adapter-cache-v${foreignDeclarationProtocolVersion}`)
     .update("\0")
     .update(producerFingerprint)
     .update("\0")
@@ -79,10 +80,13 @@ export function writeForeignDeclarationArtifact(
     .digest("hex");
   const outputPath = resolve(outputArgument);
   const metadataPath = `${outputPath}.meta`;
+  const expectedProtocolPrefix =
+    `ZFDCL${foreignDeclarationProtocolVersion.toString(16).padStart(16, "0")}\n`;
   if (
     existsSync(outputPath)
     && existsSync(metadataPath)
     && readFileSync(metadataPath, "utf8").trim() === cacheKey
+    && readFileSync(outputPath, "utf8").startsWith(expectedProtocolPrefix)
   ) return;
 
   const stream = resolveForeignFunctionDeclarationStream(

@@ -337,7 +337,7 @@ hostToolchainTest("narrows dynamic Objective-C objects with instanceof", () => {
     artifact.source,
     /\[body isKindOfClass:\[NSString class\]\]/,
   );
-  assert.match(artifact.source, /\[body length\]/);
+  assert.match(artifact.source, /z_string_from_nsstring\(body\)/);
 
   const compilation = spawnSync("clang", [
     "-x", "objective-c",
@@ -348,7 +348,7 @@ hostToolchainTest("narrows dynamic Objective-C objects with instanceof", () => {
   ], { input: artifact.source, encoding: "utf8" });
   assert.equal(compilation.status, 0, compilation.stderr);
 
-  const narrowedUse = source.indexOf("body.length") + 1;
+  const narrowedUse = source.indexOf("body;", source.indexOf("const text")) + 1;
   assert.match(
     hover(source, fixture, narrowedUse)?.contents.value ?? "",
     /body: Foundation\.NSString/,

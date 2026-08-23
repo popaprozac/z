@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 10;
+export const foreignDeclarationProtocolVersion = 10;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -97,7 +97,7 @@ export function encodeForeignFunctionDeclarationStream(
   );
 
   const records = [
-    `ZFDCL${hexNumber(protocolVersion)}`,
+    `ZFDCL${hexNumber(foreignDeclarationProtocolVersion)}`,
     [
       "M",
       text(module.producer),
