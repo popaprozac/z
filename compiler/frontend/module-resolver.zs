@@ -3597,12 +3597,19 @@ function inferSignatureCallType(
   in callKind: String,
   inout evidence: ModuleSemanticEvidence
 ): String throws ModuleResolveError {
+  let requiredExecutor = signature.executorAffinity.copyBytes(
+    0,
+    signature.executorAffinity.byteLength
+  );
+  if (signature.threadContract == "thread.main") {
+    requiredExecutor = "thread.main";
+  }
   try requireMainExecutorContext(
     module,
     tree,
     callIndex,
     bindings,
-    signature.executorAffinity,
+    requiredExecutor,
     `function "${functionName}"`
   );
   const argumentCount = argumentNodes.length;
@@ -4469,12 +4476,16 @@ function identifierCallableTypeName(
         location.symbolIndex
       ].functionSignature) {
         some(signature) => {
-          const callableSignature = rebaseModuleFunctionSignature(
+          let callableSignature = rebaseModuleFunctionSignature(
             modules,
             location.moduleIndex,
             moduleIndex,
             signature
           );
+          if (callableSignature.executorAffinity == "thread.main") {
+            callableSignature.threadContract = "thread.main";
+            callableSignature.executorAffinity = "";
+          }
           return Option.some(nativeFunctionTypeName(callableSignature));
         }
         none => {}
@@ -4656,7 +4667,26 @@ function inferExpressionNodeType(
       none => {}
     }
     match (identifierCallableTypeName(modules, moduleIndex, tree, index)) {
-      some(callableType) => return move callableType;
+      some(callableType) => {
+        match (nativeFunctionSignature(callableType)) {
+          some(signature) => {
+            const requiredExecutor = signature.threadContract
+              == "thread.main"
+              ? "thread.main"
+              : "";
+            try requireMainExecutorContext(
+              module,
+              tree,
+              index,
+              bindings,
+              requiredExecutor,
+              `function value "${lookup}"`
+            );
+          }
+          none => {}
+        }
+        return move callableType;
+      }
       none => {}
     }
     try requireInitializedBinding(module, tree, index, bindings, lookup);
@@ -6512,10 +6542,22 @@ function inferExpressionNodeType(
     const closureExecutorContext = closureSignature.threadContract
       == "thread.any"
       ? ""
-      : valueBindingType(
+      : closureSignature.threadContract == "thread.main"
+        ? "thread.main"
+        : valueBindingType(
+          bindings,
+          "__z_native_closure_executor_context"
+        );
+    if (closureSignature.threadContract == "thread.main") {
+      try requireMainExecutorContext(
+        module,
+        tree,
+        index,
         bindings,
-        "__z_native_closure_executor_context"
+        "thread.main",
+        "thread.main function value construction"
       );
+    }
     addValueBinding(
       inout closureBindings,
       "__z_native_executor_context",

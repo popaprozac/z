@@ -2158,18 +2158,18 @@ function validateCallableThreadContract(
   });
 }
 
-function typeContainsAnyThreadCallable(name: string): boolean {
+function typeContainsThreadCallable(name: string): boolean {
   const functionType = parseFunctionType(name);
   if (functionType) {
-    return functionType.thread === "any"
-      || functionType.parameters.some((parameter) => typeContainsAnyThreadCallable(parameter.type))
-      || typeContainsAnyThreadCallable(functionType.returnType)
-      || (functionType.errorType !== null && typeContainsAnyThreadCallable(functionType.errorType));
+    return functionType.thread !== "local"
+      || functionType.parameters.some((parameter) => typeContainsThreadCallable(parameter.type))
+      || typeContainsThreadCallable(functionType.returnType)
+      || (functionType.errorType !== null && typeContainsThreadCallable(functionType.errorType));
   }
   const readonly = parseReadonlyType(name);
-  if (readonly) return typeContainsAnyThreadCallable(readonly.target);
+  if (readonly) return typeContainsThreadCallable(readonly.target);
   const generic = parseGenericType(name);
-  return generic?.arguments.some(typeContainsAnyThreadCallable) ?? false;
+  return generic?.arguments.some(typeContainsThreadCallable) ?? false;
 }
 
 function validateCallableThreadTypeCapability(
@@ -2177,14 +2177,14 @@ function validateCallableThreadTypeCapability(
   globals: Map<string, SymbolValue>,
   fileName: string,
 ): void {
-  if (!typeContainsAnyThreadCallable(type.name)) return;
+  if (!typeContainsThreadCallable(type.name)) return;
   if (type.location.fileName && type.location.fileName !== fileName) {
     // Linked dependencies were validated in their own import environment.
     return;
   }
   const binding = globals.get("thread");
   if (binding?.kind === "standardModule" && binding.module === "thread") return;
-  throw new DiagnosticError(fileName, type.location, "`on thread.any` function types require the standard thread capability", {
+  throw new DiagnosticError(fileName, type.location, "`on thread.any` and `on thread.main` function types require the standard thread capability", {
     code: "Z0712",
     helps: ["import { thread } from \"std/thread\" before declaring the function type"],
   });
@@ -2231,6 +2231,15 @@ function collectAggregateExecutorAffinities(
     try {
       const alias = aliases.get(type);
       if (alias) return typeAffinity(alias, path);
+      const callable = parseFunctionType(type);
+      if (callable?.thread === "main") {
+        return {
+          executor: "main",
+          declared: true,
+          originType: displayFunctionType(type) ?? type,
+          fieldPath: [...path],
+        };
+      }
       const foreign = foreignExecutorAffinityForTypeName(type, state);
       if (foreign) return { ...foreign, fieldPath: [...path, ...foreign.fieldPath] };
       const generic = parseGenericType(type);
@@ -5489,7 +5498,8 @@ function closureFunctionType(closure: ClosureInfo): FunctionType {
     })),
     returnType: closure.declaration.returnType.name,
     errorType: closure.declaration.errorType?.name ?? null,
-    thread: closure.declaration.threadContract?.thread ?? "local",
+    thread: closure.declaration.threadContract?.thread
+      ?? (closure.declaration.executorAffinity ? "main" : "local"),
   };
 }
 
@@ -5513,6 +5523,17 @@ function functionTypeDeclaration(name: string, type: FunctionType, location: Sou
             kind: "member",
             object: { kind: "identifier", name: "thread", location },
             property: "any",
+            location,
+          },
+          onLocation: location,
+      }
+      : undefined,
+    executorAffinity: type.thread === "main"
+      ? {
+          executor: {
+            kind: "member",
+            object: { kind: "identifier", name: "thread", location },
+            property: "main",
             location,
           },
           onLocation: location,
@@ -5554,7 +5575,9 @@ function inferClosureExpression(
   const oneShotOwnedCaptures = options.oneShotOwnedCaptures ?? false;
   const nativeThreadBody = options.nativeThreadBody ?? false;
   const scheduledAsyncBody = options.scheduledAsyncBody ?? false;
-  const executionContext = options.executionContext ?? "unknown";
+  const executionContext = expectedFunction?.thread === "main"
+    ? "main"
+    : options.executionContext ?? "unknown";
   if (expression.async && !nativeThreadBody && !scheduledAsyncBody) {
     throw new DiagnosticError(fileName, expression.location, "async closures are currently executable only through thread.spawn", {
       code: "Z0703",
@@ -5798,6 +5821,17 @@ function inferClosureExpression(
             location: expression.location,
           },
           onLocation: expression.location,
+      }
+      : undefined,
+    executorAffinity: expectedFunction?.thread === "main"
+      ? {
+          executor: {
+            kind: "member",
+            object: { kind: "identifier", name: "thread", location: expression.location },
+            property: "main",
+            location: expression.location,
+          },
+          onLocation: expression.location,
         }
       : undefined,
     body: [],
@@ -5879,6 +5913,13 @@ function finalizeClosureFunctionValue(
   state: AnalysisState,
   allowBorrowedCaptures = false,
 ): ClosureInfo {
+  requireMainExecutorContext(
+    expectedFunction.thread === "main",
+    expression.location,
+    "thread.main function value construction",
+    fileName,
+    state,
+  );
   let closure = state.closures.get(expression.location.offset)!;
   if (closure.captures.length > 0 && expression.captureMode !== "move" && !allowBorrowedCaptures) {
     throw new DiagnosticError(
@@ -8287,6 +8328,15 @@ function executorAffinityForType(
   visiting = new Set<string>(),
 ): ExecutorAffinityInfo | null {
   const actual = String(underlyingType(type));
+  const callable = parseFunctionType(actual);
+  if (callable?.thread === "main") {
+    return {
+      executor: "main",
+      declared: true,
+      originType: displayFunctionType(actual) ?? actual,
+      fieldPath: [],
+    };
+  }
   const direct = state.aggregateExecutorAffinities.get(actual);
   if (direct) return direct;
   const foreign = foreignExecutorAffinityForTypeName(actual, state);
@@ -8781,18 +8831,21 @@ function inferExpressionInner(
       }
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
-        if (global.declaration.executorAffinity) {
-          throw new DiagnosticError(fileName, expression.location, "executor-isolated function values are deferred; call the function directly from its required executor context", {
-            code: "Z0711",
-            notes: ["ordinary function types do not erase or implicitly carry executor affinity"],
-          });
-        }
         if (global.declaration.async) {
           throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
         }
         if (global.declaration.typeParameters?.length) {
           throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
         }
+        const thread = global.declaration.threadContract?.thread
+          ?? (global.declaration.executorAffinity ? "main" : "local");
+        requireMainExecutorContext(
+          thread === "main",
+          expression.location,
+          `function value ${JSON.stringify(global.declaration.name)}`,
+          fileName,
+          state,
+        );
         return functionTypeName(
           global.declaration.parameters.map((parameter) => ({
             name: parameter.name,
@@ -8803,7 +8856,7 @@ function inferExpressionInner(
           global.declaration.errorType && !isGeneratorFunction(global.declaration)
             ? global.declaration.errorType.name
             : null,
-          global.declaration.threadContract?.thread ?? "local",
+          thread,
         );
       }
       if (global?.kind === "constant") {
@@ -12577,6 +12630,13 @@ function inferExpressionInner(
         }
         rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
         if (functionType) {
+          requireMainExecutorContext(
+            functionType.thread === "main",
+            expression.location,
+            `function value ${JSON.stringify(expression.callee.name)}`,
+            fileName,
+            state,
+          );
           state.expressionTypes.set(expression.callee.location.offset, String(underlyingType(localCallee)));
           checkArguments(
             functionTypeDeclaration(expression.callee.name, functionType, expression.callee.location),
@@ -16026,8 +16086,12 @@ function shareableTypeIssue(
   }
   const callable = parseFunctionType(actual);
   if (callable) {
-    return callable.thread === "any"
-      ? null
+    if (callable.thread === "any") return null;
+    return callable.thread === "main"
+      ? {
+          reason: `${path} contains a thread.main-isolated function value`,
+          help: "keep this value on thread.main, or use an `on thread.any` callable with a shareable capture graph",
+        }
       : {
           reason: `${path} contains an executor-local function value`,
           help: "declare the callable type `on thread.any` and satisfy its concurrent capture contract",

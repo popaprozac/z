@@ -13,7 +13,7 @@ export type FunctionType = {
    * contract than the ordinary executor-local default and therefore affects
    * source compatibility without changing the native call ABI.
    */
-  readonly thread: "local" | "any";
+  readonly thread: "local" | "main" | "any";
 };
 
 const prefix = "__z_function:";
@@ -41,7 +41,12 @@ export function parseFunctionType(name: string): FunctionType | null {
       || !["value", "in", "inout", "out"].includes(parameter.mode)
       || typeof parameter.type !== "string"
     ))) return null;
-    if (parsed.thread !== undefined && parsed.thread !== "local" && parsed.thread !== "any") return null;
+    if (
+      parsed.thread !== undefined
+      && parsed.thread !== "local"
+      && parsed.thread !== "main"
+      && parsed.thread !== "any"
+    ) return null;
     return { ...parsed, errorType: parsed.errorType ?? null, thread: parsed.thread ?? "local" };
   } catch {
     return null;
@@ -51,10 +56,14 @@ export function parseFunctionType(name: string): FunctionType | null {
 export function functionTypesCompatible(left: FunctionType, right: FunctionType): boolean {
   return left.returnType === right.returnType
     && left.errorType === right.errorType
-    // The left side is the required type. An arbitrary-thread callable may be
-    // used by an executor-local consumer, but the reverse would erase the
-    // environment's ownership and capture proof.
-    && (left.thread === "local" || right.thread === "any")
+    // The left side is the required type. An arbitrary-thread callable may
+    // satisfy either a local or main-only destination. A main-only callable
+    // remains distinct from an executor-local value so its placement proof
+    // cannot be erased by storage or parameter passing.
+    && (
+      left.thread === right.thread
+      || right.thread === "any"
+    )
     && left.parameters.length === right.parameters.length
     && left.parameters.every((parameter, index) => (
       parameter.mode === right.parameters[index].mode
@@ -87,7 +96,7 @@ export function displayFunctionType(
     return `${capability}${parameter.name}: ${display(parameter.type)}`;
   });
   const throws = functionType.errorType ? ` throws ${display(functionType.errorType)}` : "";
-  const thread = functionType.thread === "any" ? " on thread.any" : "";
+  const thread = functionType.thread === "local" ? "" : ` on thread.${functionType.thread}`;
   return `(${parameters.join(", ")}) => ${display(functionType.returnType)}${throws}${thread}`;
 }
 

@@ -1463,10 +1463,14 @@ thread transfer must still pass transfer checking, and executor-bound identity
 remains unusable outside its placement. Closure parameters and locals shadow
 outer bindings before capture forwarding is computed.
 
-The bootstrap reference count is single-threaded, matching the first class ARC
-tier. Explicit weak values can now be captured to break class/closure cycles.
-Inferred single-parameter syntax, weak capture-list sugar, direct strong
-capturing of `this`, atomic cross-thread environments, and automatic cycle
+An ordinary or `on thread.main` capturing environment uses executor-local ARC.
+The main-qualified type preserves construction, invocation, storage, and
+destruction affinity through aliases and aggregate fields; it may capture
+main-isolated state but cannot be weakened to an ordinary local callable or
+transferred to a worker. `on thread.any` uses atomic environment ownership and
+requires a recursively shareable capture graph. Explicit weak values can be
+captured to break class/closure cycles. Inferred single-parameter syntax, weak
+capture-list sugar, direct strong capturing of `this`, and automatic cycle
 handling remain later tiers.
 
 ## Strings, formatting, and diagnostics

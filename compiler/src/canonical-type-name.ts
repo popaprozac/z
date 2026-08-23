@@ -29,7 +29,7 @@ export function canonicalTypeName(name: string): string {
       return `${capability}${parameter.name}: ${canonicalTypeName(parameter.type)}`;
     });
     const throws = functionType.errorType ? ` throws ${canonicalTypeName(functionType.errorType)}` : "";
-    const thread = functionType.thread === "any" ? " on thread.any" : "";
+    const thread = functionType.thread === "local" ? "" : ` on thread.${functionType.thread}`;
     return `(${parameters.join(", ")}) => ${canonicalTypeName(functionType.returnType)}${throws}${thread}`;
   }
   return name;

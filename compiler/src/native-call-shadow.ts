@@ -3,6 +3,7 @@ import { canonicalTypeName } from "./canonical-type-name.ts";
 import type { SourceModuleBatch } from "./modules.ts";
 import type { NativeSemanticIndex } from "./native-semantic-index.ts";
 import {
+  callableExecutorAffinity,
   executorAffinityName,
   sameModuleFunctionSignature,
   stage0ConstructorSignature,
@@ -42,6 +43,7 @@ export function createNativeSemanticBridge(
   const sourceEnums = new Map<string, { readonly modulePath: string; readonly declaration: EnumDeclaration }>();
   const canonicalModulePathBySourcePath = new Map<string, string>();
   const sourceByModulePath = new Map<string, string>();
+  const programByModulePath = new Map(sourceBatch.modules.map((module) => [module.fileName, module.program]));
   for (const module of sourceBatch.modules) {
     sourceByModulePath.set(module.fileName, module.source);
     canonicalModulePathBySourcePath.set(module.fileName, module.fileName);
@@ -223,7 +225,10 @@ export function createNativeSemanticBridge(
       || !sourceField
       || !nativeField
       || nativeField.typeName !== canonicalTypeName(sourceField.type.name)
-      || nativeField.executorAffinity !== executorAffinityName(sourceField.executorAffinity)
+      || nativeField.executorAffinity !== (
+        executorAffinityName(sourceField.executorAffinity)
+        ?? callableExecutorAffinity(programByModulePath.get(source.modulePath)!, sourceField.type.name)
+      )
       || nativeField.visibility !== sourceField.visibility
       || nativeField.readonlyField !== sourceField.readonly
       || nativeField.hasDefault !== (Boolean(sourceField.defaultValue) || Boolean(sourceField.optional))

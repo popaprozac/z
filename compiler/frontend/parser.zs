@@ -564,11 +564,14 @@ function parseType(
     if (takeIf(tokens, inout current, TokenKind.onKeyword)) {
       const namespace = try expect(tokens, inout current, TokenKind.identifier, "`thread` after `on` in a function type");
       try expectKind(tokens, inout current, TokenKind.dot, "`.` after `thread`");
-      const member = try expect(tokens, inout current, TokenKind.identifier, "`any` after `thread.` in a function type");
-      if (namespace.text != "thread" || member.text != "any") {
-        throw fail(namespace, "function types currently support only the `on thread.any` callable contract");
+      const member = try expect(tokens, inout current, TokenKind.identifier, "`main` or `any` after `thread.` in a function type");
+      if (
+        namespace.text != "thread"
+        || (member.text != "main" && member.text != "any")
+      ) {
+        throw fail(namespace, "function types currently support only `on thread.main` and `on thread.any` callable contracts");
       }
-      output.append(" on thread.any");
+      output.append(` on thread.${member.text}`);
     }
     return TypeReference({
       name: output.finish(),

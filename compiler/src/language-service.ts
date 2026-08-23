@@ -1524,7 +1524,9 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     const callable = parseFunctionType(String(type));
     const callableContract = aliasType && callable?.thread === "any"
       ? `\n// ${displayServiceType(type, context)}; callable concurrently from arbitrary registered threads`
-      : "";
+      : aliasType && callable?.thread === "main"
+        ? `\n// ${displayServiceType(type, context)}; callable only with thread.main executor proof`
+        : "";
     return markdownHover(
       `${word.text}: ${aliasType ?? displayServiceType(type, context)}${provenance}${affinityDetail}${callableContract}`,
       source,

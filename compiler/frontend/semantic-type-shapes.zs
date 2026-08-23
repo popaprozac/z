@@ -373,6 +373,7 @@ export function nativeFunctionSignature(
   let functionTypeLength = functionType.byteLength;
   let threadContract = "";
   const anyThreadSuffix = " on thread.any";
+  const mainThreadSuffix = " on thread.main";
   if (
     functionTypeLength >= anyThreadSuffix.byteLength
     && functionType.copyBytes(
@@ -382,6 +383,15 @@ export function nativeFunctionSignature(
   ) {
     threadContract = "thread.any";
     functionTypeLength = functionTypeLength - anyThreadSuffix.byteLength;
+  } else if (
+    functionTypeLength >= mainThreadSuffix.byteLength
+    && functionType.copyBytes(
+      functionTypeLength - mainThreadSuffix.byteLength,
+      functionTypeLength
+    ) == mainThreadSuffix
+  ) {
+    threadContract = "thread.main";
+    functionTypeLength = functionTypeLength - mainThreadSuffix.byteLength;
   }
   let throwsAt = functionTypeLength;
   let returnParenthesisDepth: usize = 0;

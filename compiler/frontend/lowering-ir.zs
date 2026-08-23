@@ -11836,6 +11836,30 @@ function lowerExpressionContextual(
         none => {}
       }
     }
+    if (
+      tree.nodes[callableBinding].kind == ExpressionKind.memberExpression
+      && tree.nodes[callableBinding].children.length == 1
+    ) {
+      const receiver = tree.nodes[callableBinding].children[0];
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiver
+      )) {
+        some(ownerTypeName) => match (fieldTypeNameForOwner(
+          program,
+          importedTypes,
+          ownerTypeName,
+          tree.nodes[callableBinding].value
+        )) {
+          some(typeName) => callableCalleeType = move typeName;
+          none => {}
+        }
+        none => {}
+      }
+    }
     callableCalleeType = moduleCallableAliasTarget(
       program,
       importedTypes,
@@ -17903,15 +17927,25 @@ function lowerStatementCore(
           }
           if (arena.nodes[index].kind == StatementKind.assignmentStatement) {
             if (expectedTypeName.byteLength > 0) {
-              loweredExpression = try wrapOwnedStorage(
+              const assignmentType = try lowerModuleTypeName(
                 program,
                 importedTypes,
-                tree,
-                sourceRoot,
-                expectedTypeName,
-                loweredExpression,
-                inout expressions
+                expectedTypeName
               );
+              // Contextual callable lowering already turns borrowed stored
+              // handles into one owned retain. Wrapping the assignment again
+              // would retain twice and leak one environment reference.
+              if (assignmentType.kind != LoweredTypeKind.functionType) {
+                loweredExpression = try wrapOwnedStorage(
+                  program,
+                  importedTypes,
+                  tree,
+                  sourceRoot,
+                  expectedTypeName,
+                  loweredExpression,
+                  inout expressions
+                );
+              }
             } else {
               loweredExpression = wrapImplicitOwnedTransfer(
                 tree,

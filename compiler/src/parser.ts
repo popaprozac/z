@@ -77,19 +77,19 @@ export function parse(tokens: Token[], fileName: string): Program {
       expect("fatArrow", "`=>` in a function type");
       const returnType = parseType();
       const errorType = match("throws") ? parseType() : null;
-      let thread: "local" | "any" = "local";
+      let thread: "local" | "main" | "any" = "local";
       if (match("on")) {
         const namespace = expect("identifier", "`thread` after `on` in a function type");
         expect("dot", "`.` after `thread`");
-        const member = expect("identifier", "`any` after `thread.` in a function type");
-        if (namespace.text !== "thread" || member.text !== "any") {
+        const member = expect("identifier", "`main` or `any` after `thread.` in a function type");
+        if (namespace.text !== "thread" || (member.text !== "main" && member.text !== "any")) {
           throw new DiagnosticError(
             fileName,
             namespace.location,
-            "function types currently support only the `on thread.any` callable contract",
+            "function types currently support only `on thread.main` and `on thread.any` callable contracts",
           );
         }
-        thread = "any";
+        thread = member.text;
       }
       return { name: functionTypeName(parameters, returnType.name, errorType?.name ?? null, thread), location };
     }

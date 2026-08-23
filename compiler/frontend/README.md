@@ -738,10 +738,13 @@ long-lived ARC `Router` class. Synchronous throwing methods lower through the
 same `Result<T, E>` ABI as ordinary throwing functions, including methods that
 are not called in the current module. Collection cleanup prototypes are emitted
 before aggregate destructors so classes and structs can own Array, Map, or Set
-fields without declaration-order sensitivity. This first environment counter
-is executor-local. Async throwing methods, sending a general stored callable
-across native threads, block-bodied first-class closures, and suspending
-callable bodies remain separate lowering tiers.
+fields without declaration-order sensitivity. Ordinary and `on thread.main`
+environment counters are executor-local; main-qualified aliases preserve
+construction, invocation, aggregate storage, and field-call lowering under
+explicit main proof. `on thread.any` environments use atomic ownership for
+recursively shareable captures. Async throwing methods, sending a general local
+or main-only callable across native threads, block-bodied first-class closures,
+and suspending callable bodies remain separate lowering tiers.
 This corpus is the positive half of the semantic authority gate above. Each
 direct `self-host-emit-*.zs` fixture must also be classified as a differential
 root, a negative semantic fixture, a specialized protocol/diagnostic fixture,

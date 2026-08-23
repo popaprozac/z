@@ -3244,6 +3244,94 @@ test("publishes frozen routers with explicit thread-any callable contracts", () 
   assert.match(localDiagnostic?.message ?? "", /executor-local function value/);
 });
 
+test("preserves thread.main placement on stored callable values", () => {
+  const example = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-main-callable.zs",
+  );
+  const source = readFileSync(example, "utf8");
+  assert.equal(diagnostics(source, example).length, 0);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const handlerOffset = source.indexOf("type Handler") + "type ".length + 1;
+  assert.match(
+    hover(source, example, handlerOffset)?.contents.value ?? "",
+    /\(\) => i32 on thread\.main/,
+  );
+  const capturedOffset = source.indexOf("const captured") + "const ".length + 1;
+  assert.match(
+    hover(source, example, capturedOffset)?.contents.value ?? "",
+    /captured: Handler[\s\S]*callable only with thread\.main executor proof/,
+  );
+  const registryOffset = source.indexOf("const registry") + "const ".length + 1;
+  assert.match(
+    hover(source, example, registryOffset)?.contents.value ?? "",
+    /registry: Registry[\s\S]*executor-isolated to thread\.main[\s\S]*handler/,
+  );
+  const completionSource = source.replace("on thread.main;", "on thread.m;");
+  const completionOffset = completionSource.indexOf("thread.m;") + "thread.m".length;
+  assert.ok(completions(completionSource, example, completionOffset).some((item) => item.label === "main"));
+
+  const cases = [
+    {
+      name: "construction-off-main",
+      source: `
+        import { thread } from "std/thread";
+        type Handler = () => i32 on thread.main;
+        function build(): Handler {
+          const handler: Handler = move () => 42;
+          return handler;
+        }
+        function main(): i32 on thread.main { return 0; }
+      `,
+      expected: /function value construction requires thread\.main/,
+    },
+    {
+      name: "named-reference-off-main",
+      source: `
+        import { thread } from "std/thread";
+        type Handler = () => i32 on thread.main;
+        function selected(): i32 on thread.main { return 42; }
+        function build(): Handler { return selected; }
+        function main(): i32 on thread.main { return 0; }
+      `,
+      expected: /function value "selected" requires thread\.main/,
+    },
+    {
+      name: "invoke-off-main",
+      source: `
+        import { thread } from "std/thread";
+        type Handler = () => i32 on thread.main;
+        function invoke(in handler: Handler): i32 { return handler(); }
+        function main(): i32 on thread.main { return 0; }
+      `,
+      expected: /function value "handler" requires thread\.main/,
+    },
+    {
+      name: "erase-placement",
+      source: `
+        import { thread } from "std/thread";
+        type Handler = () => i32 on thread.main;
+        type LocalHandler = () => i32;
+        function selected(): i32 on thread.main { return 42; }
+        function main(): i32 on thread.main {
+          const handler: Handler = selected;
+          const local: LocalHandler = handler;
+          return local();
+        }
+      `,
+      expected: /expected \(\) => i32, found \(\) => i32 on thread\.main/,
+    },
+  ] as const;
+  for (const item of cases) {
+    const diagnostic = diagnostics(item.source, `${item.name}.zs`)[0];
+    assert.equal(diagnostic?.code, item.name === "erase-placement" ? undefined : "Z0711", item.name);
+    assert.match(diagnostic?.message ?? "", item.expected, item.name);
+  }
+});
+
 test("applies readonly aggregate shorthand to every stored field", () => {
   const source = `
     export readonly struct Snapshot<T> {

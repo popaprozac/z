@@ -960,9 +960,39 @@ are rejected.
 
 A thread-any callable may be passed to an ordinary executor-local function
 type; the reverse is rejected because it would erase the stronger capture and
-ownership proof. This first tier covers synchronous free functions and
-contextually typed expression closures. Methods, suspending callables, and
-other executor-specific function types remain later extensions.
+ownership proof.
+
+A stored callable may instead preserve main-executor isolation:
+
+```z
+type LifecycleOperation = () => i32 on thread.main;
+
+function prepareWindow(): i32 on thread.main {
+  return 42;
+}
+
+struct LifecycleEntry {
+  start: LifecycleOperation;
+}
+
+function main(): i32 on thread.main {
+  const operation: LifecycleOperation = prepareWindow;
+  const entry = LifecycleEntry({ start: operation });
+  return entry.start() - 42;
+}
+```
+
+`on thread.main` also does not schedule or hop. It preserves the proof required
+to construct, invoke, store, and destroy the callable environment. Aggregates
+containing such a callable inherit main lifecycle affinity. A `thread.any`
+callable may satisfy a `thread.main` destination, but a main-only callable
+cannot be weakened to an ordinary executor-local type or transferred to a
+worker. Contextually typed `move` closures receive main proof in their bodies,
+so they may safely capture and use main-isolated state.
+
+Both callable contracts currently cover synchronous free functions and
+contextually typed expression closures. Methods and suspending callable values
+remain later extensions.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:

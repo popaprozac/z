@@ -375,12 +375,12 @@ function validateTypeNameShape(
   match (nativeFunctionSignature(name)) {
     some(signature) => {
       if (
-        signature.threadContract == "thread.any"
+        signature.threadContract.byteLength > 0
         && !moduleImportsThreadCapability(module)
       ) throw validationError(
         ModuleResolveErrorKind.typeMismatch,
         module.path,
-        "`on thread.any` function types require `import { thread } from \"std/thread\"`",
+        "`on thread.any` and `on thread.main` function types require `import { thread } from \"std/thread\"`",
         line,
         column
       );

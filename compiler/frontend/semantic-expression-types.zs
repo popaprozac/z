@@ -97,7 +97,8 @@ function nativeFunctionSignaturesCompatible(
               && actualSignature.errorType.byteLength == 0
             )
             || (
-              expectedSignature.threadContract == "thread.any"
+              expectedSignature.threadContract
+                != actualSignature.threadContract
               && actualSignature.threadContract != "thread.any"
             )
           ) return false;

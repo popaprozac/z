@@ -13944,6 +13944,84 @@ test("preserves thread-any callable contracts and emits atomic closure environme
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("preserves thread.main callable placement through native resolution and emission", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-thread-main-callable.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  assert.match(parity.stdout, /native frontend hybrid/);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /environment->refcount \+= 1/);
+  assert.match(emission.stdout, /environment->refcount -= 1/);
+  assert.doesNotMatch(emission.stdout, /__atomic_(?:add|sub)_fetch\(&environment->refcount/);
+
+  const directory = mkdtempSync("/tmp/z-thread-main-callable-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+
+  const invalidCases = [
+    {
+      name: "construct-off-main",
+      source:
+        "import { thread } from \"std/thread\";\n"
+        + "type Handler = () => i32 on thread.main;\n"
+        + "function build(): Handler { const value: Handler = move () => 42; return value; }\n"
+        + "function main(): i32 on thread.main { return 0; }\n",
+      expected: /function value construction.*requires thread\.main/,
+    },
+    {
+      name: "reference-off-main",
+      source:
+        "import { thread } from \"std/thread\";\n"
+        + "type Handler = () => i32 on thread.main;\n"
+        + "function selected(): i32 on thread.main { return 42; }\n"
+        + "function build(): Handler { return selected; }\n"
+        + "function main(): i32 on thread.main { return 0; }\n",
+      expected: /function value "selected".*requires thread\.main/,
+    },
+    {
+      name: "invoke-off-main",
+      source:
+        "import { thread } from \"std/thread\";\n"
+        + "type Handler = () => i32 on thread.main;\n"
+        + "function invoke(in handler: Handler): i32 { return handler(); }\n"
+        + "function main(): i32 on thread.main { return 0; }\n",
+      expected: /function "handler".*requires thread\.main/,
+    },
+  ] as const;
+  for (const invalidCase of invalidCases) {
+    const invalidInput = resolve(directory, `${invalidCase.name}.zs`);
+    writeFileSync(invalidInput, invalidCase.source);
+    const invalid = spawnSync(
+      process.execPath,
+      [cli, "self-host-resolve", invalidInput],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 1, invalidCase.name);
+    assert.match(invalid.stderr, invalidCase.expected, `${invalidCase.name}\n${invalid.stderr}`);
+  }
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves throwing closure and transparent callable-alias effects natively", () => {
   const cases = [
     "examples/language/basics/throwing-function-values.zs",

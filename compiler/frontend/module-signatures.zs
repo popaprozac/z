@@ -21,7 +21,39 @@ import {
   ModuleTypeSignature,
   ModuleVariantSignature,
 } from "./semantic-model.zs";
-import { genericTypeShape } from "./semantic-type-shapes.zs";
+import {
+  genericTypeShape,
+  nativeFunctionSignature,
+} from "./semantic-type-shapes.zs";
+
+function callableExecutorAffinityInner(
+  in program: Program,
+  in typeName: String,
+  depth: usize
+): String {
+  if (depth > 32) return "";
+  match (nativeFunctionSignature(typeName)) {
+    some(signature) => return signature.threadContract == "thread.main"
+      ? "thread.main"
+      : "";
+    none => {}
+  }
+  for (const alias of program.typeAliases) {
+    if (alias.name == typeName) return callableExecutorAffinityInner(
+      program,
+      alias.target.name,
+      depth + 1
+    );
+  }
+  return "";
+}
+
+function callableExecutorAffinity(
+  in program: Program,
+  in typeName: String
+): String {
+  return callableExecutorAffinityInner(program, typeName, 0);
+}
 
 function parameterModeName(mode: ParameterMode): String {
   return match (mode) {
@@ -908,13 +940,13 @@ export function programTypeSignature(
           some(_) => hasDefault = true;
           none => {}
         }
+        const executorAffinity = field.executorAffinity.byteLength > 0
+          ? field.executorAffinity.copyBytes(0, field.executorAffinity.byteLength)
+          : callableExecutorAffinity(program, field.type.name);
         fields.push(ModuleFieldSignature({
           name: field.name.copyBytes(0, field.name.byteLength),
           typeName: field.type.name.copyBytes(0, field.type.name.byteLength),
-          executorAffinity: field.executorAffinity.copyBytes(
-            0,
-            field.executorAffinity.byteLength
-          ),
+          executorAffinity,
           visibility: visibilityName(field.visibility),
           readonlyField: field.readonlyField,
           hasDefault,

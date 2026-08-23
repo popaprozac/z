@@ -551,9 +551,32 @@ executor-routed final release already preserve its lifecycle.
 The current executable tier requires both synchronous and async isolated calls
 to occur under statically proven main context. Automatic scheduling when an
 off-main caller invokes an async isolated function remains later lowering;
-today the caller enters through `await on thread.main`. Isolated function
-values are rejected rather than erasing the effect from an ordinary function
-type.
+today the caller enters through `await on thread.main`.
+
+Synchronous function values preserve this effect explicitly:
+
+```z
+type MainOperation = () => i32 on thread.main;
+
+struct OperationEntry {
+  run: MainOperation;
+}
+
+function readWindow(): i32 on thread.main { /* ... */ }
+
+function main(): i32 on thread.main {
+  const operation: MainOperation = readWindow;
+  const entry = OperationEntry({ run: operation });
+  return entry.run();
+}
+```
+
+Construction and invocation require main proof, and storing the callable gives
+the containing aggregate main lifecycle affinity. The qualifier schedules
+nothing: an off-main caller must still use an explicit placement operation.
+An `on thread.any` callable may satisfy this destination, but a main-only value
+cannot be weakened to an ordinary local callable or transferred to a worker.
+Suspending and method-valued callables remain later tiers.
 
 ## Member-level isolation
 

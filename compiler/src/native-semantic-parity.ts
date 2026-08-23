@@ -1,5 +1,6 @@
 import { canonicalTypeName } from "./canonical-type-name.ts";
 import type { FunctionDeclaration, StructDeclaration } from "./ast.ts";
+import { parseFunctionType } from "./function-types.ts";
 import type { SourceModuleBatch, SourceModuleBatchModule } from "./modules.ts";
 import { NativeSemanticIndex } from "./native-semantic-index.ts";
 import type { Stage1ModuleFunctionSignature, Stage1ModuleGraph, Stage1ModuleSymbol } from "./self-hosting.ts";
@@ -9,6 +10,24 @@ export type NativeSemanticEvidence = {
   readonly index: NativeSemanticIndex;
   readonly queryCount: number;
 };
+
+export function callableExecutorAffinity(
+  program: SourceModuleBatchModule["program"],
+  typeName: string,
+): string | null {
+  const aliases = new Map(program.typeAliases.map((alias) => [alias.name, alias.target.name]));
+  const visiting = new Set<string>();
+  let current = typeName;
+  while (!visiting.has(current)) {
+    visiting.add(current);
+    const callable = parseFunctionType(current);
+    if (callable) return callable.thread === "main" ? "thread.main" : null;
+    const target = aliases.get(current);
+    if (!target) return null;
+    current = target;
+  }
+  return null;
+}
 
 export function stage0FunctionSignature(declaration: FunctionDeclaration): Stage1ModuleFunctionSignature {
   return {
@@ -138,7 +157,8 @@ function stage0ModuleSymbols(
       fields: declaration.fields.map((field) => ({
         name: field.name,
         typeName: canonicalTypeName(field.type.name),
-        executorAffinity: executorAffinityName(field.executorAffinity),
+        executorAffinity: executorAffinityName(field.executorAffinity)
+          ?? callableExecutorAffinity(program, field.type.name),
         visibility: field.visibility,
         readonlyField: field.readonly,
         hasDefault: Boolean(field.defaultValue) || Boolean(field.optional),
