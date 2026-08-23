@@ -1,0 +1,68 @@
+---
+title: Z systems language
+description: Familiar syntax, native performance, memory-safe ownership, and direct C-family interop.
+template: splash
+hero:
+  tagline: Familiar syntax. Native performance. Checked interop.
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: Explore interop
+      link: /interop/
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+Z is an experimental native systems language with TypeScript-inspired syntax,
+deterministic cleanup, typed errors, memory-safe ownership, and direct interop
+with C, Objective-C, and selected C++ and Swift surfaces.
+
+:::caution[Pre-alpha]
+Z is a language-design laboratory with a working Stage-0 compiler and a
+fixed-point native compiler. It is not yet a production toolchain, and source
+compatibility is not guaranteed.
+:::
+
+<CardGrid>
+  <Card title="Readable ownership">
+    Use explicit `in`, `inout`, `out`, `move`, `copy`, and `view` capabilities
+    without spelling lifetimes throughout ordinary application code.
+  </Card>
+  <Card title="Direct native APIs">
+    Import real C-family headers, preserve native layouts and calls, and add
+    `.zd` contracts only when a header cannot express the facts Z needs.
+  </Card>
+  <Card title="Familiar, not JavaScript">
+    Z borrows TypeScript's approachable surface—not JavaScript's runtime model.
+    It compiles through readable C-family output to native binaries.
+  </Card>
+</CardGrid>
+
+```z
+import console from "std/console";
+
+struct Point {
+  x: i32;
+  y: i32;
+}
+
+function main(): i32 {
+  const point = Point({ x: 20, y: 22 });
+  console.log(`Z says ${point.x + point.y}`);
+  return 0;
+}
+```
+
+The core pipeline is intentionally conventional:
+
+```text
+Z source -> semantic and ownership analysis -> C-family source -> Clang -> native binary
+```
+
+That backend is part of the interop strategy: supported native calls remain
+direct calls rather than passing through a VM or universal foreign-function
+runtime.
