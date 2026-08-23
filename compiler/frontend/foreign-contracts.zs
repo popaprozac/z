@@ -1,5 +1,8 @@
 import {
   RawForeignModuleDeclarations,
+  RawForeignObjCAvailability,
+  RawForeignObjCMethod,
+  RawForeignObjCParameter,
   RawForeignParameter,
   RawForeignType,
 } from "./foreign-declaration-protocol.zs";
@@ -12,7 +15,10 @@ import {
   ModuleFunctionSignature,
   ModuleTypeParameterConstraint,
 } from "./semantic-model.zs";
-import { nativeFunctionTypeName } from "./semantic-type-shapes.zs";
+import {
+  nativeFunctionTypeName,
+  stringStartsWith,
+} from "./semantic-type-shapes.zs";
 import { TextBuffer } from "std/text";
 
 // Native .zd slice: inferred scalar/record, value-resource, opaque-handle,
@@ -154,11 +160,63 @@ export struct NativeForeignConstantContract {
   typeName: String;
 }
 
+export struct NativeForeignObjCAvailabilityContract {
+  platform: Option<String>;
+  introduced: Option<String>;
+  deprecated: boolean;
+  deprecatedVersion: Option<String>;
+  obsoleted: Option<String>;
+  unavailable: boolean;
+  message: Option<String>;
+}
+
+export struct NativeForeignObjCParameterContract {
+  name: String;
+  typeName: String;
+  nativeType: String;
+  protocols: Array<String>;
+}
+
+export struct NativeForeignObjCMethodContract {
+  name: String;
+  selector: String;
+  instance: boolean;
+  returnsInstanceType: boolean;
+  returnType: String;
+  nativeReturnType: String;
+  required: boolean;
+  executorAffinity: String;
+  parameters: Array<NativeForeignObjCParameterContract>;
+  availability: Array<NativeForeignObjCAvailabilityContract>;
+  asyncCallbackParameter: Option<usize>;
+  asyncResultParameter: Option<usize>;
+  asyncErrorParameter: Option<usize>;
+  representable: boolean;
+}
+
+export struct NativeForeignObjCInterfaceContract {
+  name: String;
+  nativeName: String;
+  superName: String;
+  executorAffinity: String;
+  methods: Array<NativeForeignObjCMethodContract>;
+}
+
+export struct NativeForeignObjCProtocolContract {
+  name: String;
+  nativeName: String;
+  inherited: Array<String>;
+  executorAffinity: String;
+  methods: Array<NativeForeignObjCMethodContract>;
+}
+
 export struct NativeForeignContractSet {
   moduleSpecifier: String;
   types: Array<NativeForeignTypeContract>;
   constants: Array<NativeForeignConstantContract>;
   functions: Array<NativeForeignFunctionContract>;
+  objectiveCInterfaces: Array<NativeForeignObjCInterfaceContract>;
+  objectiveCProtocols: Array<NativeForeignObjCProtocolContract>;
 }
 
 struct ForeignContractCursor {
@@ -2561,6 +2619,256 @@ function rawContractFunctionExists(
   return false;
 }
 
+function copiedOptionalText(in value: Option<String>): Option<String> {
+  return match (in value) {
+    some(text) => Option.some(text.copyBytes(0, text.byteLength));
+    none => Option<String>.none;
+  };
+}
+
+function relativeObjCTypeName(
+  in declarations: RawForeignModuleDeclarations,
+  in typeName: String
+): String {
+  if (stringStartsWith(typeName, "__z_objc:nullable:")) {
+    const target = typeName.copyBytes(18, typeName.byteLength);
+    const relative = relativeObjCTypeName(declarations, target);
+    return `${relative} | null`;
+  }
+  if (stringStartsWith(typeName, "__z_objc:nonnull:")) {
+    const target = typeName.copyBytes(17, typeName.byteLength);
+    return relativeObjCTypeName(declarations, target);
+  }
+  for (const interface_ of declarations.objectiveCInterfaces) {
+    if (typeName == interface_.typeName) {
+      return interface_.exportName.copyBytes(
+        0,
+        interface_.exportName.byteLength
+      );
+    }
+  }
+  for (const declaration of declarations.types) {
+    if (typeName == declaration.typeName) {
+      return declaration.exportName.copyBytes(
+        0,
+        declaration.exportName.byteLength
+      );
+    }
+  }
+  return typeName.copyBytes(0, typeName.byteLength);
+}
+
+function normalizedObjCAvailability(
+  in availability: RawForeignObjCAvailability
+): NativeForeignObjCAvailabilityContract {
+  return NativeForeignObjCAvailabilityContract({
+    platform: copiedOptionalText(availability.platform),
+    introduced: copiedOptionalText(availability.introduced),
+    deprecated: availability.deprecated,
+    deprecatedVersion: copiedOptionalText(availability.deprecatedVersion),
+    obsoleted: copiedOptionalText(availability.obsoleted),
+    unavailable: availability.unavailable,
+    message: copiedOptionalText(availability.message),
+  });
+}
+
+function normalizedObjCParameter(
+  in declarations: RawForeignModuleDeclarations,
+  in parameter: RawForeignObjCParameter
+): NativeForeignObjCParameterContract {
+  let name = `argument${parameter.parameterIndex + 1}`;
+  match (in parameter.name) {
+    some(value) => name = value.copyBytes(0, value.byteLength);
+    none => {}
+  }
+  let protocols = Array<String>();
+  let protocolIndex: usize = 0;
+  while (protocolIndex < parameter.protocolCount) {
+    const protocol = view declarations.objectiveCParameterProtocols[
+      parameter.protocolStart + protocolIndex
+    ];
+    protocols.push(protocol.copyBytes(0, protocol.byteLength));
+    protocolIndex = protocolIndex + 1;
+  }
+  return NativeForeignObjCParameterContract({
+    name,
+    typeName: relativeObjCTypeName(declarations, parameter.typeName),
+    nativeType: parameter.nativeType.copyBytes(
+      0,
+      parameter.nativeType.byteLength
+    ),
+    protocols,
+  });
+}
+
+function normalizedObjCMethod(
+  in declarations: RawForeignModuleDeclarations,
+  in method: RawForeignObjCMethod,
+  in ownerType: String
+): NativeForeignObjCMethodContract {
+  let parameters = Array<NativeForeignObjCParameterContract>();
+  let representable = method.returnTypeName.byteLength > 0;
+  let parameterIndex: usize = 0;
+  while (parameterIndex < method.parameterCount) {
+    const parameter = normalizedObjCParameter(
+      declarations,
+      declarations.objectiveCParameters[
+        method.parameterStart + parameterIndex
+      ]
+    );
+    if (parameter.typeName.byteLength == 0) representable = false;
+    parameters.push(move parameter);
+    parameterIndex = parameterIndex + 1;
+  }
+  let availability = Array<NativeForeignObjCAvailabilityContract>();
+  let availabilityIndex: usize = 0;
+  while (availabilityIndex < method.availabilityCount) {
+    availability.push(normalizedObjCAvailability(
+      declarations.objectiveCAvailability[
+        method.availabilityStart + availabilityIndex
+      ]
+    ));
+    availabilityIndex = availabilityIndex + 1;
+  }
+  let returnType = relativeObjCTypeName(
+    declarations,
+    method.returnTypeName
+  );
+  if (method.returnsInstanceType) {
+    returnType = ownerType.copyBytes(0, ownerType.byteLength);
+  }
+  let executorAffinity = "";
+  match (in method.executorAffinity) {
+    some(affinity) => {
+      if (affinity == "main") executorAffinity = "thread.main";
+      else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
+    }
+    none => {}
+  }
+  return NativeForeignObjCMethodContract({
+    name: method.baseName.copyBytes(0, method.baseName.byteLength),
+    selector: method.selector.copyBytes(0, method.selector.byteLength),
+    instance: method.instance,
+    returnsInstanceType: method.returnsInstanceType,
+    returnType,
+    nativeReturnType: method.returnNativeType.copyBytes(
+      0,
+      method.returnNativeType.byteLength
+    ),
+    required: method.required,
+    executorAffinity,
+    parameters,
+    availability,
+    asyncCallbackParameter: method.asyncCallbackParameter,
+    asyncResultParameter: method.asyncResultParameter,
+    asyncErrorParameter: method.asyncErrorParameter,
+    representable,
+  });
+}
+
+function normalizedObjCMethods(
+  in declarations: RawForeignModuleDeclarations,
+  methodStart: usize,
+  methodCount: usize,
+  in ownerType: String
+): Array<NativeForeignObjCMethodContract> {
+  let methods = Array<NativeForeignObjCMethodContract>();
+  let methodIndex: usize = 0;
+  while (methodIndex < methodCount) {
+    methods.push(normalizedObjCMethod(
+      declarations,
+      declarations.objectiveCMethods[methodStart + methodIndex],
+      ownerType
+    ));
+    methodIndex = methodIndex + 1;
+  }
+  return methods;
+}
+
+function normalizedObjCInterfaces(
+  in declarations: RawForeignModuleDeclarations
+): Array<NativeForeignObjCInterfaceContract> {
+  let interfaces = Array<NativeForeignObjCInterfaceContract>();
+  for (const declaration of declarations.objectiveCInterfaces) {
+    let superName = "";
+    match (in declaration.superName) {
+      some(name) => superName = name.copyBytes(0, name.byteLength);
+      none => {}
+    }
+    let executorAffinity = "";
+    match (in declaration.executorAffinity) {
+      some(affinity) => {
+        if (affinity == "main") executorAffinity = "thread.main";
+        else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
+      }
+      none => {}
+    }
+    interfaces.push(NativeForeignObjCInterfaceContract({
+      name: declaration.exportName.copyBytes(
+        0,
+        declaration.exportName.byteLength
+      ),
+      nativeName: declaration.className.copyBytes(
+        0,
+        declaration.className.byteLength
+      ),
+      superName,
+      executorAffinity,
+      methods: normalizedObjCMethods(
+        declarations,
+        declaration.methodStart,
+        declaration.methodCount,
+        declaration.exportName
+      ),
+    }));
+  }
+  return interfaces;
+}
+
+function normalizedObjCProtocols(
+  in declarations: RawForeignModuleDeclarations
+): Array<NativeForeignObjCProtocolContract> {
+  let protocols = Array<NativeForeignObjCProtocolContract>();
+  for (const declaration of declarations.objectiveCProtocols) {
+    let inherited = Array<String>();
+    let inheritedIndex: usize = 0;
+    while (inheritedIndex < declaration.inheritedCount) {
+      const name = view declarations.objectiveCProtocolInheritance[
+        declaration.inheritedStart + inheritedIndex
+      ];
+      inherited.push(name.copyBytes(0, name.byteLength));
+      inheritedIndex = inheritedIndex + 1;
+    }
+    let executorAffinity = "";
+    match (in declaration.executorAffinity) {
+      some(affinity) => {
+        if (affinity == "main") executorAffinity = "thread.main";
+        else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
+      }
+      none => {}
+    }
+    protocols.push(NativeForeignObjCProtocolContract({
+      name: declaration.exportName.copyBytes(
+        0,
+        declaration.exportName.byteLength
+      ),
+      nativeName: declaration.protocolName.copyBytes(
+        0,
+        declaration.protocolName.byteLength
+      ),
+      inherited,
+      executorAffinity,
+      methods: normalizedObjCMethods(
+        declarations,
+        declaration.methodStart,
+        declaration.methodCount,
+        declaration.exportName
+      ),
+    }));
+  }
+  return protocols;
+}
+
 export function normalizeForeignContracts(
   contracts: RawForeignContractSet,
   in declarations: RawForeignModuleDeclarations,
@@ -3459,5 +3767,7 @@ export function normalizeForeignContracts(
     types,
     constants,
     functions,
+    objectiveCInterfaces: normalizedObjCInterfaces(declarations),
+    objectiveCProtocols: normalizedObjCProtocols(declarations),
   });
 }

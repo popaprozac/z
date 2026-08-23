@@ -2,9 +2,10 @@ import type {
   ForeignAvailability,
   ForeignModuleDeclarations,
   ForeignObjCMethod,
+  ForeignType,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 8;
+const protocolVersion = 9;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -27,6 +28,20 @@ function boolean(value: boolean): string {
 
 function optionalNumber(value: number | null): string {
   return value === null ? "0" : `1${hexNumber(value)}`;
+}
+
+function semanticTypeName(type: ForeignType): string {
+  if (type.kind === "z") return type.name;
+  if (type.kind === "nullPointer") return "null";
+  if (type.kind === "selector") return "objc.Selector";
+  if (type.kind === "swiftString") return "Swift.String";
+  if (type.kind === "named") return type.type.typeName;
+  if (type.kind === "reference") return type.type.typeName;
+  if (type.kind === "object") return type.typeName;
+  if (type.kind === "pointer") return type.typeName;
+  if (type.kind === "pointerOut") return type.pointer.typeName;
+  if (type.kind === "scalarPointer") return type.typeName;
+  return "";
 }
 
 function availabilityRecord(
@@ -52,7 +67,9 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 8 carries Objective-C interfaces, protocols, methods, method
+ * Version 9 adds the producer's semantic Z type identity beside every
+ * Objective-C method ABI spelling, preserving nullability and imported object
+ * identity for native semantic normalization. Version 8 carries Objective-C interfaces, protocols, methods, method
  * parameters, protocol-qualified `id<...>` evidence, availability, and async
  * projection indices into the native frontend. Properties remain a later
  * protocol slice. Version 7 retained every field of an otherwise-supported C record using its
@@ -224,6 +241,7 @@ export function encodeForeignFunctionDeclarationStream(
         boolean(method.instance),
         boolean(method.returnsInstanceType),
         text(method.returnType.cName),
+        text(semanticTypeName(method.returnType)),
         boolean(required),
         optionalText(source?.fileName),
         hexNumber(source?.line ?? 0),
@@ -246,6 +264,7 @@ export function encodeForeignFunctionDeclarationStream(
           hexNumber(parameterIndex),
           optionalText(parameter.name),
           text(parameter.type.cName),
+          text(semanticTypeName(parameter.type)),
           hexNumber(parameter.protocols?.length ?? 0),
           ...(parameter.protocols ?? []).map(text),
         ].join(""));

@@ -1552,16 +1552,19 @@ The executable fixture covers construction, mutation through a pointer, owned
 copying, explicit move-to-release, implicit scope cleanup, alias identity,
 borrowed observation, borrowed escape rejection, and use-after-move.
 
-`ZFDCL` version 8 begins the fixed-point Objective-C carry. The Clang producer
+`ZFDCL` version 9 completes the fixed-point Objective-C semantic carry. The Clang producer
 now frames interfaces, protocols, inherited protocol names, selectors,
 instance/class method shape, exact return and parameter spellings,
 method-parameter `id<Protocol>` qualifiers, executor affinity, availability,
-and async projection indices. A Z-native decoder validates the real
+async projection indices, and the producer's semantic type/nullability identity.
+A Z-native decoder validates the real
 `ZRegistrationOwner` fixture and proves that `addHandler:name:` retains its
-`ZRegistrationHandler` qualifier as owned flat Z data. This closes the
-metadata-transport half of `objc.register`; native semantic normalization,
-Objective-C properties, and Objective-C/Objective-C++ emission remain the next
-fixed-point layers.
+`ZRegistrationHandler` qualifier as owned flat Z data. Native normalization now
+attaches interfaces as reference-class contracts and protocols as trait
+contracts, preserves selector-specific facts, and makes `objc.register`
+protocol-conformance and stable-teardown rejection native-authoritative.
+Objective-C properties, header-only native-driver discovery, and
+Objective-C/Objective-C++ emission remain the next fixed-point layers.
 
 The following native slice crossed opaque pointer owners without pretending
 they were record values. A `.zd` `deinit` fact on a direct nullable result or
@@ -3418,11 +3421,14 @@ general `objc.register({ add, remove })` guard. It validates the native pair and
 Z protocol conformance, owns the receiver, generated adapter, and controller,
 and unregisters exactly once during cleanup. A runtime fixture proves
 add/callback/remove ordering, while a real WebKit example proves the SDK shape.
-The remaining boundary is fixed-point use: version 8 now carries Objective-C
-interfaces, protocols, methods, and `id<Protocol>` qualifiers into owned native
-Z data, but native semantic normalization and Objective-C emission do not yet
-consume them. Zapp therefore retains its temporary Objective-C adapter until
-those compiler layers land rather than weakening the lifetime model.
+The remaining boundary is fixed-point emission: version 9 carries Objective-C
+interfaces, protocols, methods, `id<Protocol>` qualifiers, and semantic type
+identity into owned native Z data, and native semantic normalization now
+consumes that graph. A fixed-point positive fixture plus protocol-owner and
+teardown negatives prove `objc.register` no longer relies on Stage 0 fallback.
+Native Objective-C emission does not yet consume those resolutions, so Zapp
+retains its temporary Objective-C adapter until that final compiler layer lands
+rather than weakening the lifetime model.
 
 The probe also exposed a smaller importer identity gap: AppKit's `NSRect` and
 WebKit's `CGRect` are ABI aliases, but their namespace-qualified source names do

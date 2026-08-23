@@ -15,6 +15,8 @@ import {
 import { substituteGenericType } from "./semantic-type-ownership.zs";
 import {
   ModuleFunctionSignature,
+  ModuleMethodSignature,
+  ModuleObjCParameterProtocolSignature,
   ModuleSymbolKind,
   ModuleTypeParameterConstraint,
   ResolvedModule,
@@ -79,6 +81,50 @@ export struct NativeMethodCallShape {
   ownerTypeArguments: Array<String>;
   ownerTypeParameterConstraints: Array<ModuleTypeParameterConstraint>;
   signature: ModuleFunctionSignature;
+  objectiveCSelector: String;
+  objectiveCParameterNativeTypes: Array<String>;
+  objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature>;
+}
+
+function objcSelectorLabelAt(in selector: String, target: usize): String {
+  if (target == 0) return "";
+  let segment: usize = 0;
+  let start: usize = 0;
+  let index: usize = 0;
+  while (index < selector.byteLength) {
+    if (selector.byteAt(index) == 58) {
+      if (segment == target) return selector.copyBytes(start, index);
+      segment = segment + 1;
+      start = index + 1;
+    }
+    index = index + 1;
+  }
+  return "";
+}
+
+function objcMethodLabelsMatch(
+  in method: ModuleMethodSignature,
+  in labels: Array<String>
+): boolean {
+  if (method.objectiveCSelector.byteLength == 0) return true;
+  let usesLabels = false;
+  for (const label of labels) {
+    if (label.byteLength > 0) usesLabels = true;
+  }
+  if (!usesLabels) return true;
+  if (labels.length > 0 && labels[0].byteLength > 0) return false;
+  let index: usize = 1;
+  while (index < labels.length) {
+    if (
+      labels[index].byteLength == 0
+      || labels[index] != objcSelectorLabelAt(
+        method.objectiveCSelector,
+        index
+      )
+    ) return false;
+    index = index + 1;
+  }
+  return true;
 }
 
 function matchVariant(
@@ -545,7 +591,9 @@ export function methodCallShape(
   moduleIndex: usize,
   in ownerType: String,
   in methodName: String,
-  staticMethod: boolean
+  staticMethod: boolean,
+  argumentCount: usize,
+  in argumentLabels: Array<String>
 ): Option<NativeMethodCallShape> {
   let ownerArguments = Array<String>();
   match (genericTypeShape(ownerType)) {
@@ -562,8 +610,17 @@ export function methodCallShape(
         in modules[location.moduleIndex].symbols[location.symbolIndex].typeSignature
       ) {
         some(typeSignature) => {
+          let matched = Option<NativeMethodCallShape>.none;
+          let matchCount: usize = 0;
           for (const method of typeSignature.methods) {
             if (method.name != methodName || method.staticMethod != staticMethod) continue;
+            if (
+              method.objectiveCSelector.byteLength > 0
+              && (
+                method.signature.parameterTypes.length != argumentCount
+                || !objcMethodLabelsMatch(method, argumentLabels)
+              )
+            ) continue;
             let ownerTypeParameters = Array<String>();
             for (const parameter of typeSignature.typeParameters) {
               ownerTypeParameters.push(parameter.copyBytes(0, parameter.byteLength));
@@ -580,7 +637,36 @@ export function methodCallShape(
                 ),
               }));
             }
-            return Option.some(NativeMethodCallShape({
+            let candidateOwnerArguments = Array<String>();
+            for (const argument of ownerArguments) {
+              candidateOwnerArguments.push(argument.copyBytes(
+                0,
+                argument.byteLength
+              ));
+            }
+            let nativeParameterTypes = Array<String>();
+            for (const typeName of method.objectiveCParameterNativeTypes) {
+              nativeParameterTypes.push(typeName.copyBytes(
+                0,
+                typeName.byteLength
+              ));
+            }
+            let nativeParameterProtocols =
+              Array<ModuleObjCParameterProtocolSignature>();
+            for (const protocol of method.objectiveCParameterProtocols) {
+              nativeParameterProtocols.push(
+                ModuleObjCParameterProtocolSignature({
+                  parameterIndex: protocol.parameterIndex,
+                  protocolName: rebaseTypeName(
+                    modules,
+                    location.moduleIndex,
+                    moduleIndex,
+                    protocol.protocolName
+                  ),
+                })
+              );
+            }
+            const shape = NativeMethodCallShape({
               name: method.name.copyBytes(0, method.name.byteLength),
               ownerName: modules[location.moduleIndex].symbols[location.symbolIndex].name.copyBytes(
                 0,
@@ -592,7 +678,7 @@ export function methodCallShape(
               visibility: method.visibility.copyBytes(0, method.visibility.byteLength),
               receiverMode: method.receiverMode.copyBytes(0, method.receiverMode.byteLength),
               ownerTypeParameters,
-              ownerTypeArguments: ownerArguments,
+              ownerTypeArguments: candidateOwnerArguments,
               ownerTypeParameterConstraints,
               signature: rebaseModuleFunctionSignature(
                 modules,
@@ -600,7 +686,36 @@ export function methodCallShape(
                 moduleIndex,
                 method.signature
               ),
-            }));
+              objectiveCSelector: method.objectiveCSelector.copyBytes(
+                0,
+                method.objectiveCSelector.byteLength
+              ),
+              objectiveCParameterNativeTypes: nativeParameterTypes,
+              objectiveCParameterProtocols: nativeParameterProtocols,
+            });
+            matched = Option<NativeMethodCallShape>.some(move shape);
+            matchCount = matchCount + 1;
+          }
+          if (matchCount == 1) return matched;
+          if (
+            matchCount == 0
+            && typeSignature.foreignObjCSuperName.byteLength > 0
+          ) {
+            const superType = rebaseTypeName(
+              modules,
+              location.moduleIndex,
+              moduleIndex,
+              typeSignature.foreignObjCSuperName
+            );
+            return methodCallShape(
+              modules,
+              moduleIndex,
+              superType,
+              methodName,
+              staticMethod,
+              argumentCount,
+              argumentLabels
+            );
           }
         }
         none => {}
@@ -678,11 +793,21 @@ function constrainedMethodCallShape(
   moduleIndex: usize,
   in bindings: Array<NativeValueBinding>,
   in ownerType: String,
-  in methodName: String
+  in methodName: String,
+  argumentCount: usize,
+  in argumentLabels: Array<String>
 ): Option<NativeMethodCallShape> {
   const constraints = typeParameterConstraintTraits(bindings, ownerType);
   for (const traitName of constraints) {
-    match (methodCallShape(modules, moduleIndex, traitName, methodName, false)) {
+    match (methodCallShape(
+      modules,
+      moduleIndex,
+      traitName,
+      methodName,
+      false,
+      argumentCount,
+      argumentLabels
+    )) {
       some(method) => return Option.some(method);
       none => {}
     }
@@ -696,14 +821,32 @@ export function callableMethodCallShape(
   in bindings: Array<NativeValueBinding>,
   in ownerType: String,
   in methodName: String,
-  staticMethod: boolean
+  staticMethod: boolean,
+  argumentCount: usize,
+  in argumentLabels: Array<String>
 ): Option<NativeMethodCallShape> {
-  match (methodCallShape(modules, moduleIndex, ownerType, methodName, staticMethod)) {
+  match (methodCallShape(
+    modules,
+    moduleIndex,
+    ownerType,
+    methodName,
+    staticMethod,
+    argumentCount,
+    argumentLabels
+  )) {
     some(method) => return Option.some(method);
     none => {}
   }
   if (!staticMethod) {
-    return constrainedMethodCallShape(modules, moduleIndex, bindings, ownerType, methodName);
+    return constrainedMethodCallShape(
+      modules,
+      moduleIndex,
+      bindings,
+      ownerType,
+      methodName,
+      argumentCount,
+      argumentLabels
+    );
   }
   return Option<NativeMethodCallShape>.none;
 }

@@ -1,6 +1,10 @@
 import {
   NativeForeignContractSet,
   NativeForeignFunctionContract,
+  NativeForeignObjCAvailabilityContract,
+  NativeForeignObjCInterfaceContract,
+  NativeForeignObjCMethodContract,
+  NativeForeignObjCProtocolContract,
   NativeForeignTypeContract,
 } from "./foreign-contracts.zs";
 import {
@@ -15,6 +19,8 @@ import {
   ModuleFunctionSignature,
   ModuleFieldSignature,
   ModuleMethodSignature,
+  ModuleObjCAvailabilitySignature,
+  ModuleObjCParameterProtocolSignature,
   ModuleResolveError,
   ModuleResolveErrorKind,
   ModuleSymbol,
@@ -82,6 +88,34 @@ function foreignTypeIndex(
   return Option<usize>.none;
 }
 
+function foreignObjCInterfaceIndex(
+  in contracts: NativeForeignContractSet,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < contracts.objectiveCInterfaces.length) {
+    if (contracts.objectiveCInterfaces[index].name == name) {
+      return Option<usize>.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
+function foreignObjCProtocolIndex(
+  in contracts: NativeForeignContractSet,
+  in name: String
+): Option<usize> {
+  let index: usize = 0;
+  while (index < contracts.objectiveCProtocols.length) {
+    if (contracts.objectiveCProtocols[index].name == name) {
+      return Option<usize>.some(index);
+    }
+    index = index + 1;
+  }
+  return Option<usize>.none;
+}
+
 function localForeignTypeName(
   in types: Array<NativeForeignTypeContract>,
   in namespace: String,
@@ -101,6 +135,222 @@ function localForeignTypeName(
     if (type.name == typeName) return `${namespace}.${type.name}`;
   }
   return typeName.copyBytes(0, typeName.byteLength);
+}
+
+function localObjCTypeName(
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  in typeName: String
+): String {
+  const nullableTarget = nullableTargetType(typeName);
+  if (nullableTarget.byteLength > 0) {
+    const localized = localObjCTypeName(
+      contracts,
+      namespace,
+      nullableTarget
+    );
+    return `${localized} | null`;
+  }
+  for (const interface_ of contracts.objectiveCInterfaces) {
+    if (interface_.name == typeName) return `${namespace}.${interface_.name}`;
+  }
+  for (const protocol of contracts.objectiveCProtocols) {
+    if (protocol.name == typeName) return `${namespace}.${protocol.name}`;
+  }
+  return localForeignTypeName(contracts.types, namespace, typeName);
+}
+
+function optionalTextOrEmpty(in value: Option<String>): String {
+  return match (in value) {
+    some(text) => text.copyBytes(0, text.byteLength);
+    none => "";
+  };
+}
+
+function objcAvailabilitySignature(
+  in availability: NativeForeignObjCAvailabilityContract
+): ModuleObjCAvailabilitySignature {
+  return ModuleObjCAvailabilitySignature({
+    platform: optionalTextOrEmpty(availability.platform),
+    introduced: optionalTextOrEmpty(availability.introduced),
+    deprecated: availability.deprecated,
+    deprecatedVersion: optionalTextOrEmpty(availability.deprecatedVersion),
+    obsoleted: optionalTextOrEmpty(availability.obsoleted),
+    unavailable: availability.unavailable,
+    message: optionalTextOrEmpty(availability.message),
+  });
+}
+
+function objcMethodSignature(
+  in method: NativeForeignObjCMethodContract,
+  in contracts: NativeForeignContractSet,
+  in namespace: String
+): ModuleMethodSignature {
+  let parameterModes = Array<String>();
+  let parameterTypes = Array<String>();
+  let parameterNativeTypes = Array<String>();
+  let parameterProtocols = Array<ModuleObjCParameterProtocolSignature>();
+  let parameterIndex: usize = 0;
+  while (parameterIndex < method.parameters.length) {
+    const parameter = view method.parameters[parameterIndex];
+    parameterModes.push("value");
+    parameterTypes.push(localObjCTypeName(
+      contracts,
+      namespace,
+      parameter.typeName
+    ));
+    parameterNativeTypes.push(parameter.nativeType.copyBytes(
+      0,
+      parameter.nativeType.byteLength
+    ));
+    for (const protocol of parameter.protocols) {
+      parameterProtocols.push(ModuleObjCParameterProtocolSignature({
+        parameterIndex,
+        protocolName: `${namespace}.${protocol}`,
+      }));
+    }
+    parameterIndex = parameterIndex + 1;
+  }
+  let availability = Array<ModuleObjCAvailabilitySignature>();
+  for (const item of method.availability) {
+    availability.push(objcAvailabilitySignature(item));
+  }
+  return ModuleMethodSignature({
+    name: method.name.copyBytes(0, method.name.byteLength),
+    staticMethod: !method.instance,
+    visibility: "public",
+    receiverMode: "in",
+    signature: ModuleFunctionSignature({
+      asynchronous: false,
+      executorAffinity: method.executorAffinity.copyBytes(
+        0,
+        method.executorAffinity.byteLength
+      ),
+      threadContract: "",
+      typeParameters: Array<String>(),
+      typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+      parameterModes,
+      parameterTypes,
+      viewParameter: Option<usize>.none,
+      invalidatesParameters: Array<usize>(),
+      invalidatesLifetimes: Array<String>(),
+      returnType: localObjCTypeName(
+        contracts,
+        namespace,
+        method.returnType
+      ),
+      errorType: "",
+    }),
+    objectiveCSelector: method.selector.copyBytes(
+      0,
+      method.selector.byteLength
+    ),
+    objectiveCNativeReturnType: method.nativeReturnType.copyBytes(
+      0,
+      method.nativeReturnType.byteLength
+    ),
+    objectiveCParameterNativeTypes: parameterNativeTypes,
+    objectiveCParameterProtocols: parameterProtocols,
+    objectiveCRequired: method.required,
+    objectiveCReturnsInstanceType: method.returnsInstanceType,
+    objectiveCAvailability: availability,
+    objectiveCAsyncCallbackParameter: method.asyncCallbackParameter,
+    objectiveCAsyncResultParameter: method.asyncResultParameter,
+    objectiveCAsyncErrorParameter: method.asyncErrorParameter,
+  });
+}
+
+function objcInterfaceTypeSignature(
+  in interface_: NativeForeignObjCInterfaceContract,
+  in contracts: NativeForeignContractSet,
+  in namespace: String
+): ModuleTypeSignature {
+  let methods = Array<ModuleMethodSignature>();
+  for (const method of interface_.methods) {
+    if (method.representable) methods.push(objcMethodSignature(
+      method,
+      contracts,
+      namespace
+    ));
+  }
+  let superName = "";
+  if (interface_.superName.byteLength > 0) {
+    superName = `${namespace}.${interface_.superName}`;
+  }
+  return ModuleTypeSignature({
+    nativeCName: "",
+    nativeCUnderlyingType: "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    executorAffinity: interface_.executorAffinity.copyBytes(
+      0,
+      interface_.executorAffinity.byteLength
+    ),
+    implementedTraits: Array<String>(),
+    fields: Array<ModuleFieldSignature>(),
+    methods,
+    variants: Array<ModuleVariantSignature>(),
+    customDeinit: true,
+    customConstructor: false,
+    constructorSignature: Option<ModuleFunctionSignature>.none,
+    foreignKind: "objcInterface",
+    foreignLayout: "reference",
+    foreignNativeName: interface_.nativeName.copyBytes(
+      0,
+      interface_.nativeName.byteLength
+    ),
+    foreignUnderlyingType: "",
+    foreignResourceRelease: "",
+    foreignObjCSuperName: superName,
+  });
+}
+
+function objcProtocolTypeSignature(
+  in protocol: NativeForeignObjCProtocolContract,
+  in contracts: NativeForeignContractSet,
+  in namespace: String
+): ModuleTypeSignature {
+  let methods = Array<ModuleMethodSignature>();
+  for (const method of protocol.methods) {
+    if (method.representable) methods.push(objcMethodSignature(
+      method,
+      contracts,
+      namespace
+    ));
+  }
+  let inherited = Array<String>();
+  for (const name of protocol.inherited) {
+    inherited.push(`${namespace}.${name}`);
+  }
+  return ModuleTypeSignature({
+    nativeCName: "",
+    nativeCUnderlyingType: "",
+    typeParameters: Array<String>(),
+    typeParameterConstraints: Array<ModuleTypeParameterConstraint>(),
+    executorAffinity: protocol.executorAffinity.copyBytes(
+      0,
+      protocol.executorAffinity.byteLength
+    ),
+    implementedTraits: inherited,
+    fields: Array<ModuleFieldSignature>(),
+    methods,
+    variants: Array<ModuleVariantSignature>(),
+    customDeinit: false,
+    customConstructor: false,
+    constructorSignature: Option<ModuleFunctionSignature>.none,
+    foreignKind: "objcProtocol",
+    foreignLayout: "protocol",
+    foreignNativeName: protocol.nativeName.copyBytes(
+      0,
+      protocol.nativeName.byteLength
+    ),
+    foreignUnderlyingType: "",
+    foreignResourceRelease: "",
+    foreignObjCProtocolName: protocol.nativeName.copyBytes(
+      0,
+      protocol.nativeName.byteLength
+    ),
+  });
 }
 
 function foreignFunctionSignature(
@@ -654,6 +904,88 @@ function attachForeignTypes(
   );
 }
 
+function attachForeignObjCTypes(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  offset: usize,
+  line: usize,
+  column: usize
+): void {
+  for (const protocol of contracts.objectiveCProtocols) {
+    const name = `${namespace}.${protocol.name}`;
+    if (
+      moduleSymbolIndex(modules[moduleIndex], name)
+        < modules[moduleIndex].symbols.length
+    ) continue;
+    modules[moduleIndex].symbols.push(ModuleSymbol({
+      name,
+      kind: ModuleSymbolKind.traitSymbol,
+      exported: false,
+      nativeCExport: false,
+      targetModule: Option<usize>.none,
+      importedName: protocol.nativeName.copyBytes(
+        0,
+        protocol.nativeName.byteLength
+      ),
+      valueType: "",
+      functionSignature: Option<ModuleFunctionSignature>.none,
+      typeSignature: Option<ModuleTypeSignature>.some(objcProtocolTypeSignature(
+        protocol,
+        contracts,
+        namespace
+      )),
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: Array<String>(),
+      foreignArguments: Array<ModuleForeignArgument>(),
+      offset,
+      line,
+      column,
+    }));
+  }
+  for (const interface_ of contracts.objectiveCInterfaces) {
+    const name = `${namespace}.${interface_.name}`;
+    if (
+      moduleSymbolIndex(modules[moduleIndex], name)
+        < modules[moduleIndex].symbols.length
+    ) continue;
+    modules[moduleIndex].symbols.push(ModuleSymbol({
+      name,
+      kind: ModuleSymbolKind.classSymbol,
+      exported: false,
+      nativeCExport: false,
+      targetModule: Option<usize>.none,
+      importedName: interface_.nativeName.copyBytes(
+        0,
+        interface_.nativeName.byteLength
+      ),
+      valueType: "",
+      functionSignature: Option<ModuleFunctionSignature>.none,
+      typeSignature: Option<ModuleTypeSignature>.some(objcInterfaceTypeSignature(
+        interface_,
+        contracts,
+        namespace
+      )),
+      foreignHeader: contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      ),
+      foreignSuccessValues: Array<String>(),
+      foreignArguments: Array<ModuleForeignArgument>(),
+      offset,
+      line,
+      column,
+    }));
+  }
+  modules[moduleIndex].symbolIndices = buildModuleSymbolIndices(
+    modules[moduleIndex].symbols
+  );
+}
+
 function attachSelectiveConstant(
   moduleIndex: usize,
   inout modules: Array<ResolvedModule>,
@@ -714,6 +1046,54 @@ function attachSelectiveType(
     );
 }
 
+function attachSelectiveObjCInterface(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  in localName: String,
+  typeIndex: usize
+): void {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
+  const interface_ = view contracts.objectiveCInterfaces[typeIndex];
+  modules[moduleIndex].symbols[symbolIndex].kind = ModuleSymbolKind.classSymbol;
+  modules[moduleIndex].symbols[symbolIndex].importedName =
+    interface_.nativeName.copyBytes(0, interface_.nativeName.byteLength);
+  modules[moduleIndex].symbols[symbolIndex].valueType = "";
+  modules[moduleIndex].symbols[symbolIndex].typeSignature = Option<ModuleTypeSignature>.some(
+    objcInterfaceTypeSignature(interface_, contracts, namespace)
+  );
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    );
+}
+
+function attachSelectiveObjCProtocol(
+  moduleIndex: usize,
+  inout modules: Array<ResolvedModule>,
+  in contracts: NativeForeignContractSet,
+  in namespace: String,
+  in localName: String,
+  typeIndex: usize
+): void {
+  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], localName);
+  const protocol = view contracts.objectiveCProtocols[typeIndex];
+  modules[moduleIndex].symbols[symbolIndex].kind = ModuleSymbolKind.traitSymbol;
+  modules[moduleIndex].symbols[symbolIndex].importedName =
+    protocol.nativeName.copyBytes(0, protocol.nativeName.byteLength);
+  modules[moduleIndex].symbols[symbolIndex].valueType = "";
+  modules[moduleIndex].symbols[symbolIndex].typeSignature = Option<ModuleTypeSignature>.some(
+    objcProtocolTypeSignature(protocol, contracts, namespace)
+  );
+  modules[moduleIndex].symbols[symbolIndex].foreignHeader =
+    contracts.moduleSpecifier.copyBytes(
+      0,
+      contracts.moduleSpecifier.byteLength
+    );
+}
+
 function attachModuleContract(
   in parsed: Array<ParsedModule>,
   in binding: NativeForeignModuleContract,
@@ -739,6 +1119,15 @@ function attachModuleContract(
     matched = true;
     const namespace = moduleBindingName(declaration);
     attachForeignTypes(
+      moduleIndex,
+      inout modules,
+      binding.contracts,
+      namespace,
+      declaration.offset,
+      declaration.line,
+      declaration.column
+    );
+    attachForeignObjCTypes(
       moduleIndex,
       inout modules,
       binding.contracts,
@@ -795,13 +1184,39 @@ function attachModuleContract(
                 localName,
                 index
               );
-              none => throw missingContract(
-                parsed[moduleIndex],
-                line,
-                column,
-                binding.contracts.moduleSpecifier,
+              none => match (foreignObjCInterfaceIndex(
+                binding.contracts,
                 importedName
-              );
+              )) {
+                some(index) => attachSelectiveObjCInterface(
+                  moduleIndex,
+                  inout modules,
+                  binding.contracts,
+                  namespace,
+                  localName,
+                  index
+                );
+                none => match (foreignObjCProtocolIndex(
+                  binding.contracts,
+                  importedName
+                )) {
+                  some(index) => attachSelectiveObjCProtocol(
+                    moduleIndex,
+                    inout modules,
+                    binding.contracts,
+                    namespace,
+                    localName,
+                    index
+                  );
+                  none => throw missingContract(
+                    parsed[moduleIndex],
+                    line,
+                    column,
+                    binding.contracts.moduleSpecifier,
+                    importedName
+                  );
+                }
+              }
             }
           }
         }

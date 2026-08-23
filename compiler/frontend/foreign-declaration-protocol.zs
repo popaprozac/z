@@ -136,6 +136,7 @@ export struct RawForeignObjCMethod {
   instance: boolean;
   returnsInstanceType: boolean;
   returnNativeType: String;
+  returnTypeName: String;
   required: boolean;
   sourceFile: Option<String>;
   sourceLine: usize;
@@ -158,6 +159,7 @@ export struct RawForeignObjCParameter {
   parameterIndex: usize;
   name: Option<String>;
   nativeType: String;
+  typeName: String;
   protocolStart: usize;
   protocolCount: usize;
 }
@@ -788,6 +790,7 @@ function appendObjCMethod(
   const instance = try readBoolean(inout cursor);
   const returnsInstanceType = try readBoolean(inout cursor);
   const returnNativeType = try readText(inout cursor);
+  const returnTypeName = try readText(inout cursor);
   const required = try readBoolean(inout cursor);
   const sourceFile = try readOptionalText(inout cursor);
   const sourceLine = try readHexUsize(inout cursor);
@@ -808,6 +811,7 @@ function appendObjCMethod(
     instance,
     returnsInstanceType,
     returnNativeType,
+    returnTypeName,
     required,
     sourceFile,
     sourceLine,
@@ -848,6 +852,7 @@ function appendObjCParameter(
   }
   const name = try readOptionalText(inout cursor);
   const nativeType = try readText(inout cursor);
+  const typeName = try readText(inout cursor);
   const protocolCount = try readHexUsize(inout cursor);
   const protocolStart = module.objectiveCParameterProtocols.length;
   let protocolIndex: usize = 0;
@@ -863,6 +868,7 @@ function appendObjCParameter(
     parameterIndex,
     name,
     nativeType,
+    typeName,
     protocolStart,
     protocolCount,
   }));
@@ -1000,7 +1006,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 8) {
+  if (module.version != 9) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);

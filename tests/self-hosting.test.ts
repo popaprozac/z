@@ -6628,7 +6628,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000008\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000009\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -6740,7 +6740,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL0000000000000008\nM/);
+  assert.match(objcStream, /^ZFDCL0000000000000009\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
@@ -6783,6 +6783,120 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8", input: contractEmission.stdout },
   );
   assert.equal(contractCompilation.status, 0, contractCompilation.stderr);
+  const objcContractPath = resolve(directory, "objc-registration-wire.h.zd");
+  writeFileSync(
+    objcContractPath,
+    'declare module "objc-registration-wire.h" {\n}\n',
+  );
+  const objcSourcePath = resolve(directory, "objc-semantic-input.zs");
+  writeFileSync(
+    objcSourcePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      'import objc from "std/objc";',
+      "",
+      "class Handler implements native.ZRegistrationHandler {",
+      "}",
+      "",
+      "function register(in owner: native.ZRegistrationOwner): objc.Registration on thread.main {",
+      "  const handler = new Handler({});",
+      "  const registration = objc.register({",
+      '    add: owner.addHandler(handler, "zapp"),',
+      '    remove: owner.removeHandlerForName("zapp"),',
+      "  });",
+      "  return registration;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcContractExecution = spawnSync(
+    contractExecutable,
+    [objcPath, objcContractPath, objcSourcePath, "objc"],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcContractExecution.status,
+    0,
+    objcContractExecution.stderr,
+  );
+  const objcProtocolNegativePath = resolve(
+    directory,
+    "objc-protocol-negative.zs",
+  );
+  writeFileSync(
+    objcProtocolNegativePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      'import objc from "std/objc";',
+      "",
+      "class Handler {",
+      "}",
+      "",
+      "function register(in owner: native.ZRegistrationOwner): objc.Registration on thread.main {",
+      "  const handler = new Handler({});",
+      "  const registration = objc.register({",
+      '    add: owner.addHandler(handler, "zapp"),',
+      '    remove: owner.removeHandlerForName("zapp"),',
+      "  });",
+      "  return registration;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcProtocolNegative = spawnSync(
+    contractExecutable,
+    [
+      objcPath,
+      objcContractPath,
+      objcProtocolNegativePath,
+      "objc-protocol-negative",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcProtocolNegative.status,
+    0,
+    objcProtocolNegative.stderr,
+  );
+  const objcTeardownNegativePath = resolve(
+    directory,
+    "objc-teardown-negative.zs",
+  );
+  writeFileSync(
+    objcTeardownNegativePath,
+    [
+      'import native from "objc-registration-wire.h";',
+      'import objc from "std/objc";',
+      "",
+      "class Handler implements native.ZRegistrationHandler {",
+      "}",
+      "",
+      "function register(in owner: native.ZRegistrationOwner): objc.Registration on thread.main {",
+      "  const handler = new Handler({});",
+      "  const registration = objc.register({",
+      '    add: owner.addHandler(handler, "zapp"),',
+      '    remove: owner.removeHandlerForName("other"),',
+      "  });",
+      "  return registration;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const objcTeardownNegative = spawnSync(
+    contractExecutable,
+    [
+      objcPath,
+      objcContractPath,
+      objcTeardownNegativePath,
+      "objc-teardown-negative",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    objcTeardownNegative.status,
+    0,
+    objcTeardownNegative.stderr,
+  );
   const contractPath = resolve(
     projectRoot,
     "tests/fixtures/foreign-functions-only.h.zd",

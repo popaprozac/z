@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 8) return 10;
+  if (module.version != 9) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -70,7 +70,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 8) return 40;
+  if (module.version != 9) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -125,7 +125,7 @@ function inspectClang(in path: String): i32 throws String {
 function inspectObjC(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 8) return 90;
+  if (module.version != 9) return 90;
   if (!module.objectiveC || module.cPlusPlus) return 91;
 
   let foundProtocol = false;
@@ -142,6 +142,7 @@ function inspectObjC(in path: String): i32 throws String {
       if (method.ownerKind != "protocol") return 93;
       if (method.selector != "registrationOwner:didReceiveValue:") return 94;
       if (!method.required || !method.instance) return 95;
+      if (method.returnTypeName != "void") return 104;
     }
   }
   if (!foundProtocol) return 96;
@@ -163,6 +164,7 @@ function inspectObjC(in path: String): i32 throws String {
             method.parameterStart
           ];
           if (handler.nativeType != "id") return 98;
+          if (handler.typeName != "__z_objc:nonnull:id") return 105;
           if (handler.protocolCount != 1) return 99;
           if (
             module.objectiveCParameterProtocols[handler.protocolStart]

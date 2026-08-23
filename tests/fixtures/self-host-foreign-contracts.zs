@@ -1,5 +1,6 @@
 import fs from "std/fs";
 import process from "std/process";
+import console from "std/console";
 import {
   decodeRawForeignDeclarations,
 } from "../../compiler/frontend/foreign-declaration-protocol.zs";
@@ -24,7 +25,135 @@ import {
 } from "../../compiler/frontend/semantic-model.zs";
 import {
   ParsedModule,
+  moduleSymbolIndex,
 } from "../../compiler/frontend/module-symbols.zs";
+
+function inspectObjC(
+  in declarationPath: String,
+  in contractPath: String,
+  in sourcePath: String,
+  in expectedError: String
+): i32 throws String {
+  const declarationSource = try fs.readText(declarationPath);
+  const declarations = try decodeRawForeignDeclarations(declarationSource);
+  const contractSource = try fs.readText(contractPath);
+  const contracts = try parseForeignContracts(contractSource, contractPath);
+  const normalized = try normalizeForeignContracts(
+    contracts,
+    declarations,
+    "objc-registration-wire.h"
+  );
+  if (normalized.objectiveCProtocols.length != 2) return 80;
+  if (normalized.objectiveCInterfaces.length != 2) return 81;
+  const protocol = view normalized.objectiveCProtocols[1];
+  if (protocol.name != "ZRegistrationHandler") return 82;
+  if (protocol.inherited.length != 1) return 83;
+  if (protocol.inherited[0] != "ZBaseHandler") return 84;
+  if (protocol.methods.length != 1) return 85;
+  if (
+    protocol.methods[0].selector
+      != "registrationOwner:didReceiveValue:"
+  ) return 86;
+  if (protocol.methods[0].returnType != "void") return 87;
+  if (protocol.methods[0].parameters[1].typeName != "i32") return 88;
+  const interface_ = view normalized.objectiveCInterfaces[1];
+  if (interface_.name != "ZRegistrationOwner") return 89;
+  if (interface_.methods.length != 2) return 90;
+  if (interface_.methods[0].selector != "addHandler:name:") return 91;
+  if (interface_.methods[0].parameters[0].typeName != "id") return 92;
+  if (interface_.methods[0].parameters[0].protocols.length != 1) return 93;
+  if (
+    interface_.methods[0].parameters[0].protocols[0]
+      != "ZRegistrationHandler"
+  ) return 94;
+  if (interface_.methods[0].parameters[1].typeName != "cstring") return 95;
+
+  const source = try fs.readText(sourcePath);
+  const moduleSource = ModuleSource({
+    path: sourcePath.copyBytes(0, sourcePath.byteLength),
+    source,
+  });
+  const parsedOutcome = attempt parseModule(moduleSource);
+  const parsed = match (parsedOutcome) {
+    success(value) => value;
+    failure(error) => throw error.message.copyBytes(
+      0,
+      error.message.byteLength
+    );
+  };
+  let modules = Array<ParsedModule>();
+  modules.push(parsed);
+  let foreignModules = Array<NativeForeignModuleContract>();
+  foreignModules.push(NativeForeignModuleContract({
+    modulePath: sourcePath.copyBytes(0, sourcePath.byteLength),
+    cacheKey: "objc-fixture",
+    contracts: normalized,
+  }));
+  const graphOutcome = attempt resolveParsedModulesWithForeignContracts(
+    modules,
+    sourcePath,
+    foreignModules
+  );
+  if (expectedError.byteLength > 0) {
+    return match (graphOutcome) {
+      success(_) => 108;
+      failure(error) => {
+        if (error.code != "Z0812") return 109;
+        if (error.message != expectedError) return 110;
+        return 0;
+      }
+    };
+  }
+  const graph = match (graphOutcome) {
+    success(value) => value;
+    failure(error) => throw error.message.copyBytes(
+      0,
+      error.message.byteLength
+    );
+  };
+  const ownerIndex = moduleSymbolIndex(
+    graph.modules[0],
+    "native.ZRegistrationOwner"
+  );
+  if (ownerIndex >= graph.modules[0].symbols.length) return 96;
+  const protocolIndex = moduleSymbolIndex(
+    graph.modules[0],
+    "native.ZRegistrationHandler"
+  );
+  if (protocolIndex >= graph.modules[0].symbols.length) return 97;
+  match (in graph.modules[0].symbols[ownerIndex].typeSignature) {
+    some(ownerType) => {
+      if (ownerType.foreignKind != "objcInterface") return 99;
+      if (ownerType.methods.length != 2) return 100;
+      if (ownerType.methods[0].objectiveCSelector != "addHandler:name:") {
+        return 101;
+      }
+      if (ownerType.methods[0].objectiveCParameterProtocols.length != 1) {
+        return 102;
+      }
+      if (
+        ownerType.methods[0].objectiveCParameterProtocols[0].protocolName
+          != "native.ZRegistrationHandler"
+      ) return 103;
+    }
+    none => return 98;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions.length != 2) {
+    return 104;
+  }
+  if (graph.modules[0].semanticEvidence.callResolutions[0].kind != "method") {
+    return 105;
+  }
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[0].targetName
+      != "native.ZRegistrationOwner.addHandler"
+  ) return 106;
+  if (
+    graph.modules[0].semanticEvidence.callResolutions[1].targetName
+      != "native.ZRegistrationOwner.removeHandlerForName"
+  ) return 107;
+  return 0;
+}
 
 function inspect(
   in declarationPath: String,
@@ -246,6 +375,34 @@ function inspect(
 
 function main(): i32 {
   const arguments = process.args();
+  if (
+    arguments.length == 4
+    && (
+      arguments[3] == "objc"
+      || arguments[3] == "objc-protocol-negative"
+      || arguments[3] == "objc-teardown-negative"
+    )
+  ) {
+    let expectedError = "";
+    if (arguments[3] == "objc-protocol-negative") {
+      expectedError = "Handler does not implement Objective-C protocol native.ZRegistrationHandler";
+    } else if (arguments[3] == "objc-teardown-negative") {
+      expectedError = "objc.register remove arguments must reuse exactly one add-time named or literal value with the same native ABI type";
+    }
+    const outcome = attempt inspectObjC(
+      arguments[0],
+      arguments[1],
+      arguments[2],
+      expectedError
+    );
+    return match (outcome) {
+      success(code) => code;
+      failure(error) => {
+        console.error(error);
+        return 3;
+      }
+    };
+  }
   if (arguments.length != 4) return 2;
   const outcome = attempt inspect(
     arguments[0],

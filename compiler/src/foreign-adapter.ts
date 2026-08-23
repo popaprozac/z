@@ -71,7 +71,7 @@ export function writeForeignDeclarationArtifact(
     project.includeDirectories,
   );
   const cacheKey = createHash("sha256")
-    .update("z-foreign-adapter-cache-v8")
+    .update("z-foreign-adapter-cache-v9")
     .update("\0")
     .update(producerFingerprint)
     .update("\0")

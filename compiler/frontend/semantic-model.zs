@@ -210,12 +210,39 @@ export struct ModuleForeignUnionMatch {
   variants: Array<ModuleForeignUnionMatchVariant>;
 }
 
+export struct ModuleObjCParameterProtocolSignature {
+  parameterIndex: usize;
+  protocolName: String;
+}
+
+export struct ModuleObjCAvailabilitySignature {
+  platform: String;
+  introduced: String;
+  deprecated: boolean;
+  deprecatedVersion: String;
+  obsoleted: String;
+  unavailable: boolean;
+  message: String;
+}
+
 export struct ModuleMethodSignature {
   name: String;
   staticMethod: boolean;
   visibility: String;
   receiverMode: String;
   signature: ModuleFunctionSignature;
+  objectiveCSelector: String = "";
+  objectiveCNativeReturnType: String = "";
+  objectiveCParameterNativeTypes: Array<String> = Array<String>();
+  objectiveCParameterProtocols: Array<ModuleObjCParameterProtocolSignature> =
+    Array<ModuleObjCParameterProtocolSignature>();
+  objectiveCRequired: boolean = true;
+  objectiveCReturnsInstanceType: boolean = false;
+  objectiveCAvailability: Array<ModuleObjCAvailabilitySignature> =
+    Array<ModuleObjCAvailabilitySignature>();
+  objectiveCAsyncCallbackParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncResultParameter: Option<usize> = Option<usize>.none;
+  objectiveCAsyncErrorParameter: Option<usize> = Option<usize>.none;
 }
 
 export struct ModuleTypeParameterConstraint {
@@ -246,6 +273,8 @@ export struct ModuleTypeSignature {
   foreignUnionVariants: Array<ModuleForeignUnionVariantSignature> =
     Array<ModuleForeignUnionVariantSignature>();
   foreignFallbackVariant: String = "";
+  foreignObjCSuperName: String = "";
+  foreignObjCProtocolName: String = "";
 }
 
 export struct ModuleFunctionSignature {

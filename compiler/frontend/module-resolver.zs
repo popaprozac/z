@@ -164,6 +164,7 @@ import {
   rebaseTypeName,
   semanticTypeIdentity,
   transparentTypeName,
+  typeSatisfiesTrait,
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import {
@@ -2718,6 +2719,446 @@ function callArgumentNodes(in children: Array<usize>): Array<usize> {
     index = index + 1;
   }
   return arguments;
+}
+
+struct NativeObjCRegistrationCall {
+  callIndex: usize;
+  receiverIndex: usize;
+  receiverPath: String;
+  method: NativeMethodCallShape;
+  arguments: Array<usize>;
+}
+
+function objcRegistrationError(
+  in module: ParsedModule,
+  in tree: ExpressionTree,
+  index: usize,
+  in message: String
+): ModuleResolveError {
+  return codedModuleResolutionError(
+    ModuleResolveErrorKind.typeMismatch,
+    "Z0812",
+    module.path,
+    message,
+    tree.nodes[index].line,
+    tree.nodes[index].column,
+    1
+  );
+}
+
+function objcRegistrationCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): NativeObjCRegistrationCall throws ModuleResolveError {
+  if (tree.nodes[callIndex].kind != ExpressionKind.callExpression) {
+    throw objcRegistrationError(
+      module,
+      tree,
+      callIndex,
+      "objc.register add/remove values must be Objective-C method calls"
+    );
+  }
+  const callChildren = copyIndices(tree.nodes[callIndex].children);
+  if (callChildren.length == 0) throw objcRegistrationError(
+    module,
+    tree,
+    callIndex,
+    "objc.register add/remove values must be Objective-C method calls"
+  );
+  const calleeIndex = callChildren[0];
+  if (
+    tree.nodes[calleeIndex].kind != ExpressionKind.memberExpression
+    || tree.nodes[calleeIndex].children.length != 1
+  ) throw objcRegistrationError(
+    module,
+    tree,
+    callIndex,
+    "objc.register add/remove values must be Objective-C method calls"
+  );
+  const receiverIndex = tree.nodes[calleeIndex].children[0];
+  const receiverType = try inferExpressionNodeType(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    receiverIndex,
+    inout bindings,
+    inout evidence
+  );
+  try requireSettledExpressionType(module, tree, receiverIndex, receiverType);
+  recordExpressionResolution(
+    modules,
+    moduleIndex,
+    tree,
+    receiverIndex,
+    receiverType,
+    inout evidence
+  );
+  const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+  const arguments = callArgumentNodes(callChildren);
+  const method = match (callableMethodCallShape(
+    modules,
+    moduleIndex,
+    bindings,
+    receiverType,
+    methodName,
+    false,
+    arguments.length,
+    tree.nodes[callIndex].labels
+  )) {
+    some(value) => value;
+    none => throw objcRegistrationError(
+      module,
+      tree,
+      calleeIndex,
+      `objc.register could not resolve Objective-C method "${methodName}"`
+    );
+  };
+  if (method.objectiveCSelector.byteLength == 0) {
+    throw objcRegistrationError(
+      module,
+      tree,
+      calleeIndex,
+      "objc.register accepts imported Objective-C methods only"
+    );
+  }
+  let requiredAffinity = method.signature.executorAffinity.copyBytes(
+    0,
+    method.signature.executorAffinity.byteLength
+  );
+  if (requiredAffinity.byteLength == 0) requiredAffinity =
+    aggregateExecutorAffinity(
+      modules,
+      method.ownerModuleIndex,
+      method.ownerSymbolIndex
+    );
+  try requireMainExecutorContext(
+    module,
+    tree,
+    callIndex,
+    bindings,
+    requiredAffinity,
+    `Objective-C registration method "${method.ownerName}.${method.objectiveCSelector}"`
+  );
+  const receiverPath = expressionDirectFieldPath(tree, receiverIndex);
+  if (receiverPath.byteLength == 0) throw objcRegistrationError(
+    module,
+    tree,
+    receiverIndex,
+    "objc.register requires add/remove calls on stable named receiver storage"
+  );
+  return NativeObjCRegistrationCall({
+    callIndex,
+    receiverIndex,
+    receiverPath,
+    method,
+    arguments,
+  });
+}
+
+function stableObjCRegistrationArgument(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  const kind = tree.nodes[index].kind;
+  return kind == ExpressionKind.identifierExpression
+    || kind == ExpressionKind.stringExpression
+    || kind == ExpressionKind.numberExpression
+    || kind == ExpressionKind.booleanExpression
+    || kind == ExpressionKind.nullExpression;
+}
+
+function sameObjCRegistrationArgument(
+  in tree: ExpressionTree,
+  left: usize,
+  right: usize
+): boolean {
+  return stableObjCRegistrationArgument(tree, left)
+    && stableObjCRegistrationArgument(tree, right)
+    && tree.nodes[left].kind == tree.nodes[right].kind
+    && tree.nodes[left].value == tree.nodes[right].value;
+}
+
+function inferObjCRegistrationMethodCall(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  in call: NativeObjCRegistrationCall,
+  replaceParameter: usize,
+  in replacementType: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): void throws ModuleResolveError {
+  let signature = methodCallableSignature(call.method);
+  if (replaceParameter < signature.parameterTypes.length) {
+    signature.parameterTypes[replaceParameter] = replacementType.copyBytes(
+      0,
+      replacementType.byteLength
+    );
+  }
+  const substitutions = Array<NativeValueBinding>();
+  const calleeIndex = tree.nodes[call.callIndex].children[0];
+  const result = try inferSignatureCallType(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    calleeIndex,
+    call.callIndex,
+    call.arguments,
+    inout bindings,
+    "",
+    "",
+    `${call.method.ownerName}.${call.method.name}`,
+    signature,
+    substitutions,
+    call.method.ownerModuleIndex,
+    call.method.ownerSymbolIndex,
+    "method",
+    inout evidence
+  );
+  if (result != "void") throw objcRegistrationError(
+    module,
+    tree,
+    call.callIndex,
+    "objc.register add/remove methods must both return void"
+  );
+}
+
+function inferObjCRegistration(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  callIndex: usize,
+  in namespaceName: String,
+  inout bindings: Array<NativeValueBinding>,
+  inout evidence: ModuleSemanticEvidence
+): String throws ModuleResolveError {
+  const arguments = callArgumentNodes(tree.nodes[callIndex].children);
+  if (arguments.length != 1) throw objcRegistrationError(
+    module,
+    tree,
+    callIndex,
+    "objc.register expects one { add, remove } descriptor"
+  );
+  const descriptorIndex = arguments[0];
+  if (tree.nodes[descriptorIndex].kind != ExpressionKind.objectExpression) {
+    throw objcRegistrationError(
+      module,
+      tree,
+      descriptorIndex,
+      "objc.register expects an object with exactly add and remove"
+    );
+  }
+  let addIndex = tree.nodes.length;
+  let removeIndex = tree.nodes.length;
+  let fieldIndex: usize = 0;
+  while (fieldIndex < tree.nodes[descriptorIndex].labels.length) {
+    const label = view tree.nodes[descriptorIndex].labels[fieldIndex];
+    if (label == "add") addIndex = tree.nodes[descriptorIndex].children[fieldIndex];
+    else if (label == "remove") {
+      removeIndex = tree.nodes[descriptorIndex].children[fieldIndex];
+    } else throw objcRegistrationError(
+      module,
+      tree,
+      descriptorIndex,
+      "objc.register descriptor permits only add and remove"
+    );
+    fieldIndex = fieldIndex + 1;
+  }
+  if (
+    addIndex >= tree.nodes.length
+    || removeIndex >= tree.nodes.length
+    || tree.nodes[descriptorIndex].labels.length != 2
+  ) throw objcRegistrationError(
+    module,
+    tree,
+    descriptorIndex,
+    "objc.register expects exactly one add and one remove method call"
+  );
+  const add = try objcRegistrationCall(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    addIndex,
+    inout bindings,
+    inout evidence
+  );
+  const remove = try objcRegistrationCall(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    removeIndex,
+    inout bindings,
+    inout evidence
+  );
+  if (add.receiverPath != remove.receiverPath) throw objcRegistrationError(
+    module,
+    tree,
+    remove.receiverIndex,
+    "objc.register add and remove must use the same Objective-C receiver"
+  );
+  let handlerParameter = add.arguments.length;
+  for (const protocol of add.method.objectiveCParameterProtocols) {
+    if (handlerParameter == add.arguments.length) {
+      handlerParameter = protocol.parameterIndex;
+    } else if (handlerParameter != protocol.parameterIndex) {
+      throw objcRegistrationError(
+        module,
+        tree,
+        add.callIndex,
+        "objc.register add method must accept exactly one id<Protocol> parameter"
+      );
+    }
+  }
+  if (handlerParameter >= add.arguments.length) throw objcRegistrationError(
+    module,
+    tree,
+    add.callIndex,
+    "objc.register add method must accept exactly one id<Protocol> parameter"
+  );
+  if (remove.method.objectiveCParameterProtocols.length > 0) {
+    throw objcRegistrationError(
+      module,
+      tree,
+      remove.callIndex,
+      "objc.register remove method cannot require another protocol adapter"
+    );
+  }
+  const handlerNode = add.arguments[handlerParameter];
+  if (tree.nodes[handlerNode].kind != ExpressionKind.identifierExpression) {
+    throw objcRegistrationError(
+      module,
+      tree,
+      handlerNode,
+      "objc.register protocol owners must be stored Z class bindings"
+    );
+  }
+  const handlerName = identifierLookupName(tree.nodes[handlerNode].value);
+  const handlerType = valueBindingType(bindings, handlerName);
+  const handlerLocation = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    handlerType
+  )) {
+    some(location) => location;
+    none => throw objcRegistrationError(
+      module,
+      tree,
+      handlerNode,
+      "objc.register protocol owner must have a known Z class type"
+    );
+  };
+  if (
+    modules[handlerLocation.moduleIndex].symbols[handlerLocation.symbolIndex].kind
+      != ModuleSymbolKind.classSymbol
+  ) throw objcRegistrationError(
+    module,
+    tree,
+    handlerNode,
+    "objc.register protocol owner must be a Z class"
+  );
+  for (const protocol of add.method.objectiveCParameterProtocols) {
+    if (!typeSatisfiesTrait(
+      modules,
+      moduleIndex,
+      handlerType,
+      protocol.protocolName
+    )) throw objcRegistrationError(
+      module,
+      tree,
+      handlerNode,
+      `${handlerType} does not implement Objective-C protocol ${protocol.protocolName}`
+    );
+  }
+  let removeArgumentIndex: usize = 0;
+  while (removeArgumentIndex < remove.arguments.length) {
+    const removeArgument = remove.arguments[removeArgumentIndex];
+    let matchCount: usize = 0;
+    let addArgumentIndex: usize = 0;
+    while (addArgumentIndex < add.arguments.length) {
+      if (
+        addArgumentIndex != handlerParameter
+        && sameObjCRegistrationArgument(
+          tree,
+          add.arguments[addArgumentIndex],
+          removeArgument
+        )
+        && addArgumentIndex
+          < add.method.objectiveCParameterNativeTypes.length
+        && removeArgumentIndex
+          < remove.method.objectiveCParameterNativeTypes.length
+        && add.method.objectiveCParameterNativeTypes[addArgumentIndex]
+          == remove.method.objectiveCParameterNativeTypes[removeArgumentIndex]
+      ) matchCount = matchCount + 1;
+      addArgumentIndex = addArgumentIndex + 1;
+    }
+    if (matchCount != 1) throw objcRegistrationError(
+      module,
+      tree,
+      removeArgument,
+      "objc.register remove arguments must reuse exactly one add-time named or literal value with the same native ABI type"
+    );
+    removeArgumentIndex = removeArgumentIndex + 1;
+  }
+  try inferObjCRegistrationMethodCall(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    add,
+    handlerParameter,
+    handlerType,
+    inout bindings,
+    inout evidence
+  );
+  const noReplacementParameter = remove.arguments.length;
+  try inferObjCRegistrationMethodCall(
+    module,
+    modules,
+    moduleIndex,
+    arena,
+    tree,
+    remove,
+    noReplacementParameter,
+    "",
+    inout bindings,
+    inout evidence
+  );
+  return `${namespaceName}.Registration`;
+}
+
+function hasNativeObjCRegistrationMetadata(
+  in modules: Array<ResolvedModule>
+): boolean {
+  for (const module of modules) {
+    for (const symbol of module.symbols) {
+      match (in symbol.typeSignature) {
+        some(signature) => {
+          if (signature.foreignKind == "objcInterface") return true;
+        }
+        none => {}
+      }
+    }
+  }
+  return false;
 }
 
 function optionalReceiverPayloadType(in typeName: String): Option<String> {
@@ -7172,6 +7613,25 @@ function inferExpressionNodeType(
           return "";
         }
         if (
+          memberName == "register"
+          && importedStandardNamespace(
+            module,
+            namespaceName,
+            "std/objc"
+          )
+          && hasNativeObjCRegistrationMetadata(modules)
+        ) return try inferObjCRegistration(
+          module,
+          modules,
+          moduleIndex,
+          arena,
+          tree,
+          index,
+          namespaceName,
+          inout bindings,
+          inout evidence
+        );
+        if (
           memberName == "connect"
           && importedStandardNamespace(
             module,
@@ -8262,7 +8722,9 @@ function inferExpressionNodeType(
           bindings,
           ownerType,
           methodName,
-          staticMethod
+          staticMethod,
+          children.length - 1,
+          tree.nodes[index].labels
         )) {
           some(method) => {
             if (
@@ -10612,6 +11074,11 @@ export function resolveParsedModulesWithForeignContracts(
 ): ModuleGraph throws ModuleResolveError {
   const entry = try findEntryModule(parsed, entryPath);
   let modules = try buildResolvedModules(parsed);
+  // Foreign types participate in ordinary type validation, including
+  // Objective-C protocol conformance. Attach their checked semantic contracts
+  // before validating source declarations rather than relying on Stage 0
+  // evidence to fill an unresolved namespace afterward.
+  try attachForeignContracts(parsed, foreignContracts, inout modules);
   try validateNativeCLayouts(parsed, modules);
   try validateNativeCExports(parsed, modules);
   let index: usize = 0;
@@ -10620,7 +11087,6 @@ export function resolveParsedModulesWithForeignContracts(
     try validateModuleNames(parsed[index], modules[index].symbols);
     index = index + 1;
   }
-  try attachForeignContracts(parsed, foreignContracts, inout modules);
   index = 0;
   while (index < parsed.length) {
     modules[index].semanticEvidence = try validateExpressionTypesAndLocals(parsed[index], modules, index);
