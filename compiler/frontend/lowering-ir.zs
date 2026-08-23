@@ -5375,6 +5375,7 @@ function wrapOwnedStorage(
     (
       payloadType.kind == LoweredTypeKind.classType
       || payloadType.kind == LoweredTypeKind.weakType
+      || payloadType.kind == LoweredTypeKind.functionType
     )
     && expressionBorrowsStoredReference(tree, input)
   ) {
@@ -11020,12 +11021,26 @@ function lowerExpressionContextual(
         if (
           parameterModes.length >= argument
           && parameterModes[argument - 1] == "value"
-        ) value = wrapImplicitOwnedTransfer(
-          tree,
-          argumentInput,
-          value,
-          inout output
-        );
+        ) {
+          if (parameterTypes.length >= argument) {
+            value = try wrapOwnedStorage(
+              program,
+              importedTypes,
+              tree,
+              argumentInput,
+              parameterTypes[argument - 1],
+              value,
+              inout output
+            );
+          } else {
+            value = wrapImplicitOwnedTransfer(
+              tree,
+              argumentInput,
+              value,
+              inout output
+            );
+          }
+        }
         if (
           parameterModes.length >= argument
           && (
@@ -11170,12 +11185,26 @@ function lowerExpressionContextual(
         if (
           parameterModes.length >= argument
           && parameterModes[argument - 1] == "value"
-        ) value = wrapImplicitOwnedTransfer(
-          tree,
-          argumentInput,
-          value,
-          inout output
-        );
+        ) {
+          if (parameterTypes.length >= argument) {
+            value = try wrapOwnedStorage(
+              program,
+              importedTypes,
+              tree,
+              argumentInput,
+              parameterTypes[argument - 1],
+              value,
+              inout output
+            );
+          } else {
+            value = wrapImplicitOwnedTransfer(
+              tree,
+              argumentInput,
+              value,
+              inout output
+            );
+          }
+        }
         if (
           parameterModes.length >= argument
           && (
@@ -11807,10 +11836,11 @@ function lowerExpressionContextual(
         none => {}
       }
     }
-    match (localTypeAliasTarget(program, callableCalleeType)) {
-      some(target) => callableCalleeType = move target;
-      none => {}
-    }
+    callableCalleeType = moduleCallableAliasTarget(
+      program,
+      importedTypes,
+      callableCalleeType
+    );
     if (
       standardTarget.byteLength == 0
       && foreignTarget.byteLength == 0

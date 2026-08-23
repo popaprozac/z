@@ -74,6 +74,24 @@ test("formats typed values through the imported console namespace and interpolat
   assert.doesNotMatch(generated, /console\.log/);
 });
 
+test("lowers interpolated String values nested inside conditions", () => {
+  const source = `
+    function main(): i32 {
+      const service = "notes";
+      if ("notes.create" == \`\${service}.create\`) return 0;
+      return 1;
+    }
+  `;
+  const generated = compileToC(source, "interpolated-condition.zs");
+  assert.match(generated, /z_string_equal/);
+  assert.match(generated, /_z_expression_result_\d+/);
+  const directory = mkdtempSync("/tmp/z-interpolated-condition-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("streams native console output before z run exits", async () => {
   const directory = mkdtempSync("/tmp/z-streaming-console-");
   const fileName = resolve(directory, "main.zs");
@@ -2699,6 +2717,34 @@ test("consumes a wrapper when extracting its sole owned field", () => {
   writeFileSync(input, source);
   const result = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+
+  const nested = `
+    struct ValueRegistry {
+      values: Array<i32>;
+    }
+
+    struct PendingRegistry {
+      registry: ValueRegistry;
+
+      function finish(move this): Array<i32> {
+        return this.registry.values;
+      }
+    }
+
+    function main(): i32 {
+      let pending = PendingRegistry({
+        registry: ValueRegistry({ values: Array<i32>(20, 22) }),
+      });
+      const values = pending.finish();
+      return values[0] + values[1] - 42;
+    }
+  `;
+  const nestedGenerated = compileToC(nested, "consume-nested-wrapper-field.zs");
+  assert.match(nestedGenerated, /_z_live_this_\d+ = false, \(self\.registry\)\.values/);
+  const nestedInput = resolve(directory, "consume-nested-wrapper-field.zs");
+  writeFileSync(nestedInput, nested);
+  const nestedResult = spawnSync(process.execPath, [cli, "run", nestedInput], { encoding: "utf8" });
+  assert.equal(nestedResult.status, 0, nestedResult.stderr);
 
   const multipleOwners = source.replace(
     "      values: Array<i32>;",

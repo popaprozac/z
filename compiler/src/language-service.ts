@@ -38,6 +38,7 @@ import { displayFunctionType, functionTypeName, parseFunctionType } from "./func
 import { displayTaskType, parseTaskType } from "./async-types.ts";
 import { parseWeakType } from "./weak-types.ts";
 import { parseViewType } from "./view-types.ts";
+import { parseOptionType } from "./option-types.ts";
 import { parseMapType } from "./map-types.ts";
 import { parseSetType } from "./set-types.ts";
 import { parseReadonlyType } from "./readonly-types.ts";
@@ -726,6 +727,17 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     );
   }
   if (
+    word.text === "move"
+    && /^\s+this\b/.test(source.slice(word.end))
+  ) {
+    return markdownHover(
+      "move this  // consumes this value-struct receiver; the caller binding is unavailable after the call",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (
     word.text === "c"
     && (
       /\bexport\s+$/.test(source.slice(Math.max(0, word.start - 24), word.start))
@@ -909,6 +921,22 @@ export function hover(source: string, fileName: string, offset: number): Hover |
         declaredField.type.name,
         context,
       )}`,
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  const declaredVariant = context.sourceProgram.enums.flatMap((declaration) => (
+    declaration.variants.map((variant) => ({ declaration, variant }))
+  )).find(({ variant }) => (
+    variant.location.offset === word.start && variant.name === word.text
+  ));
+  if (declaredVariant) {
+    const payload = declaredVariant.variant.payload
+      ? `(${displayType(declaredVariant.variant.payload.name, context.typeDisplayNames)})`
+      : "";
+    return markdownHover(
+      `${declaredVariant.declaration.name}.${declaredVariant.variant.name}${payload}`,
       source,
       word.start,
       word.end,
@@ -6705,10 +6733,13 @@ function methodDetail(
     : [];
   const genericParameters = [...inferredOwnerParameters, ...(method.typeParameters ?? [])];
   const generic = genericParameters.length ? `<${genericParameters.join(", ")}>` : "";
-  const parameters = method.parameters.map((parameter) => {
+  const receiver = !method.static && method.receiverMode
+    ? [`${method.receiverMode} this`]
+    : [];
+  const parameters = [...receiver, ...method.parameters.map((parameter) => {
     const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
     return `${capability}${parameter.name}: ${displaySubstitutedType(parameter.type.name, substitutions, typeDisplayNames)}`;
-  });
+  })];
   const result = displaySubstitutedType(method.returnType.name, substitutions, typeDisplayNames);
   const throws = method.errorType
     ? ` throws ${displaySubstitutedType(method.errorType.name, substitutions, typeDisplayNames)}`
@@ -6892,7 +6923,10 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   const readonly = parseReadonlyType(type);
   if (readonly) return `readonly ${displayType(readonly.target, typeDisplayNames)}`;
   const known = typeDisplayNames.get(type);
-  if (known) return known;
+  // A linked aggregate display name can itself contain encoded nested types.
+  // Reconstruct containers below so those implementation identities never
+  // leak into hover or completion text.
+  if (known && !known.includes("__z_")) return known;
   const unsafeNative = displayUnsafeNativeType(type);
   if (unsafeNative) return `${unsafeNative} — unsafe pass-through only`;
   const view = parseViewType(type);
@@ -6903,6 +6937,18 @@ function displayType(type: string, typeDisplayNames: ReadonlyMap<string, string>
   if (nonnullObjC) return displayType(nonnullObjC[1], typeDisplayNames);
   const functionType = displayFunctionType(type, (nested) => displayType(nested, typeDisplayNames));
   if (functionType) return functionType;
+  const option = parseOptionType(type);
+  if (option) return `Option<${displayType(option.target, typeDisplayNames)}>`;
+  const map = parseMapType(type);
+  if (map) {
+    const prefix = map.readonly ? "readonly " : "";
+    return `${prefix}Map<${displayType(map.keyType, typeDisplayNames)}, ${displayType(map.valueType, typeDisplayNames)}>`;
+  }
+  const set = parseSetType(type);
+  if (set) {
+    const prefix = set.readonly ? "readonly " : "";
+    return `${prefix}Set<${displayType(set.elementType, typeDisplayNames)}>`;
+  }
   const weak = parseWeakType(type);
   if (weak) return `Weak<${displayType(weak.target, typeDisplayNames)}>`;
   const task = parseTaskType(type);

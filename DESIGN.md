@@ -2287,6 +2287,23 @@ time without exposing C preprocessor text to ordinary Z source.
 Platform APIs continue to require explicit native imports; portable `std` APIs
 may provide common contracts over them without erasing platform differences.
 
+Target selection follows the configured build target, never the machine that
+happens to run the compiler or language server. Inactive platform source must
+remain parseable, navigable, hoverable, and available to definition lookup, but
+its unavailable imports and declarations must not produce ordinary semantic
+errors for the selected target. Editors should render it as inactive and state
+the target reason rather than covering a shared file in red diagnostics. The
+compiler should also be able to check an explicit target matrix and diagnose a
+missing implementation before packaging.
+
+Framework consumers such as Zapp should select platform implementation modules
+once behind a shared Z contract. Application and framework logic then imports
+one portable facade, while macOS, Windows, and Linux modules contain only the
+native construction or behavior that truly differs. Scattered target branches
+inside otherwise shared functions are an escape for small constants or narrow
+operations, not the default cross-platform architecture. The eventual syntax
+must preserve that DRY module shape without introducing textual preprocessing.
+
 Interop is bidirectional. Z modules use ordinary `export` for source-module
 visibility and the accepted `export c function` qualifier for implementations
 that deliberately enter the global C ABI:

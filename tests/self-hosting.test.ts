@@ -2805,7 +2805,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocal\(Z_ResourceState state\) \{\n  int32_t value;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
+    /inspectLocal\(Z_ResourceState state\) \{\n  \(void\)state;\n  int32_t value;\n  Z_ResourceState _z_stage1_match_\d+ = state;\n  switch \(_z_stage1_match_\d+\.tag\).*?value = _z_stage1_match_payload_\d+_\d+\.id;\n      Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -2839,11 +2839,11 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectLocalBlock\(Z_ResourceState state\) \{\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
+    /inspectLocalBlock\(Z_ResourceState state\) \{\n  \(void\)state;\n  int32_t value;.*?value = audit\.id;\n        Z_Resource_deinit\(&audit\);.*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);.*?return value;/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
-    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
+    /inspectIf\(Z_ResourceState state, bool inspectNow\) \{\n  \(void\)state;\n  \(void\)inspectNow;\n  bool _z_stage1_live_state = true;.*?_z_stage1_live_state = false;\n    Z_ResourceState _z_stage1_match_\d+ = state;\n    switch \(_z_stage1_match_\d+\.tag\).*?Z_Resource_deinit\(&_z_stage1_match_payload_\d+_\d+\);\n        if \(_z_stage1_live_state\) Z_ResourceState_deinit\(&state\);/s,
   );
   assert.match(
     ownedEnumEmission.stdout,
@@ -2887,7 +2887,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
     { encoding: "utf8" },
   );
   assert.equal(moveEmission.status, 0, moveEmission.stderr);
-  assert.match(moveEmission.stdout, /int32_t relay\(Z_Resource resource\) \{\n  return inspect\(resource\);\n\}/);
+  assert.match(moveEmission.stdout, /int32_t relay\(Z_Resource resource\) \{\n  \(void\)resource;\n  return inspect\(resource\);\n\}/);
   const moveExecutable = resolve(directory, "move");
   const moveCompilation = spawnSync(
     "clang",
@@ -2975,7 +2975,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   );
   assert.match(
     cleanupFlowEmission.stdout,
-    /conditionalParameter\(Z_Resource resource, bool transfer\) \{\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);.*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+    /conditionalParameter\(Z_Resource resource, bool transfer\).*?bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);.*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
   );
   assert.match(
     cleanupFlowEmission.stdout,
@@ -3024,7 +3024,7 @@ test("emits and runs the first program directly from the native Z AST", () => {
   assert.equal(loopTransferEmission.status, 0, loopTransferEmission.stderr);
   assert.match(
     loopTransferEmission.stdout,
-    /inspect\(Z_Resource resource, int32_t limit\) \{\n  bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
+    /inspect\(Z_Resource resource, int32_t limit\).*?bool _z_stage1_live_resource = true;.*?\(_z_stage1_live_resource = false, resource\).*?if \(_z_stage1_live_resource\) Z_Resource_deinit\(&resource\);/s,
   );
   const loopTransferExecutable = resolve(directory, "loop-transfer");
   const loopTransferCompilation = spawnSync(
@@ -5222,7 +5222,7 @@ test("allocates and reversely cleans Arena values through the native frontend", 
   assert.doesNotMatch(managedEmission.stdout, /Z___z_Array_i32_deinit\(&values\)/);
   assert.match(
     managedEmission.stdout,
-    /void finish\(Z_Arena region\) \{\n  Z_Arena_deinit\(&region\);/,
+    /void finish\(Z_Arena region\) \{\n  \(void\)region;\n  Z_Arena_deinit\(&region\);/,
   );
   assert.match(managedEmission.stdout, /finish\(scratch\);/);
   assert.doesNotMatch(managedEmission.stdout, /Z_Arena_deinit\(&scratch\)/);
@@ -13972,6 +13972,32 @@ test("preserves callable identities nested in Map values", () => {
   assert.ok(observedExpressions);
   assert.equal(authoritativeBindings, observedBindings);
   assert.equal(authoritativeExpressions, observedExpressions);
+});
+
+test("invokes an imported callable alias retrieved from a Map", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-imported-callable-map/main.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /_call\(selected,/);
+
+  const directory = mkdtempSync("/tmp/z-imported-callable-map-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
 });
 
 test("preserves weak-reference construction and upgrade effects natively", () => {

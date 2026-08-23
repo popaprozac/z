@@ -3587,6 +3587,40 @@ state even when fresh pages happen to be zero. Native Z class construction now
 uses `calloc` before initializing fields, and the fixed-point Objective-C
 fixture retains that generated-storage requirement.
 
+## Zapp typed-service composition
+
+The first Z-owned Zapp service router combined a transparent callable alias
+declared in one module, imported into another module, stored in a mutable Map,
+frozen into a readonly Map, retrieved through `Option`, copied into a local
+handler, and invoked. Each feature already had isolated native evidence. In
+composition, call lowering expanded only local type aliases and emitted the
+imported callable handle as though it were a raw C function pointer.
+
+Native call lowering now follows transparent callable aliases through imported
+type evidence before selecting the typed handle-call expression. A focused
+three-module fixture emits C, compiles it with strict warnings, and executes the
+retrieved handler. Zapp retains a frozen typed routing table instead of using a
+manual switch or weakening the service abstraction.
+
+The registry also passed one captured handler to two ordinary Z methods before
+freezing. That exposed a second composition bug: native method-call lowering
+treated every identifier argument as a unique transfer, while Stage 0 retained
+ARC-managed callable values passed by value. Both entries could therefore share
+one physical closure reference count and intermittently double-release it during
+Map cleanup. Native method and Objective-C call arguments now use the same
+owned-storage projection as ordinary calls, including retained function values.
+The fixture installs one captured imported handler twice and must execute and
+destroy the complete routing table without a use-after-free.
+
+The same application probe also established two honest remaining fixed-point
+boundaries. Traits are parsed and checked but not executable, so the first
+service uses a concrete generated adapter rather than claiming a generic
+`Service` trait. Cross-module `json.decode<UserType>` specialization is not yet
+native-authoritative, so that generated adapter projects `JsonValue` while the
+public service method and TypeScript binding remain typed. These are compiler
+composition tasks, not reasons to expose JSON or adapter boilerplate to Zapp
+application authors.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

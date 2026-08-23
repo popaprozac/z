@@ -66,6 +66,154 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
   );
 });
 
+test("keeps service-style callable registries clean across diagnostics, hover, completion, and tokens", () => {
+  const directory = mkdtempSync("/tmp/z-service-editor-");
+  const contractFile = resolve(directory, "service-contract.zs");
+  const servicesFile = resolve(directory, "services.zs");
+  const contract = `
+    import { Map } from "std/collections";
+    import { thread } from "std/thread";
+
+    export struct Invocation { method: String; }
+    export enum Outcome {
+      success String,
+      failure String,
+    }
+    export type Handler =
+      (in invocation: Invocation) => Outcome on thread.any;
+    export struct Registry { handlers: Map<String, Handler>; }
+    export function createRegistry(): Registry {
+      return Registry({ handlers: Map<String, Handler>() });
+    }
+  `;
+  const services = `
+    import {
+      Handler,
+      Invocation,
+      Outcome,
+      Registry,
+      createRegistry,
+    } from "./service-contract.zs";
+    import { Map } from "std/collections";
+    import { thread } from "std/thread";
+
+    function invokeAny(in invocation: Invocation): Outcome on thread.any {
+      return Outcome.success(copy invocation.method);
+    }
+
+    export function createHandler(): Handler {
+      return move (in invocation: Invocation): Outcome => invokeAny(in invocation);
+    }
+
+    export struct Builder {
+      registry: Registry;
+
+      function freeze(move this): Services {
+        return new Services({ handlers: this.registry.handlers.freeze() });
+      }
+    }
+
+    export readonly class Services {
+      readonly handlers: readonly Map<String, Handler>;
+
+      function invoke(in invocation: Invocation): Outcome {
+        const found = this.handlers.get(invocation.method);
+        return match (in found) {
+          some(handler) => handler(in invocation);
+          none => Outcome.failure("UNKNOWN_METHOD");
+        };
+      }
+    }
+
+    export function createBuilder(): Builder {
+      return Builder({ registry: createRegistry() });
+    }
+  `;
+  try {
+    writeFileSync(contractFile, contract);
+    writeFileSync(servicesFile, services);
+
+    assert.deepEqual(diagnostics(contract, contractFile), []);
+    assert.deepEqual(diagnostics(services, servicesFile), []);
+
+    const successOffset = contract.indexOf("success String") + 2;
+    assert.match(
+      hover(contract, contractFile, successOffset)?.contents.value ?? "",
+      /Outcome\.success\(String\)/,
+    );
+    const handlerFieldOffset = services.indexOf("handlers: this.registry") + 2;
+    const handlerFieldHover = hover(services, servicesFile, handlerFieldOffset)?.contents.value ?? "";
+    assert.match(handlerFieldHover, /readonly Map<String, Handler>/);
+    assert.doesNotMatch(handlerFieldHover, /__z_/);
+
+    const someOffset = services.indexOf("some(handler)") + 2;
+    const someHover = hover(services, servicesFile, someOffset)?.contents.value ?? "";
+    assert.match(someHover, /Option<.*Invocation.*Outcome.*thread\.any>\.some/s);
+    assert.doesNotMatch(someHover, /__z_/);
+
+    const freezeOffset = services.indexOf("freeze(move this)") + 2;
+    assert.match(
+      hover(services, servicesFile, freezeOffset)?.contents.value ?? "",
+      /freeze\(move this\): Services/,
+    );
+    const moveOffset = services.indexOf("move this");
+    assert.match(
+      hover(services, servicesFile, moveOffset + 2)?.contents.value ?? "",
+      /consumes this value-struct receiver/,
+    );
+
+    const completionSource = services.replace(
+      "const found = this.handlers.get(invocation.method);",
+      "this.handlers.;\n        const found = this.handlers.get(invocation.method);",
+    );
+    const completionOffset = completionSource.indexOf("this.handlers.") + "this.handlers.".length;
+    const getCompletion = completions(completionSource, servicesFile, completionOffset)
+      .find((item) => item.label === "get");
+    assert.match(getCompletion?.detail ?? "", /Invocation.*Outcome.*thread\.any/s);
+    assert.doesNotMatch(getCompletion?.detail ?? "", /__z_/);
+
+    const contractTokens = decodeSemanticTokens(semanticTokens(contract, contractFile).data);
+    const successPosition = positionForOffset(contract, contract.indexOf("success String"));
+    assert.ok(contractTokens.some((token) => (
+      token.line === successPosition.line
+      && token.character === successPosition.character
+      && semanticTokenTypes[token.type] === "enumMember"
+      && token.modifiers === 1
+    )));
+
+    const importedHandler = services.indexOf("Handler,") + 2;
+    assert.match(definition(services, `file://${servicesFile}`, importedHandler)?.uri ?? "", /service-contract\.zs$/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("treats canonical C record typedef aliases as one editor-visible argument type", () => {
+  const directory = mkdtempSync("/tmp/z-editor-record-alias-");
+  const header = resolve(directory, "native.h");
+  const file = resolve(directory, "main.zs");
+  const source = `
+    import native from "./native.h";
+
+    function main(): i32 {
+      const point = native.make_point();
+      return native.read_alias(point);
+    }
+  `;
+  try {
+    writeFileSync(header, `
+      typedef struct ZEditorPoint { int value; } ZEditorPoint;
+      typedef ZEditorPoint ZEditorPointAlias;
+      static inline ZEditorPoint make_point(void) { return (ZEditorPoint){ 42 }; }
+      static inline int read_alias(ZEditorPointAlias point) { return point.value - 42; }
+    `);
+    writeFileSync(file, source);
+    assert.deepEqual(diagnostics(source, file), []);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("provides compiler-backed AppKit completion, labels, hover, diagnostics, and definitions", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/nswindow.zs");

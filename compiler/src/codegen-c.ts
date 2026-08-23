@@ -6931,13 +6931,14 @@ function generateLoopTransfer(kind: "break" | "continue", context: GenerationCon
 }
 
 function generateIf(statement: Extract<Statement, { kind: "if" }>, context: GenerationContext): string {
-  const condition = generateExpression(statement.condition, context);
-  const thenBranch = generateBlock(statement.thenBranch.statements, context);
-  if (!statement.elseBranch) return `if ${controlCondition(condition)} ${thenBranch}`;
-  const elseBranch = statement.elseBranch.kind === "if"
-    ? generateIf(statement.elseBranch, context)
-    : generateBlock(statement.elseBranch.statements, context);
-  return `if ${controlCondition(condition)} ${thenBranch} else ${elseBranch}`;
+  return generateDirectValue(statement.condition, context, (condition, conditionContext) => {
+    const thenBranch = generateBlock(statement.thenBranch.statements, conditionContext);
+    if (!statement.elseBranch) return `if ${controlCondition(condition)} ${thenBranch}`;
+    const elseBranch = statement.elseBranch.kind === "if"
+      ? generateIf(statement.elseBranch, conditionContext)
+      : generateBlock(statement.elseBranch.statements, conditionContext);
+    return `if ${controlCondition(condition)} ${thenBranch} else ${elseBranch}`;
+  });
 }
 
 function controlCondition(value: string): string {
@@ -6968,6 +6969,21 @@ function generateDirectValue(
   }
   if (expression.kind === "dynamicArrayExpression" && expression.elements.length > 0) {
     return generateDynamicArrayValue(expression, context, consumeValue);
+  }
+  if (
+    expression.kind === "binary"
+    && (
+      requiresStatementValue(expression.left, context)
+      || requiresStatementValue(expression.right, context)
+    )
+  ) {
+    return generateLoweredCompositeValue(
+      expression,
+      [expression.left, expression.right],
+      context,
+      consumeValue,
+      consumeTerminates,
+    );
   }
   if (expression.kind === "template") {
     return generateTemplateValue(expression, context, (value, valueContext) => (
@@ -7047,14 +7063,88 @@ function generateBridgedStringValue(expression: Expression, value: string, conte
   return value;
 }
 
+function generateLoweredCompositeValue(
+  expression: Expression,
+  children: readonly Expression[],
+  context: GenerationContext,
+  consumeValue: (value: string, context: GenerationContext) => string,
+  consumeTerminates: boolean,
+): string {
+  const lines: string[] = [];
+  const overrides = new Map<number, string>();
+  const temporaries: CleanupLocal[] = [];
+  const cleanupScope = context.cleanupScopes.at(-1);
+  try {
+    for (const child of children) {
+      if (!requiresStatementValue(child, context)) continue;
+      const type = temporaryValueType(child, context);
+      const temporary = `_z_expression_${context.valueCounter.value++}`;
+      lines.push(`${generateLocalDeclaration(
+        type,
+        temporary,
+        true,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      )};`);
+      let liveFlag: string | null = null;
+      if (hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+        liveFlag = nextLiveFlag(temporary, context.liveFlagCounter);
+        const cleanup = { name: temporary, type, liveFlag };
+        temporaries.push(cleanup);
+        cleanupScope?.push(cleanup);
+        lines.push(`bool ${liveFlag} = false;`);
+        lines.push(`(void)${liveFlag};`);
+      }
+      lines.push(generateDirectValue(
+        child,
+        context,
+        (value) => `${temporary} = ${value};${liveFlag ? `\n${liveFlag} = true;` : ""}`,
+      ));
+      overrides.set(child.location.offset, temporary);
+    }
+    const loweredContext = withExpressionOverrides(context, overrides);
+    const cleanup = [...temporaries]
+      .reverse()
+      .map((temporary) => (
+        `if (${temporary.liveFlag}) ${generateValueCleanup(temporary.name, temporary.type, null, context)}\n`
+        + `${temporary.liveFlag} = false;`
+      ))
+      .join("\n");
+    lines.push(generateDirectValue(expression, loweredContext, (value, valueContext) => {
+      if (!cleanup) return consumeValue(value, valueContext);
+      const type = temporaryValueType(expression, loweredContext);
+      if (type === "void") return `(void)${value};\n${cleanup}`;
+      const result = `_z_expression_result_${context.valueCounter.value++}`;
+      const declaration = generateLocalDeclaration(
+        type,
+        result,
+        false,
+        context.structs,
+        context.enums,
+        context.semanticInfo.foreignNamedTypes,
+      );
+      return `${declaration} = ${value};\n${cleanup}\n${consumeValue(result, valueContext)}`;
+    }, consumeTerminates));
+  } finally {
+    for (let index = 0; index < temporaries.length; index += 1) cleanupScope?.pop();
+  }
+  return lines.join("\n");
+}
+
 function requiresStatementValue(expression: Expression, context: GenerationContext): boolean {
   if (context.expressionOverrides.has(expression.location.offset)) return false;
   if (context.semanticInfo.optionalChains.has(expression.location.offset)) return true;
   if (["template", "try", "matchExpression", "ifExpression", "unsafeExpression", "whileExpression", "forExpression"].includes(expression.kind)) return true;
   if (expression.kind === "dynamicArrayExpression") return expression.elements.length > 0;
   if (expression.kind === "conditional") {
-    return requiresStatementValue(expression.thenExpression, context)
+    return requiresStatementValue(expression.condition, context)
+      || requiresStatementValue(expression.thenExpression, context)
       || requiresStatementValue(expression.elseExpression, context);
+  }
+  if (expression.kind === "binary") {
+    return requiresStatementValue(expression.left, context)
+      || requiresStatementValue(expression.right, context);
   }
   if (expression.kind === "new") return expression.arguments.some((argument) => requiresStatementValue(argument, context));
   if (expression.kind === "call") {
@@ -7411,6 +7501,12 @@ function isStableStorageExpression(expression: Expression): boolean {
     && isStableStorageExpression(expression.object);
 }
 
+function memberPathStartsAtThis(expression: Expression): boolean {
+  let current = expression;
+  while (current.kind === "member") current = current.object;
+  return current.kind === "identifier" && current.name === "this";
+}
+
 function withExpressionOverrides(
   context: GenerationContext,
   overrides: ReadonlyMap<number, string>,
@@ -7700,10 +7796,21 @@ function generateConditionalValue(
   consumeValue: (value: string, context: GenerationContext) => string,
   consumeTerminates: boolean,
 ): string {
-  const condition = generateExpression(expression.condition, context);
-  const thenBranch = generateDirectValue(expression.thenExpression, context, consumeValue, consumeTerminates);
-  const elseBranch = generateDirectValue(expression.elseExpression, context, consumeValue, consumeTerminates);
-  return `if ${controlCondition(condition)} {\n${indent(thenBranch, 2)}\n} else {\n${indent(elseBranch, 2)}\n}`;
+  return generateDirectValue(expression.condition, context, (condition, conditionContext) => {
+    const thenBranch = generateDirectValue(
+      expression.thenExpression,
+      conditionContext,
+      consumeValue,
+      consumeTerminates,
+    );
+    const elseBranch = generateDirectValue(
+      expression.elseExpression,
+      conditionContext,
+      consumeValue,
+      consumeTerminates,
+    );
+    return `if ${controlCondition(condition)} {\n${indent(thenBranch, 2)}\n} else {\n${indent(elseBranch, 2)}\n}`;
+  });
 }
 
 function generateTemplateValue(
@@ -9623,11 +9730,17 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
       }
       const owner = context.structs.get(ownerValueType);
       const access = ownerView || owner?.kind === "class" ? "->" : ".";
-      return maybeRetainClass(
-        expression,
-        `(${generateExpression(expression.object, context)})${access}${expression.property}`,
-        context,
-      );
+      const value = `(${generateExpression(expression.object, context)})${access}${expression.property}`;
+      if (
+        context.semanticInfo.movedExpressions.has(expression.location.offset)
+        && context.owner.receiverMode === "move"
+        && memberPathStartsAtThis(expression)
+      ) {
+        const liveFlag = context.liveFlags.get("this");
+        if (!liveFlag) throw new Error("missing ownership flag for consumed nested receiver field");
+        return `(${liveFlag} = false, ${value})`;
+      }
+      return maybeRetainClass(expression, value, context);
     }
     case "call": {
       const integerConversion = context.semanticInfo.integerConversions.get(expression.location.offset);

@@ -5408,7 +5408,24 @@ function inferDirectValue(
     return inferForExpression(expression, owner, locals, globals, structs, enums, fileName, state, expected);
   }
   if (expression.kind === "closure") {
-    return inferClosureExpression(expression, locals, globals, structs, enums, fileName, state);
+    const expectedFunction = expected === null
+      ? null
+      : parseFunctionType(String(underlyingType(expected)));
+    const inferred = inferClosureExpression(expression, locals, globals, structs, enums, fileName, state, {
+      expectedFunction,
+    });
+    if (!expectedFunction || expected === null) return inferred;
+    finalizeClosureFunctionValue(
+      expression,
+      expectedFunction,
+      String(underlyingType(expected)),
+      locals,
+      structs,
+      enums,
+      fileName,
+      state,
+    );
+    return expected;
   }
   const contextualUnsafeCall = state.unsafeDepth > 0 && expected !== null && expression.kind === "call";
   if (contextualUnsafeCall) {
@@ -13369,20 +13386,34 @@ function consumeOwnedValue(
   ) {
     return;
   }
-  const consumesWholeReceiver = expression.kind === "member"
-    && expression.object.kind === "identifier"
-    && expression.object.name === "this"
+  const movedReceiverFieldPath = (() => {
+    if (expression.kind !== "member") return null;
+    const fields: string[] = [];
+    let current: Expression = expression;
+    while (current.kind === "member" && !current.optional) {
+      fields.unshift(current.property);
+      current = current.object;
+    }
+    return current.kind === "identifier" && current.name === "this" && fields.length > 0
+      ? fields
+      : null;
+  })();
+  const consumesWholeReceiver = movedReceiverFieldPath !== null
     && state.activeFunction?.receiverMode === "move"
     && state.activeReceiver !== null
     && (() => {
-      const receiver = structs.get(state.activeReceiver!);
-      if (!receiver || receiver.kind !== "struct" || receiver.deinitializer) return false;
-      const field = receiver.fields.find((candidate) => candidate.name === expression.property);
-      if (!field || !hasOwnershipType(field.type.name, structs, enums, state)) return false;
-      return receiver.fields.every((candidate) => (
-        candidate.name === expression.property
-        || !hasOwnershipType(candidate.type.name, structs, enums, state)
-      ));
+      let owner = structs.get(state.activeReceiver!);
+      for (const fieldName of movedReceiverFieldPath) {
+        if (!owner || owner.kind !== "struct" || owner.deinitializer) return false;
+        const field = owner.fields.find((candidate) => candidate.name === fieldName);
+        if (!field || !hasOwnershipType(field.type.name, structs, enums, state)) return false;
+        if (owner.fields.some((candidate) => (
+          candidate.name !== fieldName
+          && hasOwnershipType(candidate.type.name, structs, enums, state)
+        ))) return false;
+        owner = structs.get(String(underlyingType(field.type.name)));
+      }
+      return true;
     })();
   if ((expression.kind === "member" || expression.kind === "index") && !consumesWholeReceiver) {
     throw new DiagnosticError(fileName, expression.location, "cannot move an ownership-bearing field or element out of its owner", {
@@ -19248,9 +19279,13 @@ function sameForeignNamedType(
   if (expected === "unknown" || expected === "never" || actual === "unknown" || actual === "never") return false;
   const expectedNamed = foreignNamedTypes.get(String(underlyingType(expected)));
   const actualNamed = foreignNamedTypes.get(String(underlyingType(actual)));
-  if (!expectedNamed || !actualNamed || expectedNamed.kind !== actualNamed.kind || expectedNamed.cName !== actualNamed.cName) {
+  if (!expectedNamed || !actualNamed || expectedNamed.kind !== actualNamed.kind) {
     return false;
   }
+  if (expectedNamed.kind === "record" && actualNamed.kind === "record") {
+    return expectedNamed.canonicalNativeName === actualNamed.canonicalNativeName;
+  }
+  if (expectedNamed.cName !== actualNamed.cName) return false;
   if (expectedNamed.kind === "object" && actualNamed.kind === "object") {
     const expectedNullable = isNullableObjCTypeName(String(underlyingType(expected)));
     const actualNullable = isNullableObjCTypeName(String(underlyingType(actual)));
