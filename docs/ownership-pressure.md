@@ -2855,9 +2855,11 @@ the exact callable ABI used by its generated trampoline. Finally, immutable ARC
 class parameters emit `T * const *` rather than `const T **`, preserving the
 pointer identity's constness without changing the pointee type.
 
-The ordinary closure environment remains executor-local in this tier;
-cross-thread general callable sharing, block-bodied first-class closures, and
-suspending callable bodies remain explicit follow-ups.
+Ordinary closure environments remain executor-local. Explicit `on thread.any`
+callables now provide atomic environments for proven shareable capture graphs,
+and `on thread.main` callables preserve main-only construction, invocation, and
+storage without changing the native callable ABI. Block-bodied first-class
+closures and suspending callable bodies remain explicit follow-ups.
 
 ## Frozen collection publication
 
@@ -3660,15 +3662,60 @@ smoke satisfies the same selected-module export with a small value runtime.
 Because each target is compiled separately, their storage layouts do not need
 to agree and the platform choice needs no runtime vtable.
 
-An ordinary trait would be the natural nominal contract, but the fixed-point
-compiler still rejects executable user traits. A callable alias was also
-rejected as the durable answer: callable types currently accept only ordinary
-local execution or `thread.any`, so they cannot encode `thread.main` without
-erasing the exact executor guarantee this boundary exists to preserve. The
-implemented seam therefore relies on the selected module's exact exported
-function signature and future target-matrix compilation. Native trait execution
-or executor-specific callable types may strengthen that check later; neither is
-required to keep the public `Application` portable today.
+An ordinary trait remains the natural nominal contract, but the fixed-point
+compiler still rejects executable user traits. The selected module's exact
+exported function signature therefore remains the implemented platform seam.
+Stored synchronous callables can now preserve `thread.main` without erasing the
+executor guarantee, which closes the lifecycle-adapter representation gap but
+does not replace the future target-matrix module selection or native trait
+execution needed to keep the public `Application` portable.
+
+## Deferred Zapp probe: Servo through Rust's C ABI
+
+Servo is worth exploring as a future first-party, behaviorally consistent
+WebView engine for Zapp rather than as a reason to add a Rust ABI to Z. The
+stable architecture is Z calling Servo's Rust implementation through Servo's
+C-compatible embedding library:
+
+```text
+Zapp application and services in Z
+                |
+          Z Servo backend
+                |
+   checked Servo C header plus `.zd`
+                |
+        Servo's Rust implementation
+```
+
+This should use Rust `staticlib` or `cdylib` artifacts, `#[repr(C)]` values,
+opaque handles, and generated C headers. Z's existing header importer and
+`.zd` vocabulary should carry ownership, cleanup, callback lifetime and
+cardinality, caller thread, buffer projection, transfer, and destruction
+affinity. Rust `String`, `Vec`, traits, generics, `Result`, and `Future` should
+remain behind that boundary rather than entering Z's type system. Panics must
+also be contained inside Rust and never unwind through Z.
+
+The bounded spike is:
+
+1. build Servo's C API as one static or shared native dependency;
+2. import its generated header into Z without a handwritten Zapp shim;
+3. create and deterministically destroy one engine/WebView owner using checked
+   contract facts;
+4. render one page in a native Zapp window;
+5. exercise resize, input, script evaluation, and one JavaScript-to-Z message;
+6. measure binary size, idle memory, startup, first paint, build time, and
+   bridge overhead; and
+7. record missing C API operations instead of depending on Servo's native Rust
+   ABI.
+
+Servo could offer stronger engine parity across macOS, Windows, and Linux than
+the platform WebViews while fitting Zapp's size and safety goals better than
+CEF. It does not eliminate platform work: window surfaces, GPU contexts, event
+loops, input/IME, accessibility, packaging, resources, and native services
+remain platform adapters. Treat this as an experimental backend until the
+embedding surface, web compatibility, build reproducibility, and measurements
+justify a product commitment. System WebViews remain the smallest baseline;
+CEF remains the mature compatibility comparison.
 
 ## Not tested yet
 
@@ -3693,6 +3740,9 @@ required to keep the public `Application` portable today.
   fallible results now survive suspension, return/await relay, `try`/`attempt`,
   match, failure, and cancellation;
 - Windows C++ UI ownership and callback shapes.
+- a Rust-produced native library with opaque ownership, escaping callbacks,
+  thread-affinity contracts, Cargo-driven artifact preparation, and a complete
+  Servo rendering/event-loop integration.
 
 Each belongs in a vertical application probe before its design is treated as
 settled.
