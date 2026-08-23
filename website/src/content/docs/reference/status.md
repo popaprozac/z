@@ -16,7 +16,8 @@ production or compatibility-sensitive use.
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
 - A visible Zapp WebKit round trip whose executable `main`, consuming
-  application builder, UI ownership, protocol handler,
+  portable application builder, selected platform-module seam, UI ownership,
+  protocol handler,
   dynamic `id` class narrowing, typed JSON routing, frozen Z service dispatch,
   generated TypeScript binding, and registration lifetime are implemented in Z
 - Arrays, strings, maps, sets, filesystem/process primitives, synchronization,

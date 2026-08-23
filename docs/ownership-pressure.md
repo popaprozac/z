@@ -3648,6 +3648,28 @@ deduplicated `target.link.frameworks`, with Stage 0, fixed-point driver, cache,
 schema, and documentation parity. Zapp names AppKit, WebKit, and CoreFoundation
 there; its CLI no longer smuggles framework flags into a second final link.
 
+## Zapp platform-contract seam
+
+Separating Zapp's portable `Application` builder from its AppKit runtime found
+an executor-contract boundary before target-conditional modules exist. The
+shared builder can consume its services into an `ApplicationConfig`, while a
+selected module exports
+`runApplicationPlatform(config: ApplicationConfig): i32 on thread.main`.
+macOS stores AppKit and WebKit identities in a private ARC runtime; a headless
+smoke satisfies the same selected-module export with a small value runtime.
+Because each target is compiled separately, their storage layouts do not need
+to agree and the platform choice needs no runtime vtable.
+
+An ordinary trait would be the natural nominal contract, but the fixed-point
+compiler still rejects executable user traits. A callable alias was also
+rejected as the durable answer: callable types currently accept only ordinary
+local execution or `thread.any`, so they cannot encode `thread.main` without
+erasing the exact executor guarantee this boundary exists to preserve. The
+implemented seam therefore relies on the selected module's exact exported
+function signature and future target-matrix compilation. Native trait execution
+or executor-specific callable types may strengthen that check later; neither is
+required to keep the public `Application` portable today.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
