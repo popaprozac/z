@@ -844,7 +844,11 @@ function attachForeignTypes(
   line: usize,
   column: usize
 ): void {
-  if (moduleSymbolIndex(modules[moduleIndex], namespace) >= modules[moduleIndex].symbols.length) {
+  const namespaceIndex = moduleSymbolIndex(
+    modules[moduleIndex],
+    namespace
+  );
+  if (namespaceIndex >= modules[moduleIndex].symbols.length) {
     modules[moduleIndex].symbols.push(ModuleSymbol({
       name: namespace.copyBytes(0, namespace.byteLength),
       kind: ModuleSymbolKind.namespaceSymbol,
@@ -868,6 +872,17 @@ function attachForeignTypes(
       line,
       column,
     }));
+  } else {
+    modules[moduleIndex].symbols[namespaceIndex].importedName =
+      contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      );
+    modules[moduleIndex].symbols[namespaceIndex].foreignHeader =
+      contracts.moduleSpecifier.copyBytes(
+        0,
+        contracts.moduleSpecifier.byteLength
+      );
   }
   for (const type of contracts.types) {
     const name = `${namespace}.${type.name}`;

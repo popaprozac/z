@@ -270,7 +270,10 @@ from accepting an unverified memory-safety obligation: unsafe functions and raw
 operations still require a separate `unsafe` boundary. Inline declarations,
 adjacent `<header>.zd` Z declaration files, and built-in toolchain contracts
 feed the same normalizer and FIIR. `.zd` is the sole project-authored foreign
-contract format.
+contract format. An empty `.zd` is not required: declarations and plain
+value-ABI functions derived safely from the real header remain visible, while
+a C function requiring pointer, ownership, error, or other semantic facts is
+rejected when source attempts to use it.
 
 `unsafe { ... }` is the middle trust tier. It remains ordinary Z source, but
 permits a local unverified interpretation of native pointer data:

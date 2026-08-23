@@ -7,6 +7,9 @@ import {
 import {
   normalizeForeignContracts,
   parseForeignContracts,
+  RawForeignContractSet,
+  RawForeignFunctionContract,
+  RawForeignTypeContract,
 } from "../frontend/foreign-contracts.zs";
 import {
   directoryName,
@@ -133,6 +136,15 @@ function resolvedDeclaredHeader(
   return normalizedModulePath(`${contractDirectory}/${moduleSpecifier}`);
 }
 
+function inferredForeignContracts(in header: String): RawForeignContractSet {
+  return RawForeignContractSet({
+    moduleSpecifier: header.copyBytes(0, header.byteLength),
+    lifetimes: Array<String>(),
+    types: Array<RawForeignTypeContract>(),
+    functions: Array<RawForeignFunctionContract>(),
+  });
+}
+
 struct CacheHash {
   first: u8;
   second: u8;
@@ -244,21 +256,21 @@ export function loadForeignModuleContract(
   column: usize,
   in config: NativeProjectConfig
 ): NativeForeignModuleContract throws String {
-  const contractPath = match (existingForeignContract(
+  let contractPath = "";
+  let contractSource = "";
+  let contracts = inferredForeignContracts(header);
+  match (existingForeignContract(
     modulePath,
     header,
     config
   )) {
-    some(path) => path;
-    none => throw sourceDiagnostic(
-      modulePath,
-      line,
-      column,
-      `native foreign import "${header}" requires an adjacent .zd contract`,
-      moduleSource
-    );
-  };
-  const contractSource = try fs.readText(contractPath);
+    some(path) => {
+      contractPath = move path;
+      contractSource = try fs.readText(contractPath);
+      contracts = try parseForeignContracts(copy contractSource, contractPath);
+    }
+    none => {}
+  }
   const identity = cacheIdentity(
     modulePath,
     header,
@@ -300,26 +312,27 @@ export function loadForeignModuleContract(
   const declarationSource = try fs.readText(artifactPath);
   const producerCacheKey = try fs.readText(`${artifactPath}.meta`);
   const declarations = try decodeRawForeignDeclarations(declarationSource);
-  let contracts = try parseForeignContracts(copy contractSource, contractPath);
-  const declaredHeader = resolvedDeclaredHeader(
-    contractPath,
-    contracts.moduleSpecifier
-  );
-  const importedHeader = resolvedForeignHeader(modulePath, header, config);
-  const exactSpecifier = contracts.moduleSpecifier == header;
-  if (
-    declaredHeader != importedHeader
-    && (!exactSpecifier || fs.exists(declaredHeader))
-  ) {
-    throw sourceDiagnostic(
+  if (contractPath.byteLength > 0) {
+    const declaredHeader = resolvedDeclaredHeader(
       contractPath,
-      1,
-      1,
-      `Z declaration module "${contracts.moduleSpecifier}" does not match imported header "${header}"; resolved "${declaredHeader}" instead of "${importedHeader}"`,
-      contractSource
+      contracts.moduleSpecifier
     );
+    const importedHeader = resolvedForeignHeader(modulePath, header, config);
+    const exactSpecifier = contracts.moduleSpecifier == header;
+    if (
+      declaredHeader != importedHeader
+      && (!exactSpecifier || fs.exists(declaredHeader))
+    ) {
+      throw sourceDiagnostic(
+        contractPath,
+        1,
+        1,
+        `Z declaration module "${contracts.moduleSpecifier}" does not match imported header "${header}"; resolved "${declaredHeader}" instead of "${importedHeader}"`,
+        contractSource
+      );
+    }
+    contracts.moduleSpecifier = header.copyBytes(0, header.byteLength);
   }
-  contracts.moduleSpecifier = header.copyBytes(0, header.byteLength);
   const normalized = try normalizeForeignContracts(
     contracts,
     declarations,

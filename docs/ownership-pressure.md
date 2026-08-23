@@ -3462,6 +3462,15 @@ borrowed Objective-C-owned string view or an Objective-C-pointer C-function
 contract in `.zd` remains a future checked-interoperability layer; the demo does
 not weaken `view` provenance to hide that gap.
 
+The same pressure test also removed an accidental ceremony seam: Zapp's desktop
+header needed an empty `.zd` even though every declaration it consumed came
+directly from Clang. The fixed-point driver now treats `.zd` as an optional
+semantic overlay. Safely representable header types, plain value-ABI functions,
+and Objective-C declarations remain available without a sidecar, while a C
+function needing pointer or ownership facts still fails at the exact use site.
+Native Objective-C fixtures now omit their former empty contracts, proving
+convenience did not broaden the trusted ABI surface.
+
 The same registration fixture also runs through Stage 0. An explicit
 `publish(in owner)` call now passes an Objective-C reference directly in both
 frontends; capability lowering no longer mistakes reference identity for a

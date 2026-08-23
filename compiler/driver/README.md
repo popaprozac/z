@@ -75,18 +75,22 @@ semantic reuse are a later layer. The current debug profile uses Clang `-O0`;
 `--release` uses `-O2 -DNDEBUG`.
 
 For the first function-only scalar/status tier, the driver discovers the same
-adjacent or include-directory `.zd` shapes as Stage 0, prefers the packaged
-`z-foreign-adapter` beside its own executable and otherwise searches `PATH`,
-then decodes its versioned Clang declaration stream, normalizes the contract in
-Z, and supplies only checked
-callables to native semantic analysis. Artifacts live under the owning
+optional adjacent or include-directory `.zd` shapes as Stage 0, prefers the
+packaged `z-foreign-adapter` beside its own executable and otherwise searches `PATH`,
+then decodes its versioned Clang declaration stream. Header-derived types,
+constants, records, plain value-ABI functions, and Objective-C declarations
+remain usable without an empty sidecar; when a `.zd` is present the driver
+normalizes its extra facts in Z. The driver supplies only checked callables to
+native semantic analysis. Artifacts live under the owning
 project's `.z-cache/foreign`; their driver identity includes the importing
 module, header, contract contents, include directories, and target settings.
 The adapter metadata additionally hashes Clang's preprocessed header view, so a
 cache hit skips the AST producer while changes in transitive headers invalidate
-the evidence. A missing contract, missing adapter, malformed producer stream,
-unsupported declaration category, or unimplemented contract fact fails at the
-boundary. Version 6 of the producer stream carries scalar typedef evidence,
+the evidence. A missing adapter, malformed producer stream, unsupported
+declaration category, or unimplemented contract fact fails at the boundary. An
+absent `.zd` fails only when source uses a C function whose pointer, ownership,
+error, or other semantics prevent safe inference. Version 6 of the producer
+stream carries scalar typedef evidence,
 nominal enums, typed native constants, record layouts/fields, and canonical C
 record identity across typedef aliases. Symbolic scalar and
 enum-backed status facts are verified against Clang evidence and lower as the

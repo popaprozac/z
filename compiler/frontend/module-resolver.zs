@@ -7928,6 +7928,25 @@ function inferExpressionNodeType(
           }
           none => {}
         }
+        const foreignNamespaceIndex = moduleSymbolIndex(
+          modules[moduleIndex],
+          namespaceName
+        );
+        if (
+          foreignNamespaceIndex < modules[moduleIndex].symbols.length
+          && modules[moduleIndex].symbols[foreignNamespaceIndex].kind
+            == ModuleSymbolKind.namespaceSymbol
+          && modules[moduleIndex].symbols[foreignNamespaceIndex]
+            .foreignHeader.byteLength > 0
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.missingExport,
+            module.path,
+            `native contract for "${modules[moduleIndex].symbols[foreignNamespaceIndex].foreignHeader}" has no checked function "${memberName}"`,
+            tree.nodes[calleeIndex].line,
+            tree.nodes[calleeIndex].column
+          );
+        }
       }
       let ownerType = try inferExpressionNodeType(
         module,

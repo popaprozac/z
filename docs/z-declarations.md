@@ -5,6 +5,14 @@ header. An adjacent `.zd` file adds semantic facts that the header and Clang AST
 cannot prove: ownership, borrowing, cleanup, hidden sentinel arguments, status
 errors, callback lifetime, and thread transfer.
 
+An empty `.zd` is never required. Header-derived types, constants, records,
+plain value-ABI functions, and Objective-C declarations remain available
+directly from the header when Z can represent them safely. A C function that
+needs pointer ownership, borrowing, cleanup, status projection, or another
+semantic contract stays unavailable until a `.zd` describes it; using that
+function produces a focused "no checked function" diagnostic at the call site.
+This keeps header-only imports convenient without inventing safety facts.
+
 A `.zd` file is not a duplicate header and cannot invent a native declaration.
 Every named function, type, parameter, callback, context, release operation, and
 constant is checked against the imported header before it reaches semantic

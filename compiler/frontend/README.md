@@ -379,12 +379,14 @@ byte-identical C and produces a generation-two compiler that checks an
 independent project. Native build/run also distinguish debuggable `-O0` output
 from explicit `--release` output built with `-O2 -DNDEBUG`. The standalone
 driver does not treat the resolver's intentionally opaque foreign symbols as
-verified. For its first function/record tier, it discovers an adjacent `.zd`,
+verified. For its first function/record tier, it discovers an optional adjacent `.zd`,
 prefers the packaged `z-foreign-adapter` beside its own executable and otherwise
 searches `PATH`, decodes the real
 Clang-produced `ZFDCL` artifact, and normalizes inferred scalar, decimal
 integer-status, and recursively copyable record value/pointer contracts before
-native semantic analysis. The same path now normalizes owned nullable pointer
+native semantic analysis. Header-derived types, constants, records, plain
+value-ABI functions, and Objective-C declarations require no empty sidecar;
+C functions needing semantic facts remain unavailable at their use sites. The same path now normalizes owned nullable pointer
 results and status-gated `out T**` handles, including deterministic failure
 cleanup, nullable flow narrowing, `Option.fromNullable`, explicit `move` to the
 declared release function, and conservative non-escaping borrowed pointer

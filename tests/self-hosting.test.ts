@@ -6555,10 +6555,6 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       ].join("\n"),
     );
     writeFileSync(
-      resolve(objcProject, "NativeOwner.h.zd"),
-      'declare module "NativeOwner.h" {\n}\n',
-    );
-    writeFileSync(
       resolve(objcProject, "main.zs"),
       [
         'import native from "NativeOwner.h";',
@@ -6608,7 +6604,6 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     mkdirSync(registrationProject);
     for (const name of [
       "objc-registration-native.h",
-      "objc-registration-native.h.zd",
       "objc-registration-native.zs",
     ]) {
       writeFileSync(
@@ -8480,12 +8475,66 @@ test("compiles a multi-module Z application through the standalone native driver
   const foreignImportCheck = spawnSync(
     driver,
     ["check", foreignImport],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: foreignAdapterEnvironment },
   );
-  assert.equal(foreignImportCheck.status, 1);
+  assert.equal(foreignImportCheck.status, 0, foreignImportCheck.stderr);
+  assert.match(foreignImportCheck.stdout, /checked 1 Z modules/);
+
+  const uncontractedHeader = resolve(directory, "uncontracted.h");
+  writeFileSync(
+    uncontractedHeader,
+    [
+      "int z_uncontracted_status(void);",
+      "void *z_uncontracted_pointer(void);",
+      "",
+    ].join("\n"),
+  );
+  const uncontractedUse = resolve(directory, "uncontracted-use.zs");
+  writeFileSync(
+    uncontractedUse,
+    [
+      'import native from "./uncontracted.h";',
+      "function main(): i32 {",
+      "  return native.z_uncontracted_status();",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const uncontractedUseCheck = spawnSync(
+    driver,
+    ["check", uncontractedUse],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(
+    uncontractedUseCheck.status,
+    0,
+    uncontractedUseCheck.stderr,
+  );
+
+  const uncontractedPointerUse = resolve(
+    directory,
+    "uncontracted-pointer-use.zs",
+  );
+  writeFileSync(
+    uncontractedPointerUse,
+    [
+      'import native from "./uncontracted.h";',
+      "function main(): i32 {",
+      "  const pointer = native.z_uncontracted_pointer();",
+      "  return pointer == null ? 1 : 0;",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const uncontractedPointerUseCheck = spawnSync(
+    driver,
+    ["check", uncontractedPointerUse],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(uncontractedPointerUseCheck.status, 1);
   assert.match(
-    foreignImportCheck.stderr,
-    /:1:1: error: native foreign import "stdint\.h" requires an adjacent \.zd contract\n1 \| import native from "stdint\.h";\n  \| \^/,
+    uncontractedPointerUseCheck.stderr,
+    /native contract for "\.\/uncontracted\.h" has no checked function "z_uncontracted_pointer"/,
   );
 
   const foreignProject = resolve(directory, "foreign-project");

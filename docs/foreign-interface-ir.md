@@ -83,8 +83,10 @@ escape, release, threading, and integer-status error projection. Multiple
 sources may contribute disjoint facts,
 but contradictory safety facts are rejected rather than resolved by source
 order. Unknown fields, functions, and parameter indices are also rejected before
-FIIR reaches sema. Project contracts use adjacent `<header>.zd` Z declaration
-files with `declare module`. Internal toolchain metadata may feed the same
+FIIR reaches sema. ABI declarations and plain value-ABI functions that Z can
+represent safely remain usable from the header without an empty contract.
+Optional project API notes use
+adjacent `<header>.zd` Z declaration files with `declare module`. Internal toolchain metadata may feed the same
 normalizer without becoming a second project-authored contract format.
 
 ### Swift and package metadata
