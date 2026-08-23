@@ -23,6 +23,25 @@ native calls.
 This tier is enough for many C functions, C aggregates, Objective-C methods,
 and selected C++ values and methods.
 
+Objective-C's dynamic `id` can be narrowed without leaving Z. Assigning the
+narrowed `NSString` to an explicit `String` destination performs an owned UTF-8
+copy, so the Z value does not borrow Objective-C-managed storage:
+
+```z
+import native from "WebKit/WebKit.h";
+
+const body = message.body;
+
+if (body instanceof native.NSString) {
+  const text: String = body;
+  route(move text);
+}
+```
+
+Zapp exercises this exact shape in a visible WebKit message round trip. The
+generated boundary uses the native Objective-C class test and preserves the
+string's exact UTF-8 byte length, including embedded null bytes.
+
 ## 2. Add a `.zd` contract
 
 Headers cannot reliably encode ownership, cleanup, callback lifetimes, typed

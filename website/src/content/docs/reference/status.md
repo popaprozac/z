@@ -15,6 +15,9 @@ production or compatibility-sensitive use.
 - Native C-family code generation through Clang
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
+- A visible Zapp WebKit round trip whose protocol handler, dynamic `id` class
+  narrowing, owned string conversion, typed JSON routing, and registration
+  lifetime are implemented in Z
 - Arrays, strings, maps, sets, filesystem/process primitives, synchronization,
   arenas, JSON foundations, and inline Z tests
 - Structured tasks, cancellation, executor placement, dedicated native threads,

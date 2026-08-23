@@ -106,9 +106,10 @@ Inherited selectors retain the dynamic class receiver and `instancetype`
 methods rebind their result to that receiver type, while
 namespace-qualified enum fields in imported C records retain their nominal
 identity through native lowering. Zapp's visible WebKit route now owns its
-protocol handler and registration guard in Z; the remaining host seam validates
-WebKit's dynamic `id` message body before entering an owned-String export; the
-compiler can now move that validation into Z. The
+protocol handler and registration guard in Z, narrows WebKit's dynamic `id`
+message body with `instanceof`, and copies the resulting `NSString` into an
+owned Z `String` before typed routing. The remaining host seam owns AppKit
+process/run-loop and window/WebView construction. The
 Foreign Interface IR row above describes the fully consumed C contract tier;
 Objective-C class properties, property writes, optional property access,
 broad/header-only native-driver discovery, Objective-C protocol runtime checks,

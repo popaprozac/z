@@ -3474,18 +3474,47 @@ guard, while the Objective-C host no longer conforms to
 message reaches the Z-owned adapter, crosses the typed JSON router, and returns
 to the page before deterministic runtime shutdown removes the handler.
 
-That real SDK integration exposed two fixed-point gaps which are now ordinary
-regressions. An inherited Objective-C method returning `instancetype` must
+That real SDK integration first exposed two fixed-point gaps which are now
+ordinary regressions. An inherited Objective-C method returning `instancetype` must
 rebind to the dynamic receiver type, so `Subclass.alloc().init()` remains a
 `Subclass` even when `alloc` or `init` is declared by `NSObject`. Imported C
 record fields may also name namespace-qualified nominal enums; native lowering
 now resolves that identity and emits the enum field rather than rejecting the
-record. The Zapp host retains one deliberately small dynamic seam for WebKit's
-`id`-typed `message.body`: Objective-C validates that the object is an
-`NSString` and immediately enters an owned-`String` Z export. Expressing a
-borrowed Objective-C-owned string view or an Objective-C-pointer C-function
-contract in `.zd` remains a future checked-interoperability layer; the demo does
-not weaken `view` provenance to hide that gap.
+record.
+
+The next checkpoint removed the dynamic host seam. Z reads WebKit's
+`id`-typed `message.body`, narrows it with
+`body instanceof native.NSString`, and explicitly copies the narrowed object
+into an owned `String`. The copy uses the Objective-C UTF-8 byte length rather
+than `strlen`, so embedded null bytes remain data rather than truncating the
+message. A non-string body produces the typed bridge error from Z; Objective-C
+no longer performs validation or calls the routing export.
+
+That move exposed four adjacent fixed-point integration gaps. The native
+emitter now lowers the Objective-C `SEL` spelling used by protocol metadata,
+projects contextual Z string literals to direct C-string arguments, suppresses
+unused imported protocol parameters without changing their signatures, and
+copies `NSString` into fresh Z storage with no dependency on Foundation's
+`nil` or `NSUInteger` convenience spellings. Foreign declaration caching is
+also tied to the current `ZFDCL` protocol version and verifies the cached stream
+header, so a compiler upgrade cannot silently reuse stale metadata. Focused
+Stage 0, fixed-point, cache-regeneration, and visible WebKit runs retain these
+as ordinary regressions.
+
+The lifecycle now has repeatable sanitizer evidence rather than an ad hoc
+binary. A bounded Zapp driver recompiles the generated core and host with UBSan,
+enables Objective-C zombies, completes the visible message round trip, and
+requires deterministic registration teardown. It probes ASan with an empty
+program before instrumenting WebKit because the current macOS/Xcode ASan
+runtime can deadlock inside dyld initialization before `main`; every probe and
+application child has a hard deadline and is killed on timeout. This separates
+a broken host sanitizer runtime from a Z failure and prevents a diagnostic run
+from leaving CPU-intensive processes behind. ASan and leak evidence still need
+a compatible host or CI runner before Phase 1 is considered fully closed.
+
+Expressing a borrowed Objective-C-owned string view remains a future checked
+interop layer; the application uses an explicit owned copy rather than
+weakening `view` provenance to hide that gap.
 
 The same pressure test also removed an accidental ceremony seam: Zapp's desktop
 header needed an empty `.zd` even though every declaration it consumed came
