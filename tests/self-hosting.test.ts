@@ -6531,10 +6531,15 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     writeFileSync(
       resolve(objcProject, "NativeOwner.h"),
       [
+        "typedef signed char BOOL;",
+        "typedef struct objc_class *Class;",
+        "",
         "__attribute__((objc_root_class))",
         "@interface NSObject",
         "+ (instancetype)alloc;",
         "- (instancetype)init;",
+        "+ (Class)class;",
+        "- (BOOL)isKindOfClass:(Class)aClass;",
         "@end",
         "",
         "@interface NativeBase : NSObject",
@@ -6546,6 +6551,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "@property(nonatomic, readonly, getter=answer) int value;",
         "@property(nonatomic) int writableValue;",
         "@property(nonatomic, readonly) NativeBase *base;",
+        "@property(nonatomic, readonly) id body;",
         "@end",
         "",
         "@implementation NativeBase",
@@ -6574,6 +6580,10 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "- (NativeBase *)base {",
         "  return self;",
         "}",
+        "",
+        "- (id)body {",
+        "  return self;",
+        "}",
         "@end",
         "",
       ].join("\n"),
@@ -6586,7 +6596,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "function main(): i32 {",
         "  const owner = native.NativeOwner.sharedOwner();",
         "  const base = owner.base;",
-        "  return owner.value + base.baseValue - 40;",
+        "  const body = owner.body;",
+        "  if (body instanceof native.NativeBase) {",
+        "    return owner.value + base.baseValue + body.baseValue - 80;",
+        "  }",
+        "  return 1;",
         "}",
         "",
       ].join("\n"),
@@ -6627,8 +6641,14 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       objcEmission,
       /NativeBase \* const base = \[owner base\]/,
     );
+    assert.match(objcEmission, /id const body = \[owner body\]/);
+    assert.match(
+      objcEmission,
+      /\[body isKindOfClass:\[NativeBase class\]\]/,
+    );
     assert.match(objcEmission, /\[owner answer\]/);
     assert.match(objcEmission, /\[base baseValue\]/);
+    assert.match(objcEmission, /\[body baseValue\]/);
 
     writeFileSync(
       resolve(objcProject, "property-write.zs"),

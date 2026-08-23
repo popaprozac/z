@@ -325,6 +325,59 @@ hostToolchainTest("narrows nullable Objective-C references before member access"
   );
 });
 
+hostToolchainTest("narrows dynamic Objective-C objects with instanceof", () => {
+  if (process.platform !== "darwin") return;
+  const fixture = resolve(projectRoot, "tests/fixtures/objc-instanceof.zs");
+  const source = readFileSync(fixture, "utf8");
+  const artifact = compileToNative(source, fixture);
+
+  assert.deepEqual(diagnostics(source, fixture), []);
+  assert.match(artifact.source, /id const body = \[owner body\];/);
+  assert.match(
+    artifact.source,
+    /\[body isKindOfClass:\[NSString class\]\]/,
+  );
+  assert.match(artifact.source, /\[body length\]/);
+
+  const compilation = spawnSync("clang", [
+    "-x", "objective-c",
+    "-fobjc-arc",
+    "-Wall", "-Wextra", "-Werror",
+    "-I", resolve(projectRoot, "tests/fixtures"),
+    "-fsyntax-only", "-",
+  ], { input: artifact.source, encoding: "utf8" });
+  assert.equal(compilation.status, 0, compilation.stderr);
+
+  const narrowedUse = source.indexOf("body.length") + 1;
+  assert.match(
+    hover(source, fixture, narrowedUse)?.contents.value ?? "",
+    /body: Foundation\.NSString/,
+  );
+  const operatorOffset = source.indexOf("instanceof") + 2;
+  assert.match(
+    hover(source, fixture, operatorOffset)?.contents.value ?? "",
+    /runtime Objective-C class check/,
+  );
+
+  const invalidLeft = source.replace(
+    "body instanceof Foundation.NSString",
+    "42 instanceof Foundation.NSString",
+  );
+  assert.match(
+    diagnostics(invalidLeft, fixture)[0]?.message ?? "",
+    /instanceof expects an Objective-C object on the left, found i32/,
+  );
+
+  const invalidRight = source.replace(
+    "body instanceof Foundation.NSString",
+    "body instanceof 42",
+  );
+  assert.match(
+    diagnostics(invalidRight, fixture)[0]?.message ?? "",
+    /instanceof expects an imported Objective-C class on the right/,
+  );
+});
+
 hostToolchainTest("lifts nullable Objective-C references into Option values", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/interop/objc/objc-nullability.zs");

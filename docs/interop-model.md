@@ -824,6 +824,22 @@ const window = AppKit.NSWindow.alloc().initWithContentRect(
 window.title = "Z Notes";
 ```
 
+Dynamic Objective-C `id` results stay typed as Objective-C identity rather than
+becoming a Z `any`. Use `instanceof` when a native API requires runtime class
+inspection:
+
+```zs
+const body = message.body;
+if (body instanceof Foundation.NSString) {
+  const text: String = body;
+  route(text);
+}
+```
+
+The guard is one direct `isKindOfClass:` message, evaluates false for `nil`, and
+gives the true branch the concrete imported class surface. Protocol conformance
+tests and general Z-class reflection are separate future capabilities.
+
 `std/objc` is the explicit bridge layer for runtime conventions that a header
 cannot express as an ordinary typed call. The first such convention is
 target/action: AppKit exposes a weak target object plus a `SEL`, while Z source

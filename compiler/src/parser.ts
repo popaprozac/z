@@ -205,6 +205,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       case "lessEqual":
       case "greater":
       case "greaterEqual":
+      case "instanceof":
         return 7;
       case "shiftLeft":
       case "shiftRight":

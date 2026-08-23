@@ -118,9 +118,10 @@ recursive path.
   functions, overloads, parameters, source locations, executor affinity, and
   availability. The producer projects that supported tier out of
   a richer header instead of letting unrelated declarations poison supported
-  imports. Representable instance properties now resolve as inherited fields
-  and lower reads through their declared getter; class properties, setters,
-  optional access, and dynamic `id` narrowing remain deferred. Native type
+  imports. Representable instance properties, including dynamic `id`, now
+  resolve as inherited fields and lower reads through their declared getter;
+  `value instanceof NativeClass` emits `isKindOfClass:` and narrows its true
+  branch. Class properties, setters, and optional access remain deferred. Native type
   spellings remain on function declarations, so a `.zd`
   contract that uses an unsupported union, pointer/resource field, or
   object boundary still fails closed during normalization. Stage 0's real
@@ -145,8 +146,8 @@ recursive path.
   lowering and C emission.
   Representable instance properties join the same inherited lookup and executor
   checks, preserve custom getter selectors, and lower directly to message sends.
-  Class properties, setters, optional property access, dynamic `id` narrowing,
-  broad SDK header discovery, and Objective-C++ remain later fixed-point layers.
+  Class properties, setters, optional property access, broad SDK header
+  discovery, and Objective-C++ remain later fixed-point layers.
 - `foreign-contracts.zs` owns the first native `.zd` reader and normalizer. It
   parses the established `declare module`, inferred scalar `export function`,
   and integer-status `void throws _ { success NATIVE_OK; }` shapes. It verifies

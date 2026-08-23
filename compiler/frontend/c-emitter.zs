@@ -94,6 +94,7 @@ function cType(in type: LoweredType): String throws String {
     return type.name.copyBytes(0, type.name.byteLength);
   }
   if (type.kind == LoweredTypeKind.foreignObjCType) {
+    if (type.name == "id") return "id";
     return `${type.name} *`;
   }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
@@ -2445,6 +2446,25 @@ function appendExpression(
       }
     }
     output.append("]");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCInstanceOf
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native Objective-C emission received a malformed instanceof expression";
+    }
+    output.append("[");
+    const receiver = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      receiver
+    );
+    output.append(" isKindOfClass:[");
+    output.append(declaration.expressions[index].value);
+    output.append(" class]]");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.directCall) {

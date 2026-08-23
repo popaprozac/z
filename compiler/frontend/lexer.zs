@@ -23,6 +23,7 @@ export enum TokenKind {
   classKeyword,
   traitKeyword,
   implementsKeyword,
+  instanceofKeyword,
   enumKeyword,
   deinitKeyword,
   matchKeyword,
@@ -147,6 +148,7 @@ function keywordKind(in text: String): Option<TokenKind> {
   if (text == "class") return Option.some(TokenKind.classKeyword);
   if (text == "trait") return Option.some(TokenKind.traitKeyword);
   if (text == "implements") return Option.some(TokenKind.implementsKeyword);
+  if (text == "instanceof") return Option.some(TokenKind.instanceofKeyword);
   if (text == "enum") return Option.some(TokenKind.enumKeyword);
   if (text == "deinit") return Option.some(TokenKind.deinitKeyword);
   if (text == "match") return Option.some(TokenKind.matchKeyword);
@@ -797,6 +799,7 @@ export function tokenKindName(kind: TokenKind): String {
     unsafeKeyword => "unsafe";
     weakKeyword => "weak";
     inKeyword => "in";
+    instanceofKeyword => "instanceof";
     outKeyword => "out";
     inoutKeyword => "inout";
     leftParen => "leftParen";

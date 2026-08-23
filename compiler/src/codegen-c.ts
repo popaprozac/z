@@ -9387,6 +9387,10 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         context,
       );
     case "binary": {
+      const objcInstanceOf = context.semanticInfo.objcInstanceOf.get(expression.location.offset);
+      if (objcInstanceOf) {
+        return `[${generateExpression(expression.left, context)} isKindOfClass:[${objcInstanceOf.className} class]]`;
+      }
       const integerOperation = context.semanticInfo.integerOperations.get(expression.location.offset);
       if (integerOperation) {
         return `${integerOperationName(integerOperation)}(${generateExpression(expression.left, context)}, ${generateExpression(expression.right, context)})`;

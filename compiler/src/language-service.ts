@@ -107,7 +107,7 @@ const completionKinds = {
 const sourceKeywordTokens = [
   "as", "async", "attempt", "await", "break", "class", "const", "constructor",
   "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
-  "function", "if", "implements", "import", "in", "inout", "let", "match", "module",
+  "function", "if", "implements", "import", "in", "inout", "instanceof", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "static", "struct", "task", "test", "throw", "throws", "trait", "type", "try", "unsafe", "view",
   "using", "weak", "while", "yield", "raw",
@@ -712,6 +712,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "unsafe") {
     return markdownHover(
       "unsafe { ... }  // local unverified native assertions remain in Z syntax and types; prefer reusable checked .zd contracts",
+      source,
+      word.start,
+      word.end,
+    );
+  }
+  if (word.text === "instanceof") {
+    return markdownHover(
+      "value instanceof NativeClass  // runtime Objective-C class check; the true branch narrows the value to NativeClass",
       source,
       word.start,
       word.end,

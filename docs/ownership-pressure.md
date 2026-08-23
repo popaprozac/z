@@ -1581,8 +1581,18 @@ the source property name is the selector. A fixed-point executable reads a
 concrete Objective-C object property, a custom-getter scalar property, and an
 inherited scalar property, while a negative proves writable property assignment
 fails with a deliberate setter-lowering diagnostic. Class properties, writes,
-optional property access, and untyped `id` narrowing remain explicit next
-layers rather than silently falling back to an invented representation.
+and optional property access remain explicit next layers rather than silently
+falling back to an invented representation.
+
+The following slice closes that untyped-body seam without introducing `any` or
+an assertion cast. Dynamic `id` properties now remain representable in the
+native contract graph. `value instanceof native.Class` requires a real imported
+Objective-C class, emits `isKindOfClass:`, and narrows only the true branch. A
+fresh fixed-point executable reads an `id` property, verifies it as the imported
+base class, accesses the narrowed property surface, and still returns `42`.
+Stage 0 additionally checks editor hover plus invalid left/right operands. This
+is runtime nominal evidence with no wrapper allocation; protocol conformance
+and general Z-class runtime inspection remain deliberately separate.
 
 The following native slice crossed opaque pointer owners without pretending
 they were record values. A `.zd` `deinit` fact on a direct nullable result or

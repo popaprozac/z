@@ -2857,7 +2857,6 @@ function normalizedObjCProperty(
     declarations,
     property.typeName
   );
-  const dynamicObject = typeName == "id" || typeName == "id | null";
   return NativeForeignObjCPropertyContract({
     name: property.name.copyBytes(0, property.name.byteLength),
     getter: property.getter.copyBytes(0, property.getter.byteLength),
@@ -2873,7 +2872,7 @@ function normalizedObjCProperty(
     protocols,
     executorAffinity,
     availability,
-    representable: property.typeName.byteLength > 0 && !dynamicObject,
+    representable: property.typeName.byteLength > 0,
   });
 }
 

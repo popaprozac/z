@@ -503,6 +503,7 @@
     },
     "operators": {
       "patterns": [
+        { "name": "keyword.operator.instanceof.z", "match": "\\binstanceof\\b" },
         { "name": "keyword.operator.arrow.z", "match": "=>" },
         { "name": "keyword.operator.optional-chaining.z", "match": "\\?\\." },
         { "name": "keyword.operator.spread.z", "match": "\\.\\.\\." },

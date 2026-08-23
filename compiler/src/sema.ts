@@ -451,6 +451,10 @@ export type SemanticInfo = {
   readonly objcBindingCalls: ReadonlyMap<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: ReadonlyMap<number, ObjCRegistrationPlan>;
   readonly objcClassNames: ReadonlyMap<number, string>;
+  readonly objcInstanceOf: ReadonlyMap<number, {
+    readonly className: string;
+    readonly typeName: string;
+  }>;
   readonly objcProperties: ReadonlyMap<number, ObjCPropertyInfo>;
   readonly objcCalls: ReadonlyMap<number, ObjCCallInfo>;
   readonly objcBlockArguments: ReadonlyMap<number, ForeignBlockType>;
@@ -606,6 +610,10 @@ type AnalysisState = {
   readonly objcBindingCalls: Map<number, ObjCBindingPlan>;
   readonly objcRegistrationCalls: Map<number, ObjCRegistrationPlan>;
   readonly objcClassNames: Map<number, string>;
+  readonly objcInstanceOf: Map<number, {
+    readonly className: string;
+    readonly typeName: string;
+  }>;
   readonly objcProperties: Map<number, ObjCPropertyInfo>;
   readonly objcCalls: Map<number, ObjCCallInfo>;
   readonly objcBlockArguments: Map<number, ForeignBlockType>;
@@ -1038,6 +1046,7 @@ export function analyze(
     objcBindingCalls: new Map(),
     objcRegistrationCalls: new Map(),
     objcClassNames: new Map(),
+    objcInstanceOf: new Map(),
     objcProperties: new Map(),
     objcCalls: new Map(),
     objcBlockArguments: new Map(),
@@ -8840,6 +8849,38 @@ function inferExpressionInner(
         enums,
         state,
       );
+      if (expression.operator === "instanceof") {
+        const object = foreignObject(left, state);
+        if (!object) {
+          throw new DiagnosticError(
+            fileName,
+            expression.left.location,
+            `instanceof expects an Objective-C object on the left, found ${displayAssignableType(String(left), state)}`,
+          );
+        }
+        const target = expression.right.kind === "member"
+          ? getObjCClass(expression.right, globals)
+          : null;
+        if (!target) {
+          throw new DiagnosticError(
+            fileName,
+            expression.right.location,
+            "instanceof expects an imported Objective-C class on the right",
+          );
+        }
+        checkForeignAvailability(
+          target.metadata,
+          target.className,
+          expression.right.location,
+          fileName,
+          state,
+        );
+        state.objcInstanceOf.set(expression.location.offset, {
+          className: target.className,
+          typeName: target.typeName,
+        });
+        return "boolean";
+      }
       const right = implicitlyLoadCopyableView(
         inferExpression(expression.right, locals, globals, structs, enums, fileName, state),
         expression.right,
@@ -14963,6 +15004,18 @@ function narrowedConditionLocals(
       name = identifier.name;
       nonnull = condition.operator === "!=" ? truthy : !truthy;
     }
+  } else if (condition.kind === "binary" && condition.operator === "instanceof") {
+    const target = state.objcInstanceOf.get(condition.location.offset);
+    if (truthy && target && condition.left.kind === "identifier") {
+      const current = narrowed.get(condition.left.name);
+      if (current && foreignObject(current, state)) {
+        narrowed.set(
+          condition.left.name,
+          replaceUnderlyingType(current, target.typeName),
+        );
+      }
+    }
+    return narrowed;
   }
   if (!name || !nonnull) return narrowed;
   const current = narrowed.get(name);

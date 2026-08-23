@@ -1334,6 +1334,24 @@ to the nearest unmatched `if`. Conditions are always `boolean`; nullable pointer
 and references require an explicit comparison with `null` rather than
 truthiness.
 
+Imported Objective-C object identity additionally supports the runtime nominal
+check `value instanceof NativeClass`. The right operand must be an imported
+Objective-C class, and the true branch narrows the left binding to that class.
+Nullable `id` evaluates false when it is `null`; no separate null guard or cast
+is required:
+
+```zs
+const body = message.body;
+if (body instanceof Foundation.NSString) {
+  const text: String = body;
+  consume(text);
+}
+```
+
+This first tier is intentionally not a general reflection operator: Z classes,
+Objective-C protocols, structural traits, and primitive type categories are not
+accepted by `instanceof` yet.
+
 `while` and `for...of` may also produce values. A required `else` block handles
 natural exhaustion, including a loop that executes zero times. `select` supplies
 the loop expression's value and exits it:
@@ -3088,6 +3106,13 @@ native nullable form into `Option<T>` for `some`/`none` matching. Objective-C
 references and `.zd`-declared C handles use `nil` or `NULL` as the `none` niche
 and remain one pointer with no wrapper allocation; general options use the
 ordinary tagged enum layout.
+
+An imported Objective-C property or method returning dynamic `id` remains an
+Objective-C reference rather than becoming an untyped Z value. Test its runtime
+class with `instanceof`; the compiler lowers the check directly to
+`isKindOfClass:` and narrows the true branch to the selected imported class.
+This adds no wrapper allocation and keeps ordinary member access statically
+checked after the guard.
 
 An owner-tied `.zd` child pointer instead lifts to
 `Option<view native.Child>`. `Option` still means present or absent; `view`

@@ -256,8 +256,11 @@ First-tier native Objective-C semantic
 normalization, direct class/instance message lowering, and retained protocol
 registration are implemented. Representable instance-property reads share the
 ordinary field surface, include inherited and custom-getter properties, and
-lower directly to Objective-C getter messages. Class properties, property
-writes, optional property access, and dynamic `id` narrowing still fail closed.
+lower directly to Objective-C getter messages. Dynamic `id` properties remain
+one-pointer Objective-C references; a checked `instanceof` target lowers to
+`isKindOfClass:` and narrows the true branch to the imported class. Class
+properties, property writes, optional property access, protocol runtime checks,
+and general Z-class runtime checks still fail closed.
 Selected selectors and exact ABI spellings
 survive through semantic evidence consumed by the Objective-C emitter. For
 `objc.register`, that evidence additionally records the native receiver, Z

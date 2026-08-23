@@ -3393,6 +3393,29 @@ function hasNativeObjCRegistrationMetadata(
   return false;
 }
 
+function isNativeObjectiveCObjectType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): boolean {
+  const nullableTarget = nullableTargetType(typeName);
+  let target = typeName.copyBytes(0, typeName.byteLength);
+  if (nullableTarget.byteLength > 0) target = nullableTarget;
+  if (target == "id") return true;
+  return match (typeSymbolLocation(modules, moduleIndex, target)) {
+    some(location) => {
+      const symbol = view modules[location.moduleIndex]
+        .symbols[location.symbolIndex];
+      if (symbol.kind != ModuleSymbolKind.classSymbol) return false;
+      return match (in symbol.typeSignature) {
+        some(signature) => signature.foreignKind == "objcInterface";
+        none => false;
+      };
+    }
+    none => false;
+  };
+}
+
 function optionalReceiverPayloadType(in typeName: String): Option<String> {
   match (genericTypeShape(typeName)) {
     some(generic) => {
@@ -5686,6 +5709,71 @@ function inferExpressionNodeType(
   if (kind == ExpressionKind.binaryExpression && children.length == 2) {
     let left = try inferExpressionNodeType(module, modules, moduleIndex, arena, tree, children[0], inout bindings, inout evidence);
     try requireSettledExpressionType(module, tree, children[0], left);
+    if (value == "instanceof") {
+      if (
+        left.byteLength > 0
+        && !isNativeObjectiveCObjectType(modules, moduleIndex, left)
+      ) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `instanceof expects an Objective-C object on the left, found ${left}`,
+          tree.nodes[children[0]].line,
+          tree.nodes[children[0]].column
+        );
+      }
+      const targetName = typeExpressionName(tree, children[1]);
+      let targetIsObjectiveCClass = false;
+      let targetWasResolved = false;
+      if (targetName.byteLength > 0) {
+        match (typeSymbolLocation(modules, moduleIndex, targetName)) {
+          some(location) => {
+            targetWasResolved = true;
+            const symbol = view modules[location.moduleIndex]
+              .symbols[location.symbolIndex];
+            if (symbol.kind == ModuleSymbolKind.classSymbol) {
+              match (in symbol.typeSignature) {
+                some(signature) => {
+                  targetIsObjectiveCClass =
+                    signature.foreignKind == "objcInterface";
+                }
+                none => {}
+              }
+            }
+          }
+          none => {}
+        }
+      }
+      if (
+        targetName.byteLength == 0
+        || (targetWasResolved && !targetIsObjectiveCClass)
+      ) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "instanceof expects an imported Objective-C class on the right",
+          tree.nodes[children[1]].line,
+          tree.nodes[children[1]].column
+        );
+      }
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        children[0],
+        left,
+        inout evidence
+      );
+      recordExpressionResolution(
+        modules,
+        moduleIndex,
+        tree,
+        index,
+        "boolean",
+        inout evidence
+      );
+      return "boolean";
+    }
     if (value == "&&" || value == "||") {
       const beforeRight = copyValueBindings(bindings);
       let rightBindings = copyValueBindings(bindings);
@@ -10481,6 +10569,27 @@ function inferStatement(
                 } else {
                   setValueBindingType(inout thenBindings, bindingName, target);
                 }
+              }
+            }
+          }
+          if (
+            tree.nodes[root].kind == ExpressionKind.binaryExpression
+            && tree.nodes[root].children.length == 2
+            && tree.nodes[root].value == "instanceof"
+          ) {
+            const left = tree.nodes[root].children[0];
+            const right = tree.nodes[root].children[1];
+            if (tree.nodes[left].kind == ExpressionKind.identifierExpression) {
+              const targetName = typeExpressionName(tree, right);
+              if (targetName.byteLength > 0) {
+                const bindingName = identifierLookupName(
+                  tree.nodes[left].value
+                );
+                setValueBindingType(
+                  inout thenBindings,
+                  bindingName,
+                  targetName
+                );
               }
             }
           }

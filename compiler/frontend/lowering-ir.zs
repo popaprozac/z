@@ -229,6 +229,7 @@ export enum LoweredExpressionKind {
   closureValue,
   methodCall,
   objectiveCMessageCall,
+  objectiveCInstanceOf,
   objectiveCRegistration,
   fieldValue,
   structValue,
@@ -2405,6 +2406,10 @@ function lowerModuleTypeName(
   in importedTypes: Array<LoweredImportedType>,
   in name: String
 ): LoweredType throws String {
+  if (name == "id") return LoweredType({
+    kind: LoweredTypeKind.foreignObjCType,
+    name: "id",
+  });
   match (localTypeAliasTarget(program, name)) {
     some(target) => return try lowerModuleTypeName(
       program,
@@ -8127,6 +8132,40 @@ function lowerExpressionContextual(
     }
     const leftInput = tree.nodes[index].children[0];
     const rightInput = tree.nodes[index].children[1];
+    if (tree.nodes[index].value == "instanceof") {
+      const targetSourceName = typeExpressionName(tree, rightInput);
+      if (targetSourceName.byteLength == 0) {
+        throw "native instanceof lowering lost its Objective-C class target";
+      }
+      const targetType = try lowerModuleTypeName(
+        program,
+        importedTypes,
+        targetSourceName
+      );
+      if (
+        targetType.kind != LoweredTypeKind.foreignObjCType
+        || targetType.name == "id"
+      ) {
+        throw `native instanceof lowering expected an Objective-C class, found ${targetSourceName}`;
+      }
+      const left = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        leftInput,
+        inout output
+      );
+      let children = Array<usize>();
+      children.push(left);
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.objectiveCInstanceOf,
+        targetType.name,
+        children,
+        Array<String>()
+      );
+    }
     const leftType = resolvedExpressionTypeName(
       evidence,
       tree,

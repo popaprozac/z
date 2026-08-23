@@ -2065,6 +2065,7 @@ function binaryPrecedence(kind: TokenKind): i32 {
     || kind == TokenKind.lessEqual
     || kind == TokenKind.greater
     || kind == TokenKind.greaterEqual
+    || kind == TokenKind.instanceofKeyword
   ) return 7;
   if (kind == TokenKind.shiftLeft || kind == TokenKind.shiftRight) return 8;
   if (kind == TokenKind.plus || kind == TokenKind.minus) return 10;
