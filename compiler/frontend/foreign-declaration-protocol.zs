@@ -96,6 +96,86 @@ export struct RawForeignFunction {
   overloadCount: usize;
 }
 
+export struct RawForeignObjCInterface {
+  interfaceIndex: usize;
+  exportName: String;
+  typeName: String;
+  className: String;
+  superName: Option<String>;
+  methodStart: usize;
+  methodCount: usize;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+  executorAffinity: Option<String>;
+}
+
+export struct RawForeignObjCProtocol {
+  protocolIndex: usize;
+  exportName: String;
+  typeName: String;
+  protocolName: String;
+  inheritedStart: usize;
+  inheritedCount: usize;
+  methodStart: usize;
+  methodCount: usize;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+  executorAffinity: Option<String>;
+}
+
+export struct RawForeignObjCMethod {
+  ownerKind: String;
+  ownerIndex: usize;
+  methodIndex: usize;
+  selector: String;
+  baseName: String;
+  instance: boolean;
+  returnsInstanceType: boolean;
+  returnNativeType: String;
+  required: boolean;
+  sourceFile: Option<String>;
+  sourceLine: usize;
+  sourceColumn: usize;
+  sourceLength: usize;
+  executorAffinity: Option<String>;
+  parameterStart: usize;
+  parameterCount: usize;
+  availabilityStart: usize;
+  availabilityCount: usize;
+  asyncCallbackParameter: Option<usize>;
+  asyncResultParameter: Option<usize>;
+  asyncErrorParameter: Option<usize>;
+}
+
+export struct RawForeignObjCParameter {
+  ownerKind: String;
+  ownerIndex: usize;
+  methodIndex: usize;
+  parameterIndex: usize;
+  name: Option<String>;
+  nativeType: String;
+  protocolStart: usize;
+  protocolCount: usize;
+}
+
+export struct RawForeignObjCAvailability {
+  ownerKind: String;
+  ownerIndex: usize;
+  methodIndex: usize;
+  availabilityIndex: usize;
+  platform: Option<String>;
+  introduced: Option<String>;
+  deprecated: boolean;
+  deprecatedVersion: Option<String>;
+  obsoleted: Option<String>;
+  unavailable: boolean;
+  message: Option<String>;
+}
+
 export struct RawForeignModuleDeclarations {
   version: usize;
   producer: String;
@@ -110,6 +190,13 @@ export struct RawForeignModuleDeclarations {
   overloads: Array<RawForeignOverload>;
   parameters: Array<RawForeignParameter>;
   availability: Array<RawForeignAvailability>;
+  objectiveCInterfaces: Array<RawForeignObjCInterface>;
+  objectiveCProtocols: Array<RawForeignObjCProtocol>;
+  objectiveCProtocolInheritance: Array<String>;
+  objectiveCMethods: Array<RawForeignObjCMethod>;
+  objectiveCParameters: Array<RawForeignObjCParameter>;
+  objectiveCParameterProtocols: Array<String>;
+  objectiveCAvailability: Array<RawForeignObjCAvailability>;
 }
 
 struct ForeignWireCursor {
@@ -132,6 +219,13 @@ function emptyRawForeignModule(): RawForeignModuleDeclarations {
     overloads: Array<RawForeignOverload>(),
     parameters: Array<RawForeignParameter>(),
     availability: Array<RawForeignAvailability>(),
+    objectiveCInterfaces: Array<RawForeignObjCInterface>(),
+    objectiveCProtocols: Array<RawForeignObjCProtocol>(),
+    objectiveCProtocolInheritance: Array<String>(),
+    objectiveCMethods: Array<RawForeignObjCMethod>(),
+    objectiveCParameters: Array<RawForeignObjCParameter>(),
+    objectiveCParameterProtocols: Array<String>(),
+    objectiveCAvailability: Array<RawForeignObjCAvailability>(),
   });
 }
 
@@ -209,6 +303,22 @@ function readBoolean(inout cursor: ForeignWireCursor): boolean throws String {
   if (value == 48) return false;
   if (value == 49) return true;
   throw "foreign declaration stream has an invalid boolean";
+}
+
+function readOptionalUsize(
+  inout cursor: ForeignWireCursor
+): Option<usize> throws String {
+  if (cursor.offset >= cursor.batch.byteLength) {
+    throw "foreign declaration stream ended before optional integer";
+  }
+  const present = cursor.batch.byteAt(cursor.offset);
+  cursor.offset = cursor.offset + 1;
+  if (present == 48) return Option<usize>.none;
+  if (present != 49) {
+    throw "foreign declaration stream has an invalid optional-integer flag";
+  }
+  const value = try readHexUsize(inout cursor);
+  return Option.some(value);
 }
 
 function expectByte(
@@ -550,6 +660,260 @@ function appendAvailability(
   try endRecord(inout cursor);
 }
 
+function appendObjCProtocol(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const protocolIndex = try readHexUsize(inout cursor);
+  if (protocolIndex != module.objectiveCProtocols.length) {
+    throw "foreign declaration stream contains an out-of-order Objective-C protocol";
+  }
+  const exportName = try readText(inout cursor);
+  const typeName = try readText(inout cursor);
+  const protocolName = try readText(inout cursor);
+  const inheritedCount = try readHexUsize(inout cursor);
+  const inheritedStart = module.objectiveCProtocolInheritance.length;
+  let inheritedIndex: usize = 0;
+  while (inheritedIndex < inheritedCount) {
+    const inherited = try readText(inout cursor);
+    module.objectiveCProtocolInheritance.push(inherited);
+    inheritedIndex = inheritedIndex + 1;
+  }
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  const executorAffinity = try readOptionalText(inout cursor);
+  const methodCount = try readHexUsize(inout cursor);
+  module.objectiveCProtocols.push(RawForeignObjCProtocol({
+    protocolIndex,
+    exportName,
+    typeName,
+    protocolName,
+    inheritedStart,
+    inheritedCount,
+    methodStart: module.objectiveCMethods.length,
+    methodCount,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+    executorAffinity,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendObjCInterface(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const interfaceIndex = try readHexUsize(inout cursor);
+  if (interfaceIndex != module.objectiveCInterfaces.length) {
+    throw "foreign declaration stream contains an out-of-order Objective-C interface";
+  }
+  const exportName = try readText(inout cursor);
+  const typeName = try readText(inout cursor);
+  const className = try readText(inout cursor);
+  const superName = try readOptionalText(inout cursor);
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  const executorAffinity = try readOptionalText(inout cursor);
+  const methodCount = try readHexUsize(inout cursor);
+  module.objectiveCInterfaces.push(RawForeignObjCInterface({
+    interfaceIndex,
+    exportName,
+    typeName,
+    className,
+    superName,
+    methodStart: module.objectiveCMethods.length,
+    methodCount,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+    executorAffinity,
+  }));
+  try endRecord(inout cursor);
+}
+
+function validateObjCMethodOwner(
+  in module: RawForeignModuleDeclarations,
+  in ownerKind: String,
+  ownerIndex: usize,
+  methodIndex: usize
+): void throws String {
+  if (ownerKind == "protocol") {
+    if (ownerIndex >= module.objectiveCProtocols.length) {
+      throw "foreign declaration stream references an unknown Objective-C protocol";
+    }
+    const owner = view module.objectiveCProtocols[ownerIndex];
+    if (
+      ownerIndex + 1 != module.objectiveCProtocols.length
+      || methodIndex >= owner.methodCount
+      || owner.methodStart + methodIndex != module.objectiveCMethods.length
+    ) {
+      throw "foreign declaration stream contains an out-of-order Objective-C protocol method";
+    }
+    return;
+  }
+  if (ownerKind == "interface") {
+    if (ownerIndex >= module.objectiveCInterfaces.length) {
+      throw "foreign declaration stream references an unknown Objective-C interface";
+    }
+    const owner = view module.objectiveCInterfaces[ownerIndex];
+    if (
+      ownerIndex + 1 != module.objectiveCInterfaces.length
+      || methodIndex >= owner.methodCount
+      || owner.methodStart + methodIndex != module.objectiveCMethods.length
+    ) {
+      throw "foreign declaration stream contains an out-of-order Objective-C interface method";
+    }
+    return;
+  }
+  throw "foreign declaration stream contains an unknown Objective-C method owner kind";
+}
+
+function appendObjCMethod(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const ownerKind = try readText(inout cursor);
+  const ownerIndex = try readHexUsize(inout cursor);
+  const methodIndex = try readHexUsize(inout cursor);
+  try validateObjCMethodOwner(module, ownerKind, ownerIndex, methodIndex);
+  const selector = try readText(inout cursor);
+  const baseName = try readText(inout cursor);
+  const instance = try readBoolean(inout cursor);
+  const returnsInstanceType = try readBoolean(inout cursor);
+  const returnNativeType = try readText(inout cursor);
+  const required = try readBoolean(inout cursor);
+  const sourceFile = try readOptionalText(inout cursor);
+  const sourceLine = try readHexUsize(inout cursor);
+  const sourceColumn = try readHexUsize(inout cursor);
+  const sourceLength = try readHexUsize(inout cursor);
+  const executorAffinity = try readOptionalText(inout cursor);
+  const parameterCount = try readHexUsize(inout cursor);
+  const availabilityCount = try readHexUsize(inout cursor);
+  const asyncCallbackParameter = try readOptionalUsize(inout cursor);
+  const asyncResultParameter = try readOptionalUsize(inout cursor);
+  const asyncErrorParameter = try readOptionalUsize(inout cursor);
+  module.objectiveCMethods.push(RawForeignObjCMethod({
+    ownerKind,
+    ownerIndex,
+    methodIndex,
+    selector,
+    baseName,
+    instance,
+    returnsInstanceType,
+    returnNativeType,
+    required,
+    sourceFile,
+    sourceLine,
+    sourceColumn,
+    sourceLength,
+    executorAffinity,
+    parameterStart: module.objectiveCParameters.length,
+    parameterCount,
+    availabilityStart: module.objectiveCAvailability.length,
+    availabilityCount,
+    asyncCallbackParameter,
+    asyncResultParameter,
+    asyncErrorParameter,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendObjCParameter(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const ownerKind = try readText(inout cursor);
+  const ownerIndex = try readHexUsize(inout cursor);
+  const methodIndex = try readHexUsize(inout cursor);
+  const parameterIndex = try readHexUsize(inout cursor);
+  if (module.objectiveCMethods.length == 0) {
+    throw "foreign declaration stream contains an Objective-C parameter before its method";
+  }
+  const method = view module.objectiveCMethods[module.objectiveCMethods.length - 1];
+  if (
+    method.ownerKind != ownerKind
+    || method.ownerIndex != ownerIndex
+    || method.methodIndex != methodIndex
+    || parameterIndex >= method.parameterCount
+    || method.parameterStart + parameterIndex != module.objectiveCParameters.length
+  ) {
+    throw "foreign declaration stream contains an out-of-order Objective-C parameter";
+  }
+  const name = try readOptionalText(inout cursor);
+  const nativeType = try readText(inout cursor);
+  const protocolCount = try readHexUsize(inout cursor);
+  const protocolStart = module.objectiveCParameterProtocols.length;
+  let protocolIndex: usize = 0;
+  while (protocolIndex < protocolCount) {
+    const protocol = try readText(inout cursor);
+    module.objectiveCParameterProtocols.push(protocol);
+    protocolIndex = protocolIndex + 1;
+  }
+  module.objectiveCParameters.push(RawForeignObjCParameter({
+    ownerKind,
+    ownerIndex,
+    methodIndex,
+    parameterIndex,
+    name,
+    nativeType,
+    protocolStart,
+    protocolCount,
+  }));
+  try endRecord(inout cursor);
+}
+
+function appendObjCAvailability(
+  inout cursor: ForeignWireCursor,
+  inout module: RawForeignModuleDeclarations
+): void throws String {
+  const ownerKind = try readText(inout cursor);
+  const ownerIndex = try readHexUsize(inout cursor);
+  const methodIndex = try readHexUsize(inout cursor);
+  const availabilityIndex = try readHexUsize(inout cursor);
+  if (module.objectiveCMethods.length == 0) {
+    throw "foreign declaration stream contains Objective-C availability before its method";
+  }
+  const method = view module.objectiveCMethods[module.objectiveCMethods.length - 1];
+  if (
+    method.ownerKind != ownerKind
+    || method.ownerIndex != ownerIndex
+    || method.methodIndex != methodIndex
+    || availabilityIndex >= method.availabilityCount
+    || method.availabilityStart + availabilityIndex
+      != module.objectiveCAvailability.length
+  ) {
+    throw "foreign declaration stream contains out-of-order Objective-C availability";
+  }
+  const platform = try readOptionalText(inout cursor);
+  const introduced = try readOptionalText(inout cursor);
+  const deprecated = try readBoolean(inout cursor);
+  const deprecatedVersion = try readOptionalText(inout cursor);
+  const obsoleted = try readOptionalText(inout cursor);
+  const unavailable = try readBoolean(inout cursor);
+  const message = try readOptionalText(inout cursor);
+  module.objectiveCAvailability.push(RawForeignObjCAvailability({
+    ownerKind,
+    ownerIndex,
+    methodIndex,
+    availabilityIndex,
+    platform,
+    introduced,
+    deprecated,
+    deprecatedVersion,
+    obsoleted,
+    unavailable,
+    message,
+  }));
+  try endRecord(inout cursor);
+}
+
 function validateCompletedModule(
   in module: RawForeignModuleDeclarations
 ): void throws String {
@@ -588,6 +952,42 @@ function validateCompletedModule(
       throw "foreign declaration stream ended before all availability records";
     }
   }
+  for (const declaration of module.objectiveCProtocols) {
+    if (
+      declaration.inheritedStart + declaration.inheritedCount
+        > module.objectiveCProtocolInheritance.length
+      || declaration.methodStart + declaration.methodCount
+        > module.objectiveCMethods.length
+    ) {
+      throw "foreign declaration stream ended inside an Objective-C protocol";
+    }
+  }
+  for (const declaration of module.objectiveCInterfaces) {
+    if (
+      declaration.methodStart + declaration.methodCount
+        > module.objectiveCMethods.length
+    ) {
+      throw "foreign declaration stream ended before all Objective-C interface methods";
+    }
+  }
+  for (const method of module.objectiveCMethods) {
+    if (
+      method.parameterStart + method.parameterCount
+        > module.objectiveCParameters.length
+      || method.availabilityStart + method.availabilityCount
+        > module.objectiveCAvailability.length
+    ) {
+      throw "foreign declaration stream ended inside an Objective-C method";
+    }
+  }
+  for (const parameter of module.objectiveCParameters) {
+    if (
+      parameter.protocolStart + parameter.protocolCount
+        > module.objectiveCParameterProtocols.length
+    ) {
+      throw "foreign declaration stream ended inside Objective-C protocol qualifiers";
+    }
+  }
 }
 
 export function decodeRawForeignDeclarations(
@@ -600,7 +1000,7 @@ export function decodeRawForeignDeclarations(
   try expectLiteral(inout cursor, "ZFDCL");
   let module = emptyRawForeignModule();
   module.version = try readHexUsize(inout cursor);
-  if (module.version != 7) {
+  if (module.version != 8) {
     throw `unsupported foreign declaration stream version ${module.version}`;
   }
   try endRecord(inout cursor);
@@ -628,6 +1028,16 @@ export function decodeRawForeignDeclarations(
       try appendParameter(inout cursor, inout module);
     } else if (tag == 65) {
       try appendAvailability(inout cursor, inout module);
+    } else if (tag == 81) {
+      try appendObjCProtocol(inout cursor, inout module);
+    } else if (tag == 73) {
+      try appendObjCInterface(inout cursor, inout module);
+    } else if (tag == 74) {
+      try appendObjCMethod(inout cursor, inout module);
+    } else if (tag == 75) {
+      try appendObjCParameter(inout cursor, inout module);
+    } else if (tag == 86) {
+      try appendObjCAvailability(inout cursor, inout module);
     } else if (tag == 69) {
       try endRecord(inout cursor);
       if (cursor.offset != cursor.batch.byteLength) {

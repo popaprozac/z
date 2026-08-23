@@ -1,9 +1,10 @@
 import type {
   ForeignAvailability,
   ForeignModuleDeclarations,
+  ForeignObjCMethod,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 7;
+const protocolVersion = 8;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -22,6 +23,10 @@ function optionalText(value: string | null | undefined): string {
 
 function boolean(value: boolean): string {
   return value ? "1" : "0";
+}
+
+function optionalNumber(value: number | null): string {
+  return value === null ? "0" : `1${hexNumber(value)}`;
 }
 
 function availabilityRecord(
@@ -47,7 +52,10 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 7 retains every field of an otherwise-supported C record using its
+ * Version 8 carries Objective-C interfaces, protocols, methods, method
+ * parameters, protocol-qualified `id<...>` evidence, availability, and async
+ * projection indices into the native frontend. Properties remain a later
+ * protocol slice. Version 7 retained every field of an otherwise-supported C record using its
  * exact native type spelling. Safe normalization can therefore keep raw
  * pointer fields hidden while a `.zd` contract ABI-checks a reviewed field
  * projection. Version 6 added canonical C-record identity so lifecycle facts
@@ -196,6 +204,111 @@ export function encodeForeignFunctionDeclarationStream(
         ));
       }
     }
+  }
+  const appendObjCMethods = (
+    ownerKind: "interface" | "protocol",
+    ownerIndex: number,
+    methods: readonly ForeignObjCMethod[],
+  ): void => {
+    for (let methodIndex = 0; methodIndex < methods.length; methodIndex += 1) {
+      const method = methods[methodIndex];
+      const source = method.metadata.source;
+      const required = "required" in method ? method.required === true : true;
+      records.push([
+        "J",
+        text(ownerKind),
+        hexNumber(ownerIndex),
+        hexNumber(methodIndex),
+        text(method.selector),
+        text(method.baseName),
+        boolean(method.instance),
+        boolean(method.returnsInstanceType),
+        text(method.returnType.cName),
+        boolean(required),
+        optionalText(source?.fileName),
+        hexNumber(source?.line ?? 0),
+        hexNumber(source?.column ?? 0),
+        hexNumber(source?.length ?? 0),
+        optionalText(method.metadata.executorAffinity),
+        hexNumber(method.parameters.length),
+        hexNumber(method.metadata.availability.length),
+        optionalNumber(method.asyncCallbackParameter),
+        optionalNumber(method.asyncResultParameter),
+        optionalNumber(method.asyncErrorParameter),
+      ].join(""));
+      for (let parameterIndex = 0; parameterIndex < method.parameters.length; parameterIndex += 1) {
+        const parameter = method.parameters[parameterIndex];
+        records.push([
+          "K",
+          text(ownerKind),
+          hexNumber(ownerIndex),
+          hexNumber(methodIndex),
+          hexNumber(parameterIndex),
+          optionalText(parameter.name),
+          text(parameter.type.cName),
+          hexNumber(parameter.protocols?.length ?? 0),
+          ...(parameter.protocols ?? []).map(text),
+        ].join(""));
+      }
+      for (let availabilityIndex = 0; availabilityIndex < method.metadata.availability.length; availabilityIndex += 1) {
+        const availability = method.metadata.availability[availabilityIndex];
+        records.push([
+          "V",
+          text(ownerKind),
+          hexNumber(ownerIndex),
+          hexNumber(methodIndex),
+          hexNumber(availabilityIndex),
+          optionalText(availability.platform),
+          optionalText(availability.introduced),
+          boolean(availability.deprecated),
+          optionalText(availability.deprecatedVersion),
+          optionalText(availability.obsoleted),
+          boolean(availability.unavailable),
+          optionalText(availability.message),
+        ].join(""));
+      }
+    }
+  };
+  const protocols = [...module.protocols.values()];
+  for (let protocolIndex = 0; protocolIndex < protocols.length; protocolIndex += 1) {
+    const protocol = protocols[protocolIndex];
+    const source = protocol.metadata.source;
+    records.push([
+      "Q",
+      hexNumber(protocolIndex),
+      text(protocol.exportName),
+      text(protocol.typeName),
+      text(protocol.protocolName),
+      hexNumber(protocol.inherited.length),
+      ...protocol.inherited.map(text),
+      optionalText(source?.fileName),
+      hexNumber(source?.line ?? 0),
+      hexNumber(source?.column ?? 0),
+      hexNumber(source?.length ?? 0),
+      optionalText(protocol.metadata.executorAffinity),
+      hexNumber(protocol.methods.length),
+    ].join(""));
+    appendObjCMethods("protocol", protocolIndex, protocol.methods);
+  }
+  const interfaces = [...module.interfaces.values()];
+  for (let interfaceIndex = 0; interfaceIndex < interfaces.length; interfaceIndex += 1) {
+    const interface_ = interfaces[interfaceIndex];
+    const source = interface_.metadata.source;
+    records.push([
+      "I",
+      hexNumber(interfaceIndex),
+      text(interface_.exportName),
+      text(interface_.typeName),
+      text(interface_.className),
+      optionalText(interface_.superName),
+      optionalText(source?.fileName),
+      hexNumber(source?.line ?? 0),
+      hexNumber(source?.column ?? 0),
+      hexNumber(source?.length ?? 0),
+      optionalText(interface_.metadata.executorAffinity),
+      hexNumber(interface_.methods.length),
+    ].join(""));
+    appendObjCMethods("interface", interfaceIndex, interface_.methods);
   }
   records.push("E");
   return `${records.join("\n")}\n`;

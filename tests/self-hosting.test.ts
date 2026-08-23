@@ -6628,7 +6628,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000007\nM/);
+  assert.match(encoded, /^ZFDCL0000000000000008\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -6637,8 +6637,6 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
         ["unsupported", {} as never],
       ]),
       objectTypes: new Map([["unsupported", {} as never]]),
-      interfaces: new Map([["unsupported", {} as never]]),
-      protocols: new Map([["unsupported", {} as never]]),
     }),
     encoded,
   );
@@ -6709,6 +6707,52 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     { encoding: "utf8" },
   );
   assert.equal(clangExecution.status, 0, clangExecution.stderr);
+
+  const objcFixture = resolve(directory, "objc-registration-wire.h");
+  writeFileSync(objcFixture, `
+    @protocol ZBaseHandler
+    @end
+
+    @protocol ZRegistrationHandler <ZBaseHandler>
+    - (void)registrationOwner:(id)owner didReceiveValue:(int)value;
+    @end
+
+    @interface ZRegistrationOwner
+    - (void)addHandler:(id<ZRegistrationHandler>)handler name:(const char *)name;
+    - (void)removeHandlerForName:(const char *)name;
+    @end
+  `);
+  const objcImport: ImportDeclaration = {
+    kind: "import",
+    moduleName: "native",
+    bindings: null,
+    header: basename(objcFixture),
+    location: {
+      fileName: fixture,
+      offset: 0,
+      line: 1,
+      column: 1,
+    },
+  };
+  const objcStream = resolveForeignFunctionDeclarationStreams(
+    [objcImport],
+    fixture,
+    [directory],
+  ).get("native");
+  assert.ok(objcStream);
+  assert.match(objcStream, /^ZFDCL0000000000000008\nM/);
+  assert.match(objcStream, /\nQ/);
+  assert.match(objcStream, /\nI/);
+  assert.match(objcStream, /\nJ/);
+  assert.match(objcStream, /\nK/);
+  const objcPath = resolve(directory, "objc.zfdcl");
+  writeFileSync(objcPath, objcStream);
+  const objcExecution = spawnSync(
+    executable,
+    [objcPath, "objc"],
+    { encoding: "utf8" },
+  );
+  assert.equal(objcExecution.status, 0, objcExecution.stderr);
 
   const contractFixture = resolve(
     projectRoot,

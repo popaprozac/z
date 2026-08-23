@@ -163,12 +163,15 @@ Z sema and native backends
 
 The first adapter seam is now executable. The real Clang header producer can
 frame functions, scalar typedefs, nominal enum types, typed native constants,
-and record layouts/fields as a versioned `ZFDCL` raw-declaration stream. Version
-6 carries scalar alias/underlying identity, enum identity/underlying type,
+record layouts/fields, and the first Objective-C declaration graph as a
+versioned `ZFDCL` raw-declaration stream. Version 8 carries scalar
+alias/underlying identity, enum identity/underlying type,
 constant identity/type, record identity/layout, canonical C record identity
 across typedef aliases, field order/types, function names, namespaces,
 overloads, native type
-spellings, parameters, source locations, executor affinity, and availability
+spellings, parameters, source locations, executor affinity, availability,
+Objective-C interfaces, protocols, inherited protocol names, methods,
+method-parameter `id<Protocol>` qualifiers, and async projection indices
 into an owned Z decoder. Text is
 length-prefixed UTF-8 and records are flat, so the
 native compiler can validate and consume a bounded stream without adopting
@@ -243,8 +246,9 @@ discriminant contract exposes tag-only cases or cleanup-free active-member
 views; pointer-bearing payload records remain view-only and expose only safe
 fields plus reviewed lifetime-bound text projections. Without that contract,
 only producer-proven scalar or enum fields support a local unsafe active-member
-read. By-value unions, Objective-C declarations, interfaces, protocols, and
-unclassified resource records still fail closed.
+read. By-value unions, Objective-C properties, full native Objective-C
+semantic normalization/lowering, and unclassified resource records still fail
+closed.
 
 Opaque pointer ownership is represented separately from record layout. A
 nullable inferred result may declare `deinit release;`, and a nullable `out`

@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 7) return 10;
+  if (module.version != 8) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -70,7 +70,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 7) return 40;
+  if (module.version != 8) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -122,11 +122,73 @@ function inspectClang(in path: String): i32 throws String {
   return 0;
 }
 
+function inspectObjC(in path: String): i32 throws String {
+  const encoded = try fs.readText(path);
+  const module = try decodeRawForeignDeclarations(encoded);
+  if (module.version != 8) return 90;
+  if (!module.objectiveC || module.cPlusPlus) return 91;
+
+  let foundProtocol = false;
+  for (const protocol of module.objectiveCProtocols) {
+    if (protocol.protocolName == "ZRegistrationHandler") {
+      foundProtocol = true;
+      if (protocol.methodCount != 1) return 92;
+      if (protocol.inheritedCount != 1) return 102;
+      if (
+        module.objectiveCProtocolInheritance[protocol.inheritedStart]
+          != "ZBaseHandler"
+      ) return 103;
+      const method = view module.objectiveCMethods[protocol.methodStart];
+      if (method.ownerKind != "protocol") return 93;
+      if (method.selector != "registrationOwner:didReceiveValue:") return 94;
+      if (!method.required || !method.instance) return 95;
+    }
+  }
+  if (!foundProtocol) return 96;
+
+  let foundOwner = false;
+  let foundRegistration = false;
+  for (const interface_ of module.objectiveCInterfaces) {
+    if (interface_.className == "ZRegistrationOwner") {
+      foundOwner = true;
+      let methodIndex: usize = 0;
+      while (methodIndex < interface_.methodCount) {
+        const method = view module.objectiveCMethods[
+          interface_.methodStart + methodIndex
+        ];
+        if (method.selector == "addHandler:name:") {
+          foundRegistration = true;
+          if (method.parameterCount != 2) return 97;
+          const handler = view module.objectiveCParameters[
+            method.parameterStart
+          ];
+          if (handler.nativeType != "id") return 98;
+          if (handler.protocolCount != 1) return 99;
+          if (
+            module.objectiveCParameterProtocols[handler.protocolStart]
+              != "ZRegistrationHandler"
+          ) return 100;
+        }
+        methodIndex = methodIndex + 1;
+      }
+    }
+  }
+  if (!foundOwner || !foundRegistration) return 101;
+  return 0;
+}
+
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1 || arguments.length > 2) return 2;
   if (arguments.length == 2 && arguments[1] == "clang") {
     const outcome = attempt inspectClang(arguments[0]);
+    return match (outcome) {
+      success(code) => code;
+      failure(_) => 3;
+    };
+  }
+  if (arguments.length == 2 && arguments[1] == "objc") {
+    const outcome = attempt inspectObjC(arguments[0]);
     return match (outcome) {
       success(code) => code;
       failure(_) => 3;

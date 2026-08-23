@@ -108,13 +108,15 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 6 covers scalar
+  `ZFDCL` stream into owned flat Z declarations. Version 8 covers scalar
   typedef evidence, nominal enums, typed native constants, record layouts and
-  fields, canonical C record identity across typedef aliases, plus foreign
+  fields, canonical C record identity across typedef aliases, Objective-C
+  interfaces/protocols/methods, method-parameter `id<Protocol>` qualifiers,
+  method availability/async indices, plus foreign
   functions, overloads, parameters, source locations, executor affinity, and
   availability. The producer projects that supported tier out of
   a richer header instead of letting unrelated declarations poison supported
-  imports; native type spellings remain on function declarations, so a `.zd`
+  imports; Objective-C properties remain deferred. Native type spellings remain on function declarations, so a `.zd`
   contract that uses an unsupported union, pointer/resource field, or
   object boundary still fails closed during normalization. Stage 0's real
   Clang producer exposes the matching stream operation, and the bootstrap suite
