@@ -56,6 +56,8 @@ export struct NativeFieldShape {
   optionalField: boolean;
   foreignUnion: boolean;
   viewLifetime: String;
+  objectiveCGetter: String = "";
+  objectiveCSetter: String = "";
 }
 
 export struct NativeAggregateConstructionShape {
@@ -406,6 +408,14 @@ export function aggregateFieldShape(
                 viewLifetime: field.viewLifetime.copyBytes(
                   0,
                   field.viewLifetime.byteLength
+                ),
+                objectiveCGetter: field.objectiveCGetter.copyBytes(
+                  0,
+                  field.objectiveCGetter.byteLength
+                ),
+                objectiveCSetter: field.objectiveCSetter.copyBytes(
+                  0,
+                  field.objectiveCSetter.byteLength
                 ),
               }));
             }

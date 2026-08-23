@@ -108,6 +108,7 @@ export struct LoweredField {
   optionalField: boolean;
   borrowedView: boolean;
   defaultTarget: String;
+  objectiveCGetter: String = "";
 }
 
 export struct LoweredStruct {
@@ -6713,6 +6714,32 @@ function fieldTypeNameForOwner(
   return Option<String>.none;
 }
 
+function objectiveCGetterForOwner(
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String,
+  in fieldName: String
+): Option<String> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind != LoweredTypeKind.foreignObjCType
+      || (
+        imported.localName != ownerTypeName
+        && imported.targetName != ownerTypeName
+      )
+    ) continue;
+    for (const field of imported.fields) {
+      if (
+        field.name == fieldName
+        && field.objectiveCGetter.byteLength > 0
+      ) return Option.some(field.objectiveCGetter.copyBytes(
+        0,
+        field.objectiveCGetter.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
+}
+
 function fieldIsOptionalForOwner(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -11845,6 +11872,14 @@ function lowerExpressionContextual(
       if (payloadTypeName.byteLength == 0) {
         throw `native optional-chain lowering could not resolve ${receiverTypeName}`;
       }
+      match (objectiveCGetterForOwner(
+        importedTypes,
+        payloadTypeName,
+        tree.nodes[index].value
+      )) {
+        some(_) => throw "native optional Objective-C property access remains deferred";
+        none => {}
+      }
       const fieldTypeName = match (fieldTypeNameForOwner(
         program,
         importedTypes,
@@ -11913,6 +11948,43 @@ function lowerExpressionContextual(
         children,
         labels
       );
+    }
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput
+    )) {
+      some(receiverTypeName) => match (objectiveCGetterForOwner(
+        importedTypes,
+        receiverTypeName,
+        tree.nodes[index].value
+      )) {
+        some(getter) => {
+          const receiver = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            receiverInput,
+            inout output
+          );
+          let propertyChildren = Array<usize>();
+          propertyChildren.push(receiver);
+          let propertyLabels = Array<String>();
+          propertyLabels.push("instance");
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.objectiveCMessageCall,
+            getter,
+            propertyChildren,
+            propertyLabels
+          );
+        }
+        none => {}
+      }
+      none => {}
     }
     if (tree.nodes[index].value == "length") {
       match (resolvedExpressionTypeName(evidence, tree, receiverInput)) {
@@ -20767,6 +20839,10 @@ function copyImportedTypeAlias(
         0,
         field.defaultTarget.byteLength
       ),
+      objectiveCGetter: field.objectiveCGetter.copyBytes(
+        0,
+        field.objectiveCGetter.byteLength
+      ),
     }));
   }
   let variants = Array<LoweredVariant>();
@@ -20864,6 +20940,42 @@ function importedTypesForModule(
   let types = Array<LoweredImportedType>();
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (
+      symbol.kind != ModuleSymbolKind.classSymbol
+      || symbol.foreignHeader.byteLength == 0
+    ) continue;
+    match (in symbol.typeSignature) {
+      some(signature) => {
+        if (
+          signature.foreignKind != "objcInterface"
+          || signature.foreignNativeName.byteLength == 0
+        ) continue;
+        types.push(LoweredImportedType({
+          localName: symbol.name.copyBytes(0, symbol.name.byteLength),
+          targetName: signature.foreignNativeName.copyBytes(
+            0,
+            signature.foreignNativeName.byteLength
+          ),
+          nativeTypeName: signature.foreignNativeName.copyBytes(
+            0,
+            signature.foreignNativeName.byteLength
+          ),
+          kind: LoweredTypeKind.foreignObjCType,
+          executorBound: signature.executorAffinity.byteLength > 0,
+          threadShareable: false,
+          workerDestructible: false,
+          needsDeinit: false,
+          resourceRelease: "",
+          fields: Array<LoweredField>(),
+          variants: Array<LoweredVariant>(),
+          payloadBearing: false,
+          underlyingType: "",
+        }));
+      }
+      none => {}
+    }
+  }
+  for (const symbol of graph.modules[moduleIndex].symbols) {
+    if (
       (
         symbol.kind == ModuleSymbolKind.enumSymbol
         || symbol.kind == ModuleSymbolKind.structSymbol
@@ -20878,27 +20990,36 @@ function importedTypesForModule(
             && signature.foreignKind == "objcInterface"
             && signature.foreignNativeName.byteLength > 0
           ) {
-            types.push(LoweredImportedType({
-              localName: symbol.name.copyBytes(0, symbol.name.byteLength),
-              targetName: signature.foreignNativeName.copyBytes(
-                0,
-                signature.foreignNativeName.byteLength
-              ),
-              nativeTypeName: signature.foreignNativeName.copyBytes(
-                0,
-                signature.foreignNativeName.byteLength
-              ),
-              kind: LoweredTypeKind.foreignObjCType,
-              executorBound: signature.executorAffinity.byteLength > 0,
-              threadShareable: false,
-              workerDestructible: false,
-              needsDeinit: false,
-              resourceRelease: "",
-              fields: Array<LoweredField>(),
-              variants: Array<LoweredVariant>(),
-              payloadBearing: false,
-              underlyingType: "",
-            }));
+            let importedIndex: usize = 0;
+            while (
+              importedIndex < types.length
+              && types[importedIndex].localName != symbol.name
+            ) {
+              importedIndex = importedIndex + 1;
+            }
+            if (importedIndex >= types.length) {
+              throw `native lowering lost Objective-C type ${symbol.name}`;
+            }
+            let fields = Array<LoweredField>();
+            for (const field of signature.fields) {
+              const fieldType = try lowerModuleTypeName(
+                program,
+                types,
+                field.typeName
+              );
+              fields.push(LoweredField({
+                name: field.name.copyBytes(0, field.name.byteLength),
+                type: fieldType,
+                optionalField: false,
+                borrowedView: false,
+                defaultTarget: "",
+                objectiveCGetter: field.objectiveCGetter.copyBytes(
+                  0,
+                  field.objectiveCGetter.byteLength
+                ),
+              }));
+            }
+            types[importedIndex].fields = move fields;
           } else if (
             symbol.kind == ModuleSymbolKind.enumSymbol
             &&

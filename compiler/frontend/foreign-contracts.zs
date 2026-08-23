@@ -3,6 +3,8 @@ import {
   RawForeignObjCAvailability,
   RawForeignObjCMethod,
   RawForeignObjCParameter,
+  RawForeignObjCProperty,
+  RawForeignObjCPropertyAvailability,
   RawForeignParameter,
   RawForeignType,
 } from "./foreign-declaration-protocol.zs";
@@ -200,6 +202,22 @@ export struct NativeForeignObjCInterfaceContract {
   superName: String;
   executorAffinity: String;
   methods: Array<NativeForeignObjCMethodContract>;
+  properties: Array<NativeForeignObjCPropertyContract>;
+}
+
+export struct NativeForeignObjCPropertyContract {
+  name: String;
+  getter: String;
+  setter: String;
+  instance: boolean;
+  readonlyProperty: boolean;
+  ownership: String;
+  typeName: String;
+  nativeType: String;
+  protocols: Array<String>;
+  executorAffinity: String;
+  availability: Array<NativeForeignObjCAvailabilityContract>;
+  representable: boolean;
 }
 
 export struct NativeForeignObjCProtocolContract {
@@ -2672,6 +2690,20 @@ function normalizedObjCAvailability(
   });
 }
 
+function normalizedObjCPropertyAvailability(
+  in availability: RawForeignObjCPropertyAvailability
+): NativeForeignObjCAvailabilityContract {
+  return NativeForeignObjCAvailabilityContract({
+    platform: copiedOptionalText(availability.platform),
+    introduced: copiedOptionalText(availability.introduced),
+    deprecated: availability.deprecated,
+    deprecatedVersion: copiedOptionalText(availability.deprecatedVersion),
+    obsoleted: copiedOptionalText(availability.obsoleted),
+    unavailable: availability.unavailable,
+    message: copiedOptionalText(availability.message),
+  });
+}
+
 function normalizedObjCParameter(
   in declarations: RawForeignModuleDeclarations,
   in parameter: RawForeignObjCParameter
@@ -2785,6 +2817,83 @@ function normalizedObjCMethods(
   return methods;
 }
 
+function normalizedObjCProperty(
+  in declarations: RawForeignModuleDeclarations,
+  in property: RawForeignObjCProperty
+): NativeForeignObjCPropertyContract {
+  let setter = "";
+  match (in property.setter) {
+    some(value) => setter = value.copyBytes(0, value.byteLength);
+    none => {}
+  }
+  let protocols = Array<String>();
+  let protocolIndex: usize = 0;
+  while (protocolIndex < property.protocolCount) {
+    const protocol = view declarations.objectiveCPropertyProtocols[
+      property.protocolStart + protocolIndex
+    ];
+    protocols.push(protocol.copyBytes(0, protocol.byteLength));
+    protocolIndex = protocolIndex + 1;
+  }
+  let availability = Array<NativeForeignObjCAvailabilityContract>();
+  let availabilityIndex: usize = 0;
+  while (availabilityIndex < property.availabilityCount) {
+    availability.push(normalizedObjCPropertyAvailability(
+      declarations.objectiveCPropertyAvailability[
+        property.availabilityStart + availabilityIndex
+      ]
+    ));
+    availabilityIndex = availabilityIndex + 1;
+  }
+  let executorAffinity = "";
+  match (in property.executorAffinity) {
+    some(affinity) => {
+      if (affinity == "main") executorAffinity = "thread.main";
+      else executorAffinity = affinity.copyBytes(0, affinity.byteLength);
+    }
+    none => {}
+  }
+  const typeName = relativeObjCTypeName(
+    declarations,
+    property.typeName
+  );
+  const dynamicObject = typeName == "id" || typeName == "id | null";
+  return NativeForeignObjCPropertyContract({
+    name: property.name.copyBytes(0, property.name.byteLength),
+    getter: property.getter.copyBytes(0, property.getter.byteLength),
+    setter,
+    instance: !property.classProperty,
+    readonlyProperty: property.readonlyProperty,
+    ownership: property.ownership.copyBytes(0, property.ownership.byteLength),
+    typeName,
+    nativeType: property.nativeType.copyBytes(
+      0,
+      property.nativeType.byteLength
+    ),
+    protocols,
+    executorAffinity,
+    availability,
+    representable: property.typeName.byteLength > 0 && !dynamicObject,
+  });
+}
+
+function normalizedObjCProperties(
+  in declarations: RawForeignModuleDeclarations,
+  propertyStart: usize,
+  propertyCount: usize
+): Array<NativeForeignObjCPropertyContract> {
+  let properties = Array<NativeForeignObjCPropertyContract>();
+  let propertyIndex: usize = 0;
+  while (propertyIndex < propertyCount) {
+    properties.push(normalizedObjCProperty(
+      declarations,
+      declarations.objectiveCProperties[propertyStart + propertyIndex]
+    ));
+    propertyIndex = propertyIndex + 1;
+  }
+  return properties;
+}
+
 function normalizedObjCInterfaces(
   in declarations: RawForeignModuleDeclarations
 ): Array<NativeForeignObjCInterfaceContract> {
@@ -2819,6 +2928,11 @@ function normalizedObjCInterfaces(
         declaration.methodStart,
         declaration.methodCount,
         declaration.exportName
+      ),
+      properties: normalizedObjCProperties(
+        declarations,
+        declaration.propertyStart,
+        declaration.propertyCount
       ),
     }));
   }

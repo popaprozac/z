@@ -926,6 +926,15 @@ function requireProjectedCapabilityValuePath(
       reversed[fieldIndex]
     )) {
       some(field) => {
+        if (mutableAccess && field.objectiveCGetter.byteLength > 0) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `Objective-C property "${field.name}" cannot be passed as inout; property setter lowering remains deferred`,
+            tree.nodes[index].line,
+            tree.nodes[index].column
+          );
+        }
         if (mutableAccess && field.readonlyField) throw resolutionError(
           ModuleResolveErrorKind.typeMismatch,
           module.path,
@@ -5516,6 +5525,18 @@ function inferExpressionNodeType(
           0,
           field.typeName.byteLength
         );
+        if (
+          node.optionalAccess
+          && field.objectiveCGetter.byteLength > 0
+        ) {
+          throw resolutionError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `optional Objective-C property access "${field.name}" remains deferred in the native compiler`,
+            node.line,
+            node.column
+          );
+        }
         if (node.optionalAccess) {
           let projectedType = fieldType.copyBytes(0, fieldType.byteLength);
           let visiting = Array<String>();
@@ -9940,6 +9961,15 @@ function inferStatement(
               }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
+                  if (field.objectiveCGetter.byteLength > 0) {
+                    throw resolutionError(
+                      ModuleResolveErrorKind.typeMismatch,
+                      module.path,
+                      `Objective-C property "${field.name}" writes remain deferred in the native compiler`,
+                      tree.nodes[root].line,
+                      tree.nodes[root].column
+                    );
+                  }
                   const constructorType = valueBindingType(
                     bindings,
                     "__z_native_constructor_type"

@@ -45,7 +45,7 @@ function inspectObjC(
     "objc-registration-wire.h"
   );
   if (normalized.objectiveCProtocols.length != 2) return 80;
-  if (normalized.objectiveCInterfaces.length != 2) return 81;
+  if (normalized.objectiveCInterfaces.length != 3) return 81;
   const protocol = view normalized.objectiveCProtocols[1];
   if (protocol.name != "ZRegistrationHandler") return 82;
   if (protocol.inherited.length != 1) return 83;

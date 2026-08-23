@@ -212,6 +212,13 @@ export struct ModuleFieldSignature {
   hasDefault: boolean;
   optionalField: boolean;
   viewLifetime: String;
+  objectiveCGetter: String = "";
+  objectiveCSetter: String = "";
+  objectiveCOwnership: String = "";
+  objectiveCNativeType: String = "";
+  objectiveCProtocols: Array<String> = Array<String>();
+  objectiveCAvailability: Array<ModuleObjCAvailabilitySignature> =
+    Array<ModuleObjCAvailabilitySignature>();
 }
 
 export struct ModuleVariantSignature {

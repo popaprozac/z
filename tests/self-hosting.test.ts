@@ -6537,9 +6537,21 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "- (instancetype)init;",
         "@end",
         "",
-        "@interface NativeOwner : NSObject",
+        "@interface NativeBase : NSObject",
+        "@property(nonatomic, readonly) int baseValue;",
+        "@end",
+        "",
+        "@interface NativeOwner : NativeBase",
         "+ (instancetype)sharedOwner;",
-        "- (int)value;",
+        "@property(nonatomic, readonly, getter=answer) int value;",
+        "@property(nonatomic) int writableValue;",
+        "@property(nonatomic, readonly) NativeBase *base;",
+        "@end",
+        "",
+        "@implementation NativeBase",
+        "- (int)baseValue {",
+        "  return 40;",
+        "}",
         "@end",
         "",
         "@implementation NativeOwner",
@@ -6547,8 +6559,20 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "  return [[self alloc] init];",
         "}",
         "",
-        "- (int)value {",
+        "- (int)answer {",
         "  return 42;",
+        "}",
+        "",
+        "- (int)writableValue {",
+        "  return 0;",
+        "}",
+        "",
+        "- (void)setWritableValue:(int)value {",
+        "  (void)value;",
+        "}",
+        "",
+        "- (NativeBase *)base {",
+        "  return self;",
         "}",
         "@end",
         "",
@@ -6561,7 +6585,8 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "",
         "function main(): i32 {",
         "  const owner = native.NativeOwner.sharedOwner();",
-        "  return owner.value();",
+        "  const base = owner.base;",
+        "  return owner.value + base.baseValue - 40;",
         "}",
         "",
       ].join("\n"),
@@ -6598,7 +6623,36 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       objcEmission,
       /NativeOwner \* const owner = \[NativeOwner sharedOwner\]/,
     );
-    assert.match(objcEmission, /return \[owner value\]/);
+    assert.match(
+      objcEmission,
+      /NativeBase \* const base = \[owner base\]/,
+    );
+    assert.match(objcEmission, /\[owner answer\]/);
+    assert.match(objcEmission, /\[base baseValue\]/);
+
+    writeFileSync(
+      resolve(objcProject, "property-write.zs"),
+      [
+        'import native from "NativeOwner.h";',
+        "",
+        "function main(): i32 {",
+        "  const owner = native.NativeOwner.sharedOwner();",
+        "  owner.writableValue = 1;",
+        "  return 0;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const propertyWriteCheck = spawnSync(
+      executable,
+      ["check", resolve(objcProject, "property-write.zs")],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(propertyWriteCheck.status, 0);
+    assert.match(
+      propertyWriteCheck.stderr,
+      /Objective-C property "writableValue" writes remain deferred in the native compiler/,
+    );
 
     const registrationProject = resolve(directory, "objc-registration-project");
     mkdirSync(registrationProject);
@@ -6776,7 +6830,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL0000000000000009\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000a\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -6870,6 +6924,11 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     - (void)removeHandlerForName:(const char *)name;
     + (ZRegistrationOwner *)sharedOwner;
     @end
+
+    @interface ZPropertyOwner
+    @property(nonatomic, readonly, getter=answer) int value;
+    @property(nonatomic, weak) id<ZRegistrationHandler> handler;
+    @end
   `);
   const objcImport: ImportDeclaration = {
     kind: "import",
@@ -6889,11 +6948,12 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL0000000000000009\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000a\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);
   assert.match(objcStream, /\nK/);
+  assert.match(objcStream, /\nR/);
   const objcPath = resolve(directory, "objc.zfdcl");
   writeFileSync(objcPath, objcStream);
   const objcExecution = spawnSync(

@@ -7,7 +7,7 @@ import {
 function inspect(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 9) return 10;
+  if (module.version != 10) return 10;
   if (module.producer != "clang") return 11;
   if (module.objectiveC || module.cPlusPlus) return 12;
   if (module.functions.length != 1) return 13;
@@ -70,7 +70,7 @@ function inspect(in path: String): i32 throws String {
 function inspectClang(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 9) return 40;
+  if (module.version != 10) return 40;
   if (module.producer != "clang") return 41;
   if (module.objectiveC || module.cPlusPlus) return 42;
   if (module.types.length != 1) return 67;
@@ -125,7 +125,7 @@ function inspectClang(in path: String): i32 throws String {
 function inspectObjC(in path: String): i32 throws String {
   const encoded = try fs.readText(path);
   const module = try decodeRawForeignDeclarations(encoded);
-  if (module.version != 9) return 90;
+  if (module.version != 10) return 90;
   if (!module.objectiveC || module.cPlusPlus) return 91;
 
   let foundProtocol = false;
@@ -149,6 +149,7 @@ function inspectObjC(in path: String): i32 throws String {
 
   let foundOwner = false;
   let foundRegistration = false;
+  let foundPropertyOwner = false;
   for (const interface_ of module.objectiveCInterfaces) {
     if (interface_.className == "ZRegistrationOwner") {
       foundOwner = true;
@@ -174,8 +175,29 @@ function inspectObjC(in path: String): i32 throws String {
         methodIndex = methodIndex + 1;
       }
     }
+    if (interface_.className == "ZPropertyOwner") {
+      foundPropertyOwner = true;
+      if (interface_.propertyCount != 2) return 106;
+      const valueProperty = view module.objectiveCProperties[
+        interface_.propertyStart
+      ];
+      if (valueProperty.name != "value") return 107;
+      if (valueProperty.getter != "answer") return 108;
+      if (valueProperty.typeName != "i32") return 109;
+      if (!valueProperty.readonlyProperty) return 110;
+      const handlerProperty = view module.objectiveCProperties[
+        interface_.propertyStart + 1
+      ];
+      if (handlerProperty.name != "handler") return 111;
+      if (handlerProperty.typeName != "__z_objc:nonnull:id") return 112;
+      if (handlerProperty.protocolCount != 1) return 113;
+      if (
+        module.objectiveCPropertyProtocols[handlerProperty.protocolStart]
+          != "ZRegistrationHandler"
+      ) return 114;
+    }
   }
-  if (!foundOwner || !foundRegistration) return 101;
+  if (!foundOwner || !foundRegistration || !foundPropertyOwner) return 101;
   return 0;
 }
 

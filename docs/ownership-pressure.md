@@ -1552,7 +1552,7 @@ The executable fixture covers construction, mutation through a pointer, owned
 copying, explicit move-to-release, implicit scope cleanup, alias identity,
 borrowed observation, borrowed escape rejection, and use-after-move.
 
-`ZFDCL` version 9 completes the fixed-point Objective-C semantic carry. The Clang producer
+`ZFDCL` version 9 completed the first fixed-point Objective-C semantic carry. The Clang producer
 now frames interfaces, protocols, inherited protocol names, selectors,
 instance/class method shape, exact return and parameter spellings,
 method-parameter `id<Protocol>` qualifiers, executor affinity, availability,
@@ -1570,6 +1570,19 @@ parameters, and makes the native driver choose `.m` plus `-fobjc-arc`
 automatically. A self-contained executable probe dispatches through a real
 Objective-C class and returns `42`. Objective-C properties, generated protocol
 adapters, header-only native-driver discovery, and Objective-C++ remain staged.
+
+`ZFDCL` version 10 closes the next real-application seam by carrying Objective-C
+interface properties as first-class producer evidence: getter and optional
+setter selectors, readonly and ownership facts, exact ABI plus semantic Z type,
+protocol qualifiers, source location, executor affinity, and availability. The
+native normalizer projects representable instance properties into inherited
+field lookup, and lowering emits the getter message rather than assuming that
+the source property name is the selector. A fixed-point executable reads a
+concrete Objective-C object property, a custom-getter scalar property, and an
+inherited scalar property, while a negative proves writable property assignment
+fails with a deliberate setter-lowering diagnostic. Class properties, writes,
+optional property access, and untyped `id` narrowing remain explicit next
+layers rather than silently falling back to an invented representation.
 
 The following native slice crossed opaque pointer owners without pretending
 they were record values. A `.zd` `deinit` fact on a direct nullable result or
@@ -3426,13 +3439,15 @@ general `objc.register({ add, remove })` guard. It validates the native pair and
 Z protocol conformance, owns the receiver, generated adapter, and controller,
 and unregisters exactly once during cleanup. A runtime fixture proves
 add/callback/remove ordering, while a real WebKit example proves the SDK shape.
-Version 9 carries Objective-C
+Version 10 carries Objective-C
 interfaces, protocols, methods, `id<Protocol>` qualifiers, and semantic type
-identity into owned native Z data, and native semantic normalization now
+identity plus interface-property metadata into owned native Z data, and native semantic normalization now
 consumes that graph. A fixed-point positive fixture plus protocol-owner and
 teardown negatives prove `objc.register` no longer relies on Stage 0 fallback.
 Native direct message emission now consumes the same resolutions, including
 class and instance selectors, ARC reference storage, and C-string projection.
+Representable inherited instance-property reads now lower through their exact
+getter selectors as well.
 The fixed-point emitter now consumes the registration plan as well. It
 synthesizes a protocol-conforming Objective-C adapter that retains the Z
 handler, plus an ARC guard that owns the receiver, adapter, and teardown

@@ -2,10 +2,11 @@ import type {
   ForeignAvailability,
   ForeignModuleDeclarations,
   ForeignObjCMethod,
+  ForeignObjCProperty,
   ForeignType,
 } from "./foreign-ir.ts";
 
-const protocolVersion = 9;
+const protocolVersion = 10;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -67,7 +68,9 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
- * Version 9 adds the producer's semantic Z type identity beside every
+ * Version 10 adds Objective-C interface properties, including their getter,
+ * setter, ownership, protocol qualifiers, type identity, executor affinity,
+ * availability, and source location. Version 9 adds the producer's semantic Z type identity beside every
  * Objective-C method ABI spelling, preserving nullability and imported object
  * identity for native semantic normalization. Version 8 carries Objective-C interfaces, protocols, methods, method
  * parameters, protocol-qualified `id<...>` evidence, availability, and async
@@ -288,6 +291,52 @@ export function encodeForeignFunctionDeclarationStream(
       }
     }
   };
+  const appendObjCProperties = (
+    ownerIndex: number,
+    properties: readonly ForeignObjCProperty[],
+  ): void => {
+    for (let propertyIndex = 0; propertyIndex < properties.length; propertyIndex += 1) {
+      const property = properties[propertyIndex];
+      const source = property.metadata.source;
+      records.push([
+        "R",
+        hexNumber(ownerIndex),
+        hexNumber(propertyIndex),
+        text(property.name),
+        text(property.getter),
+        optionalText(property.setter),
+        boolean(property.classProperty),
+        boolean(property.readonly),
+        text(property.ownership),
+        text(property.type.cName),
+        text(semanticTypeName(property.type)),
+        hexNumber(property.protocols.length),
+        ...property.protocols.map(text),
+        optionalText(source?.fileName),
+        hexNumber(source?.line ?? 0),
+        hexNumber(source?.column ?? 0),
+        hexNumber(source?.length ?? 0),
+        optionalText(property.metadata.executorAffinity),
+        hexNumber(property.metadata.availability.length),
+      ].join(""));
+      for (let availabilityIndex = 0; availabilityIndex < property.metadata.availability.length; availabilityIndex += 1) {
+        const availability = property.metadata.availability[availabilityIndex];
+        records.push([
+          "W",
+          hexNumber(ownerIndex),
+          hexNumber(propertyIndex),
+          hexNumber(availabilityIndex),
+          optionalText(availability.platform),
+          optionalText(availability.introduced),
+          boolean(availability.deprecated),
+          optionalText(availability.deprecatedVersion),
+          optionalText(availability.obsoleted),
+          boolean(availability.unavailable),
+          optionalText(availability.message),
+        ].join(""));
+      }
+    }
+  };
   const protocols = [...module.protocols.values()];
   for (let protocolIndex = 0; protocolIndex < protocols.length; protocolIndex += 1) {
     const protocol = protocols[protocolIndex];
@@ -326,8 +375,10 @@ export function encodeForeignFunctionDeclarationStream(
       hexNumber(source?.length ?? 0),
       optionalText(interface_.metadata.executorAffinity),
       hexNumber(interface_.methods.length),
+      hexNumber(interface_.properties.length),
     ].join(""));
     appendObjCMethods("interface", interfaceIndex, interface_.methods);
+    appendObjCProperties(interfaceIndex, interface_.properties);
   }
   records.push("E");
   return `${records.join("\n")}\n`;

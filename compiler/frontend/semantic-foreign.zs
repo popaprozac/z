@@ -273,6 +273,95 @@ function objcInterfaceTypeSignature(
       namespace
     ));
   }
+  let fields = Array<ModuleFieldSignature>();
+  let hierarchy = Array<usize>();
+  let currentName = interface_.name.copyBytes(0, interface_.name.byteLength);
+  while (currentName.byteLength > 0) {
+    let currentIndex = contracts.objectiveCInterfaces.length;
+    match (foreignObjCInterfaceIndex(
+      contracts,
+      currentName
+    )) {
+      some(index) => currentIndex = index;
+      none => {}
+    }
+    if (currentIndex >= contracts.objectiveCInterfaces.length) break;
+    let repeated = false;
+    for (const existing of hierarchy) {
+      if (existing == currentIndex) {
+        repeated = true;
+        break;
+      }
+    }
+    if (repeated) break;
+    hierarchy.push(currentIndex);
+    currentName = contracts.objectiveCInterfaces[currentIndex]
+      .superName.copyBytes(
+        0,
+        contracts.objectiveCInterfaces[currentIndex].superName.byteLength
+      );
+  }
+  let hierarchyIndex = hierarchy.length;
+  while (hierarchyIndex > 0) {
+    hierarchyIndex = hierarchyIndex - 1;
+    for (const property of contracts.objectiveCInterfaces[
+      hierarchy[hierarchyIndex]
+    ].properties) {
+      if (!property.instance || !property.representable) continue;
+      let protocols = Array<String>();
+      for (const protocol of property.protocols) {
+        protocols.push(`${namespace}.${protocol}`);
+      }
+      let availability = Array<ModuleObjCAvailabilitySignature>();
+      for (const item of property.availability) {
+        availability.push(objcAvailabilitySignature(item));
+      }
+      const field = ModuleFieldSignature({
+        name: property.name.copyBytes(0, property.name.byteLength),
+        typeName: localObjCTypeName(
+          contracts,
+          namespace,
+          property.typeName
+        ),
+        executorAffinity: property.executorAffinity.copyBytes(
+          0,
+          property.executorAffinity.byteLength
+        ),
+        visibility: "public",
+        readonlyField: property.readonlyProperty,
+        hasDefault: false,
+        optionalField: false,
+        viewLifetime: "",
+        objectiveCGetter: property.getter.copyBytes(
+          0,
+          property.getter.byteLength
+        ),
+        objectiveCSetter: property.setter.copyBytes(
+          0,
+          property.setter.byteLength
+        ),
+        objectiveCOwnership: property.ownership.copyBytes(
+          0,
+          property.ownership.byteLength
+        ),
+        objectiveCNativeType: property.nativeType.copyBytes(
+          0,
+          property.nativeType.byteLength
+        ),
+        objectiveCProtocols: protocols,
+        objectiveCAvailability: availability,
+      });
+      let fieldIndex: usize = 0;
+      while (
+        fieldIndex < fields.length
+        && fields[fieldIndex].name != property.name
+      ) {
+        fieldIndex = fieldIndex + 1;
+      }
+      if (fieldIndex < fields.length) fields[fieldIndex] = move field;
+      else fields.push(move field);
+    }
+  }
   let superName = "";
   if (interface_.superName.byteLength > 0) {
     superName = `${namespace}.${interface_.superName}`;
@@ -287,7 +376,7 @@ function objcInterfaceTypeSignature(
       interface_.executorAffinity.byteLength
     ),
     implementedTraits: Array<String>(),
-    fields: Array<ModuleFieldSignature>(),
+    fields,
     methods,
     variants: Array<ModuleVariantSignature>(),
     customDeinit: true,
