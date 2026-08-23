@@ -6536,6 +6536,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "#define nil ((id)0)",
         "#define NSUTF8StringEncoding 4UL",
         "",
+        "typedef enum __attribute__((flag_enum)) NativeOptions : unsigned int {",
+        "  NativeOptionFirst = 1,",
+        "  NativeOptionSecond = 2",
+        "} NativeOptions;",
+        "",
         "__attribute__((objc_root_class))",
         "@interface NSObject",
         "+ (instancetype)alloc;",
@@ -6631,6 +6636,8 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "}",
         "",
         "function main(): i32 {",
+        "  const options = native.NativeOptionFirst | native.NativeOptionSecond;",
+        "  if (options == native.NativeOptionFirst) return 2;",
         "  const owner = native.NativeOwner.sharedOwner();",
         "  const root = new NativeRoot({ owner });",
         "  const base = owner.base;",
@@ -6904,6 +6911,21 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
           executorAffinity: null,
         },
       }],
+      ["WireFlags", {
+        kind: "enum",
+        exportName: "WireFlags",
+        typeName: "WireFlags",
+        cName: "WireFlags",
+        flags: true,
+        underlying: "u32",
+        namespacePath: [],
+        qualifiedName: "WireFlags",
+        metadata: {
+          source: null,
+          availability: [],
+          executorAffinity: null,
+        },
+      }],
     ]),
     constants: new Map(),
     objectTypes: new Map(),
@@ -6914,7 +6936,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     cPlusPlus: false,
   };
   const encoded = encodeForeignFunctionDeclarationStream(declarations);
-  assert.match(encoded, /^ZFDCL000000000000000a\nM/);
+  assert.match(encoded, /^ZFDCL000000000000000b\nM/);
   assert.equal(
     encodeForeignFunctionDeclarationStream({
       ...declarations,
@@ -7032,7 +7054,7 @@ test("decodes versioned raw foreign function declarations in native Z", () => {
     [directory],
   ).get("native");
   assert.ok(objcStream);
-  assert.match(objcStream, /^ZFDCL000000000000000a\nM/);
+  assert.match(objcStream, /^ZFDCL000000000000000b\nM/);
   assert.match(objcStream, /\nQ/);
   assert.match(objcStream, /\nI/);
   assert.match(objcStream, /\nJ/);

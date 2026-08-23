@@ -3466,6 +3466,11 @@ Native direct message emission now consumes the same resolutions, including
 class and instance selectors, ARC reference storage, and C-string projection.
 Representable inherited instance-property reads now lower through their exact
 getter selectors as well.
+Version 11 carries Clang's flag-enum classification into the same owned native
+model. The resolver consumes that narrow verified fact before its general
+unresolved-header deferral. As a result, expressions such as
+`NSWindowStyleMaskTitled | NSWindowStyleMaskClosable` retain the nominal
+`NSWindowStyleMask` type through inference and native lowering.
 The fixed-point emitter now consumes the registration plan as well. It
 synthesizes a protocol-conforming Objective-C adapter that retains the Z
 handler, plus an ARC guard that owns the receiver, adapter, and teardown

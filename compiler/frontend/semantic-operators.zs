@@ -52,6 +52,36 @@ function isKnownEnumType(
   };
 }
 
+function flagEnumUnderlyingType(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in typeName: String
+): String {
+  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+    some(location) => {
+      match (
+        in modules[location.moduleIndex]
+          .symbols[location.symbolIndex]
+          .typeSignature
+      ) {
+        some(signature) => {
+          if (
+            signature.foreignKind == "enum"
+            && signature.foreignFlags
+            && isIntegerTypeName(signature.foreignUnderlyingType)
+          ) return signature.foreignUnderlyingType.copyBytes(
+            0,
+            signature.foreignUnderlyingType.byteLength
+          );
+          return "";
+        }
+        none => return "";
+      }
+    }
+    none => return "";
+  }
+}
+
 export function unaryOperatorType(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -114,8 +144,16 @@ export function unaryOperatorType(
     (operator == "+" || operator == "-")
     && isNumericTypeName(operand)
   ) return operand.copyBytes(0, operand.byteLength);
-  if (operator == "~" && isIntegerTypeName(operand)) {
-    return operand.copyBytes(0, operand.byteLength);
+  if (operator == "~") {
+    const flagUnderlying = flagEnumUnderlyingType(
+      modules,
+      moduleIndex,
+      operand
+    );
+    if (
+      isIntegerTypeName(operand)
+      || flagUnderlying.byteLength > 0
+    ) return operand.copyBytes(0, operand.byteLength);
   }
   const requirement = operator == "!"
     ? "a boolean operand"
@@ -139,6 +177,21 @@ export function binaryOperatorType(
   in right: String
 ): String throws ModuleResolveError {
   if (left.byteLength == 0 || right.byteLength == 0) return "";
+  if (
+    operator == "&"
+    || operator == "|"
+    || operator == "^"
+    || operator == "<<"
+    || operator == ">>"
+  ) {
+    const leftFlag = flagEnumUnderlyingType(modules, moduleIndex, left);
+    const rightFlag = flagEnumUnderlyingType(modules, moduleIndex, right);
+    if (
+      leftFlag.byteLength > 0
+      && rightFlag == leftFlag
+      && equivalentTypes(modules, moduleIndex, left, right)
+    ) return left.copyBytes(0, left.byteLength);
+  }
   if (
     isUnresolvedExternalType(modules, moduleIndex, left)
     || isUnresolvedExternalType(modules, moduleIndex, right)

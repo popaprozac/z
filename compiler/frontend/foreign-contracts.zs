@@ -134,6 +134,7 @@ export struct NativeForeignTypeContract {
   name: String;
   nativeName: String;
   underlyingType: String;
+  flags: boolean = false;
   layout: String;
   resourceRelease: String;
   fields: Array<NativeForeignFieldContract>;
@@ -1670,6 +1671,7 @@ function normalizedForeignType(
       0,
       declaration.underlyingType.byteLength
     ),
+    flags: declaration.flags,
     layout: declaration.layout.copyBytes(
       0,
       declaration.layout.byteLength

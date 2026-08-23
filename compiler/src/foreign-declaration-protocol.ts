@@ -6,7 +6,7 @@ import type {
   ForeignType,
 } from "./foreign-ir.ts";
 
-export const foreignDeclarationProtocolVersion = 10;
+export const foreignDeclarationProtocolVersion = 11;
 
 function hexNumber(value: number): string {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -68,6 +68,8 @@ function availabilityRecord(
 
 /**
  * Versioned bootstrap wire format for producer-facing foreign declarations.
+ * Version 11 preserves Clang's flag-enum classification so the native
+ * frontend can retain nominal enum identity across bitwise expressions.
  * Version 10 adds Objective-C interface properties, including their getter,
  * setter, ownership, protocol qualifiers, type identity, executor affinity,
  * availability, and source location. Version 9 adds the producer's semantic Z type identity beside every
@@ -130,6 +132,7 @@ export function encodeForeignFunctionDeclarationStream(
           ? type.underlying
           : "",
       ),
+      boolean(type.kind === "enum" && type.flags),
       text(type.kind === "record" ? type.layout : ""),
       optionalText(source?.fileName),
       hexNumber(source?.line ?? 0),

@@ -108,8 +108,8 @@ recursive path.
 - `module-resolver-protocol.zs` frames that host-loaded batch and returns the
   resolved graph through the same in-process native-library boundary.
 - `foreign-declaration-protocol.zs` decodes the versioned producer-facing
-  `ZFDCL` stream into owned flat Z declarations. Version 10 covers scalar
-  typedef evidence, nominal enums, typed native constants, record layouts and
+  `ZFDCL` stream into owned flat Z declarations. Version 11 covers scalar
+  typedef evidence, nominal and flag enums, typed native constants, record layouts and
   fields, canonical C record identity across typedef aliases, Objective-C
   interfaces/protocols/methods, method-parameter `id<Protocol>` qualifiers,
   semantic Objective-C type identity/nullability beside each ABI spelling,

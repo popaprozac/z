@@ -23,6 +23,15 @@ native calls.
 This tier is enough for many C functions, C aggregates, Objective-C methods,
 and selected C++ values and methods.
 
+Clang flag enums retain their nominal type through bitwise expressions, so
+native option sets infer without an annotation:
+
+```z
+const style = AppKit.NSWindowStyleMaskTitled
+  | AppKit.NSWindowStyleMaskClosable
+  | AppKit.NSWindowStyleMaskResizable;
+```
+
 Objective-C's dynamic `id` can be narrowed without leaving Z. Assigning the
 narrowed `NSString` to an explicit `String` destination performs an owned UTF-8
 copy, so the Z value does not borrow Objective-C-managed storage:

@@ -907,6 +907,7 @@ function foreignTypeSignature(
       0,
       type.underlyingType.byteLength
     ),
+    foreignFlags: type.flags,
     foreignResourceRelease: type.resourceRelease.copyBytes(
       0,
       type.resourceRelease.byteLength
