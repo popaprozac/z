@@ -5,6 +5,7 @@ import zGrammar from "../editors/vscode/syntaxes/z.tmLanguage.json" with {
 };
 
 export default defineConfig({
+  site: "https://docs.z-language.com",
   output: "static",
   markdown: {
     shikiConfig: {
