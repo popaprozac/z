@@ -4182,12 +4182,16 @@ test("adds explicit target native libraries without exposing raw linker flags", 
     target: {
       name: "native-link",
       entry: "main.zs",
-      link: { libraries: ["sqlite3", "sqlite3"] },
+      link: {
+        libraries: ["sqlite3", "sqlite3"],
+        frameworks: ["AppKit", "AppKit"],
+      },
     },
   }));
 
   const artifact = compileToNative(source, sourceFile);
   assert.deepEqual(artifact.nativeLinkerArguments, ["-lsqlite3"]);
+  assert.deepEqual(artifact.frameworks, ["AppKit"]);
 
   writeFileSync(manifest, JSON.stringify({
     target: {
@@ -4199,6 +4203,18 @@ test("adds explicit target native libraries without exposing raw linker flags", 
   assert.match(
     diagnostics(source, sourceFile)[0]?.message ?? "",
     /target\.link\.libraries must contain native library names/,
+  );
+
+  writeFileSync(manifest, JSON.stringify({
+    target: {
+      name: "native-link",
+      entry: "main.zs",
+      link: { frameworks: ["-framework AppKit"] },
+    },
+  }));
+  assert.match(
+    diagnostics(source, sourceFile)[0]?.message ?? "",
+    /target\.link\.frameworks must contain Apple framework names/,
   );
 });
 

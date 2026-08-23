@@ -3621,6 +3621,33 @@ public service method and TypeScript binding remain typed. These are compiler
 composition tasks, not reasons to expose JSON or adapter boilerplate to Zapp
 application authors.
 
+## Zapp-owned executable lifecycle
+
+Moving Zapp's public builder from prose into the visible application exposed
+two more composition seams. First, constructing an imported ordinary value
+struct omitted a field default whose expression belonged to the declaring
+module. Semantic checking correctly accepted `Application({ name: "Notes" })`, but
+the fixed-point emitter produced zero-initialized `ServicesBuilder` storage.
+Ordinary non-generic defaults now lower to private owner-module helpers, just
+as concrete generic defaults already did. A focused two-module regression
+constructs an application-shaped value whose fresh default owns an `Array`,
+mutates it, and destroys it normally.
+
+Second, an ordinary Z `main` inside a static library naturally collided with
+the Objective-C host's `main`. The application now uses the clearer final
+ownership split instead of renaming either entry point: Z builds the executable
+and owns `main`, while Objective-C is a prelinked platform adapter that prepares
+the host, provides the run loop, and returns its exit status. The Z
+`run(move this)` method freezes services, publishes the `Once`-backed desktop
+root for exactly the blocking run-loop lifetime, and releases it after the
+window closes. The visible WebKit round trip exercises this exact path.
+
+That executable also demonstrated that Apple frameworks are native link
+dependencies, not Swift-only configuration. `z.json` now accepts validated,
+deduplicated `target.link.frameworks`, with Stage 0, fixed-point driver, cache,
+schema, and documentation parity. Zapp names AppKit, WebKit, and CoreFoundation
+there; its CLI no longer smuggles framework flags into a second final link.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

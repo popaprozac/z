@@ -62,6 +62,11 @@ not claim `.z`, which Unix tooling commonly recognizes as a compressed archive.
 Once the bootstrapped `z` binary is on `PATH`, project commands become simply
 `z check .`, `z run .`, and `z build .`.
 
+Native dependencies belong in `z.json`. Portable libraries use
+`target.link.libraries`; Apple executables can use
+`target.link.frameworks` for checked names such as `AppKit` and `WebKit`
+without adding a Swift subtarget or raw linker flags.
+
 ## Editor support
 
 The repository includes a VS Code/Cursor extension with syntax highlighting,

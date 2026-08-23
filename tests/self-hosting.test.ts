@@ -1458,6 +1458,35 @@ test("evaluates generic value-struct defaults per native construction", () => {
   }
 }, 240_000);
 
+test("evaluates ordinary value-struct defaults across native modules", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-struct-defaults-modules/main.zs",
+  );
+  const directory = mkdtempSync("/tmp/z-native-struct-defaults-");
+  try {
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8" },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_Application___default_builder\(\)/);
+
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("specializes generic value-struct deinit through native cleanup", () => {
   const cases = [
     {
@@ -6333,7 +6362,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(
     version.stdout,
-    "z 0.1.0-dev revision 2026-08-22 compiler-api 1\n",
+    "z 0.1.0-dev revision 2026-08-23 compiler-api 1\n",
   );
 
   const checking = spawnSync(
@@ -10324,6 +10353,9 @@ function main(): i32 {
       link: {
         directories: ["lib", "lib"],
         libraries: ["zmanifest", "zmanifest"],
+        ...(process.platform === "darwin"
+          ? { frameworks: ["Foundation", "Foundation"] }
+          : {}),
       },
     },
   };

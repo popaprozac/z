@@ -9,6 +9,11 @@ Z uses a TypeScript-inspired surface with native, value-oriented semantics.
 Familiar punctuation is an on-ramp; it does not imply garbage collection,
 structural typing, truthiness, or JavaScript numbers.
 
+Z-authored types use `PascalCase`; functions, methods, fields, locals, and
+module exports use `camelCase`; source files use lowercase kebab-case. Native
+imports and explicit ABI exports preserve their foreign spelling, so a C symbol
+such as `sqlite3_open` remains recognizable at the boundary.
+
 ## Values and identities
 
 `struct` defines a value. `class` defines ARC-managed reference identity.

@@ -22188,12 +22188,17 @@ function appendLoweredProgram(
         importedTypes,
         field.type
       );
+      let defaultTarget = "";
+      match (in field.defaultValue) {
+        some(_) => defaultTarget = `Z_${emittedName}___default_${field.name}`;
+        none => {}
+      }
       fields.push(LoweredField({
         name: field.name.copyBytes(0, field.name.byteLength),
         type: move fieldType,
         optionalField: field.optionalField,
         borrowedView: stringStartsWith(field.type.name, "view "),
-        defaultTarget: "",
+        defaultTarget,
       }));
     }
     let deinitializer = Option<LoweredFunction>.none;
@@ -22491,6 +22496,45 @@ function appendLoweredProgram(
         inout loweredMethod
       );
       functions.push(move loweredMethod);
+    }
+  }
+
+  // A default belongs to the module that declared the struct. Emit one
+  // private helper there so construction through an imported type evaluates
+  // the same checked expression instead of silently zero-initializing the
+  // omitted field in the consuming module.
+  for (const aggregate of program.aggregates) {
+    if (aggregate.typeParameters.length > 0) continue;
+    const emittedName = privateTypeNeedsMangle(
+      program,
+      privateTypeCollisionNames,
+      aggregate.name
+    )
+      ? emittedPrivateTypeName(moduleIndex, aggregate.name)
+      : aggregate.name.copyBytes(0, aggregate.name.byteLength);
+    for (const field of aggregate.fields) {
+      match (in field.defaultValue) {
+        some(_) => {
+          const target = `Z_${emittedName}___default_${field.name}`;
+          let loweredDefault = try lowerGenericFieldDefault(
+            program,
+            importedTypes,
+            evidence,
+            sourcePath,
+            target,
+            field
+          );
+          rewritePrivateCallTargets(
+            program,
+            privateFunctionCollisionNames,
+            moduleIndex,
+            entryIndex,
+            inout loweredDefault
+          );
+          functions.push(move loweredDefault);
+        }
+        none => {}
+      }
     }
   }
 

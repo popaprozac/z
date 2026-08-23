@@ -340,7 +340,8 @@ and the system libraries the final binary must link:
     "includeDirectories": ["vendor/include"],
     "link": {
       "directories": ["vendor/lib"],
-      "libraries": ["sqlite3"]
+      "libraries": ["sqlite3"],
+      "frameworks": ["AppKit"]
     }
   }
 }
@@ -361,8 +362,14 @@ search paths to both compiler and editor analysis, while
 resolve from the `z.json` directory; absolute paths remain absolute. Every
 configured path must name an existing directory. Importing a header describes
 the API; selecting a library describes where its implementation comes from, so
-the two concerns remain explicit and independent. Run the macOS probe in
-project mode:
+the two concerns remain explicit and independent.
+
+On Apple targets, `target.link.frameworks` supplies deduplicated framework
+names such as `AppKit` without admitting arbitrary linker flags. It is the
+framework counterpart to `target.link.libraries` and does not require a Swift
+subtarget.
+
+Run the macOS probe in project mode:
 
 ```sh
 bun run z run examples/interop/c/deployment-target

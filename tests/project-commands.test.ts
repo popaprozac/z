@@ -32,6 +32,13 @@ test("associates z.json with the implemented project-manifest schema", () => {
         readonly required?: readonly string[];
         readonly properties?: {
           readonly kind?: { readonly enum?: readonly string[] };
+          readonly link?: {
+            readonly properties?: {
+              readonly frameworks?: {
+                readonly items?: { readonly pattern?: string };
+              };
+            };
+          };
           readonly swift?: {
             readonly properties?: {
               readonly interop?: { readonly enum?: readonly string[] };
@@ -69,6 +76,10 @@ test("associates z.json with the implemented project-manifest schema", () => {
   );
   assert.equal(
     schema.properties?.target?.properties?.runtime?.properties?.initialize?.pattern,
+    "^[A-Za-z_][A-Za-z0-9_]*$",
+  );
+  assert.equal(
+    schema.properties?.target?.properties?.link?.properties?.frameworks?.items?.pattern,
     "^[A-Za-z_][A-Za-z0-9_]*$",
   );
 });

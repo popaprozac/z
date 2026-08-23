@@ -46,7 +46,7 @@ import {
 } from "./self-hosting.ts";
 
 const Z_LANGUAGE_VERSION = "0.1.0-dev";
-const Z_COMPILER_REVISION = "2026-08-22";
+const Z_COMPILER_REVISION = "2026-08-23";
 const Z_COMPILER_API_REVISION = 1;
 
 const [command, ...commandArguments] = process.argv.slice(2);

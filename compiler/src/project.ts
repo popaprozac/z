@@ -37,6 +37,7 @@ type ProjectManifest = {
     readonly link?: {
       readonly directories?: readonly string[];
       readonly libraries?: readonly string[];
+      readonly frameworks?: readonly string[];
     };
     readonly swift?: {
       readonly module?: string;
@@ -121,7 +122,7 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
     const link = projectObject(target.link, "target.link", fileName);
     rejectUnknownProjectFields(
       link,
-      ["directories", "libraries"],
+      ["directories", "libraries", "frameworks"],
       "target.link",
       fileName,
     );
@@ -219,6 +220,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     fileName,
   );
   const linkedLibraries = parseLinkedLibraries(manifest.target?.link?.libraries, fileName);
+  const linkedFrameworks = parseLinkedFrameworks(manifest.target?.link?.frameworks, fileName);
   const baseBuild: ProjectBuild = {
     ...emptyBuild,
     manifestPath,
@@ -232,6 +234,7 @@ export function prepareProject(fileName: string): ProjectBuild {
       ...linkedDirectories.map((linkedDirectory) => `-L${linkedDirectory}`),
       ...linkedLibraries.map((library) => `-l${library}`),
     ],
+    frameworks: linkedFrameworks,
   };
   if (!swift) return baseBuild;
   const moduleName = swift.module;
@@ -327,7 +330,10 @@ export function prepareProject(fileName: string): ProjectBuild {
       ...baseBuild.nativeLinkerArguments,
       ...(cxxInterop ? swiftRuntimeLinkerArguments(fileName) : []),
     ],
-    frameworks: [...(swift.frameworks ?? [])],
+    frameworks: [...new Set([
+      ...baseBuild.frameworks,
+      ...(swift.frameworks ?? []),
+    ])],
     foreignApiNotes: cxxInterop
       ? {}
       : { [compatibilityHeader]: swiftExecutorApiNotes(symbolGraph, fileName) },
@@ -373,6 +379,20 @@ function parseLinkedLibraries(libraries: readonly string[] | undefined, fileName
     throw projectDiagnostic(fileName, "z.json target.link.libraries must contain native library names such as \"sqlite3\"");
   }
   return [...new Set(libraries)];
+}
+
+function parseLinkedFrameworks(frameworks: readonly string[] | undefined, fileName: string): string[] {
+  if (frameworks === undefined) return [];
+  if (
+    !Array.isArray(frameworks)
+    || frameworks.some((framework) => (
+      typeof framework !== "string"
+      || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(framework)
+    ))
+  ) {
+    throw projectDiagnostic(fileName, "z.json target.link.frameworks must contain Apple framework names such as \"AppKit\"");
+  }
+  return [...new Set(frameworks)];
 }
 
 function swiftRuntimeLinkerArguments(fileName: string): string[] {

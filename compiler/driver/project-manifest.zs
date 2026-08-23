@@ -17,6 +17,7 @@ export struct NativeProjectConfig {
   includeDirectories: Array<String>;
   linkDirectories: Array<String>;
   linkLibraries: Array<String>;
+  linkFrameworks: Array<String>;
   hasSwiftTarget: boolean;
 }
 
@@ -39,6 +40,7 @@ function emptyProjectConfig(): NativeProjectConfig {
     includeDirectories: Array<String>(),
     linkDirectories: Array<String>(),
     linkLibraries: Array<String>(),
+    linkFrameworks: Array<String>(),
     hasSwiftTarget: false,
   });
 }
@@ -307,6 +309,11 @@ function parseLink(
       config.linkLibraries = try parseStringArray(
         inout cursor,
         "target.link.libraries"
+      );
+    } else if (key == "frameworks") {
+      config.linkFrameworks = try parseStringArray(
+        inout cursor,
+        "target.link.frameworks"
       );
     } else {
       throw jsonError(
@@ -650,6 +657,16 @@ function validateProjectConfig(
     if (!containsString(libraries, library)) libraries.push(copy library);
   }
   config.linkLibraries = move libraries;
+  let frameworks = Array<String>();
+  for (const framework of config.linkFrameworks) {
+    if (!validZIdentifier(framework)) {
+      throw `${manifestPath}:1:1: error: z.json target.link.frameworks must contain Apple framework names such as "AppKit"`;
+    }
+    if (!containsString(frameworks, framework)) {
+      frameworks.push(copy framework);
+    }
+  }
+  config.linkFrameworks = move frameworks;
   if (
     config.targetKind != "executable"
     && config.targetKind != "static-library"
@@ -797,5 +814,9 @@ export function appendProjectCompilerArguments(
   }
   for (const library of config.linkLibraries) {
     arguments.push(`-l${library}`);
+  }
+  for (const framework of config.linkFrameworks) {
+    arguments.push("-framework");
+    arguments.push(copy framework);
   }
 }

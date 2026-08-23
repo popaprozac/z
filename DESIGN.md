@@ -57,6 +57,9 @@ feature-by-feature acknowledgements and divergences are maintained in
 ## Core semantics
 
 - TypeScript-inspired syntax does not imply JavaScript semantics.
+- Z-authored types use `PascalCase`; functions, methods, fields, locals, and
+  module exports use `camelCase`. Foreign imports and exported ABI symbols keep
+  their declared native spelling.
 - `struct` is a value type and may contain fields, methods, computed properties,
   static functions, and deterministic cleanup.
 - `class` is an ARC-managed reference type with identity.

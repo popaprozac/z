@@ -974,6 +974,9 @@ function runCacheMetadata(
   for (const library of project.config.linkLibraries) {
     appendCacheField(inout output, "link-library", library);
   }
+  for (const framework of project.config.linkFrameworks) {
+    appendCacheField(inout output, "link-framework", framework);
+  }
   for (const foreignModule of project.foreignModules) {
     appendCacheField(
       inout output,
@@ -1135,7 +1138,7 @@ function main(): i32 {
       console.error("usage: z version");
       return 2;
     }
-    console.log("z 0.1.0-dev revision 2026-08-22 compiler-api 1");
+    console.log("z 0.1.0-dev revision 2026-08-23 compiler-api 1");
     return 0;
   }
   if (command == "check") {

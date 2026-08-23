@@ -480,6 +480,24 @@ object type, `any`, or user-written nullable value union. Use `u8` for a byte,
 `String` for owned UTF-8 text, `Option<T>` for optional Z values, and `T | null`
 only where a native nullable representation enters the type system.
 
+## Naming conventions
+
+Z-authored APIs follow the familiar TypeScript convention:
+
+| Subject | Convention | Example |
+| --- | --- | --- |
+| Types and traits | `PascalCase` | `Application`, `ServicesBuilder`, `Hashable` |
+| Functions and methods | `camelCase` | `createServices`, `runApplication` |
+| Fields, locals, and module exports | `camelCase` | `contentController`, `currentWindow` |
+| True constant-style symbols | `SCREAMING_SNAKE_CASE` when useful | `DEFAULT_CAPACITY` |
+| Source and declaration files | lowercase kebab-case | `desktop-core.zs`, `sqlite-contract.zd` |
+
+Imported foreign names and explicit ABI exports preserve the spelling required
+by that boundary. Therefore `sqlite3_open`, `zapp_desktop_run`, Objective-C
+selectors, and C macro names remain native-shaped even when the surrounding Z
+API is camel-cased. The distinction keeps ordinary Z code consistent without
+obscuring or silently renaming the ABI being called.
+
 Integer construction performs an explicit value conversion:
 
 ```z
@@ -3072,7 +3090,8 @@ Native library selection is explicit project configuration:
     "includeDirectories": ["vendor/include"],
     "link": {
       "directories": ["vendor/lib"],
-      "libraries": ["sqlite3"]
+      "libraries": ["sqlite3"],
+      "frameworks": ["AppKit"]
     }
   }
 }
@@ -3086,6 +3105,10 @@ library search paths. Relative entries resolve from the directory containing
 existing directories. Raw linker flags are intentionally not part of this
 contract. A header import supplies declarations while `target.link.libraries`
 supplies link-time implementations.
+
+Apple targets may additionally list framework names in
+`target.link.frameworks`; each becomes one checked `-framework <name>` pair.
+This native-link contract is independent of `target.swift.frameworks`.
 
 Every manifest target also supplies a portable `target.name` and a `.zs`
 `target.entry`. Omitting `target.kind` selects an executable; `static-library`
