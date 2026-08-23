@@ -6544,6 +6544,9 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "@end",
         "",
         "@interface NSString : NSObject",
+        "- (instancetype)initWithBytes:(const void *)bytes",
+        "                       length:(unsigned long)length",
+        "                     encoding:(unsigned long)encoding;",
         "- (unsigned long)lengthOfBytesUsingEncoding:(unsigned long)encoding;",
         "- (const char *)UTF8String;",
         "@end",
@@ -6559,6 +6562,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "@property(nonatomic, readonly) NativeBase *base;",
         "@property(nonatomic, readonly) id body;",
         "@property(nonatomic, readonly) NSString *text;",
+        "@property(nonatomic, copy) NSString *title;",
         "@end",
         "",
         "@implementation NativeBase",
@@ -6595,6 +6599,14 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "- (NSString *)text {",
         "  return (NSString *)0;",
         "}",
+        "",
+        "- (NSString *)title {",
+        "  return (NSString *)0;",
+        "}",
+        "",
+        "- (void)setTitle:(NSString *)value {",
+        "  (void)value;",
+        "}",
         "@end",
         "",
       ].join("\n"),
@@ -6609,6 +6621,8 @@ test("bootstraps a fixed-point native z executable for local use", () => {
         "  const base = owner.base;",
         "  const body = owner.body;",
         "  const nativeText = owner.text;",
+        "  owner.writableValue = 9;",
+        '  owner.title = "Native Z";',
         "  if (owner.value == 0) {",
         "    const text: String = nativeText;",
         "    return i32(text.byteLength);",
@@ -6658,6 +6672,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       /NativeBase \* const base = \[owner base\]/,
     );
     assert.match(objcEmission, /id const body = \[owner body\]/);
+    assert.match(objcEmission, /\[owner setWritableValue: 9\]/);
+    assert.match(
+      objcEmission,
+      /\[owner setTitle: z_stage1_nsstring_from_string\(Z_STRING_LITERAL\("Native Z"\)\)\]/,
+    );
     assert.match(
       objcEmission,
       /Z_String text = z_stage1_string_from_nsstring\(nativeText\)/,
@@ -6675,13 +6694,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     assert.match(objcEmission, /\[body baseValue\]/);
 
     writeFileSync(
-      resolve(objcProject, "property-write.zs"),
+      resolve(objcProject, "readonly-property-write.zs"),
       [
         'import native from "NativeOwner.h";',
         "",
         "function main(): i32 {",
         "  const owner = native.NativeOwner.sharedOwner();",
-        "  owner.writableValue = 1;",
+        "  owner.value = 1;",
         "  return 0;",
         "}",
         "",
@@ -6689,13 +6708,13 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     );
     const propertyWriteCheck = spawnSync(
       executable,
-      ["check", resolve(objcProject, "property-write.zs")],
+      ["check", resolve(objcProject, "readonly-property-write.zs")],
       { encoding: "utf8" },
     );
     assert.notEqual(propertyWriteCheck.status, 0);
     assert.match(
       propertyWriteCheck.stderr,
-      /Objective-C property "writableValue" writes remain deferred in the native compiler/,
+      /cannot assign to readonly field "value"/,
     );
 
     const registrationProject = resolve(directory, "objc-registration-project");

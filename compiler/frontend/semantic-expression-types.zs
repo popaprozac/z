@@ -204,6 +204,10 @@ export function requireExpressionType(
     && isNativeObjectiveCStringType(modules, moduleIndex, actual)
   ) return;
   if (
+    actual == "String"
+    && isNativeObjectiveCStringType(modules, moduleIndex, expected)
+  ) return;
+  if (
     isNumericTypeName(expected)
     && isNumericTypeName(actual)
     && isContextualNumericLiteral(tree, index)

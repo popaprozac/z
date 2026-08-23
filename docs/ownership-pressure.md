@@ -176,6 +176,14 @@ The copy is intentional: a Z `String` never borrows storage returned by
 views, mutable strings, and explicit conversion APIs remain later pressure
 tests.
 
+The fixed-point compiler now consumes imported property setter evidence as
+well as getter evidence. An assignment such as `window.title = title;` emits
+the verified setter selector directly, contextually converts an owned Z
+`String` to `NSString` using its explicit byte length, and leaves ARC to bound
+the temporary native string. Imported `readonly` properties remain rejected.
+This removes a real Zapp migration blocker without adding Objective-C-specific
+surface syntax.
+
 ## Pressure 5: foreign RAII values inside Z aggregates
 
 Resolved for copyable C++, move-only C++, and generated Swift C++ wrapper values

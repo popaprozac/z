@@ -42,6 +42,18 @@ Zapp exercises this exact shape in a visible WebKit message round trip. The
 generated boundary uses the native Objective-C class test and preserves the
 string's exact UTF-8 byte length, including embedded null bytes.
 
+Writable Objective-C properties use ordinary Z assignment while preserving
+the header's setter and ownership contract:
+
+```z
+window.title = "Ready";
+configuration.userContentController = controller;
+```
+
+The fixed-point compiler emits direct setter messages. Imported `readonly`
+properties remain compile-time errors, and a Z `String` assigned to an
+`NSString` property is converted with its explicit byte length.
+
 ## 2. Add a `.zd` contract
 
 Headers cannot reliably encode ownership, cleanup, callback lifetimes, typed

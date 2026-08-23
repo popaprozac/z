@@ -10053,15 +10053,6 @@ function inferStatement(
               }
               match (aggregateFieldShape(modules, moduleIndex, receiverType, memberName)) {
                 some(field) => {
-                  if (field.objectiveCGetter.byteLength > 0) {
-                    throw resolutionError(
-                      ModuleResolveErrorKind.typeMismatch,
-                      module.path,
-                      `Objective-C property "${field.name}" writes remain deferred in the native compiler`,
-                      tree.nodes[root].line,
-                      tree.nodes[root].column
-                    );
-                  }
                   const constructorType = valueBindingType(
                     bindings,
                     "__z_native_constructor_type"

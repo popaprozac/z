@@ -258,9 +258,13 @@ registration are implemented. Representable instance-property reads share the
 ordinary field surface, include inherited and custom-getter properties, and
 lower directly to Objective-C getter messages. Dynamic `id` properties remain
 one-pointer Objective-C references; a checked `instanceof` target lowers to
-`isKindOfClass:` and narrows the true branch to the imported class. Class
-properties, property writes, optional property access, protocol runtime checks,
-and general Z-class runtime checks still fail closed.
+`isKindOfClass:` and narrows the true branch to the imported class. Imported
+writable instance-property assignments consume the preserved custom setter and
+lower to direct setter messages; `readonly` assignments remain compile-time
+errors. Contextual Z `String` values become length-aware ARC `NSString`
+arguments without truncating embedded null bytes. Class properties, optional
+property access, protocol runtime checks, and general Z-class runtime checks
+still fail closed.
 Selected selectors and exact ABI spellings
 survive through semantic evidence consumed by the Objective-C emitter. For
 `objc.register`, that evidence additionally records the native receiver, Z

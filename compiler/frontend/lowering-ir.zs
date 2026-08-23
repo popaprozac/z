@@ -109,6 +109,7 @@ export struct LoweredField {
   borrowedView: boolean;
   defaultTarget: String;
   objectiveCGetter: String = "";
+  objectiveCSetter: String = "";
 }
 
 export struct LoweredStruct {
@@ -230,6 +231,7 @@ export enum LoweredExpressionKind {
   methodCall,
   objectiveCMessageCall,
   objectiveCInstanceOf,
+  objectiveCStringFromZ,
   objectiveCStringToZ,
   objectiveCRegistration,
   fieldValue,
@@ -6750,6 +6752,32 @@ function objectiveCGetterForOwner(
   return Option<String>.none;
 }
 
+function objectiveCSetterForOwner(
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerTypeName: String,
+  in fieldName: String
+): Option<String> {
+  for (const imported of importedTypes) {
+    if (
+      imported.kind != LoweredTypeKind.foreignObjCType
+      || (
+        imported.localName != ownerTypeName
+        && imported.targetName != ownerTypeName
+      )
+    ) continue;
+    for (const field of imported.fields) {
+      if (
+        field.name == fieldName
+        && field.objectiveCSetter.byteLength > 0
+      ) return Option.some(field.objectiveCSetter.copyBytes(
+        0,
+        field.objectiveCSetter.byteLength
+      ));
+    }
+  }
+  return Option<String>.none;
+}
+
 function fieldIsOptionalForOwner(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -10968,14 +10996,27 @@ function lowerExpressionContextual(
       let argument: usize = 1;
       while (argument < tree.nodes[index].children.length) {
         const argumentInput = tree.nodes[index].children[argument];
-        let value = try lowerExpression(
-          program,
-          importedTypes,
-          evidence,
-          tree,
-          argumentInput,
-          inout output
-        );
+        let value: usize = 0;
+        if (parameterTypes.length >= argument) {
+          value = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput,
+            parameterTypes[argument - 1],
+            inout output
+          );
+        } else {
+          value = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            argumentInput,
+            inout output
+          );
+        }
         if (
           parameterModes.length >= argument
           && parameterModes[argument - 1] == "value"
@@ -12391,6 +12432,45 @@ function lowerExpressionExpected(
   in expectedTypeName: String,
   inout output: Array<LoweredExpression>
 ): usize throws String {
+  let expectedIsObjectiveCString = false;
+  if (expectedTypeName.byteLength > 0) {
+    const expectedType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      expectedTypeName
+    );
+    expectedIsObjectiveCString = expectedType.kind
+      == LoweredTypeKind.foreignObjCType
+      && expectedType.name == "NSString";
+  }
+  if (expectedIsObjectiveCString) {
+    let sourceIsString = tree.nodes[index].kind
+      == ExpressionKind.stringExpression
+      || tree.nodes[index].kind == ExpressionKind.templateExpression;
+    match (resolvedExpressionTypeName(evidence, tree, index)) {
+      some(actualTypeName) => {
+        if (actualTypeName == "String") sourceIsString = true;
+      }
+      none => {}
+    }
+    if (sourceIsString) {
+      const value = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index,
+        inout output
+      );
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.objectiveCStringFromZ,
+        "",
+        Array<usize>(value),
+        Array<String>()
+      );
+    }
+  }
   if (expectedTypeName == "String") {
     match (resolvedExpressionTypeName(evidence, tree, index)) {
       some(actualTypeName) => {
@@ -17432,16 +17512,56 @@ function lowerStatementCore(
       none => {}
     }
   }
+  let objectiveCSetter = "";
   let expression = Option<usize>.none;
   match (in arena.nodes[index].expression) {
     some(source) => {
       const expressionStart = expressions.length;
       let directTryReturn = false;
       let loweredValue: usize = 0;
-      let loweredUnsafe = false;
+      let loweredDirectly = false;
       match (in source.tree) {
         some(tree) => {
-          if (tree.nodes[tree.root].kind == ExpressionKind.unsafeExpression) {
+          const root = tree.root;
+          if (
+            arena.nodes[index].kind == StatementKind.assignmentStatement
+            && tree.nodes[root].kind == ExpressionKind.memberExpression
+            && tree.nodes[root].children.length == 1
+          ) {
+            const receiverInput = tree.nodes[root].children[0];
+            match (evidenceResolvedExpressionTypeName(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              receiverInput
+            )) {
+              some(receiverTypeName) => match (objectiveCSetterForOwner(
+                importedTypes,
+                receiverTypeName,
+                tree.nodes[root].value
+              )) {
+                some(setter) => {
+                  objectiveCSetter = move setter;
+                  loweredValue = try lowerExpression(
+                    program,
+                    importedTypes,
+                    evidence,
+                    tree,
+                    receiverInput,
+                    inout expressions
+                  );
+                  loweredDirectly = true;
+                }
+                none => {}
+              }
+              none => {}
+            }
+          }
+          if (
+            !loweredDirectly
+            && tree.nodes[root].kind == ExpressionKind.unsafeExpression
+          ) {
             loweredValue = try lowerUnsafeSelectedExpression(
               program,
               importedTypes,
@@ -17450,12 +17570,12 @@ function lowerStatementCore(
               source,
               inout expressions
             );
-            loweredUnsafe = true;
+            loweredDirectly = true;
           }
         }
         none => {}
       }
-      if (!loweredUnsafe && arena.nodes[index].kind == StatementKind.returnStatement) {
+      if (!loweredDirectly && arena.nodes[index].kind == StatementKind.returnStatement) {
         match (in source.tree) {
           some(tree) => {
             const root = tree.root;
@@ -17516,7 +17636,7 @@ function lowerStatementCore(
           }
           none => throw "native lowering cannot lower an opaque expression";
         }
-      } else if (!loweredUnsafe) {
+      } else if (!loweredDirectly) {
         let expectedTypeName = "";
         if (arena.nodes[index].kind == StatementKind.variableStatement) {
           match (in arena.nodes[index].typeAnnotation) {
@@ -17777,6 +17897,33 @@ function lowerStatementCore(
       }
     }
     none => {}
+  }
+  if (objectiveCSetter.byteLength > 0) {
+    const receiver = match (in expression) {
+      some(value) => value;
+      none => throw "native Objective-C property assignment lost its receiver";
+    };
+    const value = match (in secondExpression) {
+      some(resolved) => resolved;
+      none => throw "native Objective-C property assignment lost its value";
+    };
+    let messageChildren = Array<usize>();
+    messageChildren.push(receiver);
+    messageChildren.push(value);
+    let messageLabels = Array<String>();
+    messageLabels.push("instance");
+    messageLabels.push("value");
+    const message = pushExpression(
+      inout expressions,
+      LoweredExpressionKind.objectiveCMessageCall,
+      objectiveCSetter,
+      move messageChildren,
+      move messageLabels
+    );
+    kind = LoweredStatementKind.expressionStatement;
+    type = Option<LoweredType>.none;
+    expression = Option.some(message);
+    secondExpression = Option<usize>.none;
   }
   let children = Array<usize>();
   for (const child of arena.nodes[index].children) {
@@ -20926,6 +21073,10 @@ function copyImportedTypeAlias(
         0,
         field.objectiveCGetter.byteLength
       ),
+      objectiveCSetter: field.objectiveCSetter.copyBytes(
+        0,
+        field.objectiveCSetter.byteLength
+      ),
     }));
   }
   let variants = Array<LoweredVariant>();
@@ -21099,6 +21250,10 @@ function importedTypesForModule(
                 objectiveCGetter: field.objectiveCGetter.copyBytes(
                   0,
                   field.objectiveCGetter.byteLength
+                ),
+                objectiveCSetter: field.objectiveCSetter.copyBytes(
+                  0,
+                  field.objectiveCSetter.byteLength
                 ),
               }));
             }

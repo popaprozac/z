@@ -2469,6 +2469,23 @@ function appendExpression(
   }
   if (
     declaration.expressions[index].kind
+      == LoweredExpressionKind.objectiveCStringFromZ
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native Objective-C emission received a malformed String conversion";
+    }
+    output.append("z_stage1_nsstring_from_string(");
+    const value = declaration.expressions[index].children[0];
+    try appendExpression(
+      inout output,
+      declaration,
+      value
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
       == LoweredExpressionKind.objectiveCStringToZ
   ) {
     if (declaration.expressions[index].children.length != 1) {
@@ -11833,12 +11850,16 @@ function emitLoweredC(
   const usesThreads = taskTypeNames.length > 0;
   const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
-  let usesObjectiveCStringConversion = false;
+  let usesObjectiveCStringFromZ = false;
+  let usesObjectiveCStringToZ = false;
   for (const declaration of program.functions) {
     for (const expression of declaration.expressions) {
       if (
+        expression.kind == LoweredExpressionKind.objectiveCStringFromZ
+      ) usesObjectiveCStringFromZ = true;
+      if (
         expression.kind == LoweredExpressionKind.objectiveCStringToZ
-      ) usesObjectiveCStringConversion = true;
+      ) usesObjectiveCStringToZ = true;
     }
   }
   let usesCStringConversion =
@@ -12213,7 +12234,15 @@ function emitLoweredC(
   output.append("  self->length += length;\n");
   output.append("  ((char *)self->data)[self->length] = '\\0';\n");
   output.append("}\n\n");
-  if (usesObjectiveCStringConversion) {
+  if (usesObjectiveCStringFromZ) {
+    output.append("static inline __attribute__((unused)) NSString *z_stage1_nsstring_from_string(Z_String value) {\n");
+    output.append("  const void *bytes = value.data != NULL ? (const void *)value.data : (const void *)\"\";\n");
+    output.append("  NSString *result = [[NSString alloc] initWithBytes:bytes length:(unsigned long)value.length encoding:NSUTF8StringEncoding];\n");
+    output.append("  if (result == (NSString *)0) abort();\n");
+    output.append("  return result;\n");
+    output.append("}\n\n");
+  }
+  if (usesObjectiveCStringToZ) {
     output.append("static inline __attribute__((unused)) Z_String z_stage1_string_from_nsstring(NSString *value) {\n");
     output.append("  if (value == (NSString *)0) abort();\n");
     output.append("  const unsigned long length = [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding];\n");
