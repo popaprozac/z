@@ -3825,6 +3825,23 @@ of the async fixture completed in roughly 15 milliseconds. Incremental work is
 still fast, but cold self-host emission is now the measured optimization target
 before it becomes routine application-build latency.
 
+Profiling showed that cleanup planning was recomputing the same ownership
+answer for every cleanup-bearing local. Each query recursively walked the
+statement arena, re-resolved every call's parameter capabilities, and then
+rescanned lowered move and thread-capture expressions. Nested statements also
+appeared both in the arena and beneath their parents, multiplying that work.
+
+Cleanup lowering now builds one move-evidence index per function: moved binding
+names, exact moved thread-capture offsets, and the presence of branching control
+flow. Locals, destructured bindings, parameters, and recursive cleanup branches
+reuse that evidence without changing the source ownership rules. With the
+self-hosted library prepared, the same complete compiler emission fell from
+77.87 to 35.43 seconds on the development machine, a 54.5% wall-time reduction.
+The resulting 7,857,457-byte C output passed an exact fixed-point rebuild, all
+265 language-tier tests, and all 90 self-hosting tests. The remaining 35-second
+cost is still too high for routine cold application builds, so profiling and
+incremental native emission remain active compiler-velocity work.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

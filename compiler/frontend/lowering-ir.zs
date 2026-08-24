@@ -58,6 +58,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
+import { Set } from "std/collections";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 
@@ -4172,13 +4173,13 @@ function copyCleanup(in cleanup: LoweredCleanup): LoweredCleanup {
   });
 }
 
-function treeMovesName(
+function collectTreeMovedNames(
   in program: Program,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize,
-  in name: String
-): boolean {
+  inout movedNames: Set<String>
+): void {
   if (
     tree.nodes[index].kind == ExpressionKind.matchExpression
     && tree.nodes[index].value != "in"
@@ -4187,8 +4188,10 @@ function treeMovesName(
     const subject = tree.nodes[index].children[0];
     if (
       tree.nodes[subject].kind == ExpressionKind.identifierExpression
-      && tree.nodes[subject].value == name
-    ) return true;
+    ) movedNames.add(tree.nodes[subject].value.copyBytes(
+      0,
+      tree.nodes[subject].value.byteLength
+    ));
   }
   if (
     tree.nodes[index].kind == ExpressionKind.unaryExpression
@@ -4198,8 +4201,10 @@ function treeMovesName(
     const operand = tree.nodes[index].children[0];
     if (
       tree.nodes[operand].kind == ExpressionKind.identifierExpression
-      && tree.nodes[operand].value == name
-    ) return true;
+    ) movedNames.add(tree.nodes[operand].value.copyBytes(
+      0,
+      tree.nodes[operand].value.byteLength
+    ));
   }
   if (
     tree.nodes[index].kind == ExpressionKind.callExpression
@@ -4220,8 +4225,10 @@ function treeMovesName(
       if (
         parameterModes[argumentPosition - 1] == "value"
         && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-        && tree.nodes[argument].value == name
-      ) return true;
+      ) movedNames.add(tree.nodes[argument].value.copyBytes(
+        0,
+        tree.nodes[argument].value.byteLength
+      ));
       argumentPosition = argumentPosition + 1;
     }
     const callee = tree.nodes[index].children[0];
@@ -4235,18 +4242,25 @@ function treeMovesName(
       if (
         tree.nodes[enumInput].kind == ExpressionKind.identifierExpression
         && tree.nodes[payload].kind == ExpressionKind.identifierExpression
-        && tree.nodes[payload].value == name
       ) {
+        let consumesPayload = tree.nodes[enumInput].value == "Option"
+          || tree.nodes[enumInput].value == "Result";
         if (
-          tree.nodes[enumInput].value == "Option"
-          || tree.nodes[enumInput].value == "Result"
-        ) return true;
-        for (const declaration of program.enums) {
-          if (declaration.name != tree.nodes[enumInput].value) continue;
-          for (const variant of declaration.variants) {
-            if (variant.name == tree.nodes[callee].value) return true;
+          !consumesPayload
+        ) {
+          for (const declaration of program.enums) {
+            if (declaration.name != tree.nodes[enumInput].value) continue;
+            for (const variant of declaration.variants) {
+              if (variant.name == tree.nodes[callee].value) {
+                consumesPayload = true;
+              }
+            }
           }
         }
+        if (consumesPayload) movedNames.add(tree.nodes[payload].value.copyBytes(
+          0,
+          tree.nodes[payload].value.byteLength
+        ));
       }
     }
     if (
@@ -4278,8 +4292,10 @@ function treeMovesName(
         consumesReceiver
         &&
         tree.nodes[receiver].kind == ExpressionKind.identifierExpression
-        && tree.nodes[receiver].value == name
-      ) return true;
+      ) movedNames.add(tree.nodes[receiver].value.copyBytes(
+        0,
+        tree.nodes[receiver].value.byteLength
+      ));
     }
     if (
       tree.nodes[callee].kind == ExpressionKind.memberExpression
@@ -4289,8 +4305,10 @@ function treeMovesName(
       const argument = tree.nodes[index].children[1];
       if (
         tree.nodes[argument].kind == ExpressionKind.identifierExpression
-        && tree.nodes[argument].value == name
-      ) return true;
+      ) movedNames.add(tree.nodes[argument].value.copyBytes(
+        0,
+        tree.nodes[argument].value.byteLength
+      ));
     }
     if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
       match (genericTypeShape(tree.nodes[callee].value)) {
@@ -4309,8 +4327,10 @@ function treeMovesName(
                 const argument = tree.nodes[index].children[argumentIndex];
                 if (
                   tree.nodes[argument].kind == ExpressionKind.identifierExpression
-                  && tree.nodes[argument].value == name
-                ) return true;
+                ) movedNames.add(tree.nodes[argument].value.copyBytes(
+                  0,
+                  tree.nodes[argument].value.byteLength
+                ));
                 argumentIndex = argumentIndex + 1;
               }
             }
@@ -4324,8 +4344,10 @@ function treeMovesName(
           for (const field of tree.nodes[initializer].children) {
             if (
               tree.nodes[field].kind == ExpressionKind.identifierExpression
-              && tree.nodes[field].value == name
-            ) return true;
+            ) movedNames.add(tree.nodes[field].value.copyBytes(
+              0,
+              tree.nodes[field].value.byteLength
+            ));
           }
         }
       }
@@ -4340,17 +4362,30 @@ function treeMovesName(
           if (
             declaration.parameters[parameter].mode == ParameterMode.value
             && tree.nodes[argument].kind == ExpressionKind.identifierExpression
-            && tree.nodes[argument].value == name
-          ) return true;
+          ) movedNames.add(tree.nodes[argument].value.copyBytes(
+            0,
+            tree.nodes[argument].value.byteLength
+          ));
           parameter = parameter + 1;
         }
       }
     }
   }
   for (const child of tree.nodes[index].children) {
-    if (treeMovesName(program, evidence, tree, child, name)) return true;
+    collectTreeMovedNames(program, evidence, tree, child, inout movedNames);
   }
-  return false;
+}
+
+function treeMovesName(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  in name: String
+): boolean {
+  let movedNames = Set<String>();
+  collectTreeMovedNames(program, evidence, tree, index, inout movedNames);
+  return movedNames.has(name);
 }
 
 function syntaxMovesName(
@@ -4368,6 +4403,27 @@ function syntaxMovesName(
   };
 }
 
+function collectSyntaxMovedNames(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in expression: ExpressionSyntax,
+  inout movedNames: Set<String>
+): void {
+  match (in expression.tree) {
+    some(tree) => {
+      const root = tree.root;
+      collectTreeMovedNames(
+        program,
+        evidence,
+        tree,
+        root,
+        inout movedNames
+      );
+    }
+    none => {}
+  }
+}
+
 function syntaxIsIdentifier(
   in expression: ExpressionSyntax,
   in name: String
@@ -4378,71 +4434,6 @@ function syntaxIsIdentifier(
       && tree.nodes[tree.root].value == name;
     none => false;
   };
-}
-
-function arenaMovesName(
-  in program: Program,
-  in evidence: ModuleSemanticEvidence,
-  in arena: StatementArena,
-  in name: String
-): boolean {
-  for (const statement of arena.nodes) {
-    if (statementMovesName(program, evidence, arena, statement, name)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function loweredThreadSpawnMovesBinding(
-  in expressions: Array<LoweredExpression>,
-  in name: String,
-  bindingOffset: usize
-): boolean {
-  for (const expression of expressions) {
-    if (
-      expression.kind != LoweredExpressionKind.threadSpawn
-      || expression.labels.length < 5
-      || (expression.labels.length - 5) % 2 != 0
-    ) continue;
-    let captureChild: usize = 0;
-    if (expression.labels[0] == "expression") captureChild = 1;
-    let captureLabel: usize = 5;
-    let captureIndex: usize = 0;
-    while (captureLabel + 1 < expression.labels.length) {
-      if (
-        expression.labels[captureLabel] == name
-        && captureIndex < expression.captureBindingOffsets.length
-        && expression.captureBindingOffsets[captureIndex] == bindingOffset
-        && captureChild < expression.children.length
-      ) {
-        const value = expression.children[captureChild];
-        if (
-          expressions[value].kind == LoweredExpressionKind.moveValue
-          && expressions[value].children.length == 1
-        ) return true;
-      }
-      captureLabel = captureLabel + 2;
-      captureChild = captureChild + 1;
-      captureIndex = captureIndex + 1;
-    }
-  }
-  return false;
-}
-
-function loweredMoveConsumesBinding(
-  in expressions: Array<LoweredExpression>,
-  in name: String
-): boolean {
-  for (const expression of expressions) {
-    if (
-      expression.kind != LoweredExpressionKind.moveValue
-      || expression.children.length != 1
-    ) continue;
-    const operand = expression.children[0];
-    if (loweredExpressionStorageRoot(expressions, operand) == name) return true;
-  }
-  return false;
 }
 
 function statementMovesName(
@@ -4491,12 +4482,148 @@ function statementMovesName(
   return false;
 }
 
-function arenaHasControlFlow(in arena: StatementArena): boolean {
+struct CleanupMoveIndex {
+  movedNames: Set<String>;
+  movedThreadBindingOffsets: Array<usize>;
+  hasControlFlow: boolean;
+}
+
+function collectDirectStatementMovedNames(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in statement: Statement,
+  inout movedNames: Set<String>
+): void {
+  match (in statement.expression) {
+    some(expression) => {
+      if (
+        statement.kind == StatementKind.returnStatement
+        || statement.kind == StatementKind.throwStatement
+        || statement.kind == StatementKind.selectStatement
+        || statement.kind == StatementKind.yieldStatement
+      ) {
+        match (in expression.tree) {
+          some(tree) => {
+            if (
+              tree.nodes[tree.root].kind
+                == ExpressionKind.identifierExpression
+            ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
+              0,
+              tree.nodes[tree.root].value.byteLength
+            ));
+          }
+          none => {}
+        }
+      }
+      collectSyntaxMovedNames(
+        program,
+        evidence,
+        expression,
+        inout movedNames
+      );
+    }
+    none => {}
+  }
+  match (in statement.secondExpression) {
+    some(expression) => {
+      if (statement.kind == StatementKind.assignmentStatement) {
+        match (in expression.tree) {
+          some(tree) => {
+            if (
+              tree.nodes[tree.root].kind
+                == ExpressionKind.identifierExpression
+            ) movedNames.add(tree.nodes[tree.root].value.copyBytes(
+              0,
+              tree.nodes[tree.root].value.byteLength
+            ));
+          }
+          none => {}
+        }
+      }
+      collectSyntaxMovedNames(
+        program,
+        evidence,
+        expression,
+        inout movedNames
+      );
+    }
+    none => {}
+  }
+}
+
+function cleanupMoveIndex(
+  in program: Program,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  in expressions: Array<LoweredExpression>
+): CleanupMoveIndex {
+  let movedNames = Set<String>();
+  let hasControlFlow = false;
   for (const statement of arena.nodes) {
+    collectDirectStatementMovedNames(
+      program,
+      evidence,
+      statement,
+      inout movedNames
+    );
     if (
       statement.kind == StatementKind.ifStatement
       || statement.kind == StatementKind.whileStatement
-    ) return true;
+    ) hasControlFlow = true;
+  }
+  for (const expression of expressions) {
+    if (
+      expression.kind != LoweredExpressionKind.moveValue
+      || expression.children.length != 1
+    ) continue;
+    const operand = expression.children[0];
+    const root = loweredExpressionStorageRoot(expressions, operand);
+    if (root.byteLength > 0) movedNames.add(move root);
+  }
+  let movedThreadBindingOffsets = Array<usize>();
+  for (const expression of expressions) {
+    if (
+      expression.kind != LoweredExpressionKind.threadSpawn
+      || expression.labels.length < 5
+      || (expression.labels.length - 5) % 2 != 0
+    ) continue;
+    let captureChild: usize = 0;
+    if (expression.labels[0] == "expression") captureChild = 1;
+    let captureLabel: usize = 5;
+    let captureIndex: usize = 0;
+    while (captureLabel + 1 < expression.labels.length) {
+      if (
+        captureIndex < expression.captureBindingOffsets.length
+        && captureChild < expression.children.length
+      ) {
+        const value = expression.children[captureChild];
+        if (
+          expressions[value].kind == LoweredExpressionKind.moveValue
+          && expressions[value].children.length == 1
+        ) movedThreadBindingOffsets.push(
+          expression.captureBindingOffsets[captureIndex]
+        );
+      }
+      captureLabel = captureLabel + 2;
+      captureChild = captureChild + 1;
+      captureIndex = captureIndex + 1;
+    }
+  }
+  return CleanupMoveIndex({
+    movedNames: move movedNames,
+    movedThreadBindingOffsets: move movedThreadBindingOffsets,
+    hasControlFlow,
+  });
+}
+
+function cleanupIndexMovesBinding(
+  in index: CleanupMoveIndex,
+  in name: String,
+  bindingOffset: usize
+): boolean {
+  if (index.movedNames.has(name)) return true;
+  for (const movedOffset of index.movedThreadBindingOffsets) {
+    if (movedOffset == bindingOffset) return true;
   }
   return false;
 }
@@ -4752,6 +4879,7 @@ function planCleanupStatement(
   loweredIndex: usize,
   in live: Array<LoweredCleanup>,
   in expressions: Array<LoweredExpression>,
+  in moveIndex: CleanupMoveIndex,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
   forceMoveLiveGuards: boolean,
@@ -4806,6 +4934,7 @@ function planCleanupStatement(
       finalStatement,
       finalLive,
       expressions,
+      moveIndex,
       inout statements,
       inout liveFlags,
       forceMoveLiveGuards,
@@ -4874,6 +5003,7 @@ function planCleanupStatement(
       loweredMatch,
       initializerLive,
       expressions,
+      moveIndex,
       inout statements,
       inout liveFlags,
       forceMoveLiveGuards,
@@ -4953,6 +5083,7 @@ function planCleanupStatement(
                 loweredRoots,
                 armLive,
                 expressions,
+                moveIndex,
                 inout statements,
                 inout liveFlags,
                 forceMoveLiveGuards,
@@ -5004,6 +5135,7 @@ function planCleanupStatement(
       loweredChildren,
       live,
       expressions,
+      moveIndex,
       inout statements,
       inout liveFlags,
       forceMoveLiveGuards,
@@ -5048,6 +5180,7 @@ function planCleanupStatement(
         loweredChild,
         live,
         expressions,
+        moveIndex,
         inout statements,
         inout liveFlags,
         forceMoveLiveGuards,
@@ -5071,6 +5204,7 @@ function planCleanupSequence(
   in loweredRoots: Array<usize>,
   in inherited: Array<LoweredCleanup>,
   in expressions: Array<LoweredExpression>,
+  in moveIndex: CleanupMoveIndex,
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>,
   forceMoveLiveGuards: boolean,
@@ -5118,23 +5252,15 @@ function planCleanupSequence(
               arena.nodes[sourceIndex].name.byteLength
             );
             const bindingOffset = arena.nodes[sourceIndex].nameOffset;
-            const moved = arenaMovesName(
-              program,
-              evidence,
-              arena,
-              bindingName
-            ) || loweredMoveConsumesBinding(
-              expressions,
-              bindingName
-            ) || loweredThreadSpawnMovesBinding(
-              expressions,
+            const moved = cleanupIndexMovesBinding(
+              moveIndex,
               bindingName,
               bindingOffset
             );
             let guard = "";
             if (
               moved
-              && (forceMoveLiveGuards || arenaHasControlFlow(arena))
+              && (forceMoveLiveGuards || moveIndex.hasControlFlow)
             ) {
               guard = ownerLiveFlag(arena.nodes[sourceIndex].name);
               statements[loweredIndex].liveFlag = guard.copyBytes(
@@ -5215,21 +5341,13 @@ function planCleanupSequence(
           0,
           statements[child].name.byteLength
         );
-        const moved = arenaMovesName(
-          program,
-          evidence,
-          arena,
-          bindingName
-        ) || loweredMoveConsumesBinding(
-          expressions,
-          bindingName
-        ) || loweredThreadSpawnMovesBinding(
-          expressions,
+        const moved = cleanupIndexMovesBinding(
+          moveIndex,
           bindingName,
           bindingOffset
         );
         let guard = "";
-        if (moved && (forceMoveLiveGuards || arenaHasControlFlow(arena))) {
+        if (moved && (forceMoveLiveGuards || moveIndex.hasControlFlow)) {
           guard = ownerLiveFlag(bindingName);
           statements[child].liveFlag = guard.copyBytes(
             0,
@@ -5275,6 +5393,7 @@ function planCleanupSequence(
       loweredIndex,
       live,
       expressions,
+      moveIndex,
       inout statements,
       inout liveFlags,
       forceMoveLiveGuards,
@@ -15371,6 +15490,12 @@ function completeNativeClosureBlocks(
       let workerLiveFlags = Array<LoweredLiveFlag>();
       const inherited = Array<LoweredCleanup>();
       const loopCleanups = Array<LoweredCleanup>();
+      const workerMoveIndex = cleanupMoveIndex(
+        program,
+        evidence,
+        arena,
+        expressions
+      );
       const workerIntroduced = try planCleanupSequence(
         program,
         importedTypes,
@@ -15381,6 +15506,7 @@ function completeNativeClosureBlocks(
         loweredStatements,
         inherited,
         expressions,
+        workerMoveIndex,
         inout statements,
         inout workerLiveFlags,
         false,
@@ -19872,6 +19998,12 @@ function lowerFunction(
     rootPosition = rootPosition + 1;
   }
   const roots = move segmentRoots;
+  const functionMoveIndex = cleanupMoveIndex(
+    program,
+    evidence,
+    declaration.body,
+    expressions
+  );
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
     const parameter = view declaration.parameters[parameterIndex];
@@ -19885,16 +20017,8 @@ function lowerFunction(
         parameter.name.byteLength
       );
       const parameterOffset = parameter.offset;
-      const moved = arenaMovesName(
-        program,
-        evidence,
-        declaration.body,
-        parameterName
-      ) || loweredMoveConsumesBinding(
-        expressions,
-        parameterName
-      ) || loweredThreadSpawnMovesBinding(
-        expressions,
+      const moved = cleanupIndexMovesBinding(
+        functionMoveIndex,
         parameterName,
         parameterOffset
       );
@@ -19904,7 +20028,7 @@ function lowerFunction(
         && (
           hasMainDelayMatch
           || hasMainDelayLoop
-          || arenaHasControlFlow(declaration.body)
+          || functionMoveIndex.hasControlFlow
         )
       ) {
         guard = ownerLiveFlag(parameter.name);
@@ -19960,6 +20084,7 @@ function lowerFunction(
     planningRoots,
     ownedParameters,
     expressions,
+    functionMoveIndex,
     inout statements,
     inout liveFlags,
     hasMainDelayMatch || hasMainDelayLoop,
@@ -20156,6 +20281,12 @@ function lowerDeinitializer(
   }
   const inherited = Array<LoweredCleanup>();
   const loopCleanups = Array<LoweredCleanup>();
+  const deinitializerMoveIndex = cleanupMoveIndex(
+    program,
+    evidence,
+    body,
+    expressions
+  );
   const introduced = try planCleanupSequence(
     program,
     importedTypes,
@@ -20166,6 +20297,7 @@ function lowerDeinitializer(
     roots,
     inherited,
     expressions,
+    deinitializerMoveIndex,
     inout statements,
     inout liveFlags,
     false,
