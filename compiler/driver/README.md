@@ -20,10 +20,18 @@ z check [entry.zs | project-directory | z.json]
 z test [entry.zs | project-directory | z.json]
 z emit [entry.zs | project-directory | z.json]
 z emit <entry.zs> <output.c>                 # bootstrap compatibility
+z metadata [entry.zs | project-directory | z.json]
 z build [project-directory | z.json] [--release]
 z build <entry.zs> <output> [--release]
 z run [entry.zs | project-directory | z.json] [--release] [-- args...]
 ```
+
+`metadata` emits versioned compiler-owned JSON for tools that need checked
+public symbols and resolved public call sites. Literal call arguments remain
+literal evidence, while non-literals retain only their checked Z type. The
+artifact is framework-neutral: consumers such as Zapp interpret their own
+public builder calls without teaching the Z compiler about services or scanning
+source text.
 
 This is still narrower than the Stage-0 compiler in language and foreign
 coverage even though it already has a more artifact-oriented command surface.

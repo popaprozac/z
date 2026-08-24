@@ -54,6 +54,7 @@ not claim `.z`, which Unix tooling commonly recognizes as a compressed archive.
 | --- | --- |
 | `bun run z check file.zs` | Parse, type-check, and validate ownership |
 | `bun run z emit file.zs` | Print the generated C-family translation unit |
+| `bun run z metadata path` | Print versioned checked metadata for tools and generators |
 | `bun run z run file.zs` | Compile and execute a native binary |
 | `bun run z run file.zs --release` | Build and run with optimization |
 | `bun run z test path` | Run reachable inline Z tests |

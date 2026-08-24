@@ -27,6 +27,7 @@ import {
 } from "./native-frontend.ts";
 import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
+import { createZProgramMetadata, renderZProgramMetadata } from "./program-metadata.ts";
 import {
   deploymentTargetFlags,
   prepareProject,
@@ -47,7 +48,7 @@ import {
 
 const Z_LANGUAGE_VERSION = "0.1.0-dev";
 const Z_COMPILER_REVISION = "2026-08-23";
-const Z_COMPILER_API_REVISION = 1;
+const Z_COMPILER_API_REVISION = 2;
 
 const [command, ...commandArguments] = process.argv.slice(2);
 if (command === "version") {
@@ -60,7 +61,7 @@ if (command === "version") {
   );
   process.exit(0);
 }
-const projectAwareCommands = new Set(["build", "check", "emit", "run", "test"]);
+const projectAwareCommands = new Set(["build", "check", "emit", "metadata", "run", "test"]);
 const projectAware = command ? projectAwareCommands.has(command) : false;
 const suppliedInputArgument = commandArguments[0];
 const usesDefaultProject = projectAware
@@ -76,7 +77,7 @@ const trailingArguments = projectAware
     : commandArguments.slice(1)
   : commandArguments.slice(1);
 
-if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
+if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run", "test", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
   process.exitCode = 2;
 } else {
@@ -205,6 +206,17 @@ if (!command || !inputArgument || !["build", "check", "emit", "run", "test", "se
         }
       }
       console.log(`${inputPath}: ok`);
+    } else if (command === "metadata") {
+      if (trailingArguments.length > 0) {
+        throw new Error(`unknown metadata option ${JSON.stringify(trailingArguments[0])}`);
+      }
+      if (!inputPath.endsWith(".zs")) {
+        throw new Error("metadata requires a .zs source module or project entry");
+      }
+      const nativeRun = runStage1Resolver(inputPath);
+      process.stdout.write(renderZProgramMetadata(
+        createZProgramMetadata(nativeRun.graph, nativeRun.sourceBatch),
+      ));
     } else if (command === "emit") {
       if (trailingArguments.length > 0) {
         throw new Error(`unknown emit option ${JSON.stringify(trailingArguments[0])}`);
@@ -3948,6 +3960,7 @@ function usage(): void {
   console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings]");
   console.error("       z test [project-directory|z.json|file.zs]");
   console.error("       z emit [project-directory|z.json|file.zs]");
+  console.error("       z metadata [project-directory|z.json|file.zs]");
   console.error("       z run [project-directory|z.json|file.zs] [--release] [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");

@@ -10,6 +10,7 @@ import {
   emitTestModulesC,
 } from "../frontend/c-emitter.zs";
 import { lowerModules } from "../frontend/lowering-ir.zs";
+import { emitProgramMetadata } from "../frontend/program-metadata.zs";
 import { validateNativeLowerability } from "../frontend/native-lowerability.zs";
 import {
   decodeRawForeignDeclarations,
@@ -335,6 +336,15 @@ function checkProject(in entryPath: String): i32 throws String {
   }
   const checkedLowering = try lowerModules(project.modules, project.graph);
   console.log(`checked ${project.modules.length} Z modules`);
+  return 0;
+}
+
+function metadataProject(in entryPath: String): i32 throws String {
+  const input = try resolveCommandInput(entryPath);
+  const project = try loadProject(input.entryPath);
+  try validateExecutableEntry(project, false);
+  const metadata = try emitProgramMetadata(project.modules, project.graph);
+  console.write(metadata);
   return 0;
 }
 
@@ -1128,7 +1138,7 @@ function reportOutcome(outcome: Result<i32, String>): i32 {
 function main(): i32 {
   const arguments = process.args();
   if (arguments.length < 1) {
-    console.error("usage: z <version|check|test|emit|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
+    console.error("usage: z <version|check|test|emit|metadata|build|run|foreign-inspect|foreign-contract-inspect> [input] [output] [--release] [-- args]");
     return 2;
   }
 
@@ -1138,7 +1148,7 @@ function main(): i32 {
       console.error("usage: z version");
       return 2;
     }
-    console.log("z 0.1.0-dev revision 2026-08-23 compiler-api 1");
+    console.log("z 0.1.0-dev revision 2026-08-23 compiler-api 2");
     return 0;
   }
   if (command == "check") {
@@ -1167,6 +1177,20 @@ function main(): i32 {
     let inputPath = ".";
     if (arguments.length == 2) inputPath = copy arguments[1];
     const outcome = attempt testProject(inputPath);
+    return reportOutcome(outcome);
+  }
+  if (command == "metadata") {
+    if (arguments.length > 2) {
+      console.error("usage: z metadata [entry.zs|project]");
+      return 2;
+    }
+    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
+      console.error(`unknown metadata option ${arguments[1]}`);
+      return 2;
+    }
+    let inputPath = ".";
+    if (arguments.length == 2) inputPath = copy arguments[1];
+    const outcome = attempt metadataProject(inputPath);
     return reportOutcome(outcome);
   }
   if (command == "foreign-inspect") {

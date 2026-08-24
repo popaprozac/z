@@ -31,6 +31,9 @@ production or compatibility-sensitive use.
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
+- Compiler API 2 and `z metadata`, exposing versioned checked public symbols and
+  public call sites to tools without source scanning. Zapp derives typed service
+  bindings from this artifact.
 
 ## Partial and still expanding
 

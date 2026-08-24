@@ -84,6 +84,7 @@ directory where shown:
 z build <project-directory | z.json> [--release]
 z check <file.zs | project-directory | z.json> [--native-frontend] [--timings]
 z emit [file.zs | project-directory | z.json]
+z metadata [file.zs | project-directory | z.json]
 z run <file.zs | project-directory | z.json> [--release] [-- program arguments]
 z test <file.zs | project-directory | z.json>
 ```
@@ -95,6 +96,7 @@ z test <file.zs | project-directory | z.json>
 | `bun run z check file.zs --native-frontend --timings` | Run the opt-in hybrid native frontend and report parity timings |
 | `bun run z emit file.zs` | Print the generated C-family source for one source entry |
 | `bun run z emit path/to/project` | Print the generated C-family source selected by `target.entry` without writing artifacts |
+| `bun run z metadata path/to/project` | Print versioned checked public-symbol and public-call metadata for external tools |
 | `bun run z run file.zs` | Generate, compile, link, and execute a native binary |
 | `bun run z run path/to/project` | Run the executable target selected by that project's `z.json` |
 | `bun run z run path/to/project --release` | Run that target through an optimized native build |
@@ -214,6 +216,7 @@ The bootstrapped native command accepts the same project-directory forms for
 z check [entry.zs | project-directory | z.json]
 z test [entry.zs | project-directory | z.json]
 z emit [entry.zs | project-directory | z.json]
+z metadata [entry.zs | project-directory | z.json]
 z emit <entry.zs> <output.c>                 # bootstrap compatibility
 z build [project-directory | z.json] [--release]
 z build <entry.zs> <output> [--release]      # bootstrap compatibility

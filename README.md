@@ -211,6 +211,7 @@ bun run test
 bun run z check examples/language/basics/first.zs
 bun run z emit examples/language/basics/first.zs
 bun run z emit path/to/project
+bun run z metadata path/to/project
 bun run z run examples/language/basics/first.zs
 bun run z check path/to/project
 bun run z run path/to/project
@@ -220,6 +221,12 @@ bun run z run examples/applications/source-stager/main.zs -- examples/language/b
 bun run bootstrap
 .z-cache/bootstrap/z test path/to/module.test.zs
 ```
+
+`z metadata` emits versioned JSON containing checked public symbols and
+resolved calls to public Z APIs. Literal arguments remain literal evidence;
+other arguments expose only their checked type. Frameworks and generators can
+consume that artifact without scanning Z source or adding framework concepts
+to the language.
 
 The bootstrap suite is split into independently runnable language, native
 interop, Objective-C, Swift, self-hosting, and async tiers. See

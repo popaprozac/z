@@ -6502,8 +6502,31 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(
     version.stdout,
-    "z 0.1.0-dev revision 2026-08-23 compiler-api 1\n",
+    "z 0.1.0-dev revision 2026-08-23 compiler-api 2\n",
   );
+
+  const metadata = spawnSync(
+    executable,
+    [
+      "metadata",
+      resolve(projectRoot, "tests/fixtures/self-host-program-metadata.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(metadata.status, 0, metadata.stderr);
+  const decodedMetadata = JSON.parse(metadata.stdout);
+  assert.equal(decodedMetadata.schemaVersion, 1);
+  assert.deepEqual(
+    decodedMetadata.modules[0].symbols.map((symbol: { name: string }) => symbol.name),
+    ["MetadataService", "register"],
+  );
+  const registerMetadata = decodedMetadata.modules[0].calls.find(
+    (call: { target: { name: string } }) => call.target.name === "register",
+  );
+  assert.deepEqual(registerMetadata.arguments, [
+    { kind: "string", type: "String", value: "notes" },
+    { kind: "other", type: "MetadataService" },
+  ]);
 
   const checking = spawnSync(
     executable,
@@ -8100,7 +8123,7 @@ test("compiles a multi-module Z application through the standalone native driver
     { encoding: "utf8" },
   );
   assert.equal(recursiveCompilation.status, 0, recursiveCompilation.stderr);
-  assert.match(recursiveCompilation.stdout, /compiled 39 Z modules/);
+  assert.match(recursiveCompilation.stdout, /compiled 41 Z modules/);
   assert.equal(
     readFileSync(`${recursiveDriver}.c`, "utf8"),
     driverEmission.stdout,
