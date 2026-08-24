@@ -14148,6 +14148,43 @@ test("preserves stored async callable ABI layout in native C emission", () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("executes one completed stored async closure through the native ABI", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /frame->task\.completed = true/);
+  assert.match(emission.stdout, /\.release_context = z_stage1_callable_/);
+  assert.match(emission.stdout, /invocation\.take_result\(invocation\.task, &result\)/);
+  assert.match(emission.stdout, /invocation\.destroy\(invocation\.task\)/);
+  assert.match(emission.stdout, /invocation\.release_context\(invocation\.callable_context\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-callable-execution-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

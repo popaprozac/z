@@ -243,6 +243,17 @@ function appendCallableHelperName(
   output.append(`${expressionIndex}`);
 }
 
+function appendAsyncCallableAwaitHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_async_callable_await_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
 function appendCallableParameterDeclaration(
   inout output: TextBuffer,
   in parameter: LoweredParameter,
@@ -2651,6 +2662,42 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.asyncFunctionAwait
+  ) {
+    if (declaration.expressions[index].children.length == 0) {
+      throw "native C emission received a malformed async function-value await";
+    }
+    appendAsyncCallableAwaitHelperName(
+      inout output,
+      declaration,
+      index
+    );
+    output.append("(");
+    let argument: usize = 0;
+    while (argument < declaration.expressions[index].children.length) {
+      if (argument > 0) output.append(", ");
+      const borrowed = argument > 0
+        && declaration.expressions[index].labels.length >= argument
+        && (
+          declaration.expressions[index].labels[argument - 1] == "in"
+          || declaration.expressions[index].labels[argument - 1] == "inout"
+          || declaration.expressions[index].labels[argument - 1] == "out"
+      );
+      if (borrowed) output.append("&(");
+      const value = declaration.expressions[index].children[argument];
+      try appendExpression(
+        inout output,
+        declaration,
+        value
+      );
+      if (borrowed) output.append(")");
+      argument = argument + 1;
+    }
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.classValue) {
     output.append("Z_");
     output.append(declaration.expressions[index].value);
@@ -4818,6 +4865,183 @@ function appendCallableHelpers(
         }
         output.append("  free(environment);\n}\n\n");
       }
+      if (functionType.asynchronous) {
+        if (expression.kind != LoweredExpressionKind.closureValue) {
+          throw "native async callable helper currently requires a contextual closure";
+        }
+        output.append("typedef struct ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task {\n  Z_AsyncTask task;\n");
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+          output.append("  ");
+          output.append(returnType);
+          output.append(" result;\n");
+        }
+        output.append("} ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task;\n\n");
+        output.append("static bool ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_failed(Z_AsyncTask *task) {\n  (void)task;\n  return false;\n}\n\n");
+        output.append("static void ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_take_result(Z_AsyncTask *task, void *destination) {\n");
+        if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+          output.append("  (void)task;\n  (void)destination;\n");
+        } else {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  if (destination == NULL) abort();\n  *((");
+          output.append(returnType);
+          output.append(" *)destination) = frame->result;\n");
+        }
+        output.append("}\n\n");
+        output.append("static void ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_take_error(Z_AsyncTask *task, void *destination) {\n  (void)task;\n  (void)destination;\n}\n\n");
+        output.append("static void ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_destroy(Z_AsyncTask *task) { free(task); }\n\n");
+        output.append("static Z_AsyncInvocation ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_start(void *");
+        appendCBindingName(inout output, contextName);
+        output.append(", Z_AsyncExecutor *executor");
+        let parameter: usize = 0;
+        while (parameter < functionType.parameters.length) {
+          output.append(", ");
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[parameter],
+            expression.labels[parameterLabelStart + parameter]
+          );
+          parameter = parameter + 1;
+        }
+        output.append(") {\n  (void)executor;\n");
+        if (expression.captureTypes.length == 0) {
+          output.append("  (void)");
+          appendCBindingName(inout output, contextName);
+          output.append(";\n");
+        } else {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *environment = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *)");
+          appendCBindingName(inout output, contextName);
+          output.append(";\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_retain(");
+          appendCBindingName(inout output, contextName);
+          output.append(");\n");
+          let capture: usize = 0;
+          while (capture < expression.captureTypes.length) {
+            output.append("  ");
+            const captureCType = try cType(expression.captureTypes[capture]);
+            output.append(captureCType);
+            output.append(" const ");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(" = environment->");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(";\n");
+            capture = capture + 1;
+          }
+        }
+        output.append("  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task *frame = (");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.completed = true;\n");
+        if (expression.children.length == 0) {
+          throw "native async closure helper lost its body";
+        }
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+          output.append("  frame->result = ");
+        } else output.append("  ");
+        try appendExpression(inout output, owner, expression.children[0]);
+        output.append(";\n  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_failed,\n    .take_result = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_take_result,\n    .take_error = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_take_error,\n    .destroy = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_destroy,\n    .callable_context = ");
+        if (expression.captureTypes.length > 0) {
+          appendCBindingName(inout output, contextName);
+        } else output.append("NULL");
+        output.append(",\n    .release_context = ");
+        if (expression.captureTypes.length > 0) {
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release");
+        } else output.append("NULL");
+        output.append(",\n  };\n}\n\n");
+        if (expression.captureTypes.length > 0) {
+          output.append("static Z_");
+          output.append(functionType.name);
+          output.append(" ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_make(");
+          let capture: usize = 0;
+          while (capture < expression.captureTypes.length) {
+            if (capture > 0) output.append(", ");
+            const captureCType = try cType(expression.captureTypes[capture]);
+            output.append(captureCType);
+            output.append(" ");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            capture = capture + 1;
+          }
+          output.append(") {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_environment *environment = malloc(sizeof(*environment));\n  if (environment == NULL) abort();\n  environment->refcount = 1;\n");
+          capture = 0;
+          while (capture < expression.captureTypes.length) {
+            output.append("  environment->");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(" = ");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(";\n");
+            capture = capture + 1;
+          }
+          output.append("  return (Z_");
+          output.append(functionType.name);
+          output.append("){ .start = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_start, .context = environment, .retain = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_retain, .release = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release };\n}\n\n");
+        } else {
+          output.append("static const Z_");
+          output.append(functionType.name);
+          output.append(" ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_value = { .start = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_start, .context = NULL, .retain = NULL, .release = NULL };\n\n");
+        }
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
       output.append("static ");
       output.append(returnType);
       output.append(" ");
@@ -4958,6 +5182,87 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_call, .context = NULL, .retain = NULL, .release = NULL };\n\n");
       }
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
+function appendAsyncCallableAwaitHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (
+        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+      ) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      let functionTypeIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == expression.value) {
+          functionTypeIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (functionTypeIndex >= program.functionTypes.length) {
+        throw "native async callable await helper could not resolve its function type";
+      }
+      const functionType = view program.functionTypes[functionTypeIndex];
+      if (!functionType.asynchronous) {
+        throw "native async callable await helper received a synchronous function type";
+      }
+      const returnType = try cType(functionType.returnType);
+      output.append("static ");
+      output.append(returnType);
+      output.append(" ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("(Z_");
+      output.append(functionType.name);
+      output.append(" callable");
+      let parameter: usize = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append(", ");
+        try appendCallableParameterDeclaration(
+          inout output,
+          functionType.parameters[parameter],
+          functionType.parameters[parameter].name
+        );
+        parameter = parameter + 1;
+      }
+      output.append(") {\n  Z_AsyncInvocation invocation = Z_");
+      output.append(functionType.name);
+      output.append("_start(callable, NULL");
+      for (const functionParameter of functionType.parameters) {
+        output.append(", ");
+        appendCBindingName(inout output, functionParameter.name);
+      }
+      output.append(");\n");
+      output.append("  if (invocation.task == NULL || !invocation.task->completed) abort();\n");
+      output.append("  if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n");
+      if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+        output.append("  if (invocation.take_result != NULL) invocation.take_result(invocation.task, NULL);\n");
+      } else {
+        output.append("  ");
+        output.append(returnType);
+        output.append(" result;\n");
+        output.append("  if (invocation.take_result == NULL) abort();\n");
+        output.append("  invocation.take_result(invocation.task, &result);\n");
+      }
+      output.append("  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n");
+      output.append("  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("  return result;\n");
+      }
+      output.append("}\n\n");
       expressionIndex = expressionIndex + 1;
     }
   }
@@ -9767,6 +10072,8 @@ function appendTypeDefinitions(
   if (usesAsyncFunctionType) {
     output.append("typedef struct Z_AsyncTask Z_AsyncTask;\n");
     output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
+    output.append("struct Z_AsyncTask { bool completed; };\n");
+    output.append("struct Z_AsyncExecutor { unsigned char _z_unused; };\n");
     output.append("typedef struct Z_AsyncInvocation {\n");
     output.append("  Z_AsyncTask *task;\n");
     output.append("  bool (*failed)(Z_AsyncTask *task);\n");
@@ -12806,6 +13113,7 @@ function emitLoweredC(
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
   try appendCallableHelpers(inout output, program);
+  try appendAsyncCallableAwaitHelpers(inout output, program);
   if (program.objectiveCRegistrations.length > 0) {
     output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");
     for (const adapter of program.objectiveCProtocolAdapters) {

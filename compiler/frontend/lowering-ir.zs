@@ -231,6 +231,7 @@ export enum LoweredExpressionKind {
   optionFromNullable,
   directCall,
   functionCall,
+  asyncFunctionAwait,
   directFunctionValue,
   closureValue,
   methodCall,
@@ -8557,6 +8558,117 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed await expression";
     }
     const taskInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[taskInput].kind == ExpressionKind.callExpression
+      && tree.nodes[taskInput].children.length > 0
+    ) {
+      const callableInput = tree.nodes[taskInput].children[0];
+      let callableTypeName = "";
+      match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
+        some(name) => callableTypeName = move name;
+        none => {}
+      }
+      if (
+        callableTypeName.byteLength == 0
+        && (
+          tree.nodes[callableInput].kind
+            == ExpressionKind.identifierExpression
+          || tree.nodes[callableInput].kind
+            == ExpressionKind.argumentBindingExpression
+        )
+      ) {
+        const callableName = tree.nodes[callableInput].value.copyBytes(
+          0,
+          tree.nodes[callableInput].value.byteLength
+        );
+        const callableOffset = tree.nodes[callableInput].offset;
+        match (namedValueTypeName(
+          program,
+          evidence,
+          "",
+          callableName,
+          callableOffset
+        )) {
+          some(name) => callableTypeName = move name;
+          none => {}
+        }
+      }
+      callableTypeName = moduleCallableAliasTarget(
+        program,
+        importedTypes,
+        callableTypeName
+      );
+      match (nativeFunctionSignature(callableTypeName)) {
+        some(signature) => {
+          if (signature.asynchronous) {
+            if (signature.errorType.byteLength > 0) {
+              throw "native direct async callable await does not execute typed errors yet";
+            }
+            if (
+              tree.nodes[taskInput].children.length
+                != signature.parameterTypes.length + 1
+            ) throw "native direct async callable await received mismatched arguments";
+            const resultType = try lowerModuleTypeName(
+              program,
+              importedTypes,
+              signature.returnType
+            );
+            if (moduleTypeNeedsCleanup(
+              program,
+              importedTypes,
+              resultType
+            )) {
+              throw "native direct async callable await currently requires a cleanup-free result";
+            }
+            let children = Array<usize>();
+            const callable = try lowerExpression(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              callableInput,
+              inout output
+            );
+            children.push(callable);
+            let labels = Array<String>();
+            let argument: usize = 0;
+            while (argument < signature.parameterTypes.length) {
+              const argumentInput = tree.nodes[taskInput].children[
+                argument + 1
+              ];
+              const value = try lowerExpressionExpected(
+                program,
+                importedTypes,
+                evidence,
+                tree,
+                argumentInput,
+                signature.parameterTypes[argument],
+                inout output
+              );
+              children.push(value);
+              labels.push(signature.parameterModes[argument].copyBytes(
+                0,
+                signature.parameterModes[argument].byteLength
+              ));
+              argument = argument + 1;
+            }
+            const callableIdentity = try moduleFunctionTypeIdentity(
+              program,
+              importedTypes,
+              signature
+            );
+            return pushExpression(
+              inout output,
+              LoweredExpressionKind.asyncFunctionAwait,
+              callableIdentity,
+              children,
+              labels
+            );
+          }
+        }
+        none => {}
+      }
+    }
     let taskName = "";
     match (evidenceResolvedExpressionTypeName(
       program,
@@ -12787,9 +12899,16 @@ function lowerExpressionExpected(
         if (
           tree.nodes[index].labels.length < 4
           || tree.nodes[index].labels[2] != "expression"
-          || tree.nodes[index].labels[3].byteLength > 0
+          || (
+            tree.nodes[index].labels[3].byteLength > 0
+            && tree.nodes[index].labels[3] != "async"
+          )
         ) {
-          throw "native first-class callable lowering currently supports synchronous expression closures";
+          throw "native first-class callable lowering currently supports expression closures";
+        }
+        const closureAsynchronous = tree.nodes[index].labels[3] == "async";
+        if (closureAsynchronous != signature.asynchronous) {
+          throw "native callable closure lost its asynchronous function-type identity";
         }
         let parameterNames = Array<String>();
         let bodyInput = tree.nodes.length;
@@ -12807,6 +12926,26 @@ function lowerExpressionExpected(
           bodyInput >= tree.nodes.length
           || parameterNames.length != signature.parameterTypes.length
         ) throw "native callable closure lost its parameter or body shape";
+        if (closureAsynchronous) {
+          if (signature.errorType.byteLength > 0) {
+            throw "native stored async closures do not execute typed errors yet";
+          }
+          const asyncReturnType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            signature.returnType
+          );
+          if (moduleTypeNeedsCleanup(
+            program,
+            importedTypes,
+            asyncReturnType
+          )) {
+            throw "native stored async closures currently require a cleanup-free result";
+          }
+          if (expressionTreeContainsAwait(tree, bodyInput)) {
+            throw "native stored async closure suspension is not executable yet";
+          }
+        }
         const bodyStart = output.length;
         const body = try lowerExpressionExpected(
           program,
@@ -15374,6 +15513,20 @@ function expressionTreeContainsTry(
   if (tree.nodes[index].kind == ExpressionKind.closureExpression) return false;
   for (const child of tree.nodes[index].children) {
     if (expressionTreeContainsTry(tree, child)) return true;
+  }
+  return false;
+}
+
+function expressionTreeContainsAwait(
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind == ExpressionKind.executorPlacementExpression
+  ) return true;
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsAwait(tree, child)) return true;
   }
   return false;
 }

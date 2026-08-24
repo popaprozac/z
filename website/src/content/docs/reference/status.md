@@ -28,8 +28,9 @@ production or compatibility-sensitive use.
 - Stored synchronous callables and a first stored-async direct-await tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the
-  distinct asynchronous start-frame ABI through aggregate storage; executable
-  native stored-closure frames remain in progress.
+  distinct asynchronous start-frame ABI through aggregate storage and executes
+  captured, nonthrowing, cleanup-free expression closures that complete without
+  suspension. Suspended native stored-closure frames remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source
