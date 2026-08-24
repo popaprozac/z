@@ -437,6 +437,17 @@ export function recordObjCCallFacts(
   }
 }
 
+function expressionResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  offset: usize
+): usize {
+  const found = evidence.expressionResolutionIndices.get(offset);
+  match (in found) {
+    some(index) => return index;
+    none => return evidence.expressionResolutions.length;
+  }
+}
+
 export function recordExpressionResolution(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -446,13 +457,8 @@ export function recordExpressionResolution(
   inout evidence: ModuleSemanticEvidence
 ): void {
   if (typeName.byteLength == 0 || typeName == "__z_never") return;
-  for (const existing of evidence.expressionResolutions) {
-    if (
-      existing.offset == tree.nodes[index].offset
-      && existing.line == tree.nodes[index].line
-      && existing.column == tree.nodes[index].column
-    ) return;
-  }
+  const offset = tree.nodes[index].offset;
+  if (evidence.expressionResolutionIndices.has(offset)) return;
   let typeIdentities = Array<ModuleTypeIdentity>();
   collectTypeIdentities(
     modules,
@@ -461,14 +467,16 @@ export function recordExpressionResolution(
     "",
     inout typeIdentities
   );
+  const resolutionIndex = evidence.expressionResolutions.length;
   evidence.expressionResolutions.push(ModuleExpressionResolution({
-    offset: tree.nodes[index].offset,
+    offset,
     line: tree.nodes[index].line,
     column: tree.nodes[index].column,
     typeName: typeName.copyBytes(0, typeName.byteLength),
     targetName: "",
     typeIdentities,
   }));
+  evidence.expressionResolutionIndices.set(offset, resolutionIndex);
 }
 
 export function recordForeignValueResolution(
@@ -488,25 +496,16 @@ export function recordForeignValueResolution(
     typeName,
     inout evidence
   );
-  let resolutionIndex: usize = 0;
-  while (resolutionIndex < evidence.expressionResolutions.length) {
-    if (
-      evidence.expressionResolutions[resolutionIndex].offset
-        == tree.nodes[index].offset
-      && evidence.expressionResolutions[resolutionIndex].line
-        == tree.nodes[index].line
-      && evidence.expressionResolutions[resolutionIndex].column
-        == tree.nodes[index].column
-    ) {
-      evidence.expressionResolutions[resolutionIndex].targetName =
-        targetName.copyBytes(
-        0,
-        targetName.byteLength
-      );
-      return;
-    }
-    resolutionIndex = resolutionIndex + 1;
-  }
+  const resolutionIndex = expressionResolutionIndex(
+    evidence,
+    tree.nodes[index].offset
+  );
+  if (resolutionIndex >= evidence.expressionResolutions.length) return;
+  evidence.expressionResolutions[resolutionIndex].targetName =
+    targetName.copyBytes(
+      0,
+      targetName.byteLength
+    );
 }
 
 export function recordBindingResolution(

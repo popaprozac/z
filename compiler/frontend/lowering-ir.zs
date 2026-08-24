@@ -6496,24 +6496,42 @@ function collectThreadClosureCaptures(
   return captures;
 }
 
+function resolvedExpressionResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  const found = evidence.expressionResolutionIndices.get(
+    tree.nodes[index].offset
+  );
+  match (in found) {
+    some(resolutionIndex) => return resolutionIndex;
+    none => return evidence.expressionResolutions.length;
+  }
+}
+
 function resolvedExpressionTypeName(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
-  for (const resolution of evidence.expressionResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-    ) {
-      return Option.some(resolution.typeName.copyBytes(
-      0,
-      resolution.typeName.byteLength
-      ));
-    }
+  const resolutionIndex = resolvedExpressionResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.expressionResolutions.length) {
+    return Option<String>.none;
   }
-  return Option<String>.none;
+  const resolution = view evidence.expressionResolutions[resolutionIndex];
+  if (
+    resolution.line != tree.nodes[index].line
+    || resolution.column != tree.nodes[index].column
+  ) return Option<String>.none;
+  return Option.some(resolution.typeName.copyBytes(
+    0,
+    resolution.typeName.byteLength
+  ));
 }
 
 function resolvedMemberReceiverTypeIs(
@@ -6535,18 +6553,24 @@ function resolvedExpressionTargetName(
   in tree: ExpressionTree,
   index: usize
 ): Option<String> {
-  for (const resolution of evidence.expressionResolutions) {
-    if (
-      resolution.offset == tree.nodes[index].offset
-      && resolution.line == tree.nodes[index].line
-      && resolution.column == tree.nodes[index].column
-      && resolution.targetName.byteLength > 0
-    ) return Option.some(resolution.targetName.copyBytes(
-      0,
-      resolution.targetName.byteLength
-    ));
+  const resolutionIndex = resolvedExpressionResolutionIndex(
+    evidence,
+    tree,
+    index
+  );
+  if (resolutionIndex >= evidence.expressionResolutions.length) {
+    return Option<String>.none;
   }
-  return Option<String>.none;
+  const resolution = view evidence.expressionResolutions[resolutionIndex];
+  if (
+    resolution.line != tree.nodes[index].line
+    || resolution.column != tree.nodes[index].column
+    || resolution.targetName.byteLength == 0
+  ) return Option<String>.none;
+  return Option.some(resolution.targetName.copyBytes(
+    0,
+    resolution.targetName.byteLength
+  ));
 }
 
 function annotatedBindingTypeInArena(

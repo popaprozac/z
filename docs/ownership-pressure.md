@@ -3842,6 +3842,25 @@ The resulting 7,857,457-byte C output passed an exact fixed-point rebuild, all
 cost is still too high for routine cold application builds, so profiling and
 incremental native emission remain active compiler-velocity work.
 
+The next profile found the same linear semantic-evidence scan on both sides of
+lowering. Semantic inference searched every prior expression resolution before
+recording a new one, then lowering searched the full array again whenever it
+needed a node's resolved type or native target. `ModuleSemanticEvidence` now
+keeps a derived source-offset-to-resolution index while the ordered resolution
+array remains the protocol truth. Recording and lookup therefore reuse the
+same evidence in expected constant time; source line and column are still
+checked before lowering consumes the result.
+
+With the prepared self-hosted library, complete compiler emission fell again
+from 35.43 to 12.90 seconds. This is an 83.4% reduction from the original
+77.87-second baseline, with byte-identical repeated 7,866,641-byte C output.
+An exact fixed-point preparation completed in 38.72 seconds. The full
+self-hosting suite remained 90/90 and fell from 374.98 to 262.29 seconds on the
+two adjacent validation runs; all 265 language-tier tests also remained green.
+These are development-machine measurements rather than release benchmarks, but
+they establish semantic indexing as a necessary foundation for compiler-scale
+Z programs.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

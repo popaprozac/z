@@ -81,6 +81,8 @@ export struct ModuleSemanticEvidence {
   callResolutions: Array<ModuleCallResolution>;
   bindingResolutions: Array<ModuleBindingResolution>;
   expressionResolutions: Array<ModuleExpressionResolution>;
+  // Derived lookup state; expressionResolutions remains the protocol truth.
+  expressionResolutionIndices: Map<usize, usize> = Map<usize, usize>();
   foreignUnionMatches: Array<ModuleForeignUnionMatch> =
     Array<ModuleForeignUnionMatch>();
   objectiveCRegistrations: Array<ModuleObjCRegistrationResolution> =
