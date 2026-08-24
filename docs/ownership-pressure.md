@@ -3811,19 +3811,29 @@ resumed parent takes the result, destroys the child invocation, and releases
 the stored callable. Existing lowering cleanup evidence selects this path, so
 there is no new source syntax or parallel ownership rule.
 
-The next bounded shape adds one cleanup-free ordinary local and one callable
-value argument. The parent writes that local into its heap frame, exposes a
-poll-local C binding while starting the child, and recreates that binding only
-after the child wakes it. The return expression then reads the original value,
-proving that neither the child call nor the suspension borrowed a dead C-stack
-temporary. Strict C compilation and execution cover the full path.
+The next bounded shape adds one ordinary local and one callable argument. The
+parent writes that local into its heap frame, exposes a poll-local C binding
+while starting the child, and recreates that binding only after the child wakes
+it. The return expression then reads the original value, proving that neither
+the child call nor the suspension borrowed a dead C-stack temporary. A
+cleanup-free value crosses by value.
+
+The same frame now accepts one cleanup-bearing owner through an `in` callable
+parameter. The child receives a pointer to the frame's address-stable storage;
+it does not copy, retain, or take ownership of the value. A `live_stored` bit
+guards the owner's destructor. Normal completion evaluates the return while the
+owner is live, then destroys and clears it. Destroying a parent after its first
+poll releases the unfinished child and destroys the owner through the same live
+bit. An executable `deinit` fixture observes exactly one destructor call on
+both paths.
 
 This remains intentionally narrow: one stored async callable, one direct await,
-one cleanup-free ordinary local and callable argument, and one cleanup-free
-integer return. The restriction keeps unsupported control flow on the existing
-diagnosed path while establishing the frame shape needed for cleanup-bearing
-locals, multiple arguments, cancellation, and structured control flow in later
-slices.
+one ordinary local and callable argument, and one cleanup-free integer return.
+An ownership-bearing argument must be `in`; consuming it would contradict the
+required post-resume use. The restriction keeps unsupported control flow on the
+existing diagnosed path while establishing the frame shape needed for multiple
+locals and arguments, cancellation propagation, and structured control flow in
+later slices.
 
 The same checkpoint exposed a compiler-velocity problem rather than hiding it.
 On the development machine on 2026-08-24, a cold exact fixed-point rebuild of

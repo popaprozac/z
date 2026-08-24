@@ -265,6 +265,7 @@ function appendPersistentAsyncParentName(
 struct PersistentAsyncParentShape {
   storedStatement: usize;
   storedInitializer: usize;
+  storedNeedsDeinit: boolean;
   localStatement: usize;
   localInitializer: usize;
   awaitExpression: usize;
@@ -4659,6 +4660,7 @@ function persistentAsyncParentShape(
   let rootOffset: usize = 0;
   let storedStatement = declaration.statements.length;
   let storedInitializer = declaration.expressions.length;
+  let storedNeedsDeinit = false;
   if (declaration.roots.length == 4) {
     storedStatement = declaration.roots[0];
     if (
@@ -4666,11 +4668,7 @@ function persistentAsyncParentShape(
         != LoweredStatementKind.localStatement
     ) return Option<PersistentAsyncParentShape>.none;
     match (in declaration.statements[storedStatement].type) {
-      some(type) => {
-        if (loweredTypeNeedsDeinit(program, type)) {
-          return Option<PersistentAsyncParentShape>.none;
-        }
-      }
+      some(type) => storedNeedsDeinit = loweredTypeNeedsDeinit(program, type);
       none => return Option<PersistentAsyncParentShape>.none;
     }
     match (in declaration.statements[storedStatement].expression) {
@@ -4743,7 +4741,11 @@ function persistentAsyncParentShape(
     }
     if (
       functionType.parameters.length != 1
-      || functionType.parameters[0].mode != LoweredParameterMode.value
+      || (
+        storedNeedsDeinit
+          ? functionType.parameters[0].mode != LoweredParameterMode.input
+          : functionType.parameters[0].mode != LoweredParameterMode.value
+      )
       || declaration.expressions[awaitExpression].children.length != 2
     ) {
       matchingFunctionType = false;
@@ -4776,18 +4778,50 @@ function persistentAsyncParentShape(
   if (!matchingFunctionType) {
     return Option<PersistentAsyncParentShape>.none;
   }
-  if (declaration.statements[returnStatement].cleanups.length != 1) {
+  const expectedCleanupCount = storedNeedsDeinit ? usize(2) : usize(1);
+  if (
+    declaration.statements[returnStatement].cleanups.length
+      != expectedCleanupCount
+  ) {
     return Option<PersistentAsyncParentShape>.none;
   }
-  const cleanup = view declaration.statements[returnStatement].cleanups[0];
-  if (
-    cleanup.name != declaration.statements[localStatement].name
-    || cleanup.type.kind != LoweredTypeKind.functionType
-    || cleanup.type.name != localTypeName
-  ) return Option<PersistentAsyncParentShape>.none;
+  let foundCallableCleanup = false;
+  let foundStoredCleanup = !storedNeedsDeinit;
+  for (const cleanup of declaration.statements[returnStatement].cleanups) {
+    if (
+      cleanup.name == declaration.statements[localStatement].name
+      && cleanup.type.kind == LoweredTypeKind.functionType
+      && cleanup.type.name == localTypeName
+    ) {
+      foundCallableCleanup = true;
+      continue;
+    }
+    if (
+      storedNeedsDeinit
+      && cleanup.name == declaration.statements[storedStatement].name
+    ) {
+      match (in declaration.statements[storedStatement].type) {
+        some(storedType) => {
+          if (
+            cleanup.type.kind == storedType.kind
+            && cleanup.type.name == storedType.name
+          ) {
+            foundStoredCleanup = true;
+            continue;
+          }
+        }
+        none => {}
+      }
+    }
+    return Option<PersistentAsyncParentShape>.none;
+  }
+  if (!foundCallableCleanup || !foundStoredCleanup) {
+    return Option<PersistentAsyncParentShape>.none;
+  }
   return Option.some(PersistentAsyncParentShape({
     storedStatement,
     storedInitializer,
+    storedNeedsDeinit,
     localStatement,
     localInitializer,
     awaitExpression,
@@ -5656,6 +5690,9 @@ function appendPersistentAsyncParentHelpers(
           };
           output.append(storedType);
           output.append(" stored;\n  ");
+          if (shape.storedNeedsDeinit) {
+            output.append("bool live_stored;\n  ");
+          }
         }
         output.append(localCType);
         output.append(" local;\n  bool live_local;\n  Z_AsyncInvocation child;\n  int32_t result;\n} ");
@@ -5690,13 +5727,20 @@ function appendPersistentAsyncParentHelpers(
             declaration,
             shape.storedInitializer
           );
-          output.append(";\n    const ");
+          output.append(";\n");
+          if (shape.storedNeedsDeinit) {
+            output.append("    frame->live_stored = true;\n");
+          }
+          output.append("    const ");
           output.append(storedType);
           output.append(" ");
           appendCBindingName(
             inout output,
             declaration.statements[shape.storedStatement].name
           );
+          if (shape.storedNeedsDeinit) {
+            output.append(" __attribute__((unused))");
+          }
           output.append(" = frame->stored;\n");
         }
         output.append("    frame->local = ");
@@ -5714,11 +5758,14 @@ function appendPersistentAsyncParentHelpers(
         let argument: usize = 1;
         while (argument < awaitExpression.children.length) {
           output.append(", ");
-          try appendExpression(
-            inout output,
-            declaration,
-            awaitExpression.children[argument]
-          );
+          if (shape.storedNeedsDeinit) output.append("&frame->stored");
+          else {
+            try appendExpression(
+              inout output,
+              declaration,
+              awaitExpression.children[argument]
+            );
+          }
           argument = argument + 1;
         }
         output.append(");\n");
@@ -5745,6 +5792,9 @@ function appendPersistentAsyncParentHelpers(
             inout output,
             declaration.statements[shape.storedStatement].name
           );
+          if (shape.storedNeedsDeinit) {
+            output.append(" __attribute__((unused))");
+          }
           output.append(" = frame->stored;\n");
         }
         output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
@@ -5758,7 +5808,25 @@ function appendPersistentAsyncParentHelpers(
         );
         output.append(";\n  Z_");
         output.append(localTypeName);
-        output.append("_deinit(&frame->local);\n  frame->live_local = false;\n  task->completed = true;\n}\n\n");
+        output.append("_deinit(&frame->local);\n  frame->live_local = false;\n");
+        if (shape.storedNeedsDeinit) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => LoweredType({
+              kind: type.kind,
+              name: type.name.copyBytes(0, type.name.byteLength),
+            });
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append("  if (frame->live_stored) { Z_");
+          output.append(storedType.name);
+          if (storedType.kind == LoweredTypeKind.classType) {
+            output.append("_release(frame->stored);");
+          } else output.append("_deinit(&frame->stored);");
+          output.append(" frame->live_stored = false; }\n");
+        }
+        output.append("  task->completed = true;\n}\n\n");
         output.append("static ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *");
@@ -5778,7 +5846,25 @@ function appendPersistentAsyncParentHelpers(
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_release_child(frame);\n  if (frame->live_local) Z_");
         output.append(localTypeName);
-        output.append("_deinit(&frame->local);\n  free(frame);\n}\n\n");
+        output.append("_deinit(&frame->local);\n");
+        if (shape.storedNeedsDeinit) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => LoweredType({
+              kind: type.kind,
+              name: type.name.copyBytes(0, type.name.byteLength),
+            });
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append("  if (frame->live_stored) { Z_");
+          output.append(storedType.name);
+          if (storedType.kind == LoweredTypeKind.classType) {
+            output.append("_release(frame->stored);");
+          } else output.append("_deinit(&frame->stored);");
+          output.append(" frame->live_stored = false; }\n");
+        }
+        output.append("  free(frame);\n}\n\n");
       }
       none => {}
     }

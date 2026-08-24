@@ -1033,14 +1033,18 @@ For the first bounded linear `async main` shape, the enclosing Z function now
 also owns a heap frame. Its callable local remains live in that frame while the
 dynamic child is suspended; completing the child requeues the parent task, and
 the resumed parent transfers the child result, destroys the invocation, and
-then cleans its local. One cleanup-free ordinary local may also live in that
-parent frame, cross into the stored callable as its single value argument, and
-be used again after the parent resumes. The generated poll function exposes the
-local only during each active poll; its storage remains in the heap frame while
-the child owns the executor turn. Broader enclosing control flow,
-cleanup-bearing locals, multiple arguments, return shapes, and cancellation
-propagation across the dynamic invocation remain staged; native lowering does
-not replace this supported shape with a blocking imitation.
+then cleans its local. One ordinary local may also live in that parent frame,
+cross into the stored callable as its single argument, and be used again after
+the parent resumes. Cleanup-free values cross by value. An ownership-bearing
+value crosses as `in`, so the frame remains its sole owner while the child sees
+an address-stable borrow. Such storage carries a live bit: normal completion
+destroys it once after the return expression, while destruction of an
+unfinished frame also cleans it. The generated poll function exposes the local
+only during each active poll; its storage remains in the heap frame while the
+child owns the executor turn. Broader enclosing control flow, multiple locals
+and arguments, return shapes, and cancellation propagation across the dynamic
+invocation remain staged; native lowering does not replace this supported shape
+with a blocking imitation.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:

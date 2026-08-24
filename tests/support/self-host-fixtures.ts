@@ -172,6 +172,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-callable-owned-result.zs": focusedPositive,
   "self-host-emit-async-callable-yield.zs": focusedPositive,
   "self-host-emit-async-callable-parent-local.zs": focusedPositive,
+  "self-host-emit-async-callable-parent-owned-local.zs": focusedPositive,
   "self-host-emit-thread-any-callable.zs": focusedPositive,
   "self-host-emit-thread-main-callable.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-match.zs": focusedPositive,

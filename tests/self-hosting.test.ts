@@ -268,7 +268,17 @@ test("emits disjoint projected inout field paths natively", () => {
   const executable = resolve(directory, "program");
   const compilation = spawnSync(
     "clang",
-    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-",
+      "-o",
+      executable,
+    ],
     { encoding: "utf8", input: emission.stdout },
   );
   assert.equal(compilation.status, 0, compilation.stderr);
@@ -14309,6 +14319,86 @@ test("preserves an ordinary local and callable argument across parent suspension
   assert.equal(compilation.status, 0, compilation.stderr);
   const execution = spawnSync(executable, [], { encoding: "utf8" });
   assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("owns and destroys a cleanup-bearing parent local across suspension", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-parent-owned-local.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z_SuspendedOwner stored;/);
+  assert.match(emission.stdout, /bool live_stored;/);
+  assert.match(emission.stdout, /frame->live_stored = true;/);
+  assert.match(
+    emission.stdout,
+    /_start\(frame->local, task->executor, &frame->stored\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /if \(frame->live_stored\) \{ Z_SuspendedOwner_deinit\(&frame->stored\); frame->live_stored = false; \}/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-callable-parent-owned-local-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "released 42\n");
+
+  const interrupted = resolve(directory, "interrupted");
+  const interruptedSource = `${emission.stdout}
+#undef main
+int interrupted_main(void) {
+  Z_AsyncExecutor executor = {0};
+  z_stage1_async_parent_main *frame = z_stage1_async_parent_main_start(&executor);
+  z_stage1_async_enqueue(&executor, &frame->task);
+  if (!z_stage1_async_run_one(&executor)) abort();
+  z_stage1_async_parent_main_destroy(frame);
+  return 0;
+}
+`;
+  const interruptedCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Dmain=z_program_main",
+      "-Dinterrupted_main=main",
+      "-",
+      "-o",
+      interrupted,
+    ],
+    { encoding: "utf8", input: interruptedSource },
+  );
+  assert.equal(interruptedCompilation.status, 0, interruptedCompilation.stderr);
+  const interruptedExecution = spawnSync(interrupted, [], {
+    encoding: "utf8",
+  });
+  assert.equal(interruptedExecution.status, 0, interruptedExecution.stderr);
+  assert.equal(interruptedExecution.stdout, "released 42\n");
   rmSync(directory, { recursive: true, force: true });
 });
 
