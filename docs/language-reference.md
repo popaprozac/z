@@ -1029,9 +1029,12 @@ The fixed-point native compiler executes completed expression closures and the
 first honest suspension shape: a void closure consisting of one direct
 `await scheduler.yield()`. That closure owns a heap frame, yields to a local
 FIFO executor on its first poll, resumes on its second poll, and then completes.
-General child suspension, parent-frame waiter linkage, and cancellation across
-the dynamic invocation remain staged; native lowering does not replace them
-with a blocking imitation.
+Direct await installs a local parent awaiter as the child's waiter. Completing
+the child requeues that parent, and the parent verifies completion before
+transferring the result and destroying the invocation. Resuming a general
+enclosing Z function frame and propagating cancellation across the dynamic
+invocation remain staged; native lowering does not replace them with a blocking
+imitation.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:

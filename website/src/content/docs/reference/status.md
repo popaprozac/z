@@ -32,8 +32,9 @@ production or compatibility-sensitive use.
   captured, nonthrowing expression closures. Primitive and ownership-bearing
   results transfer exactly once; an unclaimed owned result is destroyed with
   its frame. A void closure containing one direct `await scheduler.yield()` now
-  polls, requeues on a local FIFO executor, resumes, and completes. General
-  child suspension and parent-frame waiter linkage remain in progress.
+  polls and requeues on a local FIFO executor. Direct await links the child to a
+  local parent awaiter and child completion requeues that parent. General Z
+  function-frame resumption and cancellation propagation remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

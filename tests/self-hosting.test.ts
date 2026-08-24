@@ -14241,7 +14241,10 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   assert.match(emission.stdout, /void \(\*poll\)\(Z_AsyncTask \*task\)/);
   assert.match(emission.stdout, /frame->state = 1;/);
   assert.match(emission.stdout, /z_stage1_async_enqueue\(task->executor, task\)/);
-  assert.match(emission.stdout, /while \(!invocation\.task->completed\)/);
+  assert.match(emission.stdout, /Z_AsyncTask \*waiter;/);
+  assert.match(emission.stdout, /invocation\.task->waiter = &awaiter\.task;/);
+  assert.match(emission.stdout, /z_stage1_async_enqueue\(waiter->executor, waiter\)/);
+  assert.match(emission.stdout, /while \(!awaiter\.task\.completed\)/);
   assert.match(emission.stdout, /z_stage1_async_run_one\(&executor\)/);
 
   const directory = mkdtempSync("/tmp/z-async-callable-yield-");

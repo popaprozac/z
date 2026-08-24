@@ -5261,6 +5261,14 @@ function appendAsyncCallableRuntime(
   output.append("  if (executor->tail == NULL) executor->head = task;\n");
   output.append("  else executor->tail->next = task;\n");
   output.append("  executor->tail = task;\n}\n\n");
+  output.append("typedef struct Z_AsyncAwaiter {\n");
+  output.append("  Z_AsyncTask task;\n");
+  output.append("  Z_AsyncTask *child;\n");
+  output.append("} Z_AsyncAwaiter;\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_async_awaiter_poll(Z_AsyncTask *task) {\n");
+  output.append("  Z_AsyncAwaiter *awaiter = (Z_AsyncAwaiter *)task;\n");
+  output.append("  if (awaiter->child == NULL || !awaiter->child->completed) abort();\n");
+  output.append("  task->completed = true;\n}\n\n");
   output.append("static __attribute__((unused)) bool z_stage1_async_run_one(Z_AsyncExecutor *executor) {\n");
   output.append("  if (executor == NULL || executor->head == NULL) return false;\n");
   output.append("  Z_AsyncTask *task = executor->head;\n");
@@ -5269,7 +5277,12 @@ function appendAsyncCallableRuntime(
   output.append("  task->next = NULL;\n  task->queued = false;\n");
   output.append("  if (!task->completed) {\n");
   output.append("    if (task->poll == NULL) abort();\n");
-  output.append("    task->poll(task);\n  }\n  return true;\n}\n\n");
+  output.append("    task->poll(task);\n  }\n");
+  output.append("  if (task->completed && task->waiter != NULL) {\n");
+  output.append("    Z_AsyncTask *waiter = task->waiter;\n");
+  output.append("    task->waiter = NULL;\n");
+  output.append("    z_stage1_async_enqueue(waiter->executor, waiter);\n");
+  output.append("  }\n  return true;\n}\n\n");
 }
 
 function appendAsyncCallableAwaitHelpers(
@@ -5323,7 +5336,7 @@ function appendAsyncCallableAwaitHelpers(
         );
         parameter = parameter + 1;
       }
-      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  Z_AsyncInvocation invocation = Z_");
+      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  Z_AsyncAwaiter awaiter = {0};\n  Z_AsyncInvocation invocation = Z_");
       output.append(functionType.name);
       output.append("_start(callable, &executor");
       for (const functionParameter of functionType.parameters) {
@@ -5332,10 +5345,16 @@ function appendAsyncCallableAwaitHelpers(
       }
       output.append(");\n");
       output.append("  if (invocation.task == NULL) abort();\n");
-      output.append("  if (!invocation.task->completed) z_stage1_async_enqueue(&executor, invocation.task);\n");
-      output.append("  while (!invocation.task->completed) {\n");
-      output.append("    if (!z_stage1_async_run_one(&executor)) abort();\n");
-      output.append("  }\n");
+      output.append("  if (!invocation.task->completed) {\n");
+      output.append("    awaiter.task.poll = z_stage1_async_awaiter_poll;\n");
+      output.append("    awaiter.task.executor = &executor;\n");
+      output.append("    awaiter.child = invocation.task;\n");
+      output.append("    invocation.task->waiter = &awaiter.task;\n");
+      output.append("    z_stage1_async_enqueue(&executor, invocation.task);\n");
+      output.append("    while (!awaiter.task.completed) {\n");
+      output.append("      if (!z_stage1_async_run_one(&executor)) abort();\n");
+      output.append("    }\n  }\n");
+      output.append("  if (!invocation.task->completed) abort();\n");
       output.append("  if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n");
       if (functionType.returnType.kind == LoweredTypeKind.voidType) {
         output.append("  if (invocation.take_result != NULL) invocation.take_result(invocation.task, NULL);\n");
@@ -10165,6 +10184,7 @@ function appendTypeDefinitions(
     output.append("  void (*poll)(Z_AsyncTask *task);\n");
     output.append("  bool completed;\n");
     output.append("  bool queued;\n");
+    output.append("  Z_AsyncTask *waiter;\n");
     output.append("  Z_AsyncTask *next;\n");
     output.append("  Z_AsyncExecutor *executor;\n");
     output.append("};\n");
