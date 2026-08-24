@@ -233,6 +233,7 @@ export enum LoweredExpressionKind {
   directCall,
   functionCall,
   asyncFunctionAwait,
+  asyncFunctionTask,
   directFunctionValue,
   closureValue,
   methodCall,
@@ -8694,6 +8695,107 @@ function lowerExpressionContextual(
       "",
       children,
       Array<String>()
+    );
+  }
+  if (tree.nodes[index].kind == ExpressionKind.spawnExpression) {
+    if (tree.nodes[index].children.length != 1) {
+      throw "native lowering received a malformed task expression";
+    }
+    const taskInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[taskInput].kind != ExpressionKind.callExpression
+      || tree.nodes[taskInput].children.length == 0
+    ) throw "native callable task lowering requires a direct call";
+    const callableInput = tree.nodes[taskInput].children[0];
+    let callableTypeName = "";
+    match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
+      some(name) => callableTypeName = move name;
+      none => {}
+    }
+    if (
+      callableTypeName.byteLength == 0
+      && (
+        tree.nodes[callableInput].kind
+          == ExpressionKind.identifierExpression
+        || tree.nodes[callableInput].kind
+          == ExpressionKind.argumentBindingExpression
+      )
+    ) {
+      const callableName = tree.nodes[callableInput].value.copyBytes(
+        0,
+        tree.nodes[callableInput].value.byteLength
+      );
+      match (namedValueTypeName(
+        program,
+        evidence,
+        "",
+        callableName,
+        tree.nodes[callableInput].offset
+      )) {
+        some(name) => callableTypeName = move name;
+        none => {}
+      }
+    }
+    callableTypeName = moduleCallableAliasTarget(
+      program,
+      importedTypes,
+      callableTypeName
+    );
+    const signature = match (nativeFunctionSignature(callableTypeName)) {
+      some(value) => value;
+      none => throw "native callable task lowering could not resolve its async function type";
+    };
+    if (!signature.asynchronous) {
+      throw "native callable task lowering received a synchronous function type";
+    }
+    if (signature.errorType.byteLength > 0) {
+      throw "native callable tasks do not execute typed errors yet";
+    }
+    if (
+      tree.nodes[taskInput].children.length
+        != signature.parameterTypes.length + 1
+    ) throw "native callable task lowering received mismatched arguments";
+    let children = Array<usize>();
+    const callable = try lowerExpression(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      callableInput,
+      inout output
+    );
+    children.push(callable);
+    let labels = Array<String>();
+    let argument: usize = 0;
+    while (argument < signature.parameterTypes.length) {
+      const argumentInput = tree.nodes[taskInput].children[argument + 1];
+      const value = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        signature.parameterTypes[argument],
+        inout output
+      );
+      children.push(value);
+      labels.push(signature.parameterModes[argument].copyBytes(
+        0,
+        signature.parameterModes[argument].byteLength
+      ));
+      argument = argument + 1;
+    }
+    const callableIdentity = try moduleFunctionTypeIdentity(
+      program,
+      importedTypes,
+      signature
+    );
+    return pushExpression(
+      inout output,
+      LoweredExpressionKind.asyncFunctionTask,
+      callableIdentity,
+      children,
+      labels
     );
   }
   if (tree.nodes[index].kind == ExpressionKind.awaitExpression) {
@@ -18123,7 +18225,10 @@ function lowerStatementCore(
     kind = LoweredStatementKind.returnStatement;
   } else if (arena.nodes[index].kind == StatementKind.expressionStatement) {
     kind = LoweredStatementKind.expressionStatement;
-  } else if (arena.nodes[index].kind == StatementKind.blockStatement) {
+  } else if (
+    arena.nodes[index].kind == StatementKind.blockStatement
+    || arena.nodes[index].kind == StatementKind.asyncScopeStatement
+  ) {
     kind = LoweredStatementKind.blockStatement;
   } else if (arena.nodes[index].kind == StatementKind.ifStatement) {
     kind = LoweredStatementKind.ifStatement;
@@ -18626,6 +18731,9 @@ function lowerStatementCore(
     children.push(loweredChild);
   }
   let labels = Array<String>();
+  if (arena.nodes[index].kind == StatementKind.asyncScopeStatement) {
+    labels.push("async-scope");
+  }
   if (arena.nodes[index].kind == StatementKind.throwStatement) {
     labels.push("throw");
   }

@@ -270,6 +270,7 @@ struct PersistentAsyncParentShape {
   localInitializer: usize;
   awaitExpression: usize;
   returnExpression: usize;
+  cancelTask: boolean;
 }
 
 function appendCallableParameterDeclaration(
@@ -4826,6 +4827,7 @@ function persistentAsyncParentShape(
     localInitializer,
     awaitExpression,
     returnExpression,
+    cancelTask: false,
   }));
 }
 
@@ -4847,6 +4849,195 @@ function loweredExpressionReferencesLocal(
     )) return true;
   }
   return false;
+}
+
+function persistentAsyncTaskParentShape(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): Option<PersistentAsyncParentShape> {
+  if (
+    !declaration.asynchronous
+    || declaration.name != "main"
+    || declaration.parameters.length != 0
+    || declaration.roots.length != 1
+    || declaration.returnType.kind != LoweredTypeKind.i32Type
+  ) return Option<PersistentAsyncParentShape>.none;
+  match (in declaration.receiverType) {
+    some(_) => return Option<PersistentAsyncParentShape>.none;
+    none => {}
+  }
+  const scopeStatement = declaration.roots[0];
+  if (
+    declaration.statements[scopeStatement].kind
+      != LoweredStatementKind.blockStatement
+    || !labelsContain(
+      declaration.statements[scopeStatement].labels,
+      "async-scope"
+    )
+    || declaration.statements[scopeStatement].children.length != 1
+  ) return Option<PersistentAsyncParentShape>.none;
+  const bodyStatement = declaration.statements[scopeStatement].children[0];
+  if (
+    declaration.statements[bodyStatement].kind
+      != LoweredStatementKind.blockStatement
+    || (
+      declaration.statements[bodyStatement].children.length != 4
+      && declaration.statements[bodyStatement].children.length != 5
+    )
+  ) return Option<PersistentAsyncParentShape>.none;
+  const roots = view declaration.statements[bodyStatement].children;
+  let rootOffset: usize = 0;
+  let storedStatement = declaration.statements.length;
+  let storedInitializer = declaration.expressions.length;
+  let storedNeedsDeinit = false;
+  if (roots.length == 5) {
+    storedStatement = roots[0];
+    if (
+      declaration.statements[storedStatement].kind
+        != LoweredStatementKind.localStatement
+    ) return Option<PersistentAsyncParentShape>.none;
+    match (in declaration.statements[storedStatement].type) {
+      some(type) => storedNeedsDeinit = loweredTypeNeedsDeinit(program, type);
+      none => return Option<PersistentAsyncParentShape>.none;
+    }
+    match (in declaration.statements[storedStatement].expression) {
+      some(expression) => storedInitializer = expression;
+      none => return Option<PersistentAsyncParentShape>.none;
+    }
+    rootOffset = 1;
+  }
+  const localStatement = roots[rootOffset];
+  const taskStatement = roots[rootOffset + 1];
+  const joinStatement = roots[rootOffset + 2];
+  const returnStatement = roots[rootOffset + 3];
+  if (
+    declaration.statements[localStatement].kind
+      != LoweredStatementKind.localStatement
+    || declaration.statements[taskStatement].kind
+      != LoweredStatementKind.localStatement
+    || declaration.statements[joinStatement].kind
+      != LoweredStatementKind.expressionStatement
+    || declaration.statements[returnStatement].kind
+      != LoweredStatementKind.returnStatement
+  ) return Option<PersistentAsyncParentShape>.none;
+  let localTypeName = "";
+  match (in declaration.statements[localStatement].type) {
+    some(type) => {
+      if (type.kind != LoweredTypeKind.functionType) {
+        return Option<PersistentAsyncParentShape>.none;
+      }
+      localTypeName = type.name.copyBytes(0, type.name.byteLength);
+    }
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  let localInitializer = declaration.expressions.length;
+  match (in declaration.statements[localStatement].expression) {
+    some(expression) => localInitializer = expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  let taskExpression = declaration.expressions.length;
+  match (in declaration.statements[taskStatement].expression) {
+    some(expression) => taskExpression = expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  let joinExpression = declaration.expressions.length;
+  match (in declaration.statements[joinStatement].expression) {
+    some(expression) => joinExpression = expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  let returnExpression = declaration.expressions.length;
+  match (in declaration.statements[returnStatement].expression) {
+    some(expression) => returnExpression = expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  const task = view declaration.expressions[taskExpression];
+  if (
+    task.kind != LoweredExpressionKind.asyncFunctionTask
+    || task.value != localTypeName
+    || task.children.length == 0
+  ) return Option<PersistentAsyncParentShape>.none;
+  const taskCallable = view declaration.expressions[task.children[0]];
+  if (
+    taskCallable.kind != LoweredExpressionKind.localValue
+    || taskCallable.value != declaration.statements[localStatement].name
+  ) return Option<PersistentAsyncParentShape>.none;
+  const join = view declaration.expressions[joinExpression];
+  const cancelTask = join.kind == LoweredExpressionKind.threadCancel;
+  if (
+    (!cancelTask && join.kind != LoweredExpressionKind.threadAwait)
+    || join.children.length != 1
+  ) return Option<PersistentAsyncParentShape>.none;
+  const joinedTask = view declaration.expressions[join.children[0]];
+  if (
+    joinedTask.kind != LoweredExpressionKind.localValue
+    || joinedTask.value != declaration.statements[taskStatement].name
+  ) return Option<PersistentAsyncParentShape>.none;
+  let matchingFunctionType = false;
+  for (const functionType of program.functionTypes) {
+    if (functionType.name != localTypeName) continue;
+    matchingFunctionType = functionType.asynchronous
+      && functionType.returnType.kind == LoweredTypeKind.voidType;
+    if (!matchingFunctionType) continue;
+    if (storedStatement >= declaration.statements.length) {
+      matchingFunctionType = functionType.parameters.length == 0
+        && task.children.length == 1;
+      continue;
+    }
+    if (
+      functionType.parameters.length != 1
+      || (
+        storedNeedsDeinit
+          ? functionType.parameters[0].mode != LoweredParameterMode.input
+          : functionType.parameters[0].mode != LoweredParameterMode.value
+      )
+      || task.children.length != 2
+    ) {
+      matchingFunctionType = false;
+      continue;
+    }
+    match (in declaration.statements[storedStatement].type) {
+      some(storedType) => {
+        if (
+          functionType.parameters[0].type.kind != storedType.kind
+          || functionType.parameters[0].type.name != storedType.name
+        ) matchingFunctionType = false;
+      }
+      none => matchingFunctionType = false;
+    }
+    if (!matchingFunctionType) continue;
+    const argument = view declaration.expressions[task.children[1]];
+    matchingFunctionType = argument.kind
+        == LoweredExpressionKind.localValue
+      && argument.value == declaration.statements[storedStatement].name
+      && loweredExpressionReferencesLocal(
+        declaration,
+        returnExpression,
+        declaration.statements[storedStatement].name
+      );
+  }
+  if (!matchingFunctionType) return Option<PersistentAsyncParentShape>.none;
+  return Option.some(PersistentAsyncParentShape({
+    storedStatement,
+    storedInitializer,
+    storedNeedsDeinit,
+    localStatement,
+    localInitializer,
+    awaitExpression: taskExpression,
+    returnExpression,
+    cancelTask,
+  }));
+}
+
+function executableAsyncParentShape(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): Option<PersistentAsyncParentShape> {
+  const taskShape = persistentAsyncTaskParentShape(program, declaration);
+  match (taskShape) {
+    some(shape) => return Option.some(shape);
+    none => {}
+  }
+  return persistentAsyncParentShape(program, declaration);
 }
 
 function appendPersistentAsyncParentDriver(
@@ -4886,7 +5077,11 @@ function appendFunction(
   in declaration: LoweredFunction,
   processArguments: boolean
 ): void throws String {
-  match (persistentAsyncParentShape(program, declaration)) {
+  const executableShape = executableAsyncParentShape(
+    program,
+    declaration
+  );
+  match (executableShape) {
     some(shape) => {
       try appendPersistentAsyncParentDriver(
         inout output,
@@ -5683,7 +5878,11 @@ function appendPersistentAsyncParentHelpers(
   in program: LoweredProgram
 ): void throws String {
   for (const declaration of program.functions) {
-    match (persistentAsyncParentShape(program, declaration)) {
+    const executableShape = executableAsyncParentShape(
+      program,
+      declaration
+    );
+    match (executableShape) {
       some(shape) => {
         const localCType = match (
           in declaration.statements[shape.localStatement].type
@@ -5832,7 +6031,11 @@ function appendPersistentAsyncParentHelpers(
           argument = argument + 1;
         }
         output.append(");\n");
-        output.append("    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n");
+        output.append("    if (frame->child.task == NULL) abort();\n");
+        if (shape.cancelTask) {
+          output.append("    z_stage1_async_request_cancel(frame->child.task);\n");
+        }
+        output.append("    frame->state = 1;\n");
         output.append("    if (frame->child.task->completed) {\n");
         output.append("      z_stage1_async_enqueue(task->executor, task);\n");
         output.append("    } else {\n");
@@ -5841,7 +6044,9 @@ function appendPersistentAsyncParentHelpers(
         output.append("      z_stage1_async_enqueue(task->executor, frame->child.task);\n");
         output.append("    }\n    return;\n  }\n");
         output.append("  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
-        output.append("  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        output.append("  if (task->cancellation_requested");
+        if (!shape.cancelTask) output.append(" || frame->child.task->cancelled");
+        output.append(") {\n    ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_complete_cancelled(frame);\n    return;\n  }\n");
         if (shape.storedStatement < declaration.statements.length) {
@@ -5863,8 +6068,11 @@ function appendPersistentAsyncParentHelpers(
           }
           output.append(" = frame->stored;\n");
         }
-        output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
-        output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n  ");
+        if (!shape.cancelTask) {
+          output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
+          output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n");
+        }
+        output.append("  ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_release_child(frame);\n  frame->result = ");
         try appendExpression(
@@ -5936,7 +6144,7 @@ function appendThreadTaskRuntime(
     output.append("_wake(Z_");
     output.append(taskName);
     output.append("Storage *storage) {\n#if defined(_WIN32)\n  WakeAllConditionVariable(&storage->state_condition);\n#else\n  if (pthread_cond_broadcast(&storage->state_condition) != 0) abort();\n#endif\n}\n\n");
-    output.append("static bool Z_");
+    output.append("static __attribute__((unused)) bool Z_");
     output.append(taskName);
     output.append("_is_cancellation_requested(Z_");
     output.append(taskName);
@@ -5969,7 +6177,7 @@ function appendThreadTaskRuntime(
     output.append("_wait(storage);\n  Z_");
     output.append(taskName);
     output.append("_unlock(storage);\n}\n\n");
-    output.append("static void Z_");
+    output.append("static __attribute__((unused)) void Z_");
     output.append(taskName);
     output.append("_complete(Z_");
     output.append(taskName);
@@ -6010,12 +6218,15 @@ function appendThreadTaskRuntime(
     output.append("_join(task);\n  Z_");
     output.append(taskName);
     output.append("Storage *storage = task->storage;\n");
-    output.append("  if (!storage->result_live) abort();\n");
-    if (resultNeedsDeinit) {
+    if (resultType.kind == LoweredTypeKind.voidType) {
+      output.append("  (void)storage;\n}\n\n");
+    } else if (resultNeedsDeinit) {
+      output.append("  if (!storage->result_live) abort();\n");
       output.append("  ");
       output.append(nativeResultType);
       output.append(" result = storage->result;\n  storage->result_live = false;\n  return result;\n}\n\n");
     } else {
+      output.append("  if (!storage->result_live) abort();\n");
       output.append("  return storage->result;\n}\n\n");
     }
     output.append("static __attribute__((unused)) void Z_");
@@ -11014,8 +11225,10 @@ function appendTypeDefinitions(
     output.append("struct Z_");
     output.append(taskName);
     output.append("Storage {\n#if defined(_WIN32)\n  HANDLE thread;\n  SRWLOCK state_mutex;\n  CONDITION_VARIABLE state_condition;\n  DWORD owner_thread;\n#else\n  pthread_t thread;\n  pthread_mutex_t state_mutex;\n  pthread_cond_t state_condition;\n  pthread_t owner_thread;\n#endif\n  bool joined;\n  bool finished;\n  bool result_live;\n  bool cancellation_requested;\n  bool continuation_cancelled;\n  bool main_request_pending;\n  bool main_request_done;\n  Z_MainThreadRequest main_request;\n  void *main_request_context;\n  void *context;\n  ");
-    output.append(nativeResultType);
-    output.append(" result;\n};\n\n");
+    if (resultType.kind != LoweredTypeKind.voidType) {
+      output.append(nativeResultType);
+      output.append(" result;\n};\n\n");
+    } else output.append("unsigned char _z_empty_result;\n};\n\n");
   }
   for (const mutexName of mutexNames) {
     const valueType = try mutexValueType(program, mutexName);

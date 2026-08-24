@@ -14453,6 +14453,102 @@ int cancelled_main(void) {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("runs and consumes a stored callable task inside native async scope", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-task-cancel.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /typedef struct z_stage1_async_parent_main/);
+  assert.match(
+    emission.stdout,
+    /_start\(frame->local, task->executor, &frame->stored\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_stage1_async_request_cancel\(frame->child\.task\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /if \(task->cancellation_requested\) \{[\s\S]*frame->result =/,
+  );
+  assert.doesNotMatch(
+    emission.stdout,
+    /if \(task->cancellation_requested \|\| frame->child\.task->cancelled\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-callable-task-cancel-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "released 42\n");
+  rmSync(directory, { recursive: true, force: true });
+});
+
+test("joins a stored callable task inside native async scope", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-task-join.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /typedef struct z_stage1_async_parent_main/);
+  assert.match(
+    emission.stdout,
+    /_start\(frame->local, task->executor, &frame->stored\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /task->cancellation_requested \|\| frame->child\.task->cancelled/,
+  );
+  assert.doesNotMatch(
+    emission.stdout,
+    /if \(frame->child\.task == NULL\) abort\(\);\n    z_stage1_async_request_cancel\(frame->child\.task\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-callable-task-join-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "released 41\n");
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

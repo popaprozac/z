@@ -1019,6 +1019,62 @@ function validateNativeExpression(
   }
 }
 
+function nativeCallableTaskScopeCandidate(
+  in body: StatementArena,
+  index: usize
+): boolean {
+  if (
+    body.nodes[index].kind != StatementKind.asyncScopeStatement
+    || body.nodes[index].name.byteLength > 0
+    || body.nodes[index].children.length != 1
+  ) return false;
+  const block = body.nodes[index].children[0];
+  if (
+    body.nodes[block].kind != StatementKind.blockStatement
+    || (
+      body.nodes[block].children.length != 4
+      && body.nodes[block].children.length != 5
+    )
+  ) return false;
+  const statements = view body.nodes[block].children;
+  let rootOffset: usize = 0;
+  if (statements.length == 5) {
+    if (body.nodes[statements[0]].kind != StatementKind.variableStatement) {
+      return false;
+    }
+    rootOffset = 1;
+  }
+  const callable = statements[rootOffset];
+  const task = statements[rootOffset + 1];
+  const join = statements[rootOffset + 2];
+  const finish = statements[rootOffset + 3];
+  if (
+    body.nodes[callable].kind != StatementKind.variableStatement
+    || body.nodes[task].kind != StatementKind.variableStatement
+    || body.nodes[join].kind != StatementKind.expressionStatement
+    || body.nodes[finish].kind != StatementKind.returnStatement
+  ) return false;
+  let startsTask = false;
+  match (in body.nodes[task].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => startsTask = tree.nodes[tree.root].kind
+        == ExpressionKind.spawnExpression;
+      none => {}
+    }
+    none => {}
+  }
+  let joinsTask = false;
+  match (in body.nodes[join].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => joinsTask = tree.nodes[tree.root].kind
+        == ExpressionKind.awaitExpression;
+      none => {}
+    }
+    none => {}
+  }
+  return startsTask && joinsTask;
+}
+
 function validateNativeBody(
   in path: String,
   moduleIndex: usize,
@@ -1027,7 +1083,9 @@ function validateNativeBody(
   in body: StatementArena,
   asynchronous: boolean
 ): void throws ModuleResolveError {
-  for (const statement of body.nodes) {
+  let statementIndex: usize = 0;
+  while (statementIndex < body.nodes.length) {
+    const statement = view body.nodes[statementIndex];
     match (in statement.typeAnnotation) {
       some(type) => try validateNativeType(path, type);
       none => {}
@@ -1069,14 +1127,16 @@ function validateNativeBody(
       );
     }
     if (statement.kind == StatementKind.asyncScopeStatement) {
-      throw loweringBoundary(
-        path,
-        "Z0700",
-        "async scope is not executable in the native compiler yet",
-        statement.line,
-        statement.column,
-        5
-      );
+      if (!nativeCallableTaskScopeCandidate(body, statementIndex)) {
+        throw loweringBoundary(
+          path,
+          "Z0700",
+          "async scope is not executable in the native compiler yet",
+          statement.line,
+          statement.column,
+          5
+        );
+      }
     }
     if (statement.kind == StatementKind.unsafeStatement) {
       throw loweringBoundary(
@@ -1201,6 +1261,7 @@ function validateNativeBody(
         none => {}
       }
     }
+    statementIndex = statementIndex + 1;
   }
 }
 

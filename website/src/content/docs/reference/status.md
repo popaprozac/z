@@ -40,10 +40,13 @@ production or compatibility-sensitive use.
   unfinished-frame destruction clean that owner exactly once. Parent-frame
   cancellation now propagates through the dynamic child poll, wakes the parent,
   and deterministically unwinds child, callable, and owner storage. Public
-  `task handler(...)` now preserves `Task<T, E>` through explicit join, typed
+  `task handler(...)` preserves `Task<T, E>` through explicit join, typed
   `try`/`attempt`, cancellation, lexical implicit join, and borrowed-owner
-  cleanup. Fixed-point C emission for that public task shape, broader native
-  function bodies, and multiple locals and arguments remain in progress.
+  cleanup in Stage 0. The fixed-point emitter now executes the first bounded
+  unnamed-scope version: one stored nonthrowing void callable, one hot task, one
+  explicit join or cancellation join, and one optional borrowed owner. Typed
+  task results/errors, implicit scope-exit join, broader native function bodies,
+  and multiple locals, arguments, and children remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

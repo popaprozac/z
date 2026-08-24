@@ -415,6 +415,15 @@ side deadlocks, then its unclaimed outcome is destroyed. This is deliberately
 cooperative: the first tier does not interrupt a synchronous worker body or an
 already-running main-thread operation.
 
+The fixed-point callable-task tier also implements this distinction for its
+first bounded unnamed `async scope`. `await pending` joins one stored
+nonthrowing void callable task and propagates structural child cancellation.
+`await pending.cancel()` requests cancellation, joins the child, discards its
+outcome, and resumes the parent normally. A named ownership-bearing `in`
+argument remains address-stable in the parent heap frame through both paths and
+is available after the join. Typed callable results/errors, multiple children,
+implicit scope-exit join, and general native scope lowering remain staged.
+
 The first async ownership tier permits owned values, ARC class references,
 owned closures, direct move-only native values, and whole Z value structs or
 enums containing them in task frames. Non-default-constructible C++ storage

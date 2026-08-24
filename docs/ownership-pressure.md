@@ -3866,10 +3866,26 @@ joins it, starts another and cancels it, and leaves a third to the implicit scop
 join before reverse-order owner cleanup. Removing the scope is a `Z0704`
 diagnostic rather than a latent dangling pointer.
 
-This closes the public Stage 0 handle without overstating fixed-point parity.
-The native frontend preserves the callable and task contracts, but its C emitter
-still rejects this enclosing `async scope` shape. Extending that emitter remains
-the next native composition step.
+The fixed-point emitter now closes the first bounded version of that gap. An
+unnamed `async scope` may hold one stored nonthrowing void callable, one hot
+callable-backed task, one explicit consuming join or cancellation join, and one
+optional address-stable owner borrowed by the child. The scope lowers to the
+same heap-owned parent frame already proven by direct await. `await pending`
+propagates structural child cancellation to the parent;
+`await pending.cancel()` requests cancellation before scheduling the child,
+joins its terminal poll, and resumes the parent normally. The borrowed owner is
+then usable by the return expression and destroyed exactly once with the stored
+callable and invocation.
+
+This pressure test also found that the generic fixed-point `Task<void>` storage
+still attempted to emit a C field of type `void`. Void tasks now use an explicit
+empty storage byte and their native await path joins without manufacturing a
+result slot. Strict C compilation and execution cover both the normal join and
+explicit cancellation shapes. Typed callable task results/errors, implicit
+scope-exit join, multiple children, named scopes, and general enclosing control
+flow remain the next composition tiers. The checkpoint passed all 94
+self-hosting tests—including exact fixed-point bootstrap and differential
+execution—and all 265 language-tier tests.
 
 The same checkpoint exposed a compiler-velocity problem rather than hiding it.
 On the development machine on 2026-08-24, a cold exact fixed-point rebuild of

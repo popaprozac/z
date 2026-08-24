@@ -89,6 +89,14 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-thread-owned-capture-consume.zs" },
   { entry: "tests/fixtures/self-host-emit-thread-shared-capture.zs" },
   { entry: "tests/fixtures/self-host-differential-thread-owned.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-async-callable-task-cancel.zs",
+    expectedStdout: "released 42\n",
+  },
+  {
+    entry: "tests/fixtures/self-host-emit-async-callable-task-join.zs",
+    expectedStdout: "released 41\n",
+  },
   { entry: "tests/fixtures/self-host-callable-collision/main.zs" },
   { entry: "examples/applications/message-router/main.zs" },
   { entry: "examples/applications/source-inspector/lexer-smoke.zs" },
@@ -173,6 +181,8 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-callable-yield.zs": focusedPositive,
   "self-host-emit-async-callable-parent-local.zs": focusedPositive,
   "self-host-emit-async-callable-parent-owned-local.zs": focusedPositive,
+  "self-host-emit-async-callable-task-cancel.zs": differential,
+  "self-host-emit-async-callable-task-join.zs": differential,
   "self-host-emit-thread-any-callable.zs": focusedPositive,
   "self-host-emit-thread-main-callable.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-match.zs": focusedPositive,

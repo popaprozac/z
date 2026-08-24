@@ -1057,13 +1057,19 @@ child owns the executor turn. The frame ABI also propagates cancellation: a
 parent request marks its suspended child, the child reaches a cancelled terminal
 state at its next poll, and its waiter wake-up lets the parent destroy the
 invocation and live owners. Destroying unfinished work first unlinks its frames
-from the executor queue. Stage 0 uses this invocation contract for public
-callable-backed tasks. The fixed-point compiler already preserves their types
-and semantic evidence, but its C emitter still rejects the enclosing
-`async scope` shape rather than pretending native executable parity. Broader
-native enclosing control flow, multiple locals and arguments, and return shapes
-remain staged; native lowering does not replace this supported shape with a
-blocking imitation.
+from the executor queue.
+
+The fixed-point emitter now reuses that same frame for the first public
+callable-backed task shape inside an unnamed `async scope`. A stored
+nonthrowing void callable may start one hot `Task<void>`, borrow one named owner,
+and then be consumed through either `await pending` or
+`await pending.cancel()`. Ordinary await treats child cancellation as structural
+parent cancellation. Explicit `cancel()` requests child cancellation and joins
+it, then resumes the parent normally so it may reuse the borrowed owner before
+exactly-once cleanup. This is a real stackless executor path, not a blocking
+imitation. Typed task results/errors, implicit scope-exit join, multiple
+children, named scopes, multiple locals/arguments, and broader enclosing control
+flow remain Stage-0-only or staged in the fixed-point emitter.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:
