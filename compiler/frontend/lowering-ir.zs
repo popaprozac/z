@@ -414,6 +414,7 @@ export struct LoweredFunction {
   sourcePath: String;
   nativeCExportName: String;
   asynchronous: boolean;
+  asyncSuspension: String;
   mainDelaySegments: Array<LoweredMainDelaySegment>;
   mainDelayIfs: Array<LoweredMainDelayIf>;
   mainDelayMatches: Array<LoweredMainDelayMatch>;
@@ -16034,7 +16035,50 @@ function expressionTreeIsSchedulerYieldAwait(
       "std/async",
       "scheduler",
       tree.nodes[namespace].value
-    );
+  );
+}
+
+function statementIsSchedulerYieldAwait(
+  in program: Program,
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        select expressionTreeIsSchedulerYieldAwait(program, tree, root);
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function functionUsesFirstTierSchedulerYield(
+  in program: Program,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  const firstRoot = declaration.body.roots[0];
+  if (!statementIsSchedulerYieldAwait(
+    program,
+    declaration.body,
+    firstRoot
+  )) return false;
+  let rootIndex: usize = 1;
+  while (rootIndex < declaration.body.roots.length) {
+    const root = declaration.body.roots[rootIndex];
+    if (statementContainsSuspension(
+      declaration.body,
+      root
+    )) return false;
+    rootIndex = rootIndex + 1;
+  }
+  return true;
 }
 
 function expressionTreeContainsSuspension(
@@ -20100,13 +20144,19 @@ function lowerFunction(
   let hasMainDelayLoop = false;
   let mainDelayLoopSource: usize = 0;
   let mainDelayLoopPosition: usize = 0;
+  let asyncSuspension = "";
   if (declaration.asynchronous && declaration.name != "main") {
+    const firstTierSchedulerYield = receiverName.byteLength == 0
+      && declaration.executorAffinity != "thread.main"
+      && functionUsesFirstTierSchedulerYield(program, declaration);
     if (
       declaration.executorAffinity != "thread.main"
       && functionContainsSuspension(declaration)
+      && !firstTierSchedulerYield
     ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
+    if (firstTierSchedulerYield) asyncSuspension = "scheduler-yield";
     let position: usize = 0;
     while (
       declaration.executorAffinity == "thread.main"
@@ -20230,6 +20280,24 @@ function lowerFunction(
       mode: lowerParameterMode(parameter.mode),
     }));
   }
+  if (asyncSuspension == "scheduler-yield") {
+    for (const parameter of parameters) {
+      if (
+        parameter.mode != LoweredParameterMode.value
+        || moduleTypeNeedsCleanup(program, importedTypes, parameter.type)
+      ) {
+        throw `native scheduler.yield function ${declaration.name} requires cleanup-free value parameters in the first tier`;
+      }
+    }
+    const yieldReturnType = try lowerModuleType(
+      program,
+      importedTypes,
+      declaration.returnType
+    );
+    if (moduleTypeNeedsCleanup(program, importedTypes, yieldReturnType)) {
+      throw `native scheduler.yield function ${declaration.name} requires a cleanup-free result in the first tier`;
+    }
+  }
   let expressions = Array<LoweredExpression>();
   let statements = Array<LoweredStatement>();
   let sourceRoots = Array<usize>();
@@ -20242,6 +20310,13 @@ function lowerFunction(
   const linearPrefixRoots = Array<usize>();
   let rootPosition: usize = 0;
   for (const root of declaration.body.roots) {
+    if (
+      asyncSuspension == "scheduler-yield"
+      && rootPosition == 0
+    ) {
+      rootPosition = rootPosition + 1;
+      continue;
+    }
     if (hasMainDelayIf && rootPosition == mainDelayIfPosition) {
       sourceRoots.push(root);
       const mainDelayIf = try lowerMainDelayIf(
@@ -20604,6 +20679,7 @@ function lowerFunction(
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
     asynchronous: declaration.asynchronous,
+    asyncSuspension: move asyncSuspension,
     mainDelaySegments,
     mainDelayIfs,
     mainDelayMatches,
@@ -20681,6 +20757,7 @@ function lowerDeinitializer(
     sourcePath: "",
     nativeCExportName: "",
     asynchronous: false,
+    asyncSuspension: "",
     mainDelaySegments: Array<LoweredMainDelaySegment>(),
     mainDelayIfs: Array<LoweredMainDelayIf>(),
     mainDelayMatches: Array<LoweredMainDelayMatch>(),
@@ -20737,6 +20814,7 @@ function lowerGenericFieldDefault(
           sourcePath: sourcePath.copyBytes(0, sourcePath.byteLength),
           nativeCExportName: "",
           asynchronous: false,
+          asyncSuspension: "",
           mainDelaySegments: Array<LoweredMainDelaySegment>(),
           mainDelayIfs: Array<LoweredMainDelayIf>(),
           mainDelayMatches: Array<LoweredMainDelayMatch>(),

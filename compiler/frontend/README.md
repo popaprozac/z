@@ -261,7 +261,9 @@ parser and semantic graph. Unplaced genuinely suspending async functions, traits
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls
-to imported non-suspending async functions now cross the fixed-point boundary.
+to imported async free functions with cleanup-free signatures now cross the
+fixed-point boundary when they complete immediately or begin with one direct
+`await scheduler.yield()` before a synchronous tail.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

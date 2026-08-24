@@ -1337,7 +1337,7 @@ test("transfers one retained captured callable into aggregate storage", () => {
   );
 }, 240_000);
 
-test("executes a non-suspending async function imported as a callable", () => {
+test("executes one scheduler-yield suspension in an imported async function", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-async-function-modules/main.zs",
@@ -1360,7 +1360,12 @@ test("executes a non-suspending async function imported as a callable", () => {
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /frame->result = loadValue\(argument0\);/,
+      /frame->result = loadValue\(frame->argument0\);/,
+    );
+    assert.match(emission.stdout, /if \(task->cancellation_requested\)/);
+    assert.match(
+      emission.stdout,
+      /frame->state = 1;\n    z_stage1_async_enqueue\(task->executor, task\);/,
     );
     const compilation = spawnSync(
       "clang",
@@ -4580,17 +4585,49 @@ test("returns scalar, owned, and typed-error values through native thread.main p
 
     const unplacedInput = resolve(
       projectRoot,
-      "tests/fixtures/self-host-emit-thread-main-unplaced-async-invalid.zs",
+      "tests/fixtures/self-host-emit-thread-main-inherited-async.zs",
     );
-    const unplaced = spawnSync(
+    const unplacedEmission = spawnSync(
       process.execPath,
       [cli, "self-host-emit", unplacedInput],
       { encoding: "utf8" },
     );
-    assert.equal(unplaced.status, 1);
-    assert.match(
-      unplaced.stderr,
-      /requires an explicit supported placement for async function calls/,
+    assert.equal(
+      unplacedEmission.status,
+      0,
+      unplacedEmission.stderr,
+    );
+    const unplacedExecutable = resolve(directory, "thread-main-inherited");
+    const unplacedCompilation = spawnSync(
+      "clang",
+      [
+        "-x",
+        "c",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-pthread",
+        "-",
+        "-o",
+        unplacedExecutable,
+      ],
+      { encoding: "utf8", input: unplacedEmission.stdout },
+    );
+    assert.equal(
+      unplacedCompilation.status,
+      0,
+      unplacedCompilation.stderr,
+    );
+    const unplacedExecution = spawnSync(
+      unplacedExecutable,
+      [],
+      { encoding: "utf8" },
+    );
+    assert.equal(
+      unplacedExecution.status,
+      0,
+      unplacedExecution.stderr,
     );
 
     const segmentsInput = resolve(
@@ -8580,6 +8617,7 @@ test("compiles a multi-module Z application through the standalone native driver
       source: [
         'import { scheduler } from "std/async";',
         "async function deferred(): i32 {",
+        "  await scheduler.yield();",
         "  await scheduler.yield();",
         "  return 42;",
         "}",

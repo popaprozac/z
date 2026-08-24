@@ -3964,14 +3964,18 @@ permanent runtime regression.
 
 The application also made the fixed-point boundary visible. Its native semantic
 frontend agrees with Stage 0 on the complete async graph. The fixed-point C
-emitter now executes a direct call to an imported non-suspending async free
-function through the same completed-task adapter used by contextual async
-closures, including strict C compilation and module-boundary execution. It
-still rejects a library-owned function or method that genuinely suspends, so
-Zapp keeps its production synchronous application graph free of the opt-in
-async surface. This is preferable to making every synchronous service depend
-on an unsupported emitter tier or disguising the limitation behind generated
-glue.
+emitter now executes a direct call to an imported async free function with a
+cleanup-free signature through a heap-owned task adapter. Immediate functions
+complete directly; a function beginning with one `await scheduler.yield()`
+stores its arguments, requeues once, observes cancellation, resumes its
+synchronous tail, and transfers the result exactly once under strict C
+compilation. The next Zapp boundary is intentionally larger:
+`SearchService.invoke` is a suspending method with a retained receiver and a
+cleanup-bearing `ServiceOutcome`. Zapp therefore keeps its production
+synchronous application graph free of the opt-in async surface until those
+frame obligations are native. This is preferable to making every synchronous
+service depend on an unsupported emitter tier or disguising the limitation
+behind generated glue.
 
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option

@@ -243,6 +243,28 @@ function appendCallableHelperName(
   output.append(`${expressionIndex}`);
 }
 
+function callableAsyncSuspension(
+  in program: LoweredProgram,
+  in expression: LoweredExpression
+): String {
+  if (
+    expression.kind == LoweredExpressionKind.closureValue
+    && expression.value == "scheduler-yield"
+  ) return "scheduler-yield";
+  if (expression.kind != LoweredExpressionKind.directFunctionValue) {
+    return "";
+  }
+  for (const declaration of program.functions) {
+    if (declaration.name == expression.value) {
+      return declaration.asyncSuspension.copyBytes(
+        0,
+        declaration.asyncSuspension.byteLength
+      );
+    }
+  }
+  return "";
+}
+
 function appendAsyncCallableAwaitHelperName(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -5332,6 +5354,12 @@ function appendCallableHelpers(
         output.append("  free(environment);\n}\n\n");
       }
       if (functionType.asynchronous) {
+        const asyncSuspension = callableAsyncSuspension(
+          program,
+          expression
+        );
+        const directSchedulerYield = asyncSuspension == "scheduler-yield"
+          && expression.kind == LoweredExpressionKind.directFunctionValue;
         const resultNeedsDeinit = loweredTypeNeedsDeinit(
           program,
           functionType.returnType
@@ -5345,13 +5373,27 @@ function appendCallableHelpers(
           output.append(" result;\n");
           if (resultNeedsDeinit) output.append("  bool live_result;\n");
         }
-        if (expression.value == "scheduler-yield") {
+        if (asyncSuspension == "scheduler-yield") {
           output.append("  uint32_t state;\n");
+          if (directSchedulerYield) {
+            let storedParameter: usize = 0;
+            while (storedParameter < functionType.parameters.length) {
+              output.append("  ");
+              const storedParameterType = try cType(
+                functionType.parameters[storedParameter].type
+              );
+              output.append(storedParameterType);
+              output.append(" argument");
+              output.append(`${storedParameter}`);
+              output.append(";\n");
+              storedParameter = storedParameter + 1;
+            }
+          }
         }
         output.append("} ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task;\n\n");
-        if (expression.value == "scheduler-yield") {
+        if (asyncSuspension == "scheduler-yield") {
           output.append("static void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll(Z_AsyncTask *task) {\n  ");
@@ -5367,6 +5409,24 @@ function appendCallableHelpers(
           output.append("    frame->state = 1;\n");
           output.append("    z_stage1_async_enqueue(task->executor, task);\n");
           output.append("    return;\n  }\n");
+          if (directSchedulerYield) {
+            if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+              output.append("  frame->result = ");
+            } else output.append("  ");
+            appendCBindingName(inout output, expression.value);
+            output.append("(");
+            let storedParameter: usize = 0;
+            while (storedParameter < functionType.parameters.length) {
+              if (storedParameter > 0) output.append(", ");
+              output.append("frame->argument");
+              output.append(`${storedParameter}`);
+              storedParameter = storedParameter + 1;
+            }
+            output.append(");\n");
+            if (resultNeedsDeinit) {
+              output.append("  frame->live_result = true;\n");
+            }
+          }
           output.append("  task->completed = true;\n}\n\n");
         }
         output.append("static bool ");
@@ -5448,7 +5508,7 @@ function appendCallableHelpers(
           parameter = parameter + 1;
         }
         output.append(") {\n");
-        if (expression.value != "scheduler-yield") {
+        if (asyncSuspension != "scheduler-yield") {
           output.append("  (void)executor;\n");
         }
         if (expression.captureTypes.length == 0) {
@@ -5491,7 +5551,7 @@ function appendCallableHelpers(
         output.append("_task *frame = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n");
-        if (expression.value == "scheduler-yield") {
+        if (asyncSuspension == "scheduler-yield") {
           output.append("  if (executor == NULL) abort();\n");
           let unusedParameter: usize = 0;
           while (unusedParameter < functionType.parameters.length) {
@@ -5521,6 +5581,20 @@ function appendCallableHelpers(
           output.append("  frame->task.poll = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll;\n  frame->task.executor = executor;\n");
+          if (directSchedulerYield) {
+            let storedParameter: usize = 0;
+            while (storedParameter < functionType.parameters.length) {
+              output.append("  frame->argument");
+              output.append(`${storedParameter}`);
+              output.append(" = ");
+              appendCBindingName(
+                inout output,
+                functionType.parameters[storedParameter].name
+              );
+              output.append(";\n");
+              storedParameter = storedParameter + 1;
+            }
+          }
         } else output.append("  frame->task.completed = true;\n");
         if (
           expression.kind == LoweredExpressionKind.closureValue
@@ -5528,10 +5602,10 @@ function appendCallableHelpers(
         ) {
           throw "native async closure helper lost its body";
         }
-        if (functionType.returnType.kind != LoweredTypeKind.voidType) {
-          output.append("  frame->result = ");
-        } else if (expression.value != "scheduler-yield") output.append("  ");
-        if (expression.value != "scheduler-yield") {
+        if (asyncSuspension != "scheduler-yield") {
+          if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+            output.append("  frame->result = ");
+          } else output.append("  ");
           if (expression.kind == LoweredExpressionKind.directFunctionValue) {
             appendCBindingName(inout output, expression.value);
             output.append("(");
@@ -5550,7 +5624,9 @@ function appendCallableHelpers(
           }
           output.append(";\n");
         }
-        if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+        if (resultNeedsDeinit && asyncSuspension.byteLength == 0) {
+          output.append("  frame->live_result = true;\n");
+        }
         output.append("  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_failed,\n    .take_result = ");

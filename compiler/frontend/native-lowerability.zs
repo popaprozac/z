@@ -5,6 +5,8 @@ import {
   ExpressionSyntax,
   ExpressionTree,
   FunctionDeclaration,
+  ParameterMode,
+  Program,
   ReceiverMode,
   StatementArena,
   StatementKind,
@@ -331,6 +333,137 @@ function functionContainsSuspension(in declaration: FunctionDeclaration): boolea
     if (statementContainsSuspension(declaration.body, root)) return true;
   }
   return false;
+}
+
+function importedStandardBinding(
+  in program: Program,
+  in header: String,
+  in importedName: String,
+  in localName: String
+): boolean {
+  for (const declaration of program.imports) {
+    if (declaration.header != header) continue;
+    for (const binding of declaration.bindings) {
+      if (
+        binding.importedName == importedName
+        && binding.localName == localName
+      ) return true;
+    }
+  }
+  return false;
+}
+
+function expressionIsSchedulerYieldAwait(
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind != ExpressionKind.awaitExpression
+    || tree.nodes[index].children.length != 1
+  ) return false;
+  const operation = tree.nodes[index].children[0];
+  if (
+    tree.nodes[operation].kind != ExpressionKind.callExpression
+    || tree.nodes[operation].children.length != 1
+  ) return false;
+  const callee = tree.nodes[operation].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "yield"
+    || tree.nodes[callee].children.length != 1
+  ) return false;
+  const namespace = tree.nodes[callee].children[0];
+  return tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+    && importedStandardBinding(
+      program,
+      "std/async",
+      "scheduler",
+      tree.nodes[namespace].value
+    );
+}
+
+function statementIsSchedulerYieldAwait(
+  in program: Program,
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        select expressionIsSchedulerYieldAwait(program, tree, root);
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function functionUsesFirstTierSchedulerYield(
+  in program: Program,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  const firstRoot = declaration.body.roots[0];
+  if (!statementIsSchedulerYieldAwait(
+    program,
+    declaration.body,
+    firstRoot
+  )) return false;
+  let rootIndex: usize = 1;
+  while (rootIndex < declaration.body.roots.length) {
+    const root = declaration.body.roots[rootIndex];
+    if (statementContainsSuspension(
+      declaration.body,
+      root
+    )) return false;
+    rootIndex = rootIndex + 1;
+  }
+  return true;
+}
+
+function functionHasFirstTierSchedulerYieldStorage(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration,
+  in owner: String
+): boolean {
+  if (
+    owner.byteLength > 0
+    || moduleIndex >= modules.length
+    || moduleIndex >= graph.modules.length
+    || !functionUsesFirstTierSchedulerYield(
+      modules[moduleIndex].program,
+      declaration
+    )
+  ) return false;
+  match (in declaration.errorType) {
+    some(_) => return false;
+    none => {}
+  }
+  let visiting = Array<String>();
+  if (typeHasCleanup(
+    graph.modules,
+    moduleIndex,
+    declaration.returnType.name,
+    visiting
+  )) return false;
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode != ParameterMode.value) return false;
+    visiting = Array<String>();
+    if (typeHasCleanup(
+      graph.modules,
+      moduleIndex,
+      parameter.type.name,
+      visiting
+    )) return false;
+  }
+  return true;
 }
 
 function parsedModuleIndexForGraphModule(
@@ -1273,11 +1406,19 @@ function validateNativeFunction(
   in declaration: FunctionDeclaration,
   in owner: String
 ): void throws ModuleResolveError {
+  const firstTierSchedulerYield = functionHasFirstTierSchedulerYieldStorage(
+    moduleIndex,
+    modules,
+    graph,
+    declaration,
+    owner
+  );
   if (
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
     && functionContainsSuspension(declaration)
+    && !firstTierSchedulerYield
   ) {
     throw loweringBoundary(
       path,

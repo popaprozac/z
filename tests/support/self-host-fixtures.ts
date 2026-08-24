@@ -213,7 +213,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-thread-main-segments.zs": focusedPositive,
   "self-host-emit-thread-main-synchronous.zs": focusedPositive,
   "self-host-emit-thread-main-uninitialized-local-invalid.zs": focusedNegative,
-  "self-host-emit-thread-main-unplaced-async-invalid.zs": focusedNegative,
+  "self-host-emit-thread-main-inherited-async.zs": focusedPositive,
   "self-host-emit-thread-main-while-control-invalid.zs": focusedNegative,
   "self-host-emit-thread-main-while-control.zs": focusedPositive,
   "self-host-emit-thread-main-while-owned.zs": focusedPositive,
