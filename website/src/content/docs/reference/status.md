@@ -25,7 +25,7 @@ production or compatibility-sensitive use.
   arenas, JSON foundations, and inline Z tests
 - Structured tasks, cancellation, executor placement, dedicated native threads,
   `Mutex<T>`, and `Once<T>` across proven slices
-- Stored synchronous callables and a first stored-async direct-await tier that
+- Stored synchronous callables and a Stage 0 stored-async task tier that
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the
   distinct asynchronous start-frame ABI through aggregate storage and executes
@@ -39,9 +39,11 @@ production or compatibility-sensitive use.
   borrow and remains guarded by frame live state. Both normal completion and
   unfinished-frame destruction clean that owner exactly once. Parent-frame
   cancellation now propagates through the dynamic child poll, wakes the parent,
-  and deterministically unwinds child, callable, and owner storage. Broader
-  function bodies, multiple locals and arguments, and public dynamic callable
-  task handles remain in progress.
+  and deterministically unwinds child, callable, and owner storage. Public
+  `task handler(...)` now preserves `Task<T, E>` through explicit join, typed
+  `try`/`attempt`, cancellation, lexical implicit join, and borrowed-owner
+  cleanup. Fixed-point C emission for that public task shape, broader native
+  function bodies, and multiple locals and arguments remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

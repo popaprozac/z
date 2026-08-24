@@ -164,6 +164,23 @@ a scope-bound `Task<T>` or `Task<T, E>`. The task's source-level success and
 error types are the async function's declared `T throws E`; async functions do
 not expose a Promise or Future wrapper in their signatures.
 
+The call may be statically named or stored in an async function value:
+
+```z
+type Loader = async (id: i32) => String throws LoadError on thread.any;
+
+async function loadLater(in loader: Loader): String throws LoadError {
+  const loading = task loader(42);
+  prepareOtherWork();
+  return try await loading;
+}
+```
+
+Starting the stored value is hot, preserves its declared `Task<T, E>` outcome,
+and retains its captured environment until the invocation is joined or
+cancelled. A borrowed argument requires named storage inside an explicit
+`async scope`; the scope proves that implicit exit cannot outlive the owner.
+
 `await task operation()` is rejected as redundant. Sequential work uses
 `await operation()`; concurrent work binds the child task and joins it after
 the parent has had an opportunity to continue.
@@ -322,11 +339,14 @@ The type records four independent facts: suspension (`async`), ownership
 capabilities, the typed error channel, and executor eligibility. Constructing
 the value only retains its capture environment. `await handler(...)` starts and
 joins a structured child on the current executor; it does not detach work or
-create an OS thread. A bare call is therefore rejected. The initial executable
-tier supports contextual async closures and direct await; named async-function
-conversion and `task handler(...)` follow after dynamic task-handle lowering.
-Borrowed arguments must currently be named storage so their address remains
-stable through the child suspension.
+create an OS thread. A bare call is therefore rejected. The executable Stage 0
+tier supports contextual async closures through direct await and
+`task handler(...)`. A callable-backed task uses the ordinary structured-task
+lifecycle: `await` consumes its value/error join handle,
+`await task.cancel()` requests cancellation and joins cleanup, and lexical
+scope exit joins an unobserved child. Borrowed arguments must currently be
+named storage inside an explicit `async scope` so their address remains stable
+through the child suspension. Named async-function conversion remains staged.
 
 Mutable classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
 weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII

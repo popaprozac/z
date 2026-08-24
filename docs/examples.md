@@ -131,6 +131,7 @@ Read [`async-model.md`](async-model.md) alongside these examples:
 | Typed errors | [`async-errors.zs`](../examples/async/async-errors.zs) |
 | Cleanup-bearing async errors | [`async-owned-errors.zs`](../examples/async/async-owned-errors.zs) — owned String error fields across observation, propagation, completed discard, and cancellation |
 | Hot task and explicit join | [`async-tasks.zs`](../examples/async/async-tasks.zs) |
+| Stored async callable tasks | [`async-callable-tasks.zs`](../examples/async/async-callable-tasks.zs) — a stored async closure started later as `Task<T, E>`, typed success/failure observation, consuming cancellation, explicit join, lexical implicit join, and borrowed-owner cleanup |
 | Lexical task scopes | [`async-scopes.zs`](../examples/async/async-scopes.zs) |
 | Scope-local ownership and child borrows | [`async-scope-locals.zs`](../examples/async/async-scope-locals.zs) |
 | Lazy branch suspension | [`async-branch-expressions.zs`](../examples/async/async-branch-expressions.zs) — selected-only `&&`, `||`, ternary, value-`if`, and loop-condition awaits |

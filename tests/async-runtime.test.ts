@@ -178,6 +178,38 @@ test("types stored async operations without starting detached work", () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("starts, joins, and cancels stored async operations as structured tasks", () => {
+  const example = resolve(projectRoot, "examples/async/async-callable-tasks.zs");
+  const source = readFileSync(example, "utf8");
+  assert.doesNotThrow(() => check(source, example));
+
+  const generated = compileToC(source, example);
+  assert.match(generated, /\.start\([^\n]+frame->task\.executor/);
+  assert.match(generated, /z_async_enqueue\(frame->task\.executor, frame->child_\d+\.task\)/);
+  assert.match(generated, /z_async_cancel\(frame->child_\d+\.task\)/);
+  assert.match(generated, /\.release_context\(frame->child_\d+\.callable_context\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "released 43\nreleased 42\nreleased 41\n");
+
+  const escapingBorrow = `
+    import { scheduler } from "std/async";
+    import { thread } from "std/thread";
+    struct Owner { marker: i32; }
+    type Inspect = async (in value: Owner) => void on thread.any;
+    async function main(): i32 {
+      const owner = Owner({ marker: 42 });
+      const inspect: Inspect = async (in value: Owner) => await scheduler.yield();
+      const pending = task inspect(in owner);
+      return owner.marker - 42;
+    }
+  `;
+  const escapeDiagnostic = diagnostics(escapingBorrow, "async-callable-task-escape.zs")[0];
+  assert.equal(escapeDiagnostic?.code, "Z0704");
+  assert.match(escapeDiagnostic?.message ?? "", /child-task borrow.*requires an explicit async scope/);
+});
+
 test("carries plain struct values and errors through async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-aggregates.zs");
   const source = readFileSync(example, "utf8");

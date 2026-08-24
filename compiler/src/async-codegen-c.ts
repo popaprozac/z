@@ -2223,14 +2223,6 @@ function spawnSite(
     );
   }
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
-  if (resolved.callable) {
-    unsupported(
-      fileName,
-      expression.location,
-      "task-starting an async function value needs dynamic child-handle lowering",
-      "await the function value directly while structured dynamic Task handles land",
-    );
-  }
   return {
     index,
     scope,
@@ -4591,6 +4583,16 @@ function childExecutor(
     : "frame->task.executor";
 }
 
+function scheduleCallableChild(
+  site: Pick<AwaitSite, "placement"> | Pick<SpawnSite, "placement">,
+  parent: Pick<AsyncFunctionPlan, "nativeThread">,
+  child: string,
+): string {
+  return site.placement && parent.nativeThread
+    ? `z_async_enqueue_from_thread(frame->task.completion_executor, ${child}.task);`
+    : `z_async_enqueue(frame->task.executor, ${child}.task);`;
+}
+
 function cancelChild(
   site: Pick<AwaitSite, "placement"> | Pick<SpawnSite, "placement"> | undefined,
   parent: Pick<AsyncFunctionPlan, "nativeThread">,
@@ -4623,7 +4625,7 @@ function beginAwait(
     const child = `frame->child_${site.index}`;
     return [
       `${child} = (${callable}).start((${callable}).context, ${childExecutor(site, parent)}${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
-      `z_async_enqueue(${childExecutor(site, parent)}, ${child}.task);`,
+      scheduleCallableChild(site, parent, child),
       `frame->state = ${nextState};`,
       "continue;",
     ];
@@ -4635,6 +4637,33 @@ function beginAwait(
     ...schedulePlacedChild(site, parent, `frame->child_${site.index}`),
     `frame->state = ${nextState};`,
     "continue;",
+  ];
+}
+
+function beginSpawn(
+  site: SpawnSite,
+  parent: AsyncFunctionPlan,
+  planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
+  fileName: string,
+  binding: string | null,
+): string[] {
+  const arguments_ = emitAwaitArguments(site, parent, fileName);
+  const child = `frame->child_${site.index}`;
+  if (site.callable) {
+    const callable = emitFrameExpression(site.call.callee, parent, fileName);
+    return [
+      `${child} = (${callable}).start((${callable}).context, ${childExecutor(site, parent)}${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
+      ...(binding ? [`frame->${frameField(binding)} = ${child}.task;`] : []),
+      scheduleCallableChild(site, parent, child),
+    ];
+  }
+  const target = planByKey.get(targetKey(site.target))!;
+  return [
+    `${child} = ${target.startName}(${[childExecutor(site, parent), ...arguments_].join(", ")});`,
+    ...(binding ? [`frame->${frameField(binding)} = &${child}->task;`] : []),
+    site.nativeThread
+      ? `z_async_start_native_thread(&${child}->task, ${site.asyncNativeThread ? "true" : "false"});`
+      : schedulePlacedChild(site, parent, child).join("\n"),
   ];
 }
 
@@ -5269,20 +5298,33 @@ function generatePoll(
     }
     if (operation.kind === "scopeExit") {
       for (const site of [...plan.spawns.values()].filter((candidate) => candidate.scope === operation.scope)) {
-        const target = planByKey.get(targetKey(site.target))!;
         const child = `frame->child_${site.index}`;
-        cases.push(caseBlock(state, [
-          `if (${child} != NULL) {`,
-          ...(operation.cancel ? [`  ${cancelChild(site, plan, `&${child}->task`)}`] : []),
-          `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
-          `  ${target.destroyName}(${child});`,
-          `  free(${child});`,
-          `  frame->child_${site.index} = NULL;`,
-          ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
-          "}",
-          `frame->state = ${state + 1};`,
-          "continue;",
-        ]));
+        if (site.callable) {
+          cases.push(caseBlock(state, [
+            `if (${child}.task != NULL) {`,
+            ...(operation.cancel ? [`  ${cancelChild(site, plan, `${child}.task`)}`] : []),
+            `  if (!z_async_wait(&frame->task, ${child}.task)) return;`,
+            ...destroyAsyncCallableInvocation(child).map((line) => `  ${line}`),
+            ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+            "}",
+            `frame->state = ${state + 1};`,
+            "continue;",
+          ]));
+        } else {
+          const target = planByKey.get(targetKey(site.target))!;
+          cases.push(caseBlock(state, [
+            `if (${child} != NULL) {`,
+            ...(operation.cancel ? [`  ${cancelChild(site, plan, `&${child}->task`)}`] : []),
+            `  if (!z_async_wait(&frame->task, &${child}->task)) return;`,
+            `  ${target.destroyName}(${child});`,
+            `  free(${child});`,
+            `  frame->child_${site.index} = NULL;`,
+            ...(site.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+            "}",
+            `frame->state = ${state + 1};`,
+            "continue;",
+          ]));
+        }
         state += 1;
       }
       if (operation.name) {
@@ -5340,14 +5382,8 @@ function generatePoll(
         : null;
       if (spawnedSite) {
         const site = spawnedSite;
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, plan), ...arguments_].join(", ")});`,
-          `frame->${frameField(statement.name)} = &frame->child_${site.index}->task;`,
-          site.nativeThread
-            ? `z_async_start_native_thread(&frame->child_${site.index}->task, ${site.asyncNativeThread ? "true" : "false"});`
-            : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
+          ...beginSpawn(site, plan, planByKey, fileName, statement.name),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -5603,13 +5639,8 @@ function generatePoll(
         || (statement.expression.kind === "executorPlacement" && statement.expression.mode === "spawn")
       ) {
         const site = plan.spawns.get(statement.expression.location.offset)!;
-        const target = planByKey.get(targetKey(site.target))!;
-        const arguments_ = emitAwaitArguments(site, plan, fileName);
         cases.push(caseBlock(state, [
-          `frame->child_${site.index} = ${target.startName}(${[childExecutor(site, plan), ...arguments_].join(", ")});`,
-          site.nativeThread
-            ? `z_async_start_native_thread(&frame->child_${site.index}->task, ${site.asyncNativeThread ? "true" : "false"});`
-            : schedulePlacedChild(site, plan, `frame->child_${site.index}`).join("\n"),
+          ...beginSpawn(site, plan, planByKey, fileName, null),
           `frame->state = ${state + 1};`,
           "continue;",
         ]));
@@ -5747,6 +5778,28 @@ function generatePoll(
       `  free(${child});`,
       `  frame->child_${index} = NULL;`,
       ...(site?.binding ? [`  frame->${frameField(site.binding)} = NULL;`] : []),
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
+  const callableChildren = new Map<number, AwaitSite | SpawnSite>();
+  for (const site of plan.awaits.values()) {
+    if (site.callable) callableChildren.set(site.index, site);
+  }
+  for (const site of plan.spawns.values()) {
+    if (site.callable) callableChildren.set(site.index, site);
+  }
+  for (const [index, site] of callableChildren) {
+    const child = `frame->child_${index}`;
+    const binding = "binding" in site ? site.binding : site.spawn?.binding ?? null;
+    cases.push(caseBlock(state, [
+      `if (${child}.task != NULL) {`,
+      `  if (frame->cancel_children) ${cancelChild(site, plan, `${child}.task`)}`,
+      `  if (!z_async_wait(&frame->task, ${child}.task)) return;`,
+      ...destroyAsyncCallableInvocation(child).map((line) => `  ${line}`),
+      ...(binding ? [`  frame->${frameField(binding)} = NULL;`] : []),
       "}",
       `frame->state = ${state + 1};`,
       "continue;",
@@ -5907,6 +5960,9 @@ function awaitCompletion(
     return awaitAsyncGeneratorCompletion(site, parent, destination, destinationType, terminal, nextState);
   }
   if (site.callable) {
+    if (site.intrinsic === "cancel") {
+      return awaitAsyncCallableCancellation(site, parent, terminal, nextState);
+    }
     return awaitAsyncCallableCompletion(
       site,
       parent,
@@ -6047,6 +6103,28 @@ function destroyAsyncCallableInvocation(child: string): string[] {
     `${child}.callable_context = NULL;`,
     `${child}.release_context = NULL;`,
   ];
+}
+
+function awaitAsyncCallableCancellation(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  terminal: boolean,
+  nextState: number,
+): string[] {
+  const child = `frame->child_${site.index}`;
+  const lines = [
+    cancelChild(site.spawn ?? site, parent, `${child}.task`),
+    `if (!z_async_wait(&frame->task, ${child}.task)) return;`,
+    ...destroyAsyncCallableInvocation(child),
+    ...(site.spawn?.binding ? [`frame->${frameField(site.spawn.binding)} = NULL;`] : []),
+  ];
+  if (terminal) {
+    if (parent.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${nextState};`, "continue;");
+  }
+  return lines;
 }
 
 function awaitAsyncCallableCompletion(

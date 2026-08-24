@@ -3844,9 +3844,32 @@ one ordinary local and callable argument, and one cleanup-free integer return.
 An ownership-bearing argument must be `in`; consuming it would contradict the
 required post-resume use. The restriction keeps unsupported control flow on the
 existing diagnosed path while establishing the frame shape needed for multiple
-locals and arguments and structured control flow in later slices. Dynamic task
-handles that initiate this cancellation from ordinary Z source remain a later
-surface.
+locals and arguments and structured control flow in later native slices. That
+same invocation contract now backs the public Stage 0 handle described below.
+
+## Public callable tasks reuse the same ownership contract
+
+Stage 0 now lowers `task handler(...)` for a stored async function value instead
+of limiting that callable to direct await. The returned handle is the ordinary
+owned `Task<T, E>`: `try await` transfers success or propagates the declared
+error, `attempt await` materializes both branches, and
+`await pending.cancel()` requests cancellation before joining and discarding an
+unclaimed outcome. An unobserved callable-backed child is joined at lexical
+`async scope` exit. Every path destroys the invocation frame, its retained
+callable context, and any live result or error exactly once.
+
+The borrowed-owner pressure case is deliberately stricter than a value-only
+task. `task handler(in owner)` requires named address-stable storage inside an
+explicit `async scope`; the scope join bounds the loan across normal exit,
+throw, return, and cancellation. The executable example starts one child and
+joins it, starts another and cancels it, and leaves a third to the implicit scope
+join before reverse-order owner cleanup. Removing the scope is a `Z0704`
+diagnostic rather than a latent dangling pointer.
+
+This closes the public Stage 0 handle without overstating fixed-point parity.
+The native frontend preserves the callable and task contracts, but its C emitter
+still rejects this enclosing `async scope` shape. Extending that emitter remains
+the next native composition step.
 
 The same checkpoint exposed a compiler-velocity problem rather than hiding it.
 On the development machine on 2026-08-24, a cold exact fixed-point rebuild of

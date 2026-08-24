@@ -1019,11 +1019,23 @@ async destination. Capturing async closures own their environment through ARC,
 and `on thread.any` applies the same recursive shareability proof used by
 synchronous callables.
 
-The first executable stored-async tier accepts contextually typed async
-closures and direct `await` invocation. Named async-function conversion and
-`task handler(...)` handles remain staged. An `in` argument crossing the child
-suspension must currently come from named storage so its address remains stable;
-bind a temporary to `const` before passing it.
+The executable Stage 0 stored-async tier accepts contextually typed async
+closures through direct `await` invocation or a hot structured task:
+
+```z
+async scope {
+  const pending = task handler(in invocation);
+  doOtherWork();
+  const outcome = try await pending;
+}
+```
+
+The task has the callable's exact `Task<T, E>` contract. Await transfers its
+result or typed error, `await pending.cancel()` consumes the handle after child
+cleanup, and scope exit joins an unobserved child. An `in` argument crossing the
+child suspension must currently come from named storage inside an explicit
+`async scope`, keeping its address stable and its owner live through every exit.
+Named async-function conversion remains staged.
 
 The fixed-point native compiler executes completed expression closures and the
 first honest suspension shape: a void closure consisting of one direct
@@ -1045,10 +1057,13 @@ child owns the executor turn. The frame ABI also propagates cancellation: a
 parent request marks its suspended child, the child reaches a cancelled terminal
 state at its next poll, and its waiter wake-up lets the parent destroy the
 invocation and live owners. Destroying unfinished work first unlinks its frames
-from the executor queue. Public dynamic callable-task handles remain staged;
-this is the internal contract they will use. Broader enclosing control flow,
-multiple locals and arguments, and return shapes remain staged; native lowering
-does not replace this supported shape with a blocking imitation.
+from the executor queue. Stage 0 uses this invocation contract for public
+callable-backed tasks. The fixed-point compiler already preserves their types
+and semantic evidence, but its C emitter still rejects the enclosing
+`async scope` shape rather than pretending native executable parity. Broader
+native enclosing control flow, multiple locals and arguments, and return shapes
+remain staged; native lowering does not replace this supported shape with a
+blocking imitation.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:
