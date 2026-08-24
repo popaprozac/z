@@ -47,6 +47,11 @@ production or compatibility-sensitive use.
   explicit join or cancellation join, and one optional borrowed owner. Typed
   task results/errors, implicit scope-exit join, broader native function bodies,
   and multiple locals, arguments, and children remain in progress.
+- An opt-in Zapp pressure test stores `thread.any` async service handlers in a
+  frozen map and executes a complete headless bridge request through a real
+  suspension and typed response. The native semantic frontend agrees on the
+  graph; general library-shaped async C emission remains a fixed-point gap, so
+  the production synchronous application graph does not import that surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

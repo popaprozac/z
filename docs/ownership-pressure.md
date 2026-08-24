@@ -3950,6 +3950,37 @@ language-tier tests also remained green in 87.53 seconds. The remaining profile
 is materially flatter, so future optimization should continue to require a
 measured dominant path rather than accumulating speculative caches.
 
+## Zapp async services exposed library-shaped composition gaps
+
+The first Zapp async-service route stores an `async (in invocation) =>
+ServiceOutcome on thread.any` callable in a frozen Map, selects it from a JSON
+bridge request, suspends through `scheduler.yield()`, and returns the typed
+response. The exercise immediately found that an unused ordinary async method
+in an imported module emitted an unreferenced static frame-destroy helper.
+Strict C builds therefore failed even when a synchronous application never
+called the async surface. Generated destroy helpers are now explicitly marked
+unused, and a synchronous program importing an unused async declaration is a
+permanent runtime regression.
+
+The application also made the fixed-point boundary visible. Its native semantic
+frontend agrees with Stage 0 on the complete async graph, but the fixed-point C
+emitter still rejects a general library-owned ordinary async function. Zapp
+therefore keeps its production synchronous application graph free of async
+declarations and places the executable async registry and bridge in opt-in
+modules. This is preferable to making every synchronous service depend on an
+unsupported emitter tier or disguising the limitation behind generated glue.
+
+Two ownership details held without new syntax. `Map.get` returns a view, so the
+route first retains the selected ARC-backed async callable into an owned Option
+and ends the map loan before `await`. The synchronous and async maps remain
+separate, preserving the direct synchronous fast path while one async bridge can
+serve either kind. One smaller generic-composition gap remains: a wrapper method
+with `T: Service` cannot yet forward that same `T` into an imported generic
+`ServicesBuilder.register<T: Service>` call. Zapp currently recreates the
+three-line statically specialized handler adapter in its opt-in builder. This
+needs a generic-constraint forwarding fix before the builders can share that
+implementation without boilerplate.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
