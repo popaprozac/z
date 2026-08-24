@@ -29,10 +29,11 @@ production or compatibility-sensitive use.
   preserve either `thread.main` isolation or arbitrary-thread `thread.any`
   sharing without scheduling implicitly. Native lowering now preserves the
   distinct asynchronous start-frame ABI through aggregate storage and executes
-  captured, nonthrowing expression closures that complete without suspension.
-  Primitive and ownership-bearing results transfer exactly once; an unclaimed
-  owned result is destroyed with its frame. Suspended native stored-closure
-  frames remain in progress.
+  captured, nonthrowing expression closures. Primitive and ownership-bearing
+  results transfer exactly once; an unclaimed owned result is destroyed with
+  its frame. A void closure containing one direct `await scheduler.yield()` now
+  polls, requeues on a local FIFO executor, resumes, and completes. General
+  child suspension and parent-frame waiter linkage remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

@@ -1025,6 +1025,14 @@ closures and direct `await` invocation. Named async-function conversion and
 suspension must currently come from named storage so its address remains stable;
 bind a temporary to `const` before passing it.
 
+The fixed-point native compiler executes completed expression closures and the
+first honest suspension shape: a void closure consisting of one direct
+`await scheduler.yield()`. That closure owns a heap frame, yields to a local
+FIFO executor on its first poll, resumes on its second poll, and then completes.
+General child suspension, parent-frame waiter linkage, and cancellation across
+the dynamic invocation remain staged; native lowering does not replace them
+with a blocking imitation.
+
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:
 

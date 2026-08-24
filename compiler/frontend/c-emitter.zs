@@ -4882,9 +4882,26 @@ function appendCallableHelpers(
           output.append(" result;\n");
           if (resultNeedsDeinit) output.append("  bool live_result;\n");
         }
+        if (expression.value == "scheduler-yield") {
+          output.append("  uint32_t state;\n");
+        }
         output.append("} ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task;\n\n");
+        if (expression.value == "scheduler-yield") {
+          output.append("static void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n");
+          output.append("  if (frame->state == 0) {\n");
+          output.append("    frame->state = 1;\n");
+          output.append("    z_stage1_async_enqueue(task->executor, task);\n");
+          output.append("    return;\n  }\n");
+          output.append("  task->completed = true;\n}\n\n");
+        }
         output.append("static bool ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_failed(Z_AsyncTask *task) {\n  (void)task;\n  return false;\n}\n\n");
@@ -4948,7 +4965,10 @@ function appendCallableHelpers(
           );
           parameter = parameter + 1;
         }
-        output.append(") {\n  (void)executor;\n");
+        output.append(") {\n");
+        if (expression.value != "scheduler-yield") {
+          output.append("  (void)executor;\n");
+        }
         if (expression.captureTypes.length == 0) {
           output.append("  (void)");
           appendCBindingName(inout output, contextName);
@@ -4988,15 +5008,23 @@ function appendCallableHelpers(
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task *frame = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.completed = true;\n");
+        output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n");
+        if (expression.value == "scheduler-yield") {
+          output.append("  if (executor == NULL) abort();\n");
+          output.append("  frame->task.poll = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll;\n  frame->task.executor = executor;\n");
+        } else output.append("  frame->task.completed = true;\n");
         if (expression.children.length == 0) {
           throw "native async closure helper lost its body";
         }
         if (functionType.returnType.kind != LoweredTypeKind.voidType) {
           output.append("  frame->result = ");
-        } else output.append("  ");
-        try appendExpression(inout output, owner, expression.children[0]);
-        output.append(";\n");
+        } else if (expression.value != "scheduler-yield") output.append("  ");
+        if (expression.value != "scheduler-yield") {
+          try appendExpression(inout output, owner, expression.children[0]);
+          output.append(";\n");
+        }
         if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
         output.append("  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -5218,6 +5246,32 @@ function appendCallableHelpers(
   }
 }
 
+function appendAsyncCallableRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  let required = false;
+  for (const functionType of program.functionTypes) {
+    if (functionType.asynchronous) required = true;
+  }
+  if (!required) return;
+  output.append("static __attribute__((unused)) void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {\n");
+  output.append("  if (executor == NULL || task == NULL || task->completed || task->queued) abort();\n");
+  output.append("  task->executor = executor;\n  task->queued = true;\n  task->next = NULL;\n");
+  output.append("  if (executor->tail == NULL) executor->head = task;\n");
+  output.append("  else executor->tail->next = task;\n");
+  output.append("  executor->tail = task;\n}\n\n");
+  output.append("static __attribute__((unused)) bool z_stage1_async_run_one(Z_AsyncExecutor *executor) {\n");
+  output.append("  if (executor == NULL || executor->head == NULL) return false;\n");
+  output.append("  Z_AsyncTask *task = executor->head;\n");
+  output.append("  executor->head = task->next;\n");
+  output.append("  if (executor->head == NULL) executor->tail = NULL;\n");
+  output.append("  task->next = NULL;\n  task->queued = false;\n");
+  output.append("  if (!task->completed) {\n");
+  output.append("    if (task->poll == NULL) abort();\n");
+  output.append("    task->poll(task);\n  }\n  return true;\n}\n\n");
+}
+
 function appendAsyncCallableAwaitHelpers(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -5269,15 +5323,19 @@ function appendAsyncCallableAwaitHelpers(
         );
         parameter = parameter + 1;
       }
-      output.append(") {\n  Z_AsyncInvocation invocation = Z_");
+      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  Z_AsyncInvocation invocation = Z_");
       output.append(functionType.name);
-      output.append("_start(callable, NULL");
+      output.append("_start(callable, &executor");
       for (const functionParameter of functionType.parameters) {
         output.append(", ");
         appendCBindingName(inout output, functionParameter.name);
       }
       output.append(");\n");
-      output.append("  if (invocation.task == NULL || !invocation.task->completed) abort();\n");
+      output.append("  if (invocation.task == NULL) abort();\n");
+      output.append("  if (!invocation.task->completed) z_stage1_async_enqueue(&executor, invocation.task);\n");
+      output.append("  while (!invocation.task->completed) {\n");
+      output.append("    if (!z_stage1_async_run_one(&executor)) abort();\n");
+      output.append("  }\n");
       output.append("  if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n");
       if (functionType.returnType.kind == LoweredTypeKind.voidType) {
         output.append("  if (invocation.take_result != NULL) invocation.take_result(invocation.task, NULL);\n");
@@ -10103,8 +10161,17 @@ function appendTypeDefinitions(
   if (usesAsyncFunctionType) {
     output.append("typedef struct Z_AsyncTask Z_AsyncTask;\n");
     output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
-    output.append("struct Z_AsyncTask { bool completed; };\n");
-    output.append("struct Z_AsyncExecutor { unsigned char _z_unused; };\n");
+    output.append("struct Z_AsyncTask {\n");
+    output.append("  void (*poll)(Z_AsyncTask *task);\n");
+    output.append("  bool completed;\n");
+    output.append("  bool queued;\n");
+    output.append("  Z_AsyncTask *next;\n");
+    output.append("  Z_AsyncExecutor *executor;\n");
+    output.append("};\n");
+    output.append("struct Z_AsyncExecutor {\n");
+    output.append("  Z_AsyncTask *head;\n");
+    output.append("  Z_AsyncTask *tail;\n");
+    output.append("};\n");
     output.append("typedef struct Z_AsyncInvocation {\n");
     output.append("  Z_AsyncTask *task;\n");
     output.append("  bool (*failed)(Z_AsyncTask *task);\n");
@@ -13143,6 +13210,7 @@ function emitLoweredC(
   if (program.functions.length > 0) output.append("\n");
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
+  appendAsyncCallableRuntime(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
   if (program.objectiveCRegistrations.length > 0) {

@@ -12919,24 +12919,46 @@ function lowerExpressionExpected(
           bodyInput >= tree.nodes.length
           || parameterNames.length != signature.parameterTypes.length
         ) throw "native callable closure lost its parameter or body shape";
+        let asyncSuspension = "";
         if (closureAsynchronous) {
           if (signature.errorType.byteLength > 0) {
             throw "native stored async closures do not execute typed errors yet";
           }
           if (expressionTreeContainsAwait(tree, bodyInput)) {
-            throw "native stored async closure suspension is not executable yet";
+            if (
+              signature.returnType == "void"
+              && expressionTreeIsSchedulerYieldAwait(
+                program,
+                tree,
+                bodyInput
+              )
+            ) asyncSuspension = "scheduler-yield";
+            else {
+              throw "native stored async closure suspension currently supports one direct `await scheduler.yield()` expression";
+            }
           }
         }
         const bodyStart = output.length;
-        const body = try lowerExpressionExpected(
-          program,
-          importedTypes,
-          evidence,
-          tree,
-          bodyInput,
-          signature.returnType,
-          inout output
-        );
+        let body: usize = 0;
+        if (asyncSuspension.byteLength > 0) {
+          body = pushExpression(
+            inout output,
+            LoweredExpressionKind.booleanValue,
+            "false",
+            Array<usize>(),
+            Array<String>()
+          );
+        } else {
+          body = try lowerExpressionExpected(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            bodyInput,
+            signature.returnType,
+            inout output
+          );
+        }
         let callableParameter: usize = 0;
         while (callableParameter < parameterNames.length) {
           if (signature.parameterModes[callableParameter] != "value") {
@@ -13059,7 +13081,7 @@ function lowerExpressionExpected(
         const closure = pushExpression(
           inout output,
           LoweredExpressionKind.closureValue,
-          "",
+          asyncSuspension,
           children,
           labels
         );
@@ -15510,6 +15532,36 @@ function expressionTreeContainsAwait(
     if (expressionTreeContainsAwait(tree, child)) return true;
   }
   return false;
+}
+
+function expressionTreeIsSchedulerYieldAwait(
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind != ExpressionKind.awaitExpression
+    || tree.nodes[index].children.length != 1
+  ) return false;
+  const operation = tree.nodes[index].children[0];
+  if (
+    tree.nodes[operation].kind != ExpressionKind.callExpression
+    || tree.nodes[operation].children.length != 1
+  ) return false;
+  const callee = tree.nodes[operation].children[0];
+  if (
+    tree.nodes[callee].kind != ExpressionKind.memberExpression
+    || tree.nodes[callee].value != "yield"
+    || tree.nodes[callee].children.length != 1
+  ) return false;
+  const namespace = tree.nodes[callee].children[0];
+  return tree.nodes[namespace].kind == ExpressionKind.identifierExpression
+    && isImportedStandardBinding(
+      program,
+      "std/async",
+      "scheduler",
+      tree.nodes[namespace].value
+    );
 }
 
 function expressionTreeContainsSuspension(

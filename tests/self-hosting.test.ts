@@ -14220,6 +14220,43 @@ test("transfers an owned result out of a completed stored async closure", () => 
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("polls and resumes a stored async closure across scheduler.yield", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-yield.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /void \(\*poll\)\(Z_AsyncTask \*task\)/);
+  assert.match(emission.stdout, /frame->state = 1;/);
+  assert.match(emission.stdout, /z_stage1_async_enqueue\(task->executor, task\)/);
+  assert.match(emission.stdout, /while \(!invocation\.task->completed\)/);
+  assert.match(emission.stdout, /z_stage1_async_run_one\(&executor\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-callable-yield-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,
