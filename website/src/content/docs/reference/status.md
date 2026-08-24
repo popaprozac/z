@@ -9,7 +9,8 @@ production or compatibility-sensitive use.
 ## Implemented and exercised
 
 - TypeScript-shaped parsing, nominal static types, generics, enums, exhaustive
-  matching, `Option<T>`, `Result<T, E>`, and typed errors
+  matching, `Option<T>`, `Result<T, E>`, typed errors, and statically dispatched
+  trait constraints that specialize across module-private boundaries
 - Value structs, ARC-managed classes, weak references, explicit ownership
   capabilities, deterministic cleanup, and conservative non-escaping views
 - Native C-family code generation through Clang

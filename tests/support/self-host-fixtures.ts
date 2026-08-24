@@ -54,6 +54,14 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
   { entry: "tests/fixtures/self-host-emit-generic-functions-modules/main.zs" },
   { entry: "tests/fixtures/self-host-emit-static-method.zs" },
   { entry: "tests/fixtures/self-host-emit-static-trait.zs" },
+  {
+    entry: "tests/fixtures/self-host-emit-static-trait-modules/main.zs",
+    expectedStdout: "released owned\n",
+  },
+  {
+    entry: "tests/fixtures/self-host-emit-static-trait-method-modules/main.zs",
+    expectedStdout: "released private\n",
+  },
   { entry: "tests/fixtures/self-host-emit-array-destructure.zs" },
   { entry: "tests/fixtures/self-host-emit-slice-signature.zs" },
   { entry: "tests/fixtures/self-host-emit-input.zs" },

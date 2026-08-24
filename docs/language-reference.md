@@ -2207,11 +2207,12 @@ function inspect<T: Source<i32>>(inout source: T): i32 {
 Generic traits remain statically dispatched. The fixed-point compiler
 specializes a constrained generic for its concrete argument and emits a direct
 call to that concrete method; it does not allocate a trait object or consult a
-vtable. Z does not yet provide trait-typed storage or existential/dynamic
-dispatch. A framework-owned generic also cannot yet be specialized in its
-declaring module over a private concrete type supplied only by a downstream
-application; compiler-generated adapters should currently be emitted beside
-that concrete application type.
+vtable. The concrete demand may originate in another module, including a
+private downstream type: the specialization remains owned by the generic's
+declaring module while its semantic type identity and cleanup contract come
+from the consumer. This works for generic free functions and independently
+generic methods. Z does not yet provide trait-typed storage or
+existential/dynamic dispatch.
 
 Transparent aliases name an existing type without changing representation,
 ownership, ABI, or assignability:

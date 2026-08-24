@@ -3713,13 +3713,19 @@ storage wrapped it in a second retain. Recognizing the existing retained value
 restores one ownership transfer into the adapter and one balancing release at
 destruction.
 
-One deliberate boundary remains. A generic defined in a framework module
-cannot yet be monomorphized there with a concrete type that is private to a
-downstream application module. Zapp therefore models the final compiler seam:
-metadata emits one concrete adapter beside the user's lifecycle type, then
-passes it into framework storage. This preserves the intended source API and
-zero-vtable execution without pretending that cross-module demand ownership is
-already solved.
+The downstream ownership boundary is now executable rather than modeled.
+Generic free functions and independently generic methods defer specialization
+until every module's concrete types have been lowered. Their demand records use
+canonical semantic identities for deduplication and retain the consumer's
+symbol provenance, so a framework-owned `register<T: ServiceLifecycle>` can
+capture an application-private, cleanup-bearing service and emit direct calls
+to its concrete methods. A second demand-closure pass also carries such a
+method's concrete substitution into generic helper calls in its body.
+
+This removed Zapp's hand-written lifecycle adapter without adding reflection,
+trait objects, metadata-only runtime dispatch, or source syntax. Permanent
+two-module fixtures compile and execute both the free-function adapter and the
+generic builder-method shape under strict C warnings.
 
 ## Deferred Zapp probe: Servo through Rust's C ABI
 

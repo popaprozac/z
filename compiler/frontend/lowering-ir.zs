@@ -52,7 +52,11 @@ import {
   addValueBinding,
 } from "./semantic-flow-state.zs";
 import { substituteGenericType } from "./semantic-type-ownership.zs";
-import { rebaseTypeName } from "./semantic-type-identities.zs";
+import {
+  rebaseTypeName,
+  semanticTypeIdentity,
+  typeSymbolLocation,
+} from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
@@ -703,6 +707,7 @@ struct LoweredGenericStructUse {
 }
 
 struct LoweredGenericMethodUse {
+  consumerModuleIndex: usize;
   ownerModuleIndex: usize;
   ownerSymbolIndex: usize;
   ownerName: String;
@@ -711,14 +716,21 @@ struct LoweredGenericMethodUse {
   methodTypeParameters: Array<String>;
   methodTypeArguments: Array<String>;
   allTypeArguments: Array<String>;
+  allTypeArgumentIdentities: Array<String>;
+  typeArgumentModules: Array<usize>;
+  typeArgumentSymbols: Array<usize>;
 }
 
 struct LoweredGenericFunctionUse {
+  consumerModuleIndex: usize;
   ownerModuleIndex: usize;
   ownerSymbolIndex: usize;
   name: String;
   typeParameters: Array<String>;
   typeArguments: Array<String>;
+  typeArgumentIdentities: Array<String>;
+  typeArgumentModules: Array<usize>;
+  typeArgumentSymbols: Array<usize>;
 }
 
 function structIndex(in program: Program, in name: String): Option<usize> {
@@ -1439,14 +1451,17 @@ function containsGenericMethodUse(
   ownerModuleIndex: usize,
   ownerSymbolIndex: usize,
   in methodName: String,
-  in typeArguments: Array<String>
+  in typeArgumentIdentities: Array<String>
 ): boolean {
   for (const use of uses) {
     if (
       use.ownerModuleIndex == ownerModuleIndex
       && use.ownerSymbolIndex == ownerSymbolIndex
       && use.methodName == methodName
-      && sameStrings(use.allTypeArguments, typeArguments)
+      && sameStrings(
+        use.allTypeArgumentIdentities,
+        typeArgumentIdentities
+      )
     ) return true;
   }
   return false;
@@ -1456,13 +1471,13 @@ function containsGenericFunctionUse(
   in uses: Array<LoweredGenericFunctionUse>,
   ownerModuleIndex: usize,
   ownerSymbolIndex: usize,
-  in typeArguments: Array<String>
+  in typeArgumentIdentities: Array<String>
 ): boolean {
   for (const use of uses) {
     if (
       use.ownerModuleIndex == ownerModuleIndex
       && use.ownerSymbolIndex == ownerSymbolIndex
-      && sameStrings(use.typeArguments, typeArguments)
+      && sameStrings(use.typeArgumentIdentities, typeArgumentIdentities)
     ) return true;
   }
   return false;
@@ -1534,7 +1549,29 @@ function appendGenericFunctionUse(
         || sourceArguments.length != resolution.callableTypeParameterCount
       ) throw `native generic-function substitutions do not match ${resolution.targetName}`;
       let arguments = Array<String>();
+      let identities = Array<String>();
+      let argumentModules = Array<usize>();
+      let argumentSymbols = Array<usize>();
       for (const sourceArgument of sourceArguments) {
+        identities.push(semanticTypeIdentity(
+          graph.modules,
+          consumerModuleIndex,
+          sourceArgument
+        ));
+        match (typeSymbolLocation(
+          graph.modules,
+          consumerModuleIndex,
+          sourceArgument
+        )) {
+          some(location) => {
+            argumentModules.push(location.moduleIndex);
+            argumentSymbols.push(location.symbolIndex);
+          }
+          none => {
+            argumentModules.push(graph.modules.length);
+            argumentSymbols.push(0);
+          }
+        }
         arguments.push(rebaseTypeName(
           graph.modules,
           consumerModuleIndex,
@@ -1546,14 +1583,18 @@ function appendGenericFunctionUse(
         uses,
         resolution.targetModuleIndex,
         resolution.targetSymbolIndex,
-        arguments
+        identities
       )) return;
       uses.push(LoweredGenericFunctionUse({
+        consumerModuleIndex,
         ownerModuleIndex: resolution.targetModuleIndex,
         ownerSymbolIndex: resolution.targetSymbolIndex,
         name: symbol.name.copyBytes(0, symbol.name.byteLength),
         typeParameters: copyStrings(signature.typeParameters),
         typeArguments: move arguments,
+        typeArgumentIdentities: move identities,
+        typeArgumentModules: move argumentModules,
+        typeArgumentSymbols: move argumentSymbols,
       }));
     }
     none => throw "native generic-function demand has no signature";
@@ -1562,7 +1603,8 @@ function appendGenericFunctionUse(
 
 function collectGenericFunctionUses(
   in parsed: Array<ParsedModule>,
-  in graph: ModuleGraph
+  in graph: ModuleGraph,
+  in genericMethodUses: Array<LoweredGenericMethodUse>
 ): Array<LoweredGenericFunctionUse> throws String {
   let uses = Array<LoweredGenericFunctionUse>();
   let consumerModuleIndex: usize = 0;
@@ -1603,11 +1645,105 @@ function collectGenericFunctionUses(
     consumerModuleIndex = consumerModuleIndex + 1;
   }
 
+  // A concrete generic-method specialization can itself call a generic free
+  // function with the method's type parameter. Close that demand here using
+  // the downstream call site's concrete substitutions.
+  for (const methodUse of genericMethodUses) {
+    const methodOwnerModuleIndex = methodUse.ownerModuleIndex;
+    if (methodOwnerModuleIndex >= parsed.length) {
+      throw "native generic-method demand lost its parsed owner";
+    }
+    let aggregateIndex = parsed[methodOwnerModuleIndex]
+      .program.aggregates.length;
+    let aggregateCandidate: usize = 0;
+    while (
+      aggregateCandidate < parsed[methodOwnerModuleIndex]
+        .program.aggregates.length
+    ) {
+      if (
+        parsed[methodOwnerModuleIndex].program.aggregates[
+          aggregateCandidate
+        ].name == methodUse.ownerName
+      ) {
+        aggregateIndex = aggregateCandidate;
+        break;
+      }
+      aggregateCandidate = aggregateCandidate + 1;
+    }
+    if (
+      aggregateIndex >= parsed[methodOwnerModuleIndex]
+        .program.aggregates.length
+    ) throw `native generic-method demand lost ${methodUse.ownerName}`;
+    const aggregate = view parsed[methodOwnerModuleIndex]
+      .program.aggregates[aggregateIndex];
+    let methodIndex = aggregate.methods.length;
+    let methodCandidate: usize = 0;
+    while (methodCandidate < aggregate.methods.length) {
+      if (aggregate.methods[methodCandidate].name == methodUse.methodName) {
+        methodIndex = methodCandidate;
+        break;
+      }
+      methodCandidate = methodCandidate + 1;
+    }
+    if (methodIndex >= aggregate.methods.length) {
+      throw `native generic-method demand lost ${methodUse.ownerName}.${methodUse.methodName}`;
+    }
+    const method = view aggregate.methods[methodIndex];
+    let substitutions = Array<NativeValueBinding>();
+    let ownerParameter: usize = 0;
+    while (
+      ownerParameter < aggregate.typeParameters.length
+      && ownerParameter < methodUse.ownerTypeArguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        aggregate.typeParameters[ownerParameter].name,
+        methodUse.ownerTypeArguments[ownerParameter]
+      );
+      ownerParameter = ownerParameter + 1;
+    }
+    let methodParameter: usize = 0;
+    while (
+      methodParameter < method.typeParameters.length
+      && methodParameter < methodUse.methodTypeArguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        method.typeParameters[methodParameter].name,
+        methodUse.methodTypeArguments[methodParameter]
+      );
+      methodParameter = methodParameter + 1;
+    }
+    for (const resolution of graph.modules[methodOwnerModuleIndex]
+      .semanticEvidence.callResolutions) {
+      if (
+        resolution.kind != "function"
+        || resolution.callableTypeParameterCount == 0
+        || !bodyContainsCallResolution(method.body, resolution)
+      ) continue;
+      let concreteArguments = Array<String>();
+      for (const argument of resolution.typeArguments) {
+        concreteArguments.push(substituteGenericType(
+          argument,
+          substitutions
+        ));
+      }
+      try appendGenericFunctionUse(
+        graph,
+        methodUse.consumerModuleIndex,
+        resolution,
+        concreteArguments,
+        inout uses
+      );
+    }
+  }
+
   // Close the demand graph. A generic body may call another generic function
   // with its own type parameter; substitute the concrete outer demand and add
   // the resulting callee specialization. Recursion naturally deduplicates.
   let useIndex: usize = 0;
   while (useIndex < uses.length) {
+    const demandConsumerModuleIndex = uses[useIndex].consumerModuleIndex;
     const ownerModuleIndex = uses[useIndex].ownerModuleIndex;
     const useName = uses[useIndex].name.copyBytes(
       0,
@@ -1668,7 +1804,7 @@ function collectGenericFunctionUses(
       }
       try appendGenericFunctionUse(
         graph,
-        ownerModuleIndex,
+        demandConsumerModuleIndex,
         resolution,
         concreteArguments,
         inout uses
@@ -1714,10 +1850,32 @@ function collectGenericMethodUseForSignature(
   let ownerArguments = Array<String>();
   let methodArguments = Array<String>();
   let allArguments = Array<String>();
+  let allArgumentIdentities = Array<String>();
+  let argumentModules = Array<usize>();
+  let argumentSymbols = Array<usize>();
   let argumentIndex: usize = 0;
   while (argumentIndex < resolution.typeArguments.length) {
     const sourceArgument = resolution.typeArguments[argumentIndex]
       .copyBytes(0, resolution.typeArguments[argumentIndex].byteLength);
+    allArgumentIdentities.push(semanticTypeIdentity(
+      graph.modules,
+      consumerModuleIndex,
+      sourceArgument
+    ));
+    match (typeSymbolLocation(
+      graph.modules,
+      consumerModuleIndex,
+      sourceArgument
+    )) {
+      some(location) => {
+        argumentModules.push(location.moduleIndex);
+        argumentSymbols.push(location.symbolIndex);
+      }
+      none => {
+        argumentModules.push(graph.modules.length);
+        argumentSymbols.push(0);
+      }
+    }
     const argument = rebaseTypeName(
       graph.modules,
       consumerModuleIndex,
@@ -1735,9 +1893,10 @@ function collectGenericMethodUseForSignature(
     resolution.targetModuleIndex,
     resolution.targetSymbolIndex,
     method.name,
-    allArguments
+    allArgumentIdentities
   )) return;
   uses.push(LoweredGenericMethodUse({
+    consumerModuleIndex,
     ownerModuleIndex: resolution.targetModuleIndex,
     ownerSymbolIndex: resolution.targetSymbolIndex,
     ownerName: ownerName.copyBytes(0, ownerName.byteLength),
@@ -1746,6 +1905,9 @@ function collectGenericMethodUseForSignature(
     methodTypeParameters: copyStrings(method.signature.typeParameters),
     methodTypeArguments: move methodArguments,
     allTypeArguments: move allArguments,
+    allTypeArgumentIdentities: move allArgumentIdentities,
+    typeArgumentModules: move argumentModules,
+    typeArgumentSymbols: move argumentSymbols,
   }));
 }
 
@@ -21742,6 +21904,128 @@ function importedTypesForModule(
   return types;
 }
 
+function appendGenericDemandArgumentTypes(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in structs: Array<LoweredStruct>,
+  in enums: Array<LoweredEnum>,
+  in privateTypeCollisionNames: Array<String>,
+  in typeArguments: Array<String>,
+  in typeArgumentModules: Array<usize>,
+  in typeArgumentSymbols: Array<usize>,
+  inout types: Array<LoweredImportedType>
+): void throws String {
+  let argumentIndex: usize = 0;
+  while (argumentIndex < typeArguments.length) {
+    if (
+      argumentIndex >= typeArgumentModules.length
+      || argumentIndex >= typeArgumentSymbols.length
+      || typeArgumentModules[argumentIndex] >= graph.modules.length
+    ) {
+      argumentIndex = argumentIndex + 1;
+      continue;
+    }
+    const targetModuleIndex = typeArgumentModules[argumentIndex];
+    const targetSymbolIndex = typeArgumentSymbols[argumentIndex];
+    if (
+      targetSymbolIndex >= graph.modules[targetModuleIndex].symbols.length
+      || targetModuleIndex >= parsed.length
+    ) throw "native generic-function demand lost a concrete type argument";
+    const symbol = view graph.modules[targetModuleIndex].symbols[
+      targetSymbolIndex
+    ];
+    if (
+      symbol.kind != ModuleSymbolKind.structSymbol
+      && symbol.kind != ModuleSymbolKind.classSymbol
+      && symbol.kind != ModuleSymbolKind.enumSymbol
+    ) {
+      argumentIndex = argumentIndex + 1;
+      continue;
+    }
+    const sourceName = typeArguments[argumentIndex].copyBytes(
+      0,
+      typeArguments[argumentIndex].byteLength
+    );
+    const targetName = privateTypeNeedsMangle(
+      parsed[targetModuleIndex].program,
+      privateTypeCollisionNames,
+      symbol.name
+    )
+      ? emittedPrivateTypeName(targetModuleIndex, symbol.name)
+      : symbol.name.copyBytes(0, symbol.name.byteLength);
+    let present = false;
+    for (const type of types) {
+      if (
+        type.localName == sourceName
+        && type.targetName == targetName
+      ) present = true;
+    }
+    if (present) {
+      argumentIndex = argumentIndex + 1;
+      continue;
+    }
+    if (
+      symbol.kind == ModuleSymbolKind.structSymbol
+      || symbol.kind == ModuleSymbolKind.classSymbol
+    ) {
+      match (loweredStructCleanup(structs, targetName)) {
+        some(needsDeinit) => types.push(LoweredImportedType({
+          localName: sourceName,
+          targetName: targetName.copyBytes(0, targetName.byteLength),
+          nativeTypeName: "",
+          kind: loweredStructIsReference(structs, targetName)
+            ? LoweredTypeKind.classType
+            : LoweredTypeKind.structType,
+          executorBound: loweredStructExecutorBound(structs, targetName),
+          threadShareable: loweredStructThreadShareable(
+            structs,
+            targetName
+          ),
+          workerDestructible: loweredStructWorkerDestructible(
+            structs,
+            targetName
+          ),
+          needsDeinit,
+          resourceRelease: "",
+          fields: loweredStructFields(structs, targetName),
+          variants: Array<LoweredVariant>(),
+          payloadBearing: false,
+          underlyingType: "",
+        }));
+        none => throw
+          `native generic-function demand could not lower type ${symbol.name}`;
+      }
+    } else {
+      match (loweredEnumCopy(enums, targetName)) {
+        some(declaration) => {
+          let variants = Array<LoweredVariant>();
+          for (const variant of declaration.variants) {
+            variants.push(copyLoweredVariant(variant));
+          }
+          types.push(LoweredImportedType({
+            localName: sourceName,
+            targetName,
+            nativeTypeName: "",
+            kind: LoweredTypeKind.enumType,
+            executorBound: false,
+            threadShareable: false,
+            workerDestructible: !declaration.needsDeinit,
+            needsDeinit: declaration.needsDeinit,
+            resourceRelease: "",
+            fields: Array<LoweredField>(),
+            variants,
+            payloadBearing: declaration.payloadBearing,
+            underlyingType: "",
+          }));
+        }
+        none => throw
+          `native generic-function demand could not lower type ${symbol.name}`;
+      }
+    }
+    argumentIndex = argumentIndex + 1;
+  }
+}
+
 function moduleConstantNumericType(in value: String): String {
   let index: usize = 0;
   while (index < value.byteLength) {
@@ -22953,6 +23237,251 @@ function appendLoweredProgram(
   }
 }
 
+function appendDeferredGenericMethod(
+  in program: Program,
+  in sourcePath: String,
+  in importedTypes: Array<LoweredImportedType>,
+  in genericStructUses: Array<LoweredGenericStructUse>,
+  in use: LoweredGenericMethodUse,
+  in evidence: ModuleSemanticEvidence,
+  in privateFunctionCollisionNames: Array<String>,
+  in privateTypeCollisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
+  inout fixedArrays: Array<LoweredFixedArray>,
+  inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void throws String {
+  let aggregateIndex = program.aggregates.length;
+  let candidateIndex: usize = 0;
+  while (candidateIndex < program.aggregates.length) {
+    if (program.aggregates[candidateIndex].name == use.ownerName) {
+      aggregateIndex = candidateIndex;
+      break;
+    }
+    candidateIndex = candidateIndex + 1;
+  }
+  if (aggregateIndex >= program.aggregates.length) {
+    throw `native generic-method lowering lost owner ${use.ownerName}`;
+  }
+  const aggregate = view program.aggregates[aggregateIndex];
+  let ownerEmittedName = privateTypeNeedsMangle(
+    program,
+    privateTypeCollisionNames,
+    aggregate.name
+  )
+    ? emittedPrivateTypeName(moduleIndex, aggregate.name)
+    : aggregate.name.copyBytes(0, aggregate.name.byteLength);
+  let ownerImportedTypes = Array<LoweredImportedType>();
+  if (aggregate.typeParameters.length > 0) {
+    let ownerUseIndex: usize = genericStructUses.length;
+    let genericIndex: usize = 0;
+    while (genericIndex < genericStructUses.length) {
+      if (
+        genericStructUses[genericIndex].consumerModuleIndex == moduleIndex
+        && genericStructUses[genericIndex].ownerModuleIndex == moduleIndex
+        && genericStructUses[genericIndex].ownerName == use.ownerName
+        && sameStrings(
+          genericStructUses[genericIndex].typeArguments,
+          use.ownerTypeArguments
+        )
+      ) {
+        ownerUseIndex = genericIndex;
+        break;
+      }
+      genericIndex = genericIndex + 1;
+    }
+    if (ownerUseIndex >= genericStructUses.length) {
+      throw `native generic-method lowering lost concrete owner ${use.ownerName}`;
+    }
+    ownerEmittedName = genericStructUses[ownerUseIndex].emittedName
+      .copyBytes(
+        0,
+        genericStructUses[ownerUseIndex].emittedName.byteLength
+      );
+    ownerImportedTypes = try genericMethodImportedTypes(
+      program,
+      importedTypes,
+      genericStructUses[ownerUseIndex]
+    );
+  } else {
+    const noTypeParameters = Array<String>();
+    const noTypeArguments = Array<String>();
+    ownerImportedTypes = try specializedCallableImportedTypes(
+      program,
+      importedTypes,
+      noTypeParameters,
+      noTypeArguments
+    );
+  }
+  const methodImportedTypes = try specializedCallableImportedTypes(
+    program,
+    ownerImportedTypes,
+    use.methodTypeParameters,
+    use.methodTypeArguments
+  );
+  const suffix = try genericCallableSpecializationSuffix(
+    program,
+    methodImportedTypes,
+    use.allTypeArguments
+  );
+  for (const method of aggregate.methods) {
+    if (
+      method.name != use.methodName
+      || method.typeParameters.length == 0
+    ) continue;
+    try collectFunctionIntrinsicTypes(
+      program,
+      methodImportedTypes,
+      method,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums
+    );
+    const ownerName = semanticMethodOwnerName(
+      aggregate.name,
+      method.name
+    );
+    const methodReceiverMode = method.staticMethod
+      ? ReceiverMode.none
+      : method.receiverMode;
+    const methodReceiverName = method.staticMethod
+      ? ""
+      : ownerEmittedName.copyBytes(0, ownerEmittedName.byteLength);
+    const methodReceiverKind = method.staticMethod
+      ? LoweredTypeKind.voidType
+      : aggregate.kind == DeclarationKind.classDeclaration
+        ? LoweredTypeKind.classType
+        : LoweredTypeKind.structType;
+    const loweredMethodOutcome = attempt lowerFunction(
+      program,
+      methodImportedTypes,
+      evidence,
+      method,
+      ownerName,
+      sourcePath,
+      methodReceiverName,
+      methodReceiverKind,
+      methodReceiverMode
+    );
+    let loweredMethod = match (loweredMethodOutcome) {
+      success(lowered) => lowered;
+      failure(message) => throw
+        `method ${aggregate.name}.${method.name}: ${message}`;
+    };
+    loweredMethod.name = `Z_${ownerEmittedName}_${method.name}${suffix}`;
+    loweredMethod.nativeCExportName = "";
+    rewritePrivateCallTargets(
+      program,
+      privateFunctionCollisionNames,
+      moduleIndex,
+      entryIndex,
+      inout loweredMethod
+    );
+    functions.push(move loweredMethod);
+    return;
+  }
+  throw `native generic-method lowering lost ${use.ownerName}.${use.methodName}`;
+}
+
+function appendDeferredGenericFunction(
+  in program: Program,
+  in sourcePath: String,
+  in importedTypes: Array<LoweredImportedType>,
+  in use: LoweredGenericFunctionUse,
+  in evidence: ModuleSemanticEvidence,
+  in privateFunctionCollisionNames: Array<String>,
+  moduleIndex: usize,
+  entryIndex: usize,
+  inout fixedArrays: Array<LoweredFixedArray>,
+  inout arrays: Array<LoweredArray>,
+  inout slices: Array<LoweredSlice>,
+  inout maps: Array<LoweredMap>,
+  inout sets: Array<LoweredSet>,
+  inout enums: Array<LoweredEnum>,
+  inout functions: Array<LoweredFunction>
+): void throws String {
+  let declarationIndex = program.functions.length;
+  let candidateIndex: usize = 0;
+  while (candidateIndex < program.functions.length) {
+    if (
+      program.functions[candidateIndex].name == use.name
+      && program.functions[candidateIndex].typeParameters.length > 0
+    ) {
+      declarationIndex = candidateIndex;
+      break;
+    }
+    candidateIndex = candidateIndex + 1;
+  }
+  if (declarationIndex >= program.functions.length) {
+    throw `native generic-function lowering lost ${use.name}`;
+  }
+  const declaration = view program.functions[declarationIndex];
+  const specializedTypes = try specializedCallableImportedTypes(
+    program,
+    importedTypes,
+    use.typeParameters,
+    use.typeArguments
+  );
+  try collectFunctionIntrinsicTypes(
+    program,
+    specializedTypes,
+    declaration,
+    inout fixedArrays,
+    inout arrays,
+    inout slices,
+    inout maps,
+    inout sets,
+    inout enums
+  );
+  const suffix = try genericCallableSpecializationSuffix(
+    program,
+    specializedTypes,
+    use.typeArguments
+  );
+  const loweredFunctionOutcome = attempt lowerFunction(
+    program,
+    specializedTypes,
+    evidence,
+    declaration,
+    declaration.name,
+    sourcePath,
+    "",
+    LoweredTypeKind.voidType,
+    ReceiverMode.none
+  );
+  let loweredFunction = match (loweredFunctionOutcome) {
+    success(lowered) => lowered;
+    failure(message) => throw `function ${declaration.name}: ${message}`;
+  };
+  rewritePrivateCallTargets(
+    program,
+    privateFunctionCollisionNames,
+    moduleIndex,
+    entryIndex,
+    inout loweredFunction
+  );
+  const baseName = privateFunctionNeedsMangle(
+    program,
+    privateFunctionCollisionNames,
+    moduleIndex,
+    entryIndex,
+    declaration.name
+  )
+    ? emittedPrivateFunctionName(moduleIndex, declaration.name)
+    : declaration.name.copyBytes(0, declaration.name.byteLength);
+  loweredFunction.name = `${baseName}${suffix}`;
+  loweredFunction.nativeCExportName = "";
+  functions.push(move loweredFunction);
+}
+
 function lowerProgramUnchecked(
   in program: Program,
   in evidence: ModuleSemanticEvidence
@@ -23094,7 +23623,13 @@ function lowerModulesIncludingTests(
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const genericStructUses = collectGenericStructUses(graph);
   const genericMethodUses = try collectGenericMethodUses(graph);
-  const genericFunctionUses = try collectGenericFunctionUses(parsed, graph);
+  const genericFunctionUses = try collectGenericFunctionUses(
+    parsed,
+    graph,
+    genericMethodUses
+  );
+  const deferredGenericMethodUses = Array<LoweredGenericMethodUse>();
+  const deferredGenericFunctionUses = Array<LoweredGenericFunctionUse>();
   const entryIndex = graph.entry;
   for (const moduleIndex of graph.dependencyOrder) {
     let importedTypes = try importedTypesForModule(
@@ -23117,8 +23652,8 @@ function lowerModulesIncludingTests(
       parsed[moduleIndex].path,
       inout importedTypes,
       genericStructUses,
-      genericMethodUses,
-      genericFunctionUses,
+      deferredGenericMethodUses,
+      deferredGenericFunctionUses,
       graph.modules[moduleIndex].semanticEvidence,
       privateFunctionCollisionNames,
       privateTypeCollisionNames,
@@ -23152,6 +23687,114 @@ function lowerModulesIncludingTests(
         );
         throw `${path}: ${message}`;
       }
+    }
+  }
+  for (const use of genericMethodUses) {
+    const genericOwnerModuleIndex = use.ownerModuleIndex;
+    if (genericOwnerModuleIndex >= parsed.length) {
+      throw "native generic-method lowering lost its owner module";
+    }
+    let importedTypes = try importedTypesForModule(
+      parsed[genericOwnerModuleIndex].program,
+      graph,
+      structs,
+      enums,
+      genericOwnerModuleIndex
+    );
+    try appendGenericDemandArgumentTypes(
+      parsed,
+      graph,
+      structs,
+      enums,
+      privateTypeCollisionNames,
+      use.allTypeArguments,
+      use.typeArgumentModules,
+      use.typeArgumentSymbols,
+      inout importedTypes
+    );
+    try appendConcreteGenericStructs(
+      parsed[genericOwnerModuleIndex].program,
+      genericStructUses,
+      genericOwnerModuleIndex,
+      inout importedTypes,
+      inout structs
+    );
+    const genericOutcome = attempt appendDeferredGenericMethod(
+      parsed[genericOwnerModuleIndex].program,
+      parsed[genericOwnerModuleIndex].path,
+      importedTypes,
+      genericStructUses,
+      use,
+      graph.modules[genericOwnerModuleIndex].semanticEvidence,
+      privateFunctionCollisionNames,
+      privateTypeCollisionNames,
+      genericOwnerModuleIndex,
+      entryIndex,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums,
+      inout functions
+    );
+    match (genericOutcome) {
+      success => {}
+      failure(message) => throw
+        `${parsed[genericOwnerModuleIndex].path}: ${message}`;
+    }
+  }
+  for (const use of genericFunctionUses) {
+    const genericOwnerModuleIndex = use.ownerModuleIndex;
+    if (genericOwnerModuleIndex >= parsed.length) {
+      throw "native generic-function lowering lost its owner module";
+    }
+    let importedTypes = try importedTypesForModule(
+      parsed[genericOwnerModuleIndex].program,
+      graph,
+      structs,
+      enums,
+      genericOwnerModuleIndex
+    );
+    try appendGenericDemandArgumentTypes(
+      parsed,
+      graph,
+      structs,
+      enums,
+      privateTypeCollisionNames,
+      use.typeArguments,
+      use.typeArgumentModules,
+      use.typeArgumentSymbols,
+      inout importedTypes
+    );
+    try appendConcreteGenericStructs(
+      parsed[genericOwnerModuleIndex].program,
+      genericStructUses,
+      genericOwnerModuleIndex,
+      inout importedTypes,
+      inout structs
+    );
+    const genericOutcome = attempt appendDeferredGenericFunction(
+      parsed[genericOwnerModuleIndex].program,
+      parsed[genericOwnerModuleIndex].path,
+      importedTypes,
+      use,
+      graph.modules[genericOwnerModuleIndex].semanticEvidence,
+      privateFunctionCollisionNames,
+      genericOwnerModuleIndex,
+      entryIndex,
+      inout fixedArrays,
+      inout arrays,
+      inout slices,
+      inout maps,
+      inout sets,
+      inout enums,
+      inout functions
+    );
+    match (genericOutcome) {
+      success => {}
+      failure(message) => throw
+        `${parsed[genericOwnerModuleIndex].path}: ${message}`;
     }
   }
   rewriteNativeCExportCallTargets(inout functions);

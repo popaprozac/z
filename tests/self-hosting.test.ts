@@ -1190,6 +1190,88 @@ test("executes statically dispatched trait constraints natively", () => {
   }
 }, 240_000);
 
+test("specializes exported trait adapters for private downstream types", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-static-trait-modules/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_PrivateLifecycle_start\(&\(service\), &\(\(\*context\)\)\)/,
+  );
+  assert.doesNotMatch(emission.stdout, /service\.start/);
+
+  const directory = mkdtempSync("/tmp/z-native-static-trait-modules-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "released owned\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("specializes exported generic methods for private downstream types", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-static-trait-method-modules/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_PrivateLifecycle_start\(&\(service\)\)/,
+  );
+  assert.doesNotMatch(emission.stdout, /service\.start/);
+
+  const directory = mkdtempSync("/tmp/z-native-static-trait-method-modules-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "released private\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("transfers one retained captured callable into aggregate storage", () => {
   const input = resolve(
     projectRoot,
