@@ -8613,13 +8613,6 @@ function lowerExpressionContextual(
               importedTypes,
               signature.returnType
             );
-            if (moduleTypeNeedsCleanup(
-              program,
-              importedTypes,
-              resultType
-            )) {
-              throw "native direct async callable await currently requires a cleanup-free result";
-            }
             let children = Array<usize>();
             const callable = try lowerExpression(
               program,
@@ -12929,18 +12922,6 @@ function lowerExpressionExpected(
         if (closureAsynchronous) {
           if (signature.errorType.byteLength > 0) {
             throw "native stored async closures do not execute typed errors yet";
-          }
-          const asyncReturnType = try lowerModuleTypeName(
-            program,
-            importedTypes,
-            signature.returnType
-          );
-          if (moduleTypeNeedsCleanup(
-            program,
-            importedTypes,
-            asyncReturnType
-          )) {
-            throw "native stored async closures currently require a cleanup-free result";
           }
           if (expressionTreeContainsAwait(tree, bodyInput)) {
             throw "native stored async closure suspension is not executable yet";

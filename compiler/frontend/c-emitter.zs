@@ -4869,6 +4869,10 @@ function appendCallableHelpers(
         if (expression.kind != LoweredExpressionKind.closureValue) {
           throw "native async callable helper currently requires a contextual closure";
         }
+        const resultNeedsDeinit = loweredTypeNeedsDeinit(
+          program,
+          functionType.returnType
+        );
         output.append("typedef struct ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task {\n  Z_AsyncTask task;\n");
@@ -4876,6 +4880,7 @@ function appendCallableHelpers(
           output.append("  ");
           output.append(returnType);
           output.append(" result;\n");
+          if (resultNeedsDeinit) output.append("  bool live_result;\n");
         }
         output.append("} ");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -4893,9 +4898,16 @@ function appendCallableHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_task *frame = (");
           appendCallableHelperName(inout output, owner, expressionIndex);
-          output.append("_task *)task;\n  if (destination == NULL) abort();\n  *((");
+          output.append("_task *)task;\n  if (destination == NULL) abort();\n");
+          if (resultNeedsDeinit) {
+            output.append("  if (!frame->live_result) abort();\n");
+          }
+          output.append("  *((");
           output.append(returnType);
           output.append(" *)destination) = frame->result;\n");
+          if (resultNeedsDeinit) {
+            output.append("  frame->live_result = false;\n");
+          }
         }
         output.append("}\n\n");
         output.append("static void ");
@@ -4903,7 +4915,24 @@ function appendCallableHelpers(
         output.append("_take_error(Z_AsyncTask *task, void *destination) {\n  (void)task;\n  (void)destination;\n}\n\n");
         output.append("static void ");
         appendCallableHelperName(inout output, owner, expressionIndex);
-        output.append("_destroy(Z_AsyncTask *task) { free(task); }\n\n");
+        output.append("_destroy(Z_AsyncTask *task) {\n  ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task *frame = (");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_task *)task;\n");
+        if (resultNeedsDeinit) {
+          output.append("  if (frame->live_result) ");
+          if (functionType.returnType.kind == LoweredTypeKind.classType) {
+            output.append("Z_");
+            output.append(functionType.returnType.name);
+            output.append("_release(frame->result);\n");
+          } else {
+            output.append("Z_");
+            output.append(functionType.returnType.name);
+            output.append("_deinit(&frame->result);\n");
+          }
+        }
+        output.append("  free(frame);\n}\n\n");
         output.append("static Z_AsyncInvocation ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_start(void *");
@@ -4967,7 +4996,9 @@ function appendCallableHelpers(
           output.append("  frame->result = ");
         } else output.append("  ");
         try appendExpression(inout output, owner, expression.children[0]);
-        output.append(";\n  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
+        output.append(";\n");
+        if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+        output.append("  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_failed,\n    .take_result = ");
         appendCallableHelperName(inout output, owner, expressionIndex);

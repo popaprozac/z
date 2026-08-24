@@ -14185,6 +14185,41 @@ test("executes one completed stored async closure through the native ABI", () =>
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("transfers an owned result out of a completed stored async closure", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-owned-result.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /bool live_result;/);
+  assert.match(emission.stdout, /frame->live_result = false;/);
+  assert.match(emission.stdout, /if \(frame->live_result\) Z_String_deinit\(&frame->result\);/);
+
+  const directory = mkdtempSync("/tmp/z-async-callable-owned-result-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,
