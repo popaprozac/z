@@ -564,11 +564,15 @@ export function typeSatisfiesTrait(
   in concreteType: String,
   in requiredTrait: String
 ): boolean {
-  const concreteLocation = match (typeSymbolLocation(modules, moduleIndex, concreteType)) {
+  const concreteLocation = match (
+    inferredTypeSymbolLocation(modules, moduleIndex, concreteType)
+  ) {
     some(location) => location;
     none => return false;
   };
-  const traitLocation = match (typeSymbolLocation(modules, moduleIndex, requiredTrait)) {
+  const traitLocation = match (
+    inferredTypeSymbolLocation(modules, moduleIndex, requiredTrait)
+  ) {
     some(location) => location;
     none => return false;
   };

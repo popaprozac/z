@@ -965,7 +965,9 @@ See [`async-model.md`](async-model.md) for the intended model and phase details.
    Native signatures now retain generic trait constraints and nominal aggregate
    conformance. Native inference enforces those constraints for inferred and
    explicit function/method calls and aggregate construction; constrained generic
-   bodies may call only methods supplied by their declared traits.
+   bodies may call only methods supplied by their declared traits. Unique
+   factory-returned exported aggregate identities also retain nominal
+   conformance without a redundant concrete-type import at the caller.
    Foreign method lookup, generic trait declarations, foreign call
    effects and executor placements with unavailable foreign/thread metadata,
    escaping closure-environment validation,

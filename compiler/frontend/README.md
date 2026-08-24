@@ -607,7 +607,11 @@ expression trees. Unknown foreign and unsupported intrinsic-member shapes
 deliberately defer instead of guessing. Native signatures retain nominal trait constraints and
 aggregate conformance. Inferred and explicit generic calls, generic methods,
 generic construction, and trait-authorized calls inside constrained bodies enforce
-those contracts natively. Standalone Z and intrinsic generic type uses recursively
+those contracts natively. A factory-returned exported aggregate may satisfy a
+constraint without forcing the caller to import its otherwise-unused concrete
+type or trait spelling; the native resolver uses the same unique, fail-closed
+exported identity inference already used by member lookup. Standalone Z and
+intrinsic generic type uses recursively
 validate arity and constraints through arrays, nullable/view wrappers, nested
 generics, and function signatures; bare generic names remain available only at
 constructor-inference sites. Direct generic function and method calls may infer

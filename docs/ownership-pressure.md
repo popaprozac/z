@@ -3727,6 +3727,28 @@ trait objects, metadata-only runtime dispatch, or source syntax. Permanent
 two-module fixtures compile and execute both the free-function adapter and the
 generic builder-method shape under strict C warnings.
 
+## Factory-returned service identity across a framework boundary
+
+Separating Zapp's reusable framework from its Notes application exposed a
+three-module native parity gap. The application imported only
+`createNotesService()`, then passed its inferred `NotesService` result into the
+framework's constrained `ServicesBuilder.register<T: Service>`. Stage 0
+correctly followed the factory return identity; the fixed-point resolver looked
+only for a caller-local type symbol and demanded an otherwise-unused
+`NotesService` import.
+
+The native constraint checker now reuses unique exported-type inference for
+both the concrete aggregate and required trait. Ambiguous names still fail
+closed, while the ordinary ergonomic call remains sufficient:
+
+```z
+app.services.register("notes", createNotesService());
+```
+
+A permanent three-module fixture keeps the trait, implementation/factory, and
+consumer separate, then checks, emits, compiles, and runs the result. This is a
+general module-composition correction rather than a Zapp special case.
+
 ## Deferred Zapp probe: Servo through Rust's C ABI
 
 Servo is worth exploring as a future first-party, behaviorally consistent

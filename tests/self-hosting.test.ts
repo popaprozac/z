@@ -1272,6 +1272,40 @@ test("specializes exported generic methods for private downstream types", () => 
   }
 }, 240_000);
 
+test("resolves trait conformance for a factory-returned imported type", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-imported-trait-factory/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-imported-trait-factory-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("transfers one retained captured callable into aggregate storage", () => {
   const input = resolve(
     projectRoot,
@@ -6502,7 +6536,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(
     version.stdout,
-    "z 0.1.0-dev revision 2026-08-23 compiler-api 2\n",
+    "z 0.1.0-dev revision 2026-08-23.1 compiler-api 2\n",
   );
 
   const metadata = spawnSync(
