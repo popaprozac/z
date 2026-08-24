@@ -3885,7 +3885,11 @@ function generateRuntime(
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateFrame(plan, planByKey), "");
   for (const plan of plans) lines.push(`static void ${plan.pollName}(Z_AsyncTask *task);`);
-  for (const plan of plans) lines.push(`static void ${plan.destroyName}(${plan.frameName} *frame);`);
+  for (const plan of plans) {
+    lines.push(
+      `static __attribute__((unused)) void ${plan.destroyName}(${plan.frameName} *frame);`,
+    );
+  }
   for (const plan of plans) lines.push(`${generateStartSignature(plan)};`);
   for (const plan of plans) {
     if (plan.generator) lines.push(`${generateAsyncGeneratorFactorySignature(plan)};`);
@@ -4042,7 +4046,7 @@ function generateDestroy(
   planByKey: ReadonlyMap<string, AsyncFunctionPlan>,
 ): string {
   const lines = [
-    `static void ${plan.destroyName}(${plan.frameName} *frame) {`,
+    `static __attribute__((unused)) void ${plan.destroyName}(${plan.frameName} *frame) {`,
     "  if (frame == NULL) return;",
   ];
   for (const [index, target] of [...plan.children].reverse()) {

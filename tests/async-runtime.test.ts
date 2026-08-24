@@ -55,6 +55,20 @@ import type {
   ImportDeclaration,
 } from "./support/bootstrap.ts";
 
+test("allows synchronous programs to import unused async declarations", () => {
+  const directory = mkdtempSync("/tmp/z-unused-async-declaration-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, `
+    async function load(): i32 { return 42; }
+    function main(): i32 { return 0; }
+  `);
+
+  const result = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test("runs scalar async functions as stackless Phase 1 task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-sequential.zs");
   const source = readFileSync(example, "utf8");
