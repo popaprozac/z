@@ -1337,6 +1337,44 @@ test("transfers one retained captured callable into aggregate storage", () => {
   );
 }, 240_000);
 
+test("executes a non-suspending async function imported as a callable", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-function-modules/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-function-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /frame->result = loadValue\(argument0\);/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("retains a readonly class receiver captured by a non-consuming method", () => {
   const input = resolve(
     projectRoot,
@@ -8538,17 +8576,21 @@ test("compiles a multi-module Z application through the standalone native driver
 
   const nativeLoweringBoundaries = [
     {
-      name: "ordinary-async",
+      name: "suspending-ordinary-async",
       source: [
-        "async function deferred(): i32 { return 42; }",
+        'import { scheduler } from "std/async";',
+        "async function deferred(): i32 {",
+        "  await scheduler.yield();",
+        "  return 42;",
+        "}",
         "function main(): i32 { return 0; }",
         "",
       ].join("\n"),
-      line: 1,
+      line: 2,
       column: 7,
       marker: "^^^^^",
       code: "Z0700",
-      summary: 'ordinary async function "deferred" is not executable in the native compiler yet',
+      summary: 'suspending async function "deferred" is not executable in the native compiler yet',
     },
     {
       name: "async-throwing-method",

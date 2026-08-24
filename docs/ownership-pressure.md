@@ -3963,12 +3963,15 @@ unused, and a synchronous program importing an unused async declaration is a
 permanent runtime regression.
 
 The application also made the fixed-point boundary visible. Its native semantic
-frontend agrees with Stage 0 on the complete async graph, but the fixed-point C
-emitter still rejects a general library-owned ordinary async function. Zapp
-therefore keeps its production synchronous application graph free of async
-declarations and places the executable async registry and bridge in opt-in
-modules. This is preferable to making every synchronous service depend on an
-unsupported emitter tier or disguising the limitation behind generated glue.
+frontend agrees with Stage 0 on the complete async graph. The fixed-point C
+emitter now executes a direct call to an imported non-suspending async free
+function through the same completed-task adapter used by contextual async
+closures, including strict C compilation and module-boundary execution. It
+still rejects a library-owned function or method that genuinely suspends, so
+Zapp keeps its production synchronous application graph free of the opt-in
+async surface. This is preferable to making every synchronous service depend
+on an unsupported emitter tier or disguising the limitation behind generated
+glue.
 
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option

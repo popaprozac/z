@@ -1277,11 +1277,12 @@ function validateNativeFunction(
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
+    && functionContainsSuspension(declaration)
   ) {
     throw loweringBoundary(
       path,
       "Z0700",
-      `ordinary async function "${declaration.name}" is not executable in the native compiler yet`,
+      `suspending async function "${declaration.name}" is not executable in the native compiler yet`,
       declaration.line,
       declaration.column,
       5

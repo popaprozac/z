@@ -5332,9 +5332,6 @@ function appendCallableHelpers(
         output.append("  free(environment);\n}\n\n");
       }
       if (functionType.asynchronous) {
-        if (expression.kind != LoweredExpressionKind.closureValue) {
-          throw "native async callable helper currently requires a contextual closure";
-        }
         const resultNeedsDeinit = loweredTypeNeedsDeinit(
           program,
           functionType.returnType
@@ -5428,10 +5425,25 @@ function appendCallableHelpers(
         let parameter: usize = 0;
         while (parameter < functionType.parameters.length) {
           output.append(", ");
+          let parameterName = functionType.parameters[parameter].name
+            .copyBytes(
+              0,
+              functionType.parameters[parameter].name.byteLength
+            );
+          if (expression.kind == LoweredExpressionKind.closureValue) {
+            parameterName = expression.labels[
+              parameterLabelStart + parameter
+            ].copyBytes(
+              0,
+              expression.labels[
+                parameterLabelStart + parameter
+              ].byteLength
+            );
+          }
           try appendCallableParameterDeclaration(
             inout output,
             functionType.parameters[parameter],
-            expression.labels[parameterLabelStart + parameter]
+            parameterName
           );
           parameter = parameter + 1;
         }
@@ -5484,11 +5496,24 @@ function appendCallableHelpers(
           let unusedParameter: usize = 0;
           while (unusedParameter < functionType.parameters.length) {
             output.append("  (void)");
+            let parameterName = functionType.parameters[unusedParameter].name
+              .copyBytes(
+                0,
+                functionType.parameters[unusedParameter].name.byteLength
+              );
+            if (expression.kind == LoweredExpressionKind.closureValue) {
+              parameterName = expression.labels[
+                parameterLabelStart + unusedParameter
+              ].copyBytes(
+                0,
+                expression.labels[
+                  parameterLabelStart + unusedParameter
+                ].byteLength
+              );
+            }
             appendCBindingName(
               inout output,
-              expression.labels[
-                parameterLabelStart + unusedParameter
-              ]
+              parameterName
             );
             output.append(";\n");
             unusedParameter = unusedParameter + 1;
@@ -5497,14 +5522,32 @@ function appendCallableHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll;\n  frame->task.executor = executor;\n");
         } else output.append("  frame->task.completed = true;\n");
-        if (expression.children.length == 0) {
+        if (
+          expression.kind == LoweredExpressionKind.closureValue
+          && expression.children.length == 0
+        ) {
           throw "native async closure helper lost its body";
         }
         if (functionType.returnType.kind != LoweredTypeKind.voidType) {
           output.append("  frame->result = ");
         } else if (expression.value != "scheduler-yield") output.append("  ");
         if (expression.value != "scheduler-yield") {
-          try appendExpression(inout output, owner, expression.children[0]);
+          if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+            appendCBindingName(inout output, expression.value);
+            output.append("(");
+            parameter = 0;
+            while (parameter < functionType.parameters.length) {
+              if (parameter > 0) output.append(", ");
+              appendCBindingName(
+                inout output,
+                functionType.parameters[parameter].name
+              );
+              parameter = parameter + 1;
+            }
+            output.append(")");
+          } else {
+            try appendExpression(inout output, owner, expression.children[0]);
+          }
           output.append(";\n");
         }
         if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");

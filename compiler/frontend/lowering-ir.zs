@@ -2023,6 +2023,48 @@ function moduleFunctionTypeIdentity(
   return encodedFunctionTypeIdentity(identity);
 }
 
+function moduleCallFunctionTypeIdentity(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in resolution: ModuleCallResolution
+): String throws String {
+  if (resolution.parameterModes.length != resolution.parameterTypes.length) {
+    throw "native async call evidence has mismatched parameter capabilities";
+  }
+  let canonical = TextBuffer();
+  let parameter: usize = 0;
+  while (parameter < resolution.parameterTypes.length) {
+    canonical.append(resolution.parameterModes[parameter]);
+    canonical.append(":");
+    const type = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resolution.parameterTypes[parameter]
+    );
+    canonical.append(loweredTypeIdentity(type));
+    canonical.append(";");
+    parameter = parameter + 1;
+  }
+  canonical.append("=>");
+  const returnType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    resolution.returnType
+  );
+  canonical.append(loweredTypeIdentity(returnType));
+  canonical.append(" throws ");
+  if (resolution.errorType.byteLength > 0) {
+    const errorType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resolution.errorType
+    );
+    canonical.append(loweredTypeIdentity(errorType));
+  }
+  const identity = canonical.finish();
+  return encodedFunctionTypeIdentity(identity);
+}
+
 function localTypeAliasTarget(
   in program: Program,
   in name: String
@@ -5706,6 +5748,24 @@ function resolvedCallTarget(
   return Option<String>.none;
 }
 
+function resolvedCallResolutionIndex(
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  let resolutionIndex: usize = 0;
+  while (resolutionIndex < evidence.callResolutions.length) {
+    const resolution = view evidence.callResolutions[resolutionIndex];
+    if (
+      resolution.offset == tree.nodes[index].offset
+      && resolution.line == tree.nodes[index].line
+      && resolution.column == tree.nodes[index].column
+    ) return resolutionIndex;
+    resolutionIndex = resolutionIndex + 1;
+  }
+  return evidence.callResolutions.length;
+}
+
 function resolvedCallKind(
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
@@ -8808,6 +8868,90 @@ function lowerExpressionContextual(
       && tree.nodes[taskInput].children.length > 0
     ) {
       const callableInput = tree.nodes[taskInput].children[0];
+      const callResolutionIndex = resolvedCallResolutionIndex(
+        evidence,
+        tree,
+        taskInput
+      );
+      if (callResolutionIndex < evidence.callResolutions.length) {
+        const resolution = view evidence.callResolutions[
+          callResolutionIndex
+        ];
+        if (resolution.asynchronous && resolution.kind == "function") {
+          if (resolution.errorType.byteLength > 0) {
+            throw "native direct async callable await does not execute typed errors yet";
+          }
+          if (
+            tree.nodes[taskInput].children.length
+              != resolution.parameterTypes.length + 1
+          ) throw "native direct async callable await received mismatched arguments";
+          const resultType = try lowerModuleTypeName(
+            program,
+            importedTypes,
+            resolution.returnType
+          );
+          const callableIdentity = try moduleCallFunctionTypeIdentity(
+            program,
+            importedTypes,
+            resolution
+          );
+          let target = resolution.targetName.copyBytes(
+            0,
+            resolution.targetName.byteLength
+          );
+          const genericFunctionSuffix = try resolvedGenericFunctionSuffix(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            taskInput
+          );
+          target = `${target}${genericFunctionSuffix}`;
+          let callableLabels = Array<String>();
+          callableLabels.push(callableIdentity.copyBytes(
+            0,
+            callableIdentity.byteLength
+          ));
+          const callable = pushExpression(
+            inout output,
+            LoweredExpressionKind.directFunctionValue,
+            target,
+            Array<usize>(),
+            callableLabels
+          );
+          let children = Array<usize>();
+          children.push(callable);
+          let labels = Array<String>();
+          let argument: usize = 0;
+          while (argument < resolution.parameterTypes.length) {
+            const argumentInput = tree.nodes[taskInput].children[
+              argument + 1
+            ];
+            const value = try lowerExpressionExpected(
+              program,
+              importedTypes,
+              evidence,
+              tree,
+              argumentInput,
+              resolution.parameterTypes[argument],
+              inout output
+            );
+            children.push(value);
+            labels.push(resolution.parameterModes[argument].copyBytes(
+              0,
+              resolution.parameterModes[argument].byteLength
+            ));
+            argument = argument + 1;
+          }
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.asyncFunctionAwait,
+            callableIdentity,
+            children,
+            labels
+          );
+        }
+      }
       let callableTypeName = "";
       match (resolvedExpressionTypeName(evidence, tree, callableInput)) {
         some(name) => callableTypeName = move name;
@@ -15948,6 +16092,15 @@ function statementContainsSuspension(
   return false;
 }
 
+function functionContainsSuspension(
+  in declaration: FunctionDeclaration
+): boolean {
+  for (const root of declaration.body.roots) {
+    if (statementContainsSuspension(declaration.body, root)) return true;
+  }
+  return false;
+}
+
 function statementContainsLoopControl(
   in arena: StatementArena,
   index: usize
@@ -19948,11 +20101,17 @@ function lowerFunction(
   let mainDelayLoopSource: usize = 0;
   let mainDelayLoopPosition: usize = 0;
   if (declaration.asynchronous && declaration.name != "main") {
-    if (declaration.executorAffinity != "thread.main") {
+    if (
+      declaration.executorAffinity != "thread.main"
+      && functionContainsSuspension(declaration)
+    ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
     let position: usize = 0;
-    while (position < declaration.body.roots.length) {
+    while (
+      declaration.executorAffinity == "thread.main"
+      && position < declaration.body.roots.length
+    ) {
       const root = declaration.body.roots[position];
       if (
         statementContainsSuspension(declaration.body, root)
@@ -22758,6 +22917,60 @@ function collectFunctionDeclarationTypes(
   );
 }
 
+function collectProgramAsyncCallFunctionType(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in resolution: ModuleCallResolution,
+  inout functionTypes: Array<LoweredFunctionType>
+): void throws String {
+  if (!resolution.asynchronous || resolution.kind != "function") return;
+  const name = try moduleCallFunctionTypeIdentity(
+    program,
+    importedTypes,
+    resolution
+  );
+  if (containsLoweredFunctionType(functionTypes, name)) return;
+  let parameters = Array<LoweredParameter>();
+  let parameter: usize = 0;
+  while (parameter < resolution.parameterTypes.length) {
+    const parameterType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resolution.parameterTypes[parameter]
+    );
+    parameters.push(LoweredParameter({
+      name: `argument${parameter}`,
+      type: parameterType,
+      mode: loweredFunctionParameterMode(
+        resolution.parameterModes[parameter]
+      ),
+    }));
+    parameter = parameter + 1;
+  }
+  let returnType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    resolution.returnType
+  );
+  if (resolution.errorType.byteLength > 0) {
+    const errorType = try lowerModuleTypeName(
+      program,
+      importedTypes,
+      resolution.errorType
+    );
+    returnType = LoweredType({
+      kind: LoweredTypeKind.enumType,
+      name: intrinsicResultName(returnType, errorType),
+    });
+  }
+  functionTypes.push(LoweredFunctionType({
+    name,
+    asynchronous: true,
+    parameters,
+    returnType,
+  }));
+}
+
 function collectProgramFunctionTypes(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -22796,6 +23009,12 @@ function collectProgramFunctionTypes(
     );
   }
   for (const call of evidence.callResolutions) {
+    try collectProgramAsyncCallFunctionType(
+      program,
+      importedTypes,
+      call,
+      inout functionTypes
+    );
     for (const parameterType of call.parameterTypes) {
       try collectProgramFunctionTypeName(
         program,

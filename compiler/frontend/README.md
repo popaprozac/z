@@ -257,17 +257,18 @@ current model for closing a lowering slice: the positive path executes, its
 invalid safety boundary rejects, and destruction follows the same affinity.
 
 The standalone executable subset is intentionally narrower than the native
-parser and semantic graph. Unplaced suspending async functions, traits, generic
+parser and semantic graph. Unplaced genuinely suspending async functions, traits, generic
 methods, fixed arrays, and callable combinations beyond the first synchronous
 direct-function/expression-closure tier still stop before C emission. Ordinary
-transparent aliases and first-class synchronous callable values now cross the
-fixed-point boundary. Those explicit rejections are staged implementation
+transparent aliases, first-class synchronous callable values, and direct calls
+to imported non-suspending async functions now cross the fixed-point boundary.
+Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.
 
 Native semantic diagnostics carry source locations and readable messages, but
 the backend still contains hard stops that must be classified. The first
-source-mapped lowerability preflight now reports ordinary async as `Z0700` and
+source-mapped lowerability preflight now reports suspending ordinary async as `Z0700` and
 valid non-async shapes without a current native representation as `Z1000`;
 custom constructors on generic aggregates and independently generic methods,
 traits, generators,
