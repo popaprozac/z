@@ -924,9 +924,13 @@ function appendClassAndOnceRuntime(
     output.append(aggregate.name);
     output.append(" *Z_");
     output.append(aggregate.name);
-    output.append("_retain(Z_");
+    output.append("_retain(const Z_");
     output.append(aggregate.name);
-    output.append(" *value) {\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n  return value;\n}\n\n");
+    output.append(" *borrowed) {\n  Z_");
+    output.append(aggregate.name);
+    output.append(" *value = (Z_");
+    output.append(aggregate.name);
+    output.append(" *)borrowed;\n  if (value != NULL) (void)__atomic_add_fetch(&value->_z_refcount, 1, __ATOMIC_RELAXED);\n  return value;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_Weak Z_");
     output.append(aggregate.name);
     output.append("_weak_retain(Z_Weak value) {\n  return z_weak_retain(value);\n}\n\n");

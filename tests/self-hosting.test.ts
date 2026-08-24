@@ -1327,6 +1327,37 @@ test("transfers one retained captured callable into aggregate storage", () => {
   );
 }, 240_000);
 
+test("retains a readonly class receiver captured by a non-consuming method", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-readonly-method-capture.zs",
+  );
+  const directory = mkdtempSync("/tmp/z-native-readonly-method-capture-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /Z_Snapshot \*Z_Snapshot_retain\(const Z_Snapshot \*borrowed\)/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("materializes demand-driven generic ARC classes natively", () => {
   const cases = [
     {
