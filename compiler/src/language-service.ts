@@ -7104,6 +7104,7 @@ function displaySubstitutedType(
           ? substitutions.get(functionType.errorType) ?? functionType.errorType
           : null,
         functionType.thread,
+        functionType.async,
       ),
       (nested) => displayType(nested, typeDisplayNames),
     )!;

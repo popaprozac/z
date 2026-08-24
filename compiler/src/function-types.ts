@@ -14,6 +14,8 @@ export type FunctionType = {
    * source compatibility without changing the native call ABI.
    */
   readonly thread: "local" | "main" | "any";
+  /** Calling this value starts structured async work and therefore requires `await` or `task`. */
+  readonly async: boolean;
 };
 
 const prefix = "__z_function:";
@@ -23,8 +25,15 @@ export function functionTypeName(
   returnType: string,
   errorType: string | null = null,
   thread: FunctionType["thread"] = "local",
+  asynchronous = false,
 ): string {
-  return `${prefix}${encodeURIComponent(JSON.stringify({ parameters, returnType, errorType, thread }))}`;
+  return `${prefix}${encodeURIComponent(JSON.stringify({
+    parameters,
+    returnType,
+    errorType,
+    thread,
+    async: asynchronous,
+  }))}`;
 }
 
 export function parseFunctionType(name: string): FunctionType | null {
@@ -47,7 +56,13 @@ export function parseFunctionType(name: string): FunctionType | null {
       && parsed.thread !== "main"
       && parsed.thread !== "any"
     ) return null;
-    return { ...parsed, errorType: parsed.errorType ?? null, thread: parsed.thread ?? "local" };
+    if (parsed.async !== undefined && typeof parsed.async !== "boolean") return null;
+    return {
+      ...parsed,
+      errorType: parsed.errorType ?? null,
+      thread: parsed.thread ?? "local",
+      async: parsed.async ?? false,
+    };
   } catch {
     return null;
   }
@@ -56,6 +71,7 @@ export function parseFunctionType(name: string): FunctionType | null {
 export function functionTypesCompatible(left: FunctionType, right: FunctionType): boolean {
   return left.returnType === right.returnType
     && left.errorType === right.errorType
+    && left.async === right.async
     // The left side is the required type. An arbitrary-thread callable may
     // satisfy either a local or main-only destination. A main-only callable
     // remains distinct from an executor-local value so its placement proof
@@ -82,6 +98,7 @@ export function transformFunctionType(
     transform(functionType.returnType),
     functionType.errorType ? transform(functionType.errorType) : null,
     functionType.thread,
+    functionType.async,
   );
 }
 
@@ -97,7 +114,8 @@ export function displayFunctionType(
   });
   const throws = functionType.errorType ? ` throws ${display(functionType.errorType)}` : "";
   const thread = functionType.thread === "local" ? "" : ` on thread.${functionType.thread}`;
-  return `(${parameters.join(", ")}) => ${display(functionType.returnType)}${throws}${thread}`;
+  const asynchronous = functionType.async ? "async " : "";
+  return `${asynchronous}(${parameters.join(", ")}) => ${display(functionType.returnType)}${throws}${thread}`;
 }
 
 export function functionTypeAbiKey(functionType: FunctionType): string {
@@ -105,5 +123,8 @@ export function functionTypeAbiKey(functionType: FunctionType): string {
     parameters: functionType.parameters.map((parameter) => ({ mode: parameter.mode, type: parameter.type })),
     returnType: functionType.returnType,
     errorType: functionType.errorType,
+    // Keep the established synchronous ABI key stable while making async
+    // callable start functions a distinct native shape.
+    async: functionType.async || undefined,
   });
 }

@@ -597,6 +597,22 @@ export function generateC(
     lines.push(generateObjCBlockRuntime(usesForeignRuntimeEntry), "");
   }
 
+  if (functionTypes.some((functionType) => functionType.async)) {
+    lines.push(
+      "typedef struct Z_AsyncTask Z_AsyncTask;",
+      "typedef struct Z_AsyncExecutor Z_AsyncExecutor;",
+      "typedef struct Z_AsyncInvocation {",
+      "  Z_AsyncTask *task;",
+      "  bool (*failed)(Z_AsyncTask *task);",
+      "  void (*take_result)(Z_AsyncTask *task, void *destination);",
+      "  void (*take_error)(Z_AsyncTask *task, void *destination);",
+      "  void (*destroy)(Z_AsyncTask *task);",
+      "  void *callable_context;",
+      "  void (*release_context)(void *context);",
+      "} Z_AsyncInvocation;",
+      "",
+    );
+  }
   for (const functionType of functionTypes) {
     lines.push(generateFunctionTypeDefinition(functionType, structs, enums, semanticInfo.foreignNamedTypes));
   }
@@ -710,7 +726,9 @@ export function generateC(
     lines.push(`${generateArenaCreateSignature(type, structs, enums, semanticInfo.foreignNamedTypes)};`);
   }
   for (const closure of closures) {
-    lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
+    if (!closure.declaration.async) {
+      lines.push(`${generateFunctionSignature(closure.declaration, structs, enums, null, semanticInfo.foreignNamedTypes)};`);
+    }
     if (closure.owned) {
       lines.push(`static void ${closureEnvironmentRetainName(closure)}(void *context);`);
       lines.push(`static void ${closureEnvironmentReleaseName(closure)}(void *context);`);
@@ -801,7 +819,7 @@ export function generateC(
   for (const closure of closures.filter((candidate) => candidate.owned)) {
     lines.push(generateClosureEnvironmentLifecycle(closure, structs, enums, semanticInfo), "");
   }
-  for (const closure of closures.filter((candidate) => candidate.storable)) {
+  for (const closure of closures.filter((candidate) => candidate.storable && !candidate.declaration.async)) {
     lines.push(generateClosureAdapter(closure, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
   for (const declaration of program.functions.filter((candidate) => candidate.name !== "main")) {
@@ -811,7 +829,7 @@ export function generateC(
     if (standardFunctionSignature(name).async) continue;
     lines.push(generateStandardFunctionAdapter(name, structs, enums, semanticInfo.foreignNamedTypes), "");
   }
-  for (const closure of closures) {
+  for (const closure of closures.filter((candidate) => !candidate.declaration.async)) {
     lines.push(generateFunction(
       closure.declaration,
       structs,
@@ -2541,15 +2559,19 @@ function generateFunctionTypeDefinition(
   const returnType = functionType.errorType
     ? resultTypeName(functionType.returnType, functionType.errorType)
     : functionType.returnType;
-  const result = mapType(returnType, structs, enums, foreignNamedTypes);
+  const result = functionType.async
+    ? "Z_AsyncInvocation"
+    : mapType(returnType, structs, enums, foreignNamedTypes);
   const name = functionTypeCName(functionType);
   const callParameters = [
     `void *${functionTypeContextParameterName(functionType)}`,
+    ...(functionType.async ? ["Z_AsyncExecutor *executor"] : []),
     ...parameters,
   ].join(", ");
+  const entry = functionType.async ? "start" : "call";
   return `typedef struct ${name} ${name};
 struct ${name} {
-  ${result} (*call)(${callParameters});
+  ${result} (*${entry})(${callParameters});
   void *context;
   void (*retain)(void *context);
   void (*release)(void *context);
@@ -2566,7 +2588,13 @@ static inline __attribute__((unused)) void ${functionTypeReleaseName(functionTyp
 }
 
 function generateObjCConnectionRuntime(): string {
-  const functionType: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
+  const functionType: FunctionType = {
+    parameters: [],
+    returnType: "void",
+    errorType: null,
+    thread: "local",
+    async: false,
+  };
   const functionName = functionTypeCName(functionType);
   const releaseName = functionTypeReleaseName(functionType);
   return `@interface ZObjCConnection : NSObject {
@@ -2757,7 +2785,7 @@ static ZObjCRegistration *${objcRegistrationHelperName(offset)}(${parameters.joi
 }`;
 }
 
-function generateFunctionTypeParameters(
+export function generateFunctionTypeParameters(
   functionType: FunctionType,
   structs: Map<string, StructDeclaration>,
   enums: Map<string, EnumDeclaration>,
@@ -2808,7 +2836,7 @@ function functionTypeReleaseName(functionType: FunctionType): string {
   return `${functionTypeCName(functionType)}_release`;
 }
 
-function functionTypeContextParameterName(functionType: FunctionType): string {
+export function functionTypeContextParameterName(functionType: FunctionType): string {
   const occupied = new Set(functionType.parameters.map((parameter) => (
     cBindingName(parameter.name)
   )));
@@ -2829,6 +2857,7 @@ function declarationFunctionType(declaration: FunctionDeclaration, skipParameter
       ? declaration.errorType.name
       : null,
     thread: declaration.threadContract?.thread ?? "local",
+    async: declaration.async ?? false,
   };
 }
 
@@ -2884,7 +2913,8 @@ export function functionValueLiteral(
   retain = "NULL",
   release = "NULL",
 ): string {
-  return `(${functionTypeCName(functionType)}){ .call = ${call}, .context = ${context}, .retain = ${retain}, .release = ${release} }`;
+  const entry = functionType.async ? "start" : "call";
+  return `(${functionTypeCName(functionType)}){ .${entry} = ${call}, .context = ${context}, .retain = ${retain}, .release = ${release} }`;
 }
 
 function generateFunctionAdapter(
@@ -2926,6 +2956,7 @@ function generateStandardFunctionAdapter(
     returnType: signature.returnType,
     errorType: signature.errorType,
     thread: "local",
+    async: signature.async ?? false,
   };
   const parameters = generateFunctionTypeParameters(functionType, structs, enums, foreignNamedTypes);
   const names = signature.parameters.map((parameter) => (
@@ -2991,6 +3022,9 @@ function generateClosureAdapterSignature(
     ? resultTypeName(type.returnType, type.errorType)
     : type.returnType;
   const contextName = functionTypeContextParameterName(type);
+  if (type.async) {
+    return `static Z_AsyncInvocation ${closureAdapterName(closure)}(void *${contextName}, Z_AsyncExecutor *executor${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
+  }
   return `static ${mapType(returnType, structs, enums, foreignNamedTypes)} ${closureAdapterName(closure)}(void *${contextName}${parameters.length ? `, ${parameters.join(", ")}` : ""})`;
 }
 
@@ -11938,7 +11972,7 @@ const cReservedWords = new Set(`
   _Generic _Imaginary _Noreturn _Static_assert _Thread_local
 `.trim().split(/\s+/));
 
-function cBindingName(name: string): string {
+export function cBindingName(name: string): string {
   return cReservedWords.has(name) ? `z_${name}` : name;
 }
 

@@ -229,6 +229,7 @@ export function inferGenericCalls(
         substituteType(functionType.returnType, substitutions),
         functionType.errorType ? substituteType(functionType.errorType, substitutions) : null,
         functionType.thread,
+        functionType.async,
       );
     }
     const array = parseFixedArrayType(type);

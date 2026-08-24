@@ -527,10 +527,18 @@ function parseType(
       column,
     });
   }
-  if (tokens[current].kind == TokenKind.leftParen) {
-    const start = try expect(tokens, inout current, TokenKind.leftParen, "a function type");
+  const asynchronous = tokens[current].kind == TokenKind.asyncKeyword;
+  if (asynchronous || tokens[current].kind == TokenKind.leftParen) {
+    const start = snapshot(tokens[current]);
+    if (asynchronous) {
+      current = current + 1;
+      try expectKind(tokens, inout current, TokenKind.leftParen, "`(` after `async` in a function type");
+    } else {
+      current = current + 1;
+    }
     let output = TextBuffer();
     let references = Array<TypeNameReference>();
+    if (asynchronous) output.append("async ");
     output.append("(");
     let first = true;
     while (tokens[current].kind != TokenKind.rightParen) {

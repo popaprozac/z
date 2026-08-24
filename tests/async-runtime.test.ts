@@ -94,6 +94,90 @@ test("runs typed scalar async errors through try and attempt await", () => {
   assert.equal(failed.status, 1, failed.stderr);
 });
 
+test("types stored async operations without starting detached work", () => {
+  const source = `
+    import { thread } from "std/thread";
+
+    struct Invocation { value: i32; }
+    struct ServiceError { code: i32; }
+    class Service {
+      readonly offset: i32;
+    }
+    type AsyncHandler =
+      async (in invocation: Invocation) => i32 throws ServiceError on thread.any;
+
+    async function invoke(in handler: AsyncHandler): i32 throws ServiceError {
+      const invocation = Invocation({ value: 42 });
+      return try await handler(in invocation);
+    }
+
+    async function main(): i32 throws ServiceError {
+      const service = new Service({ offset: 2 });
+      const handler: AsyncHandler = async move (in invocation): i32 throws ServiceError => {
+        if (invocation.value < 0) throw ServiceError({ code: 3 });
+        return invocation.value + service.offset;
+      };
+      const success = try await invoke(in handler);
+      const failedInvocation = Invocation({ value: -1 });
+      const failed = attempt await handler(in failedInvocation);
+      return match (failed) {
+        success(value) => value;
+        failure(error) => success + error.code - 47;
+      };
+    }
+  `;
+  assert.doesNotThrow(() => check(source, "async-function-value.zs"));
+
+  const aliasOffset = source.indexOf("AsyncHandler");
+  assert.match(
+    hover(source, "async-function-value.zs", aliasOffset + 1)?.contents.value ?? "",
+    /type AsyncHandler = async \(in invocation: Invocation\) => i32 throws ServiceError on thread\.any/,
+  );
+  const handlerUse = source.indexOf("handler(in invocation)") + 1;
+  assert.match(
+    hover(source, "async-function-value.zs", handlerUse)?.contents.value ?? "",
+    /handler: AsyncHandler/,
+  );
+
+  const naked = source.replace(
+    "return try await handler(in invocation);",
+    "return try handler(in invocation);",
+  );
+  const nakedDiagnostic = diagnostics(naked, "naked-async-function-value.zs")[0];
+  assert.equal(nakedDiagnostic.code, "Z0702");
+  assert.match(nakedDiagnostic.message, /requires `await` or `task`/);
+
+  const borrowedTemporary = source.replace(
+    "const invocation = Invocation({ value: 42 });\n      return try await handler(in invocation);",
+    "return try await handler(Invocation({ value: 42 }));",
+  );
+  const temporaryDiagnostic = diagnostics(
+    borrowedTemporary,
+    "temporary-async-function-value-argument.zs",
+  )[0];
+  assert.equal(temporaryDiagnostic.code, "Z0704");
+  assert.match(temporaryDiagnostic.message, /requires named storage/);
+
+  const synchronous = source.replace(
+    "async move (in invocation): i32 throws ServiceError =>",
+    "move (in invocation): i32 throws ServiceError =>",
+  );
+  assert.match(
+    diagnostics(synchronous, "sync-for-async-function-value.zs")[0].message,
+    /expected an async callable, found a synchronous closure/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-function-value-");
+  const input = resolve(directory, "main.zs");
+  writeFileSync(input, source);
+  const artifact = compileToNative(source, input);
+  assert.match(artifact.source, /typedef struct Z_AsyncInvocation/);
+  assert.match(artifact.source, /\.start = __z_closure_call_[0-9]+_adapter/);
+  const execution = spawnSync(process.execPath, [cli, "run", input], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("carries plain struct values and errors through async task frames", () => {
   const example = resolve(projectRoot, "examples/async/async-aggregates.zs");
   const source = readFileSync(example, "utf8");

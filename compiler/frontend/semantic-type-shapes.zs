@@ -19,7 +19,9 @@ export function nativeFunctionTypeName(
   in signature: ModuleFunctionSignature
 ): String {
   let output = TextBuffer();
-  output.append("__z_native_function:(");
+  output.append("__z_native_function:");
+  if (signature.asynchronous) output.append("async ");
+  output.append("(");
   let index: usize = 0;
   while (index < signature.parameterTypes.length) {
     if (index > 0) output.append(", ");
@@ -305,9 +307,16 @@ export function nativeFunctionSignature(
   let functionType = nativeFunctionDisplayType(typeName);
   if (
     functionType.byteLength == 0
-    && typeName.byteLength > 0
-    && typeName.byteAt(0) == 40
+    && (
+      (typeName.byteLength > 0 && typeName.byteAt(0) == 40)
+      || stringStartsWith(typeName, "async (")
+    )
   ) functionType = typeName.copyBytes(0, typeName.byteLength);
+  let asynchronous = false;
+  if (stringStartsWith(functionType, "async ")) {
+    asynchronous = true;
+    functionType = functionType.copyBytes(6, functionType.byteLength);
+  }
   if (functionType.byteLength < 6 || functionType.byteAt(0) != 40) {
     return Option<ModuleFunctionSignature>.none;
   }
@@ -431,7 +440,7 @@ export function nativeFunctionSignature(
     }
   }
   return Option.some(ModuleFunctionSignature({
-    asynchronous: false,
+    asynchronous,
     executorAffinity: "",
     threadContract,
     typeParameters: Array<String>(),

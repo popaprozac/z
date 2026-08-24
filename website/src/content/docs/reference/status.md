@@ -25,8 +25,9 @@ production or compatibility-sensitive use.
   arenas, JSON foundations, and inline Z tests
 - Structured tasks, cancellation, executor placement, dedicated native threads,
   `Mutex<T>`, and `Once<T>` across proven slices
-- Stored synchronous callables that preserve either `thread.main` isolation or
-  arbitrary-thread `thread.any` sharing without scheduling implicitly
+- Stored synchronous callables and a first stored-async direct-await tier that
+  preserve either `thread.main` isolation or arbitrary-thread `thread.any`
+  sharing without scheduling implicitly
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

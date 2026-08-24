@@ -27,6 +27,7 @@ import {
 } from "./parser.zs";
 
 export struct NativeClosureSignatureShape {
+  asynchronous: boolean;
   parameterNames: Array<String>;
   parameterModes: Array<String>;
   parameterTypes: Array<String>;
@@ -106,8 +107,25 @@ export function resolveClosureSignature(
     moduleIndex,
     contextualType
   );
+  const closureAsynchronous = tree.nodes[index].labels.length > 3
+    && tree.nodes[index].labels[3] == "async";
   match (nativeFunctionSignature(expandedContextualType)) {
     some(signature) => {
+      if (signature.asynchronous != closureAsynchronous) {
+        const expected = signature.asynchronous
+          ? "an async callable"
+          : "a synchronous callable";
+        const actual = closureAsynchronous
+          ? "an async closure"
+          : "a synchronous closure";
+        throw moduleResolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          `expected ${expected}, found ${actual}`,
+          tree.nodes[index].line,
+          tree.nodes[index].column
+        );
+      }
       threadContract = signature.threadContract.copyBytes(
         0,
         signature.threadContract.byteLength
@@ -277,6 +295,7 @@ export function resolveClosureSignature(
     parameterIndex = parameterIndex + 1;
   }
   return NativeClosureSignatureShape({
+    asynchronous: closureAsynchronous,
     parameterNames,
     parameterModes,
     parameterTypes,
@@ -293,10 +312,12 @@ export function nativeClosureFunctionType(
   in parameterTypes: Array<String>,
   in returnType: String,
   in errorType: String,
-  in threadContract: String
+  in threadContract: String,
+  asynchronous: boolean
 ): String {
   let output = TextBuffer();
   output.append("__z_native_function:");
+  if (asynchronous) output.append("async ");
   output.append("(");
   let first = true;
   let parameterIndex: usize = 0;

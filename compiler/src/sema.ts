@@ -5509,6 +5509,7 @@ function closureFunctionType(closure: ClosureInfo): FunctionType {
     errorType: closure.declaration.errorType?.name ?? null,
     thread: closure.declaration.threadContract?.thread
       ?? (closure.declaration.executorAffinity ? "main" : "local"),
+    async: closure.declaration.async ?? false,
   };
 }
 
@@ -5516,6 +5517,7 @@ function functionTypeDeclaration(name: string, type: FunctionType, location: Sou
   return {
     kind: "function",
     name,
+    async: type.async,
     receiverMode: null,
     parameters: type.parameters.map((parameter) => ({
       name: parameter.name,
@@ -5587,7 +5589,7 @@ function inferClosureExpression(
   const executionContext = expectedFunction?.thread === "main"
     ? "main"
     : options.executionContext ?? "unknown";
-  if (expression.async && !nativeThreadBody && !scheduledAsyncBody) {
+  if (expression.async && !nativeThreadBody && !scheduledAsyncBody && !expectedFunction?.async) {
     throw new DiagnosticError(fileName, expression.location, "async closures are currently executable only through thread.spawn", {
       code: "Z0703",
       notes: ["an async closure requires an explicit owner and executor"],
@@ -5595,6 +5597,16 @@ function inferClosureExpression(
         "pass this closure directly to thread.spawn for a dedicated worker",
         "or submit it through TaskScope.schedule for structured executor work",
       ],
+    });
+  }
+  if (expectedFunction && expression.async !== expectedFunction.async) {
+    const expected = expectedFunction.async ? "an async callable" : "a synchronous callable";
+    const actual = expression.async ? "an async closure" : "a synchronous closure";
+    throw new DiagnosticError(fileName, expression.location, `expected ${expected}, found ${actual}`, {
+      code: "Z0215",
+      helps: [expectedFunction.async
+        ? "add `async` before the closure parameter list"
+        : "remove `async` from the closure"],
     });
   }
   if (expectedFunction && expression.parameters.length !== expectedFunction.parameters.length) {
@@ -5953,6 +5965,7 @@ function finalizeClosureFunctionValue(
         actualFunction.returnType,
         actualFunction.errorType,
         actualFunction.thread,
+        actualFunction.async,
       ))}`,
     );
   }
@@ -8841,7 +8854,11 @@ function inferExpressionInner(
       const global = globals.get(expression.name);
       if (global?.kind === "function") {
         if (global.declaration.async) {
-          throw new DiagnosticError(fileName, expression.location, "async function values are deferred; call the function beneath `await` or `task`");
+          throw new DiagnosticError(fileName, expression.location, "named async function values are not executable in the first stored-callable tier", {
+            code: "Z0703",
+            notes: ["typed async closures already provide the same structured invocation contract"],
+            helps: ["wrap the function in an explicitly typed `async (...) => await operation(...)` closure"],
+          });
         }
         if (global.declaration.typeParameters?.length) {
           throw new DiagnosticError(fileName, expression.location, "generic function values require explicit specialization, which is not implemented yet");
@@ -8866,6 +8883,7 @@ function inferExpressionInner(
             ? global.declaration.errorType.name
             : null,
           thread,
+          false,
         );
       }
       if (global?.kind === "constant") {
@@ -10715,7 +10733,13 @@ function inferExpressionInner(
                 });
               }
               const operation = expression.arguments[1];
-              const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
+              const expectedFunction: FunctionType = {
+                parameters: [],
+                returnType: "void",
+                errorType: null,
+                thread: "local",
+                async: false,
+              };
               const expectedType = functionTypeName([], "void");
               const controlExecutionContext: ClosureExecutionContext = executorAffinityForType(
                 controlType,
@@ -11506,8 +11530,14 @@ function inferExpressionInner(
               });
             }
             const operation = expression.arguments[1];
-            const expectedFunction: FunctionType = { parameters: [], returnType: "void", errorType: null, thread: "local" };
-            const expectedType = functionTypeName([], "void");
+            const expectedFunction: FunctionType = {
+              parameters: [],
+              returnType: "void",
+              errorType: null,
+              thread: "local",
+              async: operation.async,
+            };
+            const expectedType = functionTypeName([], "void", null, "local", operation.async);
             if (operation.async && operation.errorType) {
               throw new DiagnosticError(fileName, operation.errorType.location, "TaskScope.schedule async operations cannot throw", {
                 code: "Z0710",
@@ -12472,6 +12502,12 @@ function inferExpressionInner(
             expression.location,
             state,
           );
+          registerAsyncCall(
+            functionTypeDeclaration(expression.callee.property, fieldFunctionType, expression.callee.location),
+            expression.location,
+            fileName,
+            state,
+          );
           if (fieldFunctionType.errorType) {
             if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
             return resultTypeName(fieldFunctionType.returnType, fieldFunctionType.errorType);
@@ -12647,8 +12683,13 @@ function inferExpressionInner(
             state,
           );
           state.expressionTypes.set(expression.callee.location.offset, String(underlyingType(localCallee)));
+          const declaration = functionTypeDeclaration(
+            expression.callee.name,
+            functionType,
+            expression.callee.location,
+          );
           checkArguments(
-            functionTypeDeclaration(expression.callee.name, functionType, expression.callee.location),
+            declaration,
             expression.arguments,
             locals,
             globals,
@@ -12658,6 +12699,7 @@ function inferExpressionInner(
             expression.location,
             state,
           );
+          registerAsyncCall(declaration, expression.location, fileName, state);
           if (functionType.errorType) {
             if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
             return resultTypeName(functionType.returnType, functionType.errorType);
@@ -13199,6 +13241,18 @@ function checkArguments(
     }
     if (parameter.mode === "in") {
       const borrowedArgument = capabilityPath?.target ?? argument;
+      if (target.async && !isNamedStorageExpression(borrowedArgument)) {
+        throw new DiagnosticError(
+          fileName,
+          argument.location,
+          "an async immutable borrow requires named storage in this task-frame tier",
+          {
+            code: "Z0704",
+            notes: ["the borrowed value must remain address-stable until the awaited child task completes"],
+            helps: ["bind the value to `const` first, then pass that binding with `in`"],
+          },
+        );
+      }
       if (capabilityPath && capabilityPath.fields.length > 0) {
         validateProjectedCapabilityPath(capabilityPath, locals, structs, fileName, state);
       }
@@ -18743,6 +18797,7 @@ function resolveSemanticTypeName(
         resolveName(functionType.returnType),
         functionType.errorType ? resolveName(functionType.errorType) : null,
         functionType.thread,
+        functionType.async,
       );
     }
     const weak = parseWeakType(name);

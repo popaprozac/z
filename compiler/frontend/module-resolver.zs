@@ -6815,7 +6815,8 @@ function inferExpressionNodeType(
       closureSignature.parameterTypes,
       returnType,
       closureSignature.errorType,
-      closureSignature.threadContract
+      closureSignature.threadContract,
+      closureSignature.asynchronous
     );
   }
   if (kind == ExpressionKind.callExpression && children.length > 0) {
@@ -8480,7 +8481,8 @@ function inferExpressionNodeType(
                 parameterTypes,
                 contextualReturnType,
                 errorType,
-                ""
+                "",
+                false
               );
               let withLockBindings = copyValueBindings(bindings);
               const inheritedExecutorContext = currentExecutorContext(

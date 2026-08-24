@@ -67,6 +67,7 @@ export function resolveTypeAliases(
         resolveName(functionType.returnType, stack),
         functionType.errorType ? resolveName(functionType.errorType, stack) : null,
         functionType.thread,
+        functionType.async,
       );
     }
     const view = parseViewType(name);

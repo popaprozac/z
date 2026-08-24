@@ -62,8 +62,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       const location = previous().location;
       return { name: readonlyTypeName(parseType().name), location };
     }
-    if (match("leftParen")) {
+    const asynchronous = match("async");
+    if (asynchronous || match("leftParen")) {
       const location = previous().location;
+      if (asynchronous) expect("leftParen", "`(` after `async` in a function type");
       const parameters = [];
       if (!at("rightParen")) {
         do {
@@ -91,7 +93,10 @@ export function parse(tokens: Token[], fileName: string): Program {
         }
         thread = member.text;
       }
-      return { name: functionTypeName(parameters, returnType.name, errorType?.name ?? null, thread), location };
+      return {
+        name: functionTypeName(parameters, returnType.name, errorType?.name ?? null, thread, asynchronous),
+        location,
+      };
     }
     const token = expect("identifier", "a type name");
     let name = token.text;

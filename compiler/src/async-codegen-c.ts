@@ -23,17 +23,21 @@ import { standardFunctionSignature } from "./standard-library.ts";
 import { parseViewType } from "./view-types.ts";
 import { parseOnceLifetimeType } from "./once-types.ts";
 import { parseMutexType } from "./mutex-types.ts";
+import { parseFunctionType, type FunctionType } from "./function-types.ts";
 import { writableTypeName } from "./readonly-types.ts";
 import { collectPlacementCaptures } from "./placement-captures.ts";
-import type { IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadTransferKind } from "./sema.ts";
+import type { ClosureInfo, IntegerOperation, ObjCCallInfo, SemanticInfo, ThreadTransferKind } from "./sema.ts";
 import {
   closureAdapterName,
+  cBindingName,
   closureEnvironmentName,
   closureEnvironmentReleaseName,
   closureEnvironmentRetainName,
   closureFunctionType,
   functionTypeCName,
+  functionTypeContextParameterName,
   functionValueLiteral,
+  generateFunctionTypeParameters,
   generateObjCBlockArgument,
   generateObjCMessage,
   semanticInfoUsesForeignRuntimeEntry,
@@ -54,6 +58,8 @@ type AwaitSite = {
     readonly type: string;
     readonly receiver: Expression;
   } | null;
+  /** A dynamically dispatched async function value rather than a statically named frame target. */
+  readonly callable?: FunctionType;
 };
 
 type SpawnSite = {
@@ -67,6 +73,7 @@ type SpawnSite = {
   readonly nativeThread: boolean;
   readonly asyncNativeThread: boolean;
   readonly placement: "main" | null;
+  readonly callable?: FunctionType;
 };
 
 type AsyncForSite = {
@@ -360,11 +367,15 @@ export function generateAsyncC(
       },
     });
   }
+  const callableTargets: AsyncTarget[] = [...semanticInfo.closures.values()]
+    .filter((closure) => closure.storable && Boolean(closure.declaration.async))
+    .map((closure) => ({ declaration: closure.declaration, owner: null }));
   const targets: AsyncTarget[] = [
     ...sourceTargets,
     ...threadTargets.values(),
     ...taskScopeTargets.values(),
     ...foreignTargets.values(),
+    ...callableTargets,
   ];
   const functions = new Map(
     targets.filter((target) => !target.owner).map((target) => [target.declaration.name, target]),
@@ -551,7 +562,7 @@ function planFunction(
       nativeThread,
     );
     awaits.set(expression.location.offset, site);
-    if (!site.intrinsic && !site.generator) children.set(site.index, site.target);
+    if (!site.intrinsic && !site.generator && !site.callable) children.set(site.index, site.target);
     return site;
   };
   const recordNestedAwaits = (
@@ -1280,7 +1291,7 @@ function planFunction(
               );
           spawns.set(statement.initializer.location.offset, site);
           spawnBindings.set(statement.name, site);
-          children.set(site.index, site.target);
+          if (!site.callable) children.set(site.index, site.target);
           continue;
         }
         if (threadSpawn && statement.initializer.kind === "call") {
@@ -1295,7 +1306,7 @@ function planFunction(
           );
           spawns.set(statement.initializer.location.offset, site);
           spawnBindings.set(statement.name, site);
-          children.set(site.index, site.target);
+          if (!site.callable) children.set(site.index, site.target);
           continue;
         }
         const operation = awaitOperation(statement.initializer);
@@ -1412,7 +1423,7 @@ function planFunction(
                 nativeThread,
               );
           spawns.set(statement.expression.location.offset, site);
-          children.set(site.index, site.target);
+          if (!site.callable) children.set(site.index, site.target);
           continue;
         }
         if (
@@ -1692,6 +1703,7 @@ function awaitSite(
           call: expression.call,
           target: resolved.target,
           receiver: resolved.receiver,
+          callable: resolved.callable,
           spawn: null,
           placement: expression.mode,
           generator: null,
@@ -1729,6 +1741,7 @@ function awaitSite(
       call: spawn.call,
       target: spawn.target,
       receiver: null,
+      callable: spawn.callable,
       spawn,
       placement: null,
       generator: null,
@@ -1785,6 +1798,7 @@ function awaitSite(
       call: spawn.call,
       target: spawn.target,
       receiver: null,
+      callable: spawn.callable,
       spawn,
       placement: null,
       generator: null,
@@ -1847,6 +1861,7 @@ function awaitSite(
     call,
     target: resolved.target,
     receiver: resolved.receiver,
+    callable: resolved.callable,
     spawn: null,
     placement: null,
     generator: null,
@@ -2208,6 +2223,14 @@ function spawnSite(
     );
   }
   const resolved = resolveAsyncCall(expression.expression, functions, fileName, locals, types);
+  if (resolved.callable) {
+    unsupported(
+      fileName,
+      expression.location,
+      "task-starting an async function value needs dynamic child-handle lowering",
+      "await the function value directly while structured dynamic Task handles land",
+    );
+  }
   return {
     index,
     scope,
@@ -2215,6 +2238,7 @@ function spawnSite(
     call: expression.expression,
     target: resolved.target,
     receiver: resolved.receiver,
+    callable: resolved.callable,
     binding,
     nativeThread: false,
     asyncNativeThread: false,
@@ -2247,6 +2271,7 @@ function placementSpawnSite(
         call: expression.call,
         target: resolved.target,
         receiver: resolved.receiver,
+        callable: resolved.callable,
         binding,
         nativeThread: false,
         asyncNativeThread: false,
@@ -2309,7 +2334,7 @@ function resolveAsyncCall(
   fileName: string,
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
-): { readonly target: AsyncTarget; readonly receiver: Expression | null } {
+): { readonly target: AsyncTarget; readonly receiver: Expression | null; readonly callable?: FunctionType } {
   const resolved = tryResolveAsyncCall(call, functions, locals, types);
   if (resolved) return resolved;
   unsupported(fileName, call.location, "async lowering could not resolve the async call");
@@ -2320,12 +2345,20 @@ function tryResolveAsyncCall(
   functions: ReadonlyMap<string, AsyncTarget>,
   locals: ReadonlyMap<string, string>,
   types: AsyncTypeContext,
-): { readonly target: AsyncTarget; readonly receiver: Expression | null } | null {
+): { readonly target: AsyncTarget; readonly receiver: Expression | null; readonly callable?: FunctionType } | null {
   const foreign = types.foreignTargets.get(call.location.offset);
   if (foreign) return { target: foreign, receiver: null };
   if (call.callee.kind === "identifier") {
     const target = functions.get(call.callee.name);
     if (target?.declaration.async) return { target, receiver: null };
+    const callable = parseFunctionType(locals.get(call.callee.name) ?? "");
+    if (callable?.async) {
+      return {
+        target: asyncCallableTarget(callable, call.callee.name, call.location),
+        receiver: null,
+        callable,
+      };
+    }
   }
   if (call.callee.kind === "member") {
     const object = call.callee.object;
@@ -2346,8 +2379,43 @@ function tryResolveAsyncCall(
     if (owner && method) {
       return { target: { declaration: method, owner }, receiver: object };
     }
+    const field = owner?.fields.find((candidate) => candidate.name === call.callee.property);
+    const callable = field ? parseFunctionType(field.type.name) : null;
+    if (callable?.async) {
+      return {
+        target: asyncCallableTarget(callable, call.callee.property, call.location),
+        receiver: null,
+        callable,
+      };
+    }
   }
   return null;
+}
+
+function asyncCallableTarget(
+  callable: FunctionType,
+  name: string,
+  location: SourceLocation,
+): AsyncTarget {
+  return {
+    owner: null,
+    declaration: {
+      kind: "function",
+      name: `__z_async_callable_${name}_${location.offset}`,
+      async: true,
+      receiverMode: null,
+      parameters: callable.parameters.map((parameter) => ({
+        name: parameter.name,
+        mode: parameter.mode,
+        type: { name: parameter.type, location },
+        location,
+      })),
+      returnType: { name: callable.returnType, location },
+      errorType: callable.errorType ? { name: callable.errorType, location } : null,
+      body: [],
+      location,
+    },
+  };
 }
 
 function awaitOperation(expression: Expression): {
@@ -2618,6 +2686,11 @@ function generateRuntime(
   taskScopeTargets: ReadonlyMap<number, AsyncTarget>,
   fileName: string,
 ): string {
+  const callableClosures = new Map(
+    [...(plans[0]?.types.semanticInfo.closures.values() ?? [])]
+      .filter((closure) => closure.storable && Boolean(closure.declaration.async))
+      .map((closure) => [closure.declaration.name, closure]),
+  );
   const usesDelay = plans.some((plan) => [...plan.awaits.values()].some((site) => site.intrinsic === "delay"));
   const usesTaskScopes = plans.some((plan) => (
     [...plan.locals.values()].includes("TaskScope")
@@ -3828,6 +3901,10 @@ function generateRuntime(
   if (plans.length > 0) lines.push("");
   for (const plan of plans) lines.push(generateDestroy(plan, planByKey), "");
   for (const plan of plans) lines.push(generateStart(plan), "");
+  for (const plan of plans) {
+    const closure = callableClosures.get(plan.declaration.name);
+    if (closure) lines.push(generateAsyncCallableAdapters(plan, closure), "");
+  }
   for (const [callOffset, target] of taskScopeTargets) {
     const plan = planByKey.get(targetKey(target))!;
     lines.push(generateTaskScopeAsyncSchedule(callOffset, plan), "");
@@ -3951,6 +4028,13 @@ function generateFrame(
   for (const [index, target] of plan.children) {
     lines.push(`  ${planByKey.get(targetKey(target))!.frameName} *child_${index};`);
   }
+  const callableChildren = new Set([
+    ...[...plan.awaits.values()].filter((site) => site.callable).map((site) => site.index),
+    ...[...plan.spawns.values()].filter((site) => site.callable).map((site) => site.index),
+  ]);
+  for (const index of callableChildren) {
+    lines.push(`  Z_AsyncInvocation child_${index};`);
+  }
   for (const site of plan.awaits.values()) {
     if (site.generator) lines.push(`  Z_AsyncTask *child_${site.index};`);
   }
@@ -3976,6 +4060,23 @@ function generateDestroy(
       `    ${child.destroyName}(frame->child_${index});`,
       `    free(frame->child_${index});`,
       `    frame->child_${index} = NULL;`,
+      "  }",
+    );
+  }
+  const callableChildren = new Set([
+    ...[...plan.awaits.values()].filter((site) => site.callable).map((site) => site.index),
+    ...[...plan.spawns.values()].filter((site) => site.callable).map((site) => site.index),
+  ]);
+  for (const index of [...callableChildren].reverse()) {
+    lines.push(
+      `  if (frame->child_${index}.task != NULL) {`,
+      `    frame->child_${index}.destroy(frame->child_${index}.task);`,
+      `    frame->child_${index}.task = NULL;`,
+      "  }",
+      `  if (frame->child_${index}.release_context != NULL) {`,
+      `    frame->child_${index}.release_context(frame->child_${index}.callable_context);`,
+      `    frame->child_${index}.callable_context = NULL;`,
+      `    frame->child_${index}.release_context = NULL;`,
       "  }",
     );
   }
@@ -4090,6 +4191,11 @@ function generateStart(plan: AsyncFunctionPlan): string {
     }
   }
   for (const index of plan.children.keys()) lines.push(`  frame->child_${index} = NULL;`);
+  const callableChildren = new Set([
+    ...[...plan.awaits.values()].filter((site) => site.callable).map((site) => site.index),
+    ...[...plan.spawns.values()].filter((site) => site.callable).map((site) => site.index),
+  ]);
+  for (const index of callableChildren) lines.push(`  frame->child_${index}.task = NULL;`);
   for (const site of plan.awaits.values()) {
     if (site.generator) lines.push(`  frame->child_${site.index} = NULL;`);
   }
@@ -4121,6 +4227,102 @@ function generateTaskScopeAsyncSchedule(
     `static Z_TaskControl *${taskScopeAsyncScheduleName(callOffset)}(Z_TaskScope *scope${parameters.length ? `, ${parameters.join(", ")}` : ""}) {`,
     `  ${plan.frameName} *child = ${plan.startName}(scope->executor${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
     `  return z_task_scope_spawn_async(scope, &child->task, ${destroyName});`,
+    "}",
+  ].join("\n");
+}
+
+function generateAsyncCallableAdapters(
+  plan: AsyncFunctionPlan,
+  closure: ClosureInfo,
+): string {
+  const callable = closureFunctionType(closure);
+  const adapterPart = targetPart(plan);
+  const failedName = `z_async_callable_failed_${adapterPart}`;
+  const takeResultName = `z_async_callable_take_result_${adapterPart}`;
+  const takeErrorName = `z_async_callable_take_error_${adapterPart}`;
+  const destroyName = `z_async_callable_destroy_${adapterPart}`;
+  const parameters = generateFunctionTypeParameters(
+    callable,
+    new Map(plan.types.structs),
+    new Map(plan.types.enums),
+    plan.types.semanticInfo.foreignNamedTypes,
+  );
+  const contextName = functionTypeContextParameterName(callable);
+  const visible = callable.parameters.map((parameter) => cBindingName(parameter.name));
+  const hidden = closure.captures.map((capture) => {
+    const stored = `environment->${capture.name}`;
+    const referenceIdentity = capture.type === "TaskScope"
+      || capture.type === "TaskControl"
+      || plan.types.structs.get(capture.type)?.kind === "class"
+      || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
+    if (capture.mode === "value" || capture.mode === "in" && referenceIdentity) return stored;
+    return `&(${stored})`;
+  });
+  const successType = plan.declaration.returnType.name;
+  const takeResult = successType === "void"
+    ? [`  (void)task;`, `  (void)destination;`]
+    : (() => {
+        const value = frameResultValue("frame", successType, plan.types);
+        const transferred = frameTransferredValue(value, "frame->live_result", successType, plan.types);
+        const type = cFrameType(successType, plan.types);
+        return requiresNativeFramePlacement(successType, plan.types)
+          ? [`  new (destination) ${type}(${transferred});`]
+          : [`  *((${type} *)destination) = ${transferred};`];
+      })();
+  const errorType = plan.declaration.errorType?.name ?? null;
+  const takeError = !errorType
+    ? [`  (void)task;`, `  (void)destination;`]
+    : (() => {
+        const value = frameErrorValue("frame", errorType, plan.types);
+        const transferred = frameTransferredValue(value, "frame->live_error", errorType, plan.types);
+        const type = cFrameType(errorType, plan.types);
+        return requiresNativeFramePlacement(errorType, plan.types)
+          ? [`  new (destination) ${type}(${transferred});`]
+          : [`  *((${type} *)destination) = ${transferred};`];
+      })();
+  const environment = closure.captures.length > 0
+    ? [`  ${closureEnvironmentName(closure)} *environment = (${closureEnvironmentName(closure)} *)${contextName};`]
+    : [`  (void)${contextName};`];
+  const retainContext = closure.owned
+    ? [`  ${closureEnvironmentRetainName(closure)}(${contextName});`]
+    : [];
+  const releaseContext = closure.owned ? closureEnvironmentReleaseName(closure) : "NULL";
+  return [
+    `static bool ${failedName}(Z_AsyncTask *task) {`,
+    ...(errorType
+      ? [`  return ((${plan.frameName} *)task)->failed;`]
+      : ["  (void)task;", "  return false;"]),
+    "}",
+    "",
+    `static void ${takeResultName}(Z_AsyncTask *task, void *destination) {`,
+    ...(successType === "void" ? [] : [`  ${plan.frameName} *frame = (${plan.frameName} *)task;`]),
+    ...takeResult,
+    "}",
+    "",
+    `static void ${takeErrorName}(Z_AsyncTask *task, void *destination) {`,
+    ...(!errorType ? [] : [`  ${plan.frameName} *frame = (${plan.frameName} *)task;`]),
+    ...takeError,
+    "}",
+    "",
+    `static void ${destroyName}(Z_AsyncTask *task) {`,
+    `  ${plan.frameName} *frame = (${plan.frameName} *)task;`,
+    `  ${plan.destroyName}(frame);`,
+    "  free(frame);",
+    "}",
+    "",
+    `static Z_AsyncInvocation ${closureAdapterName(closure)}(void *${contextName}, Z_AsyncExecutor *executor${parameters.length ? `, ${parameters.join(", ")}` : ""}) {`,
+    ...environment,
+    ...retainContext,
+    `  ${plan.frameName} *frame = ${plan.startName}(executor${hidden.length || visible.length ? `, ${[...hidden, ...visible].join(", ")}` : ""});`,
+    "  return (Z_AsyncInvocation){",
+    "    .task = &frame->task,",
+    `    .failed = ${failedName},`,
+    `    .take_result = ${takeResultName},`,
+    `    .take_error = ${takeErrorName},`,
+    `    .destroy = ${destroyName},`,
+    `    .callable_context = ${closure.owned ? contextName : "NULL"},`,
+    `    .release_context = ${releaseContext},`,
+    "  };",
     "}",
   ].join("\n");
 }
@@ -4411,6 +4613,17 @@ function beginAwait(
     return [
       `frame->child_${site.index} = (${handle}).next((${handle}).context, frame->task.executor);`,
       `z_async_enqueue(frame->task.executor, frame->child_${site.index});`,
+      `frame->state = ${nextState};`,
+      "continue;",
+    ];
+  }
+  if (site.callable) {
+    const callable = emitFrameExpression(site.call.callee, parent, fileName);
+    const arguments_ = emitAwaitArguments(site, parent, fileName);
+    const child = `frame->child_${site.index}`;
+    return [
+      `${child} = (${callable}).start((${callable}).context, ${childExecutor(site, parent)}${arguments_.length ? `, ${arguments_.join(", ")}` : ""});`,
+      `z_async_enqueue(${childExecutor(site, parent)}, ${child}.task);`,
       `frame->state = ${nextState};`,
       "continue;",
     ];
@@ -4939,6 +5152,7 @@ function generatePoll(
       cases.push(caseBlock(state, awaitCompletion(
         site,
         plan,
+        fileName,
         `frame->${nested.field}`,
         nested.type,
         false,
@@ -5156,6 +5370,7 @@ function generatePoll(
             awaitCompletion(
               site,
               plan,
+              fileName,
               `frame->${frameField(statement.name)}`,
               plan.locals.get(statement.name)!,
               false,
@@ -5321,6 +5536,7 @@ function generatePoll(
         cases.push(caseBlock(state, awaitCompletion(
           site,
           plan,
+          fileName,
           "frame->result",
           plan.declaration.returnType.name,
           true,
@@ -5464,7 +5680,7 @@ function generatePoll(
         cases.push(caseBlock(state, beginAwait(site, plan, planByKey, fileName, state + 1)));
         state += 1;
       }
-      cases.push(caseBlock(state, awaitCompletion(site, plan, null, null, false, state + 1)));
+      cases.push(caseBlock(state, awaitCompletion(site, plan, fileName, null, null, false, state + 1)));
       state += 1;
     }
   }
@@ -5681,6 +5897,7 @@ function scheduleYield(nextState: number): string[] {
 function awaitCompletion(
   site: AwaitSite,
   parent: AsyncFunctionPlan,
+  fileName: string,
   destination: string | null,
   destinationType: string | null,
   terminal: boolean,
@@ -5688,6 +5905,17 @@ function awaitCompletion(
 ): string[] {
   if (site.generator) {
     return awaitAsyncGeneratorCompletion(site, parent, destination, destinationType, terminal, nextState);
+  }
+  if (site.callable) {
+    return awaitAsyncCallableCompletion(
+      site,
+      parent,
+      fileName,
+      destination,
+      destinationType,
+      terminal,
+      nextState,
+    );
   }
   const child = `frame->child_${site.index}`;
   if (site.intrinsic === "cancel") {
@@ -5801,6 +6029,87 @@ function awaitCompletion(
     `free(${child});`,
     `frame->child_${site.index} = NULL;`,
   );
+  if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
+  if (terminal) {
+    if (parent.declaration.errorType) lines.push("frame->failed = false;");
+    lines.push(`frame->state = ${finalizeStateMarker};`, "continue;");
+  } else {
+    lines.push(`frame->state = ${nextState};`, "continue;");
+  }
+  return lines;
+}
+
+function destroyAsyncCallableInvocation(child: string): string[] {
+  return [
+    `${child}.destroy(${child}.task);`,
+    `if (${child}.release_context != NULL) ${child}.release_context(${child}.callable_context);`,
+    `${child}.task = NULL;`,
+    `${child}.callable_context = NULL;`,
+    `${child}.release_context = NULL;`,
+  ];
+}
+
+function awaitAsyncCallableCompletion(
+  site: AwaitSite,
+  parent: AsyncFunctionPlan,
+  fileName: string,
+  destination: string | null,
+  destinationType: string | null,
+  terminal: boolean,
+  nextState: number,
+): string[] {
+  const child = `frame->child_${site.index}`;
+  const successType = site.callable!.returnType;
+  const errorType = site.callable!.errorType;
+  const lines = [`if (!z_async_wait(&frame->task, ${child}.task)) return;`];
+  if (site.mode === "try" && errorType) {
+    const errorDestination = requiresNativeFramePlacement(errorType, parent.types)
+      ? "frame->error"
+      : "&(frame->error)";
+    lines.push(
+      `if (${child}.failed(${child}.task)) {`,
+      `  ${child}.take_error(${child}.task, ${errorDestination});`,
+      ...(hasFrameCleanup(errorType, parent.types) ? ["  frame->live_error = true;"] : []),
+      ...destroyAsyncCallableInvocation(child).map((line) => `  ${line}`),
+      "  frame->failed = true;",
+      "  frame->cancel_children = true;",
+      `  frame->state = ${finalizeStateMarker};`,
+      "  continue;",
+      "}",
+    );
+  } else if (site.mode === "attempt" && destination && errorType) {
+    const resultType = resultTypeName(successType, errorType);
+    if (requiresNativeFramePlacement(resultType, parent.types)) {
+      unsupported(
+        fileName,
+        site.expression.location,
+        "attempt-awaiting an async function value with native-placement payloads is not executable yet",
+        "use `try await` or cleanup-free Result payloads in this tier",
+      );
+    }
+    const cResult = resultCName(resultType);
+    lines.push(
+      `if (${child}.failed(${child}.task)) {`,
+      `  ${destination} = (${cResult}){ .tag = ${resultTag(resultType, "failure")} };`,
+      `  ${child}.take_error(${child}.task, &(${destination}.data.failure));`,
+      "} else {",
+      `  ${destination} = (${cResult}){ .tag = ${resultTag(resultType, "success")} };`,
+      ...(successType === "void"
+        ? []
+        : [`  ${child}.take_result(${child}.task, &(${destination}.data.success));`]),
+      "}",
+    );
+  }
+  if (site.mode !== "attempt" && destination && successType !== "void") {
+    const pointer = destinationType && requiresNativeFramePlacement(destinationType, parent.types)
+      ? destination
+      : `&(${destination})`;
+    lines.push(`${child}.take_result(${child}.task, ${pointer});`);
+  }
+  if (destination && destinationType && hasFrameCleanup(destinationType, parent.types)) {
+    lines.push(`${destinationLiveFlag(destination, parent)} = true;`);
+  }
+  lines.push(...destroyAsyncCallableInvocation(child));
   if (site.spawn?.binding) lines.push(`frame->${frameField(site.spawn.binding)} = NULL;`);
   if (terminal) {
     if (parent.declaration.errorType) lines.push("frame->failed = false;");
@@ -6118,14 +6427,6 @@ function emitPreparedFrameExpression(
         if (!closure) {
           unsupported(fileName, candidate.location, "async closure lowering requires analyzed closure metadata");
         }
-        if (closure.owned) {
-          unsupported(
-            fileName,
-            candidate.location,
-            "an owned or escaping inline closure is not executable in an async frame yet",
-            "use a synchronous nonescaping closure parameter here, or construct the owned closure outside the async function",
-          );
-        }
         const functionType = closureFunctionType(closure);
         const functionValue = `_z_async_inline_function_${candidate.location.offset}`;
         if (closure.captures.length === 0) {
@@ -6139,28 +6440,58 @@ function emitPreparedFrameExpression(
           return;
         }
         const environmentType = closureEnvironmentName(closure);
-        const environment = `_z_async_inline_environment_${candidate.location.offset}`;
-        prefix.push(`${environmentType} ${environment};`);
+        const environment = closure.owned
+          ? `_z_async_owned_environment_${candidate.location.offset}`
+          : `_z_async_inline_environment_${candidate.location.offset}`;
+        prefix.push(closure.owned
+          ? `${environmentType} *${environment} = (${environmentType} *)calloc(1, sizeof(${environmentType}));`
+          : `${environmentType} ${environment};`);
+        if (closure.owned) {
+          prefix.push(`if (${environment} == NULL) abort();`);
+          prefix.push(`${environment}->refcount = 1;`);
+        }
         for (const capture of closure.captures) {
           const captured: Expression = {
             kind: "identifier",
             name: capture.name,
             location: capture.location,
           };
-          const value = emitFrameExpression(captured, plan, fileName);
+          let value = emitFrameExpression(captured, plan, fileName);
           const hasReferenceIdentity = capture.type === "TaskScope"
             || capture.type === "TaskControl"
             || plan.types.structs.get(capture.type)?.kind === "class"
             || plan.types.semanticInfo.foreignNamedTypes.get(capture.type)?.kind === "object";
-          const borrowedPointer = capture.mode !== "value"
+          if (closure.owned) {
+            const capturedFunction = parseFunctionType(capture.type);
+            const mutex = parseMutexType(capture.type);
+            if (capture.type === "TaskScope") value = `z_task_scope_retain(${value})`;
+            else if (capture.type === "TaskControl") value = `z_task_control_retain(${value})`;
+            else if (mutex) value = `${asyncMutexRetainName(mutex.valueType)}(${value})`;
+            else if (plan.types.structs.get(capture.type)?.kind === "class") value = `Z_${capture.type}_retain(${value})`;
+            else if (capturedFunction) value = `${functionTypeCName(capturedFunction)}_retain(${value})`;
+            else if (hasFrameCleanup(capture.type, plan.types)) {
+              unsupported(
+                fileName,
+                capture.location,
+                `owned async closure capture ${JSON.stringify(capture.name)} needs explicit frame-to-environment transfer lowering`,
+                "capture a class, Mutex, TaskScope, TaskControl, function value, or cleanup-free value in this tier",
+              );
+            }
+          }
+          const borrowedPointer = !closure.owned && capture.mode !== "value"
             && !(capture.mode === "in" && hasReferenceIdentity);
-          prefix.push(`${environment}.${capture.name} = ${borrowedPointer ? `&(${value})` : value};`);
+          const target = closure.owned
+            ? `${environment}->${capture.name}`
+            : `${environment}.${capture.name}`;
+          prefix.push(`${target} = ${borrowedPointer ? `&(${value})` : value};`);
         }
         prefix.push(
           `${functionTypeCName(functionType)} ${functionValue} = ${functionValueLiteral(
             functionType,
             closureAdapterName(closure),
-            `&${environment}`,
+            closure.owned ? environment : `&${environment}`,
+            closure.owned ? closureEnvironmentRetainName(closure) : "NULL",
+            closure.owned ? closureEnvironmentReleaseName(closure) : "NULL",
           )};`,
         );
         expressionBindings.set(candidate.location.offset, functionValue);
@@ -7152,6 +7483,8 @@ function cFrameType(type: string, types: AsyncTypeContext): string {
   const writable = writableTypeName(type);
   if (writable !== type) return cFrameType(writable, types);
   if (parseTaskType(type)) return "Z_AsyncTask *";
+  const functionType = parseFunctionType(type);
+  if (functionType) return functionTypeCName(functionType);
   if (type === "TaskScope") return "Z_TaskScope *";
   if (type === "TaskControl") return "Z_TaskControl *";
   const onceLifetime = parseOnceLifetimeType(type);
@@ -7244,6 +7577,7 @@ function isSupportedFrameType(type: string, types: AsyncTypeContext, visiting = 
   const writable = writableTypeName(type);
   if (writable !== type) return isSupportedFrameType(writable, types, visiting);
   if (parseTaskType(type)) return true;
+  if (parseFunctionType(type)) return true;
   if (type === "TaskScope") return true;
   if (type === "TaskControl") return true;
   if (parseOnceLifetimeType(type)) return true;
@@ -7292,6 +7626,7 @@ function hasFrameCleanup(type: string, types: AsyncTypeContext, visiting = new S
   if (writable !== type) return hasFrameCleanup(writable, types, visiting);
   if (visiting.has(type)) return false;
   if (parseAsyncGeneratorType(type)) return true;
+  if (parseFunctionType(type)) return true;
   if (type === "String" || type === "TextBuffer" || type === "TaskScope" || type === "TaskControl") return true;
   if (parseOnceLifetimeType(type)) return true;
   if (parseMutexType(type)) return true;
@@ -7326,6 +7661,10 @@ function frameCleanup(value: string, type: string, types: AsyncTypeContext): str
   if (writable !== type) return frameCleanup(value, writable, types);
   if (parseAsyncGeneratorType(type)) {
     return `if ((${value}).context != NULL) { (${value}).destroy((${value}).context); (${value}).context = NULL; }`;
+  }
+  const functionType = parseFunctionType(type);
+  if (functionType) {
+    return `${functionTypeCName(functionType)}_release(${value});`;
   }
   if (requiresNativeFramePlacement(type, types)) {
     const managed = frameManagedCleanup(value, type, types);

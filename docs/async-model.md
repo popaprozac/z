@@ -304,6 +304,30 @@ shares one ARC `Router` with `thread.spawn`, and invokes both a named handler
 and a handler capturing readonly ARC state. Ordinary function types remain
 executor-local by default.
 
+Async behavior may also be stored as a typed value without starting detached
+work:
+
+```z
+type AsyncHandler =
+  async (in message: Message) => Reply throws RouteError on thread.any;
+
+const handler: AsyncHandler = async move (in message) => {
+  return try await route(in message);
+};
+
+const reply = try await handler(in message);
+```
+
+The type records four independent facts: suspension (`async`), ownership
+capabilities, the typed error channel, and executor eligibility. Constructing
+the value only retains its capture environment. `await handler(...)` starts and
+joins a structured child on the current executor; it does not detach work or
+create an OS thread. A bare call is therefore rejected. The initial executable
+tier supports contextual async closures and direct await; named async-function
+conversion and `task handler(...)` follow after dynamic task-handle lowering.
+Borrowed arguments must currently be named storage so their address remains
+stable through the child suspension.
+
 Mutable classes, borrowed `in`, `inout`, and `out` bindings, `view`, `Slice`, `Arena`,
 weak references, and custom Z `deinit` remain rejected. A move-only C++ RAII
 value or owned C handle may transfer when its adjacent `.zd` contract explicitly

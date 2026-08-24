@@ -990,9 +990,40 @@ cannot be weakened to an ordinary executor-local type or transferred to a
 worker. Contextually typed `move` closures receive main proof in their bodies,
 so they may safely capture and use main-isolated state.
 
-Both callable contracts currently cover synchronous free functions and
-contextually typed expression closures. Methods and suspending callable values
-remain later extensions.
+Stored async operations use the same function-type shape with an explicit
+`async` prefix:
+
+```z
+type AsyncHandler =
+  async (in invocation: ServiceInvocation) => ServiceOutcome
+  throws ServiceError
+  on thread.any;
+
+const handler: AsyncHandler = async move (in invocation) => {
+  return try await dispatch(in invocation);
+};
+```
+
+Constructing or storing `handler` does not start work. Calling it beneath
+`await` starts one child task on the current executor and joins that child at
+the await point:
+
+```z
+const outcome = try await handler(in invocation);
+```
+
+A bare call is rejected because it would neither acknowledge nor own the async
+work. `async`, parameter capabilities, `throws`, and the executor contract are
+all part of the callable type; a synchronous closure cannot silently satisfy an
+async destination. Capturing async closures own their environment through ARC,
+and `on thread.any` applies the same recursive shareability proof used by
+synchronous callables.
+
+The first executable stored-async tier accepts contextually typed async
+closures and direct `await` invocation. Named async-function conversion and
+`task handler(...)` handles remain staged. An `in` argument crossing the child
+suspension must currently come from named storage so its address remains stable;
+bind a temporary to `const` before passing it.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:
