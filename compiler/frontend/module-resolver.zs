@@ -2324,7 +2324,8 @@ function inferContextualObjectExpressionNode(
     index,
     construction.name,
     construction.typeParameterConstraints,
-    constraintSubstitutions
+    constraintSubstitutions,
+    bindings
   );
   let aggregateViewVisiting = Array<String>();
   if (
@@ -4142,7 +4143,8 @@ function inferSignatureCallType(
     calleeIndex,
     functionName,
     signature.typeParameterConstraints,
-    substitutions
+    substitutions,
+    bindings
   );
   let parameterIndex: usize = 0;
   while (parameterIndex < argumentTypes.length) {
@@ -9246,11 +9248,7 @@ function inferExpressionNodeType(
             );
             const callableSignature = methodCallableSignature(method);
             const argumentNodes = callArgumentNodes(children);
-            let callKind = staticMethod ? "staticMethod" : "method";
-            if (
-              modules[method.ownerModuleIndex].symbols[method.ownerSymbolIndex].kind
-              == ModuleSymbolKind.traitSymbol
-            ) callKind = "value";
+            const callKind = staticMethod ? "staticMethod" : "method";
             const callType = try inferSignatureCallType(
               module,
               modules,

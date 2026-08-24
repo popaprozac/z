@@ -262,7 +262,8 @@ export function requireGenericConstraints(
   index: usize,
   in functionName: String,
   in constraints: Array<ModuleTypeParameterConstraint>,
-  in substitutions: Array<NativeValueBinding>
+  in substitutions: Array<NativeValueBinding>,
+  in activeBindings: Array<NativeValueBinding>
 ): void throws ModuleResolveError {
   for (const constraint of constraints) {
     const argument = valueBindingType(substitutions, constraint.parameter);
@@ -274,6 +275,13 @@ export function requireGenericConstraints(
         argument,
         constraint.traitName
       )
+      || activeTypeParameterSatisfiesTrait(
+        modules,
+        moduleIndex,
+        activeBindings,
+        argument,
+        constraint.traitName
+      )
     ) continue;
     throw genericCallError(
       module,
@@ -282,4 +290,41 @@ export function requireGenericConstraints(
       `${argument} does not satisfy ${constraint.traitName} for ${constraint.parameter} in "${functionName}"`
     );
   }
+}
+
+function activeTypeParameterSatisfiesTrait(
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in bindings: Array<NativeValueBinding>,
+  in parameter: String,
+  in requiredTrait: String
+): boolean {
+  const markerName = `__z_native_type_parameter:${parameter}`;
+  const constraintName =
+    `__z_native_type_parameter_constraint:${parameter}`;
+  let markerIndex = bindings.length;
+  while (markerIndex > 0) {
+    markerIndex = markerIndex - 1;
+    if (bindings[markerIndex].name == markerName) break;
+  }
+  if (
+    bindings.length == 0
+    || bindings[markerIndex].name != markerName
+  ) return false;
+  let index = markerIndex + 1;
+  while (index < bindings.length) {
+    if (bindings[index].name == constraintName) {
+      if (
+        bindings[index].typeName == requiredTrait
+        || equivalentTypes(
+          modules,
+          moduleIndex,
+          bindings[index].typeName,
+          requiredTrait
+        )
+      ) return true;
+    }
+    index = index + 1;
+  }
+  return false;
 }

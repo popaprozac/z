@@ -527,7 +527,7 @@ export function createNativeSemanticBridge(
         if (
           resolution.kind !== (resolved.method.staticMethod ? "staticMethod" : "method")
           || targetModule?.path !== resolved.source.modulePath
-          || (target?.kind !== "struct" && target?.kind !== "class")
+          || (target?.kind !== "struct" && target?.kind !== "class" && target?.kind !== "trait")
           || target.name !== resolved.source.declaration.name
           || resolution.targetName !== expectedTargetName
           || resolution.typeParameters.length !== typeParameters.length

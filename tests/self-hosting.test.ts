@@ -1153,6 +1153,64 @@ test("materializes concrete generic value structs through native ownership", () 
   }
 }, 240_000);
 
+test("executes statically dispatched trait constraints natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-static-trait.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z_Service_start\(&\(\(\*service\)\), value\)/);
+  assert.doesNotMatch(emission.stdout, /service\.start/);
+
+  const directory = mkdtempSync("/tmp/z-native-static-trait-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("transfers one retained captured callable into aggregate storage", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-callables.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_TransformAdapter_new\(Z_Function_[A-Za-z0-9_]+_retain\(operation\)\)/,
+  );
+  assert.doesNotMatch(
+    emission.stdout,
+    /Z_TransformAdapter_new\(Z_Function_[A-Za-z0-9_]+_retain\(Z_Function_[A-Za-z0-9_]+_retain\(operation\)\)\)/,
+  );
+}, 240_000);
+
 test("materializes demand-driven generic ARC classes natively", () => {
   const cases = [
     {
@@ -8344,19 +8402,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^^^^^^^",
       code: "Z1000",
       summary: 'constructor for generic class "Box" is not executable in the native compiler yet',
-    },
-    {
-      name: "trait",
-      source: [
-        "trait Named { function name(): String; }",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 1,
-      column: 1,
-      marker: "^^^^^",
-      code: "Z1000",
-      summary: 'trait declaration "Named" is not executable in the native compiler yet',
     },
     {
       name: "generator",

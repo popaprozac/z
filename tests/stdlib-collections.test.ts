@@ -1829,10 +1829,14 @@ test("checks nominal trait constraints on inferred and explicit generic instance
     }
     export struct Plain { function measure(): i32 { return 42; } }
     export struct Holder<T: Measured> { value: T; }
+    export class Owner<T: Measured> { value: T; }
     export struct Utility {
       static function inspect<T: Measured>(value: T): i32 { return value.measure(); }
     }
     export function read<T: Measured>(value: T): i32 { return value.measure(); }
+    export function own<T: Measured>(value: T): Owner<T> {
+      return new Owner<T>({ value });
+    }
     export function readBoth<T: Measured & Named>(value: T): i32 {
       const label = value.name();
       return value.measure();
@@ -1840,7 +1844,10 @@ test("checks nominal trait constraints on inferred and explicit generic instance
   `);
   writeFileSync(main, `
     import model from "./model.zs";
-    function main(): i32 { return model.readBoth(model.Reading({})); }
+    function main(): i32 {
+      const owner = model.own(model.Reading({}));
+      return model.readBoth(owner.value);
+    }
   `);
   const nativeValid = spawnSync(process.execPath, [cli, "self-host-resolve", main], { encoding: "utf8" });
   assert.equal(nativeValid.status, 0, nativeValid.stderr);

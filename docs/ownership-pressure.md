@@ -3614,14 +3614,13 @@ owned-storage projection as ordinary calls, including retained function values.
 The fixture installs one captured imported handler twice and must execute and
 destroy the complete routing table without a use-after-free.
 
-The same application probe also established two honest remaining fixed-point
-boundaries. Traits are parsed and checked but not executable, so the first
-service uses a concrete generated adapter rather than claiming a generic
-`Service` trait. Cross-module `json.decode<UserType>` specialization is not yet
-native-authoritative, so that generated adapter projects `JsonValue` while the
-public service method and TypeScript binding remain typed. These are compiler
-composition tasks, not reasons to expose JSON or adapter boilerplate to Zapp
-application authors.
+The same application probe originally established two honest fixed-point
+boundaries. Static trait calls are now executable through concrete
+specialization, while cross-module `json.decode<UserType>` specialization is
+still not native-authoritative. The generated service adapter therefore
+projects `JsonValue` while the public service method and TypeScript binding
+remain typed. These are compiler composition tasks, not reasons to expose JSON
+or adapter boilerplate to Zapp application authors.
 
 ## Zapp-owned executable lifecycle
 
@@ -3662,13 +3661,13 @@ smoke satisfies the same selected-module export with a small value runtime.
 Because each target is compiled separately, their storage layouts do not need
 to agree and the platform choice needs no runtime vtable.
 
-An ordinary trait remains the natural nominal contract, but the fixed-point
-compiler still rejects executable user traits. The selected module's exact
-exported function signature therefore remains the implemented platform seam.
-Stored synchronous callables can now preserve `thread.main` without erasing the
-executor guarantee, which closes the lifecycle-adapter representation gap but
-does not replace the future target-matrix module selection or native trait
-execution needed to keep the public `Application` portable.
+An ordinary trait remains the natural nominal contract, and the fixed-point
+compiler now executes statically constrained calls. The selected module's
+exact exported function signature remains the implemented platform seam because
+platform selection is a compile-time module problem rather than a reason for
+runtime trait dispatch. Stored synchronous callables preserve `thread.main`
+without erasing the executor guarantee, which closes the lifecycle-adapter
+representation gap but does not replace future target-matrix module selection.
 
 ## Zapp lifecycle composition checkpoint
 
@@ -3696,9 +3695,31 @@ fixed-point executable proves all three paths. The real Z-owned AppKit/WebKit
 application then builds with the same fixed-point compiler, completes its
 visible typed WebView round trip, returns from the native run loop, and performs
 the empty lifecycle shutdown path without adding work to the service-call fast
-path. Until ordinary traits execute natively, the stored-callable adapter is
-framework/compiler plumbing for the intended `ServiceLifecycle` contract, not
-a second user-facing model.
+path. The stored-callable adapter is framework/compiler plumbing generated from
+the checked `ServiceLifecycle` contract, not a second user-facing model.
+
+## Static trait lifecycle adapter checkpoint
+
+Turning `ServiceLifecycle` into an executable nominal trait closed three
+fixed-point seams. A constrained type parameter now carries its proven trait
+constraint into nested generic construction, trait method evidence is lowered
+as a direct concrete call after specialization, and trait declarations no
+longer trigger a blanket native-lowerability rejection. The emitted C contains
+`Z_Concrete_method(...)`, not a vtable lookup or trait-object allocation.
+
+The lifecycle adapter also exposed an owned-callable retain imbalance. A
+captured hook had already been retained by expression lowering, but aggregate
+storage wrapped it in a second retain. Recognizing the existing retained value
+restores one ownership transfer into the adapter and one balancing release at
+destruction.
+
+One deliberate boundary remains. A generic defined in a framework module
+cannot yet be monomorphized there with a concrete type that is private to a
+downstream application module. Zapp therefore models the final compiler seam:
+metadata emits one concrete adapter beside the user's lifecycle type, then
+passes it into framework storage. This preserves the intended source API and
+zero-vtable execution without pretending that cross-module demand ownership is
+already solved.
 
 ## Deferred Zapp probe: Servo through Rust's C ABI
 

@@ -251,6 +251,7 @@ function typeParameterSatisfiesTrait(
     bindingIndex = bindingIndex - 1;
     if (bindings[bindingIndex].name != parameter) continue;
     for (const constraint of bindings[bindingIndex].constraints) {
+      if (constraint == requiredTrait) return true;
       match (typeSymbolLocation(modules, moduleIndex, constraint)) {
         some(location) => {
           if (

@@ -5380,6 +5380,9 @@ function wrapOwnedStorage(
     )
     && expressionBorrowsStoredReference(tree, input)
   ) {
+    if (output[value].kind == LoweredExpressionKind.retainValue) {
+      return value;
+    }
     let children = Array<usize>();
     children.push(value);
     return pushExpression(
@@ -22031,10 +22034,6 @@ function appendLoweredProgram(
   inout enums: Array<LoweredEnum>,
   inout functions: Array<LoweredFunction>
 ): void throws String {
-  if (program.traits.length > 0) {
-    throw "native lowering does not support traits yet";
-  }
-
   for (const declaration of program.constants) {
     const loweredConstant = try lowerModuleConstant(
       program,

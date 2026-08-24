@@ -64,7 +64,9 @@ export class NativeSemanticIndex {
         }
         if (
           (resolution.kind === "function" && target.kind !== "function")
-          || ((resolution.kind === "method" || resolution.kind === "staticMethod")
+          || (resolution.kind === "method"
+            && target.kind !== "struct" && target.kind !== "class" && target.kind !== "trait")
+          || (resolution.kind === "staticMethod"
             && target.kind !== "struct" && target.kind !== "class")
           || (resolution.kind === "constructor" && target.kind !== "class")
           || (resolution.kind === "standard" && target.kind !== "namespace")

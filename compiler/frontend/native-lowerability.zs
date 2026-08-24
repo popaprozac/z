@@ -1398,17 +1398,6 @@ export function validateNativeLowerability(
         );
       }
     }
-    if (module.program.traits.length > 0) {
-      const declaration = view module.program.traits[0];
-      throw loweringBoundary(
-        module.path,
-        "Z1000",
-        `trait declaration "${declaration.name}" is not executable in the native compiler yet`,
-        declaration.line,
-        declaration.column,
-        5
-      );
-    }
     for (const aggregate of module.program.aggregates) {
       try validateNativeAggregate(
         module.path,
