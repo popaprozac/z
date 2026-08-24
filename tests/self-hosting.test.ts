@@ -14270,6 +14270,48 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("preserves an ordinary local and callable argument across parent suspension", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-callable-parent-local.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /int32_t stored;/);
+  assert.match(emission.stdout, /frame->stored = 42;/);
+  assert.match(
+    emission.stdout,
+    /_start\(frame->local, task->executor, baseline\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /const int32_t baseline = frame->stored;/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-async-callable-parent-local-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

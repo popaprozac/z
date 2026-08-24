@@ -33,10 +33,11 @@ production or compatibility-sensitive use.
   results transfer exactly once; an unclaimed owned result is destroyed with
   its frame. A void closure containing one direct `await scheduler.yield()` now
   polls and requeues on a local FIFO executor. The first linear async `main`
-  shape now owns its callable local and child invocation in a persistent heap
-  frame: child completion wakes and resumes that enclosing Z frame before its
-  local is destroyed. Broader function bodies and cancellation propagation
-  remain in progress.
+  shape now owns its callable local, one cleanup-free ordinary local, and child
+  invocation in a persistent heap frame. It can pass that ordinary local as the
+  child's single value argument, suspend, then reuse it after child completion
+  wakes the parent. Broader function bodies, cleanup-bearing locals, and
+  cancellation propagation remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

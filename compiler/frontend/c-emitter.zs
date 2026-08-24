@@ -263,8 +263,11 @@ function appendPersistentAsyncParentName(
 }
 
 struct PersistentAsyncParentShape {
+  storedStatement: usize;
+  storedInitializer: usize;
   localStatement: usize;
   localInitializer: usize;
+  awaitExpression: usize;
   returnExpression: usize;
 }
 
@@ -4643,16 +4646,42 @@ function persistentAsyncParentShape(
     !declaration.asynchronous
     || declaration.name != "main"
     || declaration.parameters.length != 0
-    || declaration.roots.length != 3
+    || (
+      declaration.roots.length != 3
+      && declaration.roots.length != 4
+    )
     || declaration.returnType.kind != LoweredTypeKind.i32Type
   ) return Option<PersistentAsyncParentShape>.none;
   match (in declaration.receiverType) {
     some(_) => return Option<PersistentAsyncParentShape>.none;
     none => {}
   }
-  const localStatement = declaration.roots[0];
-  const awaitStatement = declaration.roots[1];
-  const returnStatement = declaration.roots[2];
+  let rootOffset: usize = 0;
+  let storedStatement = declaration.statements.length;
+  let storedInitializer = declaration.expressions.length;
+  if (declaration.roots.length == 4) {
+    storedStatement = declaration.roots[0];
+    if (
+      declaration.statements[storedStatement].kind
+        != LoweredStatementKind.localStatement
+    ) return Option<PersistentAsyncParentShape>.none;
+    match (in declaration.statements[storedStatement].type) {
+      some(type) => {
+        if (loweredTypeNeedsDeinit(program, type)) {
+          return Option<PersistentAsyncParentShape>.none;
+        }
+      }
+      none => return Option<PersistentAsyncParentShape>.none;
+    }
+    match (in declaration.statements[storedStatement].expression) {
+      some(expression) => storedInitializer = expression;
+      none => return Option<PersistentAsyncParentShape>.none;
+    }
+    rootOffset = 1;
+  }
+  const localStatement = declaration.roots[rootOffset];
+  const awaitStatement = declaration.roots[rootOffset + 1];
+  const returnStatement = declaration.roots[rootOffset + 2];
   if (
     declaration.statements[localStatement].kind
       != LoweredStatementKind.localStatement
@@ -4692,9 +4721,6 @@ function persistentAsyncParentShape(
   if (
     declaration.expressions[awaitExpression].kind
       != LoweredExpressionKind.asyncFunctionAwait
-    || declaration.expressions[awaitExpression].children.length != 1
-    || declaration.expressions[returnExpression].kind
-      != LoweredExpressionKind.integerValue
   ) return Option<PersistentAsyncParentShape>.none;
   const awaitedCallable = view declaration.expressions[
     declaration.expressions[awaitExpression].children[0]
@@ -4708,8 +4734,44 @@ function persistentAsyncParentShape(
   for (const functionType of program.functionTypes) {
     if (functionType.name != localTypeName) continue;
     matchingFunctionType = functionType.asynchronous
-      && functionType.parameters.length == 0
       && functionType.returnType.kind == LoweredTypeKind.voidType;
+    if (!matchingFunctionType) continue;
+    if (storedStatement >= declaration.statements.length) {
+      matchingFunctionType = functionType.parameters.length == 0
+        && declaration.expressions[awaitExpression].children.length == 1;
+      continue;
+    }
+    if (
+      functionType.parameters.length != 1
+      || functionType.parameters[0].mode != LoweredParameterMode.value
+      || declaration.expressions[awaitExpression].children.length != 2
+    ) {
+      matchingFunctionType = false;
+      continue;
+    }
+    match (in declaration.statements[storedStatement].type) {
+      some(storedType) => {
+        if (
+          functionType.parameters[0].type.kind != storedType.kind
+          || functionType.parameters[0].type.name != storedType.name
+        ) {
+          matchingFunctionType = false;
+        }
+      }
+      none => matchingFunctionType = false;
+    }
+    if (!matchingFunctionType) continue;
+    const argument = view declaration.expressions[
+      declaration.expressions[awaitExpression].children[1]
+    ];
+    matchingFunctionType = argument.kind
+        == LoweredExpressionKind.localValue
+      && argument.value == declaration.statements[storedStatement].name
+      && loweredExpressionReferencesLocal(
+        declaration,
+        returnExpression,
+        declaration.statements[storedStatement].name
+      );
   }
   if (!matchingFunctionType) {
     return Option<PersistentAsyncParentShape>.none;
@@ -4724,10 +4786,33 @@ function persistentAsyncParentShape(
     || cleanup.type.name != localTypeName
   ) return Option<PersistentAsyncParentShape>.none;
   return Option.some(PersistentAsyncParentShape({
+    storedStatement,
+    storedInitializer,
     localStatement,
     localInitializer,
+    awaitExpression,
     returnExpression,
   }));
+}
+
+function loweredExpressionReferencesLocal(
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  in name: String
+): boolean {
+  const expression = view declaration.expressions[expressionIndex];
+  if (
+    expression.kind == LoweredExpressionKind.localValue
+    && expression.value == name
+  ) return true;
+  for (const child of expression.children) {
+    if (loweredExpressionReferencesLocal(
+      declaration,
+      child,
+      name
+    )) return true;
+  }
+  return false;
 }
 
 function appendPersistentAsyncParentDriver(
@@ -5163,6 +5248,18 @@ function appendCallableHelpers(
         output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n");
         if (expression.value == "scheduler-yield") {
           output.append("  if (executor == NULL) abort();\n");
+          let unusedParameter: usize = 0;
+          while (unusedParameter < functionType.parameters.length) {
+            output.append("  (void)");
+            appendCBindingName(
+              inout output,
+              expression.labels[
+                parameterLabelStart + unusedParameter
+              ]
+            );
+            output.append(";\n");
+            unusedParameter = unusedParameter + 1;
+          }
           output.append("  frame->task.poll = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll;\n  frame->task.executor = executor;\n");
@@ -5550,6 +5647,16 @@ function appendPersistentAsyncParentHelpers(
         output.append("typedef struct ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" {\n  Z_AsyncTask task;\n  uint32_t state;\n  ");
+        if (shape.storedStatement < declaration.statements.length) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => try cType(type);
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append(storedType);
+          output.append(" stored;\n  ");
+        }
         output.append(localCType);
         output.append(" local;\n  bool live_local;\n  Z_AsyncInvocation child;\n  int32_t result;\n} ");
         appendPersistentAsyncParentName(inout output, declaration);
@@ -5569,7 +5676,30 @@ function appendPersistentAsyncParentHelpers(
         output.append(" *frame = (");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *)task;\n");
-        output.append("  if (frame->state == 0) {\n    frame->local = ");
+        output.append("  if (frame->state == 0) {\n");
+        if (shape.storedStatement < declaration.statements.length) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => try cType(type);
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append("    frame->stored = ");
+          try appendExpression(
+            inout output,
+            declaration,
+            shape.storedInitializer
+          );
+          output.append(";\n    const ");
+          output.append(storedType);
+          output.append(" ");
+          appendCBindingName(
+            inout output,
+            declaration.statements[shape.storedStatement].name
+          );
+          output.append(" = frame->stored;\n");
+        }
+        output.append("    frame->local = ");
         try appendExpression(
           inout output,
           declaration,
@@ -5577,7 +5707,21 @@ function appendPersistentAsyncParentHelpers(
         );
         output.append(";\n    frame->live_local = true;\n    frame->child = Z_");
         output.append(localTypeName);
-        output.append("_start(frame->local, task->executor);\n");
+        output.append("_start(frame->local, task->executor");
+        const awaitExpression = view declaration.expressions[
+          shape.awaitExpression
+        ];
+        let argument: usize = 1;
+        while (argument < awaitExpression.children.length) {
+          output.append(", ");
+          try appendExpression(
+            inout output,
+            declaration,
+            awaitExpression.children[argument]
+          );
+          argument = argument + 1;
+        }
+        output.append(");\n");
         output.append("    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n");
         output.append("    if (frame->child.task->completed) {\n");
         output.append("      z_stage1_async_enqueue(task->executor, task);\n");
@@ -5587,6 +5731,22 @@ function appendPersistentAsyncParentHelpers(
         output.append("      z_stage1_async_enqueue(task->executor, frame->child.task);\n");
         output.append("    }\n    return;\n  }\n");
         output.append("  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
+        if (shape.storedStatement < declaration.statements.length) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => try cType(type);
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append("  const ");
+          output.append(storedType);
+          output.append(" ");
+          appendCBindingName(
+            inout output,
+            declaration.statements[shape.storedStatement].name
+          );
+          output.append(" = frame->stored;\n");
+        }
         output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
         output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n  ");
         appendPersistentAsyncParentName(inout output, declaration);

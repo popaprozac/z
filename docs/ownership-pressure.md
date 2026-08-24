@@ -3811,11 +3811,19 @@ resumed parent takes the result, destroys the child invocation, and releases
 the stored callable. Existing lowering cleanup evidence selects this path, so
 there is no new source syntax or parallel ownership rule.
 
-This is intentionally narrow: one no-argument stored async callable, one direct
-await, and one cleanup-free integer return. The restriction keeps unsupported
-control flow on the existing diagnosed path while establishing the frame shape
-needed for parameters, multiple locals, cancellation, and structured control
-flow in later slices.
+The next bounded shape adds one cleanup-free ordinary local and one callable
+value argument. The parent writes that local into its heap frame, exposes a
+poll-local C binding while starting the child, and recreates that binding only
+after the child wakes it. The return expression then reads the original value,
+proving that neither the child call nor the suspension borrowed a dead C-stack
+temporary. Strict C compilation and execution cover the full path.
+
+This remains intentionally narrow: one stored async callable, one direct await,
+one cleanup-free ordinary local and callable argument, and one cleanup-free
+integer return. The restriction keeps unsupported control flow on the existing
+diagnosed path while establishing the frame shape needed for cleanup-bearing
+locals, multiple arguments, cancellation, and structured control flow in later
+slices.
 
 The same checkpoint exposed a compiler-velocity problem rather than hiding it.
 On the development machine on 2026-08-24, a cold exact fixed-point rebuild of
