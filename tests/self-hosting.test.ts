@@ -14076,6 +14076,39 @@ test("compares native function values by capability and type, not parameter name
   assert.equal(authoritativeExpressions, observedExpressions);
 });
 
+test("defers generic thread-any capture proof until concrete specialization", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-generic-thread-any-callable.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /__atomic_add_fetch\(&environment->refcount/);
+
+  const directory = mkdtempSync("/tmp/z-generic-thread-any-callable-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

@@ -6633,7 +6633,10 @@ function inferExpressionNodeType(
             node.column
           );
         }
-        if (!typeIsThreadShareable(modules, moduleIndex, captureType)) {
+        if (
+          !isActiveTypeParameter(bindings, captureType)
+          && !typeIsThreadShareable(modules, moduleIndex, captureType)
+        ) {
           throw resolutionError(
             ModuleResolveErrorKind.typeMismatch,
             module.path,
