@@ -58,7 +58,7 @@ import {
   typeSymbolLocation,
 } from "./semantic-type-identities.zs";
 import { typeExpressionName } from "./semantic-member-lookups.zs";
-import { Set } from "std/collections";
+import { Map, Set } from "std/collections";
 import { TextBuffer } from "std/text";
 import { internalBackendFailure } from "./native-backend-errors.zs";
 
@@ -12892,6 +12892,83 @@ function moduleCallableAliasTarget(
   return target;
 }
 
+struct ModuleCallableAliasTargets {
+  targets: Array<String>;
+  indices: Map<String, usize>;
+}
+
+function appendModuleCallableAliasTarget(
+  inout aliases: ModuleCallableAliasTargets,
+  in name: String,
+  in target: String
+): void {
+  const index = aliases.targets.length;
+  aliases.targets.push(target.copyBytes(0, target.byteLength));
+  aliases.indices.set(name.copyBytes(0, name.byteLength), index);
+}
+
+function collectModuleCallableAliasTargets(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>
+): ModuleCallableAliasTargets {
+  let aliases = ModuleCallableAliasTargets({
+    targets: Array<String>(),
+    indices: Map<String, usize>(),
+  });
+  let importedIndex: usize = 0;
+  while (importedIndex < importedTypes.length) {
+    const imported = view importedTypes[importedIndex];
+    if (
+      imported.kind == LoweredTypeKind.functionType
+      && imported.underlyingType.byteLength > 0
+    ) {
+      appendModuleCallableAliasTarget(
+        inout aliases,
+        imported.localName,
+        imported.underlyingType
+      );
+    }
+    importedIndex = importedIndex + 1;
+  }
+  // Local aliases take precedence over imported aliases, matching
+  // moduleCallableAliasTarget's lookup order.
+  for (const declaration of program.typeAliases) {
+    appendModuleCallableAliasTarget(
+      inout aliases,
+      declaration.name,
+      declaration.target.name
+    );
+  }
+  return aliases;
+}
+
+function indexedModuleCallableAliasTarget(
+  in aliases: ModuleCallableAliasTargets,
+  in name: String
+): String {
+  let target = name.copyBytes(0, name.byteLength);
+  let depth: usize = 0;
+  while (depth < 64) {
+    const index = moduleCallableAliasIndex(aliases, target);
+    if (index >= aliases.targets.length) break;
+    const next = view aliases.targets[index];
+    target = next.copyBytes(0, next.byteLength);
+    depth = depth + 1;
+  }
+  return target;
+}
+
+function moduleCallableAliasIndex(
+  in aliases: ModuleCallableAliasTargets,
+  in name: String
+): usize {
+  const found = aliases.indices.get(name);
+  match (in found) {
+    some(index) => return index;
+    none => return aliases.targets.length;
+  }
+}
+
 function lowerExpressionExpected(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -22488,12 +22565,12 @@ function containsLoweredFunctionType(
 function collectProgramFunctionTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in callableAliasTargets: ModuleCallableAliasTargets,
   in typeName: String,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
-  const target = moduleCallableAliasTarget(
-    program,
-    importedTypes,
+  const target = indexedModuleCallableAliasTarget(
+    callableAliasTargets,
     typeName
   );
   match (nativeFunctionSignature(target)) {
@@ -22551,6 +22628,7 @@ function collectProgramFunctionTypeName(
 function collectFunctionDeclarationTypes(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
+  in callableAliasTargets: ModuleCallableAliasTargets,
   in declaration: FunctionDeclaration,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
@@ -22558,6 +22636,7 @@ function collectFunctionDeclarationTypes(
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
+      callableAliasTargets,
       parameter.type.name,
       inout functionTypes
     );
@@ -22565,6 +22644,7 @@ function collectFunctionDeclarationTypes(
   try collectProgramFunctionTypeName(
     program,
     importedTypes,
+    callableAliasTargets,
     declaration.returnType.name,
     inout functionTypes
   );
@@ -22576,10 +22656,15 @@ function collectProgramFunctionTypes(
   in evidence: ModuleSemanticEvidence,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
+  const callableAliasTargets = collectModuleCallableAliasTargets(
+    program,
+    importedTypes
+  );
   for (const alias of program.typeAliases) {
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
+      callableAliasTargets,
       alias.name,
       inout functionTypes
     );
@@ -22588,6 +22673,7 @@ function collectProgramFunctionTypes(
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
+      callableAliasTargets,
       binding.typeName,
       inout functionTypes
     );
@@ -22596,6 +22682,7 @@ function collectProgramFunctionTypes(
     try collectProgramFunctionTypeName(
       program,
       importedTypes,
+      callableAliasTargets,
       expression.typeName,
       inout functionTypes
     );
@@ -22605,6 +22692,7 @@ function collectProgramFunctionTypes(
       try collectProgramFunctionTypeName(
         program,
         importedTypes,
+        callableAliasTargets,
         parameterType,
         inout functionTypes
       );
@@ -22614,6 +22702,7 @@ function collectProgramFunctionTypes(
     try collectFunctionDeclarationTypes(
       program,
       importedTypes,
+      callableAliasTargets,
       declaration,
       inout functionTypes
     );
@@ -22623,6 +22712,7 @@ function collectProgramFunctionTypes(
       try collectProgramFunctionTypeName(
         program,
         importedTypes,
+        callableAliasTargets,
         field.type.name,
         inout functionTypes
       );
@@ -22631,6 +22721,7 @@ function collectProgramFunctionTypes(
       try collectFunctionDeclarationTypes(
         program,
         importedTypes,
+        callableAliasTargets,
         method,
         inout functionTypes
       );

@@ -3861,6 +3861,25 @@ These are development-machine measurements rather than release benchmarks, but
 they establish semantic indexing as a necessary foundation for compiler-scale
 Z programs.
 
+The next split profile isolated one more compiler-scale lookup in native
+lowering. Function-type discovery asked every binding, expression, parameter,
+field, and method whether its type spelling resolved through a callable alias.
+Each query rescanned the module's full imported-type array; because an imported
+type carries fields, variants, ownership, and executor metadata, ordinary
+iteration also copied substantially more state than the lookup needed.
+
+Lowering now builds one callable-alias target array and a `Map<String, usize>`
+index per module before function-type discovery. Local aliases still override
+imported aliases, alias chains keep the existing bounded resolution rule, and
+the broader lowering model remains unchanged. Warm complete compiler emission
+fell from 12.90 to 7.50 seconds, a further 41.9% reduction and a 90.4% reduction
+from the original 77.87-second baseline. Repeated 7,872,237-byte C output was
+byte-identical. The full self-hosting suite remained 90/90 and completed in
+242.34 seconds versus 262.29 seconds at the preceding checkpoint; all 265
+language-tier tests also remained green in 87.53 seconds. The remaining profile
+is materially flatter, so future optimization should continue to require a
+measured dominant path rather than accumulating speculative caches.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
