@@ -159,6 +159,7 @@ export struct LoweredSet {
 
 export struct LoweredFunctionType {
   name: String;
+  asynchronous: boolean;
   parameters: Array<LoweredParameter>;
   returnType: LoweredType;
 }
@@ -22196,6 +22197,7 @@ function collectProgramFunctionTypeName(
       }
       functionTypes.push(LoweredFunctionType({
         name,
+        asynchronous: signature.asynchronous,
         parameters,
         returnType,
       }));

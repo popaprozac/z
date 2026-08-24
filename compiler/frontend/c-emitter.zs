@@ -9664,8 +9664,12 @@ function appendFunctionTypeLayout(
   output.append("typedef struct Z_");
   output.append(declaration.name);
   output.append(" {\n  ");
-  output.append(returnType);
-  output.append(" (*call)(void *context");
+  if (declaration.asynchronous) {
+    output.append("Z_AsyncInvocation (*start)(void *context, Z_AsyncExecutor *executor");
+  } else {
+    output.append(returnType);
+    output.append(" (*call)(void *context");
+  }
   for (const parameter of declaration.parameters) {
     output.append(", ");
     const parameterType = try cType(parameter.type);
@@ -9699,12 +9703,17 @@ function appendFunctionTypeHelpers(
   output.append(declaration.name);
   output.append(" value) {\n  if (value.retain != NULL) value.retain(value.context);\n  return value;\n}\n\n");
   output.append("static inline __attribute__((unused)) ");
-  output.append(returnType);
+  if (declaration.asynchronous) output.append("Z_AsyncInvocation");
+  else output.append(returnType);
   output.append(" Z_");
   output.append(declaration.name);
-  output.append("_call(Z_");
+  if (declaration.asynchronous) output.append("_start(Z_");
+  else output.append("_call(Z_");
   output.append(declaration.name);
   output.append(" value");
+  if (declaration.asynchronous) {
+    output.append(", Z_AsyncExecutor *executor");
+  }
   let parameterIndex: usize = 0;
   while (parameterIndex < declaration.parameters.length) {
     output.append(", ");
@@ -9716,10 +9725,15 @@ function appendFunctionTypeHelpers(
     parameterIndex = parameterIndex + 1;
   }
   output.append(") {\n  ");
-  if (declaration.returnType.kind != LoweredTypeKind.voidType) {
+  if (
+    declaration.asynchronous
+    || declaration.returnType.kind != LoweredTypeKind.voidType
+  ) {
     output.append("return ");
   }
-  output.append("value.call(value.context");
+  if (declaration.asynchronous) {
+    output.append("value.start(value.context, executor");
+  } else output.append("value.call(value.context");
   for (const parameter of declaration.parameters) {
     output.append(", ");
     appendCBindingName(inout output, parameter.name);
@@ -9729,7 +9743,10 @@ function appendFunctionTypeHelpers(
   output.append(declaration.name);
   output.append("_deinit(Z_");
   output.append(declaration.name);
-  output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n  value->call = NULL;\n  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
+  output.append(" *value) {\n  if (value == NULL) return;\n  if (value->release != NULL) value->release(value->context);\n");
+  if (declaration.asynchronous) output.append("  value->start = NULL;\n");
+  else output.append("  value->call = NULL;\n");
+  output.append("  value->context = NULL;\n  value->retain = NULL;\n  value->release = NULL;\n}\n\n");
   if (programUsesForeignCallbackType(program, declaration.name)) {
     try appendForeignCallbackHelpers(inout output, declaration);
   }
@@ -9742,6 +9759,23 @@ function appendTypeDefinitions(
   const taskNames = programTaskTypeNames(program);
   if (taskNames.length > 0) {
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
+  }
+  let usesAsyncFunctionType = false;
+  for (const declaration of program.functionTypes) {
+    if (declaration.asynchronous) usesAsyncFunctionType = true;
+  }
+  if (usesAsyncFunctionType) {
+    output.append("typedef struct Z_AsyncTask Z_AsyncTask;\n");
+    output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
+    output.append("typedef struct Z_AsyncInvocation {\n");
+    output.append("  Z_AsyncTask *task;\n");
+    output.append("  bool (*failed)(Z_AsyncTask *task);\n");
+    output.append("  void (*take_result)(Z_AsyncTask *task, void *destination);\n");
+    output.append("  void (*take_error)(Z_AsyncTask *task, void *destination);\n");
+    output.append("  void (*destroy)(Z_AsyncTask *task);\n");
+    output.append("  void *callable_context;\n");
+    output.append("  void (*release_context)(void *context);\n");
+    output.append("} Z_AsyncInvocation;\n\n");
   }
   for (const taskName of taskNames) {
     output.append("typedef struct Z_");

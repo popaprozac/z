@@ -167,6 +167,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-thread-affine-capture-invalid.zs": focusedNegative,
   "self-host-emit-thread-affine-result-invalid.zs": focusedNegative,
   "self-host-emit-generic-thread-any-callable.zs": focusedPositive,
+  "self-host-emit-async-callable-layout.zs": focusedPositive,
   "self-host-emit-thread-any-callable.zs": focusedPositive,
   "self-host-emit-thread-main-callable.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-match.zs": focusedPositive,
