@@ -1041,10 +1041,14 @@ an address-stable borrow. Such storage carries a live bit: normal completion
 destroys it once after the return expression, while destruction of an
 unfinished frame also cleans it. The generated poll function exposes the local
 only during each active poll; its storage remains in the heap frame while the
-child owns the executor turn. Broader enclosing control flow, multiple locals
-and arguments, return shapes, and cancellation propagation across the dynamic
-invocation remain staged; native lowering does not replace this supported shape
-with a blocking imitation.
+child owns the executor turn. The frame ABI also propagates cancellation: a
+parent request marks its suspended child, the child reaches a cancelled terminal
+state at its next poll, and its waiter wake-up lets the parent destroy the
+invocation and live owners. Destroying unfinished work first unlinks its frames
+from the executor queue. Public dynamic callable-task handles remain staged;
+this is the internal contract they will use. Broader enclosing control flow,
+multiple locals and arguments, and return shapes remain staged; native lowering
+does not replace this supported shape with a blocking imitation.
 
 An untyped uninitialized binding is accepted only when its first initializing
 use is a typed native `out` call:

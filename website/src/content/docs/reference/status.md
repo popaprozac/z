@@ -37,9 +37,11 @@ production or compatibility-sensitive use.
   a persistent heap frame. A cleanup-free local crosses as the child's single
   value argument; a cleanup-bearing owner crosses as an address-stable `in`
   borrow and remains guarded by frame live state. Both normal completion and
-  unfinished-frame destruction clean that owner exactly once. Broader function
-  bodies, multiple locals and arguments, and cancellation propagation remain in
-  progress.
+  unfinished-frame destruction clean that owner exactly once. Parent-frame
+  cancellation now propagates through the dynamic child poll, wakes the parent,
+  and deterministically unwinds child, callable, and owner storage. Broader
+  function bodies, multiple locals and arguments, and public dynamic callable
+  task handles remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

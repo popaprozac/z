@@ -4875,7 +4875,7 @@ function appendPersistentAsyncParentDriver(
   output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n");
   output.append("  while (!frame->task.completed) {\n");
   output.append("    if (!z_stage1_async_run_one(&executor)) abort();\n");
-  output.append("  }\n  const int32_t result = frame->result;\n  ");
+  output.append("  }\n  if (frame->task.cancelled) abort();\n  const int32_t result = frame->result;\n  ");
   appendPersistentAsyncParentName(inout output, declaration);
   output.append("_destroy(frame);\n  return result;\n}\n\n");
 }
@@ -5167,6 +5167,10 @@ function appendCallableHelpers(
           output.append("_task *frame = (");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_task *)task;\n");
+          output.append("  if (task->cancellation_requested) {\n");
+          output.append("    task->cancelled = true;\n");
+          output.append("    task->completed = true;\n");
+          output.append("    return;\n  }\n");
           output.append("  if (frame->state == 0) {\n");
           output.append("    frame->state = 1;\n");
           output.append("    z_stage1_async_enqueue(task->executor, task);\n");
@@ -5544,6 +5548,21 @@ function appendAsyncCallableRuntime(
   output.append("  if (executor->tail == NULL) executor->head = task;\n");
   output.append("  else executor->tail->next = task;\n");
   output.append("  executor->tail = task;\n}\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_async_remove_queued(Z_AsyncTask *task) {\n");
+  output.append("  if (task == NULL || !task->queued) return;\n");
+  output.append("  Z_AsyncExecutor *executor = task->executor;\n");
+  output.append("  if (executor == NULL) abort();\n");
+  output.append("  Z_AsyncTask *previous = NULL;\n");
+  output.append("  Z_AsyncTask *current = executor->head;\n");
+  output.append("  while (current != NULL && current != task) { previous = current; current = current->next; }\n");
+  output.append("  if (current == NULL) abort();\n");
+  output.append("  if (previous == NULL) executor->head = task->next;\n");
+  output.append("  else previous->next = task->next;\n");
+  output.append("  if (executor->tail == task) executor->tail = previous;\n");
+  output.append("  task->next = NULL;\n  task->queued = false;\n}\n\n");
+  output.append("static __attribute__((unused)) void z_stage1_async_request_cancel(Z_AsyncTask *task) {\n");
+  output.append("  if (task == NULL || task->completed) return;\n");
+  output.append("  task->cancellation_requested = true;\n}\n\n");
   output.append("typedef struct Z_AsyncAwaiter {\n");
   output.append("  Z_AsyncTask task;\n");
   output.append("  Z_AsyncTask *child;\n");
@@ -5703,9 +5722,50 @@ function appendPersistentAsyncParentHelpers(
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *frame) {\n");
         output.append("  if (frame->child.task == NULL) return;\n");
+        output.append("  z_stage1_async_remove_queued(frame->child.task);\n");
         output.append("  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n");
         output.append("  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n");
         output.append("  frame->child = (Z_AsyncInvocation){0};\n}\n\n");
+        output.append("static void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_cleanup_owned(");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame) {\n  if (frame->live_local) { Z_");
+        output.append(localTypeName);
+        output.append("_deinit(&frame->local); frame->live_local = false; }\n");
+        if (shape.storedNeedsDeinit) {
+          const storedType = match (
+            in declaration.statements[shape.storedStatement].type
+          ) {
+            some(type) => LoweredType({
+              kind: type.kind,
+              name: type.name.copyBytes(0, type.name.byteLength),
+            });
+            none => throw "persistent async parent lost its stored local type";
+          };
+          output.append("  if (frame->live_stored) { Z_");
+          output.append(storedType.name);
+          if (storedType.kind == LoweredTypeKind.classType) {
+            output.append("_release(frame->stored);");
+          } else output.append("_deinit(&frame->stored);");
+          output.append(" frame->live_stored = false; }\n");
+        }
+        output.append("}\n\nstatic void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_request_cancel(");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame) {\n  if (frame == NULL || frame->task.completed) return;\n");
+        output.append("  z_stage1_async_request_cancel(&frame->task);\n");
+        output.append("  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\n");
+        output.append("static void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_complete_cancelled(");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame) {\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_release_child(frame);\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_cleanup_owned(frame);\n  frame->task.cancelled = true;\n  frame->task.completed = true;\n}\n\n");
         output.append("static void ");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append("_poll(Z_AsyncTask *task) {\n  ");
@@ -5713,6 +5773,9 @@ function appendPersistentAsyncParentHelpers(
         output.append(" *frame = (");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *)task;\n");
+        output.append("  if (task->cancellation_requested && frame->state == 0) {\n    ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_complete_cancelled(frame);\n    return;\n  }\n");
         output.append("  if (frame->state == 0) {\n");
         if (shape.storedStatement < declaration.statements.length) {
           const storedType = match (
@@ -5778,6 +5841,9 @@ function appendPersistentAsyncParentHelpers(
         output.append("      z_stage1_async_enqueue(task->executor, frame->child.task);\n");
         output.append("    }\n    return;\n  }\n");
         output.append("  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
+        output.append("  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_complete_cancelled(frame);\n    return;\n  }\n");
         if (shape.storedStatement < declaration.statements.length) {
           const storedType = match (
             in declaration.statements[shape.storedStatement].type
@@ -5806,26 +5872,9 @@ function appendPersistentAsyncParentHelpers(
           declaration,
           shape.returnExpression
         );
-        output.append(";\n  Z_");
-        output.append(localTypeName);
-        output.append("_deinit(&frame->local);\n  frame->live_local = false;\n");
-        if (shape.storedNeedsDeinit) {
-          const storedType = match (
-            in declaration.statements[shape.storedStatement].type
-          ) {
-            some(type) => LoweredType({
-              kind: type.kind,
-              name: type.name.copyBytes(0, type.name.byteLength),
-            });
-            none => throw "persistent async parent lost its stored local type";
-          };
-          output.append("  if (frame->live_stored) { Z_");
-          output.append(storedType.name);
-          if (storedType.kind == LoweredTypeKind.classType) {
-            output.append("_release(frame->stored);");
-          } else output.append("_deinit(&frame->stored);");
-          output.append(" frame->live_stored = false; }\n");
-        }
+        output.append(";\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_cleanup_owned(frame);\n");
         output.append("  task->completed = true;\n}\n\n");
         output.append("static ");
         appendPersistentAsyncParentName(inout output, declaration);
@@ -5843,27 +5892,13 @@ function appendPersistentAsyncParentHelpers(
         output.append("_destroy(");
         appendPersistentAsyncParentName(inout output, declaration);
         output.append(" *frame) {\n  if (frame == NULL) return;\n  ");
+        output.append("if (!frame->task.completed) ");
         appendPersistentAsyncParentName(inout output, declaration);
-        output.append("_release_child(frame);\n  if (frame->live_local) Z_");
-        output.append(localTypeName);
-        output.append("_deinit(&frame->local);\n");
-        if (shape.storedNeedsDeinit) {
-          const storedType = match (
-            in declaration.statements[shape.storedStatement].type
-          ) {
-            some(type) => LoweredType({
-              kind: type.kind,
-              name: type.name.copyBytes(0, type.name.byteLength),
-            });
-            none => throw "persistent async parent lost its stored local type";
-          };
-          output.append("  if (frame->live_stored) { Z_");
-          output.append(storedType.name);
-          if (storedType.kind == LoweredTypeKind.classType) {
-            output.append("_release(frame->stored);");
-          } else output.append("_deinit(&frame->stored);");
-          output.append(" frame->live_stored = false; }\n");
-        }
+        output.append("_request_cancel(frame);\n  z_stage1_async_remove_queued(&frame->task);\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_release_child(frame);\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_cleanup_owned(frame);\n");
         output.append("  free(frame);\n}\n\n");
       }
       none => {}
@@ -10678,6 +10713,8 @@ function appendTypeDefinitions(
     output.append("struct Z_AsyncTask {\n");
     output.append("  void (*poll)(Z_AsyncTask *task);\n");
     output.append("  bool completed;\n");
+    output.append("  bool cancellation_requested;\n");
+    output.append("  bool cancelled;\n");
     output.append("  bool queued;\n");
     output.append("  Z_AsyncTask *waiter;\n");
     output.append("  Z_AsyncTask *next;\n");

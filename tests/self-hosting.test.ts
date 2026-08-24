@@ -14322,7 +14322,7 @@ test("preserves an ordinary local and callable argument across parent suspension
   rmSync(directory, { recursive: true, force: true });
 });
 
-test("owns and destroys a cleanup-bearing parent local across suspension", () => {
+test("owns, cancels, and destroys a cleanup-bearing parent local across suspension", () => {
   const input = resolve(
     projectRoot,
     "tests/fixtures/self-host-emit-async-callable-parent-owned-local.zs",
@@ -14342,6 +14342,8 @@ test("owns and destroys a cleanup-bearing parent local across suspension", () =>
   assert.equal(emission.status, 0, emission.stderr);
   assert.match(emission.stdout, /Z_SuspendedOwner stored;/);
   assert.match(emission.stdout, /bool live_stored;/);
+  assert.match(emission.stdout, /bool cancellation_requested;/);
+  assert.match(emission.stdout, /bool cancelled;/);
   assert.match(emission.stdout, /frame->live_stored = true;/);
   assert.match(
     emission.stdout,
@@ -14350,6 +14352,14 @@ test("owns and destroys a cleanup-bearing parent local across suspension", () =>
   assert.match(
     emission.stdout,
     /if \(frame->live_stored\) \{ Z_SuspendedOwner_deinit\(&frame->stored\); frame->live_stored = false; \}/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_stage1_async_request_cancel\(frame->child\.task\);/,
+  );
+  assert.match(
+    emission.stdout,
+    /if \(task->cancellation_requested\) \{[\s\S]*task->cancelled = true;[\s\S]*task->completed = true;/,
   );
 
   const directory = mkdtempSync("/tmp/z-async-callable-parent-owned-local-");
@@ -14373,6 +14383,7 @@ int interrupted_main(void) {
   z_stage1_async_enqueue(&executor, &frame->task);
   if (!z_stage1_async_run_one(&executor)) abort();
   z_stage1_async_parent_main_destroy(frame);
+  if (z_stage1_async_run_one(&executor)) abort();
   return 0;
 }
 `;
@@ -14399,6 +14410,46 @@ int interrupted_main(void) {
   });
   assert.equal(interruptedExecution.status, 0, interruptedExecution.stderr);
   assert.equal(interruptedExecution.stdout, "released 42\n");
+
+  const cancelled = resolve(directory, "cancelled");
+  const cancelledSource = `${emission.stdout}
+#undef main
+int cancelled_main(void) {
+  Z_AsyncExecutor executor = {0};
+  z_stage1_async_parent_main *frame = z_stage1_async_parent_main_start(&executor);
+  z_stage1_async_enqueue(&executor, &frame->task);
+  if (!z_stage1_async_run_one(&executor)) abort();
+  z_stage1_async_parent_main_request_cancel(frame);
+  while (!frame->task.completed) {
+    if (!z_stage1_async_run_one(&executor)) abort();
+  }
+  if (!frame->task.cancelled) abort();
+  z_stage1_async_parent_main_destroy(frame);
+  if (z_stage1_async_run_one(&executor)) abort();
+  return 0;
+}
+`;
+  const cancelledCompilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Dmain=z_program_main",
+      "-Dcancelled_main=main",
+      "-",
+      "-o",
+      cancelled,
+    ],
+    { encoding: "utf8", input: cancelledSource },
+  );
+  assert.equal(cancelledCompilation.status, 0, cancelledCompilation.stderr);
+  const cancelledExecution = spawnSync(cancelled, [], { encoding: "utf8" });
+  assert.equal(cancelledExecution.status, 0, cancelledExecution.stderr);
+  assert.equal(cancelledExecution.stdout, "released 42\n");
   rmSync(directory, { recursive: true, force: true });
 });
 

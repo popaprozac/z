@@ -3827,13 +3827,26 @@ poll releases the unfinished child and destroys the owner through the same live
 bit. An executable `deinit` fixture observes exactly one destructor call on
 both paths.
 
+Cancellation now follows the same ownership path instead of bypassing it. Every
+local-executor task frame records requested and terminal cancellation states.
+Requesting cancellation on the suspended parent marks its dynamic child. The
+child observes that request at its next poll, completes as cancelled, and wakes
+the waiting parent through the ordinary executor queue. The resumed parent then
+releases the child invocation, callable, and stored owner before entering its
+own cancelled terminal state. Destroying that completed parent sees cleared live
+bits and cannot repeat cleanup. Unfinished destruction also unlinks both parent
+and child from the FIFO queue before freeing either frame, so executor progress
+cannot observe a dangling task node. This proves the frame-level contract before
+a public dynamic callable `Task` handle exposes it.
+
 This remains intentionally narrow: one stored async callable, one direct await,
 one ordinary local and callable argument, and one cleanup-free integer return.
 An ownership-bearing argument must be `in`; consuming it would contradict the
 required post-resume use. The restriction keeps unsupported control flow on the
 existing diagnosed path while establishing the frame shape needed for multiple
-locals and arguments, cancellation propagation, and structured control flow in
-later slices.
+locals and arguments and structured control flow in later slices. Dynamic task
+handles that initiate this cancellation from ordinary Z source remain a later
+surface.
 
 The same checkpoint exposed a compiler-velocity problem rather than hiding it.
 On the development machine on 2026-08-24, a cold exact fixed-point rebuild of
