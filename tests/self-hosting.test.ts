@@ -13966,6 +13966,11 @@ test("preserves thread.main callable placement through native resolution and emi
   assert.match(emission.stdout, /environment->refcount \+= 1/);
   assert.match(emission.stdout, /environment->refcount -= 1/);
   assert.doesNotMatch(emission.stdout, /__atomic_(?:add|sub)_fetch\(&environment->refcount/);
+  assert.match(
+    emission.stdout,
+    /Z_Controller \* const stored = Z_Controller_retain\(\(\*Z___z_Array_Controller_at/,
+  );
+  assert.match(emission.stdout, /Z_Controller_release\(items\[self->length\]\)/);
 
   const directory = mkdtempSync("/tmp/z-thread-main-callable-");
   const executable = resolve(directory, "program");

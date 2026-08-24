@@ -3670,6 +3670,36 @@ executor guarantee, which closes the lifecycle-adapter representation gap but
 does not replace the future target-matrix module selection or native trait
 execution needed to keep the public `Application` portable.
 
+## Zapp lifecycle composition checkpoint
+
+Making that adapter executable against Zapp's real blocking AppKit/WebKit path
+found four general compiler seams that smaller callable fixtures had not
+combined. A main-affine aggregate default now receives the same main-executor
+proof as construction of its containing aggregate. `Result<void, E>` emission
+no longer invents a success payload for expression-bodied throwing callables.
+Fixed-point try lowering recognizes a throwing callable stored in a field, and
+indexed ARC class values are retained when they become owned locals instead of
+being borrowed and later released as though independently owned.
+
+The indexed-class correction also fixed the collection C ABI: immutable access
+uses pointer-to-const-element storage rather than accidentally making the class
+pointee const, and Array/Map/Set teardown releases ARC class elements instead of
+calling nonexistent value destructors. A fixed-point regression emits, strict
+compiles, and executes a main-qualified throwing callable plus `Array<Class>`;
+it asserts the balancing indexed retain and collection release explicitly.
+
+Zapp keeps lifecycle orchestration separate from its `on thread.any` service
+router. Starts execute in registration order, a failed start rolls back the
+started prefix in reverse order, and normal stop attempts every service in
+reverse order before propagating the first stop failure. A lifecycle-only
+fixed-point executable proves all three paths. The real Z-owned AppKit/WebKit
+application then builds with the same fixed-point compiler, completes its
+visible typed WebView round trip, returns from the native run loop, and performs
+the empty lifecycle shutdown path without adding work to the service-call fast
+path. Until ordinary traits execute natively, the stored-callable adapter is
+framework/compiler plumbing for the intended `ServiceLifecycle` contract, not
+a second user-facing model.
+
 ## Deferred Zapp probe: Servo through Rust's C ABI
 
 Servo is worth exploring as a future first-party, behaviorally consistent

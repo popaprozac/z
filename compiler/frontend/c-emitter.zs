@@ -12573,9 +12573,9 @@ function emitLoweredC(
   try appendClassAndOnceRuntime(inout output, program);
   for (const declaration of program.slices) {
     const elementType = try cType(declaration.elementType);
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at(const Z_");
     output.append(declaration.name);
@@ -12585,9 +12585,9 @@ function emitLoweredC(
     output.append(elementType);
     output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at_unchecked(const Z_");
     output.append(declaration.name);
@@ -12625,9 +12625,9 @@ function emitLoweredC(
     output.append("){ (void *)&(self->data[index]), ");
     output.append(declaration.length);
     output.append(" - index };\n}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at(const Z_");
     output.append(declaration.name);
@@ -12635,9 +12635,9 @@ function emitLoweredC(
     output.append("  if (index >= ");
     output.append(declaration.length);
     output.append(") abort();\n  return &(self->data[index]);\n}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at_unchecked(const Z_");
     output.append(declaration.name);
@@ -12692,9 +12692,9 @@ function emitLoweredC(
     output.append(declaration.sliceName);
     output.append("){ data, self->length - index };\n");
     output.append("}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at(const Z_");
     output.append(declaration.name);
@@ -12704,9 +12704,9 @@ function emitLoweredC(
     output.append(elementType);
     output.append(" *)self->data)[index];\n");
     output.append("}\n\n");
-    output.append("static inline __attribute__((unused)) const ");
+    output.append("static inline __attribute__((unused)) ");
     output.append(elementType);
-    output.append(" *Z_");
+    output.append(" const *Z_");
     output.append(declaration.name);
     output.append("_at_unchecked(const Z_");
     output.append(declaration.name);
@@ -12837,7 +12837,11 @@ function emitLoweredC(
       output.append("    self->length -= 1;\n");
       output.append("    Z_");
       output.append(declaration.elementType.name);
-      output.append("_deinit(&items[self->length]);\n");
+      if (declaration.elementType.kind == LoweredTypeKind.classType) {
+        output.append("_release(items[self->length]);\n");
+      } else {
+        output.append("_deinit(&items[self->length]);\n");
+      }
       output.append("  }\n");
     }
     output.append("  free(self->data);\n");
@@ -12857,12 +12861,20 @@ function emitLoweredC(
     if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
       output.append("    Z_");
       output.append(declaration.keyType.name);
-      output.append("_deinit(&self->entries[self->length].key);\n");
+      if (declaration.keyType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[self->length].key);\n");
+      } else {
+        output.append("_deinit(&self->entries[self->length].key);\n");
+      }
     }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("    Z_");
       output.append(declaration.valueType.name);
-      output.append("_deinit(&self->entries[self->length].value);\n");
+      if (declaration.valueType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[self->length].value);\n");
+      } else {
+        output.append("_deinit(&self->entries[self->length].value);\n");
+      }
     }
     output.append("  }\n");
     output.append("  free(self->entries);\n");
@@ -12885,7 +12897,11 @@ function emitLoweredC(
     if (loweredTypeNeedsDeinit(program, declaration.elementType)) {
       output.append("    Z_");
       output.append(declaration.elementType.name);
-      output.append("_deinit(&self->values[self->length]);\n");
+      if (declaration.elementType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->values[self->length]);\n");
+      } else {
+        output.append("_deinit(&self->values[self->length]);\n");
+      }
     }
     output.append("  }\n");
     output.append("  free(self->values);\n");

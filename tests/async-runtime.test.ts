@@ -531,9 +531,11 @@ test("destroys active Option and Result payloads in async task frames", () => {
 test("represents fallible void success without an enum payload", () => {
   const source = `
     struct NetworkError { code: i32; }
+    type Operation = () => void throws NetworkError;
     function warm(): void throws NetworkError { return; }
     function main(): i32 {
-      const result = attempt warm();
+      const operation: Operation = (): void => try warm();
+      const result = attempt operation();
       return match (result) {
         success => 0;
         failure(error) => error.code;
@@ -3308,6 +3310,22 @@ test("preserves thread.main placement on stored callable values", () => {
         function main(): i32 on thread.main { return 0; }
       `,
       expected: /function value "handler" requires thread\.main/,
+    },
+    {
+      name: "aggregate-default-off-main",
+      source: `
+        import { thread } from "std/thread";
+        type Handler = () => i32 on thread.main;
+        struct Registry { handler: Handler; }
+        function selected(): i32 on thread.main { return 42; }
+        function createRegistry(): Registry on thread.main {
+          return Registry({ handler: selected });
+        }
+        struct Application { registry: Registry = createRegistry(); }
+        function build(): Application { return Application(); }
+        function main(): i32 on thread.main { return 0; }
+      `,
+      expected: /construction of struct "Application" requires thread\.main/,
     },
     {
       name: "erase-placement",

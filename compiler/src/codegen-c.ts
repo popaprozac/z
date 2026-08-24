@@ -8289,6 +8289,11 @@ function generateValueCleanup(
 
 function generateSuccessReturn(value: string, context: GenerationContext, view = false): string {
   const cleanup = generateCleanup(context.cleanupScopes, context);
+  if (context.owner.returnType.name === "void" && context.owner.errorType) {
+    const result = resultTypeName("void", context.owner.errorType.name);
+    const returned = `return ${generateCompilerVariantConstruction(result, "success", null, context)};`;
+    return cleanup ? `${cleanup}\n${returned}` : returned;
+  }
   if (view) {
     const returned = `return &(${value});`;
     return cleanup ? `${cleanup}\n${returned}` : returned;

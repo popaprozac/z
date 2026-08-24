@@ -1763,15 +1763,24 @@ export function analyze(
     for (const field of declaration.fields) {
       if (!field.defaultValue) continue;
       const defaultLocals = new Map<string, ValueType>();
-      let actual = inferExpression(
-        field.defaultValue,
-        defaultLocals,
-        globals,
-        structs,
-        enums,
-        fileName,
-        state,
-      );
+      const previousExecutorContext = state.executorContext;
+      if (state.aggregateExecutorAffinities.has(declaration.name)) {
+        state.executorContext = "main";
+      }
+      let actual: ValueType;
+      try {
+        actual = inferExpression(
+          field.defaultValue,
+          defaultLocals,
+          globals,
+          structs,
+          enums,
+          fileName,
+          state,
+        );
+      } finally {
+        state.executorContext = previousExecutorContext;
+      }
       actual = contextualCStringLiteral(field.type.name, field.defaultValue, state) ?? actual;
       rejectBorrowedNativeResourceEscape(
         actual,

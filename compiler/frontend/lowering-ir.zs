@@ -5353,7 +5353,8 @@ function expressionBorrowsStoredReference(
   return kind == ExpressionKind.identifierExpression
     || kind == ExpressionKind.argumentBindingExpression
     || kind == ExpressionKind.argumentReferenceExpression
-    || kind == ExpressionKind.memberExpression;
+    || kind == ExpressionKind.memberExpression
+    || kind == ExpressionKind.indexExpression;
 }
 
 function wrapOwnedStorage(
@@ -13527,6 +13528,48 @@ function directThrowingCallResult(
           }
           none => {}
         }
+      }
+      none => {}
+    }
+  }
+  if (
+    tree.nodes[callee].kind == ExpressionKind.memberExpression
+    && tree.nodes[callee].children.length == 1
+  ) {
+    const receiver = tree.nodes[callee].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiver
+    )) {
+      some(ownerTypeName) => match (fieldTypeNameForOwner(
+        program,
+        importedTypes,
+        ownerTypeName,
+        tree.nodes[callee].value
+      )) {
+        some(fieldTypeName) => {
+          const callableTypeName = moduleCallableAliasTarget(
+            program,
+            importedTypes,
+            fieldTypeName
+          );
+          match (nativeFunctionSignature(callableTypeName)) {
+            some(signature) => {
+              if (signature.errorType.byteLength > 0) {
+                return try intrinsicResultDeclaration(
+                  program,
+                  importedTypes,
+                  `Result<${signature.returnType}, ${signature.errorType}>`
+                );
+              }
+            }
+            none => {}
+          }
+        }
+        none => {}
       }
       none => {}
     }
