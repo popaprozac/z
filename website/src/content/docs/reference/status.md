@@ -50,15 +50,19 @@ production or compatibility-sensitive use.
   to imported async free functions with cleanup-free signatures now also cross
   the fixed-point compiler through a heap-owned task adapter. They may complete
   immediately or begin with one direct `await scheduler.yield()` before a
-  synchronous tail; broader suspending bodies and methods remain the next
-  library-composition boundary.
+  synchronous tail. A directly awaited non-consuming ARC class method may use
+  that one-yield shape with borrowed or cleanup-free arguments and an owned
+  result; the frame retains the receiver and transfers or destroys the result
+  exactly once. General suspending bodies and child-frame composition remain
+  the next library-composition boundary.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
-  graph. The first cleanup-free free-function suspension now emits natively,
-  but the service's retained, cleanup-bearing suspending method remains a
-  fixed-point gap, so the production synchronous application graph does not
-  import that surface.
+  graph. Its retained, cleanup-bearing `SearchService.invoke` method now emits
+  natively; the remaining fixed-point gap is the containing router method,
+  which combines loops, maps, matches, owned locals, and a dynamic child await.
+  The production synchronous application graph therefore still does not import
+  that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

@@ -3964,18 +3964,23 @@ permanent runtime regression.
 
 The application also made the fixed-point boundary visible. Its native semantic
 frontend agrees with Stage 0 on the complete async graph. The fixed-point C
-emitter now executes a direct call to an imported async free function with a
+emitter executes a direct call to an imported async free function with a
 cleanup-free signature through a heap-owned task adapter. Immediate functions
 complete directly; a function beginning with one `await scheduler.yield()`
 stores its arguments, requeues once, observes cancellation, resumes its
 synchronous tail, and transfers the result exactly once under strict C
-compilation. The next Zapp boundary is intentionally larger:
-`SearchService.invoke` is a suspending method with a retained receiver and a
-cleanup-bearing `ServiceOutcome`. Zapp therefore keeps its production
-synchronous application graph free of the opt-in async surface until those
-frame obligations are native. This is preferable to making every synchronous
-service depend on an unsupported emitter tier or disguising the limitation
-behind generated glue.
+compilation.
+
+The next slice closed `SearchService.invoke` itself without new source syntax.
+A directly awaited, non-consuming ARC class method may begin with the same one
+yield and return a cleanup-bearing value. Its frame retains the receiver, keeps
+an `in` argument as a loan for the blocking join instead of copying its owned
+fields, marks the result live only after the method tail completes, and either
+transfers or destroys that result exactly once. A deinitializer regression
+proves the receiver retain is balanced. The Zapp graph now advances to
+`AsyncServices.invoke`, whose loop, frozen maps, matches, owned locals, and
+dynamic child-callable await require a general parent/child frame rather than
+another one-off adapter. That is the next honest composition boundary.
 
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option

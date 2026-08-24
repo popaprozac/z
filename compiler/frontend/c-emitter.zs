@@ -2710,6 +2710,57 @@ function appendExpression(
     if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received a malformed async function-value await";
     }
+    if (
+      declaration.expressions[index].labels.length > 0
+      && declaration.expressions[index].labels[0] == "method"
+    ) {
+      if (declaration.expressions[index].children.length != 1) {
+        throw "native C emission received a malformed async method await";
+      }
+      const method = declaration.expressions[index].children[0];
+      if (
+        declaration.expressions[method].kind
+          != LoweredExpressionKind.methodCall
+        || declaration.expressions[method].labels.length < 3
+      ) throw "native C emission lost its async method call";
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        declaration,
+        index
+      );
+      output.append("(");
+      let methodArgument: usize = 0;
+      while (
+        methodArgument
+          < declaration.expressions[method].children.length
+      ) {
+        if (methodArgument > 0) output.append(", ");
+        const borrowed = methodArgument > 0
+          && declaration.expressions[method].labels.length
+            > methodArgument + 2
+          && (
+            declaration.expressions[method].labels[methodArgument + 2]
+              == "in"
+            || declaration.expressions[method].labels[methodArgument + 2]
+              == "inout"
+            || declaration.expressions[method].labels[methodArgument + 2]
+              == "out"
+        );
+        if (borrowed) output.append("&(");
+        const methodValue = declaration.expressions[method].children[
+          methodArgument
+        ];
+        try appendExpression(
+          inout output,
+          declaration,
+          methodValue
+        );
+        if (borrowed) output.append(")");
+        methodArgument = methodArgument + 1;
+      }
+      output.append(")");
+      return;
+    }
     appendAsyncCallableAwaitHelperName(
       inout output,
       declaration,
@@ -5911,6 +5962,10 @@ function appendAsyncCallableAwaitHelpers(
       const expression = view owner.expressions[expressionIndex];
       if (
         expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        || (
+          expression.labels.length > 0
+          && expression.labels[0] == "method"
+        )
       ) {
         expressionIndex = expressionIndex + 1;
         continue;
@@ -5983,6 +6038,221 @@ function appendAsyncCallableAwaitHelpers(
       }
       output.append("  if (invocation.destroy != NULL) invocation.destroy(invocation.task);\n");
       output.append("  if (invocation.release_context != NULL) invocation.release_context(invocation.callable_context);\n");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("  return result;\n");
+      }
+      output.append("}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
+function appendAsyncMethodAwaitHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (
+        expression.kind != LoweredExpressionKind.asyncFunctionAwait
+        || expression.labels.length == 0
+        || expression.labels[0] != "method"
+        || expression.children.length != 1
+      ) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      const method = view owner.expressions[expression.children[0]];
+      if (
+        method.kind != LoweredExpressionKind.methodCall
+        || method.labels.length < 3
+        || method.labels[0] != "class"
+        || method.children.length == 0
+      ) throw "native async method await helper lost its method shape";
+      let functionTypeIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == expression.value) {
+          functionTypeIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (functionTypeIndex >= program.functionTypes.length) {
+        throw "native async method await helper could not resolve its function type";
+      }
+      const functionType = view program.functionTypes[functionTypeIndex];
+      if (
+        !functionType.asynchronous
+        || method.children.length != functionType.parameters.length + 1
+      ) throw "native async method await helper received an unsupported signature";
+      const receiverType = method.labels[2].copyBytes(
+        0,
+        method.labels[2].byteLength
+      );
+      const returnType = try cType(functionType.returnType);
+      const resultNeedsDeinit = loweredTypeNeedsDeinit(
+        program,
+        functionType.returnType
+      );
+      output.append("typedef struct ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task {\n  Z_AsyncTask task;\n  uint32_t state;\n  Z_");
+      output.append(receiverType);
+      output.append(" *receiver;\n");
+      let parameter: usize = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append("  ");
+        try appendCallableParameterDeclaration(
+          inout output,
+          functionType.parameters[parameter],
+          `argument${parameter}`
+        );
+        output.append(";\n");
+        parameter = parameter + 1;
+      }
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("  ");
+        output.append(returnType);
+        output.append(" result;\n");
+        if (resultNeedsDeinit) output.append("  bool live_result;\n");
+      }
+      output.append("} ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task;\n\nstatic void ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_poll(Z_AsyncTask *task) {\n  ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task *frame = (");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task *)task;\n  if (task->cancellation_requested) { task->cancelled = true; task->completed = true; return; }\n  if (frame->state == 0) { frame->state = 1; z_stage1_async_enqueue(task->executor, task); return; }\n  ");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        output.append("frame->result = ");
+      }
+      output.append(method.value);
+      output.append("(frame->receiver");
+      parameter = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append(", frame->argument");
+        output.append(`${parameter}`);
+        parameter = parameter + 1;
+      }
+      output.append(");\n");
+      if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+      output.append("  task->completed = true;\n}\n\nstatic void ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_destroy(");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task *frame) {\n  if (frame == NULL) return;\n");
+      if (resultNeedsDeinit) {
+        output.append("  if (frame->live_result) Z_");
+        output.append(functionType.returnType.name);
+        if (functionType.returnType.kind == LoweredTypeKind.classType) {
+          output.append("_release(frame->result);\n");
+        } else output.append("_deinit(&frame->result);\n");
+      }
+      output.append("  Z_");
+      output.append(receiverType);
+      output.append("_release(frame->receiver);\n  free(frame);\n}\n\nstatic __attribute__((unused)) ");
+      output.append(returnType);
+      output.append(" ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("(const Z_");
+      output.append(receiverType);
+      output.append(" *receiver");
+      parameter = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append(", ");
+        try appendCallableParameterDeclaration(
+          inout output,
+          functionType.parameters[parameter],
+          functionType.parameters[parameter].name
+        );
+        parameter = parameter + 1;
+      }
+      output.append(") {\n  Z_AsyncExecutor executor = {0};\n  ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task *frame = (");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n  frame->task.poll = ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_poll;\n  frame->task.executor = &executor;\n  frame->receiver = Z_");
+      output.append(receiverType);
+      output.append("_retain(receiver);\n");
+      parameter = 0;
+      while (parameter < functionType.parameters.length) {
+        output.append("  frame->argument");
+        output.append(`${parameter}`);
+        output.append(" = ");
+        appendCBindingName(
+          inout output,
+          functionType.parameters[parameter].name
+        );
+        output.append(";\n");
+        parameter = parameter + 1;
+      }
+      output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n  while (!frame->task.completed) { if (!z_stage1_async_run_one(&executor)) abort(); }\n  if (frame->task.cancelled) abort();\n");
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        if (resultNeedsDeinit) {
+          output.append("  if (!frame->live_result) abort();\n");
+        }
+        output.append("  ");
+        output.append(returnType);
+        output.append(" result = frame->result;\n");
+        if (resultNeedsDeinit) output.append("  frame->live_result = false;\n");
+      }
+      output.append("  ");
+      appendAsyncCallableAwaitHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("_destroy(frame);\n");
       if (functionType.returnType.kind != LoweredTypeKind.voidType) {
         output.append("  return result;\n");
       }
@@ -14097,6 +14367,7 @@ function emitLoweredC(
   appendAsyncCallableRuntime(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
+  try appendAsyncMethodAwaitHelpers(inout output, program);
   try appendPersistentAsyncParentHelpers(inout output, program);
   if (program.objectiveCRegistrations.length > 0) {
     output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");

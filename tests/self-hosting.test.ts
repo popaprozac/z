@@ -1380,6 +1380,64 @@ test("executes one scheduler-yield suspension in an imported async function", ()
   }
 }, 240_000);
 
+test("retains a class receiver and owned result across async method suspension", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-method-yield.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /frame->receiver = Z_Service_retain\(receiver\);/);
+    assert.match(emission.stdout, /Z_Service_release\(frame->receiver\);/);
+    assert.match(emission.stdout, /frame->result = Z_Service_invoke\(/);
+    assert.match(emission.stdout, /if \(task->cancellation_requested\)/);
+    assert.match(emission.stdout, /frame->live_result = true;/);
+    assert.match(emission.stdout, /frame->live_result = false;/);
+    assert.match(emission.stdout, /Z_Response_deinit\(&frame->result\);/);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "released async service\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("rejects a suspending value-struct receiver before native lowering", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-struct-method-invalid.zs",
+  );
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 1);
+  assert.match(emission.stderr, /error\[Z0700\]/);
+  assert.match(emission.stderr, /suspending async function "read"/);
+  assert.doesNotMatch(emission.stderr, /internal compiler error/);
+});
+
 test("retains a readonly class receiver captured by a non-consuming method", () => {
   const input = resolve(
     projectRoot,

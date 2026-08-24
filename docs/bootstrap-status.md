@@ -90,8 +90,11 @@ cleanup-free signature now uses a heap-owned task adapter. It may complete
 immediately or begin with one direct `await scheduler.yield()`; the latter
 stores its arguments, requeues once, observes cancellation, resumes a
 synchronous tail, and transfers its result exactly once under strict C
-compilation. `Z0700` remains for broader suspending bodies and async methods;
-named async-function value conversion also remains deferred.
+compilation. `Z0700` remains for broader suspending bodies, including general
+async methods; one direct awaited non-consuming ARC class method uses the bounded
+one-yield frame while retaining its receiver and transferring a cleanup-bearing
+result exactly once. General suspending methods, named async-function value
+conversion, and child-frame composition remain deferred.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an

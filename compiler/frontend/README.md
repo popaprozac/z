@@ -263,7 +263,11 @@ direct-function/expression-closure tier still stop before C emission. Ordinary
 transparent aliases, first-class synchronous callable values, and direct calls
 to imported async free functions with cleanup-free signatures now cross the
 fixed-point boundary when they complete immediately or begin with one direct
-`await scheduler.yield()` before a synchronous tail.
+`await scheduler.yield()` before a synchronous tail. A non-consuming ARC class
+method may use the same one-yield shape with borrowed or cleanup-free value
+parameters and an ownership-bearing result: its await adapter retains the
+receiver, holds borrowed arguments only for the blocking join, and destroys an
+unclaimed result with the frame.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

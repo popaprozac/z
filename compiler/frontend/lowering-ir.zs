@@ -7800,6 +7800,141 @@ function lowerExpressionUsingNumericPeerType(
   );
 }
 
+function lowerAsyncMethodTailCall(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in tree: ExpressionTree,
+  index: usize,
+  inout output: Array<LoweredExpression>
+): usize throws String {
+  if (
+    tree.nodes[index].kind != ExpressionKind.callExpression
+    || tree.nodes[index].children.length == 0
+  ) throw "native async method tail lowering requires a call";
+  const calleeInput = tree.nodes[index].children[0];
+  if (
+    resolvedCallKind(evidence, tree, index) != "method"
+    || tree.nodes[calleeInput].kind != ExpressionKind.memberExpression
+    || tree.nodes[calleeInput].children.length != 1
+  ) throw "native async method tail lowering requires an instance method";
+  let sourceMethodName = tree.nodes[calleeInput].value.copyBytes(
+    0,
+    tree.nodes[calleeInput].value.byteLength
+  );
+  match (genericTypeShape(sourceMethodName)) {
+    some(generic) => sourceMethodName = generic.base.copyBytes(
+      0,
+      generic.base.byteLength
+    );
+    none => {}
+  }
+  const genericMethodSuffix = try resolvedGenericMethodSuffix(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    index
+  );
+  const receiverInput = tree.nodes[calleeInput].children[0];
+  const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    receiverInput
+  )) {
+    some(name) => name;
+    none => throw "native async method tail lowering could not resolve its receiver type";
+  };
+  const receiverType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    receiverTypeName
+  );
+  if (
+    receiverType.kind != LoweredTypeKind.structType
+    && receiverType.kind != LoweredTypeKind.classType
+  ) {
+    throw `native async method tail lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
+  }
+  const receiverMode = resolvedCallReceiverMode(evidence, tree, index);
+  if (
+    receiverType.kind != LoweredTypeKind.classType
+    || receiverMode == "move"
+    || receiverMode == "inout"
+  ) {
+    throw "native first-tier suspending methods require a non-consuming class receiver";
+  }
+  const receiver = try lowerExpression(
+    program,
+    importedTypes,
+    evidence,
+    tree,
+    receiverInput,
+    inout output
+  );
+  let children = Array<usize>();
+  children.push(receiver);
+  const parameterModes = resolvedCallParameterModes(
+    program,
+    evidence,
+    tree,
+    index
+  );
+  const parameterTypes = resolvedCallParameterTypes(
+    evidence,
+    tree,
+    index
+  );
+  let labels = Array<String>();
+  labels.push("class");
+  labels.push(receiverMode.byteLength > 0
+    ? receiverMode.copyBytes(0, receiverMode.byteLength)
+    : "in");
+  labels.push(receiverType.name.copyBytes(0, receiverType.name.byteLength));
+  let argument: usize = 1;
+  while (argument < tree.nodes[index].children.length) {
+    const argumentInput = tree.nodes[index].children[argument];
+    let value: usize = 0;
+    if (parameterTypes.length >= argument) {
+      value = try lowerExpressionExpected(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        parameterTypes[argument - 1],
+        inout output
+      );
+    } else {
+      value = try lowerExpression(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        argumentInput,
+        inout output
+      );
+    }
+    children.push(value);
+    labels.push(parameterModes.length >= argument
+      ? parameterModes[argument - 1].copyBytes(
+        0,
+        parameterModes[argument - 1].byteLength
+      )
+      : "value");
+    argument = argument + 1;
+  }
+  return pushExpression(
+    inout output,
+    LoweredExpressionKind.methodCall,
+    `Z_${receiverType.name}_${sourceMethodName}${genericMethodSuffix}`,
+    children,
+    labels
+  );
+}
+
 function lowerExpression(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -8944,6 +9079,35 @@ function lowerExpressionContextual(
             ));
             argument = argument + 1;
           }
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.asyncFunctionAwait,
+            callableIdentity,
+            children,
+            labels
+          );
+        }
+        if (resolution.asynchronous && resolution.kind == "method") {
+          if (resolution.errorType.byteLength > 0) {
+            throw "native direct async method await does not execute typed errors yet";
+          }
+          const methodCall = try lowerAsyncMethodTailCall(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            taskInput,
+            inout output
+          );
+          const callableIdentity = try moduleCallFunctionTypeIdentity(
+            program,
+            importedTypes,
+            resolution
+          );
+          let children = Array<usize>();
+          children.push(methodCall);
+          let labels = Array<String>();
+          labels.push("method");
           return pushExpression(
             inout output,
             LoweredExpressionKind.asyncFunctionAwait,
@@ -20146,8 +20310,7 @@ function lowerFunction(
   let mainDelayLoopPosition: usize = 0;
   let asyncSuspension = "";
   if (declaration.asynchronous && declaration.name != "main") {
-    const firstTierSchedulerYield = receiverName.byteLength == 0
-      && declaration.executorAffinity != "thread.main"
+    const firstTierSchedulerYield = declaration.executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     if (
       declaration.executorAffinity != "thread.main"
@@ -20281,21 +20444,49 @@ function lowerFunction(
     }));
   }
   if (asyncSuspension == "scheduler-yield") {
-    for (const parameter of parameters) {
-      if (
-        parameter.mode != LoweredParameterMode.value
-        || moduleTypeNeedsCleanup(program, importedTypes, parameter.type)
-      ) {
-        throw `native scheduler.yield function ${declaration.name} requires cleanup-free value parameters in the first tier`;
+    if (receiverName.byteLength == 0) {
+      for (const parameter of parameters) {
+        if (
+          parameter.mode != LoweredParameterMode.value
+          || moduleTypeNeedsCleanup(program, importedTypes, parameter.type)
+        ) {
+          throw `native scheduler.yield function ${declaration.name} requires cleanup-free value parameters in the first tier`;
+        }
       }
-    }
-    const yieldReturnType = try lowerModuleType(
-      program,
-      importedTypes,
-      declaration.returnType
-    );
-    if (moduleTypeNeedsCleanup(program, importedTypes, yieldReturnType)) {
-      throw `native scheduler.yield function ${declaration.name} requires a cleanup-free result in the first tier`;
+      const yieldReturnType = try lowerModuleType(
+        program,
+        importedTypes,
+        declaration.returnType
+      );
+      if (moduleTypeNeedsCleanup(
+        program,
+        importedTypes,
+        yieldReturnType
+      )) {
+        throw `native scheduler.yield function ${declaration.name} requires a cleanup-free result in the first tier`;
+      }
+    } else {
+      if (
+        receiverKind != LoweredTypeKind.classType
+        || receiverSourceMode != ReceiverMode.none
+      ) {
+        throw `native scheduler.yield method ${receiverName}.${declaration.name} requires a non-consuming class receiver in the first tier`;
+      }
+      for (const parameter of parameters) {
+        if (
+          parameter.mode != LoweredParameterMode.input
+          && (
+            parameter.mode != LoweredParameterMode.value
+            || moduleTypeNeedsCleanup(
+              program,
+              importedTypes,
+              parameter.type
+            )
+          )
+        ) {
+          throw `native scheduler.yield method ${receiverName}.${declaration.name} requires borrowed or cleanup-free value parameters in the first tier`;
+        }
+      }
     }
   }
   let expressions = Array<LoweredExpression>();
@@ -23001,7 +23192,13 @@ function collectProgramAsyncCallFunctionType(
   in resolution: ModuleCallResolution,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
-  if (!resolution.asynchronous || resolution.kind != "function") return;
+  if (
+    !resolution.asynchronous
+    || (
+      resolution.kind != "function"
+      && resolution.kind != "method"
+    )
+  ) return;
   const name = try moduleCallFunctionTypeIdentity(
     program,
     importedTypes,

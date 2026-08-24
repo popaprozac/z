@@ -434,8 +434,7 @@ function functionHasFirstTierSchedulerYieldStorage(
   in owner: String
 ): boolean {
   if (
-    owner.byteLength > 0
-    || moduleIndex >= modules.length
+    moduleIndex >= modules.length
     || moduleIndex >= graph.modules.length
     || !functionUsesFirstTierSchedulerYield(
       modules[moduleIndex].program,
@@ -447,13 +446,27 @@ function functionHasFirstTierSchedulerYieldStorage(
     none => {}
   }
   let visiting = Array<String>();
-  if (typeHasCleanup(
-    graph.modules,
-    moduleIndex,
-    declaration.returnType.name,
-    visiting
-  )) return false;
+  if (owner.byteLength > 0) {
+    let supportedOwner = false;
+    for (const aggregate of modules[moduleIndex].program.aggregates) {
+      if (aggregate.name != owner) continue;
+      supportedOwner = aggregate.kind == DeclarationKind.classDeclaration
+        && declaration.receiverMode == ReceiverMode.none;
+    }
+    if (!supportedOwner) return false;
+  } else {
+    if (typeHasCleanup(
+      graph.modules,
+      moduleIndex,
+      declaration.returnType.name,
+      visiting
+    )) return false;
+  }
   for (const parameter of declaration.parameters) {
+    if (
+      owner.byteLength > 0
+      && parameter.mode == ParameterMode.input
+    ) continue;
     if (parameter.mode != ParameterMode.value) return false;
     visiting = Array<String>();
     if (typeHasCleanup(
