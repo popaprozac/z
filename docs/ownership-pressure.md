@@ -3796,6 +3796,35 @@ embedding surface, web compatibility, build reproducibility, and measurements
 justify a product commitment. System WebViews remain the smallest baseline;
 CEF remains the mature compatibility comparison.
 
+## A stored async callable forced the enclosing frame to become real
+
+The first stored-async callable suspension initially used a stack-local C
+awaiter that drained a private executor. That proved the dynamic child's frame,
+result transfer, and waiter wake-up, but the enclosing Z function still lived
+on the native C call stack.
+
+The first bounded linear `async main` shape now owns its callable local, child
+invocation, state, and result in one heap frame. Starting the child records the
+parent task as its waiter and returns to the FIFO executor. When the child
+completes after `scheduler.yield()`, the executor requeues the parent; only that
+resumed parent takes the result, destroys the child invocation, and releases
+the stored callable. Existing lowering cleanup evidence selects this path, so
+there is no new source syntax or parallel ownership rule.
+
+This is intentionally narrow: one no-argument stored async callable, one direct
+await, and one cleanup-free integer return. The restriction keeps unsupported
+control flow on the existing diagnosed path while establishing the frame shape
+needed for parameters, multiple locals, cancellation, and structured control
+flow in later slices.
+
+The same checkpoint exposed a compiler-velocity problem rather than hiding it.
+On the development machine on 2026-08-24, a cold exact fixed-point rebuild of
+the 7.85 MB generated compiler took 109.57 seconds of wall time; Stage 0 seed C
+emission alone took 77.87 seconds. By contrast, a cached native-front-end check
+of the async fixture completed in roughly 15 milliseconds. Incremental work is
+still fast, but cold self-host emission is now the measured optimization target
+before it becomes routine application-build latency.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

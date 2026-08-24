@@ -32,9 +32,11 @@ production or compatibility-sensitive use.
   captured, nonthrowing expression closures. Primitive and ownership-bearing
   results transfer exactly once; an unclaimed owned result is destroyed with
   its frame. A void closure containing one direct `await scheduler.yield()` now
-  polls and requeues on a local FIFO executor. Direct await links the child to a
-  local parent awaiter and child completion requeues that parent. General Z
-  function-frame resumption and cancellation propagation remain in progress.
+  polls and requeues on a local FIFO executor. The first linear async `main`
+  shape now owns its callable local and child invocation in a persistent heap
+  frame: child completion wakes and resumes that enclosing Z frame before its
+  local is destroyed. Broader function bodies and cancellation propagation
+  remain in progress.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

@@ -254,6 +254,20 @@ function appendAsyncCallableAwaitHelperName(
   output.append(`${expressionIndex}`);
 }
 
+function appendPersistentAsyncParentName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction
+): void {
+  output.append("z_stage1_async_parent_");
+  appendCBindingName(inout output, declaration.name);
+}
+
+struct PersistentAsyncParentShape {
+  localStatement: usize;
+  localInitializer: usize;
+  returnExpression: usize;
+}
+
 function appendCallableParameterDeclaration(
   inout output: TextBuffer,
   in parameter: LoweredParameter,
@@ -4621,11 +4635,149 @@ function appendFunctionTail(
   }
 }
 
-function appendFunction(
+function persistentAsyncParentShape(
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): Option<PersistentAsyncParentShape> {
+  if (
+    !declaration.asynchronous
+    || declaration.name != "main"
+    || declaration.parameters.length != 0
+    || declaration.roots.length != 3
+    || declaration.returnType.kind != LoweredTypeKind.i32Type
+  ) return Option<PersistentAsyncParentShape>.none;
+  match (in declaration.receiverType) {
+    some(_) => return Option<PersistentAsyncParentShape>.none;
+    none => {}
+  }
+  const localStatement = declaration.roots[0];
+  const awaitStatement = declaration.roots[1];
+  const returnStatement = declaration.roots[2];
+  if (
+    declaration.statements[localStatement].kind
+      != LoweredStatementKind.localStatement
+    || declaration.statements[awaitStatement].kind
+      != LoweredStatementKind.expressionStatement
+    || declaration.statements[returnStatement].kind
+      != LoweredStatementKind.returnStatement
+  ) return Option<PersistentAsyncParentShape>.none;
+  let localTypeName = "";
+  match (in declaration.statements[localStatement].type) {
+    some(type) => {
+      if (type.kind != LoweredTypeKind.functionType) {
+        return Option<PersistentAsyncParentShape>.none;
+      }
+      localTypeName = type.name.copyBytes(0, type.name.byteLength);
+    }
+    none => return Option<PersistentAsyncParentShape>.none;
+  }
+  const localInitializer = match (
+    in declaration.statements[localStatement].expression
+  ) {
+    some(expression) => expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  };
+  const awaitExpression = match (
+    in declaration.statements[awaitStatement].expression
+  ) {
+    some(expression) => expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  };
+  const returnExpression = match (
+    in declaration.statements[returnStatement].expression
+  ) {
+    some(expression) => expression;
+    none => return Option<PersistentAsyncParentShape>.none;
+  };
+  if (
+    declaration.expressions[awaitExpression].kind
+      != LoweredExpressionKind.asyncFunctionAwait
+    || declaration.expressions[awaitExpression].children.length != 1
+    || declaration.expressions[returnExpression].kind
+      != LoweredExpressionKind.integerValue
+  ) return Option<PersistentAsyncParentShape>.none;
+  const awaitedCallable = view declaration.expressions[
+    declaration.expressions[awaitExpression].children[0]
+  ];
+  if (
+    awaitedCallable.kind != LoweredExpressionKind.localValue
+    || awaitedCallable.value != declaration.statements[localStatement].name
+    || declaration.expressions[awaitExpression].value != localTypeName
+  ) return Option<PersistentAsyncParentShape>.none;
+  let matchingFunctionType = false;
+  for (const functionType of program.functionTypes) {
+    if (functionType.name != localTypeName) continue;
+    matchingFunctionType = functionType.asynchronous
+      && functionType.parameters.length == 0
+      && functionType.returnType.kind == LoweredTypeKind.voidType;
+  }
+  if (!matchingFunctionType) {
+    return Option<PersistentAsyncParentShape>.none;
+  }
+  if (declaration.statements[returnStatement].cleanups.length != 1) {
+    return Option<PersistentAsyncParentShape>.none;
+  }
+  const cleanup = view declaration.statements[returnStatement].cleanups[0];
+  if (
+    cleanup.name != declaration.statements[localStatement].name
+    || cleanup.type.kind != LoweredTypeKind.functionType
+    || cleanup.type.name != localTypeName
+  ) return Option<PersistentAsyncParentShape>.none;
+  return Option.some(PersistentAsyncParentShape({
+    localStatement,
+    localInitializer,
+    returnExpression,
+  }));
+}
+
+function appendPersistentAsyncParentDriver(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
   processArguments: boolean
 ): void throws String {
+  try appendFunctionSignature(
+    inout output,
+    declaration,
+    processArguments
+  );
+  output.append(" {\n");
+  if (
+    declaration.name == "main"
+    && processArguments
+  ) {
+    output.append("  z_stage1_process_argc = argc;\n");
+    output.append("  z_stage1_process_argv = argv;\n");
+  }
+  output.append("  Z_AsyncExecutor executor = {0};\n  ");
+  appendPersistentAsyncParentName(inout output, declaration);
+  output.append(" *frame = ");
+  appendPersistentAsyncParentName(inout output, declaration);
+  output.append("_start(&executor);\n");
+  output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n");
+  output.append("  while (!frame->task.completed) {\n");
+  output.append("    if (!z_stage1_async_run_one(&executor)) abort();\n");
+  output.append("  }\n  const int32_t result = frame->result;\n  ");
+  appendPersistentAsyncParentName(inout output, declaration);
+  output.append("_destroy(frame);\n  return result;\n}\n\n");
+}
+
+function appendFunction(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  processArguments: boolean
+): void throws String {
+  match (persistentAsyncParentShape(program, declaration)) {
+    some(shape) => {
+      try appendPersistentAsyncParentDriver(
+        inout output,
+        declaration,
+        processArguments
+      );
+      return;
+    }
+    none => {}
+  }
   try appendFunctionSignature(
     inout output,
     declaration,
@@ -5315,7 +5467,7 @@ function appendAsyncCallableAwaitHelpers(
         throw "native async callable await helper received a synchronous function type";
       }
       const returnType = try cType(functionType.returnType);
-      output.append("static ");
+      output.append("static __attribute__((unused)) ");
       output.append(returnType);
       output.append(" ");
       appendAsyncCallableAwaitHelperName(
@@ -5372,6 +5524,103 @@ function appendAsyncCallableAwaitHelpers(
       }
       output.append("}\n\n");
       expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
+function appendPersistentAsyncParentHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const declaration of program.functions) {
+    match (persistentAsyncParentShape(program, declaration)) {
+      some(shape) => {
+        const localCType = match (
+          in declaration.statements[shape.localStatement].type
+        ) {
+          some(type) => try cType(type);
+          none => throw "persistent async parent lost its callable local type";
+        };
+        const localTypeName = match (
+          in declaration.statements[shape.localStatement].type
+        ) {
+          some(type) => type.name.copyBytes(0, type.name.byteLength);
+          none => throw "persistent async parent lost its callable local type";
+        };
+        output.append("typedef struct ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" {\n  Z_AsyncTask task;\n  uint32_t state;\n  ");
+        output.append(localCType);
+        output.append(" local;\n  bool live_local;\n  Z_AsyncInvocation child;\n  int32_t result;\n} ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(";\n\nstatic void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_release_child(");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame) {\n");
+        output.append("  if (frame->child.task == NULL) return;\n");
+        output.append("  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n");
+        output.append("  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n");
+        output.append("  frame->child = (Z_AsyncInvocation){0};\n}\n\n");
+        output.append("static void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_poll(Z_AsyncTask *task) {\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame = (");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *)task;\n");
+        output.append("  if (frame->state == 0) {\n    frame->local = ");
+        try appendExpression(
+          inout output,
+          declaration,
+          shape.localInitializer
+        );
+        output.append(";\n    frame->live_local = true;\n    frame->child = Z_");
+        output.append(localTypeName);
+        output.append("_start(frame->local, task->executor);\n");
+        output.append("    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n");
+        output.append("    if (frame->child.task->completed) {\n");
+        output.append("      z_stage1_async_enqueue(task->executor, task);\n");
+        output.append("    } else {\n");
+        output.append("      if (frame->child.task->waiter != NULL) abort();\n");
+        output.append("      frame->child.task->waiter = task;\n");
+        output.append("      z_stage1_async_enqueue(task->executor, frame->child.task);\n");
+        output.append("    }\n    return;\n  }\n");
+        output.append("  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n");
+        output.append("  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
+        output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_release_child(frame);\n  frame->result = ");
+        try appendExpression(
+          inout output,
+          declaration,
+          shape.returnExpression
+        );
+        output.append(";\n  Z_");
+        output.append(localTypeName);
+        output.append("_deinit(&frame->local);\n  frame->live_local = false;\n  task->completed = true;\n}\n\n");
+        output.append("static ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_start(Z_AsyncExecutor *executor) {\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame = (");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *)calloc(1, sizeof(*frame));\n  if (frame == NULL || executor == NULL) abort();\n  frame->task.poll = ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_poll;\n  frame->task.executor = executor;\n  return frame;\n}\n\n");
+        output.append("static void ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_destroy(");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append(" *frame) {\n  if (frame == NULL) return;\n  ");
+        appendPersistentAsyncParentName(inout output, declaration);
+        output.append("_release_child(frame);\n  if (frame->live_local) Z_");
+        output.append(localTypeName);
+        output.append("_deinit(&frame->local);\n  free(frame);\n}\n\n");
+      }
+      none => {}
     }
   }
 }
@@ -13233,6 +13482,7 @@ function emitLoweredC(
   appendAsyncCallableRuntime(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);
+  try appendPersistentAsyncParentHelpers(inout output, program);
   if (program.objectiveCRegistrations.length > 0) {
     output.append("@interface ZObjCRegistration : NSObject\n@end\n\n@implementation ZObjCRegistration\n@end\n\n");
     for (const adapter of program.objectiveCProtocolAdapters) {
@@ -13480,6 +13730,7 @@ function emitLoweredC(
   for (const declaration of program.functions) {
     try appendFunction(
       inout output,
+      program,
       declaration,
       usesProcessArguments
     );
