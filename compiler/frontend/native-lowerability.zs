@@ -457,6 +457,54 @@ function functionUsesFirstTierTailAwait(
   }
 }
 
+function functionUsesFirstTierPrefixedTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let position: usize = 0;
+  while (position + 1 < declaration.body.roots.length) {
+    const root = declaration.body.roots[position];
+    if (
+      declaration.body.nodes[root].kind != StatementKind.variableStatement
+      || declaration.body.nodes[root].children.length > 0
+      || statementContainsSuspension(declaration.body, root)
+    ) return false;
+    match (in declaration.body.nodes[root].expression) {
+      some(_) => {}
+      none => return false;
+    }
+    position = position + 1;
+  }
+  const tail = declaration.body.roots[
+    declaration.body.roots.length - 1
+  ];
+  if (
+    declaration.body.nodes[tail].kind
+      != StatementKind.returnStatement
+  ) return false;
+  match (in declaration.body.nodes[tail].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const awaitRoot = tree.root;
+        if (
+          tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
+          || tree.nodes[awaitRoot].children.length != 1
+        ) return false;
+        const operation = tree.nodes[awaitRoot].children[0];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => return false;
+    }
+    none => return false;
+  }
+}
+
 function functionHasFirstTierTailAwaitStorage(
   moduleIndex: usize,
   in modules: Array<ParsedModule>,
@@ -467,7 +515,13 @@ function functionHasFirstTierTailAwaitStorage(
   if (
     moduleIndex >= modules.length
     || moduleIndex >= graph.modules.length
-    || !functionUsesFirstTierTailAwait(declaration)
+    || (
+      !functionUsesFirstTierTailAwait(declaration)
+      && (
+        owner.byteLength == 0
+        || !functionUsesFirstTierPrefixedTailAwait(declaration)
+      )
+    )
   ) return false;
   match (in declaration.errorType) {
     some(_) => return false;

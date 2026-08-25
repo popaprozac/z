@@ -4001,6 +4001,13 @@ both captured state and receiver deinitializers run exactly once. This closes
 the method-vs-free-function distinction for the tail adapter without adding a
 second source-level async rule.
 
+The next slice hoists straight-line locals declared before that method's tail
+await into the same heap frame. A cleanup-bearing `Request` may therefore be
+constructed locally, passed `in` to a suspended handler, and destroyed only
+after the handler finishes. The ordinary source shape remains unchanged; this
+is more work by the compiler rather than another ownership capability for the
+author to spell.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

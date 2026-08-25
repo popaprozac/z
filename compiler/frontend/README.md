@@ -275,6 +275,10 @@ cancellation, and transfers or destroys an owned result exactly once.
 The same tail-adapter body is executable as a non-consuming ARC class method;
 its parent frame additionally retains and releases the receiver around the
 dynamic child lifetime.
+A class-method tail adapter may also construct straight-line locals before the
+await. Cleanup-bearing locals are hoisted into the parent frame, remain valid
+when lent to the dynamic child, and are destroyed after completion or
+cancellation rather than at the first poll's stack boundary.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

@@ -60,7 +60,9 @@ production or compatibility-sensitive use.
   once. General suspending bodies with locals and control flow around the child
   remain the next library-composition boundary. A non-consuming ARC class
   method may use that same tail adapter; its parent frame retains the receiver
-  through child completion and cancellation.
+  through child completion and cancellation. Straight-line locals declared
+  before the await are frame-owned as well, so cleanup-bearing request values
+  may be lent safely to the suspended child.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the

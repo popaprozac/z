@@ -1079,6 +1079,9 @@ frame-planning tier rather than falling back to a nested blocking executor.
 The same body may be a non-consuming ARC class method. In that form the parent
 frame also retains the receiver until the child has completed or cancellation
 cleanup has finished.
+Straight-line local declarations before the tail await are also preserved in
+that method frame. This permits an owned request or adapter value to be built
+locally and lent to the child without exposing a lifetime annotation in Z.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

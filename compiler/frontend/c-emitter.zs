@@ -310,9 +310,9 @@ function asyncTailAwaitShape(
     if (
       declaration.name == name
       && declaration.asyncSuspension == "tail-await"
-      && declaration.roots.length == 1
+      && declaration.roots.length > 0
     ) {
-      const root = declaration.roots[0];
+      const root = declaration.roots[declaration.roots.length - 1];
       if (
         declaration.statements[root].kind
           == LoweredStatementKind.returnStatement
@@ -339,6 +339,179 @@ function asyncTailAwaitShape(
     functionIndex = functionIndex + 1;
   }
   return Option<AsyncTailAwaitShape>.none;
+}
+
+function appendAsyncTailLocalFields(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): void throws String {
+  let position: usize = 0;
+  while (position + 1 < declaration.roots.length) {
+    const root = declaration.roots[position];
+    const statement = view declaration.statements[root];
+    if (statement.kind != LoweredStatementKind.localStatement) {
+      throw "native prefixed tail await received a non-local prefix";
+    }
+    const type = match (in statement.type) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an untyped local";
+    };
+    const localCType = try cType(type);
+    output.append("  ");
+    output.append(localCType);
+    output.append(" ");
+    appendCBindingName(inout output, statement.name);
+    output.append(";\n");
+    if (loweredTypeNeedsDeinit(program, type)) {
+      if (statement.liveFlag.byteLength == 0) {
+        throw "native prefixed tail await lost a local cleanup guard";
+      }
+      output.append("  bool ");
+      appendCBindingName(inout output, statement.liveFlag);
+      output.append(";\n");
+    }
+    position = position + 1;
+  }
+}
+
+function appendAsyncTailLocalMacros(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): void throws String {
+  let position: usize = 0;
+  while (position + 1 < declaration.roots.length) {
+    const statement = view declaration.statements[
+      declaration.roots[position]
+    ];
+    const type = match (in statement.type) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an untyped local";
+    };
+    output.append("#define ");
+    appendCBindingName(inout output, statement.name);
+    output.append(" (frame->");
+    appendCBindingName(inout output, statement.name);
+    output.append(")\n");
+    if (loweredTypeNeedsDeinit(program, type)) {
+      output.append("#define ");
+      appendCBindingName(inout output, statement.liveFlag);
+      output.append(" (frame->");
+      appendCBindingName(inout output, statement.liveFlag);
+      output.append(")\n");
+    }
+    position = position + 1;
+  }
+  if (declaration.roots.length > 1) output.append("\n");
+}
+
+function appendAsyncTailLocalMacroUndefs(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction
+): void throws String {
+  let position = declaration.roots.length - 1;
+  while (position > 0) {
+    position = position - 1;
+    const statement = view declaration.statements[
+      declaration.roots[position]
+    ];
+    const type = match (in statement.type) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an untyped local";
+    };
+    if (loweredTypeNeedsDeinit(program, type)) {
+      output.append("#undef ");
+      appendCBindingName(inout output, statement.liveFlag);
+      output.append("\n");
+    }
+    output.append("#undef ");
+    appendCBindingName(inout output, statement.name);
+    output.append("\n");
+  }
+  if (declaration.roots.length > 1) output.append("\n");
+}
+
+function appendAsyncTailLocalInitializers(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  depth: usize
+): void throws String {
+  let position: usize = 0;
+  while (position + 1 < declaration.roots.length) {
+    const statement = view declaration.statements[
+      declaration.roots[position]
+    ];
+    const type = match (in statement.type) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an untyped local";
+    };
+    const initializer = match (in statement.expression) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an uninitialized local";
+    };
+    try appendBorrowedTemporaryInitializers(
+      inout output,
+      declaration,
+      initializer,
+      depth
+    );
+    appendIndent(inout output, depth);
+    appendCBindingName(inout output, statement.name);
+    output.append(" = ");
+    try appendExpression(inout output, declaration, initializer);
+    output.append(";\n");
+    appendBorrowedTemporaryCleanups(
+      inout output,
+      declaration,
+      initializer,
+      depth
+    );
+    if (loweredTypeNeedsDeinit(program, type)) {
+      appendIndent(inout output, depth);
+      appendCBindingName(inout output, statement.liveFlag);
+      output.append(" = true;\n");
+    }
+    position = position + 1;
+  }
+}
+
+function appendAsyncTailLocalCleanups(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  depth: usize
+): void throws String {
+  let position = declaration.roots.length - 1;
+  while (position > 0) {
+    position = position - 1;
+    const statement = view declaration.statements[
+      declaration.roots[position]
+    ];
+    const type = match (in statement.type) {
+      some(found) => copy found;
+      none => throw "native prefixed tail await received an untyped local";
+    };
+    if (!loweredTypeNeedsDeinit(program, type)) continue;
+    appendIndent(inout output, depth);
+    output.append("if (");
+    appendCBindingName(inout output, statement.liveFlag);
+    output.append(") { Z_");
+    output.append(type.name);
+    if (type.kind == LoweredTypeKind.classType) {
+      output.append("_release(");
+      appendCBindingName(inout output, statement.name);
+      output.append("); ");
+    } else {
+      output.append("_deinit(&");
+      appendCBindingName(inout output, statement.name);
+      output.append("); ");
+    }
+    appendCBindingName(inout output, statement.liveFlag);
+    output.append(" = false; }\n");
+  }
 }
 
 function appendCallableParameterDeclaration(
@@ -3750,6 +3923,15 @@ function appendLocalStatementStorage(
     output.append("bool ");
     appendCBindingName(inout output, declaration.statements[index].liveFlag);
     output.append(" = true;\n");
+    if (
+      declaration.asyncSuspension == "tail-await"
+      && declaration.roots.length > 1
+    ) {
+      appendIndent(inout output, depth);
+      output.append("(void)");
+      appendCBindingName(inout output, declaration.statements[index].liveFlag);
+      output.append(";\n");
+    }
   }
 }
 
@@ -6381,7 +6563,18 @@ function appendAsyncMethodAwaitHelpers(
         output.append(" result;\n");
         if (resultNeedsDeinit) output.append("  bool live_result;\n");
       }
-      if (directTailAwait) output.append("  Z_AsyncInvocation child;\n");
+      if (directTailAwait) {
+        const shape = match (tailAwaitShape) {
+          some(found) => found;
+          none => throw "native tail-await method lost its lowered shape";
+        };
+        try appendAsyncTailLocalFields(
+          inout output,
+          program,
+          program.functions[shape.functionIndex]
+        );
+        output.append("  Z_AsyncInvocation child;\n");
+      }
       output.append("} ");
       appendAsyncCallableAwaitHelperName(
         inout output,
@@ -6400,6 +6593,11 @@ function appendAsyncMethodAwaitHelpers(
         const tailAwait = view tailDeclaration.expressions[
           shape.expressionIndex
         ];
+        try appendAsyncTailLocalMacros(
+          inout output,
+          program,
+          tailDeclaration
+        );
         output.append("static void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -6468,13 +6666,26 @@ function appendAsyncMethodAwaitHelpers(
           aliasParameter = aliasParameter + 1;
         }
         output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          tailDeclaration,
+          2
+        );
         appendAsyncStoredParameterCleanups(
           inout output,
           program,
           functionType,
           2
         );
-        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n    frame->child = Z_");
+        output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+        try appendAsyncTailLocalInitializers(
+          inout output,
+          program,
+          tailDeclaration,
+          2
+        );
+        output.append("    frame->child = Z_");
         output.append(tailAwait.value);
         output.append("_start(");
         try appendExpression(
@@ -6508,6 +6719,12 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_release_child(frame);\n");
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          tailDeclaration,
+          2
+        );
         appendAsyncStoredParameterCleanups(
           inout output,
           program,
@@ -6528,6 +6745,12 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_release_child(frame);\n");
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          tailDeclaration,
+          1
+        );
         appendAsyncStoredParameterCleanups(
           inout output,
           program,
@@ -6591,6 +6814,16 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_release_child(frame);\n");
+        const destroyShape = match (tailAwaitShape) {
+          some(found) => found;
+          none => throw "native tail-await method lost its lowered shape";
+        };
+        try appendAsyncTailLocalCleanups(
+          inout output,
+          program,
+          program.functions[destroyShape.functionIndex],
+          1
+        );
         appendAsyncStoredParameterCleanups(
           inout output,
           program,
@@ -6703,6 +6936,17 @@ function appendAsyncMethodAwaitHelpers(
         output.append("  return result;\n");
       }
       output.append("}\n\n");
+      if (directTailAwait) {
+        const undefShape = match (tailAwaitShape) {
+          some(found) => found;
+          none => throw "native tail-await method lost its lowered shape";
+        };
+        try appendAsyncTailLocalMacroUndefs(
+          inout output,
+          program,
+          program.functions[undefShape.functionIndex]
+        );
+      }
       expressionIndex = expressionIndex + 1;
     }
   }

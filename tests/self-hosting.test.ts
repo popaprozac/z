@@ -1506,6 +1506,52 @@ test("retains a class receiver while its method awaits a dynamic child", () => {
   }
 }, 240_000);
 
+test("keeps a cleanup-bearing method local alive across a dynamic child", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-prefixed-tail-method.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-prefixed-tail-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_Request forwarded;/);
+    assert.match(emission.stdout, /bool _z_stage1_live_forwarded;/);
+    assert.match(emission.stdout, /#define forwarded \(frame->forwarded\)/);
+    assert.match(emission.stdout, /_start\([^\n]*&\(forwarded\)\)/);
+    assert.match(
+      emission.stdout,
+      /if \(_z_stage1_live_forwarded\) \{ Z_Request_deinit\(&forwarded\); _z_stage1_live_forwarded = false; \}/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      "released forwarded request\nreleased prefixed source\nreleased forwarded request\nreleased prefixed relay\n",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects a suspending value-struct receiver before native lowering", () => {
   const input = resolve(
     projectRoot,
