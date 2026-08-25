@@ -1185,9 +1185,12 @@ Continue focused self-hosting work in this order:
    failures render their Z source line and caret without Stage 0. The native
    command now finds and parses `z.json`, validates its entry and configured
    directories, deduplicates libraries, and supplies include/link directories,
-   native libraries, and a macOS minimum target to Clang. Swift target
-   preparation, broader foreign declarations, cross-platform target selection,
-   manifest-selected/custom profiles, richer diagnostics,
+   native libraries, and a macOS minimum target to Clang. Project configuration
+   also follows external source-module imports into the adjacent
+   metadata producer, so reusable framework modules retain the owning app's
+   include directories and deployment target.
+   Swift preparation, broader foreign declarations, cross-platform target
+   selection, manifest-selected/custom profiles, richer diagnostics,
    general console formatting,
    native-library cache identities, and complete production options remain.
    Automatic first-tier foreign discovery now invokes `z-foreign-adapter` and

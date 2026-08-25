@@ -49,11 +49,12 @@ export function writeForeignDeclarationArtifact(
   sourceArgument: string,
   header: string,
   outputArgument: string,
+  projectArgument?: string,
 ): void {
   const sourcePath = resolve(sourceArgument);
   const source = readFileSync(sourcePath, "utf8");
   const program = parse(lex(source, sourcePath), sourcePath);
-  const project = prepareProject(sourcePath);
+  const project = prepareProject(projectArgument ?? sourcePath);
   const declaration = program.imports.find((candidate) => candidate.header === header);
   if (!declaration) {
     throw new Error(

@@ -4081,6 +4081,17 @@ three-line statically specialized handler adapter in its opt-in builder. This
 needs a generic-constraint forwarding fix before the builders can share that
 implementation without boilerplate.
 
+Zapp's first source-local application manifest exposed a project-authority gap
+in the fixed-point compiler. The app entry imported framework `.zs` modules
+outside its directory; those modules imported Objective-C headers by basename.
+The native driver knew the app's `includeDirectories`, but its adjacent Clang
+metadata producer rediscovered a project from each framework module and lost
+that context. The driver now passes its already validated manifest path to the
+producer explicitly. A standalone adapter fixture and a fixed-point two-module
+project prove that external source modules keep the owning app's native header
+and deployment configuration. This preserves reusable framework layouts
+without copied headers or nested compatibility manifests.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -104,6 +104,48 @@ test("regenerates cached foreign declarations after a protocol upgrade", () => {
   );
 });
 
+test("uses an explicit project manifest for headers imported by external source modules", () => {
+  const directory = mkdtempSync("/tmp/z-foreign-adapter-project-");
+  const projectDirectory = resolve(directory, "application");
+  const sharedDirectory = resolve(directory, "shared");
+  const includeDirectory = resolve(projectDirectory, "include");
+  mkdirSync(projectDirectory, { recursive: true });
+  mkdirSync(sharedDirectory, { recursive: true });
+  mkdirSync(includeDirectory, { recursive: true });
+  const entryPath = resolve(projectDirectory, "main.zs");
+  const sourcePath = resolve(sharedDirectory, "native-value.zs");
+  const manifestPath = resolve(projectDirectory, "z.json");
+  const artifactPath = resolve(projectDirectory, "native.zfdcl");
+  writeFileSync(entryPath, "function main(): i32 { return 0; }\n");
+  writeFileSync(
+    sourcePath,
+    'import native from "native.h";\n'
+      + "export function nativeValue(): i32 { return native.z_native_value(); }\n",
+  );
+  writeFileSync(
+    resolve(includeDirectory, "native.h"),
+    "int z_native_value(void);\n",
+  );
+  writeFileSync(
+    manifestPath,
+    `${JSON.stringify({
+      target: {
+        name: "foreign-adapter-project",
+        entry: "main.zs",
+        includeDirectories: ["include"],
+      },
+    }, null, 2)}\n`,
+  );
+
+  writeForeignDeclarationArtifact(
+    sourcePath,
+    "native.h",
+    artifactPath,
+    manifestPath,
+  );
+  assert.match(readFileSync(artifactPath, "utf8"), /z_native_value/);
+});
+
 test("compiles the shimless curl application without performing its network request", () => {
   if (process.platform !== "darwin") return;
   const example = resolve(projectRoot, "examples/applications/z-curl/main.zs");

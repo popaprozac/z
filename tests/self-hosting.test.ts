@@ -7150,7 +7150,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(
     version.stdout,
-    "z 0.1.0-dev revision 2026-08-24.1 compiler-api 2\n",
+    "z 0.1.0-dev revision 2026-08-24.2 compiler-api 2\n",
   );
 
   const metadata = spawnSync(
@@ -9660,6 +9660,51 @@ test("compiles a multi-module Z application through the standalone native driver
   assert.equal(foreignProjectCheck.status, 0, foreignProjectCheck.stderr);
   assert.match(foreignProjectCheck.stdout, /checked 1 Z modules/);
   assert.equal(existsSync(`${foreignProjectContract}.zfdcl`), false);
+
+  const externalProject = resolve(directory, "external-foreign-project");
+  const externalShared = resolve(directory, "external-foreign-shared");
+  mkdirSync(externalProject);
+  mkdirSync(externalShared);
+  writeFileSync(
+    resolve(externalProject, "main.zs"),
+    [
+      'import { externalAdd } from "../external-foreign-shared/helper.zs";',
+      "function main(): i32 { return externalAdd(20, 22) - 42; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(externalShared, "helper.zs"),
+    [
+      'import native from "foreign-functions-only.h";',
+      "export function externalAdd(left: i32, right: i32): i32 {",
+      "  return native.z_foreign_add(left, right);",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(externalProject, "z.json"),
+    `${JSON.stringify({
+      target: {
+        name: "external-foreign-project",
+        entry: "main.zs",
+        includeDirectories: ["../foreign-project"],
+      },
+    }, null, 2)}\n`,
+  );
+  const externalForeignCheck = spawnSync(
+    driver,
+    ["check", externalProject],
+    { encoding: "utf8", env: foreignAdapterEnvironment },
+  );
+  assert.equal(
+    externalForeignCheck.status,
+    0,
+    externalForeignCheck.stderr,
+  );
+  assert.match(externalForeignCheck.stdout, /checked 2 Z modules/);
+
   const foreignCacheDirectory = resolve(
     foreignProject,
     ".z-cache/foreign",

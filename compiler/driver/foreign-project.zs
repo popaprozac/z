@@ -285,6 +285,10 @@ export function loadForeignModuleContract(
   adapterArguments.push(copy modulePath);
   adapterArguments.push(copy header);
   adapterArguments.push(copy artifactPath);
+  match (in config.manifestPath) {
+    some(path) => adapterArguments.push(copy path);
+    none => {}
+  }
   const adapterProgram = foreignAdapterProgram();
   const adapterOutcome = attempt process.run(
     adapterProgram,
