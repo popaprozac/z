@@ -670,6 +670,22 @@ function functionUsesFirstTierLinearAwait(
   return awaitCount == 1;
 }
 
+function functionUsesFirstTierDoubleAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 3) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (!statementIsFirstTierAwaitLocal(
+      declaration.body,
+      root
+    )) return false;
+    awaitCount = awaitCount + 1;
+  }
+  return awaitCount == 2;
+}
+
 function functionUsesFirstTierPrefixedTailAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -718,6 +734,10 @@ function functionHasFirstTierTailAwaitStorage(
       && !functionUsesFirstTierPrefixedTailAwait(declaration)
       && !functionUsesFirstTierMatchedTailAwait(declaration)
       && !functionUsesFirstTierLinearAwait(declaration)
+      && !(
+        owner.byteLength == 0
+        && functionUsesFirstTierDoubleAwait(declaration)
+      )
     )
   ) return false;
   match (in declaration.errorType) {

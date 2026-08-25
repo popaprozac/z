@@ -1729,6 +1729,49 @@ test("continues a free-function frame after an awaited method result", () => {
   }
 }, 240_000);
 
+test("resumes a reusable function through two awaited children", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-double-await.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-double-await-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /uint32_t state;[\s\S]*Z_String loaded;[\s\S]*Z_String separator;[\s\S]*Z_String decorated;[\s\S]*Z_AsyncInvocation child;/);
+    assert.match(
+      emission.stdout,
+      /frame->state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &loaded\);[\s\S]*frame->state = 2;/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &decorated\);[\s\S]*frame->state = 3;/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("awaits a method from a captured generic async closure", () => {
   const input = resolve(
     projectRoot,
@@ -7107,7 +7150,7 @@ test("bootstraps a fixed-point native z executable for local use", () => {
   assert.equal(version.status, 0, version.stderr);
   assert.equal(
     version.stdout,
-    "z 0.1.0-dev revision 2026-08-23.1 compiler-api 2\n",
+    "z 0.1.0-dev revision 2026-08-24.1 compiler-api 2\n",
   );
 
   const metadata = spawnSync(

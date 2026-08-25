@@ -87,10 +87,12 @@ production or compatibility-sensitive use.
   smoke now executes both its synchronous health route and its suspended search
   route under strict C compilation. This pressure test closed consuming-match
   owner transfer, cleanup-bearing immediate arms, ARC value-argument retains,
-  and synchronous control flow after an await. Top-level `async main` currently
-  sequences those two awaits through blocking local-executor adapters; a
-  reusable arbitrary async function with multiple suspension states remains the
-  next broader frame-composition tier.
+  and synchronous control flow after an await. Both requests now run inside one
+  ordinary reusable async free function whose heap-owned frame advances through
+  two awaited children. Parameters and owned locals remain stable across both
+  joins and cancellation follows the active child. Arbitrary suspension counts,
+  branches between awaits, throwing children, and equivalent async method
+  bodies remain future frame tiers.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

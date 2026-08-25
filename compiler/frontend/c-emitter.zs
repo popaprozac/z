@@ -307,6 +307,16 @@ struct AsyncLinearAwaitShape {
   rootPosition: usize;
 }
 
+struct AsyncDoubleAwaitShape {
+  functionIndex: usize;
+  firstStatementIndex: usize;
+  firstExpressionIndex: usize;
+  firstRootPosition: usize;
+  secondStatementIndex: usize;
+  secondExpressionIndex: usize;
+  secondRootPosition: usize;
+}
+
 function asyncTailAwaitShape(
   in program: LoweredProgram,
   in name: String
@@ -391,6 +401,69 @@ function asyncLinearAwaitShape(
   return Option<AsyncLinearAwaitShape>.none;
 }
 
+function asyncDoubleAwaitShape(
+  in program: LoweredProgram,
+  in name: String
+): Option<AsyncDoubleAwaitShape> {
+  let functionIndex: usize = 0;
+  while (functionIndex < program.functions.length) {
+    const declaration = view program.functions[functionIndex];
+    if (
+      declaration.name == name
+      && declaration.asyncSuspension == "double-await"
+    ) {
+      let firstStatementIndex: usize = declaration.statements.length;
+      let firstExpressionIndex: usize = declaration.expressions.length;
+      let firstRootPosition: usize = declaration.roots.length;
+      let secondStatementIndex: usize = declaration.statements.length;
+      let secondExpressionIndex: usize = declaration.expressions.length;
+      let secondRootPosition: usize = declaration.roots.length;
+      let position: usize = 0;
+      while (position < declaration.roots.length) {
+        const statementIndex = declaration.roots[position];
+        const statement = view declaration.statements[statementIndex];
+        if (statement.kind == LoweredStatementKind.localStatement) {
+          match (in statement.expression) {
+            some(expressionIndex) => if (
+              declaration.expressions[expressionIndex].kind
+                == LoweredExpressionKind.asyncFunctionAwait
+            ) {
+              if (firstStatementIndex >= declaration.statements.length) {
+                firstStatementIndex = statementIndex;
+                firstExpressionIndex = expressionIndex;
+                firstRootPosition = position;
+              } else if (
+                secondStatementIndex >= declaration.statements.length
+              ) {
+                secondStatementIndex = statementIndex;
+                secondExpressionIndex = expressionIndex;
+                secondRootPosition = position;
+              } else return Option<AsyncDoubleAwaitShape>.none;
+            }
+            none => {}
+          }
+        }
+        position = position + 1;
+      }
+      if (
+        firstStatementIndex < declaration.statements.length
+        && secondStatementIndex < declaration.statements.length
+      ) return Option.some(AsyncDoubleAwaitShape({
+        functionIndex,
+        firstStatementIndex,
+        firstExpressionIndex,
+        firstRootPosition,
+        secondStatementIndex,
+        secondExpressionIndex,
+        secondRootPosition,
+      }));
+      return Option<AsyncDoubleAwaitShape>.none;
+    }
+    functionIndex = functionIndex + 1;
+  }
+  return Option<AsyncDoubleAwaitShape>.none;
+}
+
 function asyncMethodAwaitStartsChild(
   in program: LoweredProgram,
   in declaration: LoweredFunction,
@@ -398,6 +471,11 @@ function asyncMethodAwaitStartsChild(
 ): boolean {
   match (asyncLinearAwaitShape(program, declaration.name)) {
     some(shape) => return shape.expressionIndex == expressionIndex;
+    none => {}
+  }
+  match (asyncDoubleAwaitShape(program, declaration.name)) {
+    some(shape) => return shape.firstExpressionIndex == expressionIndex
+      || shape.secondExpressionIndex == expressionIndex;
     none => {}
   }
   for (const expression of declaration.expressions) {
@@ -1556,6 +1634,7 @@ function appendAsyncTailChildStart(
   in declaration: LoweredFunction,
   in tailAwait: LoweredExpression,
   tailExpressionIndex: usize,
+  waitingState: usize,
   depth: usize
 ): void throws String {
   appendIndent(inout output, depth);
@@ -1628,7 +1707,7 @@ function appendAsyncTailChildStart(
   appendIndent(inout output, depth);
   output.append("if (frame->child.task == NULL) abort();\n");
   appendIndent(inout output, depth);
-  output.append("frame->state = 1;\n");
+  output.append(`frame->state = ${waitingState};\n`);
   appendIndent(inout output, depth);
   output.append("if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n");
   appendIndent(inout output, depth);
@@ -1752,6 +1831,7 @@ function appendAsyncTailDispatchStatement(
           declaration,
           tailAwait,
           tailExpressionIndex,
+          1,
           depth
         );
         return;
@@ -5307,6 +5387,7 @@ function appendLocalStatementStorage(
       (
         declaration.asyncSuspension == "tail-await"
         || declaration.asyncSuspension == "linear-await"
+        || declaration.asyncSuspension == "double-await"
       )
       && declaration.roots.length > 1
     ) {
@@ -7069,11 +7150,18 @@ function appendCallableHelpers(
           : Option<AsyncLinearAwaitShape>.none;
         const directLinearAwait = asyncSuspension == "linear-await"
           && expression.kind == LoweredExpressionKind.directFunctionValue;
+        const doubleAwaitShape = expression.kind
+            == LoweredExpressionKind.directFunctionValue
+          ? asyncDoubleAwaitShape(program, expression.value)
+          : Option<AsyncDoubleAwaitShape>.none;
+        const directDoubleAwait = asyncSuspension == "double-await"
+          && expression.kind == LoweredExpressionKind.directFunctionValue;
         const closureMethodAwait = asyncSuspension == "method-await"
           && expression.kind == LoweredExpressionKind.closureValue;
         const persistentSuspension = asyncSuspension == "scheduler-yield"
           || directTailAwait
           || directLinearAwait
+          || directDoubleAwait
           || closureMethodAwait;
         let closureMethodAwaitExpression: usize = owner.expressions.length;
         if (closureMethodAwait) {
@@ -7149,6 +7237,18 @@ function appendCallableHelpers(
             const shape = match (linearAwaitShape) {
               some(found) => found;
               none => throw "native linear-await callable lost its lowered shape";
+            };
+            try appendAsyncTailLocalFields(
+              inout output,
+              program,
+              program.functions[shape.functionIndex]
+            );
+            output.append("  Z_AsyncInvocation child;\n");
+          }
+          if (directDoubleAwait) {
+            const shape = match (doubleAwaitShape) {
+              some(found) => found;
+              none => throw "native double-await callable lost its lowered shape";
             };
             try appendAsyncTailLocalFields(
               inout output,
@@ -7276,6 +7376,7 @@ function appendCallableHelpers(
             owner,
             awaited,
             closureMethodAwaitExpression,
+            1,
             2
           );
           output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
@@ -7564,6 +7665,7 @@ function appendCallableHelpers(
             linearDeclaration,
             linearAwait,
             shape.expressionIndex,
+            1,
             2
           );
           output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
@@ -7609,6 +7711,221 @@ function appendCallableHelpers(
             );
             suffix = suffix + 1;
           }
+          output.append("  task->completed = true;\n}\n\n");
+        }
+        if (directDoubleAwait) {
+          const shape = match (doubleAwaitShape) {
+            some(found) => found;
+            none => throw "native double-await callable lost its lowered shape";
+          };
+          const doubleDeclaration = view program.functions[
+            shape.functionIndex
+          ];
+          const firstAwait = view doubleDeclaration.expressions[
+            shape.firstExpressionIndex
+          ];
+          const secondAwait = view doubleDeclaration.expressions[
+            shape.secondExpressionIndex
+          ];
+          const firstLocal = view doubleDeclaration.statements[
+            shape.firstStatementIndex
+          ];
+          const secondLocal = view doubleDeclaration.statements[
+            shape.secondStatementIndex
+          ];
+          const firstType = match (in firstLocal.type) {
+            some(found) => copy found;
+            none => throw "native double await lost its first result type";
+          };
+          const secondType = match (in secondLocal.type) {
+            some(found) => copy found;
+            none => throw "native double await lost its second result type";
+          };
+          try appendAsyncTailLocalMacros(
+            inout output,
+            program,
+            doubleDeclaration
+          );
+          try appendAsyncStoredParameterMacros(
+            inout output,
+            doubleDeclaration,
+            functionType
+          );
+          output.append("static void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cancel(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n");
+          let aliasParameter: usize = 0;
+          while (aliasParameter < functionType.parameters.length) {
+            if (aliasParameter >= doubleDeclaration.parameters.length) {
+              throw "native double-await callable lost its parameter identity";
+            }
+            output.append("  ");
+            try appendCallableParameterDeclaration(
+              inout output,
+              functionType.parameters[aliasParameter],
+              doubleDeclaration.parameters[aliasParameter].name
+            );
+            output.append(" = frame->argument");
+            output.append(`${aliasParameter}`);
+            output.append(";\n");
+            aliasParameter = aliasParameter + 1;
+          }
+          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            doubleDeclaration,
+            2
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          let prefix: usize = 0;
+          while (prefix < shape.firstRootPosition) {
+            const prefixRoot = doubleDeclaration.roots[prefix];
+            try appendAsyncTailPrefixStatement(
+              inout output,
+              program,
+              doubleDeclaration,
+              functionType,
+              shape.firstExpressionIndex,
+              prefixRoot,
+              2
+            );
+            prefix = prefix + 1;
+          }
+          try appendAsyncTailChildStart(
+            inout output,
+            doubleDeclaration,
+            firstAwait,
+            shape.firstExpressionIndex,
+            1,
+            2
+          );
+          output.append("  }\n  if (frame->state == 1) {\n    if (frame->child.task == NULL || !frame->child.task->completed) abort();\n    if (task->cancellation_requested || frame->child.task->cancelled) {\n      ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            doubleDeclaration,
+            3
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            3
+          );
+          output.append("      task->cancelled = true; task->completed = true; return;\n    }\n    if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n    if (frame->child.take_result == NULL) abort();\n    frame->child.take_result(frame->child.task, &");
+          appendCBindingName(inout output, firstLocal.name);
+          output.append(");\n");
+          if (loweredTypeNeedsDeinit(program, firstType)) {
+            if (firstLocal.liveFlag.byteLength == 0) {
+              throw "native double await lost its first result cleanup guard";
+            }
+            output.append("    ");
+            appendCBindingName(inout output, firstLocal.liveFlag);
+            output.append(" = true;\n");
+          }
+          output.append("    ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          let middle = shape.firstRootPosition + 1;
+          while (middle < shape.secondRootPosition) {
+            const middleRoot = doubleDeclaration.roots[middle];
+            try appendAsyncTailPrefixStatement(
+              inout output,
+              program,
+              doubleDeclaration,
+              functionType,
+              shape.firstExpressionIndex,
+              middleRoot,
+              2
+            );
+            middle = middle + 1;
+          }
+          try appendAsyncTailChildStart(
+            inout output,
+            doubleDeclaration,
+            secondAwait,
+            shape.secondExpressionIndex,
+            2,
+            2
+          );
+          output.append("  }\n  if (frame->state != 2 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            doubleDeclaration,
+            2
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &");
+          appendCBindingName(inout output, secondLocal.name);
+          output.append(");\n");
+          if (loweredTypeNeedsDeinit(program, secondType)) {
+            if (secondLocal.liveFlag.byteLength == 0) {
+              throw "native double await lost its second result cleanup guard";
+            }
+            output.append("  ");
+            appendCBindingName(inout output, secondLocal.liveFlag);
+            output.append(" = true;\n");
+          }
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n  frame->state = 3;\n");
+          let suffix = shape.secondRootPosition + 1;
+          while (suffix < doubleDeclaration.roots.length) {
+            const suffixRoot = doubleDeclaration.roots[suffix];
+            try appendAsyncTailPrefixStatement(
+              inout output,
+              program,
+              doubleDeclaration,
+              functionType,
+              shape.secondExpressionIndex,
+              suffixRoot,
+              1
+            );
+            suffix = suffix + 1;
+          }
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            doubleDeclaration,
+            1
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
           output.append("  task->completed = true;\n}\n\n");
         }
         output.append("static bool ");
@@ -7661,6 +7978,27 @@ function appendCallableHelpers(
             destroyShape.expressionIndex,
             1
           );
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            program.functions[destroyShape.functionIndex],
+            1
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
+        }
+        if (directDoubleAwait) {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          const destroyShape = match (doubleAwaitShape) {
+            some(found) => found;
+            none => throw "native double-await callable lost its lowered shape";
+          };
           try appendAsyncTailLocalCleanups(
             inout output,
             program,
@@ -7834,6 +8172,7 @@ function appendCallableHelpers(
           if (
             directTailAwait
             || directLinearAwait
+            || directDoubleAwait
             || closureMethodAwait
           ) {
             output.append("  frame->task.request_cancel = ");
@@ -7844,6 +8183,7 @@ function appendCallableHelpers(
             directSchedulerYield
             || directTailAwait
             || directLinearAwait
+            || directDoubleAwait
             || closureMethodAwait
           ) {
             let storedParameter: usize = 0;
@@ -8005,6 +8345,21 @@ function appendCallableHelpers(
           const undefShape = match (linearAwaitShape) {
             some(found) => found;
             none => throw "native linear-await callable lost its lowered shape";
+          };
+          try appendAsyncTailLocalMacroUndefs(
+            inout output,
+            program,
+            program.functions[undefShape.functionIndex]
+          );
+          appendAsyncStoredParameterMacroUndefs(
+            inout output,
+            program.functions[undefShape.functionIndex]
+          );
+        }
+        if (directDoubleAwait) {
+          const undefShape = match (doubleAwaitShape) {
+            some(found) => found;
+            none => throw "native double-await callable lost its lowered shape";
           };
           try appendAsyncTailLocalMacroUndefs(
             inout output,

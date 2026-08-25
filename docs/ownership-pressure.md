@@ -4046,10 +4046,16 @@ arguments for the join, starts the captured service method on the current
 executor, forwards cancellation, and transfers an ownership-bearing result once.
 A strict-C generic trait fixture proves the same path independently of Zapp.
 The complete Zapp graph now reaches `main`. Its synchronous health route and
-suspended search route both emit as strict C and execute end to end. Top-level
-`async main` currently sequences the two bridge awaits through blocking local
-executor adapters; general arbitrary async functions with multiple suspension
-states remain a broader frame tier rather than a hidden claim of completion.
+suspended search route both emit as strict C and execute end to end. The first
+version sequenced the two bridge awaits only from top-level `async main` through
+blocking local-executor adapters. The next pressure slice moved both calls into
+an ordinary `validateRoutes()` async free function. One heap-owned frame now
+stores its service and request/result locals, starts the first child, resumes
+through the waiter, starts the second child, and resumes again before returning.
+Cancellation follows whichever child is active and unfinished-frame destruction
+walks the same live guards. This is deliberately a two-site linear tier;
+arbitrary state graphs, branching between awaits, throwing children, and
+suspending async method bodies remain broader work.
 
 That final run exposed ownership bugs that smaller fixtures had not combined.
 A consuming intrinsic-Result match moved its payload into a child frame while

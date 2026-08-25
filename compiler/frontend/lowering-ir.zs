@@ -16594,6 +16594,22 @@ function functionUsesFirstTierLinearAwait(
   return awaitCount == 1;
 }
 
+function functionUsesFirstTierDoubleAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 3) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (!statementIsFirstTierAwaitLocal(
+      declaration.body,
+      root
+    )) return false;
+    awaitCount = awaitCount + 1;
+  }
+  return awaitCount == 2;
+}
+
 function functionUsesFirstTierPrefixedTailAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -20701,12 +20717,16 @@ function lowerFunction(
   if (declaration.asynchronous && declaration.name != "main") {
     const firstTierSchedulerYield = declaration.executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
+    const firstTierDoubleAwait = receiverName.byteLength == 0
+      && declaration.executorAffinity != "thread.main"
+      && functionUsesFirstTierDoubleAwait(declaration);
     const firstTierTailAwait = declaration.executorAffinity != "thread.main"
       && (
         functionUsesFirstTierTailAwait(declaration)
         || functionUsesFirstTierPrefixedTailAwait(declaration)
         || functionUsesFirstTierMatchedTailAwait(declaration)
         || functionUsesFirstTierLinearAwait(declaration)
+        || firstTierDoubleAwait
       );
     if (
       declaration.executorAffinity != "thread.main"
@@ -20718,9 +20738,11 @@ function lowerFunction(
     }
     if (firstTierSchedulerYield) asyncSuspension = "scheduler-yield";
     else if (firstTierTailAwait) {
-      asyncSuspension = functionUsesFirstTierLinearAwait(declaration)
-        ? "linear-await"
-        : "tail-await";
+      if (firstTierDoubleAwait) {
+        asyncSuspension = "double-await";
+      } else asyncSuspension = functionUsesFirstTierLinearAwait(declaration)
+          ? "linear-await"
+          : "tail-await";
     }
     let position: usize = 0;
     while (
@@ -21113,6 +21135,7 @@ function lowerFunction(
     (
       asyncSuspension == "tail-await"
       || asyncSuspension == "linear-await"
+      || asyncSuspension == "double-await"
     )
     && roots.length > 1
   ) {
