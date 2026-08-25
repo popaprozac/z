@@ -776,7 +776,7 @@ same prefixed and matched tail-child frame is emitted for direct async free
 functions. A direct free-function frame may additionally store one awaited
 method result, resume after that child completes, and run a synchronous suffix
 against the frame-owned local. Async throwing methods, generic captured async
-adapters, sending a general local
+closures with broader bodies, sending a general local
 or main-only callable across native threads, block-bodied first-class closures,
 and suspending callable bodies remain separate lowering tiers.
 This corpus is the positive half of the semantic authority gate above. Each

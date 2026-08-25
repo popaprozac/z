@@ -1711,10 +1711,54 @@ test("continues a free-function frame after an awaited method result", () => {
       emission.stdout,
       /take_result\(frame->child\.task, &loaded\);[\s\S]*frame->state = 2;/,
     );
-  assert.match(
-    emission.stdout,
-    /frame->state = 2;[\s\S]*frame->result = \([^;]*loaded\);/,
+    assert.match(
+      emission.stdout,
+      /frame->state = 2;[\s\S]*frame->result = \([^;]*loaded\);/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("awaits a method from a captured generic async closure", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-captured-method.zs",
   );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-captured-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /_environment \*environment;/);
+    assert.match(emission.stdout, /frame->environment = environment;/);
+    assert.match(
+      emission.stdout,
+      /_start_invocation\(task->executor, source, &\(\(\*request\)\)\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /take_result\(frame->child\.task, &frame->result\);/,
+    );
     const compilation = spawnSync(
       "clang",
       ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],

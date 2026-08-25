@@ -4038,6 +4038,16 @@ fixture executes the full suspend/resume path. Applied to Zapp, this closes
 `dispatchWithServicesAsync` and moves the native boundary to the generic
 captured `asyncServiceHandler<T>` closure adapter.
 
+That generic adapter now executes without changing its source shape. Lowering
+keeps the awaited method expression instead of replacing it with a placeholder,
+discovers the specialized service capture, and gives the cold closure a real
+parent frame. Each invocation retains the callable environment, stores borrowed
+arguments for the join, starts the captured service method on the current
+executor, forwards cancellation, and transfers an ownership-bearing result once.
+A strict-C generic trait fixture proves the same path independently of Zapp.
+The complete Zapp graph now advances to `main`, whose two sequential bridge
+awaits and intervening validation need multiple suspension states in one frame.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

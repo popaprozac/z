@@ -248,10 +248,9 @@ function callableAsyncSuspension(
   in program: LoweredProgram,
   in expression: LoweredExpression
 ): String {
-  if (
-    expression.kind == LoweredExpressionKind.closureValue
-    && expression.value == "scheduler-yield"
-  ) return "scheduler-yield";
+  if (expression.kind == LoweredExpressionKind.closureValue) {
+    return expression.value.copyBytes(0, expression.value.byteLength);
+  }
   if (expression.kind != LoweredExpressionKind.directFunctionValue) {
     return "";
   }
@@ -399,8 +398,17 @@ function asyncMethodAwaitStartsChild(
 ): boolean {
   match (asyncLinearAwaitShape(program, declaration.name)) {
     some(shape) => return shape.expressionIndex == expressionIndex;
-    none => return false;
+    none => {}
   }
+  for (const expression of declaration.expressions) {
+    if (
+      expression.kind == LoweredExpressionKind.closureValue
+      && expression.value == "method-await"
+      && expression.children.length > 0
+      && expression.children[0] == expressionIndex
+    ) return true;
+  }
+  return false;
 }
 
 function asyncFrameLocalRootLimit(
@@ -6433,9 +6441,21 @@ function appendCallableHelpers(
           : Option<AsyncLinearAwaitShape>.none;
         const directLinearAwait = asyncSuspension == "linear-await"
           && expression.kind == LoweredExpressionKind.directFunctionValue;
+        const closureMethodAwait = asyncSuspension == "method-await"
+          && expression.kind == LoweredExpressionKind.closureValue;
         const persistentSuspension = asyncSuspension == "scheduler-yield"
           || directTailAwait
-          || directLinearAwait;
+          || directLinearAwait
+          || closureMethodAwait;
+        let closureMethodAwaitExpression: usize = owner.expressions.length;
+        if (closureMethodAwait) {
+          if (
+            expression.children.length == 0
+            || owner.expressions[expression.children[0]].kind
+              != LoweredExpressionKind.asyncFunctionAwait
+          ) throw "native captured async method closure lost its awaited body";
+          closureMethodAwaitExpression = expression.children[0];
+        }
         const resultNeedsDeinit = loweredTypeNeedsDeinit(
           program,
           functionType.returnType
@@ -6451,7 +6471,10 @@ function appendCallableHelpers(
         }
         if (persistentSuspension) {
           output.append("  uint32_t state;\n");
-          if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+          if (
+            expression.kind == LoweredExpressionKind.directFunctionValue
+            || closureMethodAwait
+          ) {
             let storedParameter: usize = 0;
             while (storedParameter < functionType.parameters.length) {
               output.append("  ");
@@ -6506,6 +6529,18 @@ function appendCallableHelpers(
             );
             output.append("  Z_AsyncInvocation child;\n");
           }
+          if (closureMethodAwait) {
+            if (expression.captureTypes.length > 0) {
+              output.append("  ");
+              appendCallableHelperName(
+                inout output,
+                owner,
+                expressionIndex
+              );
+              output.append("_environment *environment;\n");
+            }
+            output.append("  Z_AsyncInvocation child;\n");
+          }
         }
         output.append("} ");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -6544,6 +6579,104 @@ function appendCallableHelpers(
               output.append("  frame->live_result = true;\n");
             }
           }
+          output.append("  task->completed = true;\n}\n\n");
+        }
+        if (closureMethodAwait) {
+          const awaited = view owner.expressions[
+            closureMethodAwaitExpression
+          ];
+          output.append("static void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cancel(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n");
+          let aliasParameter: usize = 0;
+          while (aliasParameter < functionType.parameters.length) {
+            output.append("  ");
+            try appendCallableParameterDeclaration(
+              inout output,
+              functionType.parameters[aliasParameter],
+              expression.labels[parameterLabelStart + aliasParameter]
+            );
+            output.append(" = frame->argument");
+            output.append(`${aliasParameter}`);
+            output.append(";\n");
+            aliasParameter = aliasParameter + 1;
+          }
+          let capture: usize = 0;
+          while (capture < expression.captureTypes.length) {
+            output.append("  ");
+            const captureType = try cType(
+              expression.captureTypes[capture]
+            );
+            output.append(captureType);
+            output.append(" const ");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(" = frame->environment->");
+            appendCBindingName(
+              inout output,
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append(";\n");
+            capture = capture + 1;
+          }
+          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          try appendAsyncTailChildStart(
+            inout output,
+            owner,
+            awaited,
+            closureMethodAwaitExpression,
+            2
+          );
+          output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
+          if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+            output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n");
+          } else {
+            output.append("  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &frame->result);\n");
+            if (resultNeedsDeinit) {
+              output.append("  frame->live_result = true;\n");
+            }
+          }
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
           output.append("  task->completed = true;\n}\n\n");
         }
         if (directTailAwait) {
@@ -6903,6 +7036,17 @@ function appendCallableHelpers(
             1
           );
         }
+        if (closureMethodAwait) {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
+        }
         if (directLinearAwait) {
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
@@ -6987,23 +7131,27 @@ function appendCallableHelpers(
           output.append("_retain(");
           appendCBindingName(inout output, contextName);
           output.append(");\n");
-          let capture: usize = 0;
-          while (capture < expression.captureTypes.length) {
-            output.append("  ");
-            const captureCType = try cType(expression.captureTypes[capture]);
-            output.append(captureCType);
-            output.append(" const ");
-            appendCBindingName(
-              inout output,
-              expression.labels[captureLabelStart + capture]
-            );
-            output.append(" = environment->");
-            appendCBindingName(
-              inout output,
-              expression.labels[captureLabelStart + capture]
-            );
-            output.append(";\n");
-            capture = capture + 1;
+          if (!closureMethodAwait) {
+            let capture: usize = 0;
+            while (capture < expression.captureTypes.length) {
+              output.append("  ");
+              const captureCType = try cType(
+                expression.captureTypes[capture]
+              );
+              output.append(captureCType);
+              output.append(" const ");
+              appendCBindingName(
+                inout output,
+                expression.labels[captureLabelStart + capture]
+              );
+              output.append(" = environment->");
+              appendCBindingName(
+                inout output,
+                expression.labels[captureLabelStart + capture]
+              );
+              output.append(";\n");
+              capture = capture + 1;
+            }
           }
         }
         output.append("  ");
@@ -7041,7 +7189,15 @@ function appendCallableHelpers(
           output.append("  frame->task.poll = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll;\n  frame->task.executor = executor;\n");
-          if (directTailAwait || directLinearAwait) {
+          if (
+            closureMethodAwait
+            && expression.captureTypes.length > 0
+          ) output.append("  frame->environment = environment;\n");
+          if (
+            directTailAwait
+            || directLinearAwait
+            || closureMethodAwait
+          ) {
             output.append("  frame->task.request_cancel = ");
             appendCallableHelperName(inout output, owner, expressionIndex);
             output.append("_cancel;\n  frame->child = (Z_AsyncInvocation){0};\n");
@@ -7050,13 +7206,19 @@ function appendCallableHelpers(
             directSchedulerYield
             || directTailAwait
             || directLinearAwait
+            || closureMethodAwait
           ) {
             let storedParameter: usize = 0;
             while (storedParameter < functionType.parameters.length) {
               output.append("  frame->argument");
               output.append(`${storedParameter}`);
               output.append(" = ");
-              appendCBindingName(
+              if (expression.kind == LoweredExpressionKind.closureValue) {
+                appendCBindingName(
+                  inout output,
+                  expression.labels[parameterLabelStart + storedParameter]
+                );
+              } else appendCBindingName(
                 inout output,
                 functionType.parameters[storedParameter].name
               );

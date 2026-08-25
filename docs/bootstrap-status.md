@@ -115,7 +115,11 @@ function may also store one awaited method result in frame-owned local storage,
 resume through the child's waiter, and execute a synchronous suffix that
 inspects or consumes that result. Cancellation and unfinished-frame destruction
 release the child, receiver, parameters, and every live local exactly once.
-Generic captured async adapters remain the next Zapp composition tier.
+A contextually typed generic `async move (...) => await service.invoke(...)`
+adapter now stores its captured ARC service in the callable environment, retains
+that environment for each invocation, borrows frame-owned arguments through the
+child join, and propagates cancellation through the awaited method. The next
+Zapp composition tier is multiple sequential suspension sites in one function.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an

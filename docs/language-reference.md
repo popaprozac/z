@@ -1096,6 +1096,19 @@ direct async free function. The local and method receiver live in the heap frame
 while the child is pending; after completion, ordinary synchronous control flow
 may inspect, transform, return, or move the local without another source-level
 lifetime marker.
+An expression-bodied captured async closure may directly await a non-consuming
+ARC method as well:
+
+```z
+function handler<T: Service>(service: T): Handler {
+  return async move (in request: Request): Response =>
+    await service.invoke(in request);
+}
+```
+
+The closure remains cold. Calling it starts a child frame on the caller's
+executor; its captured environment and borrowed arguments remain alive until
+the method completes or cancellation finishes unwinding the child.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

@@ -13567,14 +13567,17 @@ function lowerExpressionExpected(
                 bodyInput
               )
             ) asyncSuspension = "scheduler-yield";
+            else if (
+              tree.nodes[bodyInput].kind == ExpressionKind.awaitExpression
+            ) asyncSuspension = "method-await";
             else {
-              throw "native stored async closure suspension currently supports one direct `await scheduler.yield()` expression";
+              throw "native stored async closure suspension currently supports one direct awaited method or `await scheduler.yield()` expression";
             }
           }
         }
         const bodyStart = output.length;
         let body: usize = 0;
-        if (asyncSuspension.byteLength > 0) {
+        if (asyncSuspension == "scheduler-yield") {
           body = pushExpression(
             inout output,
             LoweredExpressionKind.booleanValue,
@@ -13593,6 +13596,14 @@ function lowerExpressionExpected(
             inout output
           );
         }
+        if (
+          asyncSuspension == "method-await"
+          && (
+            output[body].kind != LoweredExpressionKind.asyncFunctionAwait
+            || output[body].labels.length == 0
+            || output[body].labels[0] != "method"
+          )
+        ) throw "native stored async closure suspension currently requires its direct await to call an async method";
         let callableParameter: usize = 0;
         while (callableParameter < parameterNames.length) {
           if (signature.parameterModes[callableParameter] != "value") {

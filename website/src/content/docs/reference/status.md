@@ -71,6 +71,9 @@ production or compatibility-sensitive use.
   use the same prefixed/matched tail-child frame. A direct free function may
   also initialize one local from an awaited ARC method, resume through the
   child waiter, and run a synchronous suffix against that frame-owned result.
+  A generic captured async closure may directly await a non-consuming service
+  method; each cold invocation retains its environment, preserves borrowed
+  arguments through the join, and forwards cancellation to the child.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
@@ -80,7 +83,9 @@ production or compatibility-sensitive use.
   outer bridge's decoded-request match now emits through a free-function child
   frame, and its dispatch helper can retain an awaited service result across
   suspension before running the synchronous response-mapping suffix. The next
-  fixed-point gap is the generic captured async service adapter.
+  generic captured async service adapter now emits and executes too. The next
+  fixed-point gap is the smoke's two sequential bridge awaits in one `main`
+  frame.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
