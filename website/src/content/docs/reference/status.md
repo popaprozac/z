@@ -19,8 +19,12 @@ production or compatibility-sensitive use.
 - A visible Zapp WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler,
-  dynamic `id` class narrowing, typed JSON routing, frozen Z service dispatch,
-  generated TypeScript binding, and registration lifetime are implemented in Z
+  dynamic `id` class narrowing, typed JSON routing, frozen synchronous and
+  suspending Z service dispatch, generated TypeScript binding, application
+  `TaskScope`, and registration lifetime are implemented in Z. A foreign
+  WebKit callback can now submit an owned request, suspend inside the Z
+  service, publish its result on `thread.main`, and be cancelled and joined
+  before lifecycle shutdown
 - Arrays, strings, maps, sets, filesystem/process primitives, synchronization,
   arenas, JSON foundations, and inline Z tests
 - Structured tasks, cancellation, executor placement, dedicated native threads,
@@ -52,8 +56,8 @@ production or compatibility-sensitive use.
   immediately or begin with one direct `await scheduler.yield()` before a
   synchronous tail. A directly awaited non-consuming ARC class method may use
   that one-yield shape with borrowed or cleanup-free arguments and an owned
-  result; the frame retains the receiver and transfers or destroys the result
-  exactly once. A direct async adapter whose body is one tail
+  result or typed error; the frame retains the receiver and transfers or
+  destroys that result exactly once. A direct async adapter whose body is one tail
   `return await handler(...)` now composes a real heap-owned parent and dynamic
   child. It stores owned and borrowed inputs, resumes through the child's waiter,
   propagates cancellation, and transfers or destroys the owned result exactly
@@ -90,11 +94,14 @@ production or compatibility-sensitive use.
   and synchronous control flow after an await. Both requests now run inside one
   ordinary reusable async free function whose heap-owned frame advances through
   two awaited children. Parameters and owned locals remain stable across both
-  joins and cancellation follows the active child. Arbitrary suspension counts,
-  branches between awaits, throwing children, and equivalent async method
-  bodies remain future frame tiers.
-  The production synchronous application graph therefore still does not import
-  that opt-in surface.
+  joins and cancellation follows the active child. Imported `TaskScope` and
+  `TaskControl` identities are canonical across modules; aggregate field copies
+  use their runtime retain operations, and scope finalization happens after an
+  active `return await` child rather than before it starts. Scheduled ARC
+  captures receive exactly one storage retain. Arbitrary suspension
+  counts, branches between awaits, and equivalent general async method bodies
+  remain future frame tiers. The visible Zapp application now imports and
+  executes this surface rather than keeping it headless-only.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

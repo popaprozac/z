@@ -1422,6 +1422,48 @@ test("retains a class receiver and owned result across async method suspension",
   }
 }, 240_000);
 
+test("materializes typed errors from directly awaited async methods", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-method-throws.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-method-error-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /Z___z_Result_i32_DecodeError result;/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->result = Z_Decoder_decode\(frame->receiver\);/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("retains owned arguments and results across a dynamic child await", () => {
   const input = resolve(
     projectRoot,
@@ -9127,23 +9169,6 @@ test("compiles a multi-module Z application through the standalone native driver
       marker: "^^^^^",
       code: "Z0700",
       summary: 'suspending async function "deferred" is not executable in the native compiler yet',
-    },
-    {
-      name: "async-throwing-method",
-      source: [
-        'import { thread } from "std/thread";',
-        "struct DecodeError { code: i32; }",
-        "class Decoder on thread.main {",
-        "  async function decode(): i32 throws DecodeError on thread.main { return 42; }",
-        "}",
-        "function main(): i32 { return 0; }",
-        "",
-      ].join("\n"),
-      line: 4,
-      column: 9,
-      marker: "^^^^^^^^",
-      code: "Z1000",
-      summary: 'async throwing method "Decoder.decode" is not executable in the native compiler yet',
     },
     {
       name: "generic-class-custom-constructor",

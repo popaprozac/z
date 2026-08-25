@@ -1784,19 +1784,6 @@ function validateNativeFunction(
       5
     );
   }
-  if (owner.byteLength > 0 && declaration.asynchronous) {
-    match (in declaration.errorType) {
-      some(_) => throw loweringBoundary(
-        path,
-        "Z1000",
-        `async throwing method "${owner}.${declaration.name}" is not executable in the native compiler yet`,
-        declaration.line,
-        declaration.column,
-        8
-      );
-      none => {}
-    }
-  }
   for (const parameter of declaration.parameters) {
     try validateNativeType(path, parameter.type);
   }

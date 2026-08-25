@@ -4092,6 +4092,24 @@ project prove that external source modules keep the owning app's native header
 and deployment configuration. This preserves reusable framework layouts
 without copied headers or nested compatibility manifests.
 
+The first suspending WebView service round trip then exposed three lifetime bugs
+that the headless async fixtures did not combine. A `TaskScope` copied from an
+ARC runtime field was treated like an ordinary class pointer instead of using
+the scope runtime's retain operation, and a scope local was joined and released
+before a direct `return await` child began. Finally, the source location of a
+captured ARC value also carried the managed-copy effect of its use inside the
+closure, so `TaskScope.schedule` retained it once for the inner call and again
+for capture storage. Capture lowering now separates those two effects. Standard
+async handles keep one canonical identity across imported modules, managed
+field copies retain the correct runtime object, and owned scopes finalize only
+after the function's active child has completed or cancellation has propagated.
+The same Z Notes
+request now travels from a WebKit callback through `TaskScope.schedule`, a
+suspending `AsyncService`, and main-thread response delivery before shutdown
+cancels and joins the scope. No new source capability was added; the compiler
+made the existing structured-lifetime promise hold under application-shaped
+composition.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

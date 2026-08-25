@@ -9867,10 +9867,19 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
         const closure = context.semanticInfo.closures.get(closureOffset)!;
         const scope = generateExpression(expression.callee.object, context);
         const captures = closure.captures.map((capture) => {
+          const retainedBySchedule = capture.type === "TaskScope"
+            || capture.type === "TaskControl"
+            || parseMutexType(capture.type) !== null
+            || context.structs.get(capture.type)?.kind === "class";
           const captured: Expression = {
             kind: "identifier",
             name: capture.name,
-            location: capture.location,
+            // The capture location belongs to the closure body. It may carry
+            // a managed-copy effect for the use *inside* that body. Capture
+            // storage has its own retain below and must not replay that effect.
+            location: retainedBySchedule
+              ? { ...capture.location, offset: -capture.location.offset - 1 }
+              : capture.location,
           };
           let value = generateExpression(captured, context);
           if (capture.type === "TaskScope") {
@@ -10276,6 +10285,8 @@ function generateForeignCallArgument(
 function maybeRetainClass(expression: Expression, value: string, context: GenerationContext): string {
   if (!context.semanticInfo.managedCopies.has(expression.location.offset)) return value;
   const type = inferExpressionType(expression, context);
+  if (type === "TaskScope") return `z_task_scope_retain(${value})`;
+  if (type === "TaskControl") return `z_task_control_retain(${value})`;
   if (parseWeakType(type)) return `z_weak_retain(${value})`;
   const functionType = parseFunctionType(type);
   if (functionType) return `${functionTypeRetainName(functionType)}(${value})`;

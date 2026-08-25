@@ -517,6 +517,10 @@ function buildScope(node: ModuleNode): ModuleScope {
           standardTypes.set(binding.localName, "OnceLifetime");
         } else if (declaration.header === "std/sync" && binding.importedName === "Mutex") {
           standardTypes.set(binding.localName, "Mutex");
+        } else if (declaration.header === "std/async" && binding.importedName === "TaskScope") {
+          standardTypes.set(binding.localName, "TaskScope");
+        } else if (declaration.header === "std/async" && binding.importedName === "TaskControl") {
+          standardTypes.set(binding.localName, "TaskControl");
         }
         bind(binding.localName, linkedImportName(node, binding.localName), binding.location);
       }

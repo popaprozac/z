@@ -9167,9 +9167,6 @@ function lowerExpressionContextual(
           );
         }
         if (resolution.asynchronous && resolution.kind == "method") {
-          if (resolution.errorType.byteLength > 0) {
-            throw "native direct async method await does not execute typed errors yet";
-          }
           const methodCall = try lowerAsyncMethodTailCall(
             program,
             importedTypes,
@@ -24393,10 +24390,6 @@ function appendLoweredProgram(
         method.name
       );
       if (method.typeParameters.length > 0) continue;
-      if (method.asynchronous) match (in method.errorType) {
-        some(_) => throw `native lowering does not support async throwing method ${aggregate.name}.${method.name} yet`;
-        none => {}
-      }
       const methodReceiverMode = method.staticMethod
         ? ReceiverMode.none
         : method.receiverMode;

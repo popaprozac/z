@@ -510,6 +510,33 @@ test("preserves executor affinity across Z module boundaries", () => {
   }
 });
 
+test("preserves canonical async standard types across linked modules", () => {
+  const directory = mkdtempSync("/tmp/z-async-standard-type-modules-");
+  try {
+    const scopes = resolve(directory, "scopes.zs");
+    const entry = resolve(directory, "main.zs");
+    writeFileSync(scopes, `
+      import { TaskScope } from "std/async";
+
+      export async function closeChildren(): i32 {
+        const children = new TaskScope();
+        await children.close();
+        return 42;
+      }
+    `);
+    writeFileSync(entry, `
+      import { closeChildren } from "./scopes.zs";
+
+      async function main(): i32 {
+        return await closeChildren() - 42;
+      }
+    `);
+    check(readFileSync(entry, "utf8"), entry);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 hostToolchainTest("imports native executor affinity from Clang metadata and Z declarations", () => {
   if (process.platform !== "darwin") return;
   const fileName = resolve(projectRoot, "tests/fixtures/executor-affinity-test.zs");

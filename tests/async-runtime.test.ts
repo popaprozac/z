@@ -1816,6 +1816,102 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   assert.match(generated, /z_task_scope_join/);
   assert.match(generated, /z_async_enqueue_from_thread/);
 
+  const storedScopeSource = `
+    import { TaskControl, TaskScope } from "std/async";
+
+    class Runtime {
+      readonly updates: TaskScope;
+    }
+
+    function readScope(runtime: Runtime): TaskScope {
+      return runtime.updates;
+    }
+
+    class Operation {
+      readonly control: TaskControl;
+    }
+
+    function readControl(operation: Operation): TaskControl {
+      return operation.control;
+    }
+
+    async function main(): i32 {
+      const updates = new TaskScope();
+      const runtime = new Runtime({ updates });
+      const stored = readScope(runtime);
+      await stored.cancel();
+      await updates.cancel();
+      return 0;
+    }
+  `;
+  const storedScopeGenerated = compileToC(storedScopeSource, "task-scope-field.zs");
+  assert.match(storedScopeGenerated, /z_task_scope_retain\(\(runtime\)->updates\)/);
+  assert.match(storedScopeGenerated, /z_task_control_retain\(\(operation\)->control\)/);
+
+  const scheduledCaptureSource = `
+    import { scheduler, TaskScope } from "std/async";
+    import { thread } from "std/thread";
+
+    readonly class Services {
+      readonly value: i32;
+    }
+
+    async function route(services: Services): void {
+      await scheduler.yield();
+      if (services.value == 0) return;
+    }
+
+    function submit(taskScope: TaskScope, services: Services): void {
+      const control = taskScope.schedule(
+        thread.main,
+        async move (): void => await route(services)
+      );
+      if (!control.accepted) return;
+    }
+
+    async function main(): i32 {
+      const taskScope = new TaskScope();
+      const services = new Services({ value: 42 });
+      submit(taskScope, services);
+      await taskScope.cancel();
+      return 0;
+    }
+  `;
+  const scheduledCaptureGenerated = compileToC(
+    scheduledCaptureSource,
+    "task-scope-scheduled-capture.zs",
+  );
+  assert.match(scheduledCaptureGenerated, /Z_Services_retain\(services\)/);
+  assert.doesNotMatch(
+    scheduledCaptureGenerated,
+    /Z_Services_retain\(Z_Services_retain\(services\)\)/,
+  );
+
+  const returnDirectory = mkdtempSync("/tmp/z-task-scope-return-await-");
+  try {
+    const returnAwait = resolve(returnDirectory, "main.zs");
+    writeFileSync(returnAwait, `
+      import { TaskScope } from "std/async";
+      async function close(updates: TaskScope): boolean {
+        await updates.cancel();
+        return true;
+      }
+
+      async function exercise(): boolean {
+        const updates = new TaskScope();
+        return await close(updates);
+      }
+
+      async function main(): i32 {
+        return (await exercise()) ? 0 : 1;
+      }
+    `);
+    const returned = spawnSync(process.execPath, [cli, "run", returnAwait], { encoding: "utf8" });
+    assert.equal(returned.status, 0, returned.stderr);
+  } finally {
+    rmSync(returnDirectory, { recursive: true, force: true });
+  }
+
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(
@@ -2055,7 +2151,7 @@ test("routes arbitrary-thread callbacks through named TaskScope ownership", () =
   `;
   assert.match(
     compileToC(throwingScope, "task-scope-throw.zs"),
-    /z_task_scope_join\(frame->value_taskScope, &frame->task, true\)/,
+    /z_task_scope_join\(frame->value_taskScope, &frame->task, frame->cancel_children\)/,
   );
 
   const unhandledScheduledError = `

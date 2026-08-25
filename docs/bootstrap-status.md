@@ -90,10 +90,10 @@ cleanup-free signature now uses a heap-owned task adapter. It may complete
 immediately or begin with one direct `await scheduler.yield()`; the latter
 stores its arguments, requeues once, observes cancellation, resumes a
 synchronous tail, and transfers its result exactly once under strict C
-compilation. `Z0700` remains for broader suspending bodies, including general
-async methods; one direct awaited non-consuming ARC class method uses the bounded
-one-yield frame while retaining its receiver and transferring a cleanup-bearing
-result exactly once. A directly called async adapter with one tail
+compilation. `Z0700` remains for broader suspending bodies. One direct awaited
+non-consuming ARC class method uses the bounded one-yield frame while retaining
+its receiver and transferring either a cleanup-bearing result or a typed error
+exactly once. A directly called async adapter with one tail
 `return await handler(...)` now owns a heap parent frame: cleanup-bearing value
 parameters and borrowed inputs remain valid while its dynamic child runs, child
 completion wakes the parent, cancellation propagates to the child, and an owned
@@ -123,8 +123,15 @@ linear tier now gives an ordinary free function two sequential awaited-local
 suspension sites in one heap-owned frame. Parameters and locals remain
 address-stable across both children, each completion wakes the same parent,
 cancellation routes to whichever child is active, and owned results clean up
-exactly once. Arbitrary counts, branching between suspensions, throwing child
-tasks, and the equivalent method-body frame remain staged.
+exactly once. Arbitrary counts, branching between suspensions, and the
+equivalent general method-body frame remain staged. Imported `TaskScope` and
+`TaskControl` aliases retain their canonical intrinsic identity across linked
+modules, and copying either managed handle from aggregate storage uses its
+runtime retain operation. An owned `TaskScope` declared in an async frame stays
+live through a direct `return await` child and joins during frame finalization
+rather than being released before that child starts. Captured ARC identities
+submitted through `TaskScope.schedule` receive exactly one capture-storage
+retain even when their use inside the operation independently requires a copy.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an
@@ -171,8 +178,10 @@ classes and structs may own supported Array, Map, and Set fields without C
 declaration-order sensitivity, and synchronous throwing methods lower through
 the same `Result<T, E>` ABI as ordinary throwing functions. The maintained
 message router proves this with an ARC `Router` owning
-`Map<String, Handler>`. Async throwing methods remain an explicit `Z1000`
-staging boundary. Imported transparent callable aliases also retain the source
+`Map<String, Handler>`. The bounded direct-awaited ARC async-method tier now
+also carries typed `throws` results through the same `Result<T, E>` ABI;
+broader suspending method bodies remain staged. Imported transparent callable
+aliases also retain the source
 signature required for contextual closure lowering while sharing the declaring
 module's canonical callable ABI. The router's companion C-callback entry proves
 that a checked escaping native callback can own that reusable class graph and

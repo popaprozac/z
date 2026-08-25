@@ -206,6 +206,7 @@ type AsyncFunctionPlan = {
   readonly spawns: ReadonlyMap<number, SpawnSite>;
   readonly asyncForSites: readonly AsyncForSite[];
   readonly children: ReadonlyMap<number, AsyncTarget>;
+  readonly ownedTaskScopes: ReadonlySet<string>;
   readonly types: AsyncTypeContext;
 };
 
@@ -1171,9 +1172,6 @@ function planFunction(
           appendScopeExit(activeScope, statement.kind === "throw", false);
         }
       }
-      if (statement.kind === "return" || statement.kind === "throw") {
-        unwindOwnedTaskScopes(statement.kind === "throw");
-      }
       operations.push({ kind: "statement", statement });
       if (statement.kind === "variable") {
         const threadSpawn = statement.initializer?.kind === "call"
@@ -1494,6 +1492,7 @@ function planFunction(
     spawns,
     asyncForSites,
     children,
+    ownedTaskScopes,
     types,
   };
 }
@@ -5742,6 +5741,20 @@ function generatePoll(
     state += 1;
   }
   const finalizeState = state;
+  for (const name of [...plan.ownedTaskScopes].reverse()) {
+    const scope = `frame->${frameField(name)}`;
+    cases.push(caseBlock(state, [
+      `if (frame->${frameLiveField(name)}) {`,
+      `  if (!z_task_scope_join(${scope}, &frame->task, frame->cancel_children)) return;`,
+      `  z_task_scope_release(${scope});`,
+      `  frame->${frameField(name)} = NULL;`,
+      `  frame->${frameLiveField(name)} = false;`,
+      "}",
+      `frame->state = ${state + 1};`,
+      "continue;",
+    ]));
+    state += 1;
+  }
   for (const site of plan.awaits.values()) {
     if (!site.generator) continue;
     const child = `frame->child_${site.index}`;
@@ -7177,8 +7190,21 @@ function emitFrameExpressionInner(
         const closure = plan.types.semanticInfo.closures.get(closureOffset)!;
         const scope = emitFrameExpression(expression.callee.object, plan, fileName);
         const captures = closure.captures.map((capture) => {
+          const mutex = parseMutexType(capture.type);
+          const retainedBySchedule = capture.type === "TaskScope"
+            || capture.type === "TaskControl"
+            || mutex !== null
+            || plan.types.structs.get(capture.type)?.kind === "class";
           let value = emitFrameExpression(
-            { kind: "identifier", name: capture.name, location: capture.location },
+            {
+              kind: "identifier",
+              name: capture.name,
+              // Do not replay a managed-copy effect attached to the closure
+              // body's use; schedule storage performs the retain below.
+              location: retainedBySchedule
+                ? { ...capture.location, offset: -capture.location.offset - 1 }
+                : capture.location,
+            },
             plan,
             fileName,
           );
@@ -7186,6 +7212,8 @@ function emitFrameExpressionInner(
             value = `z_task_scope_retain(${value})`;
           } else if (capture.type === "TaskControl") {
             value = `z_task_control_retain(${value})`;
+          } else if (mutex) {
+            value = `${asyncMutexRetainName(mutex.valueType)}(${value})`;
           } else if (plan.types.structs.get(capture.type)?.kind === "class") {
             value = `Z_${capture.type}_retain(${value})`;
           }

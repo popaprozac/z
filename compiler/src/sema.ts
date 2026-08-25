@@ -9122,7 +9122,10 @@ function inferExpressionInner(
     }
     case "new": {
       const standardType = [...state.standardTypeBindings.entries()]
-        .find(([localName]) => localName === expression.typeName)?.[1];
+        .find(([localName, type]) => (
+          localName === expression.typeName
+          || type === expression.typeName
+        ))?.[1];
       if (standardType === "TaskScope") {
         if (!state.activeFunction?.async) {
           throw new DiagnosticError(fileName, expression.location, "TaskScope construction requires an enclosing async function", {
