@@ -63,13 +63,19 @@ production or compatibility-sensitive use.
   through child completion and cancellation. Straight-line locals declared
   before the await are frame-owned as well, so cleanup-bearing request values
   may be lent safely to the suspended child. Non-suspending prefix loops and
-  early-result branches also execute in that frame.
+  early-result branches also execute in that frame. A final consuming
+  enum/`Option` match may move one selected owned async handler into guarded
+  frame storage, suspend only that arm, and complete alternate arms immediately.
+  Synchronous and asynchronous callable types retain distinct native identities
+  even when their ordinary signatures match.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
-  graph. Its retained, cleanup-bearing `SearchService.invoke` method now emits
-  natively; the remaining fixed-point gap is the containing router method,
-  which combines loops, maps, matches, owned locals, and a dynamic child await.
+  graph. Its retained, cleanup-bearing `SearchService.invoke` method and the
+  containing `AsyncServices.invoke` router now emit natively through loops,
+  maps, owned locals, a consuming handler match, and a dynamic child await. The
+  remaining fixed-point gap is the outer bridge's free-function
+  decode/match/method-await composition.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

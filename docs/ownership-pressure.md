@@ -4014,6 +4014,18 @@ fixture executes both the immediate result and dynamic-child paths. The next
 remaining Zapp-specific boundary is the final `Option` match that extracts the
 selected handler before suspension.
 
+That final consuming match now shares the same parent frame. Its selected
+cleanup-bearing callable payload moves from the enum into a guarded frame field,
+starts the dynamic child, and remains live until completion or cancellation.
+The payload-free arm completes immediately, and unfinished-frame destruction
+cleans whichever owner is still live. Applying the fixture to Zapp uncovered a
+separate ABI-identity bug: synchronous and asynchronous service handlers with
+the same arguments and result had distinct Z types but the same encoded native
+callable name. Native function identities now include the async effect, so both
+maps can coexist without declaration-order ambiguity. `AsyncServices.invoke`
+now emits as strict C; the next boundary is the outer free-function bridge that
+matches a decoded request, awaits the service method, and transforms its result.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

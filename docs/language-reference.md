@@ -1084,7 +1084,11 @@ that method frame. This permits an owned request or adapter value to be built
 locally and lent to the child without exposing a lifetime annotation in Z.
 Non-suspending loops and branches may precede the tail await. An early branch
 can complete the parent with an immediate result while the other path proceeds
-to the child suspension.
+to the child suspension. The method may also end in a consuming enum match that
+extracts one owned async callable. The selected payload moves into guarded frame
+storage before the child starts; non-selected arms may return immediately. This
+is the executable fixed-point shape used by a frozen service registry's
+`Option<AsyncServiceHandler>` lookup.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

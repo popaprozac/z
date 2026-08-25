@@ -104,8 +104,13 @@ non-consuming ARC class method, whose parent frame retains the receiver until
 child completion or cancellation. Straight-line method locals before that
 await are frame-owned too, including cleanup-bearing values lent to the child.
 Non-suspending prefix loops and early-return branches are executable in that
-frame as well. A final match that selects the dynamic handler remains the next
-tier.
+frame as well. A final consuming enum/`Option` match may now move one selected
+owned async handler into the frame, suspend only that arm, and complete the
+other arms immediately. Handler cleanup is guarded across completion,
+cancellation, and unfinished-frame destruction. Synchronous and asynchronous
+callable types also carry distinct native identities even when their parameter
+and return shapes are otherwise identical. Broader free-function routing around
+method awaits remains the next composition tier.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an

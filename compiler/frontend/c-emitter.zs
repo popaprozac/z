@@ -15,6 +15,7 @@ import {
   LoweredParameter,
   LoweredParameterMode,
   LoweredProgram,
+  LoweredStatement,
   LoweredStatementKind,
   LoweredStruct,
   LoweredType,
@@ -312,33 +313,79 @@ function asyncTailAwaitShape(
       && declaration.asyncSuspension == "tail-await"
       && declaration.roots.length > 0
     ) {
-      const root = declaration.roots[declaration.roots.length - 1];
-      if (
-        declaration.statements[root].kind
-          == LoweredStatementKind.returnStatement
-      ) {
-        match (in declaration.statements[root].expression) {
-          some(expressionIndex) => {
-            const expression = view declaration.expressions[expressionIndex];
-            if (
-              expression.kind == LoweredExpressionKind.asyncFunctionAwait
-              && expression.children.length > 0
-              && (
-                expression.labels.length == 0
-                || expression.labels[0] != "method"
-              )
-            ) return Option.some(AsyncTailAwaitShape({
-              functionIndex,
-              expressionIndex,
-            }));
-          }
-          none => {}
+      let awaitIndex: usize = 0;
+      let awaitCount: usize = 0;
+      let candidate: usize = 0;
+      while (candidate < declaration.expressions.length) {
+        const expression = view declaration.expressions[candidate];
+        if (
+          expression.kind == LoweredExpressionKind.asyncFunctionAwait
+          && expression.children.length > 0
+          && (
+            expression.labels.length == 0
+            || expression.labels[0] != "method"
+          )
+        ) {
+          awaitIndex = candidate;
+          awaitCount = awaitCount + 1;
         }
+        candidate = candidate + 1;
       }
+      if (awaitCount == 1) return Option.some(AsyncTailAwaitShape({
+        functionIndex,
+        expressionIndex: awaitIndex,
+      }));
     }
     functionIndex = functionIndex + 1;
   }
   return Option<AsyncTailAwaitShape>.none;
+}
+
+function loweredStatementContainsExpression(
+  in declaration: LoweredFunction,
+  index: usize,
+  expressionIndex: usize
+): boolean {
+  match (in declaration.statements[index].expression) {
+    some(found) => if (found == expressionIndex) return true;
+    none => {}
+  }
+  match (in declaration.statements[index].secondExpression) {
+    some(found) => if (found == expressionIndex) return true;
+    none => {}
+  }
+  for (const child of declaration.statements[index].children) {
+    if (loweredStatementContainsExpression(
+      declaration,
+      child,
+      expressionIndex
+    )) return true;
+  }
+  return false;
+}
+
+function asyncTailAwaitMatchArm(
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): Option<usize> {
+  if (declaration.roots.length == 0) return Option<usize>.none;
+  const root = declaration.roots[declaration.roots.length - 1];
+  if (
+    declaration.statements[root].kind
+      != LoweredStatementKind.matchStatement
+  ) return Option<usize>.none;
+  for (const arm of declaration.statements[root].children) {
+    if (loweredStatementContainsExpression(
+      declaration,
+      arm,
+      expressionIndex
+    )) return Option.some(arm);
+  }
+  return Option<usize>.none;
+}
+
+function asyncTailMatchBindingLiveFlag(in name: String): String {
+  return `_z_stage1_async_live_${name}`;
 }
 
 function appendAsyncTailLocalFields(
@@ -373,6 +420,41 @@ function appendAsyncTailLocalFields(
       output.append(";\n");
     }
     position = position + 1;
+  }
+}
+
+function appendAsyncTailMatchBindingField(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void throws String {
+  const armIndex = match (asyncTailAwaitMatchArm(
+    declaration,
+    expressionIndex
+  )) {
+    some(found) => found;
+    none => return;
+  };
+  const arm = view declaration.statements[armIndex];
+  const type = match (in arm.type) {
+    some(found) => copy found;
+    none => throw "native matched tail await requires a payload binding";
+  };
+  if (arm.labels.length != 1) {
+    throw "native matched tail await requires one payload binding";
+  }
+  const bindingCType = try cType(type);
+  output.append("  ");
+  output.append(bindingCType);
+  output.append(" ");
+  appendCBindingName(inout output, arm.labels[0]);
+  output.append(";\n");
+  if (loweredTypeNeedsDeinit(program, type)) {
+    const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+    output.append("  bool ");
+    appendCBindingName(inout output, liveFlag);
+    output.append(";\n");
   }
 }
 
@@ -411,6 +493,42 @@ function appendAsyncTailLocalMacros(
   if (declaration.roots.length > 1) output.append("\n");
 }
 
+function appendAsyncTailMatchBindingMacro(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void throws String {
+  const armIndex = match (asyncTailAwaitMatchArm(
+    declaration,
+    expressionIndex
+  )) {
+    some(found) => found;
+    none => return;
+  };
+  const arm = view declaration.statements[armIndex];
+  if (arm.labels.length != 1) {
+    throw "native matched tail await requires one payload binding";
+  }
+  output.append("#define ");
+  appendCBindingName(inout output, arm.labels[0]);
+  output.append(" (frame->");
+  appendCBindingName(inout output, arm.labels[0]);
+  output.append(")\n");
+  match (in arm.type) {
+    some(type) => if (loweredTypeNeedsDeinit(program, type)) {
+      const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+      output.append("#define ");
+      appendCBindingName(inout output, liveFlag);
+      output.append(" (frame->");
+      appendCBindingName(inout output, liveFlag);
+      output.append(")\n");
+    }
+    none => {}
+  }
+  output.append("\n");
+}
+
 function appendAsyncTailLocalMacroUndefs(
   inout output: TextBuffer,
   in program: LoweredProgram,
@@ -437,6 +555,37 @@ function appendAsyncTailLocalMacroUndefs(
     output.append("\n");
   }
   if (declaration.roots.length > 1) output.append("\n");
+}
+
+function appendAsyncTailMatchBindingMacroUndef(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void throws String {
+  const armIndex = match (asyncTailAwaitMatchArm(
+    declaration,
+    expressionIndex
+  )) {
+    some(found) => found;
+    none => return;
+  };
+  const arm = view declaration.statements[armIndex];
+  if (arm.labels.length != 1) {
+    throw "native matched tail await requires one payload binding";
+  }
+  match (in arm.type) {
+    some(type) => if (loweredTypeNeedsDeinit(program, type)) {
+      const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+      output.append("#undef ");
+      appendCBindingName(inout output, liveFlag);
+      output.append("\n");
+    }
+    none => {}
+  }
+  output.append("#undef ");
+  appendCBindingName(inout output, arm.labels[0]);
+  output.append("\n\n");
 }
 
 function appendAsyncTailLocalInitializer(
@@ -519,6 +668,48 @@ function appendAsyncTailLocalCleanups(
   }
 }
 
+function appendAsyncTailMatchBindingCleanup(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  depth: usize
+): void throws String {
+  const armIndex = match (asyncTailAwaitMatchArm(
+    declaration,
+    expressionIndex
+  )) {
+    some(found) => found;
+    none => return;
+  };
+  const arm = view declaration.statements[armIndex];
+  const type = match (in arm.type) {
+    some(found) => copy found;
+    none => return;
+  };
+  if (!loweredTypeNeedsDeinit(program, type)) return;
+  if (arm.labels.length != 1) {
+    throw "native matched tail await requires one payload binding";
+  }
+  const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+  appendIndent(inout output, depth);
+  output.append("if (");
+  appendCBindingName(inout output, liveFlag);
+  output.append(") { Z_");
+  output.append(type.name);
+  if (type.kind == LoweredTypeKind.classType) {
+    output.append("_release(");
+    appendCBindingName(inout output, arm.labels[0]);
+    output.append("); ");
+  } else {
+    output.append("_deinit(&");
+    appendCBindingName(inout output, arm.labels[0]);
+    output.append("); ");
+  }
+  appendCBindingName(inout output, liveFlag);
+  output.append(" = false; }\n");
+}
+
 function appendCallableParameterDeclaration(
   inout output: TextBuffer,
   in parameter: LoweredParameter,
@@ -592,6 +783,7 @@ function appendAsyncTailImmediateReturn(
   in program: LoweredProgram,
   in declaration: LoweredFunction,
   in functionType: LoweredFunctionType,
+  tailExpressionIndex: usize,
   index: usize,
   depth: usize
 ): void throws String {
@@ -628,6 +820,13 @@ function appendAsyncTailImmediateReturn(
       }
     }
   }
+  try appendAsyncTailMatchBindingCleanup(
+    inout output,
+    program,
+    declaration,
+    tailExpressionIndex,
+    depth
+  );
   try appendAsyncTailLocalCleanups(
     inout output,
     program,
@@ -651,6 +850,7 @@ function appendAsyncTailPrefixStatement(
   in program: LoweredProgram,
   in declaration: LoweredFunction,
   in functionType: LoweredFunctionType,
+  tailExpressionIndex: usize,
   index: usize,
   depth: usize
 ): void throws String {
@@ -671,6 +871,7 @@ function appendAsyncTailPrefixStatement(
       program,
       declaration,
       functionType,
+      tailExpressionIndex,
       index,
       depth
     );
@@ -683,6 +884,7 @@ function appendAsyncTailPrefixStatement(
         program,
         declaration,
         functionType,
+        tailExpressionIndex,
         child,
         depth
       );
@@ -709,6 +911,7 @@ function appendAsyncTailPrefixStatement(
       program,
       declaration,
       functionType,
+      tailExpressionIndex,
       statement.children[0],
       depth + 1
     );
@@ -720,6 +923,7 @@ function appendAsyncTailPrefixStatement(
         program,
         declaration,
         functionType,
+        tailExpressionIndex,
         statement.children[1],
         depth + 1
       );
@@ -743,6 +947,259 @@ function appendAsyncTailPrefixStatement(
     return;
   }
   throw "native prefixed tail await received unsupported control flow";
+}
+
+function appendAsyncTailChildStart(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  in tailAwait: LoweredExpression,
+  depth: usize
+): void throws String {
+  appendIndent(inout output, depth);
+  output.append("frame->child = Z_");
+  output.append(tailAwait.value);
+  output.append("_start(");
+  try appendExpression(
+    inout output,
+    declaration,
+    tailAwait.children[0]
+  );
+  output.append(", task->executor");
+  let argument: usize = 1;
+  while (argument < tailAwait.children.length) {
+    output.append(", ");
+    const borrowed = tailAwait.labels.length >= argument
+      && (
+        tailAwait.labels[argument - 1] == "in"
+        || tailAwait.labels[argument - 1] == "inout"
+        || tailAwait.labels[argument - 1] == "out"
+      );
+    if (borrowed) output.append("&(");
+    try appendExpression(
+      inout output,
+      declaration,
+      tailAwait.children[argument]
+    );
+    if (borrowed) output.append(")");
+    argument = argument + 1;
+  }
+  output.append(");\n");
+  appendIndent(inout output, depth);
+  output.append("if (frame->child.task == NULL) abort();\n");
+  appendIndent(inout output, depth);
+  output.append("frame->state = 1;\n");
+  appendIndent(inout output, depth);
+  output.append("if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n");
+  appendIndent(inout output, depth);
+  output.append("else {\n");
+  appendIndent(inout output, depth + 1);
+  output.append("if (frame->child.task->waiter != NULL) abort();\n");
+  appendIndent(inout output, depth + 1);
+  output.append("frame->child.task->waiter = task;\n");
+  appendIndent(inout output, depth + 1);
+  output.append("z_stage1_async_enqueue(task->executor, frame->child.task);\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
+  appendIndent(inout output, depth);
+  output.append("return;\n");
+}
+
+function appendAsyncTailConsumeMatchSubject(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in statement: LoweredStatement,
+  depth: usize
+): void throws String {
+  if (!statement.matchConsumesSubject) {
+    throw "native matched tail await requires a consuming match";
+  }
+  if (statement.liveFlag.byteLength > 0) {
+    appendIndent(inout output, depth);
+    appendCBindingName(inout output, statement.liveFlag);
+    output.append(" = false;\n");
+    return;
+  }
+  const subject = match (in statement.expression) {
+    some(found) => found;
+    none => throw "native matched tail await lost its subject";
+  };
+  const expression = view declaration.expressions[subject];
+  let parameter: usize = 0;
+  while (parameter < declaration.parameters.length) {
+    if (
+      declaration.parameters[parameter].name == expression.value
+      && functionType.parameters[parameter].mode
+        == LoweredParameterMode.value
+      && loweredTypeNeedsDeinit(
+        program,
+        functionType.parameters[parameter].type
+      )
+    ) {
+      appendIndent(inout output, depth);
+      output.append("frame->live_argument");
+      output.append(`${parameter}`);
+      output.append(" = false;\n");
+      return;
+    }
+    parameter = parameter + 1;
+  }
+}
+
+function appendAsyncTailDispatchStatement(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in tailAwait: LoweredExpression,
+  tailExpressionIndex: usize,
+  index: usize,
+  depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.returnStatement) {
+    match (in statement.expression) {
+      some(expression) => if (expression == tailExpressionIndex) {
+        try appendAsyncTailChildStart(
+          inout output,
+          declaration,
+          tailAwait,
+          depth
+        );
+        return;
+      }
+      none => {}
+    }
+    try appendAsyncTailImmediateReturn(
+      inout output,
+      program,
+      declaration,
+      functionType,
+      tailExpressionIndex,
+      index,
+      depth
+    );
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.blockStatement) {
+    for (const child of statement.children) {
+      try appendAsyncTailDispatchStatement(
+        inout output,
+        program,
+        declaration,
+        functionType,
+        tailAwait,
+        tailExpressionIndex,
+        child,
+        depth
+      );
+    }
+    return;
+  }
+  if (statement.kind != LoweredStatementKind.matchStatement) {
+    try appendAsyncTailPrefixStatement(
+      inout output,
+      program,
+      declaration,
+      functionType,
+      tailExpressionIndex,
+      index,
+      depth
+    );
+    return;
+  }
+  if (!labelsContain(statement.labels, "tagged")) {
+    throw "native matched tail await requires a tagged enum subject";
+  }
+  try appendAsyncTailConsumeMatchSubject(
+    inout output,
+    program,
+    declaration,
+    functionType,
+    statement,
+    depth
+  );
+  const subjectType = match (in statement.type) {
+    some(type) => try cType(type);
+    none => throw "native matched tail await lost its subject type";
+  };
+  const subject = match (in statement.expression) {
+    some(found) => found;
+    none => throw "native matched tail await lost its subject";
+  };
+  const temporary = `_z_stage1_async_match_${index}`;
+  appendIndent(inout output, depth);
+  output.append(subjectType);
+  output.append(" ");
+  output.append(temporary);
+  output.append(" = ");
+  try appendExpression(inout output, declaration, subject);
+  output.append(";\n");
+  appendIndent(inout output, depth);
+  output.append("switch (");
+  output.append(temporary);
+  output.append(".tag) {\n");
+  const awaitedArm = match (asyncTailAwaitMatchArm(
+    declaration,
+    tailExpressionIndex
+  )) {
+    some(found) => found;
+    none => throw "native matched tail await lost its selected arm";
+  };
+  for (const armIndex of statement.children) {
+    const arm = view declaration.statements[armIndex];
+    if (arm.kind != LoweredStatementKind.matchArmStatement) {
+      throw "native matched tail await received a malformed arm";
+    }
+    appendIndent(inout output, depth + 1);
+    output.append("case Z_");
+    output.append(statement.name);
+    output.append("Tag_");
+    output.append(arm.name);
+    output.append(": {\n");
+    match (in arm.type) {
+      some(type) => {
+        if (armIndex != awaitedArm || arm.labels.length != 1) {
+          throw "native matched tail await supports one suspended payload arm";
+        }
+        appendIndent(inout output, depth + 2);
+        appendCBindingName(inout output, arm.labels[0]);
+        output.append(" = ");
+        output.append(temporary);
+        output.append(".payload.");
+        output.append(arm.name);
+        output.append(";\n");
+        if (loweredTypeNeedsDeinit(program, type)) {
+          const liveFlag = asyncTailMatchBindingLiveFlag(arm.labels[0]);
+          appendIndent(inout output, depth + 2);
+          appendCBindingName(inout output, liveFlag);
+          output.append(" = true;\n");
+        }
+      }
+      none => {}
+    }
+    for (const child of arm.children) {
+      try appendAsyncTailDispatchStatement(
+        inout output,
+        program,
+        declaration,
+        functionType,
+        tailAwait,
+        tailExpressionIndex,
+        child,
+        depth + 2
+      );
+    }
+    appendIndent(inout output, depth + 2);
+    output.append("abort();\n");
+    appendIndent(inout output, depth + 1);
+    output.append("}\n");
+  }
+  appendIndent(inout output, depth + 1);
+  output.append("default: abort();\n");
+  appendIndent(inout output, depth);
+  output.append("}\n");
 }
 
 function callableContextParameterName(
@@ -6583,7 +7040,7 @@ function appendAsyncCallableAwaitHelpers(
       }
       const functionType = view program.functionTypes[functionTypeIndex];
       if (!functionType.asynchronous) {
-        throw "native async callable await helper received a synchronous function type";
+        throw `native async callable await helper received synchronous type ${expression.value} in ${owner.name}`;
       }
       const returnType = try cType(functionType.returnType);
       output.append("static __attribute__((unused)) ");
@@ -6750,6 +7207,12 @@ function appendAsyncMethodAwaitHelpers(
           program,
           program.functions[shape.functionIndex]
         );
+        try appendAsyncTailMatchBindingField(
+          inout output,
+          program,
+          program.functions[shape.functionIndex],
+          shape.expressionIndex
+        );
         output.append("  Z_AsyncInvocation child;\n");
       }
       output.append("} ");
@@ -6774,6 +7237,12 @@ function appendAsyncMethodAwaitHelpers(
           inout output,
           program,
           tailDeclaration
+        );
+        try appendAsyncTailMatchBindingMacro(
+          inout output,
+          program,
+          tailDeclaration,
+          shape.expressionIndex
         );
         output.append("static void ");
         appendAsyncCallableAwaitHelperName(
@@ -6843,6 +7312,13 @@ function appendAsyncMethodAwaitHelpers(
           aliasParameter = aliasParameter + 1;
         }
         output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+        try appendAsyncTailMatchBindingCleanup(
+          inout output,
+          program,
+          tailDeclaration,
+          shape.expressionIndex,
+          2
+        );
         try appendAsyncTailLocalCleanups(
           inout output,
           program,
@@ -6864,45 +7340,39 @@ function appendAsyncMethodAwaitHelpers(
             program,
             tailDeclaration,
             functionType,
+            shape.expressionIndex,
             prefixRoot,
             2
           );
           prefix = prefix + 1;
         }
-        output.append("    frame->child = Z_");
-        output.append(tailAwait.value);
-        output.append("_start(");
-        try appendExpression(
+        const tailRoot = tailDeclaration.roots[
+          tailDeclaration.roots.length - 1
+        ];
+        try appendAsyncTailDispatchStatement(
           inout output,
+          program,
           tailDeclaration,
-          tailAwait.children[0]
+          functionType,
+          tailAwait,
+          shape.expressionIndex,
+          tailRoot,
+          2
         );
-        output.append(", task->executor");
-        let tailArgument: usize = 1;
-        while (tailArgument < tailAwait.children.length) {
-          output.append(", ");
-          const borrowed = tailAwait.labels.length >= tailArgument
-            && (
-              tailAwait.labels[tailArgument - 1] == "in"
-              || tailAwait.labels[tailArgument - 1] == "inout"
-              || tailAwait.labels[tailArgument - 1] == "out"
-            );
-          if (borrowed) output.append("&(");
-          try appendExpression(
-            inout output,
-            tailDeclaration,
-            tailAwait.children[tailArgument]
-          );
-          if (borrowed) output.append(")");
-          tailArgument = tailArgument + 1;
-        }
-        output.append(");\n    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n    if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (frame->child.task->waiter != NULL) abort();\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n    }\n    return;\n  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+        output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
           expressionIndex
         );
         output.append("_release_child(frame);\n");
+        try appendAsyncTailMatchBindingCleanup(
+          inout output,
+          program,
+          tailDeclaration,
+          shape.expressionIndex,
+          2
+        );
         try appendAsyncTailLocalCleanups(
           inout output,
           program,
@@ -6929,6 +7399,13 @@ function appendAsyncMethodAwaitHelpers(
           expressionIndex
         );
         output.append("_release_child(frame);\n");
+        try appendAsyncTailMatchBindingCleanup(
+          inout output,
+          program,
+          tailDeclaration,
+          shape.expressionIndex,
+          1
+        );
         try appendAsyncTailLocalCleanups(
           inout output,
           program,
@@ -7002,6 +7479,13 @@ function appendAsyncMethodAwaitHelpers(
           some(found) => found;
           none => throw "native tail-await method lost its lowered shape";
         };
+        try appendAsyncTailMatchBindingCleanup(
+          inout output,
+          program,
+          program.functions[destroyShape.functionIndex],
+          destroyShape.expressionIndex,
+          1
+        );
         try appendAsyncTailLocalCleanups(
           inout output,
           program,
@@ -7129,6 +7613,12 @@ function appendAsyncMethodAwaitHelpers(
           inout output,
           program,
           program.functions[undefShape.functionIndex]
+        );
+        try appendAsyncTailMatchBindingMacroUndef(
+          inout output,
+          program,
+          program.functions[undefShape.functionIndex],
+          undefShape.expressionIndex
         );
       }
       expressionIndex = expressionIndex + 1;

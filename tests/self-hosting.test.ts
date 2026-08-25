@@ -1593,6 +1593,54 @@ test("selects an immediate method result before a dynamic child path", () => {
   }
 }, 240_000);
 
+test("moves a matched async handler into its suspending method frame", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-match-tail-method.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-match-tail-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /bool _z_stage1_async_live_/);
+    assert.match(
+      emission.stdout,
+      /frame->live_argument0 = false;[\s\S]*switch \(_z_stage1_async_match_/,
+    );
+    assert.match(
+      emission.stdout,
+      /\.payload\.some;[\s\S]*_start\([^\n]*task->executor/,
+    );
+    assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
+    assert.match(
+      emission.stdout,
+      /case Z_OperationOptionTag_none:[\s\S]*frame->result = Z_STRING_LITERAL\("missing"\);[\s\S]*task->completed = true;/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects a suspending value-struct receiver before native lowering", () => {
   const input = resolve(
     projectRoot,

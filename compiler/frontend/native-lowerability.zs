@@ -426,15 +426,14 @@ function functionUsesFirstTierSchedulerYield(
   return true;
 }
 
-function functionUsesFirstTierTailAwait(
-  in declaration: FunctionDeclaration
+function statementIsFirstTierTailAwait(
+  in arena: StatementArena,
+  index: usize
 ): boolean {
-  if (declaration.body.roots.length != 1) return false;
-  const root = declaration.body.roots[0];
-  if (
-    declaration.body.nodes[root].kind != StatementKind.returnStatement
-  ) return false;
-  match (in declaration.body.nodes[root].expression) {
+  if (arena.nodes[index].kind != StatementKind.returnStatement) {
+    return false;
+  }
+  match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
         const awaitRoot = tree.root;
@@ -455,6 +454,173 @@ function functionUsesFirstTierTailAwait(
     }
     none => return false;
   }
+}
+
+function functionUsesFirstTierTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  return statementIsFirstTierTailAwait(
+    declaration.body,
+    root
+  );
+}
+
+function statementUsesOnlyFirstTierTailAwaitSuspension(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (!statementContainsSuspension(arena, index)) return true;
+  if (statementIsFirstTierTailAwait(arena, index)) return true;
+  if (
+    arena.nodes[index].kind == StatementKind.asyncScopeStatement
+    || arena.nodes[index].kind == StatementKind.forAwaitStatement
+    || arena.nodes[index].kind == StatementKind.forTryAwaitStatement
+  ) return false;
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (!expressionTreeUsesOnlyFirstTierTailAwaitSuspension(
+          arena,
+          tree,
+          root
+        )) return false;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (!expressionTreeUsesOnlyFirstTierTailAwaitSuspension(
+          arena,
+          tree,
+          root
+        )) return false;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (!statementUsesOnlyFirstTierTailAwaitSuspension(
+      arena,
+      child
+    )) return false;
+  }
+  return true;
+}
+
+function expressionTreeUsesOnlyFirstTierTailAwaitSuspension(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    || tree.nodes[index].kind
+      == ExpressionKind.executorPlacementExpression
+  ) return false;
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return true;
+  for (const statement of tree.nodes[index].statements) {
+    if (!statementUsesOnlyFirstTierTailAwaitSuspension(
+      arena,
+      statement
+    )) return false;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (!expressionTreeUsesOnlyFirstTierTailAwaitSuspension(
+      arena,
+      tree,
+      child
+    )) return false;
+  }
+  return true;
+}
+
+function expressionTreeFirstTierTailAwaitCount(
+  in arena: StatementArena,
+  in tree: ExpressionTree,
+  index: usize
+): usize {
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) return 0;
+  let count: usize = 0;
+  for (const statement of tree.nodes[index].statements) {
+    count = count + statementFirstTierTailAwaitCount(arena, statement);
+  }
+  for (const child of tree.nodes[index].children) {
+    count = count + expressionTreeFirstTierTailAwaitCount(
+      arena,
+      tree,
+      child
+    );
+  }
+  return count;
+}
+
+function statementFirstTierTailAwaitCount(
+  in arena: StatementArena,
+  index: usize
+): usize {
+  if (statementIsFirstTierTailAwait(arena, index)) return 1;
+  let count: usize = 0;
+  match (in arena.nodes[index].expression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        count = count + expressionTreeFirstTierTailAwaitCount(
+          arena,
+          tree,
+          root
+        );
+      }
+      none => {}
+    }
+    none => {}
+  }
+  match (in arena.nodes[index].secondExpression) {
+    some(expression) => match (in expression.tree) {
+      some(tree) => {
+        const root = tree.root;
+        count = count + expressionTreeFirstTierTailAwaitCount(
+          arena,
+          tree,
+          root
+        );
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    count = count + statementFirstTierTailAwaitCount(arena, child);
+  }
+  return count;
+}
+
+function functionUsesFirstTierMatchedTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length == 0) return false;
+  let position: usize = 0;
+  while (position + 1 < declaration.body.roots.length) {
+    const root = declaration.body.roots[position];
+    if (statementContainsSuspension(declaration.body, root)) return false;
+    position = position + 1;
+  }
+  const tail = declaration.body.roots[
+    declaration.body.roots.length - 1
+  ];
+  return declaration.body.nodes[tail].kind == StatementKind.matchStatement
+    && statementFirstTierTailAwaitCount(declaration.body, tail) == 1
+    && statementUsesOnlyFirstTierTailAwaitSuspension(
+      declaration.body,
+      tail
+    );
 }
 
 function functionUsesFirstTierPrefixedTailAwait(
@@ -487,31 +653,7 @@ function functionUsesFirstTierPrefixedTailAwait(
   const tail = declaration.body.roots[
     declaration.body.roots.length - 1
   ];
-  if (
-    declaration.body.nodes[tail].kind
-      != StatementKind.returnStatement
-  ) return false;
-  match (in declaration.body.nodes[tail].expression) {
-    some(syntax) => match (in syntax.tree) {
-      some(tree) => {
-        const awaitRoot = tree.root;
-        if (
-          tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
-          || tree.nodes[awaitRoot].children.length != 1
-        ) return false;
-        const operation = tree.nodes[awaitRoot].children[0];
-        if (
-          tree.nodes[operation].kind != ExpressionKind.callExpression
-          || tree.nodes[operation].children.length == 0
-        ) return false;
-        const callee = tree.nodes[operation].children[0];
-        return tree.nodes[callee].kind
-          == ExpressionKind.identifierExpression;
-      }
-      none => return false;
-    }
-    none => return false;
-  }
+  return statementIsFirstTierTailAwait(declaration.body, tail);
 }
 
 function functionHasFirstTierTailAwaitStorage(
@@ -528,7 +670,10 @@ function functionHasFirstTierTailAwaitStorage(
       !functionUsesFirstTierTailAwait(declaration)
       && (
         owner.byteLength == 0
-        || !functionUsesFirstTierPrefixedTailAwait(declaration)
+        || (
+          !functionUsesFirstTierPrefixedTailAwait(declaration)
+          && !functionUsesFirstTierMatchedTailAwait(declaration)
+        )
       )
     )
   ) return false;

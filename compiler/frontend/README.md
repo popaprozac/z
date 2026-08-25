@@ -767,7 +767,12 @@ fields without declaration-order sensitivity. Ordinary and `on thread.main`
 environment counters are executor-local; main-qualified aliases preserve
 construction, invocation, aggregate storage, and field-call lowering under
 explicit main proof. `on thread.any` environments use atomic ownership for
-recursively shareable captures. Async throwing methods, sending a general local
+recursively shareable captures. The bounded async-method frame also accepts a
+final consuming enum/`Option` match: one owned callable payload moves into
+guarded frame storage and suspends, while alternate arms complete immediately.
+Async is part of the encoded native function-type identity, preventing
+otherwise identical synchronous and async callable ABIs from colliding. Async
+throwing methods, sending a general local
 or main-only callable across native threads, block-bodied first-class closures,
 and suspending callable bodies remain separate lowering tiers.
 This corpus is the positive half of the semantic authority gate above. Each
