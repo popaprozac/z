@@ -23,7 +23,7 @@ async function publish(
   shouldFail: boolean
 ): String throws PublishError on thread.main {
   if (shouldFail) {
-    const staged = FrameResource({ message: duplicate("main frame") });
+    const staged = FrameResource({ message: move value });
     console.log("entered main segment");
     await delay(1000);
     console.log("unexpected suspended continuation resume");

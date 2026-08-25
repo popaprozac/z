@@ -5933,7 +5933,7 @@ test("requests native worker cancellation and joins owned cleanup", () => {
         if (fixture == "self-host-emit-thread-cancel-main.zs") {
           assert.match(
             emission.stdout,
-            /_cancel_suspended[\s\S]*Z_String_deinit\(&context->argument_0\)/,
+            /\.message = \(_z_stage1_live_value = false, value\)/,
           );
           assert.match(
             emission.stdout,
@@ -5963,7 +5963,10 @@ test("requests native worker cancellation and joins owned cleanup", () => {
       const execution = spawnSync(executable, [], { encoding: "utf8" });
       assert.equal(execution.status, 0, execution.stderr);
       if (fixture == "self-host-emit-thread-cancel-main.zs") {
-        assert.equal(execution.stdout, "entered main segment\nreleased main frame\n");
+        assert.equal(
+          execution.stdout,
+          "entered main segment\nreleased pending main request\n",
+        );
       }
       if (fixture == "self-host-emit-thread-cancel-main-match.zs") {
         assert.equal(
@@ -15259,6 +15262,30 @@ hostToolchainTest("transfers owned captures through native TaskScope async frame
   assert.equal(execution.stdout, "native owned delivery\n");
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
+
+test("fails closed for a stored delay-suspending async method", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-stored-async-main-delay.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 1);
+  assert.match(
+    emission.stderr,
+    /native stored async closure cannot await delay-suspending method Z_DeliveryService_hold yet/,
+  );
+});
 
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(

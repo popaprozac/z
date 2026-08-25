@@ -9133,6 +9133,21 @@ function appendAsyncMethodAwaitHelpers(
         some(_) => directTailAwait = true;
         none => {}
       }
+      let delaySuspendingMethod = false;
+      for (const candidateMethod of program.functions) {
+        if (
+          candidateMethod.name == method.value
+          && (
+            candidateMethod.mainDelaySegments.length > 0
+            || candidateMethod.mainDelayIfs.length > 0
+            || candidateMethod.mainDelayMatches.length > 0
+            || candidateMethod.mainDelayLoops.length > 0
+          )
+        ) delaySuspendingMethod = true;
+      }
+      if (delaySuspendingMethod) {
+        throw `native stored async closure cannot await delay-suspending method ${method.value} yet`;
+      }
       const nonblockingStart = asyncMethodAwaitStartsChild(
         program,
         owner,
@@ -10698,6 +10713,12 @@ function appendThreadMainBranchSegmentHelpers(
         parameterCount,
         true
       );
+      try appendThreadMainStructuredParameterLiveFlags(
+        inout output,
+        target,
+        parameterCount,
+        true
+      );
       try appendMainFrameRootRestores(
         inout output,
         program,
@@ -10751,6 +10772,11 @@ function appendThreadMainBranchSegmentHelpers(
         );
         none => {}
       }
+      try appendThreadMainStructuredParameterLiveFlagSaves(
+        inout output,
+        target,
+        parameterCount
+      );
       output.append("  }\n");
       try appendMainFrameRootSaves(
         inout output,
@@ -11791,7 +11817,7 @@ function appendThreadMainIfCallHelper(
     expression,
     resultType,
     nativeResultType,
-    false
+    true
   );
   output.append("  bool branch_0;\n");
   try appendMainFrameRootFields(
@@ -11834,6 +11860,12 @@ function appendThreadMainIfCallHelper(
     argumentCount,
     true
   );
+  try appendThreadMainStructuredParameterLiveFlags(
+    inout output,
+    target,
+    argumentCount,
+    true
+  );
   for (const root of plan.prefixRoots) {
     try appendStatement(inout output, target, root, 1);
   }
@@ -11846,6 +11878,11 @@ function appendThreadMainIfCallHelper(
     target,
     plan.prefixRoots,
     1
+  );
+  try appendThreadMainStructuredParameterLiveFlagSaves(
+    inout output,
+    target,
+    argumentCount
   );
   output.append("}\n\n");
 
@@ -11896,7 +11933,7 @@ function appendThreadMainIfCallHelper(
     inout output,
     target,
     argumentCount,
-    false
+    true
   );
   output.append("  if (context->branch_0) {\n");
   for (const segment of plan.thenSegments) {
@@ -11998,7 +12035,7 @@ function appendThreadMainIfCallHelper(
     inout output,
     program,
     expression,
-    false
+    true
   );
   output.append("}\n\n");
 
@@ -12009,7 +12046,7 @@ function appendThreadMainIfCallHelper(
     expressionIndex,
     expression,
     nativeResultType,
-    false
+    true
   );
   output.append("  Z_");
   output.append(expression.value);

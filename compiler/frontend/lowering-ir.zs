@@ -20117,7 +20117,8 @@ function validateMainFrameSourceStatement(
   in evidence: ModuleSemanticEvidence,
   in declaration: FunctionDeclaration,
   in parameters: Array<LoweredParameter>,
-  sourceIndex: usize
+  sourceIndex: usize,
+  allowParameterTransfer: boolean
 ): void throws String {
   if (
     declaration.body.nodes[sourceIndex].kind
@@ -20160,7 +20161,8 @@ function validateMainFrameSourceStatement(
       throw `native lowering does not yet preserve writes to parameter ${parameter.name} across suspension in ${declaration.name}`;
     }
     if (
-      moduleTypeNeedsCleanup(
+      !allowParameterTransfer
+      && moduleTypeNeedsCleanup(
         program,
         importedTypes,
         parameters[parameterIndex].type
@@ -20189,7 +20191,8 @@ function validateMainFrameLoweredStatement(
   in prefixRoots: Array<usize>,
   in priorSegments: Array<LoweredMainDelaySegment>,
   in currentRoots: Array<usize>,
-  loweredRoot: usize
+  loweredRoot: usize,
+  allowParameterTransfer: boolean
 ): void throws String {
   if (
     statements[loweredRoot].kind
@@ -20252,24 +20255,26 @@ function validateMainFrameLoweredStatement(
       throw `native lowering only preserves direct local assignment across suspension in ${declaration.name}`;
     }
   }
-  let parameterIndex: usize = 0;
-  while (parameterIndex < declaration.parameters.length) {
-    if (
-      moduleTypeNeedsCleanup(
-        program,
-        importedTypes,
-        parameters[parameterIndex].type
-      )
-      && loweredStatementDirectlyTransfersBinding(
-        expressions,
-        statements,
-        loweredRoot,
-        declaration.parameters[parameterIndex].name
-      )
-    ) {
-      throw `native lowering does not yet preserve ownership transfer of parameter ${declaration.parameters[parameterIndex].name} across suspension in ${declaration.name}`;
+  if (!allowParameterTransfer) {
+    let parameterIndex: usize = 0;
+    while (parameterIndex < declaration.parameters.length) {
+      if (
+        moduleTypeNeedsCleanup(
+          program,
+          importedTypes,
+          parameters[parameterIndex].type
+        )
+        && loweredStatementDirectlyTransfersBinding(
+          expressions,
+          statements,
+          loweredRoot,
+          declaration.parameters[parameterIndex].name
+        )
+      ) {
+        throw `native lowering does not yet preserve ownership transfer of parameter ${declaration.parameters[parameterIndex].name} across suspension in ${declaration.name}`;
+      }
+      parameterIndex = parameterIndex + 1;
     }
-    parameterIndex = parameterIndex + 1;
   }
 }
 
@@ -20344,7 +20349,8 @@ function lowerMainDelayBranch(
         evidence,
         declaration,
         parameters,
-        sourceChild
+        sourceChild,
+        true
       );
     }
     const loweredChild = try lowerStatement(
@@ -20369,7 +20375,8 @@ function lowerMainDelayBranch(
         prefixRoots,
         segments,
         segmentRoots,
-        loweredChild
+        loweredChild,
+        true
       );
     }
     segmentRoots.push(loweredChild);
@@ -20633,7 +20640,8 @@ function lowerMainDelayLoopBody(
         evidence,
         declaration,
         parameters,
-        sourceChild
+        sourceChild,
+        false
       );
     }
     const loweredChild = try lowerStatement(
@@ -20662,7 +20670,8 @@ function lowerMainDelayLoopBody(
         prefixRoots,
         segments,
         segmentRoots,
-        loweredChild
+        loweredChild,
+        false
       );
     }
     segmentRoots.push(loweredChild);
@@ -21465,7 +21474,8 @@ function lowerFunction(
         evidence,
         declaration,
         parameters,
-        root
+        root,
+        false
       );
     }
     sourceRoots.push(root);
@@ -21490,7 +21500,8 @@ function lowerFunction(
         linearPrefixRoots,
         mainDelaySegments,
         segmentRoots,
-        loweredRoot
+        loweredRoot,
+        false
       );
     }
     planningRoots.push(loweredRoot);

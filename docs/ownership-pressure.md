@@ -4132,6 +4132,21 @@ thread: the current thread drives the scope until its accepted work finishes.
 With those fixes, the visible Z Notes WebView round trip builds and runs through
 the fixed-point native driver with no Stage 0 override.
 
+The next cancellation pressure test moved an owned async parameter into a
+frame-local resource before a main-executor delay. Existing frame live bits
+already described the transfer, but lowering rejected it before emission.
+Branch and match suspension segments now restore and save parameter liveness,
+so cancellation destroys the frame local exactly once and does not also
+destroy the moved-from parameter. Linear and loop suspension plans retain their
+conservative transfer restriction until they carry the same proof.
+
+The same probe found a more serious hidden boundary: a stored async closure
+could await a method whose body suspends on `delay`, while the helper invoked
+that method's deliberately unavailable synchronous stub after one requeue.
+Fixed-point emission now fails closed for that composition. Timer/task-backed
+stored-callable suspension is therefore the explicit prerequisite before Zapp
+maps frontend request cancellation onto an accepted `TaskControl`.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
