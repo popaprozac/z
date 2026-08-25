@@ -101,7 +101,14 @@ production or compatibility-sensitive use.
   captures receive exactly one storage retain. Arbitrary suspension
   counts, branches between awaits, and equivalent general async method bodies
   remain future frame tiers. The visible Zapp application now imports and
-  executes this surface rather than keeping it headless-only.
+  executes this surface rather than keeping it headless-only. The fixed-point
+  compiler also executes its explicit `new TaskScope()` lifecycle: a foreign
+  callback schedules an owned async closure on `thread.main`, cleanup-bearing
+  captures and moved parameters transfer through guarded frame storage, and
+  `close()` joins or cancels them exactly once. A scope with no enclosing Z task
+  owns a serial fallback executor on the current thread; it does not create an
+  OS thread. Z Notes now runs this complete path through the standalone native
+  driver without a Stage 0 override.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
 - A standalone native compiler capable of rebuilding its own constrained source

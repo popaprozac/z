@@ -155,6 +155,14 @@ The dynamic tier accepts synchronous `(): void` and explicitly async
 fallible children locally with `attempt await` because its synchronous
 submitter has no task result through which to receive an unhandled error.
 The scope owns the submitted async root and all of its structured descendants.
+The fixed-point native compiler executes this explicit form as well. A scope
+created without an enclosing Z task owns an embedded serial executor on the
+current thread; it does not create an OS thread. `schedule(thread.main, ...)`
+still performs the declared placement, while `close()` drives and joins every
+accepted operation. Owned closure captures and moved async parameters carry
+live-state guards through suspension, cancellation, and frame destruction, so
+transferring a `String` or another cleanup-bearing value into a scheduled child
+invalidates the former storage exactly once.
 The complete authority matrix for direct await, `Task<T, E>`, `TaskScope`, and
 `TaskControl` is in the
 [language reference](./language-reference.md#task-taskscope-and-taskcontrol).

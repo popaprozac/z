@@ -99,6 +99,10 @@ function cType(in type: LoweredType): String throws String {
     return `${type.name} *`;
   }
   if (type.kind == LoweredTypeKind.classType) return `Z_${type.name} *`;
+  if (
+    type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType
+  ) return `Z_${type.name} *`;
   if (type.kind == LoweredTypeKind.weakType) return "Z_Weak";
   if (
     type.kind == LoweredTypeKind.onceType
@@ -239,6 +243,67 @@ function appendCallableHelperName(
   expressionIndex: usize
 ): void {
   output.append("z_stage1_callable_");
+  appendCBindingName(inout output, declaration.name);
+  output.append("_");
+  output.append(`${expressionIndex}`);
+}
+
+function callableCaptureLiveFlag(in name: String): String {
+  return `_z_stage1_live_${name}`;
+}
+
+function appendCallableCaptureLiveMacros(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in expression: LoweredExpression,
+  captureLabelStart: usize,
+  in environment: String
+): void {
+  let capture: usize = 0;
+  while (capture < expression.captureTypes.length) {
+    if (loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
+      const liveFlag = callableCaptureLiveFlag(
+        expression.labels[captureLabelStart + capture]
+      );
+      output.append("#define ");
+      appendCBindingName(inout output, liveFlag);
+      output.append(" (");
+      output.append(environment);
+      output.append("->");
+      appendCBindingName(inout output, liveFlag);
+      output.append(")\n");
+    }
+    capture = capture + 1;
+  }
+}
+
+function appendCallableCaptureLiveMacroUndefs(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in expression: LoweredExpression,
+  captureLabelStart: usize
+): void {
+  let capture = expression.captureTypes.length;
+  while (capture > 0) {
+    capture = capture - 1;
+    if (loweredTypeNeedsDeinit(program, expression.captureTypes[capture])) {
+      const liveFlag = callableCaptureLiveFlag(
+        expression.labels[captureLabelStart + capture]
+      );
+      output.append("#undef ");
+      appendCBindingName(inout output, liveFlag);
+      output.append("\n");
+    }
+  }
+  if (expression.captureTypes.length > 0) output.append("\n");
+}
+
+function appendTaskScopeScheduleHelperName(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): void {
+  output.append("z_stage1_task_scope_schedule_");
   appendCBindingName(inout output, declaration.name);
   output.append("_");
   output.append(`${expressionIndex}`);
@@ -1140,6 +1205,7 @@ function appendAsyncStoredParameterMacros(
       candidate = candidate + 1;
     }
     if (parameter >= functionType.parameters.length) {
+      if (flag.owner == "this") continue;
       throw "native async frame lost a stored parameter cleanup guard";
     }
     output.append("#define ");
@@ -2210,6 +2276,56 @@ function programTaskTypeNames(
   return names;
 }
 
+function typeUsesTaskScope(in type: LoweredType): boolean {
+  return type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType;
+}
+
+function expressionsUseTaskScope(
+  in expressions: Array<LoweredExpression>
+): boolean {
+  for (const expression of expressions) {
+    if (
+      expression.kind == LoweredExpressionKind.taskScopeValue
+      || expression.kind == LoweredExpressionKind.taskScopeSchedule
+      || expression.kind == LoweredExpressionKind.taskScopeClose
+      || expression.kind == LoweredExpressionKind.taskControlCancel
+    ) return true;
+  }
+  return false;
+}
+
+function programUsesTaskScope(in program: LoweredProgram): boolean {
+  for (const constant of program.constants) {
+    if (typeUsesTaskScope(constant.type)) return true;
+  }
+  for (const aggregate of program.structs) {
+    for (const field of aggregate.fields) {
+      if (typeUsesTaskScope(field.type)) return true;
+    }
+    match (in aggregate.deinitializer) {
+      some(deinitializer) => {
+        if (expressionsUseTaskScope(deinitializer.expressions)) return true;
+      }
+      none => {}
+    }
+  }
+  for (const declaration of program.functions) {
+    if (typeUsesTaskScope(declaration.returnType)) return true;
+    for (const parameter of declaration.parameters) {
+      if (typeUsesTaskScope(parameter.type)) return true;
+    }
+    for (const statement of declaration.statements) {
+      match (in statement.type) {
+        some(type) => if (typeUsesTaskScope(type)) return true;
+        none => {}
+      }
+    }
+    if (expressionsUseTaskScope(declaration.expressions)) return true;
+  }
+  return false;
+}
+
 function loweredTypeForIdentity(
   in program: LoweredProgram,
   in identity: String
@@ -2230,6 +2346,8 @@ function loweredTypeForIdentity(
   if (identity == "f64") return LoweredType({ kind: LoweredTypeKind.f64Type, name: "" });
   if (identity == "String") return LoweredType({ kind: LoweredTypeKind.stringType, name: "String" });
   if (identity == "Arena") return LoweredType({ kind: LoweredTypeKind.arenaType, name: "Arena" });
+  if (identity == "TaskScope") return LoweredType({ kind: LoweredTypeKind.taskScopeType, name: "TaskScope" });
+  if (identity == "TaskControl") return LoweredType({ kind: LoweredTypeKind.taskControlType, name: "TaskControl" });
   if (identity == "cstring") return LoweredType({ kind: LoweredTypeKind.cstringType, name: "cstring" });
   if (
     identity.byteLength > 5
@@ -3016,6 +3134,10 @@ function appendExpression(
     output.append("_");
     output.append(`${index}`);
     if (
+      declaration.expressions[index].kind
+        == LoweredExpressionKind.directFunctionValue
+    ) output.append("_value()");
+    else if (
       declaration.expressions[index].kind
         == LoweredExpressionKind.closureValue
       && declaration.expressions[index].captureTypes.length > 0
@@ -4521,6 +4643,63 @@ function appendExpression(
     output.append(")");
     return;
   }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.taskScopeValue
+  ) {
+    output.append("z_stage1_task_scope_new(z_stage1_current_executor)");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.taskScopeSchedule
+  ) {
+    if (declaration.expressions[index].children.length != 2) {
+      throw "native C emission received malformed TaskScope.schedule";
+    }
+    appendTaskScopeScheduleHelperName(inout output, declaration, index);
+    output.append("(");
+    const scopeExpression = declaration.expressions[index].children[0];
+    const operation = declaration.expressions[index].children[1];
+    try appendExpression(inout output, declaration, scopeExpression);
+    output.append(", ");
+    try appendExpression(inout output, declaration, operation);
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.taskScopeClose
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed TaskScope join";
+    }
+    output.append("z_stage1_task_scope_join(");
+    const scopeExpression = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, scopeExpression);
+    output.append(", ");
+    output.append(
+      declaration.expressions[index].labels.length > 0
+        && declaration.expressions[index].labels[0] == "cancel"
+        ? "true"
+        : "false"
+    );
+    output.append(")");
+    return;
+  }
+  if (
+    declaration.expressions[index].kind
+      == LoweredExpressionKind.taskControlCancel
+  ) {
+    if (declaration.expressions[index].children.length != 1) {
+      throw "native C emission received malformed TaskControl cancellation";
+    }
+    output.append("z_stage1_task_control_request_cancel(");
+    const control = declaration.expressions[index].children[0];
+    try appendExpression(inout output, declaration, control);
+    output.append(")");
+    return;
+  }
   if (declaration.expressions[index].kind == LoweredExpressionKind.arenaNew) {
     if (declaration.expressions[index].children.length > 1) {
       throw "native C emission received malformed Arena construction";
@@ -5270,6 +5449,8 @@ function appendLocalStatementStorage(
         && storageType.kind != LoweredTypeKind.setType
         && storageType.kind != LoweredTypeKind.stringType
         && storageType.kind != LoweredTypeKind.classType
+        && storageType.kind != LoweredTypeKind.taskScopeType
+        && storageType.kind != LoweredTypeKind.taskControlType
         && storageType.kind != LoweredTypeKind.foreignObjCType
         && storageType.kind != LoweredTypeKind.onceLifetimeType
         && storageType.kind != LoweredTypeKind.mutexType
@@ -7074,6 +7255,17 @@ function appendCallableHelpers(
             expression.labels[captureLabelStart + capture]
           );
           output.append(";\n");
+          if (loweredTypeNeedsDeinit(
+            program,
+            expression.captureTypes[capture]
+          )) {
+            const liveFlag = callableCaptureLiveFlag(
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append("  bool ");
+            appendCBindingName(inout output, liveFlag);
+            output.append(";\n");
+          }
           capture = capture + 1;
         }
         output.append("} ");
@@ -7110,7 +7302,12 @@ function appendCallableHelpers(
           capture = capture - 1;
           const captureType = view expression.captureTypes[capture];
           if (loweredTypeNeedsDeinit(program, captureType)) {
-            output.append("  Z_");
+            const liveFlag = callableCaptureLiveFlag(
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append("  if (environment->");
+            appendCBindingName(inout output, liveFlag);
+            output.append(") Z_");
             output.append(captureType.name);
             if (captureType.kind == LoweredTypeKind.classType) {
               output.append("_release(environment->");
@@ -7330,6 +7527,13 @@ function appendCallableHelpers(
           output.append("_task *frame = (");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_task *)task;\n");
+          appendCallableCaptureLiveMacros(
+            inout output,
+            program,
+            expression,
+            captureLabelStart,
+            "frame->environment"
+          );
           let aliasParameter: usize = 0;
           while (aliasParameter < functionType.parameters.length) {
             output.append("  ");
@@ -7407,6 +7611,12 @@ function appendCallableHelpers(
             1
           );
           output.append("  task->completed = true;\n}\n\n");
+          appendCallableCaptureLiveMacroUndefs(
+            inout output,
+            program,
+            expression,
+            captureLabelStart
+          );
         }
         if (directTailAwait) {
           const shape = match (tailAwaitShape) {
@@ -8224,6 +8434,13 @@ function appendCallableHelpers(
           throw "native async closure helper lost its body";
         }
         if (asyncSuspension.byteLength == 0) {
+          appendCallableCaptureLiveMacros(
+            inout output,
+            program,
+            expression,
+            captureLabelStart,
+            "environment"
+          );
           if (functionType.returnType.kind != LoweredTypeKind.voidType) {
             output.append("  frame->result = ");
           } else output.append("  ");
@@ -8244,6 +8461,12 @@ function appendCallableHelpers(
             try appendExpression(inout output, owner, expression.children[0]);
           }
           output.append(";\n");
+          appendCallableCaptureLiveMacroUndefs(
+            inout output,
+            program,
+            expression,
+            captureLabelStart
+          );
         }
         if (resultNeedsDeinit && asyncSuspension.byteLength == 0) {
           output.append("  frame->live_result = true;\n");
@@ -8300,6 +8523,17 @@ function appendCallableHelpers(
               expression.labels[captureLabelStart + capture]
             );
             output.append(";\n");
+            if (loweredTypeNeedsDeinit(
+              program,
+              expression.captureTypes[capture]
+            )) {
+              const liveFlag = callableCaptureLiveFlag(
+                expression.labels[captureLabelStart + capture]
+              );
+              output.append("  environment->");
+              appendCBindingName(inout output, liveFlag);
+              output.append(" = true;\n");
+            }
             capture = capture + 1;
           }
           output.append("  return (Z_");
@@ -8311,6 +8545,18 @@ function appendCallableHelpers(
           output.append("_retain, .release = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release };\n}\n\n");
+        } else if (
+          expression.kind == LoweredExpressionKind.directFunctionValue
+        ) {
+          output.append("static Z_");
+          output.append(functionType.name);
+          output.append(" ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_value(void) {\n  return (Z_");
+          output.append(functionType.name);
+          output.append("){ .start = ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_start, .context = NULL, .retain = NULL, .release = NULL };\n}\n\n");
         } else {
           output.append("static const Z_");
           output.append(functionType.name);
@@ -8399,6 +8645,13 @@ function appendCallableHelpers(
         parameter = parameter + 1;
       }
       output.append(") {\n");
+      appendCallableCaptureLiveMacros(
+        inout output,
+        program,
+        expression,
+        captureLabelStart,
+        "environment"
+      );
       if (expression.captureTypes.length == 0) {
         output.append("  (void)");
         appendCBindingName(inout output, contextName);
@@ -8460,6 +8713,12 @@ function appendCallableHelpers(
         if (expression.labels[2] == "throwing") output.append(" }");
       }
       output.append(";\n}\n\n");
+      appendCallableCaptureLiveMacroUndefs(
+        inout output,
+        program,
+        expression,
+        captureLabelStart
+      );
       if (expression.captureTypes.length > 0) {
         output.append("static Z_");
         output.append(functionType.name);
@@ -8494,6 +8753,17 @@ function appendCallableHelpers(
             expression.labels[captureLabelStart + capture]
           );
           output.append(";\n");
+          if (loweredTypeNeedsDeinit(
+            program,
+            expression.captureTypes[capture]
+          )) {
+            const liveFlag = callableCaptureLiveFlag(
+              expression.labels[captureLabelStart + capture]
+            );
+            output.append("  environment->");
+            appendCBindingName(inout output, liveFlag);
+            output.append(" = true;\n");
+          }
           capture = capture + 1;
         }
         output.append("  return (Z_");
@@ -8505,6 +8775,18 @@ function appendCallableHelpers(
         output.append("_retain, .release = ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_release };\n}\n\n");
+      } else if (
+        expression.kind == LoweredExpressionKind.directFunctionValue
+      ) {
+        output.append("static Z_");
+        output.append(functionType.name);
+        output.append(" ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_value(void) {\n  return (Z_");
+        output.append(functionType.name);
+        output.append("){ .call = ");
+        appendCallableHelperName(inout output, owner, expressionIndex);
+        output.append("_call, .context = NULL, .retain = NULL, .release = NULL };\n}\n\n");
       } else {
         output.append("static const Z_");
         output.append(functionType.name);
@@ -8519,6 +8801,83 @@ function appendCallableHelpers(
   }
 }
 
+function appendDirectCallableValuePrototypes(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  let emitted = false;
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (
+        expression.kind != LoweredExpressionKind.directFunctionValue
+      ) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      if (expression.labels.length == 0) {
+        throw "native direct callable prototype lost its function type";
+      }
+      output.append("static Z_");
+      output.append(expression.labels[0]);
+      output.append(" ");
+      appendCallableHelperName(inout output, owner, expressionIndex);
+      output.append("_value(void);\n");
+      emitted = true;
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+  if (emitted) output.append("\n");
+}
+
+function appendTaskScopeScheduleHelpers(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void throws String {
+  for (const owner of program.functions) {
+    let expressionIndex: usize = 0;
+    while (expressionIndex < owner.expressions.length) {
+      const expression = view owner.expressions[expressionIndex];
+      if (expression.kind != LoweredExpressionKind.taskScopeSchedule) {
+        expressionIndex = expressionIndex + 1;
+        continue;
+      }
+      let callableIndex = program.functionTypes.length;
+      let candidate: usize = 0;
+      while (candidate < program.functionTypes.length) {
+        if (program.functionTypes[candidate].name == expression.value) {
+          callableIndex = candidate;
+        }
+        candidate = candidate + 1;
+      }
+      if (callableIndex >= program.functionTypes.length) {
+        throw `native TaskScope.schedule could not resolve callable ${expression.value}`;
+      }
+      const callable = view program.functionTypes[callableIndex];
+      if (
+        !callable.asynchronous
+        || callable.parameters.length != 0
+        || callable.returnType.kind != LoweredTypeKind.voidType
+      ) throw "native TaskScope.schedule requires async () => void";
+      output.append("static Z_TaskControl *");
+      appendTaskScopeScheduleHelperName(
+        inout output,
+        owner,
+        expressionIndex
+      );
+      output.append("(Z_TaskScope *scope, Z_");
+      output.append(callable.name);
+      output.append(" operation) {\n  if (scope == NULL) abort();\n  Z_AsyncInvocation child = Z_");
+      output.append(callable.name);
+      output.append("_start(operation, scope->executor);\n  Z_");
+      output.append(callable.name);
+      output.append("_deinit(&operation);\n  return z_stage1_task_scope_spawn_async(scope, child);\n}\n\n");
+      expressionIndex = expressionIndex + 1;
+    }
+  }
+}
+
 function appendAsyncCallableRuntime(
   inout output: TextBuffer,
   in program: LoweredProgram
@@ -8527,7 +8886,13 @@ function appendAsyncCallableRuntime(
   for (const functionType of program.functionTypes) {
     if (functionType.asynchronous) required = true;
   }
+  const usesTaskScope = programUsesTaskScope(program);
+  if (usesTaskScope) required = true;
   if (!required) return;
+  if (usesTaskScope) {
+    output.append("#if defined(__cplusplus)\n#define Z_STAGE1_THREAD_LOCAL thread_local\n#else\n#define Z_STAGE1_THREAD_LOCAL _Thread_local\n#endif\n");
+    output.append("static Z_STAGE1_THREAD_LOCAL Z_AsyncExecutor *z_stage1_current_executor = NULL;\n\n");
+  }
   output.append("static __attribute__((unused)) void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {\n");
   output.append("  if (executor == NULL || task == NULL || task->completed || task->queued) abort();\n");
   output.append("  task->executor = executor;\n  task->queued = true;\n  task->next = NULL;\n");
@@ -8566,12 +8931,47 @@ function appendAsyncCallableRuntime(
   output.append("  task->next = NULL;\n  task->queued = false;\n");
   output.append("  if (!task->completed) {\n");
   output.append("    if (task->poll == NULL) abort();\n");
-  output.append("    task->poll(task);\n  }\n");
+  if (usesTaskScope) {
+    output.append("    Z_AsyncExecutor *previous_executor = z_stage1_current_executor;\n");
+    output.append("    z_stage1_current_executor = executor;\n");
+  }
+  output.append("    task->poll(task);\n");
+  if (usesTaskScope) {
+    output.append("    z_stage1_current_executor = previous_executor;\n");
+  }
+  output.append("  }\n");
   output.append("  if (task->completed && task->waiter != NULL) {\n");
   output.append("    Z_AsyncTask *waiter = task->waiter;\n");
   output.append("    task->waiter = NULL;\n");
   output.append("    z_stage1_async_enqueue(waiter->executor, waiter);\n");
   output.append("  }\n  return true;\n}\n\n");
+}
+
+function appendTaskScopeRuntime(
+  inout output: TextBuffer,
+  in program: LoweredProgram
+): void {
+  if (!programUsesTaskScope(program)) return;
+  output.append("static void z_stage1_task_scope_lock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  EnterCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_lock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
+  output.append("static void z_stage1_task_scope_unlock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_unlock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
+  output.append("static Z_TaskScope *Z_TaskScope_retain(Z_TaskScope *scope) {\n  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);\n  return scope;\n}\n\n");
+  output.append("static Z_TaskControl *Z_TaskControl_retain(Z_TaskControl *control) {\n  if (control != NULL) __atomic_add_fetch(&control->refcount, 1, __ATOMIC_RELAXED);\n  return control;\n}\n\n");
+  output.append("static void z_stage1_task_scope_release_invocation(Z_AsyncInvocation *invocation) {\n  if (invocation == NULL || invocation->task == NULL) return;\n  if (invocation->destroy != NULL) invocation->destroy(invocation->task);\n  if (invocation->release_context != NULL) invocation->release_context(invocation->callable_context);\n  *invocation = (Z_AsyncInvocation){0};\n}\n\n");
+  output.append("static void z_stage1_task_scope_discard_jobs(Z_TaskScope *scope) {\n  Z_TaskScopeJob *job = scope->jobs;\n  scope->jobs = NULL;\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->scope_next;\n    if (job->child.task != NULL) abort();\n    free(job);\n    job = next;\n  }\n}\n\n");
+  output.append("static void Z_TaskScope_release(Z_TaskScope *scope) {\n  if (scope == NULL) return;\n  if (__atomic_fetch_sub(&scope->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  if (scope->pending != 0 || scope->external_head != NULL) abort();\n  z_stage1_task_scope_discard_jobs(scope);\n#if defined(_WIN32)\n  DeleteCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_destroy(&scope->mutex) != 0) abort();\n#endif\n  free(scope);\n}\n\n");
+  output.append("static void Z_TaskControl_release(Z_TaskControl *control) {\n  if (control == NULL) return;\n  if (__atomic_fetch_sub(&control->refcount, 1, __ATOMIC_ACQ_REL) != 1) return;\n  Z_TaskScope_release(control->scope);\n  free(control);\n}\n\n");
+  output.append("static void Z_TaskScope_deinit(Z_TaskScope **scope) {\n  if (scope == NULL) return;\n  Z_TaskScope_release(*scope);\n  *scope = NULL;\n}\n\n");
+  output.append("static void Z_TaskControl_deinit(Z_TaskControl **control) {\n  if (control == NULL) return;\n  Z_TaskControl_release(*control);\n  *control = NULL;\n}\n\n");
+  output.append("static Z_TaskControl *z_stage1_task_control_new(bool accepted) {\n  Z_TaskControl *control = (Z_TaskControl *)calloc(1, sizeof(*control));\n  if (control == NULL) abort();\n  control->refcount = 1;\n  control->accepted = accepted;\n  return control;\n}\n\n");
+  output.append("static Z_TaskScope *z_stage1_task_scope_new(Z_AsyncExecutor *executor) {\n  Z_TaskScope *scope = (Z_TaskScope *)calloc(1, sizeof(*scope));\n  if (scope == NULL) abort();\n  scope->refcount = 1;\n  scope->executor = executor != NULL ? executor : &scope->local_executor;\n#if defined(_WIN32)\n  InitializeCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_init(&scope->mutex, NULL) != 0) abort();\n#endif\n  return scope;\n}\n\n");
+  output.append("static void z_stage1_task_scope_job_cancel(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->control != NULL) job->control->cancellation_requested = true;\n  if (job->child.task != NULL) z_stage1_async_request_cancel(job->child.task);\n}\n\n");
+  output.append("static void z_stage1_task_scope_job_poll(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->state == 0) {\n    job->state = 1;\n    if (task->cancellation_requested) z_stage1_async_request_cancel(job->child.task);\n    if (job->child.task == NULL) abort();\n    if (job->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (job->child.task->waiter != NULL) abort();\n      job->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, job->child.task);\n    }\n    return;\n  }\n  if (job->state != 1 || job->child.task == NULL || !job->child.task->completed) abort();\n  task->cancelled = task->cancellation_requested || job->child.task->cancelled;\n  z_stage1_task_scope_release_invocation(&job->child);\n  task->completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  Z_TaskControl_release(control);\n}\n\n");
+  output.append("static void z_stage1_task_scope_drain_external(Z_TaskScope *scope) {\n  z_stage1_task_scope_lock(scope);\n  Z_TaskScopeJob *job = scope->external_head;\n  scope->external_head = NULL;\n  scope->external_tail = NULL;\n  z_stage1_task_scope_unlock(scope);\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->external_next;\n    job->external_next = NULL;\n    z_stage1_async_enqueue(scope->executor, &job->task);\n    job = next;\n  }\n}\n\n");
+  output.append("static void z_stage1_task_scope_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_drain_external(scope);\n  while (z_stage1_async_run_one(scope->executor)) {}\n}\n\n");
+  output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_perform(scope);\n  Z_TaskScope_release(scope);\n}\n#endif\n\n");
+  output.append("static Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation child) {\n  if (scope == NULL || child.task == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->child = child;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    free(job);\n    z_stage1_task_scope_release_invocation(&child);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n#if defined(__APPLE__)\n  if (pthread_main_np() != 0) z_stage1_task_scope_perform(scope);\n  else dispatch_async_f(dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n#endif\n  return control;\n}\n\n");
+  output.append("static __attribute__((unused)) bool z_stage1_task_control_request_cancel(Z_TaskControl *control) {\n  if (control == NULL || !control->accepted || control->scope == NULL) return false;\n  Z_TaskScope *scope = control->scope;\n  z_stage1_task_scope_lock(scope);\n  if (control->cancellation_requested || control->job == NULL) {\n    z_stage1_task_scope_unlock(scope);\n    return false;\n  }\n  control->cancellation_requested = true;\n  Z_TaskScopeJob *job = control->job;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_async_request_cancel(&job->task);\n  return true;\n}\n\n");
+  output.append("static void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_run_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
 }
 
 function appendAsyncCallableAwaitHelpers(
@@ -8690,7 +9090,10 @@ function appendAsyncMethodAwaitHelpers(
       if (
         method.kind != LoweredExpressionKind.methodCall
         || method.labels.length < 3
-        || method.labels[0] != "class"
+        || (
+          method.labels[0] != "class"
+          && method.labels[0] != "struct"
+        )
         || method.children.length == 0
       ) throw "native async method await helper lost its method shape";
       let functionTypeIndex = program.functionTypes.length;
@@ -8713,6 +9116,12 @@ function appendAsyncMethodAwaitHelpers(
         0,
         method.labels[2].byteLength
       );
+      const classReceiver = method.labels[0] == "class";
+      const consumingStructReceiver = method.labels[0] == "struct"
+        && method.labels[1] == "move";
+      if (!classReceiver && !consumingStructReceiver) {
+        throw "native async method await helper requires a retained class or moved struct receiver";
+      }
       const returnType = try cType(functionType.returnType);
       const resultNeedsDeinit = loweredTypeNeedsDeinit(
         program,
@@ -8737,7 +9146,7 @@ function appendAsyncMethodAwaitHelpers(
       );
       output.append("_task {\n  Z_AsyncTask task;\n  uint32_t state;\n  Z_");
       output.append(receiverType);
-      output.append(" *receiver;\n");
+      output.append(classReceiver ? " *receiver;\n" : " receiver;\n  bool live_receiver;\n");
       let parameter: usize = 0;
       while (parameter < functionType.parameters.length) {
         output.append("  ");
@@ -8803,6 +9212,17 @@ function appendAsyncMethodAwaitHelpers(
         const tailAwait = view tailDeclaration.expressions[
           shape.expressionIndex
         ];
+        let receiverLiveFlag = "";
+        if (consumingStructReceiver) {
+          for (const flag of tailDeclaration.liveFlags) {
+            if (flag.parameter && flag.owner == "this") {
+              receiverLiveFlag = flag.name.copyBytes(
+                0,
+                flag.name.byteLength
+              );
+            }
+          }
+        }
         try appendAsyncTailLocalMacros(
           inout output,
           program,
@@ -8849,7 +9269,17 @@ function appendAsyncMethodAwaitHelpers(
           owner,
           expressionIndex
         );
-        output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\nstatic void ");
+        output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\n");
+        if (consumingStructReceiver) {
+          output.append("#define self (frame->receiver)\n");
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#define ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append(" (frame->live_receiver)\n");
+          }
+          output.append("\n");
+        }
+        output.append("static void ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
@@ -8867,9 +9297,12 @@ function appendAsyncMethodAwaitHelpers(
           owner,
           expressionIndex
         );
-        output.append("_task *)task;\n  Z_");
-        output.append(receiverType);
-        output.append(" *self __attribute__((unused)) = frame->receiver;\n");
+        output.append("_task *)task;\n");
+        if (classReceiver) {
+          output.append("  Z_");
+          output.append(receiverType);
+          output.append(" *self __attribute__((unused)) = frame->receiver;\n");
+        }
         let aliasParameter: usize = 0;
         while (aliasParameter < functionType.parameters.length) {
           if (aliasParameter >= tailDeclaration.parameters.length) {
@@ -8994,6 +9427,14 @@ function appendAsyncMethodAwaitHelpers(
           1
         );
         output.append("  task->completed = true;\n}\n\n");
+        if (consumingStructReceiver) {
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#undef ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append("\n");
+          }
+          output.append("#undef self\n\n");
+        }
       } else {
         output.append("static void ");
       appendAsyncCallableAwaitHelperName(
@@ -9026,6 +9467,9 @@ function appendAsyncMethodAwaitHelpers(
         parameter = parameter + 1;
       }
       output.append(");\n");
+      if (consumingStructReceiver) {
+        output.append("  frame->live_receiver = false;\n");
+      }
       if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
       output.append("  task->completed = true;\n}\n\n");
       }
@@ -9081,9 +9525,16 @@ function appendAsyncMethodAwaitHelpers(
           output.append("_release(frame->result);\n");
         } else output.append("_deinit(&frame->result);\n");
       }
-      output.append("  Z_");
-      output.append(receiverType);
-      output.append("_release(frame->receiver);\n  free(frame);\n}\n\n");
+      if (classReceiver) {
+        output.append("  Z_");
+        output.append(receiverType);
+        output.append("_release(frame->receiver);\n");
+      } else {
+        output.append("  if (frame->live_receiver) Z_");
+        output.append(receiverType);
+        output.append("_deinit(&frame->receiver);\n");
+      }
+      output.append("  free(frame);\n}\n\n");
       if (nonblockingStart) {
       output.append("static bool ");
       appendAsyncCallableAwaitHelperName(
@@ -9151,9 +9602,11 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_start_invocation(Z_AsyncExecutor *executor, const Z_");
+      output.append("_start_invocation(Z_AsyncExecutor *executor, ");
+      if (classReceiver) output.append("const ");
+      output.append("Z_");
       output.append(receiverType);
-      output.append(" *receiver");
+      output.append(classReceiver ? " *receiver" : " receiver");
       parameter = 0;
       while (parameter < functionType.parameters.length) {
         output.append(", ");
@@ -9182,9 +9635,16 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_poll;\n  frame->task.executor = executor;\n  frame->receiver = Z_");
-      output.append(receiverType);
-      output.append("_retain(receiver);\n");
+      output.append("_poll;\n  frame->task.executor = executor;\n  frame->receiver = ");
+      if (classReceiver) {
+        output.append("Z_");
+        output.append(receiverType);
+        output.append("_retain(receiver)");
+      } else output.append("receiver");
+      output.append(";\n");
+      if (consumingStructReceiver) {
+        output.append("  frame->live_receiver = true;\n");
+      }
       if (directTailAwait) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
@@ -9251,9 +9711,11 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("(const Z_");
+      output.append("(");
+      if (classReceiver) output.append("const ");
+      output.append("Z_");
       output.append(receiverType);
-      output.append(" *receiver");
+      output.append(classReceiver ? " *receiver" : " receiver");
       parameter = 0;
       while (parameter < functionType.parameters.length) {
         output.append(", ");
@@ -9282,9 +9744,16 @@ function appendAsyncMethodAwaitHelpers(
         owner,
         expressionIndex
       );
-      output.append("_poll;\n  frame->task.executor = &executor;\n  frame->receiver = Z_");
-      output.append(receiverType);
-      output.append("_retain(receiver);\n");
+      output.append("_poll;\n  frame->task.executor = &executor;\n  frame->receiver = ");
+      if (classReceiver) {
+        output.append("Z_");
+        output.append(receiverType);
+        output.append("_retain(receiver)");
+      } else output.append("receiver");
+      output.append(";\n");
+      if (consumingStructReceiver) {
+        output.append("  frame->live_receiver = true;\n");
+      }
       if (directTailAwait) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
@@ -9418,9 +9887,11 @@ function appendAsyncMethodAwaitStartPrototypes(
         owner,
         expressionIndex
       );
-      output.append("_start_invocation(Z_AsyncExecutor *executor, const Z_");
+      output.append("_start_invocation(Z_AsyncExecutor *executor, ");
+      if (method.labels[0] == "class") output.append("const ");
+      output.append("Z_");
       output.append(method.labels[2]);
-      output.append(" *receiver");
+      output.append(method.labels[0] == "class" ? " *receiver" : " receiver");
       let parameter: usize = 0;
       while (parameter < functionType.parameters.length) {
         output.append(", ");
@@ -13622,6 +14093,8 @@ function loweredTypeNeedsDeinit(
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
@@ -14477,6 +14950,7 @@ function appendTypeDefinitions(
   in program: LoweredProgram
 ): void throws String {
   const taskNames = programTaskTypeNames(program);
+  const usesTaskScope = programUsesTaskScope(program);
   if (taskNames.length > 0) {
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
   }
@@ -14484,7 +14958,7 @@ function appendTypeDefinitions(
   for (const declaration of program.functionTypes) {
     if (declaration.asynchronous) usesAsyncFunctionType = true;
   }
-  if (usesAsyncFunctionType) {
+  if (usesAsyncFunctionType || usesTaskScope) {
     output.append("typedef struct Z_AsyncTask Z_AsyncTask;\n");
     output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
     output.append("struct Z_AsyncTask {\n");
@@ -14511,6 +14985,30 @@ function appendTypeDefinitions(
     output.append("  void *callable_context;\n");
     output.append("  void (*release_context)(void *context);\n");
     output.append("} Z_AsyncInvocation;\n\n");
+  }
+  if (usesTaskScope) {
+    output.append("typedef struct Z_TaskScopeJob Z_TaskScopeJob;\n");
+    output.append("typedef struct Z_TaskScope Z_TaskScope;\n");
+    output.append("typedef struct Z_TaskControl Z_TaskControl;\n");
+    output.append("struct Z_TaskScope {\n");
+    output.append("  size_t refcount;\n");
+    output.append("  Z_AsyncExecutor local_executor;\n");
+    output.append("  Z_AsyncExecutor *executor;\n");
+    output.append("#if defined(_WIN32)\n  CRITICAL_SECTION mutex;\n#else\n  pthread_mutex_t mutex;\n#endif\n");
+    output.append("  bool closing;\n  bool cancelling;\n  size_t pending;\n");
+    output.append("  Z_TaskScopeJob *jobs;\n  Z_TaskScopeJob *external_head;\n  Z_TaskScopeJob *external_tail;\n");
+    output.append("};\n");
+    output.append("struct Z_TaskControl {\n");
+    output.append("  size_t refcount;\n  Z_TaskScope *scope;\n  Z_TaskScopeJob *job;\n");
+    output.append("  bool accepted;\n  bool cancellation_requested;\n");
+    output.append("};\n");
+    output.append("struct Z_TaskScopeJob {\n");
+    output.append("  Z_AsyncTask task;\n  Z_AsyncInvocation child;\n");
+    output.append("  Z_TaskScope *scope;\n  Z_TaskControl *control;\n");
+    output.append("  Z_TaskScopeJob *scope_next;\n  Z_TaskScopeJob *external_next;\n");
+    output.append("  uint8_t state;\n};\n\n");
+    output.append("static void Z_TaskScope_deinit(Z_TaskScope **scope);\n");
+    output.append("static void Z_TaskControl_deinit(Z_TaskControl **control);\n\n");
   }
   for (const taskName of taskNames) {
     output.append("typedef struct Z_");
@@ -16622,7 +17120,8 @@ function emitLoweredC(
   const onceTypeNames = programOnceTypeNames(program);
   const usesOnce = onceTypeNames.length > 0;
   const taskTypeNames = programTaskTypeNames(program);
-  const usesThreads = taskTypeNames.length > 0;
+  const usesTaskScope = programUsesTaskScope(program);
+  const usesThreads = taskTypeNames.length > 0 || usesTaskScope;
   const usesArena = programUsesArena(program);
   const usesExecutorBoundClasses = programUsesExecutorBoundClasses(program);
   let usesObjectiveCStringFromZ = false;
@@ -16703,6 +17202,9 @@ function emitLoweredC(
   }
   if (usesMutex || usesOnce || usesThreads) {
     output.append("#if defined(_WIN32)\n#include <windows.h>\n#else\n#include <pthread.h>\n#endif\n");
+  }
+  if (usesTaskScope) {
+    output.append("#if defined(__APPLE__)\n#include <dispatch/dispatch.h>\n#endif\n");
   }
   if (usesSleep || usesMainDelay) {
     output.append("#include <time.h>\n");
@@ -17543,6 +18045,9 @@ function emitLoweredC(
   try appendMapRuntime(inout output, program);
   try appendSetRuntime(inout output, program);
   appendAsyncCallableRuntime(inout output, program);
+  appendTaskScopeRuntime(inout output, program);
+  try appendDirectCallableValuePrototypes(inout output, program);
+  try appendTaskScopeScheduleHelpers(inout output, program);
   try appendAsyncMethodAwaitStartPrototypes(inout output, program);
   try appendCallableHelpers(inout output, program);
   try appendAsyncCallableAwaitHelpers(inout output, program);

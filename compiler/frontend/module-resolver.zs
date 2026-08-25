@@ -5043,6 +5043,21 @@ function inferExpressionNodeType(
     }
   }
   if (kind == ExpressionKind.newExpression) {
+    if (
+      value == "TaskScope"
+      || importedStandardType(module, value, "std/async", "TaskScope")
+    ) {
+      if (children.length != 0) {
+        throw resolutionError(
+          ModuleResolveErrorKind.typeMismatch,
+          module.path,
+          "TaskScope construction expects no arguments",
+          node.line,
+          node.column
+        );
+      }
+      return value.copyBytes(0, value.byteLength);
+    }
     match (typeSymbolLocation(modules, moduleIndex, value)) {
       some(location) => {
         if (
@@ -8158,6 +8173,134 @@ function inferExpressionNodeType(
       }
       if (ownerType.byteLength > 0) {
         const methodName = identifierLookupName(tree.nodes[calleeIndex].value);
+        if (
+          ownerType == "TaskScope"
+          || importedStandardType(
+            module,
+            ownerType,
+            "std/async",
+            "TaskScope"
+          )
+        ) {
+          if (optionalMethodCall) {
+            throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "optional call cannot invoke TaskScope methods",
+              tree.nodes[calleeIndex].line,
+              tree.nodes[calleeIndex].column
+            );
+          }
+          const argumentNodes = callArgumentNodes(children);
+          if (methodName == "schedule") {
+            if (
+              argumentNodes.length != 2
+              || tree.nodes[argumentNodes[1]].kind
+                != ExpressionKind.closureExpression
+            ) throw resolutionError(
+              ModuleResolveErrorKind.typeMismatch,
+              module.path,
+              "TaskScope.schedule expects thread.main and one async closure",
+              node.line,
+              node.column
+            );
+            const closureIndex = argumentNodes[1];
+            const parameterModes = Array<String>();
+            const parameterTypes = Array<String>();
+            const contextualType = nativeClosureFunctionType(
+              tree,
+              closureIndex,
+              parameterModes,
+              parameterTypes,
+              "void",
+              "",
+              "",
+              true
+            );
+            let taskScopeBindings = copyValueBindings(bindings);
+            addValueBinding(
+              inout taskScopeBindings,
+              "__z_native_closure_executor_context",
+              "thread.main"
+            );
+            const closureType = try inferExpressionNodeTypeExpected(
+              module,
+              modules,
+              moduleIndex,
+              arena,
+              tree,
+              closureIndex,
+              contextualType,
+              inout taskScopeBindings,
+              inout evidence
+            );
+            copyBindingFlowStates(inout bindings, taskScopeBindings);
+            match (nativeFunctionSignature(closureType)) {
+              some(signature) => {
+                if (
+                  !signature.asynchronous
+                  || signature.parameterTypes.length != 0
+                  || signature.returnType != "void"
+                  || signature.errorType.byteLength > 0
+                ) throw resolutionError(
+                  ModuleResolveErrorKind.typeMismatch,
+                  module.path,
+                  "TaskScope.schedule requires async () => void",
+                  tree.nodes[closureIndex].line,
+                  tree.nodes[closureIndex].column
+                );
+              }
+              none => throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                "TaskScope.schedule could not resolve its async closure",
+                tree.nodes[closureIndex].line,
+                tree.nodes[closureIndex].column
+              );
+            }
+            return "TaskControl";
+          }
+          if (methodName == "close" || methodName == "cancel") {
+            if (argumentNodes.length != 0) {
+              throw resolutionError(
+                ModuleResolveErrorKind.typeMismatch,
+                module.path,
+                `TaskScope.${methodName} expects no arguments`,
+                node.line,
+                node.column
+              );
+            }
+            return "Task<void>";
+          }
+          throw resolutionError(
+            ModuleResolveErrorKind.unknownMember,
+            module.path,
+            `TaskScope has no method "${methodName}"`,
+            tree.nodes[calleeIndex].line,
+            tree.nodes[calleeIndex].column
+          );
+        }
+        if (
+          ownerType == "TaskControl"
+          || importedStandardType(
+            module,
+            ownerType,
+            "std/async",
+            "TaskControl"
+          )
+        ) {
+          const argumentNodes = callArgumentNodes(children);
+          if (methodName == "requestCancel" && argumentNodes.length == 0) {
+            return "boolean";
+          }
+          throw resolutionError(
+            ModuleResolveErrorKind.unknownMember,
+            module.path,
+            `TaskControl has no method "${methodName}"`,
+            tree.nodes[calleeIndex].line,
+            tree.nodes[calleeIndex].column
+          );
+        }
         if (
           ownerType == "Arena"
           || importedStandardType(

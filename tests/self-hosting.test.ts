@@ -7190,10 +7190,11 @@ test("bootstraps a fixed-point native z executable for local use", () => {
 
   const version = spawnSync(executable, ["version"], { encoding: "utf8" });
   assert.equal(version.status, 0, version.stderr);
-  assert.equal(
-    version.stdout,
-    "z 0.1.0-dev revision 2026-08-24.2 compiler-api 2\n",
-  );
+  const stage0Version = spawnSync(process.execPath, [cli, "version"], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0Version.status, 0, stage0Version.stderr);
+  assert.equal(version.stdout, stage0Version.stdout);
 
   const metadata = spawnSync(
     executable,
@@ -15196,6 +15197,68 @@ test("joins a stored callable task inside native async scope", () => {
   assert.equal(execution.stdout, "released 41\n");
   rmSync(directory, { recursive: true, force: true });
 });
+
+hostToolchainTest("transfers owned captures through native TaskScope async frames", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-task-scope-owned-capture.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /struct Z_TaskScope/);
+  assert.match(emission.stdout, /bool _z_stage1_live_message;/);
+  assert.match(
+    emission.stdout,
+    /#define _z_stage1_live_message \(frame->environment->_z_stage1_live_message\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /#define _z_stage1_live_message \(frame->live_argument0\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /\(_z_stage1_live_message = false, message\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /if \(environment->_z_stage1_live_message\) Z_String_deinit\(&environment->message\)/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-task-scope-owned-capture-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "native owned delivery\n");
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
 
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(

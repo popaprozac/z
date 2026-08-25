@@ -94,6 +94,8 @@ export enum LoweredTypeKind {
   onceLifetimeType,
   mutexType,
   taskType,
+  taskScopeType,
+  taskControlType,
   enumType,
   foreignEnumType,
   foreignStructType,
@@ -247,6 +249,10 @@ export enum LoweredExpressionKind {
   moveStructSpreadValue,
   foreignStructValue,
   classValue,
+  taskScopeValue,
+  taskScopeSchedule,
+  taskScopeClose,
+  taskControlCancel,
   mutexValue,
   mutexWithLock,
   arenaNew,
@@ -2346,6 +2352,18 @@ function lowerTypeName(
       name: name.copyBytes(0, name.byteLength),
     });
   }
+  if (name == "TaskScope") {
+    return LoweredType({
+      kind: LoweredTypeKind.taskScopeType,
+      name: "TaskScope",
+    });
+  }
+  if (name == "TaskControl") {
+    return LoweredType({
+      kind: LoweredTypeKind.taskControlType,
+      name: "TaskControl",
+    });
+  }
   if (stringStartsWith(name, "OnceLifetime_")) {
     return LoweredType({
       kind: LoweredTypeKind.onceLifetimeType,
@@ -2667,6 +2685,18 @@ function lowerModuleTypeName(
     return LoweredType({
       kind: LoweredTypeKind.taskType,
       name: name.copyBytes(0, name.byteLength),
+    });
+  }
+  if (name == "TaskScope") {
+    return LoweredType({
+      kind: LoweredTypeKind.taskScopeType,
+      name: "TaskScope",
+    });
+  }
+  if (name == "TaskControl") {
+    return LoweredType({
+      kind: LoweredTypeKind.taskControlType,
+      name: "TaskControl",
     });
   }
   if (stringStartsWith(name, "OnceLifetime_")) {
@@ -3135,6 +3165,8 @@ function typeNeedsCleanup(in program: Program, in type: LoweredType): boolean {
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
@@ -3325,6 +3357,8 @@ function moduleTypeNeedsCleanupDepth(
     || type.kind == LoweredTypeKind.onceLifetimeType
     || type.kind == LoweredTypeKind.mutexType
     || type.kind == LoweredTypeKind.taskType
+    || type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType
     || type.kind == LoweredTypeKind.arenaType
     || type.kind == LoweredTypeKind.functionType
   ) return true;
@@ -5709,6 +5743,8 @@ function wrapOwnedStorage(
     (
       payloadType.kind == LoweredTypeKind.classType
       || payloadType.kind == LoweredTypeKind.weakType
+      || payloadType.kind == LoweredTypeKind.taskScopeType
+      || payloadType.kind == LoweredTypeKind.taskControlType
       || payloadType.kind == LoweredTypeKind.functionType
     )
     && expressionBorrowsStoredReference(tree, input)
@@ -7218,6 +7254,12 @@ function staticallyResolvedExpressionTypeName(
     }
     none => {}
   }
+  if (tree.nodes[index].kind == ExpressionKind.newExpression) {
+    return Option.some(tree.nodes[index].value.copyBytes(
+      0,
+      tree.nodes[index].value.byteLength
+    ));
+  }
   if (
     tree.nodes[index].kind == ExpressionKind.conditionalExpression
     && tree.nodes[index].children.length == 3
@@ -7252,6 +7294,35 @@ function staticallyResolvedExpressionTypeName(
         none => {}
       }
       none => {}
+    }
+  }
+  if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length == 3
+  ) {
+    const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "schedule"
+      && tree.nodes[callee].children.length == 1
+    ) {
+      const receiver = tree.nodes[callee].children[0];
+      match (staticallyResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        arena,
+        ownerName,
+        tree,
+        receiver
+      )) {
+        some(receiverType) => {
+          if (receiverType == "TaskScope") {
+            return Option.some("TaskControl");
+          }
+        }
+        none => {}
+      }
     }
   }
   if (
@@ -7901,20 +7972,33 @@ function lowerAsyncMethodTailCall(
     throw `native async method tail lowering requires a concrete struct or class receiver, found ${receiverTypeName}`;
   }
   const receiverMode = resolvedCallReceiverMode(evidence, tree, index);
-  if (
-    receiverType.kind != LoweredTypeKind.classType
-    || receiverMode == "move"
-    || receiverMode == "inout"
-  ) {
-    throw "native first-tier suspending methods require a non-consuming class receiver";
+  const borrowedClassReceiver = receiverType.kind
+      == LoweredTypeKind.classType
+    && receiverMode != "move"
+    && receiverMode != "inout";
+  const consumingStructReceiver = receiverType.kind
+      == LoweredTypeKind.structType
+    && receiverMode == "move";
+  if (!borrowedClassReceiver && !consumingStructReceiver) {
+    throw "native first-tier suspending methods require a non-consuming class receiver or a consuming struct receiver";
   }
-  const receiver = try lowerExpression(
+  let receiver = try lowerExpression(
     program,
     importedTypes,
     evidence,
     tree,
     receiverInput,
     inout output
+  );
+  if (
+    consumingStructReceiver
+    && moduleTypeNeedsCleanup(program, importedTypes, receiverType)
+  ) receiver = pushExpression(
+    inout output,
+    LoweredExpressionKind.moveValue,
+    "",
+    Array<usize>(receiver),
+    Array<String>()
   );
   let children = Array<usize>();
   children.push(receiver);
@@ -7931,7 +8015,7 @@ function lowerAsyncMethodTailCall(
     index
   );
   let labels = Array<String>();
-  labels.push("class");
+  labels.push(borrowedClassReceiver ? "class" : "struct");
   labels.push(receiverMode.byteLength > 0
     ? receiverMode.copyBytes(0, receiverMode.byteLength)
     : "in");
@@ -8495,6 +8579,18 @@ function lowerExpressionContextual(
       importedTypes,
       tree.nodes[index].value
     );
+    if (classType.kind == LoweredTypeKind.taskScopeType) {
+      if (tree.nodes[index].children.length != 0) {
+        throw "native TaskScope construction expects no arguments";
+      }
+      return pushExpression(
+        inout output,
+        LoweredExpressionKind.taskScopeValue,
+        "TaskScope",
+        Array<usize>(),
+        Array<String>()
+      );
+    }
     if (classType.kind != LoweredTypeKind.classType) {
       throw `native new lowering requires a class, found ${tree.nodes[index].value}`;
     }
@@ -9069,6 +9165,58 @@ function lowerExpressionContextual(
     const taskInput = tree.nodes[index].children[0];
     if (
       tree.nodes[taskInput].kind == ExpressionKind.callExpression
+      && tree.nodes[taskInput].children.length == 1
+    ) {
+      const joinCallee = tree.nodes[taskInput].children[0];
+      if (
+        tree.nodes[joinCallee].kind == ExpressionKind.memberExpression
+        && tree.nodes[joinCallee].children.length == 1
+        && (
+          tree.nodes[joinCallee].value == "close"
+          || tree.nodes[joinCallee].value == "cancel"
+        )
+      ) {
+        const receiverInput = tree.nodes[joinCallee].children[0];
+        const receiverTypeName = match (
+          evidenceResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            receiverInput
+          )
+        ) {
+          some(name) => name;
+          none => "";
+        };
+        if (receiverTypeName == "TaskScope") {
+          const receiver = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            receiverInput,
+            inout output
+          );
+          let children = Array<usize>();
+          children.push(receiver);
+          let labels = Array<String>();
+          labels.push(tree.nodes[joinCallee].value.copyBytes(
+            0,
+            tree.nodes[joinCallee].value.byteLength
+          ));
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.taskScopeClose,
+            "TaskScope",
+            children,
+            labels
+          );
+        }
+      }
+    }
+    if (
+      tree.nodes[taskInput].kind == ExpressionKind.callExpression
       && tree.nodes[taskInput].children.length > 0
     ) {
       const callableInput = tree.nodes[taskInput].children[0];
@@ -9082,9 +9230,6 @@ function lowerExpressionContextual(
           callResolutionIndex
         ];
         if (resolution.asynchronous && resolution.kind == "function") {
-          if (resolution.errorType.byteLength > 0) {
-            throw "native direct async callable await does not execute typed errors yet";
-          }
           if (
             tree.nodes[taskInput].children.length
               != resolution.parameterTypes.length + 1
@@ -9231,9 +9376,6 @@ function lowerExpressionContextual(
       match (nativeFunctionSignature(callableTypeName)) {
         some(signature) => {
           if (signature.asynchronous) {
-            if (signature.errorType.byteLength > 0) {
-              throw "native direct async callable await does not execute typed errors yet";
-            }
             if (
               tree.nodes[taskInput].children.length
                 != signature.parameterTypes.length + 1
@@ -9367,10 +9509,121 @@ function lowerExpressionContextual(
     if (tree.nodes[index].children.length == 0) {
       throw "native lowering received a malformed call expression";
     }
+    const calleeInput = tree.nodes[index].children[0];
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "schedule"
+      && tree.nodes[index].children.length == 3
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      if (receiverTypeName == "TaskScope") {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        const operationInput = tree.nodes[index].children[2];
+        const operationTypeName = match (
+          evidenceResolvedExpressionTypeName(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            operationInput
+          )
+        ) {
+          some(name) => name;
+          none => "async () => void";
+        };
+        const operationExpression = try lowerExpressionExpected(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          operationInput,
+          operationTypeName,
+          inout output
+        );
+        if (
+          output[operationExpression].kind != LoweredExpressionKind.closureValue
+          && output[operationExpression].kind
+            != LoweredExpressionKind.directFunctionValue
+          && output[operationExpression].kind != LoweredExpressionKind.localValue
+        ) throw "native TaskScope.schedule requires an async callable value";
+        const operationType = try lowerModuleTypeName(
+          program,
+          importedTypes,
+          operationTypeName
+        );
+        if (operationType.kind != LoweredTypeKind.functionType) {
+          throw "native TaskScope.schedule lost its async callable type";
+        }
+        let children = Array<usize>();
+        children.push(receiver);
+        children.push(operationExpression);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.taskScopeSchedule,
+          operationType.name,
+          children,
+          Array<String>()
+        );
+      }
+    }
+    if (
+      tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].children.length == 1
+      && tree.nodes[calleeInput].value == "requestCancel"
+      && tree.nodes[index].children.length == 1
+    ) {
+      const receiverInput = tree.nodes[calleeInput].children[0];
+      const receiverTypeName = match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        receiverInput
+      )) {
+        some(name) => name;
+        none => "";
+      };
+      if (receiverTypeName == "TaskControl") {
+        const receiver = try lowerExpression(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiverInput,
+          inout output
+        );
+        let children = Array<usize>();
+        children.push(receiver);
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.taskControlCancel,
+          "TaskControl",
+          children,
+          Array<String>()
+        );
+      }
+    }
     if (resolvedCallIsAsynchronous(evidence, tree, index)) {
       throw "native lowering requires an explicit supported placement for async function calls";
     }
-    const calleeInput = tree.nodes[index].children[0];
     const registrationPlanIndex = objectiveCRegistrationResolutionIndex(
       evidence,
       tree,
@@ -12902,6 +13155,47 @@ function lowerExpressionContextual(
       throw "native lowering received a malformed member expression";
     }
     const receiverInput = tree.nodes[index].children[0];
+    match (evidenceResolvedExpressionTypeName(
+      program,
+      importedTypes,
+      evidence,
+      tree,
+      receiverInput
+    )) {
+      some(receiverTypeName) => {
+        if (
+          receiverTypeName == "TaskControl"
+          && (
+            tree.nodes[index].value == "accepted"
+            || tree.nodes[index].value == "isCancellationRequested"
+          )
+        ) {
+          const receiver = try lowerExpression(
+            program,
+            importedTypes,
+            evidence,
+            tree,
+            receiverInput,
+            inout output
+          );
+          let children = Array<usize>();
+          children.push(receiver);
+          let labels = Array<String>();
+          labels.push("class");
+          const propertyName = tree.nodes[index].value == "accepted"
+            ? "accepted"
+            : "cancellation_requested";
+          return pushExpression(
+            inout output,
+            LoweredExpressionKind.fieldValue,
+            propertyName,
+            children,
+            labels
+          );
+        }
+      }
+      none => {}
+    }
     if (tree.nodes[index].optionalAccess) {
       if (!stableOptionalChainSource(tree, receiverInput)) {
         throw "native optional-chain emission currently requires a named stable receiver; temporary receiver lowering remains deferred";
@@ -13688,10 +13982,8 @@ function lowerExpressionExpected(
           asyncSuspension == "method-await"
           && (
             output[body].kind != LoweredExpressionKind.asyncFunctionAwait
-            || output[body].labels.length == 0
-            || output[body].labels[0] != "method"
           )
-        ) throw "native stored async closure suspension currently requires its direct await to call an async method";
+        ) throw "native stored async closure suspension currently requires one direct async call";
         let callableParameter: usize = 0;
         while (callableParameter < parameterNames.length) {
           if (signature.parameterModes[callableParameter] != "value") {
@@ -16347,6 +16639,130 @@ function functionUsesFirstTierSchedulerYield(
   return true;
 }
 
+function statementIsTaskScopeJoinAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.expressionStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (
+          tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1
+        ) return false;
+        const call = tree.nodes[root].children[0];
+        if (
+          tree.nodes[call].kind != ExpressionKind.callExpression
+          || tree.nodes[call].children.length != 1
+        ) return false;
+        const callee = tree.nodes[call].children[0];
+        if (
+          tree.nodes[callee].kind != ExpressionKind.memberExpression
+          || tree.nodes[callee].children.length != 1
+          || (
+            tree.nodes[callee].value != "close"
+            && tree.nodes[callee].value != "cancel"
+          )
+        ) return false;
+        const receiver = tree.nodes[callee].children[0];
+        return match (evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          receiver
+        )) {
+          some(name) => name == "TaskScope";
+          none => false;
+        };
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function expressionTreeContainsMainDelayAwait(
+  in program: Program,
+  in tree: ExpressionTree,
+  index: usize
+): boolean {
+  if (
+    tree.nodes[index].kind == ExpressionKind.awaitExpression
+    && tree.nodes[index].children.length == 1
+  ) {
+    const operation = tree.nodes[index].children[0];
+    if (
+      tree.nodes[operation].kind == ExpressionKind.callExpression
+      && tree.nodes[operation].children.length == 2
+    ) {
+      const callee = tree.nodes[operation].children[0];
+      if (
+        tree.nodes[callee].kind == ExpressionKind.identifierExpression
+        && isImportedStandardBinding(
+          program,
+          "std/time",
+          "delay",
+          tree.nodes[callee].value
+        )
+      ) return true;
+    }
+  }
+  if (tree.nodes[index].kind == ExpressionKind.closureExpression) {
+    return false;
+  }
+  for (const child of tree.nodes[index].children) {
+    if (expressionTreeContainsMainDelayAwait(program, tree, child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function statementContainsMainDelayAwait(
+  in program: Program,
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (expressionTreeContainsMainDelayAwait(
+          program,
+          tree,
+          root
+        )) return true;
+      }
+      none => {}
+    }
+    none => {}
+  }
+  for (const child of arena.nodes[index].children) {
+    if (statementContainsMainDelayAwait(program, arena, child)) return true;
+  }
+  return false;
+}
+
+function functionContainsMainDelayAwait(
+  in program: Program,
+  in declaration: FunctionDeclaration
+): boolean {
+  for (const root of declaration.body.roots) {
+    if (statementContainsMainDelayAwait(program, declaration.body, root)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function statementIsFirstTierTailAwait(
   in arena: StatementArena,
   index: usize
@@ -16357,7 +16773,11 @@ function statementIsFirstTierTailAwait(
   match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const awaitRoot = tree.root;
+        let awaitRoot = tree.root;
+        if (
+          tree.nodes[awaitRoot].kind == ExpressionKind.tryExpression
+          && tree.nodes[awaitRoot].children.length == 1
+        ) awaitRoot = tree.nodes[awaitRoot].children[0];
         if (
           tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
           || tree.nodes[awaitRoot].children.length != 1
@@ -18295,6 +18715,7 @@ function lowerStatementCore(
                   some(name) => name;
                   none => throw "native task cancellation could not resolve its Task type";
                 };
+                if (receiverTypeName != "TaskScope") {
                 const storageType = try taskStorageType(
                   program,
                   importedTypes,
@@ -18334,6 +18755,7 @@ function lowerStatementCore(
                   matchBindingNeedsCleanup: false,
                 }));
                 return lowered;
+                }
               }
             }
           }
@@ -20715,15 +21137,27 @@ function lowerFunction(
     const firstTierSchedulerYield = declaration.executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
     const firstTierDoubleAwait = receiverName.byteLength == 0
-      && declaration.executorAffinity != "thread.main"
       && functionUsesFirstTierDoubleAwait(declaration);
-    const firstTierTailAwait = declaration.executorAffinity != "thread.main"
-      && (
+    const firstTierLinearAwait = functionUsesFirstTierLinearAwait(declaration);
+    const firstTierTailAwait = (
+        declaration.executorAffinity != "thread.main"
+        && (
         functionUsesFirstTierTailAwait(declaration)
         || functionUsesFirstTierPrefixedTailAwait(declaration)
         || functionUsesFirstTierMatchedTailAwait(declaration)
-        || functionUsesFirstTierLinearAwait(declaration)
+        || firstTierLinearAwait
         || firstTierDoubleAwait
+      )
+      ) || (
+        declaration.executorAffinity == "thread.main"
+        && !functionContainsMainDelayAwait(program, declaration)
+        && (
+          functionUsesFirstTierTailAwait(declaration)
+          || functionUsesFirstTierPrefixedTailAwait(declaration)
+          || functionUsesFirstTierMatchedTailAwait(declaration)
+          || firstTierLinearAwait
+          || firstTierDoubleAwait
+        )
       );
     if (
       declaration.executorAffinity != "thread.main"
@@ -20737,16 +21171,27 @@ function lowerFunction(
     else if (firstTierTailAwait) {
       if (firstTierDoubleAwait) {
         asyncSuspension = "double-await";
-      } else asyncSuspension = functionUsesFirstTierLinearAwait(declaration)
+      } else asyncSuspension = firstTierLinearAwait
           ? "linear-await"
           : "tail-await";
     }
     let position: usize = 0;
     while (
       declaration.executorAffinity == "thread.main"
+      && asyncSuspension.byteLength == 0
       && position < declaration.body.roots.length
     ) {
       const root = declaration.body.roots[position];
+      if (statementIsTaskScopeJoinAwait(
+        program,
+        importedTypes,
+        evidence,
+        declaration.body,
+        root
+      )) {
+        position = position + 1;
+        continue;
+      }
       if (
         statementContainsSuspension(declaration.body, root)
         && declaration.body.nodes[root].kind == StatementKind.whileStatement
@@ -21081,6 +21526,8 @@ function lowerFunction(
       if (
         moved
         && (
+          declaration.asynchronous
+          ||
           hasMainDelayMatch
           || hasMainDelayLoop
           || functionMoveIndex.hasControlFlow
@@ -23198,6 +23645,82 @@ function importedTypesForModule(
       }
     }
   }
+  // Exported aliases can appear inside the public fields and return types
+  // above without being named directly by the consumer. Resolve them to a
+  // fixed point so callable aliases and aliases of aliases remain available
+  // to inferred native lowering without redundant source imports.
+  let addedPublicAlias = true;
+  while (addedPublicAlias) {
+    addedPublicAlias = false;
+    for (const candidateModule of graph.modules) {
+      for (const symbol of candidateModule.symbols) {
+        if (
+          !symbol.exported
+          || symbol.kind != ModuleSymbolKind.typeAliasSymbol
+        ) continue;
+        let present = false;
+        for (const type of types) {
+          if (type.localName == symbol.name) present = true;
+        }
+        if (present) continue;
+        const aliasTarget = view symbol.importedName;
+        const loweredAttempt = attempt lowerModuleTypeName(
+          program,
+          types,
+          aliasTarget
+        );
+        match (loweredAttempt) {
+          success(lowered) => {
+            const visiting = Array<String>();
+            types.push(LoweredImportedType({
+              localName: symbol.name.copyBytes(
+                0,
+                symbol.name.byteLength
+              ),
+              targetName: lowered.name.copyBytes(
+                0,
+                lowered.name.byteLength
+              ),
+              nativeTypeName: "",
+              kind: lowered.kind,
+              executorBound: moduleTypeHasExecutorAffinity(
+                program,
+                types,
+                lowered.name,
+                visiting
+              ),
+              threadShareable: moduleTypeIsThreadShareable(
+                program,
+                types,
+                aliasTarget,
+                visiting
+              ),
+              workerDestructible: moduleTypeIsWorkerDestructible(
+                program,
+                types,
+                lowered.name,
+                visiting
+              ),
+              needsDeinit: moduleTypeNeedsCleanup(
+                program,
+                types,
+                lowered
+              ),
+              resourceRelease: "",
+              fields: Array<LoweredField>(),
+              variants: Array<LoweredVariant>(),
+              payloadBearing: false,
+              underlyingType: lowered.kind == LoweredTypeKind.functionType
+                ? aliasTarget.copyBytes(0, aliasTarget.byteLength)
+                : "",
+            }));
+            addedPublicAlias = true;
+          }
+          failure(_) => {}
+        }
+      }
+    }
+  }
   for (const symbol of graph.modules[moduleIndex].symbols) {
     if (symbol.kind != ModuleSymbolKind.importedSymbol) continue;
     let targetModule = graph.modules.length;
@@ -23689,6 +24212,30 @@ function collectProgramFunctionTypes(
   in evidence: ModuleSemanticEvidence,
   inout functionTypes: Array<LoweredFunctionType>
 ): void throws String {
+  let importsTaskScope = false;
+  for (const declaration of program.imports) {
+    if (declaration.header != "std/async") continue;
+    for (const binding of declaration.bindings) {
+      if (binding.importedName == "TaskScope") importsTaskScope = true;
+    }
+  }
+  if (importsTaskScope) {
+    const taskScopeOperation = encodedFunctionTypeIdentity(
+      "async =>void throws "
+    );
+    if (!containsLoweredFunctionType(
+      functionTypes,
+      taskScopeOperation
+    )) functionTypes.push(LoweredFunctionType({
+      name: move taskScopeOperation,
+      asynchronous: true,
+      parameters: Array<LoweredParameter>(),
+      returnType: LoweredType({
+        kind: LoweredTypeKind.voidType,
+        name: "",
+      }),
+    }));
+  }
   const callableAliasTargets = collectModuleCallableAliasTargets(
     program,
     importedTypes

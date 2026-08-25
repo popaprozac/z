@@ -4110,6 +4110,28 @@ cancels and joins the scope. No new source capability was added; the compiler
 made the existing structured-lifetime promise hold under application-shaped
 composition.
 
+Moving that application entirely onto the fixed-point driver exposed the next
+ownership seam. A scheduled async closure correctly cleared the live bit for a
+captured `String` when forwarding it into a direct async adapter, but the
+adapter's own task-frame parameter remained live after forwarding the same
+owner to its child. Parent and child therefore both destroyed one allocation.
+Native lowering now gives every cleanup-bearing moved parameter of an async
+function a live guard, not only parameters in already-recognized suspending
+shapes. Closure environments likewise carry live bits for cleanup-bearing
+captures; generated move guards refer to that storage in synchronous calls,
+immediate async starts, and suspending polls. Completion, cancellation, and
+environment release all consult the same evidence.
+
+The resulting `TaskScope` fixture moves a `String` from a callback environment
+through two async frames, places the operation on `thread.main`, and joins the
+scope under strict C compilation. It also revealed that an explicit scope can
+remain useful after all source awaits optimize to synchronous joins and no
+enclosing task supplies an executor. `TaskScope` now owns an embedded serial
+fallback executor for that root case. This is not detachment or an implicit
+thread: the current thread drives the scope until its accepted work finishes.
+With those fixes, the visible Z Notes WebView round trip builds and runs through
+the fixed-point native driver with no Stage 0 override.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
