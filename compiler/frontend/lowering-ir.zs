@@ -20548,13 +20548,8 @@ function lowerFunction(
     const firstTierTailAwait = declaration.executorAffinity != "thread.main"
       && (
         functionUsesFirstTierTailAwait(declaration)
-        || (
-          receiverName.byteLength > 0
-          && (
-            functionUsesFirstTierPrefixedTailAwait(declaration)
-            || functionUsesFirstTierMatchedTailAwait(declaration)
-          )
-        )
+        || functionUsesFirstTierPrefixedTailAwait(declaration)
+        || functionUsesFirstTierMatchedTailAwait(declaration)
       );
     if (
       declaration.executorAffinity != "thread.main"

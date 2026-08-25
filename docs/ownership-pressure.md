@@ -4026,6 +4026,13 @@ maps can coexist without declaration-order ambiguity. `AsyncServices.invoke`
 now emits as strict C; the next boundary is the outer free-function bridge that
 matches a decoded request, awaits the service method, and transforms its result.
 
+The outer decoded-request match now uses the same mechanism in a free-function
+frame, retaining its decoded message and forwarding it to the selected child.
+That moves the live boundary one level inward to `dispatchWithServicesAsync`:
+it stores the result of `await services.invoke(...)` in a local and then maps
+that result through a synchronous response match. Supporting a child result that
+feeds a post-await suffix is the next general frame-planning step.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

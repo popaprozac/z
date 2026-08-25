@@ -1089,6 +1089,8 @@ extracts one owned async callable. The selected payload moves into guarded frame
 storage before the child starts; non-selected arms may return immediately. This
 is the executable fixed-point shape used by a frozen service registry's
 `Option<AsyncServiceHandler>` lookup.
+The same bounded shape is available to an async free function, including
+cleanup-bearing prefix locals retained until the selected child finishes.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

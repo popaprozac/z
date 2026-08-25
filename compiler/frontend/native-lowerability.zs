@@ -668,13 +668,8 @@ function functionHasFirstTierTailAwaitStorage(
     || moduleIndex >= graph.modules.length
     || (
       !functionUsesFirstTierTailAwait(declaration)
-      && (
-        owner.byteLength == 0
-        || (
-          !functionUsesFirstTierPrefixedTailAwait(declaration)
-          && !functionUsesFirstTierMatchedTailAwait(declaration)
-        )
-      )
+      && !functionUsesFirstTierPrefixedTailAwait(declaration)
+      && !functionUsesFirstTierMatchedTailAwait(declaration)
     )
   ) return false;
   match (in declaration.errorType) {

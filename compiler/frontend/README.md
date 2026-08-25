@@ -771,7 +771,9 @@ recursively shareable captures. The bounded async-method frame also accepts a
 final consuming enum/`Option` match: one owned callable payload moves into
 guarded frame storage and suspends, while alternate arms complete immediately.
 Async is part of the encoded native function-type identity, preventing
-otherwise identical synchronous and async callable ABIs from colliding. Async
+otherwise identical synchronous and async callable ABIs from colliding. The
+same prefixed and matched tail-child frame is emitted for direct async free
+functions. Async
 throwing methods, sending a general local
 or main-only callable across native threads, block-bodied first-class closures,
 and suspending callable bodies remain separate lowering tiers.

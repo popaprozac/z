@@ -6356,6 +6356,21 @@ function appendCallableHelpers(
             }
           }
           if (directTailAwait) {
+            const shape = match (tailAwaitShape) {
+              some(found) => found;
+              none => throw "native tail-await callable lost its lowered shape";
+            };
+            try appendAsyncTailLocalFields(
+              inout output,
+              program,
+              program.functions[shape.functionIndex]
+            );
+            try appendAsyncTailMatchBindingField(
+              inout output,
+              program,
+              program.functions[shape.functionIndex],
+              shape.expressionIndex
+            );
             output.append("  Z_AsyncInvocation child;\n");
           }
         }
@@ -6409,6 +6424,17 @@ function appendCallableHelpers(
           const tailAwait = view tailDeclaration.expressions[
             shape.expressionIndex
           ];
+          try appendAsyncTailLocalMacros(
+            inout output,
+            program,
+            tailDeclaration
+          );
+          try appendAsyncTailMatchBindingMacro(
+            inout output,
+            program,
+            tailDeclaration,
+            shape.expressionIndex
+          );
           output.append("static void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
@@ -6443,42 +6469,69 @@ function appendCallableHelpers(
             aliasParameter = aliasParameter + 1;
           }
           output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          try appendAsyncTailMatchBindingCleanup(
+            inout output,
+            program,
+            tailDeclaration,
+            shape.expressionIndex,
+            2
+          );
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            tailDeclaration,
+            2
+          );
           appendAsyncStoredParameterCleanups(
             inout output,
             program,
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n    frame->child = Z_");
-          output.append(tailAwait.value);
-          output.append("_start(");
-          try appendExpression(
-            inout output,
-            tailDeclaration,
-            tailAwait.children[0]
-          );
-          output.append(", task->executor");
-          let tailArgument: usize = 1;
-          while (tailArgument < tailAwait.children.length) {
-            output.append(", ");
-            const borrowed = tailAwait.labels.length >= tailArgument
-              && (
-                tailAwait.labels[tailArgument - 1] == "in"
-                || tailAwait.labels[tailArgument - 1] == "inout"
-                || tailAwait.labels[tailArgument - 1] == "out"
-              );
-            if (borrowed) output.append("&(");
-            try appendExpression(
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
+          let prefix: usize = 0;
+          while (prefix + 1 < tailDeclaration.roots.length) {
+            const prefixRoot = tailDeclaration.roots[prefix];
+            try appendAsyncTailPrefixStatement(
               inout output,
+              program,
               tailDeclaration,
-              tailAwait.children[tailArgument]
+              functionType,
+              shape.expressionIndex,
+              prefixRoot,
+              2
             );
-            if (borrowed) output.append(")");
-            tailArgument = tailArgument + 1;
+            prefix = prefix + 1;
           }
-          output.append(");\n    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n    if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (frame->child.task->waiter != NULL) abort();\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n    }\n    return;\n  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          const tailRoot = tailDeclaration.roots[
+            tailDeclaration.roots.length - 1
+          ];
+          try appendAsyncTailDispatchStatement(
+            inout output,
+            program,
+            tailDeclaration,
+            functionType,
+            tailAwait,
+            shape.expressionIndex,
+            tailRoot,
+            2
+          );
+          output.append("  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
+          try appendAsyncTailMatchBindingCleanup(
+            inout output,
+            program,
+            tailDeclaration,
+            shape.expressionIndex,
+            2
+          );
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            tailDeclaration,
+            2
+          );
           appendAsyncStoredParameterCleanups(
             inout output,
             program,
@@ -6497,6 +6550,19 @@ function appendCallableHelpers(
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
+          try appendAsyncTailMatchBindingCleanup(
+            inout output,
+            program,
+            tailDeclaration,
+            shape.expressionIndex,
+            1
+          );
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            tailDeclaration,
+            1
+          );
           appendAsyncStoredParameterCleanups(
             inout output,
             program,
@@ -6544,6 +6610,23 @@ function appendCallableHelpers(
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(frame);\n");
+          const destroyShape = match (tailAwaitShape) {
+            some(found) => found;
+            none => throw "native tail-await callable lost its lowered shape";
+          };
+          try appendAsyncTailMatchBindingCleanup(
+            inout output,
+            program,
+            program.functions[destroyShape.functionIndex],
+            destroyShape.expressionIndex,
+            1
+          );
+          try appendAsyncTailLocalCleanups(
+            inout output,
+            program,
+            program.functions[destroyShape.functionIndex],
+            1
+          );
           appendAsyncStoredParameterCleanups(
             inout output,
             program,
@@ -6805,6 +6888,23 @@ function appendCallableHelpers(
           output.append("_value = { .start = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_start, .context = NULL, .retain = NULL, .release = NULL };\n\n");
+        }
+        if (directTailAwait) {
+          const undefShape = match (tailAwaitShape) {
+            some(found) => found;
+            none => throw "native tail-await callable lost its lowered shape";
+          };
+          try appendAsyncTailLocalMacroUndefs(
+            inout output,
+            program,
+            program.functions[undefShape.functionIndex]
+          );
+          try appendAsyncTailMatchBindingMacroUndef(
+            inout output,
+            program,
+            program.functions[undefShape.functionIndex],
+            undefShape.expressionIndex
+          );
         }
         expressionIndex = expressionIndex + 1;
         continue;

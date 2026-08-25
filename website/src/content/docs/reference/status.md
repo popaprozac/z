@@ -67,15 +67,17 @@ production or compatibility-sensitive use.
   enum/`Option` match may move one selected owned async handler into guarded
   frame storage, suspend only that arm, and complete alternate arms immediately.
   Synchronous and asynchronous callable types retain distinct native identities
-  even when their ordinary signatures match.
+  even when their ordinary signatures match. Direct async free functions may
+  use the same prefixed/matched tail-child frame.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
   graph. Its retained, cleanup-bearing `SearchService.invoke` method and the
   containing `AsyncServices.invoke` router now emit natively through loops,
   maps, owned locals, a consuming handler match, and a dynamic child await. The
-  remaining fixed-point gap is the outer bridge's free-function
-  decode/match/method-await composition.
+  outer bridge's decoded-request match now emits through a free-function child
+  frame. The remaining fixed-point gap is the dispatch helper's awaited service
+  result followed by a synchronous response-mapping suffix.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

@@ -1641,6 +1641,46 @@ test("moves a matched async handler into its suspending method frame", () => {
   }
 }, 240_000);
 
+test("moves a matched async handler into a free-function frame", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-match-tail-function.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-match-tail-function-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_Request forwarded;/);
+    assert.match(emission.stdout, /bool _z_stage1_async_live_/);
+    assert.match(
+      emission.stdout,
+      /\.payload\.some;[\s\S]*frame->child\.task->waiter = task;/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects a suspending value-struct receiver before native lowering", () => {
   const input = resolve(
     projectRoot,
