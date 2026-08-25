@@ -7046,7 +7046,7 @@ function appendPersistentAsyncParentDriver(
   output.append("_start(&executor);\n");
   output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n");
   output.append("  while (!frame->task.completed) {\n");
-  output.append("    if (!z_stage1_async_run_one(&executor)) abort();\n");
+  output.append("    if (!z_stage1_async_drive_one(&executor)) abort();\n");
   output.append("  }\n  if (frame->task.cancelled) abort();\n  const int32_t result = frame->result;\n  ");
   appendPersistentAsyncParentName(inout output, declaration);
   output.append("_destroy(frame);\n  return result;\n}\n\n");
@@ -8887,11 +8887,17 @@ function appendAsyncCallableRuntime(
     if (functionType.asynchronous) required = true;
   }
   const usesTaskScope = programUsesTaskScope(program);
+  const usesDelay = programUsesMainDelay(program);
   if (usesTaskScope) required = true;
   if (!required) return;
   if (usesTaskScope) {
     output.append("#if defined(__cplusplus)\n#define Z_STAGE1_THREAD_LOCAL thread_local\n#else\n#define Z_STAGE1_THREAD_LOCAL _Thread_local\n#endif\n");
     output.append("static Z_STAGE1_THREAD_LOCAL Z_AsyncExecutor *z_stage1_current_executor = NULL;\n\n");
+  }
+  if (usesDelay) {
+    output.append("static __attribute__((unused)) uint64_t z_stage1_async_now_ms(void) {\n#if defined(_WIN32)\n  return (uint64_t)GetTickCount64();\n#else\n  struct timespec now;\n  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) abort();\n  return (uint64_t)now.tv_sec * UINT64_C(1000) + (uint64_t)now.tv_nsec / UINT64_C(1000000);\n#endif\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_os_sleep_ms(uint64_t milliseconds) {\n#if defined(_WIN32)\n  while (milliseconds > UINT32_MAX) { Sleep(UINT32_MAX); milliseconds -= UINT32_MAX; }\n  Sleep((DWORD)milliseconds);\n#else\n  while (milliseconds > 0) {\n    const uint64_t chunk = milliseconds > UINT64_C(86400000) ? UINT64_C(86400000) : milliseconds;\n    struct timespec remaining = { .tv_sec = (time_t)(chunk / UINT64_C(1000)), .tv_nsec = (long)((chunk % UINT64_C(1000)) * UINT64_C(1000000)) };\n    while (nanosleep(&remaining, &remaining) == -1) { if (errno != EINTR) abort(); }\n    milliseconds -= chunk;\n  }\n#endif\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_remove_timer(Z_AsyncTask *task) {\n  if (task == NULL || !task->timer_scheduled) return;\n  if (task->executor == NULL) abort();\n  Z_AsyncTask **link = &task->executor->timers;\n  while (*link != NULL && *link != task) link = &(*link)->timer_next;\n  if (*link == NULL) abort();\n  *link = task->timer_next;\n  task->timer_scheduled = false;\n  task->timer_next = NULL;\n}\n\n");
   }
   output.append("static __attribute__((unused)) void z_stage1_async_enqueue(Z_AsyncExecutor *executor, Z_AsyncTask *task) {\n");
   output.append("  if (executor == NULL || task == NULL || task->completed || task->queued) abort();\n");
@@ -8899,6 +8905,11 @@ function appendAsyncCallableRuntime(
   output.append("  if (executor->tail == NULL) executor->head = task;\n");
   output.append("  else executor->tail->next = task;\n");
   output.append("  executor->tail = task;\n}\n\n");
+  if (usesDelay) {
+    output.append("static __attribute__((unused)) void z_stage1_async_schedule_delay(Z_AsyncTask *task, uint64_t milliseconds) {\n  if (task == NULL || task->executor == NULL || task->queued || task->completed) abort();\n  z_stage1_async_remove_timer(task);\n  const uint64_t now = z_stage1_async_now_ms();\n  task->wake_at_ms = milliseconds > UINT64_MAX - now ? UINT64_MAX : now + milliseconds;\n  task->timer_scheduled = true;\n  Z_AsyncTask **link = &task->executor->timers;\n  while (*link != NULL && (*link)->wake_at_ms <= task->wake_at_ms) link = &(*link)->timer_next;\n  task->timer_next = *link;\n  *link = task;\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_release_timers(Z_AsyncExecutor *executor) {\n  if (executor == NULL) abort();\n  const uint64_t now = z_stage1_async_now_ms();\n  while (executor->timers != NULL && executor->timers->wake_at_ms <= now) {\n    Z_AsyncTask *task = executor->timers;\n    executor->timers = task->timer_next;\n    task->timer_scheduled = false;\n    task->timer_next = NULL;\n    z_stage1_async_enqueue(executor, task);\n  }\n}\n\n");
+    output.append("static __attribute__((unused)) void z_stage1_async_wait_for_timer(Z_AsyncExecutor *executor) {\n  if (executor == NULL || executor->timers == NULL) abort();\n  const uint64_t now = z_stage1_async_now_ms();\n  if (executor->timers->wake_at_ms > now) z_stage1_async_os_sleep_ms(executor->timers->wake_at_ms - now);\n  z_stage1_async_release_timers(executor);\n}\n\n");
+  }
   output.append("static __attribute__((unused)) void z_stage1_async_remove_queued(Z_AsyncTask *task) {\n");
   output.append("  if (task == NULL || !task->queued) return;\n");
   output.append("  Z_AsyncExecutor *executor = task->executor;\n");
@@ -8924,6 +8935,7 @@ function appendAsyncCallableRuntime(
   output.append("  if (awaiter->child == NULL || !awaiter->child->completed) abort();\n");
   output.append("  task->completed = true;\n}\n\n");
   output.append("static __attribute__((unused)) bool z_stage1_async_run_one(Z_AsyncExecutor *executor) {\n");
+  if (usesDelay) output.append("  z_stage1_async_release_timers(executor);\n");
   output.append("  if (executor == NULL || executor->head == NULL) return false;\n");
   output.append("  Z_AsyncTask *task = executor->head;\n");
   output.append("  executor->head = task->next;\n");
@@ -8945,6 +8957,11 @@ function appendAsyncCallableRuntime(
   output.append("    task->waiter = NULL;\n");
   output.append("    z_stage1_async_enqueue(waiter->executor, waiter);\n");
   output.append("  }\n  return true;\n}\n\n");
+  if (usesDelay) {
+    output.append("static __attribute__((unused)) bool z_stage1_async_drive_one(Z_AsyncExecutor *executor) {\n  if (z_stage1_async_run_one(executor)) return true;\n  if (executor == NULL || executor->timers == NULL) return false;\n  z_stage1_async_wait_for_timer(executor);\n  return z_stage1_async_run_one(executor);\n}\n\n");
+  } else {
+    output.append("static __attribute__((unused)) bool z_stage1_async_drive_one(Z_AsyncExecutor *executor) { return z_stage1_async_run_one(executor); }\n\n");
+  }
 }
 
 function appendTaskScopeRuntime(
@@ -8952,6 +8969,7 @@ function appendTaskScopeRuntime(
   in program: LoweredProgram
 ): void {
   if (!programUsesTaskScope(program)) return;
+  const usesDelay = programUsesMainDelay(program);
   output.append("static void z_stage1_task_scope_lock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  EnterCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_lock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
   output.append("static void z_stage1_task_scope_unlock(Z_TaskScope *scope) {\n#if defined(_WIN32)\n  LeaveCriticalSection(&scope->mutex);\n#else\n  if (pthread_mutex_unlock(&scope->mutex) != 0) abort();\n#endif\n}\n\n");
   output.append("static Z_TaskScope *Z_TaskScope_retain(Z_TaskScope *scope) {\n  if (scope != NULL) __atomic_add_fetch(&scope->refcount, 1, __ATOMIC_RELAXED);\n  return scope;\n}\n\n");
@@ -8967,11 +8985,17 @@ function appendTaskScopeRuntime(
   output.append("static void z_stage1_task_scope_job_cancel(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->control != NULL) job->control->cancellation_requested = true;\n  if (job->child.task != NULL) z_stage1_async_request_cancel(job->child.task);\n}\n\n");
   output.append("static void z_stage1_task_scope_job_poll(Z_AsyncTask *task) {\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)task;\n  if (job->state == 0) {\n    job->state = 1;\n    if (task->cancellation_requested) z_stage1_async_request_cancel(job->child.task);\n    if (job->child.task == NULL) abort();\n    if (job->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (job->child.task->waiter != NULL) abort();\n      job->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, job->child.task);\n    }\n    return;\n  }\n  if (job->state != 1 || job->child.task == NULL || !job->child.task->completed) abort();\n  task->cancelled = task->cancellation_requested || job->child.task->cancelled;\n  z_stage1_task_scope_release_invocation(&job->child);\n  task->completed = true;\n  Z_TaskScope *scope = job->scope;\n  Z_TaskControl *control = job->control;\n  z_stage1_task_scope_lock(scope);\n  if (scope->pending == 0) abort();\n  scope->pending -= 1;\n  if (control != NULL) control->job = NULL;\n  job->control = NULL;\n  z_stage1_task_scope_unlock(scope);\n  Z_TaskControl_release(control);\n}\n\n");
   output.append("static void z_stage1_task_scope_drain_external(Z_TaskScope *scope) {\n  z_stage1_task_scope_lock(scope);\n  Z_TaskScopeJob *job = scope->external_head;\n  scope->external_head = NULL;\n  scope->external_tail = NULL;\n  z_stage1_task_scope_unlock(scope);\n  while (job != NULL) {\n    Z_TaskScopeJob *next = job->external_next;\n    job->external_next = NULL;\n    z_stage1_async_enqueue(scope->executor, &job->task);\n    job = next;\n  }\n}\n\n");
-  output.append("static void z_stage1_task_scope_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_drain_external(scope);\n  while (z_stage1_async_run_one(scope->executor)) {}\n}\n\n");
+  output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context);\n#endif\n\n");
+  output.append("static void z_stage1_task_scope_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_drain_external(scope);\n  while (z_stage1_async_run_one(scope->executor)) {}\n");
+  if (usesDelay) {
+    output.append("#if defined(__APPLE__)\n  if (scope->executor->timers != NULL) {\n    const uint64_t now = z_stage1_async_now_ms();\n    const uint64_t remaining = scope->executor->timers->wake_at_ms > now ? scope->executor->timers->wake_at_ms - now : 0;\n    dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remaining * UINT64_C(1000000))), dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n  }\n#endif\n");
+  }
+  output.append("}\n\n");
   output.append("#if defined(__APPLE__)\nstatic void z_stage1_task_scope_dispatch_perform(void *context) {\n  Z_TaskScope *scope = (Z_TaskScope *)context;\n  z_stage1_task_scope_perform(scope);\n  Z_TaskScope_release(scope);\n}\n#endif\n\n");
-  output.append("static Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation child) {\n  if (scope == NULL || child.task == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->child = child;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    free(job);\n    z_stage1_task_scope_release_invocation(&child);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n#if defined(__APPLE__)\n  if (pthread_main_np() != 0) z_stage1_task_scope_perform(scope);\n  else dispatch_async_f(dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n#endif\n  return control;\n}\n\n");
-  output.append("static __attribute__((unused)) bool z_stage1_task_control_request_cancel(Z_TaskControl *control) {\n  if (control == NULL || !control->accepted || control->scope == NULL) return false;\n  Z_TaskScope *scope = control->scope;\n  z_stage1_task_scope_lock(scope);\n  if (control->cancellation_requested || control->job == NULL) {\n    z_stage1_task_scope_unlock(scope);\n    return false;\n  }\n  control->cancellation_requested = true;\n  Z_TaskScopeJob *job = control->job;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_async_request_cancel(&job->task);\n  return true;\n}\n\n");
-  output.append("static void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_run_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
+  output.append("static void z_stage1_task_scope_schedule_perform(Z_TaskScope *scope) {\n#if defined(__APPLE__)\n  if (pthread_main_np() != 0) z_stage1_task_scope_perform(scope);\n  else dispatch_async_f(dispatch_get_main_queue(), Z_TaskScope_retain(scope), z_stage1_task_scope_dispatch_perform);\n#else\n  z_stage1_task_scope_perform(scope);\n#endif\n}\n\n");
+  output.append("static Z_TaskControl *z_stage1_task_scope_spawn_async(Z_TaskScope *scope, Z_AsyncInvocation child) {\n  if (scope == NULL || child.task == NULL) abort();\n  Z_TaskControl *control = z_stage1_task_control_new(true);\n  Z_TaskScopeJob *job = (Z_TaskScopeJob *)calloc(1, sizeof(*job));\n  if (job == NULL) abort();\n  job->task.poll = z_stage1_task_scope_job_poll;\n  job->task.request_cancel = z_stage1_task_scope_job_cancel;\n  job->task.executor = scope->executor;\n  job->child = child;\n  job->scope = scope;\n  z_stage1_task_scope_lock(scope);\n  if (scope->closing) {\n    z_stage1_task_scope_unlock(scope);\n    free(job);\n    z_stage1_task_scope_release_invocation(&child);\n    control->accepted = false;\n    return control;\n  }\n  control->scope = Z_TaskScope_retain(scope);\n  control->job = job;\n  job->control = Z_TaskControl_retain(control);\n  job->scope_next = scope->jobs;\n  scope->jobs = job;\n  if (scope->external_tail == NULL) scope->external_head = job;\n  else scope->external_tail->external_next = job;\n  scope->external_tail = job;\n  scope->pending += 1;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_task_scope_schedule_perform(scope);\n  return control;\n}\n\n");
+  output.append("static __attribute__((unused)) bool z_stage1_task_control_request_cancel(Z_TaskControl *control) {\n  if (control == NULL || !control->accepted || control->scope == NULL) return false;\n  Z_TaskScope *scope = control->scope;\n  z_stage1_task_scope_lock(scope);\n  if (control->cancellation_requested || control->job == NULL) {\n    z_stage1_task_scope_unlock(scope);\n    return false;\n  }\n  control->cancellation_requested = true;\n  Z_TaskScopeJob *job = control->job;\n  z_stage1_task_scope_unlock(scope);\n  z_stage1_async_request_cancel(&job->task);\n  z_stage1_task_scope_schedule_perform(scope);\n  return true;\n}\n\n");
+  output.append("static void z_stage1_task_scope_join(Z_TaskScope *scope, bool cancel) {\n  if (scope == NULL) abort();\n  z_stage1_task_scope_lock(scope);\n  scope->closing = true;\n  if (cancel) scope->cancelling = true;\n  if (cancel) {\n    for (Z_TaskScopeJob *job = scope->jobs; job != NULL; job = job->scope_next) z_stage1_async_request_cancel(&job->task);\n  }\n  z_stage1_task_scope_unlock(scope);\n  for (;;) {\n    z_stage1_task_scope_drain_external(scope);\n    z_stage1_task_scope_lock(scope);\n    const size_t pending = scope->pending;\n    z_stage1_task_scope_unlock(scope);\n    if (pending == 0) break;\n    if (!z_stage1_async_drive_one(scope->executor)) abort();\n  }\n  z_stage1_task_scope_discard_jobs(scope);\n}\n\n");
 }
 
 function appendAsyncCallableAwaitHelpers(
@@ -9045,7 +9069,7 @@ function appendAsyncCallableAwaitHelpers(
       output.append("    invocation.task->waiter = &awaiter.task;\n");
       output.append("    z_stage1_async_enqueue(&executor, invocation.task);\n");
       output.append("    while (!awaiter.task.completed) {\n");
-      output.append("      if (!z_stage1_async_run_one(&executor)) abort();\n");
+      output.append("      if (!z_stage1_async_drive_one(&executor)) abort();\n");
       output.append("    }\n  }\n");
       output.append("  if (!invocation.task->completed) abort();\n");
       output.append("  if (invocation.failed != NULL && invocation.failed(invocation.task)) abort();\n");
@@ -9133,8 +9157,10 @@ function appendAsyncMethodAwaitHelpers(
         some(_) => directTailAwait = true;
         none => {}
       }
-      let delaySuspendingMethod = false;
-      for (const candidateMethod of program.functions) {
+      let delayMethodIndex = program.functions.length;
+      let delayCandidateIndex: usize = 0;
+      while (delayCandidateIndex < program.functions.length) {
+        const candidateMethod = view program.functions[delayCandidateIndex];
         if (
           candidateMethod.name == method.value
           && (
@@ -9143,10 +9169,20 @@ function appendAsyncMethodAwaitHelpers(
             || candidateMethod.mainDelayMatches.length > 0
             || candidateMethod.mainDelayLoops.length > 0
           )
-        ) delaySuspendingMethod = true;
+        ) delayMethodIndex = delayCandidateIndex;
+        delayCandidateIndex = delayCandidateIndex + 1;
       }
-      if (delaySuspendingMethod) {
-        throw `native stored async closure cannot await delay-suspending method ${method.value} yet`;
+      const delaySuspendingMethod = delayMethodIndex < program.functions.length;
+      if (
+        delaySuspendingMethod
+        && (
+          program.functions[delayMethodIndex].mainDelaySegments.length == 0
+          || program.functions[delayMethodIndex].mainDelayIfs.length > 0
+          || program.functions[delayMethodIndex].mainDelayMatches.length > 0
+          || program.functions[delayMethodIndex].mainDelayLoops.length > 0
+        )
+      ) {
+        throw `native stored async closure currently supports a linear delay-suspending method, received ${method.value}`;
       }
       const nonblockingStart = asyncMethodAwaitStartsChild(
         program,
@@ -9191,7 +9227,256 @@ function appendAsyncMethodAwaitHelpers(
         output.append(" result;\n");
         if (resultNeedsDeinit) output.append("  bool live_result;\n");
       }
-      if (directTailAwait) {
+      if (delaySuspendingMethod) {
+        for (const segment of program.functions[delayMethodIndex]
+          .mainDelaySegments) {
+          try appendMainFrameRootFields(
+            inout output,
+            program,
+            program.functions[delayMethodIndex],
+            segment.roots
+          );
+        }
+      }
+      if (delaySuspendingMethod) {
+        output.append("} ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task;\n\n");
+        const delayDeclaration = view program.functions[delayMethodIndex];
+        let receiverLiveFlag = "";
+        if (consumingStructReceiver) {
+          for (const flag of delayDeclaration.liveFlags) {
+            if (flag.parameter && flag.owner == "this") {
+              receiverLiveFlag = flag.name.copyBytes(
+                0,
+                flag.name.byteLength
+              );
+            }
+          }
+          output.append("#define self (frame->receiver)\n");
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#define ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append(" (frame->live_receiver)\n");
+          }
+          output.append("\n");
+        }
+        try appendAsyncStoredParameterMacros(
+          inout output,
+          delayDeclaration,
+          functionType
+        );
+        output.append("static void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cleanup_owned(");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *context __attribute__((unused)) = frame;\n");
+        try appendMainFrameLocalCleanups(
+          inout output,
+          program,
+          delayDeclaration,
+          1
+        );
+        appendAsyncStoredParameterCleanups(
+          inout output,
+          program,
+          functionType,
+          1
+        );
+        output.append("}\n\nstatic void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cancel(Z_AsyncTask *task) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame = (");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *)task;\n  z_stage1_async_remove_timer(task);\n  if (!task->queued && !task->completed) z_stage1_async_enqueue(task->executor, task);\n  (void)frame;\n}\n\nstatic ");
+        output.append(returnType);
+        output.append(" ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_continue(");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *context __attribute__((unused)) = frame;\n");
+        if (classReceiver) {
+          output.append("  Z_");
+          output.append(receiverType);
+          output.append(" *self __attribute__((unused)) = frame->receiver;\n");
+        }
+        let aliasParameter: usize = 0;
+        while (aliasParameter < functionType.parameters.length) {
+          if (aliasParameter >= delayDeclaration.parameters.length) {
+            throw "native delay method lost its parameter identity";
+          }
+          output.append("  ");
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[aliasParameter],
+            delayDeclaration.parameters[aliasParameter].name
+          );
+          output.append(" = frame->argument");
+          output.append(`${aliasParameter}`);
+          output.append(";\n");
+          aliasParameter = aliasParameter + 1;
+        }
+        const delaySegmentCount = delayDeclaration.mainDelaySegments.length;
+        try appendMainFrameRestores(
+          inout output,
+          program,
+          delayDeclaration,
+          delaySegmentCount,
+          1
+        );
+        try appendFunctionTail(inout output, delayDeclaration);
+        output.append("}\n\nstatic void ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_poll(Z_AsyncTask *task) {\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *frame = (");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *)task;\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task *context __attribute__((unused)) = frame;\n");
+        if (classReceiver) {
+          output.append("  Z_");
+          output.append(receiverType);
+          output.append(" *self __attribute__((unused)) = frame->receiver;\n");
+        }
+        aliasParameter = 0;
+        while (aliasParameter < functionType.parameters.length) {
+          output.append("  ");
+          try appendCallableParameterDeclaration(
+            inout output,
+            functionType.parameters[aliasParameter],
+            delayDeclaration.parameters[aliasParameter].name
+          );
+          output.append(" = frame->argument");
+          output.append(`${aliasParameter}`);
+          output.append(";\n");
+          aliasParameter = aliasParameter + 1;
+        }
+        output.append("  if (task->cancellation_requested) {\n    z_stage1_async_remove_timer(task);\n    ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cleanup_owned(frame);\n    task->cancelled = true;\n    task->completed = true;\n    return;\n  }\n");
+        let segmentIndex: usize = 0;
+        while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
+          output.append(`  if (frame->state == ${segmentIndex}) {\n`);
+          try appendMainFrameRestores(
+            inout output,
+            program,
+            delayDeclaration,
+            segmentIndex,
+            2
+          );
+          for (const root of delayDeclaration
+            .mainDelaySegments[segmentIndex].roots) {
+            try appendStatement(
+              inout output,
+              delayDeclaration,
+              root,
+              2
+            );
+          }
+          try appendMainFrameSaves(
+            inout output,
+            program,
+            delayDeclaration,
+            segmentIndex + 1,
+            2
+          );
+          output.append(`    frame->state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
+          output.append(
+            delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
+          );
+          output.append(");\n    return;\n  }\n");
+          segmentIndex = segmentIndex + 1;
+        }
+        output.append("  if (frame->state != ");
+        output.append(`${delayDeclaration.mainDelaySegments.length}`);
+        output.append(") abort();\n  ");
+        if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+          output.append("frame->result = ");
+        }
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_continue(frame);\n");
+        if (consumingStructReceiver) {
+          output.append("  frame->live_receiver = false;\n");
+        }
+        if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+        output.append("  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cleanup_owned(frame);\n  task->completed = true;\n}\n\n");
+      } else if (directTailAwait) {
         const shape = match (tailAwaitShape) {
           some(found) => found;
           none => throw "native tail-await method lost its lowered shape";
@@ -9209,13 +9494,15 @@ function appendAsyncMethodAwaitHelpers(
         );
         output.append("  Z_AsyncInvocation child;\n");
       }
-      output.append("} ");
-      appendAsyncCallableAwaitHelperName(
-        inout output,
-        owner,
-        expressionIndex
-      );
-      output.append("_task;\n\n");
+      if (!delaySuspendingMethod) {
+        output.append("} ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_task;\n\n");
+      }
       if (directTailAwait) {
         const shape = match (tailAwaitShape) {
           some(found) => found;
@@ -9450,7 +9737,7 @@ function appendAsyncMethodAwaitHelpers(
           }
           output.append("#undef self\n\n");
         }
-      } else {
+      } else if (!delaySuspendingMethod) {
         output.append("static void ");
       appendAsyncCallableAwaitHelperName(
         inout output,
@@ -9501,7 +9788,15 @@ function appendAsyncMethodAwaitHelpers(
         expressionIndex
       );
       output.append("_task *frame) {\n  if (frame == NULL) return;\n");
-      if (directTailAwait) {
+      if (delaySuspendingMethod) {
+        output.append("  z_stage1_async_remove_timer(&frame->task);\n  ");
+        appendAsyncCallableAwaitHelperName(
+          inout output,
+          owner,
+          expressionIndex
+        );
+        output.append("_cleanup_owned(frame);\n");
+      } else if (directTailAwait) {
         output.append("  ");
         appendAsyncCallableAwaitHelperName(
           inout output,
@@ -9660,14 +9955,17 @@ function appendAsyncMethodAwaitHelpers(
       if (consumingStructReceiver) {
         output.append("  frame->live_receiver = true;\n");
       }
-      if (directTailAwait) {
+      if (directTailAwait || delaySuspendingMethod) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
           expressionIndex
         );
-        output.append("_cancel;\n  frame->child = (Z_AsyncInvocation){0};\n");
+        output.append("_cancel;\n");
+        if (directTailAwait) {
+          output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+        }
       }
       parameter = 0;
       while (parameter < functionType.parameters.length) {
@@ -9769,14 +10067,17 @@ function appendAsyncMethodAwaitHelpers(
       if (consumingStructReceiver) {
         output.append("  frame->live_receiver = true;\n");
       }
-      if (directTailAwait) {
+      if (directTailAwait || delaySuspendingMethod) {
         output.append("  frame->task.request_cancel = ");
         appendAsyncCallableAwaitHelperName(
           inout output,
           owner,
           expressionIndex
         );
-        output.append("_cancel;\n  frame->child = (Z_AsyncInvocation){0};\n");
+        output.append("_cancel;\n");
+        if (directTailAwait) {
+          output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+        }
       }
       parameter = 0;
       while (parameter < functionType.parameters.length) {
@@ -9802,7 +10103,7 @@ function appendAsyncMethodAwaitHelpers(
         }
         parameter = parameter + 1;
       }
-      output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n  while (!frame->task.completed) { if (!z_stage1_async_run_one(&executor)) abort(); }\n  if (frame->task.cancelled) abort();\n");
+      output.append("  z_stage1_async_enqueue(&executor, &frame->task);\n  while (!frame->task.completed) { if (!z_stage1_async_drive_one(&executor)) abort(); }\n  if (frame->task.cancelled) abort();\n");
       if (functionType.returnType.kind != LoweredTypeKind.voidType) {
         if (resultNeedsDeinit) {
           output.append("  if (!frame->live_result) abort();\n");
@@ -9823,7 +10124,29 @@ function appendAsyncMethodAwaitHelpers(
         output.append("  return result;\n");
       }
       output.append("}\n\n");
-      if (directTailAwait) {
+      if (delaySuspendingMethod) {
+        appendAsyncStoredParameterMacroUndefs(
+          inout output,
+          program.functions[delayMethodIndex]
+        );
+        if (consumingStructReceiver) {
+          let receiverLiveFlag = "";
+          for (const flag of program.functions[delayMethodIndex].liveFlags) {
+            if (flag.parameter && flag.owner == "this") {
+              receiverLiveFlag = flag.name.copyBytes(
+                0,
+                flag.name.byteLength
+              );
+            }
+          }
+          if (receiverLiveFlag.byteLength > 0) {
+            output.append("#undef ");
+            appendCBindingName(inout output, receiverLiveFlag);
+            output.append("\n");
+          }
+          output.append("#undef self\n\n");
+        }
+      } else if (directTailAwait) {
         const undefShape = match (tailAwaitShape) {
           some(found) => found;
           none => throw "native tail-await method lost its lowered shape";
@@ -14988,6 +15311,7 @@ function appendTypeDefinitions(
 ): void throws String {
   const taskNames = programTaskTypeNames(program);
   const usesTaskScope = programUsesTaskScope(program);
+  const usesAsyncDelay = programUsesMainDelay(program);
   if (taskNames.length > 0) {
     output.append("typedef void (*Z_MainThreadRequest)(void *context);\n\n");
   }
@@ -15007,11 +15331,17 @@ function appendTypeDefinitions(
     output.append("  bool queued;\n");
     output.append("  Z_AsyncTask *waiter;\n");
     output.append("  Z_AsyncTask *next;\n");
+    if (usesAsyncDelay) {
+      output.append("  bool timer_scheduled;\n");
+      output.append("  uint64_t wake_at_ms;\n");
+      output.append("  Z_AsyncTask *timer_next;\n");
+    }
     output.append("  Z_AsyncExecutor *executor;\n");
     output.append("};\n");
     output.append("struct Z_AsyncExecutor {\n");
     output.append("  Z_AsyncTask *head;\n");
     output.append("  Z_AsyncTask *tail;\n");
+    if (usesAsyncDelay) output.append("  Z_AsyncTask *timers;\n");
     output.append("};\n");
     output.append("typedef struct Z_AsyncInvocation {\n");
     output.append("  Z_AsyncTask *task;\n");

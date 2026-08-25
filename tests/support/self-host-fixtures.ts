@@ -197,6 +197,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-callable-task-cancel.zs": differential,
   "self-host-emit-async-callable-task-join.zs": differential,
   "self-host-emit-task-scope-owned-capture.zs": focusedPositive,
+  "self-host-emit-task-scope-delay-method.zs": focusedPositive,
   "self-host-emit-thread-any-callable.zs": focusedPositive,
   "self-host-emit-thread-main-callable.zs": focusedPositive,
   "self-host-emit-thread-cancel-main-match.zs": focusedPositive,

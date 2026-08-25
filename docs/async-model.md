@@ -625,7 +625,14 @@ redirecting their state machines through deterministic child and frame cleanup
 before failure completes. The
 executor now maintains a sorted monotonic timer queue for direct `await
 delay(...)`; it wakes expired tasks in deadline order and blocks the OS thread
-only when the ready queue is empty. Synchronous Z calls, receiver methods,
+only when the ready queue is empty. The fixed-point stored-callable tier uses the same
+queue when a `TaskScope` closure directly awaits a linear delay-suspending
+method. The method owns its receiver and frame locals while parked; ordinary
+scope close drives the timer to completion, while `TaskControl.requestCancel()`
+removes the parked timer, requeues the child, and runs live-flag cleanup exactly
+once before join. Branching and looping delay-method frames remain explicit
+future composition work.
+Synchronous Z calls, receiver methods,
 capability-aware arguments, and typed console output lower between suspension
 states without yielding. Concise synchronous `match` expressions over
 cleanup-free enum subjects and results lower atomically in a poll state, with

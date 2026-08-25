@@ -14907,7 +14907,7 @@ test("polls and resumes a stored async closure across scheduler.yield", () => {
   assert.match(emission.stdout, /invocation\.task->waiter = &awaiter\.task;/);
   assert.match(emission.stdout, /z_stage1_async_enqueue\(waiter->executor, waiter\)/);
   assert.match(emission.stdout, /while \(!awaiter\.task\.completed\)/);
-  assert.match(emission.stdout, /z_stage1_async_run_one\(&executor\)/);
+  assert.match(emission.stdout, /z_stage1_async_drive_one\(&executor\)/);
   assert.match(emission.stdout, /typedef struct z_stage1_async_parent_main/);
   assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
   assert.match(
@@ -15263,10 +15263,10 @@ hostToolchainTest("transfers owned captures through native TaskScope async frame
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
-test("fails closed for a stored delay-suspending async method", () => {
+test("runs a stored delay-suspending async method through TaskScope", () => {
   const input = resolve(
     projectRoot,
-    "tests/fixtures/self-host-reject-stored-async-main-delay.zs",
+    "tests/fixtures/self-host-emit-task-scope-delay-method.zs",
   );
   const parity = spawnSync(
     process.execPath,
@@ -15280,12 +15280,39 @@ test("fails closed for a stored delay-suspending async method", () => {
     [cli, "self-host-emit", input],
     { encoding: "utf8" },
   );
-  assert.equal(emission.status, 1);
-  assert.match(
-    emission.stderr,
-    /native stored async closure cannot await delay-suspending method Z_DeliveryService_hold yet/,
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /uint64_t wake_at_ms;/);
+  assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1000\)/);
+  assert.match(emission.stdout, /z_stage1_async_wait_for_timer/);
+  assert.match(emission.stdout, /request_cancel = .*_cancel/);
+
+  const directory = mkdtempSync("/tmp/z-task-scope-delay-method-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
   );
-});
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(
+    execution.stdout,
+    "completed request 40\nreleased request 41\n",
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
 
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(

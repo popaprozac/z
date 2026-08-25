@@ -4143,9 +4143,16 @@ conservative transfer restriction until they carry the same proof.
 The same probe found a more serious hidden boundary: a stored async closure
 could await a method whose body suspends on `delay`, while the helper invoked
 that method's deliberately unavailable synchronous stub after one requeue.
-Fixed-point emission now fails closed for that composition. Timer/task-backed
-stored-callable suspension is therefore the explicit prerequisite before Zapp
-maps frontend request cancellation onto an accepted `TaskControl`.
+The first fix failed closed instead of emitting the aborting fallback. The next
+slice then gave the fixed-point executor a monotonic timer queue and emitted a
+heap-owned linear method frame for this composition. A `TaskScope` proof now
+runs one delayed method to completion and cancels another while it is parked.
+Cancellation removes the timer, resumes the child immediately, skips its
+post-delay continuation, destroys a cleanup-bearing local exactly once, and
+lets the scope join without waiting for the original deadline. Branching and
+looping delay-method frames remain conservative rather than silently falling
+back to synchronous code. This closes the runtime prerequisite for Zapp to map
+frontend request cancellation onto the accepted `TaskControl`.
 
 ## Not tested yet
 
