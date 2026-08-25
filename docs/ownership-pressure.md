@@ -4028,10 +4028,15 @@ matches a decoded request, awaits the service method, and transforms its result.
 
 The outer decoded-request match now uses the same mechanism in a free-function
 frame, retaining its decoded message and forwarding it to the selected child.
-That moves the live boundary one level inward to `dispatchWithServicesAsync`:
-it stores the result of `await services.invoke(...)` in a local and then maps
-that result through a synchronous response match. Supporting a child result that
-feeds a post-await suffix is the next general frame-planning step.
+The next slice makes that child result persistent too. A direct async free
+function may initialize one local with an awaited non-consuming ARC method,
+resume through the child's waiter, then execute a synchronous suffix that
+checks, transforms, returns, or moves the local. The frame retains the receiver,
+keeps borrowed arguments address-stable, guards the result after transfer, and
+cleans child plus every live owner on cancellation or destruction. The strict-C
+fixture executes the full suspend/resume path. Applied to Zapp, this closes
+`dispatchWithServicesAsync` and moves the native boundary to the generic
+captured `asyncServiceHandler<T>` closure adapter.
 
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option

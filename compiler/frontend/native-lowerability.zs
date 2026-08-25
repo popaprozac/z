@@ -623,6 +623,53 @@ function functionUsesFirstTierMatchedTailAwait(
     );
 }
 
+function statementIsFirstTierAwaitLocal(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.variableStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const root = tree.root;
+        if (
+          tree.nodes[root].kind != ExpressionKind.awaitExpression
+          || tree.nodes[root].children.length != 1
+        ) return false;
+        const operation = tree.nodes[root].children[0];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        select tree.nodes[callee].kind
+            == ExpressionKind.identifierExpression
+          || tree.nodes[callee].kind == ExpressionKind.memberExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function functionUsesFirstTierLinearAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (!statementContainsSuspension(declaration.body, root)) continue;
+    if (!statementIsFirstTierAwaitLocal(
+      declaration.body,
+      root
+    )) return false;
+    awaitCount = awaitCount + 1;
+  }
+  return awaitCount == 1;
+}
+
 function functionUsesFirstTierPrefixedTailAwait(
   in declaration: FunctionDeclaration
 ): boolean {
@@ -670,6 +717,7 @@ function functionHasFirstTierTailAwaitStorage(
       !functionUsesFirstTierTailAwait(declaration)
       && !functionUsesFirstTierPrefixedTailAwait(declaration)
       && !functionUsesFirstTierMatchedTailAwait(declaration)
+      && !functionUsesFirstTierLinearAwait(declaration)
     )
   ) return false;
   match (in declaration.errorType) {

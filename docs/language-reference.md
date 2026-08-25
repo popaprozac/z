@@ -1091,6 +1091,11 @@ is the executable fixed-point shape used by a frozen service registry's
 `Option<AsyncServiceHandler>` lookup.
 The same bounded shape is available to an async free function, including
 cleanup-bearing prefix locals retained until the selected child finishes.
+One awaited non-consuming ARC method result may also initialize a local in a
+direct async free function. The local and method receiver live in the heap frame
+while the child is pending; after completion, ordinary synchronous control flow
+may inspect, transform, return, or move the local without another source-level
+lifetime marker.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

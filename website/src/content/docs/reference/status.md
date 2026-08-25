@@ -68,7 +68,9 @@ production or compatibility-sensitive use.
   frame storage, suspend only that arm, and complete alternate arms immediately.
   Synchronous and asynchronous callable types retain distinct native identities
   even when their ordinary signatures match. Direct async free functions may
-  use the same prefixed/matched tail-child frame.
+  use the same prefixed/matched tail-child frame. A direct free function may
+  also initialize one local from an awaited ARC method, resume through the
+  child waiter, and run a synchronous suffix against that frame-owned result.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
@@ -76,8 +78,9 @@ production or compatibility-sensitive use.
   containing `AsyncServices.invoke` router now emit natively through loops,
   maps, owned locals, a consuming handler match, and a dynamic child await. The
   outer bridge's decoded-request match now emits through a free-function child
-  frame. The remaining fixed-point gap is the dispatch helper's awaited service
-  result followed by a synchronous response-mapping suffix.
+  frame, and its dispatch helper can retain an awaited service result across
+  suspension before running the synchronous response-mapping suffix. The next
+  fixed-point gap is the generic captured async service adapter.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

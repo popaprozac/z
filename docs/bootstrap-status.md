@@ -110,9 +110,12 @@ other arms immediately. Handler cleanup is guarded across completion,
 cancellation, and unfinished-frame destruction. Synchronous and asynchronous
 callable types also carry distinct native identities even when their parameter
 and return shapes are otherwise identical. The same prefixed/matched tail shape
-now works for free functions as well as class methods. A local initialized by an
-awaited child and then consumed by a synchronous suffix remains the next
-composition tier.
+now works for free functions as well as class methods. A direct async free
+function may also store one awaited method result in frame-owned local storage,
+resume through the child's waiter, and execute a synchronous suffix that
+inspects or consumes that result. Cancellation and unfinished-frame destruction
+release the child, receiver, parameters, and every live local exactly once.
+Generic captured async adapters remain the next Zapp composition tier.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an
