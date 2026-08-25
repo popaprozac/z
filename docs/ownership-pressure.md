@@ -4045,8 +4045,24 @@ parent frame. Each invocation retains the callable environment, stores borrowed
 arguments for the join, starts the captured service method on the current
 executor, forwards cancellation, and transfers an ownership-bearing result once.
 A strict-C generic trait fixture proves the same path independently of Zapp.
-The complete Zapp graph now advances to `main`, whose two sequential bridge
-awaits and intervening validation need multiple suspension states in one frame.
+The complete Zapp graph now reaches `main`. Its synchronous health route and
+suspended search route both emit as strict C and execute end to end. Top-level
+`async main` currently sequences the two bridge awaits through blocking local
+executor adapters; general arbitrary async functions with multiple suspension
+states remain a broader frame tier rather than a hidden claim of completion.
+
+That final run exposed ownership bugs that smaller fixtures had not combined.
+A consuming intrinsic-Result match moved its payload into a child frame while
+leaving the original Result live, and a value-parameter async call transferred
+an ARC class pointer without retaining it. Native lowering now marks the enum
+owner dead before payload extraction, transfers a moved selected payload by
+clearing its frame guard, and applies the same owned-storage wrapping used by
+synchronous calls to async function, callable, method, and placed-call
+arguments. Cleanup-bearing immediate match arms evaluate their return value
+before destroying the bound payload. A standalone strict-C fixture combines
+the consuming Result, ARC argument, selected child, cleanup-bearing failure,
+post-await owned local, and synchronous result match so this application-shaped
+ownership seam no longer depends on the sibling Zapp repository.
 
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option

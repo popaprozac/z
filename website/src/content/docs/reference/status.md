@@ -82,10 +82,15 @@ production or compatibility-sensitive use.
   maps, owned locals, a consuming handler match, and a dynamic child await. The
   outer bridge's decoded-request match now emits through a free-function child
   frame, and its dispatch helper can retain an awaited service result across
-  suspension before running the synchronous response-mapping suffix. The next
-  generic captured async service adapter now emits and executes too. The next
-  fixed-point gap is the smoke's two sequential bridge awaits in one `main`
-  frame.
+  suspension before running the synchronous response-mapping suffix. The
+  generic captured async service adapter emits and executes too. The complete
+  smoke now executes both its synchronous health route and its suspended search
+  route under strict C compilation. This pressure test closed consuming-match
+  owner transfer, cleanup-bearing immediate arms, ARC value-argument retains,
+  and synchronous control flow after an await. Top-level `async main` currently
+  sequences those two awaits through blocking local-executor adapters; a
+  reusable arbitrary async function with multiple suspension states remains the
+  next broader frame-composition tier.
   The production synchronous application graph therefore still does not import
   that opt-in surface.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`

@@ -1577,7 +1577,8 @@ test("selects an immediate method result before a dynamic child path", () => {
       emission.stdout,
       /if \(\(!enabled\) \|\| \(separator == 0\)\) \{[\s\S]*frame->result = Z_STRING_LITERAL\("disabled"\);[\s\S]*task->completed = true;[\s\S]*return;/,
     );
-    assert.match(emission.stdout, /size_t separator;/);
+    assert.match(emission.stdout, /size_t separator = 0;/);
+    assert.doesNotMatch(emission.stdout, /frame->separator/);
     assert.match(emission.stdout, /while \(\(separator </);
     assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
     const compilation = spawnSync(
@@ -1758,6 +1759,52 @@ test("awaits a method from a captured generic async closure", () => {
     assert.match(
       emission.stdout,
       /take_result\(frame->child\.task, &frame->result\);/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
+test("composes owned matches, ARC arguments, and post-await control flow", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-service-composition.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-service-composition-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /_z_stage1_live_decoded = false;[\s\S]*_z_stage1_async_match_/,
+    );
+    assert.match(
+      emission.stdout,
+      /_z_stage1_async_live_.* = false;[\s\S]*Z_Service_retain\(service\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /_z_stage1_live_outcome = false;[\s\S]*switch \(_z_stage1_async_suffix_match_/,
     );
     const compilation = spawnSync(
       "clang",

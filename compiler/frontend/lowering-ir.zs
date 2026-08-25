@@ -5702,6 +5702,9 @@ function wrapOwnedStorage(
     importedTypes,
     payloadTypeName
   );
+  if (!moduleTypeNeedsCleanup(program, importedTypes, payloadType)) {
+    return value;
+  }
   if (
     (
       payloadType.kind == LoweredTypeKind.classType
@@ -6204,6 +6207,7 @@ function resolvedCallParameterModes(
 }
 
 function resolvedCallParameterTypes(
+  in program: Program,
   in evidence: ModuleSemanticEvidence,
   in tree: ExpressionTree,
   index: usize
@@ -6218,7 +6222,24 @@ function resolvedCallParameterTypes(
     for (const type of resolution.parameterTypes) {
       types.push(type.copyBytes(0, type.byteLength));
     }
-    return types;
+    if (types.length > 0) return types;
+    break;
+  }
+  if (tree.nodes[index].children.length > 0) {
+    const callee = tree.nodes[index].children[0];
+    if (tree.nodes[callee].kind == ExpressionKind.identifierExpression) {
+      for (const declaration of program.functions) {
+        if (declaration.name != tree.nodes[callee].value) continue;
+        let types = Array<String>();
+        for (const parameter of declaration.parameters) {
+          types.push(parameter.type.name.copyBytes(
+            0,
+            parameter.type.name.byteLength
+          ));
+        }
+        return types;
+      }
+    }
   }
   return Array<String>();
 }
@@ -7732,6 +7753,12 @@ function lowerPlacedDirectCall(
     tree,
     index
   );
+  const parameterTypes = resolvedCallParameterTypes(
+    program,
+    evidence,
+    tree,
+    index
+  );
   let labels = Array<String>();
   for (const mode of parameterModes) {
     labels.push(mode.copyBytes(0, mode.byteLength));
@@ -7752,12 +7779,24 @@ function lowerPlacedDirectCall(
     if (
       parameterModes.length >= argument
       && parameterModes[argument - 1] == "value"
-    ) value = wrapImplicitOwnedTransfer(
-      tree,
-      argumentInput,
-      value,
-      inout output
-    );
+    ) {
+      if (parameterTypes.length >= argument) {
+        value = try wrapOwnedStorage(
+          program,
+          importedTypes,
+          tree,
+          argumentInput,
+          parameterTypes[argument - 1],
+          value,
+          inout output
+        );
+      } else value = wrapImplicitOwnedTransfer(
+        tree,
+        argumentInput,
+        value,
+        inout output
+      );
+    }
     children.push(value);
     argument = argument + 1;
   }
@@ -7886,6 +7925,7 @@ function lowerAsyncMethodTailCall(
     index
   );
   const parameterTypes = resolvedCallParameterTypes(
+    program,
     evidence,
     tree,
     index
@@ -7920,6 +7960,19 @@ function lowerAsyncMethodTailCall(
         inout output
       );
     }
+    if (
+      parameterModes.length >= argument
+      && parameterModes[argument - 1] == "value"
+      && parameterTypes.length >= argument
+    ) value = try wrapOwnedStorage(
+      program,
+      importedTypes,
+      tree,
+      argumentInput,
+      parameterTypes[argument - 1],
+      value,
+      inout output
+    );
     children.push(value);
     labels.push(parameterModes.length >= argument
       ? parameterModes[argument - 1].copyBytes(
@@ -8110,6 +8163,7 @@ function lowerExpressionContextual(
       });
     }
     const parameterTypes = resolvedCallParameterTypes(
+      program,
       evidence,
       tree,
       callInput
@@ -8968,7 +9022,7 @@ function lowerExpressionContextual(
     let argument: usize = 0;
     while (argument < signature.parameterTypes.length) {
       const argumentInput = tree.nodes[taskInput].children[argument + 1];
-      const value = try lowerExpressionExpected(
+      let value = try lowerExpressionExpected(
         program,
         importedTypes,
         evidence,
@@ -8977,6 +9031,17 @@ function lowerExpressionContextual(
         signature.parameterTypes[argument],
         inout output
       );
+      if (signature.parameterModes[argument] == "value") {
+        value = try wrapOwnedStorage(
+          program,
+          importedTypes,
+          tree,
+          argumentInput,
+          signature.parameterTypes[argument],
+          value,
+          inout output
+        );
+      }
       children.push(value);
       labels.push(signature.parameterModes[argument].copyBytes(
         0,
@@ -9066,7 +9131,7 @@ function lowerExpressionContextual(
             const argumentInput = tree.nodes[taskInput].children[
               argument + 1
             ];
-            const value = try lowerExpressionExpected(
+            let value = try lowerExpressionExpected(
               program,
               importedTypes,
               evidence,
@@ -9075,6 +9140,17 @@ function lowerExpressionContextual(
               resolution.parameterTypes[argument],
               inout output
             );
+            if (resolution.parameterModes[argument] == "value") {
+              value = try wrapOwnedStorage(
+                program,
+                importedTypes,
+                tree,
+                argumentInput,
+                resolution.parameterTypes[argument],
+                value,
+                inout output
+              );
+            }
             children.push(value);
             labels.push(resolution.parameterModes[argument].copyBytes(
               0,
@@ -9186,7 +9262,7 @@ function lowerExpressionContextual(
               const argumentInput = tree.nodes[taskInput].children[
                 argument + 1
               ];
-              const value = try lowerExpressionExpected(
+              let value = try lowerExpressionExpected(
                 program,
                 importedTypes,
                 evidence,
@@ -9195,6 +9271,17 @@ function lowerExpressionContextual(
                 signature.parameterTypes[argument],
                 inout output
               );
+              if (signature.parameterModes[argument] == "value") {
+                value = try wrapOwnedStorage(
+                  program,
+                  importedTypes,
+                  tree,
+                  argumentInput,
+                  signature.parameterTypes[argument],
+                  value,
+                  inout output
+                );
+              }
               children.push(value);
               labels.push(signature.parameterModes[argument].copyBytes(
                 0,
@@ -9330,6 +9417,7 @@ function lowerExpressionContextual(
       );
       children.push(registrationReceiver);
       const addParameterTypes = resolvedCallParameterTypes(
+        program,
         evidence,
         tree,
         addCall
@@ -11819,6 +11907,7 @@ function lowerExpressionContextual(
         index
       );
       const parameterTypes = resolvedCallParameterTypes(
+        program,
         evidence,
         tree,
         index
@@ -11989,6 +12078,7 @@ function lowerExpressionContextual(
         index
       );
       const parameterTypes = resolvedCallParameterTypes(
+        program,
         evidence,
         tree,
         index
@@ -12235,6 +12325,7 @@ function lowerExpressionContextual(
       index
     );
     const parameterTypes = resolvedCallParameterTypes(
+      program,
       evidence,
       tree,
       index
@@ -20554,13 +20645,20 @@ function ensureMainFrameLocalLiveFlags(
   inout statements: Array<LoweredStatement>,
   inout liveFlags: Array<LoweredLiveFlag>
 ): void {
+  const resultPrefix = "__z_Result_";
   for (const root of roots) {
     if (
       statements[root].kind != LoweredStatementKind.localStatement
       || statements[root].liveFlag.byteLength > 0
     ) continue;
     const frameLocalNeedsCleanup = match (in statements[root].type) {
-      some(type) => moduleTypeNeedsCleanup(program, importedTypes, type);
+      some(type) => moduleTypeNeedsCleanup(program, importedTypes, type)
+        || (
+          type.kind == LoweredTypeKind.enumType
+          && type.name.byteLength >= resultPrefix.byteLength
+          && type.name.copyBytes(0, resultPrefix.byteLength)
+            == resultPrefix
+        );
       none => false;
     };
     if (!frameLocalNeedsCleanup) continue;
@@ -21011,7 +21109,13 @@ function lowerFunction(
       }));
     }
   }
-  if (asyncSuspension == "tail-await" && roots.length > 1) {
+  if (
+    (
+      asyncSuspension == "tail-await"
+      || asyncSuspension == "linear-await"
+    )
+    && roots.length > 1
+  ) {
     ensureMainFrameLocalLiveFlags(
       program,
       importedTypes,

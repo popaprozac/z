@@ -185,6 +185,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-match-tail-function.zs": focusedPositive,
   "self-host-emit-async-linear-method.zs": focusedPositive,
   "self-host-emit-async-captured-method.zs": focusedPositive,
+  "self-host-emit-async-service-composition.zs": focusedPositive,
   "self-host-emit-async-tail-callable.zs": focusedPositive,
   "self-host-emit-async-tail-method.zs": focusedPositive,
   "self-host-emit-async-struct-method-invalid.zs": focusedNegative,
