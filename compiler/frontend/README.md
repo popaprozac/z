@@ -272,6 +272,9 @@ unclaimed result with the frame. A direct async adapter whose entire body is
 nested blocking executor. It owns cleanup-bearing value parameters, preserves
 borrowed inputs, installs itself as the dynamic child's waiter, forwards
 cancellation, and transfers or destroys an owned result exactly once.
+The same tail-adapter body is executable as a non-consuming ARC class method;
+its parent frame additionally retains and releases the receiver around the
+dynamic child lifetime.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

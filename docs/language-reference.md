@@ -1076,6 +1076,9 @@ waiter. Child completion requeues the adapter; cancellation is forwarded to the
 child; and cleanup transfers or destroys each owned argument and result exactly
 once. Locals, loops, and matches surrounding that await remain a later native
 frame-planning tier rather than falling back to a nested blocking executor.
+The same body may be a non-consuming ARC class method. In that form the parent
+frame also retains the receiver until the child has completed or cancellation
+cleanup has finished.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

@@ -58,7 +58,9 @@ production or compatibility-sensitive use.
   child. It stores owned and borrowed inputs, resumes through the child's waiter,
   propagates cancellation, and transfers or destroys the owned result exactly
   once. General suspending bodies with locals and control flow around the child
-  remain the next library-composition boundary.
+  remain the next library-composition boundary. A non-consuming ARC class
+  method may use that same tail adapter; its parent frame retains the receiver
+  through child completion and cancellation.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the

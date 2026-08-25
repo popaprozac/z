@@ -3994,6 +3994,13 @@ deinitializer runs once. `AsyncServices.invoke` still requires the next tier:
 the same mechanism composed with its prefix loop, early returns, Map loan,
 owned local construction, and final Option match.
 
+The same adapter frame now backs a non-consuming ARC class method. A strict-C
+fixture proves the method receiver remains retained while the dynamic child
+runs, the owned handler environment is released after result transfer, and
+both captured state and receiver deinitializers run exactly once. This closes
+the method-vs-free-function distinction for the tail adapter without adding a
+second source-level async rule.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

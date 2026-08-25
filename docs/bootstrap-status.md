@@ -97,9 +97,11 @@ result exactly once. A directly called async adapter with one tail
 `return await handler(...)` now owns a heap parent frame: cleanup-bearing value
 parameters and borrowed inputs remain valid while its dynamic child runs, child
 completion wakes the parent, cancellation propagates to the child, and an owned
-result transfers or is destroyed exactly once. General suspending methods,
+result transfers or is destroyed exactly once. General suspending bodies with
 locals/control flow around a child await, and named async-function value
-conversion remain deferred.
+conversion remain deferred. The same single-tail-await body is executable on a
+non-consuming ARC class method, whose parent frame retains the receiver until
+child completion or cancellation.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an
