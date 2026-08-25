@@ -1082,6 +1082,9 @@ cleanup has finished.
 Straight-line local declarations before the tail await are also preserved in
 that method frame. This permits an owned request or adapter value to be built
 locally and lent to the child without exposing a lifetime annotation in Z.
+Non-suspending loops and branches may precede the tail await. An early branch
+can complete the parent with an immediate result while the other path proceeds
+to the child suspension.
 
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored

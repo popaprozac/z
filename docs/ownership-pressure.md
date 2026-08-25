@@ -4008,6 +4008,12 @@ after the handler finishes. The ordinary source shape remains unchanged; this
 is more work by the compiler rather than another ownership capability for the
 author to spell.
 
+That parent now also accepts the first routing-control layer: a synchronous
+prefix loop plus an early-result branch before the tail await. A strict-C
+fixture executes both the immediate result and dynamic-child paths. The next
+remaining Zapp-specific boundary is the final `Option` match that extracts the
+selected handler before suspension.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

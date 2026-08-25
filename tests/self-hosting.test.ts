@@ -1552,6 +1552,47 @@ test("keeps a cleanup-bearing method local alive across a dynamic child", () => 
   }
 }, 240_000);
 
+test("selects an immediate method result before a dynamic child path", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-branch-tail-method.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-branch-tail-method-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /if \(\(!enabled\) \|\| \(separator == 0\)\) \{[\s\S]*frame->result = Z_STRING_LITERAL\("disabled"\);[\s\S]*task->completed = true;[\s\S]*return;/,
+    );
+    assert.match(emission.stdout, /size_t separator;/);
+    assert.match(emission.stdout, /while \(\(separator </);
+    assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects a suspending value-struct receiver before native lowering", () => {
   const input = resolve(
     projectRoot,

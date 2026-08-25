@@ -103,7 +103,9 @@ conversion remain deferred. The same single-tail-await body is executable on a
 non-consuming ARC class method, whose parent frame retains the receiver until
 child completion or cancellation. Straight-line method locals before that
 await are frame-owned too, including cleanup-bearing values lent to the child.
-Branches, loops, and matches around the suspension remain the next tier.
+Non-suspending prefix loops and early-return branches are executable in that
+frame as well. A final match that selects the dynamic handler remains the next
+tier.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an

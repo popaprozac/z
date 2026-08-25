@@ -351,7 +351,8 @@ function appendAsyncTailLocalFields(
     const root = declaration.roots[position];
     const statement = view declaration.statements[root];
     if (statement.kind != LoweredStatementKind.localStatement) {
-      throw "native prefixed tail await received a non-local prefix";
+      position = position + 1;
+      continue;
     }
     const type = match (in statement.type) {
       some(found) => copy found;
@@ -385,6 +386,10 @@ function appendAsyncTailLocalMacros(
     const statement = view declaration.statements[
       declaration.roots[position]
     ];
+    if (statement.kind != LoweredStatementKind.localStatement) {
+      position = position + 1;
+      continue;
+    }
     const type = match (in statement.type) {
       some(found) => copy found;
       none => throw "native prefixed tail await received an untyped local";
@@ -417,6 +422,7 @@ function appendAsyncTailLocalMacroUndefs(
     const statement = view declaration.statements[
       declaration.roots[position]
     ];
+    if (statement.kind != LoweredStatementKind.localStatement) continue;
     const type = match (in statement.type) {
       some(found) => copy found;
       none => throw "native prefixed tail await received an untyped local";
@@ -433,48 +439,46 @@ function appendAsyncTailLocalMacroUndefs(
   if (declaration.roots.length > 1) output.append("\n");
 }
 
-function appendAsyncTailLocalInitializers(
+function appendAsyncTailLocalInitializer(
   inout output: TextBuffer,
   in program: LoweredProgram,
   in declaration: LoweredFunction,
+  index: usize,
   depth: usize
 ): void throws String {
-  let position: usize = 0;
-  while (position + 1 < declaration.roots.length) {
-    const statement = view declaration.statements[
-      declaration.roots[position]
-    ];
-    const type = match (in statement.type) {
-      some(found) => copy found;
-      none => throw "native prefixed tail await received an untyped local";
-    };
-    const initializer = match (in statement.expression) {
-      some(found) => copy found;
-      none => throw "native prefixed tail await received an uninitialized local";
-    };
-    try appendBorrowedTemporaryInitializers(
-      inout output,
-      declaration,
-      initializer,
-      depth
-    );
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.localStatement) {
+    throw "native prefixed tail await received a non-local initializer";
+  }
+  const type = match (in statement.type) {
+    some(found) => copy found;
+    none => throw "native prefixed tail await received an untyped local";
+  };
+  const initializer = match (in statement.expression) {
+    some(found) => copy found;
+    none => throw "native prefixed tail await received an uninitialized local";
+  };
+  try appendBorrowedTemporaryInitializers(
+    inout output,
+    declaration,
+    initializer,
+    depth
+  );
+  appendIndent(inout output, depth);
+  appendCBindingName(inout output, statement.name);
+  output.append(" = ");
+  try appendExpression(inout output, declaration, initializer);
+  output.append(";\n");
+  appendBorrowedTemporaryCleanups(
+    inout output,
+    declaration,
+    initializer,
+    depth
+  );
+  if (loweredTypeNeedsDeinit(program, type)) {
     appendIndent(inout output, depth);
-    appendCBindingName(inout output, statement.name);
-    output.append(" = ");
-    try appendExpression(inout output, declaration, initializer);
-    output.append(";\n");
-    appendBorrowedTemporaryCleanups(
-      inout output,
-      declaration,
-      initializer,
-      depth
-    );
-    if (loweredTypeNeedsDeinit(program, type)) {
-      appendIndent(inout output, depth);
-      appendCBindingName(inout output, statement.liveFlag);
-      output.append(" = true;\n");
-    }
-    position = position + 1;
+    appendCBindingName(inout output, statement.liveFlag);
+    output.append(" = true;\n");
   }
 }
 
@@ -490,6 +494,7 @@ function appendAsyncTailLocalCleanups(
     const statement = view declaration.statements[
       declaration.roots[position]
     ];
+    if (statement.kind != LoweredStatementKind.localStatement) continue;
     const type = match (in statement.type) {
       some(found) => copy found;
       none => throw "native prefixed tail await received an untyped local";
@@ -566,6 +571,178 @@ function appendAsyncStoredParameterCleanups(
     output.append(`${parameter}`);
     output.append(" = false; }\n");
   }
+}
+
+function loweredStatementContainsReturn(
+  in declaration: LoweredFunction,
+  index: usize
+): boolean {
+  if (
+    declaration.statements[index].kind
+      == LoweredStatementKind.returnStatement
+  ) return true;
+  for (const child of declaration.statements[index].children) {
+    if (loweredStatementContainsReturn(declaration, child)) return true;
+  }
+  return false;
+}
+
+function appendAsyncTailImmediateReturn(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  index: usize,
+  depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.kind != LoweredStatementKind.returnStatement) {
+    throw "native prefixed tail await lost an immediate return";
+  }
+  match (in statement.expression) {
+    some(expression) => {
+      try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      appendIndent(inout output, depth);
+      output.append("frame->result = ");
+      try appendExpression(inout output, declaration, expression);
+      output.append(";\n");
+      appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      if (loweredTypeNeedsDeinit(program, functionType.returnType)) {
+        appendIndent(inout output, depth);
+        output.append("frame->live_result = true;\n");
+      }
+    }
+    none => {
+      if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+        throw "native prefixed tail await received an empty value return";
+      }
+    }
+  }
+  try appendAsyncTailLocalCleanups(
+    inout output,
+    program,
+    declaration,
+    depth
+  );
+  appendAsyncStoredParameterCleanups(
+    inout output,
+    program,
+    functionType,
+    depth
+  );
+  appendIndent(inout output, depth);
+  output.append("task->completed = true;\n");
+  appendIndent(inout output, depth);
+  output.append("return;\n");
+}
+
+function appendAsyncTailPrefixStatement(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  index: usize,
+  depth: usize
+): void throws String {
+  const statement = view declaration.statements[index];
+  if (statement.kind == LoweredStatementKind.localStatement) {
+    try appendAsyncTailLocalInitializer(
+      inout output,
+      program,
+      declaration,
+      index,
+      depth
+    );
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.returnStatement) {
+    try appendAsyncTailImmediateReturn(
+      inout output,
+      program,
+      declaration,
+      functionType,
+      index,
+      depth
+    );
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.blockStatement) {
+    for (const child of statement.children) {
+      try appendAsyncTailPrefixStatement(
+        inout output,
+        program,
+        declaration,
+        functionType,
+        child,
+        depth
+      );
+    }
+    return;
+  }
+  if (statement.kind == LoweredStatementKind.ifStatement) {
+    appendIndent(inout output, depth);
+    output.append("if ");
+    match (in statement.expression) {
+      some(condition) => try appendCondition(
+        inout output,
+        declaration,
+        condition
+      );
+      none => throw "native prefixed tail await received an if without a condition";
+    }
+    if (statement.children.length == 0) {
+      throw "native prefixed tail await received an if without a branch";
+    }
+    output.append(" {\n");
+    try appendAsyncTailPrefixStatement(
+      inout output,
+      program,
+      declaration,
+      functionType,
+      statement.children[0],
+      depth + 1
+    );
+    appendIndent(inout output, depth);
+    if (statement.children.length > 1) {
+      output.append("} else {\n");
+      try appendAsyncTailPrefixStatement(
+        inout output,
+        program,
+        declaration,
+        functionType,
+        statement.children[1],
+        depth + 1
+      );
+      appendIndent(inout output, depth);
+    }
+    output.append("}\n");
+    return;
+  }
+  if (
+    statement.kind == LoweredStatementKind.whileStatement
+    && loweredStatementContainsReturn(declaration, index)
+  ) {
+    throw "native prefixed tail await does not support return from its prefix loop yet";
+  }
+  if (
+    statement.kind == LoweredStatementKind.assignmentStatement
+    || statement.kind == LoweredStatementKind.expressionStatement
+    || statement.kind == LoweredStatementKind.whileStatement
+  ) {
+    try appendStatement(inout output, declaration, index, depth);
+    return;
+  }
+  throw "native prefixed tail await received unsupported control flow";
 }
 
 function callableContextParameterName(
@@ -6679,12 +6856,19 @@ function appendAsyncMethodAwaitHelpers(
           2
         );
         output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
-        try appendAsyncTailLocalInitializers(
-          inout output,
-          program,
-          tailDeclaration,
-          2
-        );
+        let prefix: usize = 0;
+        while (prefix + 1 < tailDeclaration.roots.length) {
+          const prefixRoot = tailDeclaration.roots[prefix];
+          try appendAsyncTailPrefixStatement(
+            inout output,
+            program,
+            tailDeclaration,
+            functionType,
+            prefixRoot,
+            2
+          );
+          prefix = prefix + 1;
+        }
         output.append("    frame->child = Z_");
         output.append(tailAwait.value);
         output.append("_start(");

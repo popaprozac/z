@@ -279,6 +279,9 @@ A class-method tail adapter may also construct straight-line locals before the
 await. Cleanup-bearing locals are hoisted into the parent frame, remain valid
 when lent to the dynamic child, and are destroyed after completion or
 cancellation rather than at the first poll's stack boundary.
+The same frame may execute non-suspending prefix loops and branches. An early
+branch return completes the parent directly; the remaining path starts and
+waits for the dynamic child.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

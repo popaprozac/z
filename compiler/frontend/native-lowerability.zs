@@ -465,13 +465,22 @@ function functionUsesFirstTierPrefixedTailAwait(
   while (position + 1 < declaration.body.roots.length) {
     const root = declaration.body.roots[position];
     if (
-      declaration.body.nodes[root].kind != StatementKind.variableStatement
-      || declaration.body.nodes[root].children.length > 0
-      || statementContainsSuspension(declaration.body, root)
+      statementContainsSuspension(declaration.body, root)
     ) return false;
-    match (in declaration.body.nodes[root].expression) {
-      some(_) => {}
-      none => return false;
+    const kind = declaration.body.nodes[root].kind;
+    if (
+      kind != StatementKind.variableStatement
+      && kind != StatementKind.ifStatement
+      && kind != StatementKind.whileStatement
+      && kind != StatementKind.assignmentStatement
+      && kind != StatementKind.expressionStatement
+    ) return false;
+    if (kind == StatementKind.variableStatement) {
+      if (declaration.body.nodes[root].children.length > 0) return false;
+      match (in declaration.body.nodes[root].expression) {
+        some(_) => {}
+        none => return false;
+      }
     }
     position = position + 1;
   }

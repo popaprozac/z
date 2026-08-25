@@ -62,7 +62,8 @@ production or compatibility-sensitive use.
   method may use that same tail adapter; its parent frame retains the receiver
   through child completion and cancellation. Straight-line locals declared
   before the await are frame-owned as well, so cleanup-bearing request values
-  may be lent safely to the suspended child.
+  may be lent safely to the suspended child. Non-suspending prefix loops and
+  early-result branches also execute in that frame.
 - An opt-in Zapp pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
