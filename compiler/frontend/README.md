@@ -267,7 +267,11 @@ fixed-point boundary when they complete immediately or begin with one direct
 method may use the same one-yield shape with borrowed or cleanup-free value
 parameters and an ownership-bearing result: its await adapter retains the
 receiver, holds borrowed arguments only for the blocking join, and destroys an
-unclaimed result with the frame.
+unclaimed result with the frame. A direct async adapter whose entire body is
+`return await handler(...)` now uses a real parent/child frame instead of a
+nested blocking executor. It owns cleanup-bearing value parameters, preserves
+borrowed inputs, installs itself as the dynamic child's waiter, forwards
+cancellation, and transfers or destroys an owned result exactly once.
 Those explicit rejections are staged implementation
 boundaries; accepting a program that violates an already-settled Stage-0 safety
 rule is not.

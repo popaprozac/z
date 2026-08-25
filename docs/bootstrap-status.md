@@ -93,8 +93,13 @@ synchronous tail, and transfers its result exactly once under strict C
 compilation. `Z0700` remains for broader suspending bodies, including general
 async methods; one direct awaited non-consuming ARC class method uses the bounded
 one-yield frame while retaining its receiver and transferring a cleanup-bearing
-result exactly once. General suspending methods, named async-function value
-conversion, and child-frame composition remain deferred.
+result exactly once. A directly called async adapter with one tail
+`return await handler(...)` now owns a heap parent frame: cleanup-bearing value
+parameters and borrowed inputs remain valid while its dynamic child runs, child
+completion wakes the parent, cancellation propagates to the child, and an owned
+result transfers or is destroyed exactly once. General suspending methods,
+locals/control flow around a child await, and named async-function value
+conversion remain deferred.
 
 `ZFDCL` version 11 additionally transports Clang's flag-enum classification,
 so native bitwise expressions retain their nominal imported type without an

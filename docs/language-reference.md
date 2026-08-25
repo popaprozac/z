@@ -1059,6 +1059,24 @@ state at its next poll, and its waiter wake-up lets the parent destroy the
 invocation and live owners. Destroying unfinished work first unlinks its frames
 from the executor queue.
 
+The next fixed-point tier generalizes that mechanism to a direct async adapter:
+
+```z
+async function relay(
+  operation: Operation,
+  in request: Request
+): Response {
+  return await operation(in request);
+}
+```
+
+The adapter's heap frame owns `operation`, keeps `request` as an address-stable
+borrow, starts the dynamic child on the current executor, and becomes its
+waiter. Child completion requeues the adapter; cancellation is forwarded to the
+child; and cleanup transfers or destroys each owned argument and result exactly
+once. Locals, loops, and matches surrounding that await remain a later native
+frame-planning tier rather than falling back to a nested blocking executor.
+
 The fixed-point emitter now reuses that same frame for the first public
 callable-backed task shape inside an unnamed `async scope`. A stored
 nonthrowing void callable may start one hot `Task<void>`, borrow one named owner,

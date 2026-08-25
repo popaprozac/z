@@ -426,6 +426,69 @@ function functionUsesFirstTierSchedulerYield(
   return true;
 }
 
+function functionUsesFirstTierTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const awaitRoot = tree.root;
+        if (
+          tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
+          || tree.nodes[awaitRoot].children.length != 1
+        ) return false;
+        const operation = tree.nodes[awaitRoot].children[0];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => return false;
+    }
+    none => return false;
+  }
+}
+
+function functionHasFirstTierTailAwaitStorage(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration,
+  in owner: String
+): boolean {
+  if (
+    moduleIndex >= modules.length
+    || moduleIndex >= graph.modules.length
+    || !functionUsesFirstTierTailAwait(declaration)
+  ) return false;
+  match (in declaration.errorType) {
+    some(_) => return false;
+    none => {}
+  }
+  if (owner.byteLength > 0) {
+    let supportedOwner = false;
+    for (const aggregate of modules[moduleIndex].program.aggregates) {
+      if (aggregate.name != owner) continue;
+      supportedOwner = aggregate.kind == DeclarationKind.classDeclaration
+        && declaration.receiverMode == ReceiverMode.none;
+    }
+    if (!supportedOwner) return false;
+  }
+  for (const parameter of declaration.parameters) {
+    if (parameter.mode == ParameterMode.input) continue;
+    if (parameter.mode != ParameterMode.value) return false;
+  }
+  return true;
+}
+
 function functionHasFirstTierSchedulerYieldStorage(
   moduleIndex: usize,
   in modules: Array<ParsedModule>,
@@ -1426,12 +1489,20 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  const firstTierTailAwait = functionHasFirstTierTailAwaitStorage(
+    moduleIndex,
+    modules,
+    graph,
+    declaration,
+    owner
+  );
   if (
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
     && functionContainsSuspension(declaration)
     && !firstTierSchedulerYield
+    && !firstTierTailAwait
   ) {
     throw loweringBoundary(
       path,

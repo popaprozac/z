@@ -3982,6 +3982,18 @@ proves the receiver retain is balanced. The Zapp graph now advances to
 dynamic child-callable await require a general parent/child frame rather than
 another one-off adapter. That is the next honest composition boundary.
 
+The first reusable part of that boundary now executes independently of Zapp.
+An async adapter consisting of one tail `return await handler(...)` lowers to a
+heap-owned parent frame. A cleanup-bearing handler parameter remains live in
+the frame, borrowed request storage stays address-stable, and the child installs
+the parent as its waiter. Completion transfers an ownership-bearing result;
+cancellation forwards to the child; every child invocation, callable context,
+argument, and unclaimed result is destroyed exactly once. The strict-C runtime
+fixture captures an ARC owner in the handler environment and proves that its
+deinitializer runs once. `AsyncServices.invoke` still requires the next tier:
+the same mechanism composed with its prefix loop, early returns, Map loan,
+owned local construction, and final Option match.
+
 Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain

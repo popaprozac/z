@@ -16245,6 +16245,37 @@ function functionUsesFirstTierSchedulerYield(
   return true;
 }
 
+function functionUsesFirstTierTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const awaitRoot = tree.root;
+        if (
+          tree.nodes[awaitRoot].kind != ExpressionKind.awaitExpression
+          || tree.nodes[awaitRoot].children.length != 1
+        ) return false;
+        const operation = tree.nodes[awaitRoot].children[0];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => return false;
+    }
+    none => return false;
+  }
+}
+
 function expressionTreeContainsSuspension(
   in arena: StatementArena,
   in tree: ExpressionTree,
@@ -20312,14 +20343,18 @@ function lowerFunction(
   if (declaration.asynchronous && declaration.name != "main") {
     const firstTierSchedulerYield = declaration.executorAffinity != "thread.main"
       && functionUsesFirstTierSchedulerYield(program, declaration);
+    const firstTierTailAwait = declaration.executorAffinity != "thread.main"
+      && functionUsesFirstTierTailAwait(declaration);
     if (
       declaration.executorAffinity != "thread.main"
       && functionContainsSuspension(declaration)
       && !firstTierSchedulerYield
+      && !firstTierTailAwait
     ) {
       throw `native lowering does not support suspending async function ${declaration.name} yet`;
     }
     if (firstTierSchedulerYield) asyncSuspension = "scheduler-yield";
+    else if (firstTierTailAwait) asyncSuspension = "tail-await";
     let position: usize = 0;
     while (
       declaration.executorAffinity == "thread.main"

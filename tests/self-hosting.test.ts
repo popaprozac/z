@@ -1422,6 +1422,47 @@ test("retains a class receiver and owned result across async method suspension",
   }
 }, 240_000);
 
+test("retains owned arguments and results across a dynamic child await", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-tail-callable.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-tail-callable-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(emission.stdout, /Z_AsyncInvocation child;/);
+    assert.match(emission.stdout, /frame->task\.request_cancel = .*_cancel;/);
+    assert.match(emission.stdout, /z_stage1_async_request_cancel\(frame->child\.task\)/);
+    assert.match(emission.stdout, /frame->child\.task->waiter = task;/);
+    assert.match(emission.stdout, /frame->child\.take_result\(frame->child\.task, &frame->result\)/);
+    assert.match(emission.stdout, /live_argument0/);
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(execution.stdout, "released relay source\n");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("rejects a suspending value-struct receiver before native lowering", () => {
   const input = resolve(
     projectRoot,

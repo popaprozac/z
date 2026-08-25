@@ -295,6 +295,52 @@ struct PersistentAsyncParentShape {
   cancelTask: boolean;
 }
 
+struct AsyncTailAwaitShape {
+  functionIndex: usize;
+  expressionIndex: usize;
+}
+
+function asyncTailAwaitShape(
+  in program: LoweredProgram,
+  in name: String
+): Option<AsyncTailAwaitShape> {
+  let functionIndex: usize = 0;
+  while (functionIndex < program.functions.length) {
+    const declaration = view program.functions[functionIndex];
+    if (
+      declaration.name == name
+      && declaration.asyncSuspension == "tail-await"
+      && declaration.roots.length == 1
+    ) {
+      const root = declaration.roots[0];
+      if (
+        declaration.statements[root].kind
+          == LoweredStatementKind.returnStatement
+      ) {
+        match (in declaration.statements[root].expression) {
+          some(expressionIndex) => {
+            const expression = view declaration.expressions[expressionIndex];
+            if (
+              expression.kind == LoweredExpressionKind.asyncFunctionAwait
+              && expression.children.length > 0
+              && (
+                expression.labels.length == 0
+                || expression.labels[0] != "method"
+              )
+            ) return Option.some(AsyncTailAwaitShape({
+              functionIndex,
+              expressionIndex,
+            }));
+          }
+          none => {}
+        }
+      }
+    }
+    functionIndex = functionIndex + 1;
+  }
+  return Option<AsyncTailAwaitShape>.none;
+}
+
 function appendCallableParameterDeclaration(
   inout output: TextBuffer,
   in parameter: LoweredParameter,
@@ -313,6 +359,40 @@ function appendCallableParameterDeclaration(
   else if (parameter.mode != LoweredParameterMode.value) output.append(" *");
   else output.append(" ");
   appendCBindingName(inout output, name);
+}
+
+function appendAsyncStoredParameterCleanups(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in functionType: LoweredFunctionType,
+  depth: usize
+): void {
+  let parameter: usize = functionType.parameters.length;
+  while (parameter > 0) {
+    parameter = parameter - 1;
+    const stored = view functionType.parameters[parameter];
+    if (
+      stored.mode != LoweredParameterMode.value
+      || !loweredTypeNeedsDeinit(program, stored.type)
+    ) continue;
+    appendIndent(inout output, depth);
+    output.append("if (frame->live_argument");
+    output.append(`${parameter}`);
+    output.append(") { Z_");
+    output.append(stored.type.name);
+    if (stored.type.kind == LoweredTypeKind.classType) {
+      output.append("_release(frame->argument");
+      output.append(`${parameter}`);
+      output.append(");");
+    } else {
+      output.append("_deinit(&frame->argument");
+      output.append(`${parameter}`);
+      output.append(");");
+    }
+    output.append(" frame->live_argument");
+    output.append(`${parameter}`);
+    output.append(" = false; }\n");
+  }
 }
 
 function callableContextParameterName(
@@ -5411,6 +5491,14 @@ function appendCallableHelpers(
         );
         const directSchedulerYield = asyncSuspension == "scheduler-yield"
           && expression.kind == LoweredExpressionKind.directFunctionValue;
+        const tailAwaitShape = expression.kind
+            == LoweredExpressionKind.directFunctionValue
+          ? asyncTailAwaitShape(program, expression.value)
+          : Option<AsyncTailAwaitShape>.none;
+        const directTailAwait = asyncSuspension == "tail-await"
+          && expression.kind == LoweredExpressionKind.directFunctionValue;
+        const persistentSuspension = asyncSuspension == "scheduler-yield"
+          || directTailAwait;
         const resultNeedsDeinit = loweredTypeNeedsDeinit(
           program,
           functionType.returnType
@@ -5424,21 +5512,35 @@ function appendCallableHelpers(
           output.append(" result;\n");
           if (resultNeedsDeinit) output.append("  bool live_result;\n");
         }
-        if (asyncSuspension == "scheduler-yield") {
+        if (persistentSuspension) {
           output.append("  uint32_t state;\n");
-          if (directSchedulerYield) {
+          if (expression.kind == LoweredExpressionKind.directFunctionValue) {
             let storedParameter: usize = 0;
             while (storedParameter < functionType.parameters.length) {
               output.append("  ");
-              const storedParameterType = try cType(
-                functionType.parameters[storedParameter].type
+              try appendCallableParameterDeclaration(
+                inout output,
+                functionType.parameters[storedParameter],
+                `argument${storedParameter}`
               );
-              output.append(storedParameterType);
-              output.append(" argument");
-              output.append(`${storedParameter}`);
               output.append(";\n");
+              if (
+                functionType.parameters[storedParameter].mode
+                  == LoweredParameterMode.value
+                && loweredTypeNeedsDeinit(
+                  program,
+                  functionType.parameters[storedParameter].type
+                )
+              ) {
+                output.append("  bool live_argument");
+                output.append(`${storedParameter}`);
+                output.append(";\n");
+              }
               storedParameter = storedParameter + 1;
             }
+          }
+          if (directTailAwait) {
+            output.append("  Z_AsyncInvocation child;\n");
           }
         }
         output.append("} ");
@@ -5480,6 +5582,113 @@ function appendCallableHelpers(
           }
           output.append("  task->completed = true;\n}\n\n");
         }
+        if (directTailAwait) {
+          const shape = match (tailAwaitShape) {
+            some(found) => found;
+            none => throw "native tail-await callable lost its lowered shape";
+          };
+          const tailDeclaration = view program.functions[
+            shape.functionIndex
+          ];
+          const tailAwait = view tailDeclaration.expressions[
+            shape.expressionIndex
+          ];
+          output.append("static void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame) {\n  if (frame->child.task == NULL) return;\n  z_stage1_async_remove_queued(frame->child.task);\n  if (frame->child.destroy != NULL) frame->child.destroy(frame->child.task);\n  if (frame->child.release_context != NULL) frame->child.release_context(frame->child.callable_context);\n  frame->child = (Z_AsyncInvocation){0};\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cancel(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  if (frame->child.task != NULL) z_stage1_async_request_cancel(frame->child.task);\n}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n");
+          let aliasParameter: usize = 0;
+          while (aliasParameter < functionType.parameters.length) {
+            if (aliasParameter >= tailDeclaration.parameters.length) {
+              throw "native tail-await callable lost its parameter identity";
+            }
+            output.append("  ");
+            try appendCallableParameterDeclaration(
+              inout output,
+              functionType.parameters[aliasParameter],
+              tailDeclaration.parameters[aliasParameter].name
+            );
+            output.append(" = frame->argument");
+            output.append(`${aliasParameter}`);
+            output.append(";\n");
+            aliasParameter = aliasParameter + 1;
+          }
+          output.append("  if (task->cancellation_requested && frame->state == 0) {\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n    frame->child = Z_");
+          output.append(tailAwait.value);
+          output.append("_start(");
+          try appendExpression(
+            inout output,
+            tailDeclaration,
+            tailAwait.children[0]
+          );
+          output.append(", task->executor");
+          let tailArgument: usize = 1;
+          while (tailArgument < tailAwait.children.length) {
+            output.append(", ");
+            const borrowed = tailAwait.labels.length >= tailArgument
+              && (
+                tailAwait.labels[tailArgument - 1] == "in"
+                || tailAwait.labels[tailArgument - 1] == "inout"
+                || tailAwait.labels[tailArgument - 1] == "out"
+              );
+            if (borrowed) output.append("&(");
+            try appendExpression(
+              inout output,
+              tailDeclaration,
+              tailAwait.children[tailArgument]
+            );
+            if (borrowed) output.append(")");
+            tailArgument = tailArgument + 1;
+          }
+          output.append(");\n    if (frame->child.task == NULL) abort();\n    frame->state = 1;\n    if (frame->child.task->completed) z_stage1_async_enqueue(task->executor, task);\n    else {\n      if (frame->child.task->waiter != NULL) abort();\n      frame->child.task->waiter = task;\n      z_stage1_async_enqueue(task->executor, frame->child.task);\n    }\n    return;\n  }\n  if (frame->state != 1 || frame->child.task == NULL || !frame->child.task->completed) abort();\n  if (task->cancellation_requested || frame->child.task->cancelled) {\n    ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            2
+          );
+          output.append("    task->cancelled = true;\n    task->completed = true;\n    return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n");
+          if (functionType.returnType.kind == LoweredTypeKind.voidType) {
+            output.append("  if (frame->child.take_result != NULL) frame->child.take_result(frame->child.task, NULL);\n");
+          } else {
+            output.append("  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &frame->result);\n");
+            if (resultNeedsDeinit) {
+              output.append("  frame->live_result = true;\n");
+            }
+          }
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
+          output.append("  task->completed = true;\n}\n\n");
+        }
         output.append("static bool ");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_failed(Z_AsyncTask *task) {\n  (void)task;\n  return false;\n}\n\n");
@@ -5515,6 +5724,17 @@ function appendCallableHelpers(
         output.append("_task *frame = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task *)task;\n");
+        if (directTailAwait) {
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_release_child(frame);\n");
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
+        }
         if (resultNeedsDeinit) {
           output.append("  if (frame->live_result) ");
           if (functionType.returnType.kind == LoweredTypeKind.classType) {
@@ -5559,7 +5779,7 @@ function appendCallableHelpers(
           parameter = parameter + 1;
         }
         output.append(") {\n");
-        if (asyncSuspension != "scheduler-yield") {
+        if (!persistentSuspension) {
           output.append("  (void)executor;\n");
         }
         if (expression.captureTypes.length == 0) {
@@ -5602,7 +5822,7 @@ function appendCallableHelpers(
         output.append("_task *frame = (");
         appendCallableHelperName(inout output, owner, expressionIndex);
         output.append("_task *)calloc(1, sizeof(*frame));\n  if (frame == NULL) abort();\n");
-        if (asyncSuspension == "scheduler-yield") {
+        if (persistentSuspension) {
           output.append("  if (executor == NULL) abort();\n");
           let unusedParameter: usize = 0;
           while (unusedParameter < functionType.parameters.length) {
@@ -5632,7 +5852,15 @@ function appendCallableHelpers(
           output.append("  frame->task.poll = ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_poll;\n  frame->task.executor = executor;\n");
-          if (directSchedulerYield) {
+          if (directTailAwait) {
+            output.append("  frame->task.request_cancel = ");
+            appendCallableHelperName(inout output, owner, expressionIndex);
+            output.append("_cancel;\n  frame->child = (Z_AsyncInvocation){0};\n");
+          }
+          if (
+            directSchedulerYield
+            || directTailAwait
+          ) {
             let storedParameter: usize = 0;
             while (storedParameter < functionType.parameters.length) {
               output.append("  frame->argument");
@@ -5643,6 +5871,18 @@ function appendCallableHelpers(
                 functionType.parameters[storedParameter].name
               );
               output.append(";\n");
+              if (
+                functionType.parameters[storedParameter].mode
+                  == LoweredParameterMode.value
+                && loweredTypeNeedsDeinit(
+                  program,
+                  functionType.parameters[storedParameter].type
+                )
+              ) {
+                output.append("  frame->live_argument");
+                output.append(`${storedParameter}`);
+                output.append(" = true;\n");
+              }
               storedParameter = storedParameter + 1;
             }
           }
@@ -5653,7 +5893,7 @@ function appendCallableHelpers(
         ) {
           throw "native async closure helper lost its body";
         }
-        if (asyncSuspension != "scheduler-yield") {
+        if (asyncSuspension.byteLength == 0) {
           if (functionType.returnType.kind != LoweredTypeKind.voidType) {
             output.append("  frame->result = ");
           } else output.append("  ");
@@ -5927,7 +6167,8 @@ function appendAsyncCallableRuntime(
   output.append("  task->next = NULL;\n  task->queued = false;\n}\n\n");
   output.append("static __attribute__((unused)) void z_stage1_async_request_cancel(Z_AsyncTask *task) {\n");
   output.append("  if (task == NULL || task->completed) return;\n");
-  output.append("  task->cancellation_requested = true;\n}\n\n");
+  output.append("  task->cancellation_requested = true;\n");
+  output.append("  if (task->request_cancel != NULL) task->request_cancel(task);\n}\n\n");
   output.append("typedef struct Z_AsyncAwaiter {\n");
   output.append("  Z_AsyncTask task;\n");
   output.append("  Z_AsyncTask *child;\n");
@@ -11312,6 +11553,7 @@ function appendTypeDefinitions(
     output.append("typedef struct Z_AsyncExecutor Z_AsyncExecutor;\n");
     output.append("struct Z_AsyncTask {\n");
     output.append("  void (*poll)(Z_AsyncTask *task);\n");
+    output.append("  void (*request_cancel)(Z_AsyncTask *task);\n");
     output.append("  bool completed;\n");
     output.append("  bool cancellation_requested;\n");
     output.append("  bool cancelled;\n");
