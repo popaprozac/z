@@ -3446,6 +3446,15 @@ function moduleTypeNeedsCleanup(
   return moduleTypeNeedsCleanupDepth(program, importedTypes, type, 0);
 }
 
+function moduleTypeRetainsCapturedIdentity(in type: LoweredType): boolean {
+  return type.kind == LoweredTypeKind.classType
+    || type.kind == LoweredTypeKind.weakType
+    || type.kind == LoweredTypeKind.mutexType
+    || type.kind == LoweredTypeKind.taskScopeType
+    || type.kind == LoweredTypeKind.taskControlType
+    || type.kind == LoweredTypeKind.functionType;
+}
+
 function threadShareablePrimitive(in name: String): boolean {
   return name == "void"
     || name == "boolean"
@@ -6272,6 +6281,44 @@ function resolvedCallParameterTypes(
       || resolution.line != tree.nodes[index].line
       || resolution.column != tree.nodes[index].column
     ) continue;
+    if (
+      resolution.kind == "function"
+      && resolution.callableTypeParameterCount > 0
+      && tree.nodes[index].children.length > 0
+    ) {
+      const callee = tree.nodes[index].children[0];
+      if (
+        tree.nodes[callee].kind == ExpressionKind.identifierExpression
+      ) {
+        for (const declaration of program.functions) {
+          if (
+            declaration.name != tree.nodes[callee].value
+            || declaration.typeParameters.length
+              != resolution.callableTypeParameterCount
+            || resolution.typeArguments.length
+              != resolution.callableTypeParameterCount
+          ) continue;
+          let substitutions = Array<NativeValueBinding>();
+          let parameter: usize = 0;
+          while (parameter < declaration.typeParameters.length) {
+            addValueBinding(
+              inout substitutions,
+              declaration.typeParameters[parameter].name,
+              resolution.typeArguments[parameter]
+            );
+            parameter = parameter + 1;
+          }
+          let types = Array<String>();
+          for (const declaredParameter of declaration.parameters) {
+            types.push(substituteGenericType(
+              declaredParameter.type.name,
+              substitutions
+            ));
+          }
+          return types;
+        }
+      }
+    }
     let types = Array<String>();
     for (const type of resolution.parameterTypes) {
       types.push(type.copyBytes(0, type.byteLength));
@@ -14148,6 +14195,19 @@ function lowerExpressionExpected(
           );
           let stored = local;
           if (
+            tree.nodes[index].value == "move"
+            && moduleTypeRetainsCapturedIdentity(captureTypes[capture])
+          ) {
+            let retainedChildren = Array<usize>();
+            retainedChildren.push(local);
+            stored = pushExpression(
+              inout output,
+              LoweredExpressionKind.retainValue,
+              captureTypes[capture].name,
+              retainedChildren,
+              Array<String>()
+            );
+          } else if (
             tree.nodes[index].value == "move"
             && moduleTypeNeedsCleanup(
               program,

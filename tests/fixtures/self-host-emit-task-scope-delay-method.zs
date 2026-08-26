@@ -16,8 +16,9 @@ function duplicate(in value: String): String {
 }
 
 readonly class DeliveryService {
-  async function complete(): void on thread.main {
+  async function complete(requestId: i32): void on thread.main {
     await delay(1);
+    if (requestId != 40) return;
     console.log("completed request 40");
   }
 
@@ -35,7 +36,11 @@ async function main(): i32 on thread.main {
   const completionService = new DeliveryService({});
   const completion = completed.schedule(
     thread.main,
-    async move (): void => await completionService.complete()
+    async move (): void => await completionService.complete(40)
+  );
+  const repeatedCompletion = completed.schedule(
+    thread.main,
+    async move (): void => await completionService.complete(40)
   );
   await completed.close();
 
@@ -47,5 +52,10 @@ async function main(): i32 on thread.main {
   );
   const requested = control.requestCancel();
   await updates.close();
-  return completion.accepted && control.accepted && requested ? 0 : 1;
+  return completion.accepted
+    && repeatedCompletion.accepted
+    && control.accepted
+    && requested
+    ? 0
+    : 1;
 }

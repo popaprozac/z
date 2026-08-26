@@ -9376,6 +9376,7 @@ function appendAsyncMethodAwaitHelpers(
             functionType.parameters[aliasParameter],
             delayDeclaration.parameters[aliasParameter].name
           );
+          output.append(" __attribute__((unused))");
           output.append(" = frame->argument");
           output.append(`${aliasParameter}`);
           output.append(";\n");
@@ -9428,6 +9429,7 @@ function appendAsyncMethodAwaitHelpers(
             functionType.parameters[aliasParameter],
             delayDeclaration.parameters[aliasParameter].name
           );
+          output.append(" __attribute__((unused))");
           output.append(" = frame->argument");
           output.append(`${aliasParameter}`);
           output.append(";\n");

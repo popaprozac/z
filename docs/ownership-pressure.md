@@ -4154,6 +4154,32 @@ looping delay-method frames remain conservative rather than silently falling
 back to synchronous code. This closes the runtime prerequisite for Zapp to map
 frontend request cancellation onto the accepted `TaskControl`.
 
+The first deterministic Zapp request-cancellation registry then combined three
+more seams. A generic class method calling a generic free function reused stale
+parameter evidence when two distinct ARC class specializations appeared in one
+module. Fixed-point `move` closure lowering transferred ARC and callable
+identities out of the enclosing scope even though managed identity capture is a
+retain, not a unique-owner move. Stage 0 retained classes copied out of borrowed
+`Map` payloads in async frames but omitted the equivalent retain for stored
+function identities. Native specialization now rebuilds local generic call
+parameters from the concrete type arguments, managed closure capture emits the
+type's retain operation, and async frame copies share one retain dispatcher for
+classes, functions, `Mutex`, `TaskScope`, and `TaskControl`. Focused strict-C
+fixtures reuse one ARC service across two delayed scheduled closures and invoke
+the same async handler from a Map twice.
+
+Zapp keeps the mutable request record entirely inside a `thread.main` registry.
+Scheduled closures carry only the scalar request ID and generation; attachment
+associates the returned `TaskControl` after admission, and completion removes
+only the matching generation. The headless proof parks one child in
+scheduler-aware `delay`, cancels it by ID, verifies that its continuation never
+runs, and then completes a later service request. Stage 0 and the fixed-point
+compiler execute the unchanged smoke, and cancellation removes the timer rather
+than waiting for its deadline. One adjacent parity gap remains explicit: Stage
+0 rejects a stronger `on thread.main` implementation of an unrestricted trait
+method, while the fixed-point trait-conformance path still needs the same
+contravariant executor check. Zapp does not rely on that invalid shape.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

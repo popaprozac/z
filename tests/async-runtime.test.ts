@@ -3676,3 +3676,17 @@ test("moves owned String and TextBuffer storage through native thread frames", (
   const arrayResult = spawnSync(process.execPath, [cli, "run", arrayFile], { encoding: "utf8" });
   assert.equal(arrayResult.status, 0, arrayResult.stderr);
 });
+
+test("retains async function identities copied from borrowed Map payloads", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/async-function-map-retain.zs",
+  );
+  const generated = compileToC(readFileSync(input, "utf8"), input);
+  assert.match(generated, /Z_Function_[A-Za-z0-9_]+_retain\(\(\*frame->value_stored\)\)/);
+
+  const result = spawnSync(process.execPath, [cli, "run", input], {
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+});

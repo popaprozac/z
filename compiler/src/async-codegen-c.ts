@@ -6958,13 +6958,9 @@ function emitFrameExpressionInner(
         if (
           type
           && plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && (type === "TaskScope" || type === "TaskControl" || plan.types.structs.get(type)?.kind === "class")
         ) {
-          return type === "TaskScope"
-            ? `z_task_scope_retain(${value})`
-            : type === "TaskControl"
-              ? `z_task_control_retain(${value})`
-              : `Z_${type}_retain(${value})`;
+          const retained = retainManagedFrameValue(type, value, plan.types);
+          if (retained) return retained;
         }
         return value;
       }
@@ -6982,15 +6978,9 @@ function emitFrameExpressionInner(
           }
           return `(frame->${frameLiveField(expression.name)} = false, ${value})`;
         }
-        if (
-          plan.types.semanticInfo.managedCopies.has(expression.location.offset)
-          && (type === "TaskScope" || type === "TaskControl" || plan.types.structs.get(type)?.kind === "class")
-        ) {
-          return type === "TaskScope"
-            ? `z_task_scope_retain(${value})`
-            : type === "TaskControl"
-              ? `z_task_control_retain(${value})`
-              : `Z_${type}_retain(${value})`;
+        if (plan.types.semanticInfo.managedCopies.has(expression.location.offset)) {
+          const retained = retainManagedFrameValue(type, value, plan.types);
+          if (retained) return retained;
         }
         return value;
       }
@@ -7663,6 +7653,21 @@ function asyncMutexInitializeName(valueType: string): string {
 
 function asyncMutexRetainName(valueType: string): string {
   return `z_mutex_${asyncNativeSymbolPart(valueType)}_retain`;
+}
+
+function retainManagedFrameValue(
+  type: string,
+  value: string,
+  types: AsyncTypeContext,
+): string | null {
+  if (type === "TaskScope") return `z_task_scope_retain(${value})`;
+  if (type === "TaskControl") return `z_task_control_retain(${value})`;
+  const mutex = parseMutexType(type);
+  if (mutex) return `${asyncMutexRetainName(mutex.valueType)}(${value})`;
+  const functionType = parseFunctionType(type);
+  if (functionType) return `${functionTypeCName(functionType)}_retain(${value})`;
+  if (types.structs.get(type)?.kind === "class") return `Z_${type}_retain(${value})`;
+  return null;
 }
 
 function asyncMutexDeinitName(valueType: string): string {

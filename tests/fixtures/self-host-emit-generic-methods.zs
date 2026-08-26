@@ -16,8 +16,20 @@ class IdentityStore {
   label: String;
 
   function preserve<T>(value: T): T {
-    return value;
+    return identity(value);
   }
+}
+
+class FirstIdentity {
+  readonly value: i32;
+}
+
+class SecondIdentity {
+  readonly value: i32;
+}
+
+function identity<T>(value: T): T {
+  return value;
 }
 
 struct Utility {
@@ -42,6 +54,13 @@ function main(): i32 {
   const store = new IdentityStore({ label: "identity" });
   const classSelected = store.preserve<String>("class");
   if (classSelected != "class") return 3;
+  const firstIdentity = store.preserve(
+    new FirstIdentity({ value: 20 })
+  );
+  const secondIdentity = store.preserve(
+    new SecondIdentity({ value: 22 })
+  );
+  if (firstIdentity.value + secondIdentity.value != 42) return 4;
   const required = attempt Utility.require<String>("safe", false);
   const status = match (required) {
     success(value) => {

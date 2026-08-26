@@ -1587,7 +1587,7 @@ test("keeps a cleanup-bearing method local alive across a dynamic child", () => 
     assert.equal(execution.status, 0, execution.stderr);
     assert.equal(
       execution.stdout,
-      "released forwarded request\nreleased prefixed source\nreleased forwarded request\nreleased prefixed relay\n",
+      "released forwarded request\nreleased forwarded request\nreleased prefixed source\nreleased prefixed relay\n",
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -15310,6 +15310,10 @@ test("runs a stored delay-suspending async method through TaskScope", () => {
   assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1000\)/);
   assert.match(emission.stdout, /z_stage1_async_wait_for_timer/);
   assert.match(emission.stdout, /request_cancel = .*_cancel/);
+  assert.match(
+    emission.stdout,
+    /Z_DeliveryService_retain\(completionService\)/,
+  );
 
   const directory = mkdtempSync("/tmp/z-task-scope-delay-method-");
   const executable = resolve(directory, "program");
@@ -15334,7 +15338,7 @@ test("runs a stored delay-suspending async method through TaskScope", () => {
   assert.equal(execution.status, 0, execution.stderr);
   assert.equal(
     execution.stdout,
-    "completed request 40\nreleased request 41\n",
+    "completed request 40\ncompleted request 40\nreleased request 41\n",
   );
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);

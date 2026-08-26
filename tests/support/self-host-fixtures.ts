@@ -133,6 +133,8 @@ const focusedNegative = { kind: "focused-negative" } as const;
 export const selfHostEmitFixtureClassifications: Readonly<
   Record<string, SelfHostEmitFixtureClassification>
 > = {
+  "self-host-emit-borrowed-task-control-cancel.zs": focusedPositive,
+  "self-host-emit-class-field-order.zs": differential,
   "self-host-emit-fixed-array.zs": differential,
   "self-host-emit-fixed-array-owned.zs": differential,
   "self-host-emit-generic-struct.zs": differential,
