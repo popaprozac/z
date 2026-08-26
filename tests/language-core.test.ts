@@ -2716,6 +2716,33 @@ test("requires exhaustive enum matches", () => {
   );
 });
 
+test("uses a final wildcard match arm as an exhaustive non-binding fallback", () => {
+  const example = resolve(projectRoot, "tests/fixtures/match-wildcard.zs");
+  const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const source = readFileSync(example, "utf8");
+  const generated = compileToC(source, example);
+  assert.match(generated, /default:\s*\{/);
+  assert.match(generated, /Z_Resource_deinit\(&\(\(_z_match_/);
+  assert.match(generated, /Z_Session_release\(\(_z_match_.*data\.some\)/s);
+
+  const binding = source.replace("_ => -1;", "_(value) => value;");
+  assert.throws(
+    () => compileToC(binding, "wildcard-binding.zs"),
+    /wildcard match arm cannot bind a payload/,
+  );
+
+  const unreachable = source.replace(
+    "number(number) => number;\n    _ => -1;",
+    "_ => -1;\n    number(number) => number;",
+  );
+  assert.throws(
+    () => compileToC(unreachable, "wildcard-unreachable.zs"),
+    /unreachable match arm after wildcard/,
+  );
+});
+
 test("compiles payload enums and exhaustive matches", () => {
   const example = resolve(projectRoot, "examples/language/control-flow/match.zs");
   const result = spawnSync(process.execPath, [cli, "run", example], { encoding: "utf8" });

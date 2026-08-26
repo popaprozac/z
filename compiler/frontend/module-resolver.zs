@@ -2561,14 +2561,37 @@ function inferMatchExpressionNodeType(
       0,
       tree.nodes[armIndex].value.byteLength
     );
+    const wildcard = variantName == "_";
+    if (
+      wildcard
+      && tree.nodes[armIndex].labels.length > 0
+      && tree.nodes[armIndex].labels[0] != "none"
+    ) {
+      throw matchError(
+        module,
+        tree,
+        armIndex,
+        "the wildcard match arm cannot bind a payload; write _ => ..."
+      );
+    }
+    if (wildcard && childIndex + 1 < children.length) {
+      throw matchError(
+        module,
+        tree,
+        children[childIndex + 1],
+        "unreachable match arm after wildcard; move _ to the final arm"
+      );
+    }
     const variantIndex = matchVariantIndex(shape, variantName);
-    if (variantIndex == shape.variants.length) {
+    if (!wildcard && variantIndex == shape.variants.length) {
       throw matchError(module, tree, armIndex, `unknown variant ${variantName}`);
     }
     if (containsString(covered, variantName)) {
       throw matchError(module, tree, armIndex, `duplicate match arm ${variantName}`);
     }
     if (
+      !wildcard
+      &&
       shape.foreignUnion
       && tree.nodes[armIndex].labels.length > 0
       && tree.nodes[armIndex].labels[0] == "object"
@@ -2594,18 +2617,18 @@ function inferMatchExpressionNodeType(
         NativeOwnershipState.moved
       );
     }
-    try addMatchArmValueBindings(
-      module,
-      modules,
-      moduleIndex,
-      tree,
-      armIndex,
-      shape.variants[variantIndex],
-      borrowedMatch,
-      subjectRoot,
-      inout armBindings,
-      inout evidence
-    );
+    if (!wildcard) try addMatchArmValueBindings(
+        module,
+        modules,
+        moduleIndex,
+        tree,
+        armIndex,
+        shape.variants[variantIndex],
+        borrowedMatch,
+        subjectRoot,
+        inout armBindings,
+        inout evidence
+      );
     const statements = copyIndices(tree.nodes[armIndex].statements);
     let armType = "";
     if (statements.length == 1) {
@@ -2696,7 +2719,7 @@ function inferMatchExpressionNodeType(
     childIndex = childIndex + 1;
   }
   for (const variant of shape.variants) {
-    if (!containsString(covered, variant.name)) {
+    if (!containsString(covered, "_") && !containsString(covered, variant.name)) {
       throw matchError(
         module,
         tree,

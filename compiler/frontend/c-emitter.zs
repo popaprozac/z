@@ -1441,7 +1441,7 @@ function appendAsyncTailSynchronousMatch(
     appendCBindingName(inout output, consumedLiveFlag);
     output.append(" = false;\n");
   }
-  const temporary = `_z_stage1_async_suffix_match_${index}`;
+  const temporary = `_z_stage1_match_${index}`;
   if (statement.matchConsumesSubject) {
     const subjectType = match (in statement.type) {
       some(type) => try cType(type);
@@ -1484,13 +1484,17 @@ function appendAsyncTailSynchronousMatch(
     } else output.append(".tag");
   }
   output.append(") {\n");
+  let hasWildcard = false;
   for (const armIndex of statement.children) {
     const arm = view declaration.statements[armIndex];
     if (arm.kind != LoweredStatementKind.matchArmStatement) {
       throw "native async suffix received a malformed match arm";
     }
     appendIndent(inout output, depth + 1);
-    if (nicheViewOption) {
+    if (arm.name == "_") {
+      hasWildcard = true;
+      output.append("default");
+    } else if (nicheViewOption) {
       output.append(arm.name == "some" ? "case 1" : "case 0");
     } else {
       output.append("case Z_");
@@ -1562,8 +1566,10 @@ function appendAsyncTailSynchronousMatch(
     appendIndent(inout output, depth + 1);
     output.append("}\n");
   }
-  appendIndent(inout output, depth + 1);
-  output.append("default: abort();\n");
+  if (!hasWildcard) {
+    appendIndent(inout output, depth + 1);
+    output.append("default: abort();\n");
+  }
   appendIndent(inout output, depth);
   output.append("}\n");
 }
@@ -1964,7 +1970,7 @@ function appendAsyncTailDispatchStatement(
     some(found) => found;
     none => throw "native matched tail await lost its subject";
   };
-  const temporary = `_z_stage1_async_match_${index}`;
+  const temporary = `_z_stage1_match_${index}`;
   appendIndent(inout output, depth);
   output.append(subjectType);
   output.append(" ");
@@ -1983,16 +1989,22 @@ function appendAsyncTailDispatchStatement(
     some(found) => found;
     none => throw "native matched tail await lost its selected arm";
   };
+  let hasWildcard = false;
   for (const armIndex of statement.children) {
     const arm = view declaration.statements[armIndex];
     if (arm.kind != LoweredStatementKind.matchArmStatement) {
       throw "native matched tail await received a malformed arm";
     }
     appendIndent(inout output, depth + 1);
-    output.append("case Z_");
-    output.append(statement.name);
-    output.append("Tag_");
-    output.append(arm.name);
+    if (arm.name == "_") {
+      hasWildcard = true;
+      output.append("default");
+    } else {
+      output.append("case Z_");
+      output.append(statement.name);
+      output.append("Tag_");
+      output.append(arm.name);
+    }
     output.append(": {\n");
     let scopedCleanupName = "";
     let scopedCleanupType = Option<LoweredType>.none;
@@ -2088,8 +2100,10 @@ function appendAsyncTailDispatchStatement(
     appendIndent(inout output, depth + 1);
     output.append("}\n");
   }
-  appendIndent(inout output, depth + 1);
-  output.append("default: abort();\n");
+  if (!hasWildcard) {
+    appendIndent(inout output, depth + 1);
+    output.append("default: abort();\n");
+  }
   appendIndent(inout output, depth);
   output.append("}\n");
 }
@@ -5753,7 +5767,7 @@ function appendForeignUnionMatchStatement(
     if (arm.kind != LoweredStatementKind.matchArmStatement) {
       throw "native C emission received a malformed native union match arm";
     }
-    if (arm.foreignMatchFallback) {
+    if (arm.name == "_" || arm.foreignMatchFallback) {
       appendIndent(inout output, depth + 1);
       output.append("default: {\n");
     } else {
@@ -6234,12 +6248,16 @@ function appendStatement(
       }
     }
     output.append(") {\n");
+    let hasWildcard = false;
     for (const arm of declaration.statements[index].children) {
       if (declaration.statements[arm].kind != LoweredStatementKind.matchArmStatement) {
         throw "native C emission received a malformed match arm";
       }
       appendIndent(inout output, depth + 1);
-      if (nicheViewOption) {
+      if (declaration.statements[arm].name == "_") {
+        hasWildcard = true;
+        output.append("default");
+      } else if (nicheViewOption) {
         output.append(declaration.statements[arm].name == "some"
           ? "case 1"
           : "case 0");
@@ -6323,10 +6341,12 @@ function appendStatement(
       appendIndent(inout output, depth + 1);
       output.append("}\n");
     }
-    appendIndent(inout output, depth + 1);
-    output.append("default:\n");
-    appendIndent(inout output, depth + 2);
-    output.append("abort();\n");
+    if (!hasWildcard) {
+      appendIndent(inout output, depth + 1);
+      output.append("default:\n");
+      appendIndent(inout output, depth + 2);
+      output.append("abort();\n");
+    }
     appendIndent(inout output, depth);
     output.append("}\n");
     return;
@@ -12559,22 +12579,32 @@ function appendThreadMainMatchCallHelper(
   const taggedSubject = labelsContain(matchStatement.labels, "tagged");
   if (taggedSubject) output.append(".tag");
   output.append(") {\n");
+  let hasWildcard = false;
   let armIndex: usize = 0;
   while (armIndex < plan.arms.length) {
     const arm = view target.statements[plan.arms[armIndex].arm];
-    output.append("    case Z_");
-    output.append(matchStatement.name);
-    if (taggedSubject) output.append("Tag");
-    output.append("_");
-    output.append(arm.name);
+    if (arm.name == "_") {
+      hasWildcard = true;
+      output.append("    default");
+    } else {
+      output.append("    case Z_");
+      output.append(matchStatement.name);
+      if (taggedSubject) output.append("Tag");
+      output.append("_");
+      output.append(arm.name);
+    }
     output.append(`: context->arm_0 = ${armIndex};`);
-    if (subjectNeedsCleanup && arm.matchBindingNeedsCleanup) {
+    if (
+      subjectNeedsCleanup
+      && (arm.matchBindingNeedsCleanup || arm.name == "_")
+    ) {
       output.append(" context->match_subject_live = true;");
     }
     output.append(" break;\n");
     armIndex = armIndex + 1;
   }
-  output.append("    default: abort();\n  }\n");
+  if (!hasWildcard) output.append("    default: abort();\n");
+  output.append("  }\n");
   try appendMainFrameRootSaves(
     inout output,
     program,

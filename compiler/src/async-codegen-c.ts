@@ -1626,6 +1626,7 @@ function registerAsyncMatchBindings(
   const { match: statement, subjectType } = site;
   const declaration = types.enums.get(subjectType);
   const arm = statement.arms[armIndex];
+  if (arm.variantName === "_") return;
   const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
   if (!declaration || !variant) {
     unsupported(fileName, statement.location, "persistent async match requires a materialized enum subject");
@@ -4994,9 +4995,11 @@ function emitAsyncMatchDispatch(
   return [
     `switch ((${subject}).tag) {`,
     ...site.match.arms.map((arm, index) => (
-      `  case ${resultTag(site.subjectType, arm.variantName)}: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
+      arm.variantName === "_"
+        ? `  default: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
+        : `  case ${resultTag(site.subjectType, arm.variantName)}: frame->state = ${asyncLabelMarker(operation.armLabels[index])}; break;`
     )),
-    "  default: abort();",
+    ...(site.match.arms.some((arm) => arm.variantName === "_") ? [] : ["  default: abort();"]),
     "}",
     "continue;",
   ];
@@ -5010,6 +5013,7 @@ function emitAsyncMatchBinding(
   const { site } = operation;
   const declaration = plan.types.enums.get(site.subjectType);
   const arm = site.match.arms[operation.armIndex];
+  if (arm.variantName === "_") return [];
   const variant = declaration?.variants.find((candidate) => candidate.name === arm.variantName);
   if (!declaration || !variant) unsupported(fileName, site.match.location, "missing persistent async match variant");
   const subject = asyncMatchSubject(site, plan, fileName);
@@ -5058,9 +5062,9 @@ function emitAsyncMatchCleanupLines(
   if (!site.subjectBinding) return [];
   const arm = site.match.arms[armIndex];
   const declaration = plan.types.enums.get(site.subjectType)!;
-  const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+  const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName) ?? null;
   const lines: string[] = [];
-  if (arm.binding && variant.payload && hasFrameCleanup(variant.payload.name, plan.types)) {
+  if (arm.binding && variant?.payload && hasFrameCleanup(variant.payload.name, plan.types)) {
     lines.push(
       `if (frame->${frameLiveField(arm.binding)}) {`,
       `  ${frameCleanup(frameStoredValue(arm.binding, variant.payload.name, plan.types), variant.payload.name, plan.types)}`,
@@ -6343,17 +6347,23 @@ function emitAsyncMatchExpression(
   const storedSubject = borrowed ? `(*${temporary})` : temporary;
   const lines = [storage, `switch (${storedSubject}.tag) {`];
   for (const arm of expression.arms) {
-    const variant = inspected.declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const wildcard = arm.variantName === "_";
+    const variant = wildcard
+      ? { name: "_", payload: null, location: arm.location }
+      : inspected.declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armContext = asyncMatchArmContext(arm, variant, storedSubject, plan);
     const value = emitFrameExpression(asyncMatchArmValue(arm, fileName), armContext, fileName);
     lines.push(
-      `  case ${resultTag(inspected.subjectType, variant.name)}: {`,
+      `  ${wildcard ? "default" : `case ${resultTag(inspected.subjectType, variant.name)}`}: {`,
       `    ${destination} = ${value};`,
       "    break;",
       "  }",
     );
   }
-  if (requiresNativeFramePlacement(inspected.subjectType, plan.types)) {
+  if (
+    !expression.arms.some((arm) => arm.variantName === "_")
+    && requiresNativeFramePlacement(inspected.subjectType, plan.types)
+  ) {
     lines.push("  default:", "    abort();");
   }
   lines.push("}");
@@ -6403,7 +6413,9 @@ function inspectAsyncMatchExpression(
   }
   emitFrameExpression(expression.expression, plan, fileName);
   for (const arm of expression.arms) {
-    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const variant = arm.variantName === "_"
+      ? { name: "_", payload: null, location: arm.location }
+      : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armContext = asyncMatchArmContext(arm, variant, "_z_async_match_subject", plan);
     emitFrameExpression(asyncMatchArmValue(arm, fileName), armContext, fileName);
   }

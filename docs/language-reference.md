@@ -1456,6 +1456,19 @@ const id = match (option) {
 };
 ```
 
+A final bare `_` is an exhaustive catch-all when only selected variants matter:
+
+```z
+const title = match (value) {
+  string(text) => text;
+  _ => "untitled";
+};
+```
+
+`_` binds no payload and must be the final arm. Arms after it are rejected as
+unreachable. A consuming `match (value)` still destroys any owned payload
+discarded by the wildcard; `match (in value)` remains non-consuming.
+
 Payload-free Z enums support `==` and `!=` by nominal tag. Payload-bearing
 enums require `match`; Z does not implicitly synthesize equality for their
 contents.

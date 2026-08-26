@@ -5128,7 +5128,7 @@ function planCleanupStatement(
               }
               let armLive = Array<LoweredCleanup>();
               appendCleanupCopies(inout armLive, live);
-              let payloadCleanup = Option<LoweredCleanup>.none;
+              let patternCleanups = Array<LoweredCleanup>();
               if (statements[loweredArm].matchBindingNeedsCleanup) {
                 const payloadType = match (in statements[loweredArm].type) {
                   some(type) => LoweredType({
@@ -5152,7 +5152,28 @@ function planCleanupStatement(
                   ),
                 });
                 armLive.push(copyCleanup(cleanup));
-                payloadCleanup = Option.some(move cleanup);
+                patternCleanups.push(move cleanup);
+              }
+              if (
+                consuming
+                && tree.nodes[arm].value == "_"
+              ) {
+                const matchType = match (in statements[loweredIndex].type) {
+                  some(type) => LoweredType({
+                    kind: type.kind,
+                    name: type.name.copyBytes(0, type.name.byteLength),
+                  });
+                  none => throw "native cleanup planning lost a wildcard match subject type";
+                };
+                if (moduleTypeNeedsCleanup(program, importedTypes, matchType)) {
+                  const cleanup = LoweredCleanup({
+                    name: `_z_stage1_match_${loweredIndex}`,
+                    type: move matchType,
+                    guard: "",
+                  });
+                  armLive.push(copyCleanup(cleanup));
+                  patternCleanups.push(move cleanup);
+                }
               }
               const introduced = try planCleanupSequence(
                 program,
@@ -5175,11 +5196,8 @@ function planCleanupStatement(
                 sequenceFallsThrough(arena, sourceRoots)
                 && loweredSequenceFallsThrough(statements, loweredRoots)
               ) {
-                match (in payloadCleanup) {
-                  some(cleanup) => statements[loweredArm].cleanups.push(
-                    copyCleanup(cleanup)
-                  );
-                  none => {}
+                for (const cleanup of patternCleanups) {
+                  statements[loweredArm].cleanups.push(copyCleanup(cleanup));
                 }
                 appendStatementCleanupCopies(
                   inout statements,

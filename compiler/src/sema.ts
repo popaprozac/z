@@ -5215,12 +5215,27 @@ function analyzeStatement(
       const incomingLoans = snapshotAccessLoanState(state);
       const continuingRegionOrigins: RegionContainerOriginState[] = [];
       const continuingLoans: AccessLoanState[] = [];
-      for (const arm of statement.arms) {
+      for (const [armIndex, arm] of statement.arms.entries()) {
         restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
         restoreAccessLoanState(state, incomingLoans);
-        const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+        const wildcard = arm.variantName === "_";
+        if (wildcard && (arm.binding || arm.objectBindings)) {
+          throw new DiagnosticError(fileName, arm.location, "the wildcard match arm cannot bind a payload", {
+            helps: ["remove the binding and write `_ => ...`"],
+          });
+        }
+        if (wildcard && armIndex !== statement.arms.length - 1) {
+          throw new DiagnosticError(fileName, statement.arms[armIndex + 1]!.location, "unreachable match arm after wildcard", {
+            helps: ["move `_` to the final arm"],
+          });
+        }
+        const declaredVariant = wildcard
+          ? { name: "_", payload: null, location: arm.location }
+          : declaration.variants.find((candidate) => candidate.name === arm.variantName);
         if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
-        const variant = foreignUnion
+        const variant = wildcard
+          ? declaredVariant
+          : foreignUnion
           ? declaredVariant
           : resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
         if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
@@ -5352,7 +5367,9 @@ function analyzeStatement(
           continuingLoans.push(snapshotAccessLoanState(state));
         }
       }
-      const missing = declaration.variants.find((variant) => !covered.has(variant.name));
+      const missing = covered.has("_")
+        ? null
+        : declaration.variants.find((variant) => !covered.has(variant.name));
       if (missing) throw new DiagnosticError(fileName, statement.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
       mergeOwnershipStates(locals, continuing, state);
       if (continuing.length > 0) {
@@ -6876,12 +6893,27 @@ function inferMatchExpression(
   const continuingLoans: AccessLoanState[] = [];
   const resultOrigins: ViewOrigin[] = [];
   let resultType: ValueType = "never";
-  for (const arm of expression.arms) {
+  for (const [armIndex, arm] of expression.arms.entries()) {
     restoreRegionContainerOrigins(regionContainers, incomingRegionOrigins, state);
     restoreAccessLoanState(state, incomingLoans);
-    const declaredVariant = declaration.variants.find((candidate) => candidate.name === arm.variantName);
+    const wildcard = arm.variantName === "_";
+    if (wildcard && (arm.binding || arm.objectBindings)) {
+      throw new DiagnosticError(fileName, arm.location, "the wildcard match arm cannot bind a payload", {
+        helps: ["remove the binding and write `_ => ...`"],
+      });
+    }
+    if (wildcard && armIndex !== expression.arms.length - 1) {
+      throw new DiagnosticError(fileName, expression.arms[armIndex + 1]!.location, "unreachable match arm after wildcard", {
+        helps: ["move `_` to the final arm"],
+      });
+    }
+    const declaredVariant = wildcard
+      ? { name: "_", payload: null, location: arm.location }
+      : declaration.variants.find((candidate) => candidate.name === arm.variantName);
     if (!declaredVariant) throw new DiagnosticError(fileName, arm.location, `unknown variant ${JSON.stringify(arm.variantName)}`);
-    const variant = foreignUnion
+    const variant = wildcard
+      ? declaredVariant
+      : foreignUnion
       ? declaredVariant
       : resolveSemanticEnumVariant(arm.location, declaration, declaredVariant, state);
     if (covered.has(variant.name)) throw new DiagnosticError(fileName, arm.location, `duplicate match arm ${JSON.stringify(variant.name)}`);
@@ -7023,7 +7055,9 @@ function inferMatchExpression(
       }
     }
   }
-  const missing = declaration.variants.find((variant) => !covered.has(variant.name));
+  const missing = covered.has("_")
+    ? null
+    : declaration.variants.find((variant) => !covered.has(variant.name));
   if (missing) throw new DiagnosticError(fileName, expression.location, `non-exhaustive match; missing ${declaration.name}.${missing.name}`);
   mergeOwnershipStates(locals, continuing, state);
   if (continuing.length > 0) {

@@ -8666,10 +8666,16 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
       ? parseViewType(inferredType)
         ? `const ${enumName(type)} *${temporary} = ${subject};`
         : `const ${enumName(type)} *${temporary} = &(${subject});`
-      : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
+      : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+        || hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)
+        ? ""
+        : "const "}${enumName(type)} ${temporary} = ${subject};`;
   }
   const arms = statement.arms.map((arm) => {
-    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const wildcard = arm.variantName === "_";
+    const variant = wildcard
+      ? { name: "_", payload: null, location: arm.location }
+      : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
@@ -8782,18 +8788,22 @@ function generateMatch(statement: Extract<Statement, { kind: "match" }>, context
         }
       }
     }
+    if (wildcard && !borrowed && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      binding += `\n    ${generateValueCleanup(discriminant, type, null, context)}`;
+    }
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
     const cleanup = statementTerminates(arm.body)
       ? ""
       : generateCleanup([armContext.cleanupScopes.at(-1)!], armContext);
     const lines = [body, cleanup, statementTerminates(arm.body) ? "" : "break;"].filter(Boolean).join("\n");
-    return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
+    const label = wildcard ? "default" : `case ${variantTag(type, variant.name)}`;
+    return `  ${label}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
-  const invalid = declaration.nativeLayout?.language === "c"
+  const invalid = !statement.arms.some((arm) => arm.variantName === "_") && (
+    declaration.nativeLayout?.language === "c"
     || requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
-    ? "\n  default:\n    abort();"
-    : "";
+  ) ? "\n  default:\n    abort();" : "";
   const matchValue = declaration.nativeLayout?.language === "c" ? discriminant : `${access}tag`;
   return `${subjectStorage ? `${subjectStorage}\n` : ""}switch (${matchValue}) {\n${arms}${invalid}\n}`;
 }
@@ -8827,7 +8837,10 @@ function generateMatchExpression(
   const access = borrowed ? `${temporary}->` : `${temporary}.`;
   const discriminant = borrowed ? `*${temporary}` : temporary;
   const arms = expression.arms.map((arm) => {
-    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const wildcard = arm.variantName === "_";
+    const variant = wildcard
+      ? { name: "_", payload: null, location: arm.location }
+      : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     const armModes = new Map(context.parameterModes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
@@ -8876,6 +8889,9 @@ function generateMatchExpression(
         binding += `\n    bool ${liveFlag} = true;`;
       }
     }
+    if (wildcard && !borrowed && hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)) {
+      binding += `\n    ${generateValueCleanup(discriminant, type, null, context)}`;
+    }
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
     const cleanup = consumeTerminates || valueArmTerminates(arm.body)
       ? ""
@@ -8885,17 +8901,21 @@ function generateMatchExpression(
       cleanup,
       consumeTerminates || valueArmTerminates(arm.body) ? "" : "break;",
     ].filter(Boolean).join("\n");
-    return `  case ${variantTag(type, variant.name)}: {${binding}\n${indent(lines, 4)}\n  }`;
+    const label = wildcard ? "default" : `case ${variantTag(type, variant.name)}`;
+    return `  ${label}: {${binding}\n${indent(lines, 4)}\n  }`;
   }).join("\n");
   const storage = borrowed
     ? parseViewType(inferredType)
       ? `const ${enumName(type)} *${temporary} = ${subject};`
       : `const ${enumName(type)} *${temporary} = &(${subject});`
-    : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes) ? "" : "const "}${enumName(type)} ${temporary} = ${subject};`;
-  const invalid = declaration.nativeLayout?.language === "c"
+    : `${requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
+      || hasCleanupType(type, context.structs, context.enums, context.semanticInfo.foreignTypes)
+      ? ""
+      : "const "}${enumName(type)} ${temporary} = ${subject};`;
+  const invalid = !expression.arms.some((arm) => arm.variantName === "_") && (
+    declaration.nativeLayout?.language === "c"
     || requiresNativeMove(type, context.structs, context.enums, context.semanticInfo.foreignNamedTypes)
-    ? "\n  default:\n    abort();"
-    : "";
+  ) ? "\n  default:\n    abort();" : "";
   const matchValue = declaration.nativeLayout?.language === "c" ? discriminant : `${access}tag`;
   return `${storage}\nswitch (${matchValue}) {\n${arms}${invalid}\n}`;
 }
@@ -8939,8 +8959,9 @@ function generateNicheOptionMatch(
       ? `${localDeclaration};\n${generateDirectValue(statement.expression, context, (value) => `${temporary} = ${value};`)}`
       : `${localDeclaration} = ${generateExpression(statement.expression, context)};`;
   }
-  const some = statement.arms.find((arm) => arm.variantName === "some")!;
-  const none = statement.arms.find((arm) => arm.variantName === "none")!;
+  const wildcard = statement.arms.find((arm) => arm.variantName === "_");
+  const some = statement.arms.find((arm) => arm.variantName === "some") ?? wildcard!;
+  const none = statement.arms.find((arm) => arm.variantName === "none") ?? wildcard!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
     const parameterModes = new Map(context.parameterModes);
@@ -8987,6 +9008,9 @@ function generateNicheOptionMatch(
         binding += `\nbool ${liveFlag} = true;`;
       }
     }
+    if (present && arm.variantName === "_" && !borrowed && cleanupBearing) {
+      binding += `${binding ? "\n" : ""}${generateValueCleanup(matchValue, payloadType, null, context)}`;
+    }
     const body = generateStatement(arm.body, armContext);
     recordVariableType(arm.body, armContext);
     const cleanup = statementTerminates(arm.body)
@@ -9026,8 +9050,9 @@ function generateNicheOptionMatchExpression(
   const storage = needsLowering
     ? `${localDeclaration};\n${generateDirectValue(expression.expression, context, (value) => `${temporary} = ${value};`)}`
     : `${localDeclaration} = ${generateExpression(expression.expression, context)};`;
-  const some = expression.arms.find((arm) => arm.variantName === "some")!;
-  const none = expression.arms.find((arm) => arm.variantName === "none")!;
+  const wildcard = expression.arms.find((arm) => arm.variantName === "_");
+  const some = expression.arms.find((arm) => arm.variantName === "some") ?? wildcard!;
+  const none = expression.arms.find((arm) => arm.variantName === "none") ?? wildcard!;
   const renderArm = (arm: typeof some, present: boolean): string => {
     const localTypes = new Map(context.localTypes);
     const parameterModes = new Map(context.parameterModes);
@@ -9048,6 +9073,9 @@ function generateNicheOptionMatchExpression(
       const liveFlag = ensureLiveFlag(arm.binding, armContext);
       armContext.cleanupScopes.at(-1)!.push({ name: arm.binding, type: payloadType, liveFlag });
       binding += `\nbool ${liveFlag} = true;`;
+    }
+    if (present && arm.variantName === "_" && !borrowed && cleanupBearing) {
+      binding += `${binding ? "\n" : ""}${generateValueCleanup(temporary, payloadType, null, context)}`;
     }
     const body = generateValueArm(arm.body, armContext, consumeValue, consumeTerminates);
     const cleanup = consumeTerminates || valueArmTerminates(arm.body)
@@ -11645,7 +11673,9 @@ function matchExpressionType(expression: Extract<Expression, { kind: "matchExpre
   const subjectType = parseViewType(inferredSubjectType)?.target ?? inferredSubjectType;
   const declaration = context.enums.get(subjectType)!;
   for (const arm of expression.arms) {
-    const variant = declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
+    const variant = arm.variantName === "_"
+      ? { name: "_", payload: null, location: arm.location }
+      : declaration.variants.find((candidate) => candidate.name === arm.variantName)!;
     const armTypes = new Map(context.localTypes);
     if (variant.payload && arm.binding) armTypes.set(arm.binding, variant.payload.name);
     const payload = variant.payload ? context.structs.get(variant.payload.name) : null;

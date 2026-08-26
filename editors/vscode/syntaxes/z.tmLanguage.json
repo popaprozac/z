@@ -430,6 +430,9 @@
     },
     "matchPatterns": {
       "patterns": [{
+        "name": "keyword.control.wildcard.z",
+        "match": "(?<![A-Za-z0-9_])_(?=\\s*=>)"
+      }, {
         "name": "constant.language.enum-member.z",
         "match": "\\b(?!move\\b)[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
       }]

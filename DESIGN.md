@@ -1350,8 +1350,21 @@ match (event) {
 }
 ```
 
-The intended pattern system is exhaustive and eventually includes enum
-variants, type patterns, destructuring, guards, literals, and wildcards.
+The pattern system is exhaustive. A final bare `_` arm matches every remaining
+variant without binding its payload:
+
+```z
+const text = match (value) {
+  string(text) => text;
+  _ => "unsupported";
+};
+```
+
+The wildcard must be final; any later arm is unreachable. Under a consuming
+`match (value)`, an owned payload discarded by `_` is still destroyed exactly
+once. Under `match (in value)`, `_` only observes the remaining case and leaves
+the owner alive. Future pattern tiers include type patterns, guards, literals,
+and or-patterns.
 
 `match` is also an expression. Concise arms provide their expression value;
 multi-statement arms use `select` to explicitly provide a value to the nearest

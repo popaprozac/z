@@ -12193,6 +12193,31 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     /match-main\.zs:3:10: non-exhaustive match; missing State\.stopped/,
   );
 
+  writeFileSync(
+    matchMain,
+    "enum State { ready, stopped, }\nfunction inspect(value: State): i32 {\n"
+      + "  return match (value) { ready => 1; _ => 0; };\n}\n",
+  );
+  const wildcardMatch = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", matchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(wildcardMatch.status, 0, wildcardMatch.stderr);
+
+  writeFileSync(
+    matchMain,
+    "enum State { ready, stopped, }\nfunction inspect(value: State): i32 {\n"
+      + "  return match (value) { _ => 0; ready => 1; };\n}\n",
+  );
+  const unreachableWildcard = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", matchMain],
+    { encoding: "utf8" },
+  );
+  assert.equal(unreachableWildcard.status, 1);
+  assert.match(unreachableWildcard.stderr, /unreachable match arm after wildcard/);
+
   const importedMatchMain = resolve(invalidDirectory, "imported-match.zs");
   const importedMatchModel = resolve(invalidDirectory, "match-model.zs");
   writeFileSync(

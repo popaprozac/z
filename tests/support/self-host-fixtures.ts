@@ -9,6 +9,7 @@ export type SelfHostDifferentialCase = {
 };
 
 export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferentialCase[] = [
+  { entry: "tests/fixtures/match-wildcard.zs" },
   { entry: "tests/fixtures/self-host-emit-fixed-array.zs" },
   {
     entry: "tests/fixtures/self-host-emit-fixed-array-owned.zs",

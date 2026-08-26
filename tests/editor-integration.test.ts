@@ -66,6 +66,30 @@ test("keeps labeled arguments reserved for Objective-C selectors", () => {
   );
 });
 
+test("highlights and explains wildcard match arms", () => {
+  const source = `
+    enum Value { number i32, empty, }
+    function inspect(value: Value): i32 {
+      return match (value) {
+        number(number) => number;
+        _ => 0;
+      };
+    }
+  `;
+  const fileName = resolve(projectRoot, "wildcard-editor.zs");
+  const offset = source.indexOf("_ =>") + 1;
+  assert.match(
+    hover(source, fileName, offset)?.contents.value ?? "",
+    /wildcard match arm; matches every remaining case/,
+  );
+  const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
+  const wildcardLine = source.slice(0, source.indexOf("_ =>")).split("\n").length - 1;
+  assert.ok(tokens.some((token) => (
+    token.line === wildcardLine
+    && semanticTokenTypes[token.type] === "keyword"
+  )));
+});
+
 test("keeps service-style callable registries clean across diagnostics, hover, completion, and tokens", () => {
   const directory = mkdtempSync("/tmp/z-service-editor-");
   const contractFile = resolve(directory, "service-contract.zs");

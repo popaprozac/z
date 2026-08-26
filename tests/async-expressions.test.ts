@@ -956,6 +956,32 @@ test("runs awaits only in the selected async match arm", () => {
   assert.equal(result.stdout, "selected\n");
 });
 
+test("runs an awaited final wildcard arm for every remaining async match case", () => {
+  const directory = mkdtempSync("/tmp/z-async-wildcard-arm-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, `
+    import console from "std/console";
+    enum State { ready, stopped, empty, }
+    async function fallback(): i32 {
+      console.log("fallback");
+      return 42;
+    }
+    async function main(): i32 {
+      const state = State.stopped;
+      return match (state) {
+        ready => 0;
+        _ => await fallback();
+      };
+    }
+  `);
+
+  const generated = compileToC(readFileSync(fileName, "utf8"), fileName);
+  assert.match(generated, /default:/);
+  const result = spawnSync(process.execPath, [cli, "run", fileName], { encoding: "utf8" });
+  assert.equal(result.status, 42, result.stderr);
+  assert.equal(result.stdout, "fallback\n");
+});
+
 test("executes async failure matches with scalar and object payload bindings", () => {
   const directory = mkdtempSync("/tmp/z-async-match-");
   const scalarFile = resolve(directory, "scalar.zs");

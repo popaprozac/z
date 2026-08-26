@@ -343,7 +343,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   const enumVariantDeclarations = new Set(
     context.sourceProgram.enums.flatMap((declaration) => declaration.variants.map((variant) => variant.location.offset)),
   );
-  const matchVariants = new Set(collectMatchArmInfos(context).map((item) => item.variantOffset));
+  const matchArmInfos = collectMatchArmInfos(context);
+  const matchVariants = new Set(
+    matchArmInfos.filter((item) => item.variantName !== "_").map((item) => item.variantOffset),
+  );
+  const matchWildcards = new Set(
+    matchArmInfos.filter((item) => item.variantName === "_").map((item) => item.variantOffset),
+  );
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
   const nativeNamespaceBindings = foreignNamespaceBindings(context);
   const localNamespaces = new Map(
@@ -459,6 +465,13 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
           .find((candidate) => candidate.name === owner);
         return Boolean(declaration?.variants.some((variant) => variant.name === token.text));
       })();
+    if (matchWildcards.has(token.location.offset)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
     if (
       enumVariantDeclarations.has(token.location.offset)
       || matchVariants.has(token.location.offset)
@@ -975,6 +988,14 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const matchVariant = collectMatchArmInfos(context).find((item) => item.variantOffset === word.start);
   if (matchVariant) {
+    if (matchVariant.variantName === "_") {
+      return markdownHover(
+        `_  // wildcard match arm; matches every remaining case`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
     const payload = matchVariant.payloadType
       ? `(${displayType(matchVariant.payloadType, context.typeDisplayNames)})`
       : "";
@@ -4431,6 +4452,8 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
               ? { payloadType: nativeVariant.payloadType }
               : arm.variantName === foreignUnion?.fallback
                 ? { payloadType: foreignUnion.discriminantType }
+                : arm.variantName === "_"
+                  ? { payloadType: null }
                 : null;
           if (!variant) continue;
           collected.push({

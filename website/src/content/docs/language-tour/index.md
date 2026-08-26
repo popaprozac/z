@@ -66,6 +66,15 @@ return match (result) {
 
 Match is exhaustive and may produce an expression value. `select` supplies a
 value to a local expression block; `return` always exits the enclosing function.
+A final bare `_` arm matches every remaining variant without binding its
+payload:
+
+```z
+return match (value) {
+  string(text) => text;
+  _ => "unsupported";
+};
+```
 
 ## Native-sized types
 
