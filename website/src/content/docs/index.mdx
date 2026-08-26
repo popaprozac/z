@@ -5,13 +5,13 @@ template: splash
 hero:
   tagline: Familiar syntax. Native performance. Checked interop.
   actions:
-    - text: Get started
-      link: /getting-started/
+    - text: Take the tour
+      link: /language-tour/
       icon: right-arrow
       variant: primary
-    - text: Explore interop
-      link: /interop/
-      icon: external
+    - text: Why Z?
+      link: /learn/why-z/
+      icon: open-book
       variant: minimal
 ---
 
@@ -24,7 +24,8 @@ with C, Objective-C, and selected C++ and Swift surfaces.
 :::caution[Pre-alpha]
 Z is a language-design laboratory with a working Stage-0 compiler and a
 fixed-point native compiler. It is not yet a production toolchain, and source
-compatibility is not guaranteed.
+compatibility is not guaranteed. See the [implementation status](/reference/status/)
+for the tested boundary today.
 :::
 
 <CardGrid>
@@ -66,3 +67,14 @@ Z source -> semantic and ownership analysis -> C-family source -> Clang -> nativ
 That backend is part of the interop strategy: supported native calls remain
 direct calls rather than passing through a VM or universal foreign-function
 runtime.
+
+## Choose your path
+
+- **New to Z:** start with [Why Z?](/learn/why-z/), then take the
+  [language tour](/language-tour/).
+- **Coming from TypeScript:** read [Z for TypeScript developers](/learn/z-for-typescript/)
+  before relying on familiar-looking syntax.
+- **Ready to run code:** follow [Getting started](/getting-started/).
+- **Evaluating native integration:** explore the [interop safety tiers](/interop/).
+- **Checking an exact or temporary boundary:** use the [reference map](/reference/)
+  and [implementation status](/reference/status/).

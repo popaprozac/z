@@ -34,17 +34,29 @@ export default defineConfig({
           label: "Start here",
           items: [
             { label: "Overview", slug: "index" },
+            { label: "Why Z?", slug: "learn/why-z" },
             { label: "Getting started", slug: "getting-started" },
-            { label: "Project status", slug: "reference/status" },
+            {
+              label: "Z for TypeScript developers",
+              slug: "learn/z-for-typescript",
+            },
           ],
         },
         {
-          label: "Language tour",
+          label: "Language guide",
           items: [{ autogenerate: { directory: "language-tour" } }],
         },
         {
           label: "Native interop",
           items: [{ autogenerate: { directory: "interop" } }],
+        },
+        {
+          label: "Reference",
+          items: [{ label: "Reference map", slug: "reference" }],
+        },
+        {
+          label: "Project",
+          items: [{ label: "Implementation status", slug: "reference/status" }],
         },
       ],
     }),

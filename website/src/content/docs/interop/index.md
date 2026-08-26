@@ -127,3 +127,12 @@ yet be represented by the checked importer.
 Z's interop thesis is not that native APIs need no modeling. It is that the
 header remains the ABI truth, missing semantics are additive and reusable, and
 unsupported behavior stays explicit instead of being guessed.
+
+Continue through the complete progression:
+
+1. [Header imports](/interop/header-imports/)
+2. [Z declaration contracts](/interop/z-declaration-contracts/)
+3. [Unsafe native calls](/interop/unsafe-native-calls/)
+4. [Raw native source](/interop/raw-native-source/)
+5. [Objective-C](/interop/objective-c/), [C++](/interop/cpp/), and [Swift](/interop/swift/)
+6. [Exporting Z through C](/interop/exporting-z-through-c/)

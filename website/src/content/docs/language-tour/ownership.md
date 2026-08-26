@@ -2,7 +2,7 @@
 title: Ownership capabilities
 description: Read, mutate, initialize, transfer, copy, and borrow values explicitly.
 sidebar:
-  order: 2
+  order: 6
 ---
 
 Z makes consequential ownership operations readable where they occur while
@@ -25,7 +25,7 @@ function inspect(in counter: Counter): i32 {
 }
 
 function increment(inout counter: Counter): void {
-  counter.count += 1;
+  counter.count = counter.count + 1;
 }
 
 let counter = Counter({ count: 0 });
@@ -56,3 +56,5 @@ cleanup. ARC-managed classes provide shared identity; `Weak<T>` provides a
 non-owning reference that must be upgraded before use. Cross-thread shared
 mutation goes through synchronization such as `Mutex<T>` or executor isolation,
 not unrestricted aliases.
+
+Next: [Control flow and expressions](/language-tour/control-flow/).
