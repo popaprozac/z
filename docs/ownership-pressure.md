@@ -4175,10 +4175,12 @@ only the matching generation. The headless proof parks one child in
 scheduler-aware `delay`, cancels it by ID, verifies that its continuation never
 runs, and then completes a later service request. Stage 0 and the fixed-point
 compiler execute the unchanged smoke, and cancellation removes the timer rather
-than waiting for its deadline. One adjacent parity gap remains explicit: Stage
-0 rejects a stronger `on thread.main` implementation of an unrestricted trait
-method, while the fixed-point trait-conformance path still needs the same
-contravariant executor check. Zapp does not rely on that invalid shape.
+than waiting for its deadline. The probe also closed an adjacent semantic parity
+gap: both frontends now check trait executor contracts contravariantly across
+module boundaries. An unrestricted implementation may satisfy a
+`thread.main`-isolated requirement, but a main-isolated implementation cannot
+silently strengthen an unrestricted trait method. Diagnostics use the declared
+trait name rather than a compiler-owned module symbol.
 
 ## Not tested yet
 

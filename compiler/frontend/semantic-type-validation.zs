@@ -919,6 +919,56 @@ function validateConstructorTypes(
   try validateArenaTypes(module, modules, moduleIndex, typeBindings, declaration.body);
 }
 
+function validateTraitExecutorConformance(
+  in module: ParsedModule,
+  in modules: Array<ResolvedModule>,
+  moduleIndex: usize,
+  in declaration: AggregateDeclaration,
+  in implemented: TypeReference
+): void throws ModuleResolveError {
+  const location = match (typeSymbolLocation(
+    modules,
+    moduleIndex,
+    implemented.name
+  )) {
+    some(value) => value;
+    none => return;
+  };
+  const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
+  if (kind != ModuleSymbolKind.traitSymbol) return;
+  const traitName = modules[location.moduleIndex].symbols[
+    location.symbolIndex
+  ].name.copyBytes(
+    0,
+    modules[location.moduleIndex].symbols[
+      location.symbolIndex
+    ].name.byteLength
+  );
+  match (in modules[location.moduleIndex].symbols[
+    location.symbolIndex
+  ].typeSignature) {
+    some(signature) => {
+      for (const requirement of signature.methods) {
+        if (requirement.staticMethod) continue;
+        for (const method of declaration.methods) {
+          if (method.staticMethod || method.name != requirement.name) continue;
+          if (
+            method.executorAffinity.byteLength > 0
+            && requirement.signature.executorAffinity.byteLength == 0
+          ) throw validationError(
+            ModuleResolveErrorKind.typeMismatch,
+            module.path,
+            `method ${declaration.name}.${method.name} does not match trait requirement ${traitName}.${requirement.name}`,
+            method.line,
+            method.column
+          );
+        }
+      }
+    }
+    none => {}
+  }
+}
+
 function validateAggregateTypes(
   in module: ParsedModule,
   in modules: Array<ResolvedModule>,
@@ -935,6 +985,13 @@ function validateAggregateTypes(
   );
   for (const implemented of declaration.implementedTraits) {
     try validateTypeReference(module, modules, moduleIndex, bindings, implemented);
+    try validateTraitExecutorConformance(
+      module,
+      modules,
+      moduleIndex,
+      declaration,
+      implemented
+    );
   }
   let directArenaFields: usize = 0;
   let carriesStoredViews = false;

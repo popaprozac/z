@@ -14480,6 +14480,40 @@ test("rejects executor-affinity violations in the native resolver", () => {
   assert.equal(transportableResult.status, 0, transportableResult.stderr);
 });
 
+test("matches trait executor-affinity conformance in both semantic frontends", () => {
+  const invalid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-reject-trait-executor.zs",
+  );
+  const expected = "method MainService.invoke does not match trait requirement AsyncService.invoke";
+  const stage0 = spawnSync(process.execPath, [cli, "check", invalid], {
+    encoding: "utf8",
+  });
+  assert.equal(stage0.status, 1, stage0.stderr);
+  assert.ok(stage0.stderr.includes(expected), stage0.stderr);
+
+  const native = spawnSync(process.execPath, [cli, "self-host-resolve", invalid], {
+    encoding: "utf8",
+  });
+  assert.equal(native.status, 1, native.stderr);
+  assert.ok(native.stderr.includes(expected), native.stderr);
+
+  const broader = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-trait-executor-broader-valid.zs",
+  );
+  const broaderStage0 = spawnSync(process.execPath, [cli, "check", broader], {
+    encoding: "utf8",
+  });
+  assert.equal(broaderStage0.status, 0, broaderStage0.stderr);
+  const broaderNative = spawnSync(
+    process.execPath,
+    [cli, "self-host-resolve", broader],
+    { encoding: "utf8" },
+  );
+  assert.equal(broaderNative.status, 0, broaderNative.stderr);
+});
+
 test("rejects class-field views from identities with hidden aliases natively", () => {
   for (const fixture of [
     "self-host-reject-shared-class-field-view.zs",

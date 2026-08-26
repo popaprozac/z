@@ -2651,10 +2651,11 @@ function validateTraitConformance(
         );
       }
       if (!sameMethodSignature(method, requirement, declaration.name)) {
+        const traitName = displayAssignableType(reference.name, state);
         throw new DiagnosticError(
           fileName,
           method.location,
-          `method ${declaration.name}.${method.name} does not match trait requirement ${reference.name}.${requirement.name}`,
+          `method ${declaration.name}.${method.name} does not match trait requirement ${traitName}.${requirement.name}`,
         );
       }
     }
