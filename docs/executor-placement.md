@@ -141,10 +141,23 @@ readonly class PublishService {
 
 The fixed-point compiler keeps `invoke` and `publish` as separate heap-owned
 task frames. Cancellation of `invoke` is forwarded to the active main-isolated
-child, and both frames run their ordinary ownership cleanup exactly once. This
-first native tier covers non-consuming ARC receivers and the already-supported
-main-method suspension shapes. General placed async free-function
-taskification remains staged outside the native-worker adapter.
+child, and both frames run their ordinary ownership cleanup exactly once. The
+same nonblocking shape works for a free function:
+
+```z
+async function publish(service: PublishService): i32 on thread.main {
+  await delay(10);
+  return 42;
+}
+
+async function invoke(service: PublishService): i32 {
+  return await on thread.main publish(service);
+}
+```
+
+In this first native tier the placed call must be the ordinary async parent's
+single tail return. Linear delay-suspending callees are taskified; broader
+control flow around the placed child remains staged.
 
 ## Block contracts and type transformation
 

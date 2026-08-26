@@ -189,6 +189,8 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-method-yield.zs": focusedPositive,
   "self-host-emit-async-method-throws.zs": focusedPositive,
   "self-host-emit-async-method-main-placement.zs": focusedPositive,
+  "self-host-emit-async-function-main-placement.zs": focusedPositive,
+  "self-host-emit-async-function-main-placement-structured-invalid.zs": focusedNegative,
   "self-host-emit-async-prefixed-tail-method.zs": focusedPositive,
   "self-host-emit-async-branch-tail-method.zs": focusedPositive,
   "self-host-emit-async-match-tail-method.zs": focusedPositive,

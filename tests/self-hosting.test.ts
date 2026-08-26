@@ -15510,6 +15510,80 @@ test("propagates cancellation through an executor-placed async method tail", () 
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
+test("propagates cancellation through an executor-placed async function tail", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-function-main-placement.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /frame->child = Z_.*_start\(.*task->executor/,
+  );
+  assert.match(
+    emission.stdout,
+    /z_stage1_async_remove_timer\(task\)/,
+  );
+  assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1000\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-function-main-placement-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "released free publish\n");
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
+test("keeps structured placed async function suspension behind a native boundary", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-function-main-placement-structured-invalid.zs",
+  );
+  const stage0 = spawnSync(
+    process.execPath,
+    [cli, "check", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(stage0.status, 0, stage0.stderr);
+  const native = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(native.status, 0);
+  assert.match(native.stderr, /error\[Z0700\]/);
+  assert.match(native.stderr, /requires a directly taskifiable callee/);
+});
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

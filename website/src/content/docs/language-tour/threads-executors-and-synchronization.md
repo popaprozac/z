@@ -86,6 +86,22 @@ The parent remains a separately cancellable task. Cancellation is forwarded to
 the suspended main-executor child, and both task frames retain their own
 ownership cleanup.
 
+A free helper has the same behavior:
+
+```z
+async function publish(service: PublishService): i32 on thread.main {
+  await delay(10);
+  return 42;
+}
+
+async function invoke(service: PublishService): i32 {
+  return await on thread.main publish(service);
+}
+```
+
+The current fixed-point tier supports this as the parent's single tail return
+and gives a linear delay-suspending callee its own cancellable heap frame.
+
 For anonymous multi-statement work, use a block and explicit ownership-bearing
 captures:
 

@@ -518,6 +518,134 @@ function functionUsesFirstTierPlacedAsyncMethodTailAwait(
   };
 }
 
+function functionUsesFirstTierPlacedAsyncFunctionTailAwaitSyntax(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  return match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function functionUsesFirstTierPlacedAsyncFunctionTailAwait(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (
+    moduleIndex >= graph.modules.length
+    || !functionUsesFirstTierPlacedAsyncFunctionTailAwaitSyntax(
+      declaration
+    )
+  ) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  return match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        if (
+          tree.nodes[callee].kind != ExpressionKind.identifierExpression
+        ) return false;
+        for (const resolution of graph.modules[moduleIndex]
+          .semanticEvidence.callResolutions) {
+          if (
+            resolution.offset == tree.nodes[operation].offset
+            && resolution.line == tree.nodes[operation].line
+            && resolution.column == tree.nodes[operation].column
+          ) {
+            if (
+              !resolution.asynchronous
+              || resolution.kind != "function"
+            ) return false;
+            const targetModule = parsedModuleIndexForGraphModule(
+              modules,
+              graph,
+              resolution.targetModuleIndex
+            );
+            if (targetModule >= modules.length) return false;
+            let targetName = resolution.targetName.copyBytes(
+              0,
+              resolution.targetName.byteLength
+            );
+            if (
+              resolution.targetModuleIndex < graph.modules.length
+              && resolution.targetSymbolIndex < graph.modules[
+                resolution.targetModuleIndex
+              ].symbols.length
+            ) {
+              targetName = graph.modules[resolution.targetModuleIndex]
+                .symbols[resolution.targetSymbolIndex].name.copyBytes(
+                  0,
+                  graph.modules[resolution.targetModuleIndex]
+                    .symbols[resolution.targetSymbolIndex].name.byteLength
+                );
+            }
+            for (const target of modules[targetModule].program.functions) {
+              if (target.name != targetName) continue;
+              for (const targetRoot of target.body.roots) {
+                if (
+                  statementContainsSuspension(target.body, targetRoot)
+                  && target.body.nodes[targetRoot].kind
+                    != StatementKind.expressionStatement
+                ) return false;
+              }
+              return true;
+            }
+            return false;
+          }
+        }
+        return false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function statementUsesOnlyFirstTierTailAwaitSuspension(
   in arena: StatementArena,
   index: usize
@@ -782,6 +910,12 @@ function functionHasFirstTierTailAwaitStorage(
     || moduleIndex >= graph.modules.length
     || (
       !functionUsesFirstTierTailAwait(declaration)
+      && !functionUsesFirstTierPlacedAsyncFunctionTailAwait(
+        moduleIndex,
+        modules,
+        graph,
+        declaration
+      )
       && !functionUsesFirstTierPlacedAsyncMethodTailAwait(
         moduleIndex,
         graph,
@@ -1823,6 +1957,24 @@ function validateNativeFunction(
     declaration,
     owner
   );
+  if (
+    functionUsesFirstTierPlacedAsyncFunctionTailAwaitSyntax(declaration)
+    && !functionUsesFirstTierPlacedAsyncFunctionTailAwait(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    )
+  ) {
+    throw loweringBoundary(
+      path,
+      "Z0700",
+      "a placed async function tail requires a directly taskifiable callee in the current native compiler tier",
+      declaration.line,
+      declaration.column,
+      5
+    );
+  }
   if (
     declaration.asynchronous
     && declaration.name != "main"

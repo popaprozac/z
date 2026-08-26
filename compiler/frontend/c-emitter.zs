@@ -7377,11 +7377,41 @@ function appendCallableHelpers(
           && expression.kind == LoweredExpressionKind.directFunctionValue;
         const closureMethodAwait = asyncSuspension == "method-await"
           && expression.kind == LoweredExpressionKind.closureValue;
+        let directMainDelayIndex = program.functions.length;
+        if (expression.kind == LoweredExpressionKind.directFunctionValue) {
+          let delayCandidate: usize = 0;
+          while (delayCandidate < program.functions.length) {
+            const candidateFunction = view program.functions[delayCandidate];
+            if (candidateFunction.name == expression.value) {
+              const hasMainDelay = candidateFunction
+                  .mainDelaySegments.length > 0
+                || candidateFunction.mainDelayIfs.length > 0
+                || candidateFunction.mainDelayMatches.length > 0
+                || candidateFunction.mainDelayLoops.length > 0;
+              if (
+                hasMainDelay
+                && (
+                  candidateFunction.mainDelaySegments.length == 0
+                  || candidateFunction.mainDelayIfs.length > 0
+                  || candidateFunction.mainDelayMatches.length > 0
+                  || candidateFunction.mainDelayLoops.length > 0
+                )
+              ) throw `native stored async function currently supports a linear delay-suspending body, received ${expression.value}`;
+              if (candidateFunction.mainDelaySegments.length > 0) {
+                directMainDelayIndex = delayCandidate;
+              }
+            }
+            delayCandidate = delayCandidate + 1;
+          }
+        }
+        const directMainDelay = directMainDelayIndex
+          < program.functions.length;
         const persistentSuspension = asyncSuspension == "scheduler-yield"
           || directTailAwait
           || directLinearAwait
           || directDoubleAwait
-          || closureMethodAwait;
+          || closureMethodAwait
+          || directMainDelay;
         let closureMethodAwaitExpression: usize = owner.expressions.length;
         if (closureMethodAwait) {
           if (
@@ -7488,6 +7518,17 @@ function appendCallableHelpers(
             }
             output.append("  Z_AsyncInvocation child;\n");
           }
+          if (directMainDelay) {
+            for (const segment of program.functions[directMainDelayIndex]
+              .mainDelaySegments) {
+              try appendMainFrameRootFields(
+                inout output,
+                program,
+                program.functions[directMainDelayIndex],
+                segment.roots
+              );
+            }
+          }
         }
         output.append("} ");
         appendCallableHelperName(inout output, owner, expressionIndex);
@@ -7527,6 +7568,141 @@ function appendCallableHelpers(
             }
           }
           output.append("  task->completed = true;\n}\n\n");
+        }
+        if (directMainDelay) {
+          const delayDeclaration = view program.functions[
+            directMainDelayIndex
+          ];
+          try appendAsyncStoredParameterMacros(
+            inout output,
+            delayDeclaration,
+            functionType
+          );
+          output.append("static void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cleanup_owned(");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *context __attribute__((unused)) = frame;\n");
+          try appendMainFrameLocalCleanups(
+            inout output,
+            program,
+            delayDeclaration,
+            1
+          );
+          appendAsyncStoredParameterCleanups(
+            inout output,
+            program,
+            functionType,
+            1
+          );
+          output.append("}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cancel(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  z_stage1_async_remove_timer(task);\n  if (!task->queued && !task->completed) z_stage1_async_enqueue(task->executor, task);\n  (void)frame;\n}\n\nstatic ");
+          output.append(returnType);
+          output.append(" ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_continue(");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *context __attribute__((unused)) = frame;\n");
+          let aliasParameter: usize = 0;
+          while (aliasParameter < functionType.parameters.length) {
+            if (aliasParameter >= delayDeclaration.parameters.length) {
+              throw "native delay callable lost its parameter identity";
+            }
+            output.append("  ");
+            try appendCallableParameterDeclaration(
+              inout output,
+              functionType.parameters[aliasParameter],
+              delayDeclaration.parameters[aliasParameter].name
+            );
+            output.append(" __attribute__((unused)) = frame->argument");
+            output.append(`${aliasParameter}`);
+            output.append(";\n");
+            aliasParameter = aliasParameter + 1;
+          }
+          const delaySegmentCount = delayDeclaration
+            .mainDelaySegments.length;
+          try appendMainFrameRestores(
+            inout output,
+            program,
+            delayDeclaration,
+            delaySegmentCount,
+            1
+          );
+          try appendFunctionTail(inout output, delayDeclaration);
+          output.append("}\n\nstatic void ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_poll(Z_AsyncTask *task) {\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *frame = (");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *)task;\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_task *context __attribute__((unused)) = frame;\n");
+          aliasParameter = 0;
+          while (aliasParameter < functionType.parameters.length) {
+            output.append("  ");
+            try appendCallableParameterDeclaration(
+              inout output,
+              functionType.parameters[aliasParameter],
+              delayDeclaration.parameters[aliasParameter].name
+            );
+            output.append(" __attribute__((unused)) = frame->argument");
+            output.append(`${aliasParameter}`);
+            output.append(";\n");
+            aliasParameter = aliasParameter + 1;
+          }
+          output.append("  if (task->cancellation_requested) {\n    z_stage1_async_remove_timer(task);\n    ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cleanup_owned(frame);\n    task->cancelled = true;\n    task->completed = true;\n    return;\n  }\n");
+          let segmentIndex: usize = 0;
+          while (segmentIndex < delayDeclaration.mainDelaySegments.length) {
+            output.append(`  if (frame->state == ${segmentIndex}) {\n`);
+            try appendMainFrameRestores(
+              inout output,
+              program,
+              delayDeclaration,
+              segmentIndex,
+              2
+            );
+            for (const root of delayDeclaration
+              .mainDelaySegments[segmentIndex].roots) {
+              try appendStatement(inout output, delayDeclaration, root, 2);
+            }
+            try appendMainFrameSaves(
+              inout output,
+              program,
+              delayDeclaration,
+              segmentIndex + 1,
+              2
+            );
+            output.append(`    frame->state = ${segmentIndex + 1};\n    z_stage1_async_schedule_delay(task, `);
+            output.append(
+              delayDeclaration.mainDelaySegments[segmentIndex].milliseconds
+            );
+            output.append(");\n    return;\n  }\n");
+            segmentIndex = segmentIndex + 1;
+          }
+          output.append("  if (frame->state != ");
+          output.append(`${delayDeclaration.mainDelaySegments.length}`);
+          output.append(") abort();\n  ");
+          if (functionType.returnType.kind != LoweredTypeKind.voidType) {
+            output.append("frame->result = ");
+          }
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_continue(frame);\n");
+          if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+          output.append("  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cleanup_owned(frame);\n  task->completed = true;\n}\n\n");
         }
         if (closureMethodAwait) {
           const awaited = view owner.expressions[
@@ -8276,6 +8452,11 @@ function appendCallableHelpers(
             1
           );
         }
+        if (directMainDelay) {
+          output.append("  z_stage1_async_remove_timer(task);\n  ");
+          appendCallableHelperName(inout output, owner, expressionIndex);
+          output.append("_cleanup_owned(frame);\n");
+        }
         if (resultNeedsDeinit) {
           output.append("  if (frame->live_result) ");
           if (functionType.returnType.kind == LoweredTypeKind.classType) {
@@ -8406,10 +8587,14 @@ function appendCallableHelpers(
             || directLinearAwait
             || directDoubleAwait
             || closureMethodAwait
+            || directMainDelay
           ) {
             output.append("  frame->task.request_cancel = ");
             appendCallableHelperName(inout output, owner, expressionIndex);
-            output.append("_cancel;\n  frame->child = (Z_AsyncInvocation){0};\n");
+            output.append("_cancel;\n");
+            if (!directMainDelay) {
+              output.append("  frame->child = (Z_AsyncInvocation){0};\n");
+            }
           }
           if (
             directSchedulerYield
@@ -8417,6 +8602,7 @@ function appendCallableHelpers(
             || directLinearAwait
             || directDoubleAwait
             || closureMethodAwait
+            || directMainDelay
           ) {
             let storedParameter: usize = 0;
             while (storedParameter < functionType.parameters.length) {
@@ -8455,7 +8641,7 @@ function appendCallableHelpers(
         ) {
           throw "native async closure helper lost its body";
         }
-        if (asyncSuspension.byteLength == 0) {
+        if (asyncSuspension.byteLength == 0 && !directMainDelay) {
           appendCallableCaptureLiveMacros(
             inout output,
             program,
@@ -8490,7 +8676,11 @@ function appendCallableHelpers(
             captureLabelStart
           );
         }
-        if (resultNeedsDeinit && asyncSuspension.byteLength == 0) {
+        if (
+          resultNeedsDeinit
+          && asyncSuspension.byteLength == 0
+          && !directMainDelay
+        ) {
           output.append("  frame->live_result = true;\n");
         }
         output.append("  return (Z_AsyncInvocation){\n    .task = &frame->task,\n    .failed = ");
@@ -8637,6 +8827,12 @@ function appendCallableHelpers(
           appendAsyncStoredParameterMacroUndefs(
             inout output,
             program.functions[undefShape.functionIndex]
+          );
+        }
+        if (directMainDelay) {
+          appendAsyncStoredParameterMacroUndefs(
+            inout output,
+            program.functions[directMainDelayIndex]
           );
         }
         expressionIndex = expressionIndex + 1;

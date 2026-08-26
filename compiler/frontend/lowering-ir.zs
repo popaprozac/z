@@ -17252,6 +17252,146 @@ function functionUsesFirstTierPlacedMethodTailAwait(
   };
 }
 
+function functionUsesFirstTierPlacedFunctionTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  return match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function rewritePlacedFunctionTailAwait(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in evidence: ModuleSemanticEvidence,
+  in declaration: FunctionDeclaration,
+  in roots: Array<usize>,
+  inout expressions: Array<LoweredExpression>,
+  inout statements: Array<LoweredStatement>
+): void throws String {
+  if (
+    !functionUsesFirstTierPlacedFunctionTailAwait(declaration)
+    || roots.length != 1
+  ) return;
+  const sourceRoot = declaration.body.roots[0];
+  let callableIdentity = "";
+  match (in declaration.body.nodes[sourceRoot].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        const callInput = tree.nodes[placement].children[2];
+        const resolutionIndex = resolvedCallResolutionIndex(
+          evidence,
+          tree,
+          callInput
+        );
+        if (resolutionIndex >= evidence.callResolutions.length) {
+          throw "native placed async tail lost its call resolution";
+        }
+        callableIdentity = try moduleCallFunctionTypeIdentity(
+          program,
+          importedTypes,
+          evidence.callResolutions[resolutionIndex]
+        );
+      }
+      none => throw "native placed async tail lost its source tree";
+    }
+    none => throw "native placed async tail lost its source expression";
+  }
+  const loweredRoot = roots[0];
+  const placedIndex = match (in statements[loweredRoot].expression) {
+    some(found) => found;
+    none => throw "native placed async tail lost its lowered expression";
+  };
+  if (
+    expressions[placedIndex].kind
+      != LoweredExpressionKind.threadMainCall
+    || expressions[placedIndex].children.length == 0
+  ) throw "native placed async tail lost its thread.main call";
+  const runnerIndex = expressions[placedIndex].children[0];
+  if (
+    expressions[runnerIndex].kind != LoweredExpressionKind.directCall
+    || expressions[runnerIndex].children.length == 0
+  ) throw "native placed async tail lost its direct runner";
+  const targetIndex = expressions[runnerIndex].children[0];
+  if (expressions[targetIndex].kind != LoweredExpressionKind.localValue) {
+    throw "native placed async tail lost its function target";
+  }
+  const targetName = expressions[targetIndex].value.copyBytes(
+    0,
+    expressions[targetIndex].value.byteLength
+  );
+  let arguments = Array<usize>();
+  let argument: usize = 1;
+  while (argument < expressions[placedIndex].children.length) {
+    arguments.push(expressions[placedIndex].children[argument]);
+    argument = argument + 1;
+  }
+  let parameterModes = Array<String>();
+  for (const mode of expressions[runnerIndex].labels) {
+    parameterModes.push(mode.copyBytes(0, mode.byteLength));
+  }
+  // The ordinary async parent no longer owns a worker-placement bridge.
+  // Retire the orphaned evidence before helper discovery scans every lowered
+  // expression, including expressions no longer reachable from a root.
+  expressions[placedIndex].kind = LoweredExpressionKind.booleanValue;
+  expressions[placedIndex].value = "false";
+  expressions[placedIndex].children = Array<usize>();
+  expressions[placedIndex].labels = Array<String>();
+  let callableLabels = Array<String>();
+  callableLabels.push(callableIdentity.copyBytes(
+    0,
+    callableIdentity.byteLength
+  ));
+  const callable = pushExpression(
+    inout expressions,
+    LoweredExpressionKind.directFunctionValue,
+    targetName,
+    Array<usize>(),
+    callableLabels
+  );
+  let children = Array<usize>();
+  children.push(callable);
+  for (const value of arguments) {
+    children.push(value);
+  }
+  const awaited = pushExpression(
+    inout expressions,
+    LoweredExpressionKind.asyncFunctionAwait,
+    callableIdentity,
+    children,
+    parameterModes
+  );
+  statements[loweredRoot].expression = Option.some(awaited);
+}
+
 function statementUsesOnlyFirstTierTailAwaitSuspension(
   in arena: StatementArena,
   index: usize
@@ -21595,11 +21735,15 @@ function lowerFunction(
     const firstTierPlacedMethodTail = declaration.executorAffinity
         != "thread.main"
       && functionUsesFirstTierPlacedMethodTailAwait(declaration);
+    const firstTierPlacedFunctionTail = declaration.executorAffinity
+        != "thread.main"
+      && functionUsesFirstTierPlacedFunctionTailAwait(declaration);
     const firstTierTailAwait = (
         declaration.executorAffinity != "thread.main"
         && (
         functionUsesFirstTierTailAwait(declaration)
         || firstTierPlacedMethodTail
+        || firstTierPlacedFunctionTail
         || functionUsesFirstTierPrefixedTailAwait(declaration)
         || functionUsesFirstTierMatchedTailAwait(declaration)
         || firstTierLinearAwait
@@ -21957,6 +22101,15 @@ function lowerFunction(
     rootPosition = rootPosition + 1;
   }
   const roots = move segmentRoots;
+  try rewritePlacedFunctionTailAwait(
+    program,
+    importedTypes,
+    evidence,
+    declaration,
+    roots,
+    inout expressions,
+    inout statements
+  );
   const functionMoveIndex = cleanupMoveIndex(
     program,
     evidence,
