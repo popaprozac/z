@@ -273,7 +273,13 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     foreignHandleTypes.canonicalBySourceName,
   );
   validateRawNativeDeclarationShapes(resolvedProgram, fileName);
-  const inferredProgram = inferGenericCalls(resolvedProgram, fileName, foreignModules);
+  const genericInference = inferGenericCalls(
+    resolvedProgram,
+    fileName,
+    foreignModules,
+    typeDisplayNames,
+  );
+  const inferredProgram = genericInference.program;
   const genericAggregateMaterializations = new Map<
     string,
     GenericAggregateMaterialization
@@ -289,6 +295,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
         typeDisplayNames,
         foreignIdentityTypes,
         genericAggregateMaterializations,
+        genericInference.deferredGenericMethodDemands,
       )),
       foreignModules,
     ),

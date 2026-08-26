@@ -1830,12 +1830,13 @@ function collectGenericMethodUseForSignature(
   in graph: ModuleGraph,
   consumerModuleIndex: usize,
   in resolution: ModuleCallResolution,
+  in sourceArguments: Array<String>,
   in ownerName: String,
   in signature: ModuleTypeSignature,
   inout uses: Array<LoweredGenericMethodUse>
 ): void throws String {
   if (
-    resolution.callableTypeParameterCount > resolution.typeArguments.length
+    resolution.callableTypeParameterCount > sourceArguments.length
   ) throw "native generic-method demand has incomplete substitutions";
   let methodIndex: usize = signature.methods.length;
   let candidateIndex: usize = 0;
@@ -1851,7 +1852,7 @@ function collectGenericMethodUseForSignature(
     throw `native generic-method demand lost ${resolution.targetName}`;
   }
   const method = view signature.methods[methodIndex];
-  const ownerCount = resolution.typeArguments.length
+  const ownerCount = sourceArguments.length
     - resolution.callableTypeParameterCount;
   if (
     ownerCount != signature.typeParameters.length
@@ -1865,9 +1866,9 @@ function collectGenericMethodUseForSignature(
   let argumentModules = Array<usize>();
   let argumentSymbols = Array<usize>();
   let argumentIndex: usize = 0;
-  while (argumentIndex < resolution.typeArguments.length) {
-    const sourceArgument = resolution.typeArguments[argumentIndex]
-      .copyBytes(0, resolution.typeArguments[argumentIndex].byteLength);
+  while (argumentIndex < sourceArguments.length) {
+    const sourceArgument = sourceArguments[argumentIndex]
+      .copyBytes(0, sourceArguments[argumentIndex].byteLength);
     allArgumentIdentities.push(semanticTypeIdentity(
       graph.modules,
       consumerModuleIndex,
@@ -1922,7 +1923,65 @@ function collectGenericMethodUseForSignature(
   }));
 }
 
+function appendGenericMethodUseForResolution(
+  in graph: ModuleGraph,
+  consumerModuleIndex: usize,
+  in resolution: ModuleCallResolution,
+  in sourceArguments: Array<String>,
+  inout uses: Array<LoweredGenericMethodUse>
+): void throws String {
+  if (
+    resolution.targetModuleIndex >= graph.modules.length
+    || resolution.targetSymbolIndex >= graph.modules[
+      resolution.targetModuleIndex
+    ].symbols.length
+  ) throw "native generic-method demand has an invalid owner";
+  const symbol = view graph.modules[resolution.targetModuleIndex]
+    .symbols[resolution.targetSymbolIndex];
+  match (in symbol.typeSignature) {
+    some(signature) => try collectGenericMethodUseForSignature(
+      graph,
+      consumerModuleIndex,
+      resolution,
+      sourceArguments,
+      symbol.name,
+      signature,
+      inout uses
+    );
+    none => throw "native generic-method demand has no owner signature";
+  }
+}
+
+function resolutionHasUnsettledTypeArguments(
+  in module: ParsedModule,
+  in resolution: ModuleCallResolution
+): boolean {
+  let parameters = Array<String>();
+  for (const declaration of module.program.functions) {
+    if (!bodyContainsCallResolution(declaration.body, resolution)) continue;
+    for (const parameter of declaration.typeParameters) {
+      parameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+    }
+  }
+  for (const aggregate of module.program.aggregates) {
+    for (const method of aggregate.methods) {
+      if (!bodyContainsCallResolution(method.body, resolution)) continue;
+      for (const parameter of aggregate.typeParameters) {
+        parameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+      }
+      for (const parameter of method.typeParameters) {
+        parameters.push(parameter.name.copyBytes(0, parameter.name.byteLength));
+      }
+    }
+  }
+  for (const argument of resolution.typeArguments) {
+    if (typeContainsGenericParameter(argument, parameters)) return true;
+  }
+  return false;
+}
+
 function collectGenericMethodUses(
+  in parsed: Array<ParsedModule>,
   in graph: ModuleGraph
 ): Array<LoweredGenericMethodUse> throws String {
   let uses = Array<LoweredGenericMethodUse>();
@@ -1937,29 +1996,197 @@ function collectGenericMethodUses(
           && resolution.kind != "staticMethod"
         )
       ) continue;
-      if (
-        resolution.targetModuleIndex >= graph.modules.length
-        || resolution.targetSymbolIndex >= graph.modules[
-          resolution.targetModuleIndex
-        ].symbols.length
-      ) throw "native generic-method demand has an invalid owner";
-      const symbol = view graph.modules[resolution.targetModuleIndex]
-        .symbols[resolution.targetSymbolIndex];
-      match (in symbol.typeSignature) {
-        some(signature) => try collectGenericMethodUseForSignature(
-          graph,
-          consumerModuleIndex,
-          resolution,
-          symbol.name,
-          signature,
-          inout uses
-        );
-        none => throw "native generic-method demand has no owner signature";
-      }
+      if (resolutionHasUnsettledTypeArguments(
+        parsed[consumerModuleIndex],
+        resolution
+      )) continue;
+      try appendGenericMethodUseForResolution(
+        graph,
+        consumerModuleIndex,
+        resolution,
+        resolution.typeArguments,
+        inout uses
+      );
     }
     consumerModuleIndex = consumerModuleIndex + 1;
   }
   return uses;
+}
+
+function closeGenericMethodDemandGraph(
+  in parsed: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in functionUses: Array<LoweredGenericFunctionUse>,
+  inout methodUses: Array<LoweredGenericMethodUse>
+): void throws String {
+  for (const functionUse of functionUses) {
+    const ownerModuleIndex = functionUse.ownerModuleIndex;
+    if (ownerModuleIndex >= parsed.length) {
+      throw "native generic-function demand lost its parsed owner";
+    }
+    let declarationIndex = parsed[ownerModuleIndex].program.functions.length;
+    let candidateIndex: usize = 0;
+    while (candidateIndex < parsed[ownerModuleIndex].program.functions.length) {
+      if (
+        parsed[ownerModuleIndex].program.functions[candidateIndex].name
+          == functionUse.name
+      ) {
+        declarationIndex = candidateIndex;
+        break;
+      }
+      candidateIndex = candidateIndex + 1;
+    }
+    if (declarationIndex >= parsed[ownerModuleIndex].program.functions.length) {
+      throw `native generic-function demand lost ${functionUse.name}`;
+    }
+    const declaration = view parsed[ownerModuleIndex].program.functions[
+      declarationIndex
+    ];
+    let substitutions = Array<NativeValueBinding>();
+    let parameterIndex: usize = 0;
+    while (
+      parameterIndex < functionUse.typeParameters.length
+      && parameterIndex < functionUse.typeArguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        functionUse.typeParameters[parameterIndex],
+        functionUse.typeArguments[parameterIndex]
+      );
+      parameterIndex = parameterIndex + 1;
+    }
+    for (const resolution of graph.modules[ownerModuleIndex]
+      .semanticEvidence.callResolutions) {
+      if (
+        resolution.callableTypeParameterCount == 0
+        || (
+          resolution.kind != "method"
+          && resolution.kind != "staticMethod"
+        )
+        || !bodyContainsCallResolution(declaration.body, resolution)
+      ) continue;
+      let concreteArguments = Array<String>();
+      for (const argument of resolution.typeArguments) {
+        concreteArguments.push(substituteGenericType(
+          argument,
+          substitutions
+        ));
+      }
+      try appendGenericMethodUseForResolution(
+        graph,
+        functionUse.consumerModuleIndex,
+        resolution,
+        concreteArguments,
+        inout methodUses
+      );
+    }
+  }
+
+  let methodUseIndex: usize = 0;
+  while (methodUseIndex < methodUses.length) {
+    const methodConsumerModuleIndex = methodUses[methodUseIndex]
+      .consumerModuleIndex;
+    const ownerModuleIndex = methodUses[methodUseIndex].ownerModuleIndex;
+    const methodOwnerName = methodUses[methodUseIndex].ownerName.copyBytes(
+      0,
+      methodUses[methodUseIndex].ownerName.byteLength
+    );
+    const methodName = methodUses[methodUseIndex].methodName.copyBytes(
+      0,
+      methodUses[methodUseIndex].methodName.byteLength
+    );
+    const ownerTypeArguments = copyStrings(
+      methodUses[methodUseIndex].ownerTypeArguments
+    );
+    const methodTypeArguments = copyStrings(
+      methodUses[methodUseIndex].methodTypeArguments
+    );
+    if (ownerModuleIndex >= parsed.length) {
+      throw "native generic-method demand lost its parsed owner";
+    }
+    let aggregateIndex = parsed[ownerModuleIndex].program.aggregates.length;
+    let aggregateCandidate: usize = 0;
+    while (aggregateCandidate < parsed[ownerModuleIndex].program.aggregates.length) {
+      if (
+        parsed[ownerModuleIndex].program.aggregates[aggregateCandidate].name
+          == methodOwnerName
+      ) {
+        aggregateIndex = aggregateCandidate;
+        break;
+      }
+      aggregateCandidate = aggregateCandidate + 1;
+    }
+    if (aggregateIndex >= parsed[ownerModuleIndex].program.aggregates.length) {
+      throw `native generic-method demand lost ${methodOwnerName}`;
+    }
+    const aggregate = view parsed[ownerModuleIndex].program.aggregates[
+      aggregateIndex
+    ];
+    let methodIndex = aggregate.methods.length;
+    let methodCandidate: usize = 0;
+    while (methodCandidate < aggregate.methods.length) {
+      if (aggregate.methods[methodCandidate].name == methodName) {
+        methodIndex = methodCandidate;
+        break;
+      }
+      methodCandidate = methodCandidate + 1;
+    }
+    if (methodIndex >= aggregate.methods.length) {
+      throw `native generic-method demand lost ${methodOwnerName}.${methodName}`;
+    }
+    const method = view aggregate.methods[methodIndex];
+    let substitutions = Array<NativeValueBinding>();
+    let ownerParameter: usize = 0;
+    while (
+      ownerParameter < aggregate.typeParameters.length
+      && ownerParameter < ownerTypeArguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        aggregate.typeParameters[ownerParameter].name,
+        ownerTypeArguments[ownerParameter]
+      );
+      ownerParameter = ownerParameter + 1;
+    }
+    let methodParameter: usize = 0;
+    while (
+      methodParameter < method.typeParameters.length
+      && methodParameter < methodTypeArguments.length
+    ) {
+      addValueBinding(
+        inout substitutions,
+        method.typeParameters[methodParameter].name,
+        methodTypeArguments[methodParameter]
+      );
+      methodParameter = methodParameter + 1;
+    }
+    for (const resolution of graph.modules[ownerModuleIndex]
+      .semanticEvidence.callResolutions) {
+      if (
+        resolution.callableTypeParameterCount == 0
+        || (
+          resolution.kind != "method"
+          && resolution.kind != "staticMethod"
+        )
+        || !bodyContainsCallResolution(method.body, resolution)
+      ) continue;
+      let concreteArguments = Array<String>();
+      for (const argument of resolution.typeArguments) {
+        concreteArguments.push(substituteGenericType(
+          argument,
+          substitutions
+        ));
+      }
+      try appendGenericMethodUseForResolution(
+        graph,
+        methodConsumerModuleIndex,
+        resolution,
+        concreteArguments,
+        inout methodUses
+      );
+    }
+    methodUseIndex = methodUseIndex + 1;
+  }
 }
 
 function localFunctionTypeIdentity(
@@ -25796,12 +26023,30 @@ function lowerModulesIncludingTests(
   );
   const privateTypeCollisionNames = collisionSafePrivateTypeNames(parsed);
   const genericStructUses = collectGenericStructUses(graph);
-  const genericMethodUses = try collectGenericMethodUses(graph);
-  const genericFunctionUses = try collectGenericFunctionUses(
+  let genericMethodUses = try collectGenericMethodUses(parsed, graph);
+  let genericFunctionUses = try collectGenericFunctionUses(
     parsed,
     graph,
     genericMethodUses
   );
+  let demandGraphChanged = true;
+  while (demandGraphChanged) {
+    const methodCount = genericMethodUses.length;
+    const functionCount = genericFunctionUses.length;
+    try closeGenericMethodDemandGraph(
+      parsed,
+      graph,
+      genericFunctionUses,
+      inout genericMethodUses
+    );
+    genericFunctionUses = try collectGenericFunctionUses(
+      parsed,
+      graph,
+      genericMethodUses
+    );
+    demandGraphChanged = genericMethodUses.length != methodCount
+      || genericFunctionUses.length != functionCount;
+  }
   const deferredGenericMethodUses = Array<LoweredGenericMethodUse>();
   const deferredGenericFunctionUses = Array<LoweredGenericFunctionUse>();
   const entryIndex = graph.entry;

@@ -1282,6 +1282,65 @@ test("specializes exported generic methods for private downstream types", () => 
   }
 }, 240_000);
 
+test("forwards constrained generic parameters into imported generic methods", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-generic-constraint-forwarding/main.zs",
+  );
+  const invalid = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-generic-constraint-forwarding/invalid.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const stage0Execution = spawnSync(
+    process.execPath,
+    [cli, "run", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(stage0Execution.status, 0, stage0Execution.stderr);
+
+  for (const command of [
+    ["check", invalid],
+    ["self-host-resolve", invalid],
+  ]) {
+    const rejection = spawnSync(process.execPath, [cli, ...command], {
+      encoding: "utf8",
+    });
+    assert.equal(rejection.status, 1, rejection.stderr);
+    assert.match(
+      rejection.stderr,
+      /T does not satisfy Service for T in "(?:ServicesBuilder\.)?register"/,
+    );
+  }
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  const directory = mkdtempSync("/tmp/z-native-generic-constraint-forwarding-");
+  try {
+    const executable = resolve(directory, "program");
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("resolves trait conformance for a factory-returned imported type", () => {
   const input = resolve(
     projectRoot,

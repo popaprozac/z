@@ -33,6 +33,7 @@ import {
 } from "./once-types.ts";
 import { mutexTypeName } from "./mutex-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
+import type { DeferredGenericMethodDemand } from "./generic-inference.ts";
 
 export type GenericAggregateMaterialization = {
   readonly declaration: StructDeclaration;
@@ -45,6 +46,10 @@ export function materializeGenerics(
   typeDisplayNames: Map<string, string> = new Map(),
   foreignIdentityTypes: ReadonlySet<string> = new Set(),
   aggregateMaterializations: Map<string, GenericAggregateMaterialization> = new Map(),
+  deferredGenericMethodDemands: ReadonlyMap<
+    FunctionDeclaration["location"],
+    readonly DeferredGenericMethodDemand[]
+  > = new Map(),
 ): Program {
   const structTemplates = new Map(program.structs.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
   const functionTemplates = new Map(program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]));
@@ -108,6 +113,15 @@ export function materializeGenerics(
   const generatorStepInstances = new Map<string, EnumDeclaration>();
   const mapInstances = new Set<string>();
   const setInstances = new Set<string>();
+  type ConcreteMethodDemand = {
+    readonly ownerName: string;
+    readonly ownerSubstitutions: ReadonlyMap<string, string>;
+    readonly template: FunctionDeclaration;
+    readonly arguments: readonly string[];
+  };
+  const pendingMethodDemands = new Map<string, ConcreteMethodDemand[]>();
+  const materializedStructIndexes = new Map<string, number>();
+  const requestedMethodInstances = new Set<string>();
 
   if (program.structs.some((item) => item.name === "Option") || program.enums.some((item) => item.name === "Option")) {
     const declaration = program.structs.find((item) => item.name === "Option")
@@ -494,8 +508,9 @@ export function materializeGenerics(
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
     const concrete = {
       ...transform({ ...template, name, typeParameters: [], typeParameterConstraints: [], methods: [] }, substitutions),
-      methods: materializeMethods(template, substitutions),
+      methods: materializeMethods(template, substitutions, name),
     } as StructDeclaration;
+    materializedStructIndexes.set(name, structs.length);
     structs.push(concrete);
     return name;
   }
@@ -682,6 +697,7 @@ export function materializeGenerics(
     const name = monomorphizedName(base, args);
     functionInstances.set(key, name);
     const substitutions = new Map(template.typeParameters!.map((parameter, index) => [parameter, args[index]]));
+    instantiateDeferredMethodDemands(template, substitutions);
     const concrete = transform({
       ...template,
       name,
@@ -730,9 +746,109 @@ export function materializeGenerics(
     }
   }
 
+  function methodInstanceKey(
+    ownerName: string,
+    methodName: string,
+    args: readonly string[],
+  ): string {
+    return `${ownerName}\0${methodName}\0${args.join("\0")}`;
+  }
+
+  function instantiateDeferredMethodDemands(
+    template: FunctionDeclaration,
+    substitutions: ReadonlyMap<string, string>,
+  ): void {
+    for (const demand of deferredGenericMethodDemands.get(template.location) ?? []) {
+      requestConcreteMethodSpecialization(
+        substituteName(demand.ownerName, new Map(substitutions)),
+        demand.methodName,
+        demand.arguments.map((argument) => substituteName(argument, new Map(substitutions))),
+      );
+    }
+  }
+
+  function concreteMethod(
+    demand: ConcreteMethodDemand,
+  ): FunctionDeclaration {
+    const substitutions = new Map(demand.ownerSubstitutions);
+    demand.template.typeParameters!.forEach((parameter, index) => {
+      substitutions.set(parameter, demand.arguments[index]);
+    });
+    instantiateDeferredMethodDemands(demand.template, substitutions);
+    return transform({
+      ...demand.template,
+      name: monomorphizedName(demand.template.name, [...demand.arguments]),
+      typeParameters: [],
+      typeParameterConstraints: [],
+    }, substitutions) as FunctionDeclaration;
+  }
+
+  function appendConcreteMethod(demand: ConcreteMethodDemand): void {
+    const index = materializedStructIndexes.get(demand.ownerName);
+    if (index === undefined) {
+      const pending = pendingMethodDemands.get(demand.ownerName) ?? [];
+      pending.push(demand);
+      pendingMethodDemands.set(demand.ownerName, pending);
+      return;
+    }
+    const method = concreteMethod(demand);
+    const owner = structs[index];
+    if (owner.methods.some((candidate) => candidate.name === method.name)) return;
+    structs[index] = { ...owner, methods: [...owner.methods, method] };
+  }
+
+  function requestConcreteMethodSpecialization(
+    ownerName: string,
+    methodName: string,
+    args: readonly string[],
+  ): void {
+    const genericOwner = parseGenericType(ownerName);
+    const sourceOwner = program.structs.find((declaration) => (
+      declaration.name === (genericOwner?.base ?? ownerName)
+    ));
+    if (!sourceOwner) return;
+    const ownerParameters = sourceOwner.typeParameters ?? [];
+    const ownerArguments = genericOwner?.arguments ?? [];
+    if (ownerParameters.length !== ownerArguments.length) {
+      throw new DiagnosticError(
+        fileName,
+        sourceOwner.location,
+        `${sourceOwner.name} expects ${ownerParameters.length} type argument(s), received ${ownerArguments.length}`,
+      );
+    }
+    const ownerSubstitutions = new Map(
+      ownerParameters.map((parameter, index) => [parameter, ownerArguments[index]]),
+    );
+    const concreteOwnerName = ownerParameters.length
+      ? instantiateStruct(sourceOwner.name, [...ownerArguments])
+      : sourceOwner.name;
+    const template = sourceOwner.methods.find((method) => (
+      method.name === methodName && method.typeParameters?.length
+    ));
+    if (!template) return;
+    if (args.length !== template.typeParameters!.length) {
+      throw new DiagnosticError(
+        fileName,
+        template.location,
+        `${sourceOwner.name}.${template.name} expects ${template.typeParameters!.length} type argument(s), received ${args.length}`,
+      );
+    }
+    validateConstraints(template, [...args]);
+    const key = methodInstanceKey(concreteOwnerName, methodName, args);
+    if (requestedMethodInstances.has(key)) return;
+    requestedMethodInstances.add(key);
+    appendConcreteMethod({
+      ownerName: concreteOwnerName,
+      ownerSubstitutions,
+      template,
+      arguments: [...args],
+    });
+  }
+
   function materializeMethods(
     declaration: StructDeclaration,
     ownerSubstitutions: Map<string, string>,
+    materializedOwnerName: string,
   ): FunctionDeclaration[] {
     const templates = new Map(
       declaration.methods
@@ -758,12 +874,22 @@ export function materializeGenerics(
       validateConstraints(template, args);
       const substitutions = new Map(ownerSubstitutions);
       template.typeParameters!.forEach((parameter, index) => substitutions.set(parameter, args[index]));
+      instantiateDeferredMethodDemands(template, substitutions);
+      requestedMethodInstances.add(methodInstanceKey(materializedOwnerName, template.name, args));
       methods.push(transform({
         ...template,
         name: monomorphizedName(template.name, args),
         typeParameters: [],
         typeParameterConstraints: [],
       }, substitutions) as FunctionDeclaration);
+    }
+    while (pendingMethodDemands.has(materializedOwnerName)) {
+      const pending = pendingMethodDemands.get(materializedOwnerName)!;
+      pendingMethodDemands.delete(materializedOwnerName);
+      for (const demand of pending) {
+        const method = concreteMethod(demand);
+        if (!methods.some((candidate) => candidate.name === method.name)) methods.push(method);
+      }
     }
     return methods;
   }
@@ -792,10 +918,12 @@ export function materializeGenerics(
   }
 
   for (const declaration of program.structs.filter((item) => !item.typeParameters?.length)) {
-    structs.push({
+    const concrete = {
       ...transform({ ...declaration, methods: [] }, new Map()),
-      methods: materializeMethods(declaration, new Map()),
-    });
+      methods: materializeMethods(declaration, new Map(), declaration.name),
+    } as StructDeclaration;
+    materializedStructIndexes.set(declaration.name, structs.length);
+    structs.push(concrete);
   }
   for (const declaration of program.functions.filter((item) => !item.typeParameters?.length)) {
     functions.push(attachGeneratorError(transform(declaration, new Map())));

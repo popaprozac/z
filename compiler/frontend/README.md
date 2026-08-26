@@ -751,6 +751,13 @@ Every Stage-0 semantic resolution observed on that corpus has a validated
 native authority contract. Migrating the remaining unsupported
 ownership/effect contexts is the next self-hosting layer.
 
+Generic demand closure is transitive across callable kinds. A concrete
+downstream specialization of a generic function or method can satisfy a
+dependent generic-method call in that body, including calls into an imported
+owner. Unsettled source demands are not lowered as abstract `T` methods; the
+fixed-point emitter substitutes the downstream type first and deduplicates the
+resulting method specialization by semantic identity.
+
 The fixed-point C emitter now represents an ordinary callable as a typed call
 pointer, context pointer, and retain/release hooks. Direct named functions use a
 static context-free handle. Capturing expression closures allocate one shared

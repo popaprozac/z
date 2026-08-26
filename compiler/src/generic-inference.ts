@@ -37,6 +37,19 @@ import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 type Environment = Map<string, string>;
 type RewrittenExpression = { readonly expression: Expression; readonly type: string | null };
+export type DeferredGenericMethodDemand = {
+  readonly ownerName: string;
+  readonly methodName: string;
+  readonly arguments: readonly string[];
+};
+
+export type GenericInferenceResult = {
+  readonly program: Program;
+  readonly deferredGenericMethodDemands: ReadonlyMap<
+    FunctionDeclaration["location"],
+    readonly DeferredGenericMethodDemand[]
+  >;
+};
 const attemptedInferencePrefix = "__z_inferred_attempt:";
 const attemptedInferenceType = (success: string): string => `${attemptedInferencePrefix}${success}`;
 const parseAttemptedInferenceType = (type: string | null): string | null => (
@@ -50,7 +63,8 @@ export function inferGenericCalls(
   program: Program,
   fileName: string,
   foreignModules: ReadonlyMap<string, ForeignModule> = new Map(),
-): Program {
+  typeDisplayNames: ReadonlyMap<string, string> = new Map(),
+): GenericInferenceResult {
   const genericFunctions = new Map(
     program.functions.filter((item) => item.typeParameters?.length).map((item) => [item.name, item]),
   );
@@ -65,8 +79,13 @@ export function inferGenericCalls(
     }
   }
   const methodSpecializations = new Map<string, Map<string, string>>();
+  const deferredGenericMethodDemands = new Map<
+    FunctionDeclaration["location"],
+    DeferredGenericMethodDemand[]
+  >();
   let activeConstraints = new Map<string, string[]>();
   let activeTypeParameters = new Set<string>();
+  let activeDeferredGenericMethodDemands: DeferredGenericMethodDemand[] | null = null;
   const closureReturns = new Map<string, string | null>();
   const objectFieldTypes = new Map<number, ReadonlyMap<string, string | null>>();
   const selectiveFunctions = new Map<string, string>();
@@ -347,8 +366,67 @@ export function inferGenericCalls(
     owner: StructDeclaration,
     method: FunctionDeclaration,
     arguments_: readonly string[],
+    ownerSubstitutions: ReadonlyMap<string, string>,
+    location: Expression["location"],
   ): string => {
     const name = genericTypeName(method.name, [...arguments_]);
+    const dependsOnActiveTypeParameter = (type: string): boolean => {
+      if (activeTypeParameters.has(type)) return true;
+      const generic = parseGenericType(type);
+      if (generic) return generic.arguments.some(dependsOnActiveTypeParameter);
+      const readonly = parseReadonlyType(type);
+      if (readonly) return dependsOnActiveTypeParameter(readonly.target);
+      const view = parseViewType(type);
+      if (view) return dependsOnActiveTypeParameter(view.target);
+      const fixed = parseFixedArrayType(type);
+      if (fixed) return dependsOnActiveTypeParameter(fixed.elementType);
+      const slice = parseSliceType(type);
+      if (slice) return dependsOnActiveTypeParameter(slice.elementType);
+      const dynamic = parseDynamicArrayType(type);
+      if (dynamic) return dependsOnActiveTypeParameter(dynamic.elementType);
+      const callable = parseFunctionType(type);
+      return Boolean(
+        callable
+        && (
+          callable.parameters.some((parameter) => dependsOnActiveTypeParameter(parameter.type))
+          || dependsOnActiveTypeParameter(callable.returnType)
+          || (callable.errorType && dependsOnActiveTypeParameter(callable.errorType))
+        )
+      );
+    };
+    if (arguments_.some(dependsOnActiveTypeParameter)) {
+      const substitutions = new Map(ownerSubstitutions);
+      (method.typeParameters ?? []).forEach((parameter, index) => {
+        substitutions.set(parameter, arguments_[index]);
+      });
+      for (const constraint of method.typeParameterConstraints ?? []) {
+        const argument = substitutions.get(constraint.parameter);
+        if (!argument || !activeTypeParameters.has(argument)) continue;
+        const available = activeConstraints.get(argument) ?? [];
+        for (const trait of constraint.traits) {
+          const required = substituteType(trait.name, substitutions);
+          if (available.includes(required)) continue;
+          throw new DiagnosticError(
+            fileName,
+            location,
+            `${typeDisplayNames.get(argument) ?? displayType(argument)} does not satisfy `
+              + `${typeDisplayNames.get(required) ?? displayType(required)} for ${constraint.parameter} `
+              + `in ${JSON.stringify(`${typeDisplayNames.get(owner.name) ?? owner.name}.${method.name}`)}`,
+          );
+        }
+      }
+      activeDeferredGenericMethodDemands?.push({
+        ownerName: owner.typeParameters?.length
+          ? genericTypeName(
+              owner.name,
+              owner.typeParameters.map((parameter) => ownerSubstitutions.get(parameter) ?? parameter),
+            )
+          : owner.name,
+        methodName: method.name,
+        arguments: [...arguments_],
+      });
+      return name;
+    }
     let ownerRequests = methodSpecializations.get(owner.name);
     if (!ownerRequests) {
       ownerRequests = new Map();
@@ -456,7 +534,13 @@ export function inferGenericCalls(
     );
     const methodArguments = methodParameters.map((parameter) => rewritten.substitutions.get(parameter)!);
     return {
-      name: requestMethodSpecialization(owner, method, methodArguments),
+      name: requestMethodSpecialization(
+        owner,
+        method,
+        methodArguments,
+        ownerSubstitutions,
+        location,
+      ),
       returnType: substituteType(method.returnType.name, rewritten.substitutions),
       arguments: rewritten.arguments,
     };
@@ -1767,6 +1851,9 @@ export function inferGenericCalls(
     inheritedTypeParameters: readonly string[] = [],
     inheritedConstraints: readonly TypeParameterConstraint[] = [],
   ): FunctionDeclaration => {
+    const previousDeferredGenericMethodDemands = activeDeferredGenericMethodDemands;
+    const deferredMethodDemands: DeferredGenericMethodDemand[] = [];
+    activeDeferredGenericMethodDemands = deferredMethodDemands;
     const environment = new Map(declaration.parameters.map((parameter) => [parameter.name, parameter.type.name]));
     if (receiverType && !declaration.static) environment.set("this", receiverType);
     const body = rewriteConstrainedStatements(
@@ -1776,6 +1863,10 @@ export function inferGenericCalls(
       [...inheritedConstraints, ...(declaration.typeParameterConstraints ?? [])],
       declaration.returnType.name,
     );
+    activeDeferredGenericMethodDemands = previousDeferredGenericMethodDemands;
+    if (deferredMethodDemands.length > 0) {
+      deferredGenericMethodDemands.set(declaration.location, deferredMethodDemands);
+    }
     return { ...declaration, body };
   };
 
@@ -1836,9 +1927,12 @@ export function inferGenericCalls(
   });
 
   return {
-    ...program,
-    structs: specializedStructs,
-    functions: rewrittenFunctions,
+    program: {
+      ...program,
+      structs: specializedStructs,
+      functions: rewrittenFunctions,
+    },
+    deferredGenericMethodDemands,
   };
 }
 

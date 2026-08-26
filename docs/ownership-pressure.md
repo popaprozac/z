@@ -4074,12 +4074,15 @@ Two ownership details held without new syntax. `Map.get` returns a view, so the
 route first retains the selected ARC-backed async callable into an owned Option
 and ends the map loan before `await`. The synchronous and async maps remain
 separate, preserving the direct synchronous fast path while one async bridge can
-serve either kind. One smaller generic-composition gap remains: a wrapper method
-with `T: Service` cannot yet forward that same `T` into an imported generic
-`ServicesBuilder.register<T: Service>` call. Zapp currently recreates the
-three-line statically specialized handler adapter in its opt-in builder. This
-needs a generic-constraint forwarding fix before the builders can share that
-implementation without boilerplate.
+serve either kind. The wrapper can now forward its proven generic constraint
+directly into an imported generic builder method. Stage 0 records dependent
+method demands while analyzing the generic wrapper and materializes them only
+after a downstream concrete specialization exists. Fixed-point lowering closes
+the same function-to-method and method-to-method demand graph before emitting C.
+A three-module fixture covers both shapes, rejects an unconstrained forwarding
+attempt, and executes the resulting direct concrete calls under strict C. Zapp
+can therefore delegate to `ServicesBuilder.register<T: Service>` instead of
+recreating its three-line handler adapter.
 
 Zapp's first source-local application manifest exposed a project-authority gap
 in the fixed-point compiler. The app entry imported framework `.zs` modules
