@@ -66,6 +66,26 @@ const window = await loading;
 - `task on thread.main` starts a hot structured child placed on main.
 - Neither spelling creates a new OS thread.
 
+An ordinary async service method can delegate its tail result to a
+main-isolated method without making the whole service main-only:
+
+```z
+readonly class PublishService {
+  async function publish(): i32 on thread.main {
+    await delay(10);
+    return 42;
+  }
+
+  async function invoke(): i32 {
+    return await on thread.main this.publish();
+  }
+}
+```
+
+The parent remains a separately cancellable task. Cancellation is forwarded to
+the suspended main-executor child, and both task frames retain their own
+ownership cleanup.
+
 For anonymous multi-statement work, use a block and explicit ownership-bearing
 captures:
 

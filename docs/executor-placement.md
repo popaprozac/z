@@ -123,6 +123,29 @@ placed frame. The current bootstrap requires an async adapter for a throwing
 synchronous direct call because synchronous `try` lowering inside task frames
 is still pending.
 
+An ordinary async ARC-class method may use a placed async method call as its
+tail result:
+
+```z
+readonly class PublishService {
+  async function publish(): i32 on thread.main {
+    await delay(10);
+    return 42;
+  }
+
+  async function invoke(): i32 {
+    return await on thread.main this.publish();
+  }
+}
+```
+
+The fixed-point compiler keeps `invoke` and `publish` as separate heap-owned
+task frames. Cancellation of `invoke` is forwarded to the active main-isolated
+child, and both frames run their ordinary ownership cleanup exactly once. This
+first native tier covers non-consuming ARC receivers and the already-supported
+main-method suspension shapes. General placed async free-function
+taskification remains staged outside the native-worker adapter.
+
 ## Block contracts and type transformation
 
 An optional annotation describes the block's success and error contract, not

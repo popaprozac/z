@@ -8611,6 +8611,42 @@ function lowerExpressionContextual(
       tree,
       callInput
     );
+    const callResolutionIndex = resolvedCallResolutionIndex(
+      evidence,
+      tree,
+      callInput
+    );
+    if (callResolutionIndex < evidence.callResolutions.length) {
+      const resolution = view evidence.callResolutions[
+        callResolutionIndex
+      ];
+      if (resolution.asynchronous && resolution.kind == "method") {
+        const methodCall = try lowerAsyncMethodTailCall(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          callInput,
+          inout output
+        );
+        const callableIdentity = try moduleCallFunctionTypeIdentity(
+          program,
+          importedTypes,
+          resolution
+        );
+        let placedChildren = Array<usize>();
+        placedChildren.push(methodCall);
+        let placedLabels = Array<String>();
+        placedLabels.push("method");
+        return pushExpression(
+          inout output,
+          LoweredExpressionKind.asyncFunctionAwait,
+          callableIdentity,
+          placedChildren,
+          placedLabels
+        );
+      }
+    }
     const loweredCall = try lowerPlacedDirectCall(
       program,
       importedTypes,
@@ -17181,6 +17217,41 @@ function functionUsesFirstTierTailAwait(
   );
 }
 
+function functionUsesFirstTierPlacedMethodTailAwait(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length != 1) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  return match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        return tree.nodes[callee].kind
+          == ExpressionKind.memberExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function statementUsesOnlyFirstTierTailAwaitSuspension(
   in arena: StatementArena,
   index: usize
@@ -21521,10 +21592,14 @@ function lowerFunction(
     const firstTierDoubleAwait = receiverName.byteLength == 0
       && functionUsesFirstTierDoubleAwait(declaration);
     const firstTierLinearAwait = functionUsesFirstTierLinearAwait(declaration);
+    const firstTierPlacedMethodTail = declaration.executorAffinity
+        != "thread.main"
+      && functionUsesFirstTierPlacedMethodTailAwait(declaration);
     const firstTierTailAwait = (
         declaration.executorAffinity != "thread.main"
         && (
         functionUsesFirstTierTailAwait(declaration)
+        || firstTierPlacedMethodTail
         || functionUsesFirstTierPrefixedTailAwait(declaration)
         || functionUsesFirstTierMatchedTailAwait(declaration)
         || firstTierLinearAwait

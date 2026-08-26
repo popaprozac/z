@@ -467,6 +467,57 @@ function functionUsesFirstTierTailAwait(
   );
 }
 
+function functionUsesFirstTierPlacedAsyncMethodTailAwait(
+  moduleIndex: usize,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (
+    moduleIndex >= graph.modules.length
+    || declaration.body.roots.length != 1
+  ) return false;
+  const root = declaration.body.roots[0];
+  if (
+    declaration.body.nodes[root].kind != StatementKind.returnStatement
+  ) return false;
+  return match (in declaration.body.nodes[root].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        if (
+          tree.nodes[callee].kind != ExpressionKind.memberExpression
+        ) return false;
+        for (const resolution of graph.modules[moduleIndex]
+          .semanticEvidence.callResolutions) {
+          if (
+            resolution.offset == tree.nodes[operation].offset
+            && resolution.line == tree.nodes[operation].line
+            && resolution.column == tree.nodes[operation].column
+          ) return resolution.asynchronous
+              && resolution.kind == "method";
+        }
+        return false;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
 function statementUsesOnlyFirstTierTailAwaitSuspension(
   in arena: StatementArena,
   index: usize
@@ -731,6 +782,11 @@ function functionHasFirstTierTailAwaitStorage(
     || moduleIndex >= graph.modules.length
     || (
       !functionUsesFirstTierTailAwait(declaration)
+      && !functionUsesFirstTierPlacedAsyncMethodTailAwait(
+        moduleIndex,
+        graph,
+        declaration
+      )
       && !functionUsesFirstTierPrefixedTailAwait(declaration)
       && !functionUsesFirstTierMatchedTailAwait(declaration)
       && !functionUsesFirstTierLinearAwait(declaration)

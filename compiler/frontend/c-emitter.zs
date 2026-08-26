@@ -402,10 +402,6 @@ function asyncTailAwaitShape(
         if (
           expression.kind == LoweredExpressionKind.asyncFunctionAwait
           && expression.children.length > 0
-          && (
-            expression.labels.length == 0
-            || expression.labels[0] != "method"
-          )
         ) {
           awaitIndex = candidate;
           awaitCount = awaitCount + 1;
@@ -534,6 +530,12 @@ function asyncMethodAwaitStartsChild(
   in declaration: LoweredFunction,
   expressionIndex: usize
 ): boolean {
+  match (asyncTailAwaitShape(program, declaration.name)) {
+    some(shape) => if (shape.expressionIndex == expressionIndex) {
+      return true;
+    }
+    none => {}
+  }
   match (asyncLinearAwaitShape(program, declaration.name)) {
     some(shape) => return shape.expressionIndex == expressionIndex;
     none => {}

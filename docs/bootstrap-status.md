@@ -103,6 +103,12 @@ conversion remain deferred. The same single-tail-await body is executable on a
 non-consuming ARC class method, whose parent frame retains the receiver until
 child completion or cancellation. Straight-line method locals before that
 await are frame-owned too, including cleanup-bearing values lent to the child.
+An ordinary async ARC-class method may now make its single tail operation an
+explicit `return await on thread.main this.method()` call. The placement proof
+lowers to the existing nonblocking main-method invocation frame; cancellation
+propagates through the parent and destroys a suspended child's live owned
+locals exactly once. General placed async free-function taskification remains
+staged outside the dedicated native-worker adapter.
 Non-suspending prefix loops and early-return branches are executable in that
 frame as well. A final consuming enum/`Option` match may now move one selected
 owned async handler into the frame, suspend only that arm, and complete the

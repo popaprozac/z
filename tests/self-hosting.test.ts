@@ -9234,6 +9234,27 @@ test("compiles a multi-module Z application through the standalone native driver
       summary: 'suspending async function "deferred" is not executable in the native compiler yet',
     },
     {
+      name: "synchronous-placed-method-tail",
+      source: [
+        'import { thread } from "std/thread";',
+        "readonly class Service {",
+        "  function publish(): i32 on thread.main {",
+        "    return 42;",
+        "  }",
+        "  async function invoke(): i32 {",
+        "    return await on thread.main this.publish();",
+        "  }",
+        "}",
+        "function main(): i32 { return 0; }",
+        "",
+      ].join("\n"),
+      line: 6,
+      column: 9,
+      marker: "^^^^^",
+      code: "Z0700",
+      summary: 'suspending async function "invoke" is not executable in the native compiler yet',
+    },
+    {
       name: "generic-class-custom-constructor",
       source: [
         "class Box<T> {",
@@ -15433,6 +15454,59 @@ test("runs a stored delay-suspending async method through TaskScope", () => {
     execution.stdout,
     "completed request 40\ncompleted request 40\nreleased request 41\n",
   );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
+test("propagates cancellation through an executor-placed async method tail", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-method-main-placement.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /frame->child = .*_start_invocation\(task->executor, self\)/,
+  );
+  assert.match(
+    emission.stdout,
+    /if \(frame->child\.task != NULL\) z_stage1_async_request_cancel\(frame->child\.task\)/,
+  );
+  assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1000\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-method-main-placement-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  assert.equal(execution.stdout, "released delegated publish\n");
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
