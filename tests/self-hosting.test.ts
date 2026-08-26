@@ -16125,3 +16125,27 @@ hostToolchainTest("preserves first-tier struct spread capability evidence native
   assert.equal(cleanupExecution.status, 0, cleanupExecution.stderr);
   assert.equal(cleanupExecution.stdout, cleanupStage0.stdout);
 }, 90_000);
+
+test("requests cancellation through a borrowed stored TaskControl", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-borrowed-task-control-cancel.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /z_stage1_task_control_request_cancel\(\(Z_TaskControl \*\)/,
+  );
+});

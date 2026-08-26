@@ -4708,7 +4708,7 @@ function appendExpression(
     if (declaration.expressions[index].children.length != 1) {
       throw "native C emission received malformed TaskControl cancellation";
     }
-    output.append("z_stage1_task_control_request_cancel(");
+    output.append("z_stage1_task_control_request_cancel((Z_TaskControl *)");
     const control = declaration.expressions[index].children[0];
     try appendExpression(inout output, declaration, control);
     output.append(")");
