@@ -15744,6 +15744,7 @@ function loweredIntrinsicIdentity(in type: LoweredType): String throws String {
   }
   if (
     type.kind == LoweredTypeKind.structType
+    || type.kind == LoweredTypeKind.classType
     || type.kind == LoweredTypeKind.enumType
   ) return type.name.copyBytes(0, type.name.byteLength);
   throw "native C emission cannot form an intrinsic identity for this type";
@@ -15759,15 +15760,16 @@ function appendMapRuntime(
     const valueIdentity = try loweredIntrinsicIdentity(declaration.valueType);
     const optionName = `__z_NicheViewOption_${valueIdentity}`;
     const ownedOptionName = `__z_Option_${valueIdentity}`;
-    const ownedFunctionGet = declaration.valueType.kind
-      == LoweredTypeKind.functionType;
+    const ownedIdentityGet = declaration.valueType.kind
+      == LoweredTypeKind.functionType
+      || declaration.valueType.kind == LoweredTypeKind.classType;
     let supportsRemove = false;
     let hasViewOption = false;
     for (const enumeration of program.enums) {
       if (enumeration.name == ownedOptionName) supportsRemove = true;
       if (enumeration.name == optionName) hasViewOption = true;
     }
-    if (!ownedFunctionGet && !hasViewOption) {
+    if (!ownedIdentityGet && !hasViewOption) {
       output.append("typedef ");
       output.append(valueType);
       if (
@@ -15867,7 +15869,7 @@ function appendMapRuntime(
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
     output.append("  }\n  return false;\n}\n\n");
     output.append("static inline __attribute__((unused)) Z_");
-    if (ownedFunctionGet) output.append(ownedOptionName);
+    if (ownedIdentityGet) output.append(ownedOptionName);
     else output.append(optionName);
     output.append(" Z_");
     output.append(declaration.name);
@@ -15876,7 +15878,7 @@ function appendMapRuntime(
     output.append(" *self, ");
     output.append(keyType);
     output.append(" key) {\n");
-    if (ownedFunctionGet) {
+    if (ownedIdentityGet) {
       output.append("  if (self->bucketCount == 0) return (Z_");
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
@@ -15888,7 +15890,7 @@ function appendMapRuntime(
     output.append("_hash(key) & (self->bucketCount - 1);\n");
     output.append("  for (size_t probe = 0; probe < self->bucketCount; probe += 1) {\n");
     output.append("    const size_t stored = self->buckets[slot];\n");
-    if (ownedFunctionGet) {
+    if (ownedIdentityGet) {
       output.append("    if (stored == 0) return (Z_");
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
@@ -15898,7 +15900,7 @@ function appendMapRuntime(
     output.append("    if (stored != SIZE_MAX && Z_");
     output.append(declaration.name);
     output.append("_equal(self->entries[stored - 1].key, key)) return ");
-    if (ownedFunctionGet) {
+    if (ownedIdentityGet) {
       output.append("(Z_");
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
@@ -15909,7 +15911,7 @@ function appendMapRuntime(
     } else output.append("&(self->entries[stored - 1].value)");
     output.append(";\n");
     output.append("    slot = (slot + 1) & (self->bucketCount - 1);\n");
-    if (ownedFunctionGet) {
+    if (ownedIdentityGet) {
       output.append("  }\n  return (Z_");
       output.append(ownedOptionName);
       output.append("){ .tag = Z_");
@@ -15925,7 +15927,7 @@ function appendMapRuntime(
     output.append(" key, ");
     output.append(valueType);
     output.append(" value) {\n");
-    if (ownedFunctionGet) {
+    if (ownedIdentityGet) {
       output.append("  value = Z_");
       output.append(declaration.valueType.name);
       output.append("_retain(value);\n");
@@ -15948,12 +15950,16 @@ function appendMapRuntime(
     if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
       output.append("      Z_");
       output.append(declaration.keyType.name);
-      output.append("_deinit(&key);\n");
+      if (declaration.keyType.kind == LoweredTypeKind.classType) {
+        output.append("_release(key);\n");
+      } else output.append("_deinit(&key);\n");
     }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("      Z_");
       output.append(declaration.valueType.name);
-      output.append("_deinit(&self->entries[stored - 1].value);\n");
+      if (declaration.valueType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[stored - 1].value);\n");
+      } else output.append("_deinit(&self->entries[stored - 1].value);\n");
     }
     output.append("      self->entries[stored - 1].value = value;\n");
     output.append("      return;\n    }\n");
@@ -16016,7 +16022,9 @@ function appendMapRuntime(
       if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
         output.append("      Z_");
         output.append(declaration.keyType.name);
-        output.append("_deinit(&self->entries[entry].key);\n");
+        if (declaration.keyType.kind == LoweredTypeKind.classType) {
+          output.append("_release(self->entries[entry].key);\n");
+        } else output.append("_deinit(&self->entries[entry].key);\n");
       }
       output.append("      ");
       output.append(valueType);
@@ -16074,12 +16082,16 @@ function appendMapRuntime(
     if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
       output.append("      Z_");
       output.append(declaration.keyType.name);
-      output.append("_deinit(&self->entries[entry].key);\n");
+      if (declaration.keyType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[entry].key);\n");
+      } else output.append("_deinit(&self->entries[entry].key);\n");
     }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("      Z_");
       output.append(declaration.valueType.name);
-      output.append("_deinit(&self->entries[entry].value);\n");
+      if (declaration.valueType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[entry].value);\n");
+      } else output.append("_deinit(&self->entries[entry].value);\n");
     }
     output.append("      self->buckets[slot] = SIZE_MAX;\n");
     output.append("      self->tombstones += 1;\n");
@@ -16113,12 +16125,16 @@ function appendMapRuntime(
     if (loweredTypeNeedsDeinit(program, declaration.keyType)) {
       output.append("    Z_");
       output.append(declaration.keyType.name);
-      output.append("_deinit(&self->entries[self->length].key);\n");
+      if (declaration.keyType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[self->length].key);\n");
+      } else output.append("_deinit(&self->entries[self->length].key);\n");
     }
     if (loweredTypeNeedsDeinit(program, declaration.valueType)) {
       output.append("    Z_");
       output.append(declaration.valueType.name);
-      output.append("_deinit(&self->entries[self->length].value);\n");
+      if (declaration.valueType.kind == LoweredTypeKind.classType) {
+        output.append("_release(self->entries[self->length].value);\n");
+      } else output.append("_deinit(&self->entries[self->length].value);\n");
     }
     output.append("  }\n");
     output.append("  if (self->bucketCount > 0) memset(self->buckets, 0, self->bucketCount * sizeof(size_t));\n");

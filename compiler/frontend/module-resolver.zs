@@ -4554,7 +4554,18 @@ function effectiveCollectionMethodSignature(
         );
         match (nativeFunctionSignature(transparentValue)) {
           some(_) => effective.returnType = `Option<${mapType.arguments[1]}>`;
-          none => {}
+          none => match (
+            typeSymbolLocation(modules, moduleIndex, transparentValue)
+          ) {
+            some(location) => {
+              if (
+                modules[location.moduleIndex].symbols[
+                  location.symbolIndex
+                ].kind == ModuleSymbolKind.classSymbol
+              ) effective.returnType = `Option<${mapType.arguments[1]}>`;
+            }
+            none => {}
+          }
         }
       }
     }

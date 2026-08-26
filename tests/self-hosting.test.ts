@@ -1660,7 +1660,7 @@ test("moves a matched async handler into its suspending method frame", () => {
     assert.match(emission.stdout, /bool _z_stage1_async_live_/);
     assert.match(
       emission.stdout,
-      /frame->live_argument0 = false;[\s\S]*switch \(_z_stage1_async_match_/,
+      /_z_stage1_live_option = false;[\s\S]*switch \(_z_stage1_match_/,
     );
     assert.match(
       emission.stdout,
@@ -1881,7 +1881,7 @@ test("composes owned matches, ARC arguments, and post-await control flow", () =>
     assert.equal(emission.status, 0, emission.stderr);
     assert.match(
       emission.stdout,
-      /_z_stage1_live_decoded = false;[\s\S]*_z_stage1_async_match_/,
+      /_z_stage1_live_decoded = false;[\s\S]*switch \(_z_stage1_match_/,
     );
     assert.match(
       emission.stdout,
@@ -1889,7 +1889,7 @@ test("composes owned matches, ARC arguments, and post-await control flow", () =>
     );
     assert.match(
       emission.stdout,
-      /_z_stage1_live_outcome = false;[\s\S]*switch \(_z_stage1_async_suffix_match_/,
+      /_z_stage1_live_outcome = false;[\s\S]*switch \(_z_stage1_match_/,
     );
     const compilation = spawnSync(
       "clang",
