@@ -47,7 +47,7 @@ if (body instanceof native.NSString) {
 }
 ```
 
-Zapp exercises this exact shape in a visible WebKit message round trip. The
+A native WebKit message-bridge probe exercises this exact shape end to end. The
 generated boundary uses the native Objective-C class test and preserves the
 string's exact UTF-8 byte length, including embedded null bytes.
 
@@ -65,10 +65,10 @@ properties remain compile-time errors, and a Z `String` assigned to an
 
 Imported Objective-C inheritance remains part of the checked type relation, so
 a non-null subclass such as `WKWebView` can populate nullable superclass
-storage such as `NSView | null`. Zapp uses these rules to construct and own its
-window, WebView, configuration, content controller, protocol adapter, and
-teardown guard in a main-executor Z application object; its transitional
-Objective-C run-loop host keeps only weak access to the UI identities.
+storage such as `NSView | null`. These rules let a native desktop application
+construct and own its window, WebView, configuration, content controller,
+protocol adapter, and teardown guard in a main-executor Z object while a
+foreign run-loop host keeps only weak access to the UI identities.
 
 Clang-proven C-record aliases compose as one native type within a header
 contract while retaining their familiar source names. A frame returned as

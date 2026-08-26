@@ -131,8 +131,8 @@ For retained protocol registrations that use separate add/remove methods,
 
 ```z
 const registration = objc.register({
-  add: contentController.addScriptMessageHandler(handler, "zapp"),
-  remove: contentController.removeScriptMessageHandlerForName("zapp"),
+  add: contentController.addScriptMessageHandler(handler, "nativeBridge"),
+  remove: contentController.removeScriptMessageHandlerForName("nativeBridge"),
 });
 ```
 

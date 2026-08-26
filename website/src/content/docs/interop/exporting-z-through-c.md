@@ -134,7 +134,7 @@ A project may configure one cleanup-bearing runtime root:
 {
   "target": {
     "kind": "static-library",
-    "name": "zapp",
+    "name": "application_core",
     "entry": "library.zs",
     "runtime": {
       "initialize": "initializeRuntime"

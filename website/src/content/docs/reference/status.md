@@ -16,7 +16,7 @@ production or compatibility-sensitive use.
 - Native C-family code generation through Clang
 - Header-first C and Objective-C interop, substantial `.zd` contracts, and
   selected C++ values, methods, namespaces, RAII, and move-only resources
-- A visible Zapp WebKit round trip whose executable `main`, consuming
+- A visible native WebKit round trip whose executable `main`, consuming
   portable application builder, selected platform-module seam, UI ownership,
   protocol handler,
   dynamic `id` class narrowing, typed JSON routing, frozen synchronous and
@@ -78,7 +78,7 @@ production or compatibility-sensitive use.
   A generic captured async closure may directly await a non-consuming service
   method; each cold invocation retains its environment, preserves borrowed
   arguments through the join, and forwards cancellation to the child.
-- An opt-in Zapp pressure test stores `thread.any` async service handlers in a
+- An opt-in application pressure test stores `thread.any` async service handlers in a
   frozen map and executes a complete headless bridge request through a real
   suspension and typed response. The native semantic frontend agrees on the
   graph. Its retained, cleanup-bearing `SearchService.invoke` method and the
@@ -100,7 +100,7 @@ production or compatibility-sensitive use.
   active `return await` child rather than before it starts. Scheduled ARC
   captures receive exactly one storage retain. Arbitrary suspension
   counts, branches between awaits, and equivalent general async method bodies
-  remain future frame tiers. The visible Zapp application now imports and
+  remain future frame tiers. The visible WebKit application now imports and
   executes this surface rather than keeping it headless-only. The fixed-point
   compiler also executes its explicit `new TaskScope()` lifecycle: a foreign
   callback schedules an owned async closure on `thread.main`, cleanup-bearing
@@ -114,8 +114,8 @@ production or compatibility-sensitive use.
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and
-  public call sites to tools without source scanning. Zapp derives typed service
-  bindings from this artifact.
+  public call sites to tools without source scanning. External tools can derive
+  typed service bindings from this artifact.
 
 ## Partial and still expanding
 
