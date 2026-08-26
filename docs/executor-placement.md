@@ -155,9 +155,21 @@ async function invoke(service: PublishService): i32 {
 }
 ```
 
-In this first native tier the placed call must be the ordinary async parent's
-single tail return. Linear delay-suspending callees are taskified; broader
-control flow around the placed child remains staged.
+The placed child can also produce one frame-owned local before a synchronous
+suffix:
+
+```z
+async function invoke(service: PublishService): i32 {
+  const status = await on thread.main publish(service);
+  return status == 42 ? 0 : 1;
+}
+```
+
+The fixed-point tier taskifies either one tail return or one top-level awaited
+local. The local may own its result while the remaining straight-line suffix
+inspects, moves, or destroys it. Parent cancellation is forwarded to the active
+child, and argument/result cleanup remains exact-once. Multiple child awaits,
+nested suspension, and broader suspending control flow remain staged.
 
 ## Block contracts and type transformation
 

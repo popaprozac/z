@@ -111,6 +111,11 @@ locals exactly once. The same single-tail shape now taskifies a placed async
 free function with a linear delay-suspending body. Its arguments and live
 locals are stored in a separate heap child frame, and parent cancellation
 removes the child's timer before running ownership cleanup exactly once.
+The placed free-function child may now feed one top-level awaited local in the
+ordinary async parent. A cleanup-bearing result transfers into frame storage,
+the synchronous suffix resumes after child completion, and both moved
+arguments and the owned result are destroyed exactly once on success or
+cancellation.
 Non-suspending prefix loops and early-return branches are executable in that
 frame as well. A final consuming enum/`Option` match may now move one selected
 owned async handler into the frame, suspend only that arm, and complete the

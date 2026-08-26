@@ -1190,6 +1190,28 @@ function appendAsyncStoredParameterCleanups(
   }
 }
 
+function appendAsyncStoredParameterDisarms(
+  inout output: TextBuffer,
+  in program: LoweredProgram,
+  in functionType: LoweredFunctionType,
+  depth: usize
+): void {
+  let parameter: usize = 0;
+  while (parameter < functionType.parameters.length) {
+    const stored = view functionType.parameters[parameter];
+    if (
+      stored.mode == LoweredParameterMode.value
+      && loweredTypeNeedsDeinit(program, stored.type)
+    ) {
+      appendIndent(inout output, depth);
+      output.append("frame->live_argument");
+      output.append(`${parameter}`);
+      output.append(" = false;\n");
+    }
+    parameter = parameter + 1;
+  }
+}
+
 function appendAsyncStoredParameterMacros(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -7700,6 +7722,12 @@ function appendCallableHelpers(
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_continue(frame);\n");
           if (resultNeedsDeinit) output.append("  frame->live_result = true;\n");
+          appendAsyncStoredParameterDisarms(
+            inout output,
+            program,
+            functionType,
+            1
+          );
           output.append("  ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_cleanup_owned(frame);\n  task->completed = true;\n}\n\n");

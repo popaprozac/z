@@ -4185,6 +4185,21 @@ module boundaries. An unrestricted implementation may satisfy a
 silently strengthen an unrestricted trait method. Diagnostics use the declared
 trait name rather than a compiler-owned module symbol.
 
+The next executor-placement slice removed the tail-only restriction from one
+ordinary async free-function composition. A parent may now bind one direct
+`await on thread.main operation(...)` result, resume a straight-line
+synchronous suffix, and keep an ownership-bearing result in its heap frame
+until that suffix consumes or destroys it. The pressure fixture moves a String
+inside an owned argument into a delayed main-isolated child, returns a second
+cleanup-bearing struct, observes it after resumption, and proves both values
+destroy exactly once. That probe exposed a latent delayed-frame bug: the
+synchronous continuation destroyed its local alias of an owned parameter, but
+the frame still marked the original slot live and destroyed the same storage
+again. Successful continuation now disarms the frame's stored-parameter guards
+after ordinary function cleanup. Cancellation continues to use those guards
+while the child is suspended. The full 117-test fixed-point suite and the
+Stage-0 async runtime tier pass with the same worker-placement behavior.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

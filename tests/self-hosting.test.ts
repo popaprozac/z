@@ -15584,6 +15584,60 @@ test("keeps structured placed async function suspension behind a native boundary
   assert.match(native.stderr, /requires a directly taskifiable callee/);
 });
 
+test("resumes synchronous work after an executor-placed async function local", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-function-main-placement-local.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /frame->child = Z_.*_start\(.*task->executor/);
+  assert.match(emission.stdout, /frame->state = 2/);
+  assert.match(emission.stdout, /z_stage1_async_schedule_delay\(task, 1\)/);
+
+  const directory = mkdtempSync("/tmp/z-async-function-main-placement-local-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(
+    execution.status,
+    0,
+    `${execution.stderr}\nsignal: ${execution.signal}\nstdout: ${execution.stdout}`,
+  );
+  assert.equal(
+    execution.stdout,
+    "completed free local publish\nreleased free local publish\n" +
+      "observed free local publish\nreleased result free local publish\n",
+  );
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
 test("preserves thread-any callable contracts and emits atomic closure environments", () => {
   const input = resolve(
     projectRoot,

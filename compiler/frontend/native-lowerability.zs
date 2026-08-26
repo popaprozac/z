@@ -553,6 +553,64 @@ function functionUsesFirstTierPlacedAsyncFunctionTailAwaitSyntax(
   };
 }
 
+function placedAsyncFunctionCallIsTaskifiable(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in tree: ExpressionTree,
+  callIndex: usize
+): boolean {
+  if (moduleIndex >= graph.modules.length) return false;
+  for (const resolution of graph.modules[moduleIndex]
+    .semanticEvidence.callResolutions) {
+    if (
+      resolution.offset != tree.nodes[callIndex].offset
+      || resolution.line != tree.nodes[callIndex].line
+      || resolution.column != tree.nodes[callIndex].column
+    ) continue;
+    if (
+      !resolution.asynchronous
+      || resolution.kind != "function"
+    ) return false;
+    const targetModule = parsedModuleIndexForGraphModule(
+      modules,
+      graph,
+      resolution.targetModuleIndex
+    );
+    if (targetModule >= modules.length) return false;
+    let targetName = resolution.targetName.copyBytes(
+      0,
+      resolution.targetName.byteLength
+    );
+    if (
+      resolution.targetModuleIndex < graph.modules.length
+      && resolution.targetSymbolIndex < graph.modules[
+        resolution.targetModuleIndex
+      ].symbols.length
+    ) {
+      targetName = graph.modules[resolution.targetModuleIndex]
+        .symbols[resolution.targetSymbolIndex].name.copyBytes(
+          0,
+          graph.modules[resolution.targetModuleIndex]
+            .symbols[resolution.targetSymbolIndex].name.byteLength
+        );
+    }
+    for (const target of modules[targetModule].program.functions) {
+      if (target.name != targetName) continue;
+      for (const targetRoot of target.body.roots) {
+        if (
+          statementContainsSuspension(target.body, targetRoot)
+          && target.body.nodes[targetRoot].kind
+            != StatementKind.expressionStatement
+        ) return false;
+      }
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 function functionUsesFirstTierPlacedAsyncFunctionTailAwait(
   moduleIndex: usize,
   in modules: Array<ParsedModule>,
@@ -590,60 +648,114 @@ function functionUsesFirstTierPlacedAsyncFunctionTailAwait(
         if (
           tree.nodes[callee].kind != ExpressionKind.identifierExpression
         ) return false;
-        for (const resolution of graph.modules[moduleIndex]
-          .semanticEvidence.callResolutions) {
-          if (
-            resolution.offset == tree.nodes[operation].offset
-            && resolution.line == tree.nodes[operation].line
-            && resolution.column == tree.nodes[operation].column
-          ) {
-            if (
-              !resolution.asynchronous
-              || resolution.kind != "function"
-            ) return false;
-            const targetModule = parsedModuleIndexForGraphModule(
-              modules,
-              graph,
-              resolution.targetModuleIndex
-            );
-            if (targetModule >= modules.length) return false;
-            let targetName = resolution.targetName.copyBytes(
-              0,
-              resolution.targetName.byteLength
-            );
-            if (
-              resolution.targetModuleIndex < graph.modules.length
-              && resolution.targetSymbolIndex < graph.modules[
-                resolution.targetModuleIndex
-              ].symbols.length
-            ) {
-              targetName = graph.modules[resolution.targetModuleIndex]
-                .symbols[resolution.targetSymbolIndex].name.copyBytes(
-                  0,
-                  graph.modules[resolution.targetModuleIndex]
-                    .symbols[resolution.targetSymbolIndex].name.byteLength
-                );
-            }
-            for (const target of modules[targetModule].program.functions) {
-              if (target.name != targetName) continue;
-              for (const targetRoot of target.body.roots) {
-                if (
-                  statementContainsSuspension(target.body, targetRoot)
-                  && target.body.nodes[targetRoot].kind
-                    != StatementKind.expressionStatement
-                ) return false;
-              }
-              return true;
-            }
-            return false;
-          }
-        }
-        return false;
+        return placedAsyncFunctionCallIsTaskifiable(
+          moduleIndex,
+          modules,
+          graph,
+          tree,
+          operation
+        );
       }
       none => false;
     }
     none => false;
   };
+}
+
+function statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
+  in arena: StatementArena,
+  index: usize
+): boolean {
+  if (arena.nodes[index].kind != StatementKind.variableStatement) {
+    return false;
+  }
+  return match (in arena.nodes[index].expression) {
+    some(syntax) => match (in syntax.tree) {
+      some(tree) => {
+        const placement = tree.root;
+        if (
+          tree.nodes[placement].kind
+            != ExpressionKind.executorPlacementExpression
+          || tree.nodes[placement].value != "await"
+          || tree.nodes[placement].labels.length < 3
+          || tree.nodes[placement].labels[2] != "call"
+          || tree.nodes[placement].children.length != 3
+        ) return false;
+        const operation = tree.nodes[placement].children[2];
+        if (
+          tree.nodes[operation].kind != ExpressionKind.callExpression
+          || tree.nodes[operation].children.length == 0
+        ) return false;
+        const callee = tree.nodes[operation].children[0];
+        for (const child of tree.nodes[placement].children) {
+          if (expressionTreeContainsSuspension(
+            arena,
+            tree,
+            child
+          )) return false;
+        }
+        return tree.nodes[callee].kind
+          == ExpressionKind.identifierExpression;
+      }
+      none => false;
+    }
+    none => false;
+  };
+}
+
+function functionUsesFirstTierPlacedAsyncFunctionLinearAwaitSyntax(
+  in declaration: FunctionDeclaration
+): boolean {
+  if (declaration.body.roots.length < 2) return false;
+  let awaitCount: usize = 0;
+  for (const root of declaration.body.roots) {
+    if (statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
+      declaration.body,
+      root
+    )) {
+      awaitCount = awaitCount + 1;
+      continue;
+    }
+    if (statementContainsSuspension(declaration.body, root)) return false;
+  }
+  return awaitCount == 1;
+}
+
+function functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (
+    !functionUsesFirstTierPlacedAsyncFunctionLinearAwaitSyntax(
+      declaration
+    )
+  ) return false;
+  for (const root of declaration.body.roots) {
+    if (!statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
+      declaration.body,
+      root
+    )) continue;
+    return match (in declaration.body.nodes[root].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          const placement = tree.root;
+          const operation = tree.nodes[placement].children[2];
+          select placedAsyncFunctionCallIsTaskifiable(
+            moduleIndex,
+            modules,
+            graph,
+            tree,
+            operation
+          );
+        }
+        none => false;
+      }
+      none => false;
+    };
+  }
+  return false;
 }
 
 function statementUsesOnlyFirstTierTailAwaitSuspension(
@@ -911,6 +1023,12 @@ function functionHasFirstTierTailAwaitStorage(
     || (
       !functionUsesFirstTierTailAwait(declaration)
       && !functionUsesFirstTierPlacedAsyncFunctionTailAwait(
+        moduleIndex,
+        modules,
+        graph,
+        declaration
+      )
+      && !functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
         moduleIndex,
         modules,
         graph,
@@ -1276,7 +1394,8 @@ function validateNativeExpressionTree(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
   in tree: ExpressionTree,
-  tailPosition: boolean
+  tailPosition: boolean,
+  allowNonTailPlacedAsyncCall: boolean
 ): void throws ModuleResolveError {
   const treeRoot = tree.root;
   let index: usize = 0;
@@ -1409,6 +1528,7 @@ function validateNativeExpressionTree(
           !tailPosition
           || !expressionIsTailPlacement(tree, treeRoot, index)
         )
+        && !allowNonTailPlacedAsyncCall
       ) {
         throw loweringBoundary(
           path,
@@ -1667,7 +1787,8 @@ function validateNativeExpression(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
   in expression: ExpressionSyntax,
-  tailPosition: boolean
+  tailPosition: boolean,
+  allowNonTailPlacedAsyncCall: boolean
 ): void throws ModuleResolveError {
   match (in expression.tree) {
     some(tree) => try validateNativeExpressionTree(
@@ -1676,7 +1797,8 @@ function validateNativeExpression(
       modules,
       graph,
       tree,
-      tailPosition
+      tailPosition,
+      allowNonTailPlacedAsyncCall
     );
     none => throw loweringBoundary(
       path,
@@ -1751,7 +1873,8 @@ function validateNativeBody(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph,
   in body: StatementArena,
-  asynchronous: boolean
+  asynchronous: boolean,
+  allowNonTailPlacedAsyncCall: boolean
 ): void throws ModuleResolveError {
   let statementIndex: usize = 0;
   while (statementIndex < body.nodes.length) {
@@ -1767,7 +1890,8 @@ function validateNativeBody(
         modules,
         graph,
         expression,
-        statement.kind == StatementKind.returnStatement
+        statement.kind == StatementKind.returnStatement,
+        allowNonTailPlacedAsyncCall
       );
       none => {}
     }
@@ -1778,7 +1902,8 @@ function validateNativeBody(
         modules,
         graph,
         expression,
-        false
+        false,
+        allowNonTailPlacedAsyncCall
       );
       none => {}
     }
@@ -1976,6 +2101,24 @@ function validateNativeFunction(
     );
   }
   if (
+    functionUsesFirstTierPlacedAsyncFunctionLinearAwaitSyntax(declaration)
+    && !functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    )
+  ) {
+    throw loweringBoundary(
+      path,
+      "Z0700",
+      "a placed async function local requires a directly taskifiable callee in the current native compiler tier",
+      declaration.line,
+      declaration.column,
+      5
+    );
+  }
+  if (
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
@@ -2001,13 +2144,21 @@ function validateNativeFunction(
     none => {}
   }
   const asynchronous = declaration.asynchronous;
+  const allowNonTailPlacedAsyncCall =
+    functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    );
   try validateNativeBody(
     path,
     moduleIndex,
     modules,
     graph,
     declaration.body,
-    asynchronous
+    asynchronous,
+    allowNonTailPlacedAsyncCall
   );
 }
 
@@ -2044,6 +2195,7 @@ function validateNativeAggregate(
         modules,
         graph,
         deinitializer.body,
+        false,
         false
       );
       none => {}
@@ -2056,7 +2208,8 @@ function validateNativeAggregate(
           modules,
           graph,
           expression,
-          true
+          true,
+          false
         );
         none => {}
       }
@@ -2093,6 +2246,7 @@ function validateNativeAggregate(
       modules,
       graph,
       field.defaultStatements,
+      false,
       false
     );
   }
@@ -2113,6 +2267,7 @@ function validateNativeAggregate(
       modules,
       graph,
       deinitializer.body,
+      false,
       false
     );
     none => {}
@@ -2174,6 +2329,7 @@ export function validateNativeLowerability(
         modules,
         graph,
         declaration.initializer,
+        false,
         false
       );
     }

@@ -99,8 +99,18 @@ async function invoke(service: PublishService): i32 {
 }
 ```
 
-The current fixed-point tier supports this as the parent's single tail return
-and gives a linear delay-suspending callee its own cancellable heap frame.
+The same child can produce one local before synchronous continuation:
+
+```z
+async function invoke(service: PublishService): i32 {
+  const status = await on thread.main publish(service);
+  return status == 42 ? 0 : 1;
+}
+```
+
+The current fixed-point tier supports a single placed tail return or one
+top-level awaited local. A linear delay-suspending callee receives its own
+cancellable heap frame; owned arguments and results transfer exactly once.
 
 For anonymous multi-statement work, use a block and explicit ownership-bearing
 captures:
