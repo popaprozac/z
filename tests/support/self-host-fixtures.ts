@@ -14,6 +14,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
     entry: "examples/language/collections/map-identities.zs",
     expectedStdout: "open: Draft\nfound: Draft\nclosed Draft\n",
   },
+  { entry: "tests/fixtures/self-host-emit-class-field-order.zs" },
   { entry: "tests/fixtures/self-host-emit-fixed-array.zs" },
   {
     entry: "tests/fixtures/self-host-emit-fixed-array-owned.zs",

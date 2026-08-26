@@ -7254,6 +7254,67 @@ function fieldIsOptionalForOwner(
   return false;
 }
 
+function reorderClassConstructionFields(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in ownerName: String,
+  inout children: Array<usize>,
+  inout labels: Array<String>
+): void throws String {
+  let orderedChildren = Array<usize>();
+  let orderedLabels = Array<String>();
+  let foundOwner = false;
+  for (const aggregate of program.aggregates) {
+    if (aggregate.name != ownerName) continue;
+    foundOwner = true;
+    for (const declaredField of aggregate.fields) {
+      let source: usize = 0;
+      while (source < labels.length) {
+        if (labels[source] == declaredField.name) {
+          orderedChildren.push(children[source]);
+          orderedLabels.push(labels[source].copyBytes(
+            0,
+            labels[source].byteLength
+          ));
+          break;
+        }
+        source = source + 1;
+      }
+    }
+    break;
+  }
+  if (!foundOwner) {
+    for (const imported of importedTypes) {
+      if (
+        imported.localName != ownerName
+        && imported.targetName != ownerName
+      ) continue;
+      foundOwner = true;
+      for (const declaredField of imported.fields) {
+        let source: usize = 0;
+        while (source < labels.length) {
+          if (labels[source] == declaredField.name) {
+            orderedChildren.push(children[source]);
+            orderedLabels.push(labels[source].copyBytes(
+              0,
+              labels[source].byteLength
+            ));
+            break;
+          }
+          source = source + 1;
+        }
+      }
+      break;
+    }
+  }
+  if (!foundOwner) return;
+  if (orderedChildren.length != children.length) {
+    throw `native class construction could not order every ${ownerName} field`;
+  }
+  children = move orderedChildren;
+  labels = move orderedLabels;
+}
+
 function staticallyResolvedExpressionTypeName(
   in program: Program,
   in importedTypes: Array<LoweredImportedType>,
@@ -8663,6 +8724,13 @@ function lowerExpressionContextual(
       labels.push(fieldName);
       field = field + 1;
     }
+    try reorderClassConstructionFields(
+      program,
+      importedTypes,
+      className,
+      inout children,
+      inout labels
+    );
     return pushExpression(
       inout output,
       LoweredExpressionKind.classValue,
