@@ -1,4 +1,3 @@
-import { JsonValue, stringify } from "std/json";
 import { TextBuffer } from "std/text";
 import {
   ExpressionKind,
@@ -16,9 +15,43 @@ import {
 } from "./semantic-model.zs";
 import { ParsedModule, moduleSymbolKindName } from "./module-symbols.zs";
 
+function appendHexByte(inout output: TextBuffer, byte: u8): void {
+  const high = byte / 16;
+  const low = byte % 16;
+  if (high < 10) output.appendAscii(48 + high);
+  else output.appendAscii(87 + high);
+  if (low < 10) output.appendAscii(48 + low);
+  else output.appendAscii(87 + low);
+}
+
 function appendQuoted(inout output: TextBuffer, in value: String): void {
-  const json = JsonValue.string(copy value);
-  output.append(stringify(in json));
+  output.appendAscii(34);
+  let segmentStart: usize = 0;
+  let offset: usize = 0;
+  while (offset < value.byteLength) {
+    const byte = value.byteAt(offset);
+    if (byte >= 32 && byte != 34 && byte != 92) {
+      offset = offset + 1;
+      continue;
+    }
+    output.appendBytes(value, segmentStart, offset);
+    if (byte == 34) output.append("\\\"");
+    else if (byte == 92) output.append("\\\\");
+    else if (byte == 8) output.append("\\b");
+    else if (byte == 9) output.append("\\t");
+    else if (byte == 10) output.append("\\n");
+    else if (byte == 12) output.append("\\f");
+    else if (byte == 13) output.append("\\r");
+    else {
+      output.append("\\u00");
+      appendHexByte(inout output, byte);
+    }
+    offset = offset + 1;
+    segmentStart = offset;
+  }
+  const valueLength = value.byteLength;
+  output.appendBytes(value, segmentStart, valueLength);
+  output.appendAscii(34);
 }
 
 function appendBoolean(inout output: TextBuffer, value: boolean): void {
