@@ -4269,6 +4269,45 @@ construction now admits the same zero-argument default path as local structs,
 with an executable cross-module regression. This is a compiler simplification
 for users rather than new syntax or ownership vocabulary.
 
+## Zapp window identity and shallow readonly storage
+
+The first Z-owned `app.windows` slice turned the documented shallow-readonly
+rule into an executable framework contract. `Application` owns a readonly
+`WindowManager` class reference, while the manager mutates its executor-bound
+internal state and returns ARC `Window` handles. Each handle holds only a weak
+route back to the manager, so the manager retains open windows without forming
+an ownership cycle:
+
+```z
+let app = Application();
+const mainWindow = app.windows.create(WindowOptions({ title: "Notes" }));
+return try await app.run();
+```
+
+Stage 0 incorrectly treated the readonly field as a recursive freeze and
+rejected `app.windows.create(...)`. The checker now distinguishes a class
+identity from inline value storage: readonly prevents replacing the class
+reference, but an `inout this` class method remains callable when its executor
+and exclusivity contracts are satisfied. A readonly value-struct or collection
+field still rejects mutation through that path. This closes an implementation
+contradiction with the language reference rather than introducing interior
+mutability syntax.
+
+The cyclic identity graph also found an ordering bug in fixed-point C emission.
+An earlier class finalizer could call the typed weak cleanup helper for a later
+class before that helper was declared. The native emitter now forward-declares
+every class weak cleanup helper, and a differential fixture compiles and runs
+the later-target shape under both compiler paths.
+
+Three fixed-point composition limits remain visible in the framework source:
+custom class constructors are not executable there yet, an inline `weak this`
+argument currently needs a named local for reliable native type evidence, and
+imported callable aliases sometimes need explicit local annotations before
+aggregate construction. Zapp uses double-underscore implementation fields and
+small typed locals rather than weakening its public ownership behavior. These
+are bootstrap gaps to remove before treating the window module's internal
+layout as final.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

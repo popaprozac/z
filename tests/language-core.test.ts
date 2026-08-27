@@ -3140,6 +3140,50 @@ test("requires addressable mutable storage for inout method receivers", () => {
   );
 });
 
+test("keeps readonly class fields shallow while preserving value immutability", () => {
+  const classReference = `
+    class Counter {
+      value: i32;
+      constructor(value: i32) { this.value = value; }
+      function add(inout this, amount: i32): void {
+        this.value = this.value + amount;
+      }
+      function read(): i32 { return this.value; }
+    }
+    struct Application {
+      readonly counter: Counter;
+    }
+    function main(): i32 {
+      const app = Application({ counter: new Counter(40) });
+      app.counter.add(2);
+      return app.counter.read();
+    }
+  `;
+  const generated = compileToC(classReference, "readonly-class-reference.zs");
+  assert.match(generated, /Z_Counter_add\([^;]*2\);/);
+
+  const valueField = `
+    struct Counter {
+      value: i32;
+      function add(inout this, amount: i32): void {
+        this.value = this.value + amount;
+      }
+    }
+    struct Application {
+      readonly counter: Counter;
+    }
+    function main(): i32 {
+      let app = Application({ counter: Counter({ value: 40 }) });
+      app.counter.add(2);
+      return app.counter.value;
+    }
+  `;
+  assert.throws(
+    () => compileToC(valueField, "readonly-value-field.zs"),
+    /mutable method "add" cannot be called through readonly field "counter"/,
+  );
+});
+
 test("keeps receiver capabilities in method signatures", () => {
   const topLevelReceiver = `
     function invalid(inout this): void {}
@@ -4443,6 +4487,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   const matchPattern = grammar.repository.matchPatterns.patterns
     .map((pattern: { match: string }) => pattern.match)
     .join(" ");
+  const matchPatterns = grammar.repository.matchPatterns.patterns
+    .map((pattern: { match: string }) => new RegExp(pattern.match));
   const matchScopes = grammar.repository.matchPatterns.patterns
     .map((pattern: { name: string }) => pattern.name)
     .join(" ");
@@ -4546,8 +4592,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.equal(projectionGrammar.patterns[0].captures[1].name, "keyword.control.declaration.projection.z");
   assert.equal(projectionGrammar.patterns[0].captures[2].name, "variable.parameter.native.z");
   assert.match(selectiveImportPatterns, /\\bas\\b/);
-  assert.doesNotMatch("move () =>", new RegExp(matchPattern));
-  assert.match("some(value) =>", new RegExp(matchPattern));
+  assert.ok(!matchPatterns.some((pattern: RegExp) => pattern.test("move () =>")));
+  assert.ok(matchPatterns.some((pattern: RegExp) => pattern.test("some(value) =>")));
   assert.match(keywordPattern, /while/);
   assert.match(keywordPattern, /for\|of/);
   assert.match(keywordPattern, /break/);

@@ -12596,7 +12596,9 @@ function inferExpressionInner(
           ? storageRoot(expression.callee.object)
           : null;
         if (callable.receiverMode === "inout") {
-          const readonlyField = readonlyFieldOnPath(expression.callee.object, structs, state);
+          const readonlyField = declaration.kind === "class"
+            ? null
+            : readonlyFieldOnPath(expression.callee.object, structs, state);
           if (readonlyField) {
             throw new DiagnosticError(fileName, expression.callee.object.location, `mutable method ${JSON.stringify(callable.name)} cannot be called through readonly field ${JSON.stringify(readonlyField.name)}`, {
               code: "Z0214",

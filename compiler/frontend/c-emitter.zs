@@ -2937,6 +2937,17 @@ function appendClassAndOnceRuntime(
     output.append(" *mutex);\n");
   }
   if (mutexNames.length > 0) output.append("\n");
+  // A class may store Weak<AnotherClass> even when the target class appears
+  // later in source/dependency order. Declare every typed weak cleanup helper
+  // before emitting any class finalizer so those safe identity cycles remain
+  // valid C regardless of aggregate ordering.
+  for (const aggregate of program.structs) {
+    if (!aggregate.referenceType) continue;
+    output.append("static inline __attribute__((unused)) void Z_");
+    output.append(aggregate.name);
+    output.append("_weak_deinit(const Z_Weak *value);\n");
+  }
+  output.append("\n");
   for (const aggregate of program.structs) {
     if (!aggregate.referenceType) continue;
     output.append("static __attribute__((unused)) Z_");

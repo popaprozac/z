@@ -36,6 +36,7 @@ export const selfHostExecutableDifferentialCorpus: readonly SelfHostDifferential
     entry: "tests/fixtures/self-host-emit-weak.zs",
     expectedStdout: "released session 42\nreleased controller 9\nreleased session 7\n",
   },
+  { entry: "tests/fixtures/self-host-emit-forward-weak.zs" },
   {
     entry: "tests/fixtures/self-host-emit-generic-weak.zs",
     expectedStdout: "released cell 1\nreleased cell 2\n",
@@ -140,6 +141,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-generic-struct.zs": differential,
   "self-host-emit-generic-class.zs": differential,
   "self-host-emit-weak.zs": differential,
+  "self-host-emit-forward-weak.zs": differential,
   "self-host-emit-generic-weak.zs": differential,
   "self-host-emit-generic-defaults.zs": differential,
   "self-host-emit-generic-deinit.zs": differential,

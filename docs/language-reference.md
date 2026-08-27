@@ -785,9 +785,13 @@ readonly class Configuration {
 
 This is shallow binding immutability. A field cannot be reassigned through the
 aggregate, but a referenced value is not recursively frozen merely because its
-field is readonly. Deep cross-thread shareability is a separate recursive
-compiler proof. Constructors may initialize readonly fields while establishing
-the value's initial state.
+field is readonly. In particular, an ARC class stored in a readonly field may
+still expose mutable methods; the field keeps the class identity stable while
+the class owns its internal state. Value structs and owning collections stored
+directly in readonly fields remain immutable through that path. Executor and
+exclusivity rules still apply to every class method call. Deep cross-thread
+shareability is a separate recursive compiler proof. Constructors may initialize
+readonly fields while establishing the value's initial state.
 
 Collections can also carry `readonly` in the type position. The two positions
 express different contracts:
