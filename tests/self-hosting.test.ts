@@ -1564,6 +1564,44 @@ test("retains owned arguments and results across a dynamic child await", () => {
   }
 }, 240_000);
 
+test("transfers an owned async closure parameter into its awaited child", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-owned-closure-parameter.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-async-owned-closure-parameter-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /task->executor, \(frame->live_argument0 = false, resource\)\)/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("retains a class receiver while its method awaits a dynamic child", () => {
   const input = resolve(
     projectRoot,
@@ -1959,7 +1997,7 @@ test("awaits a method from a captured generic async closure", () => {
     assert.match(emission.stdout, /frame->environment = environment;/);
     assert.match(
       emission.stdout,
-      /_start_invocation\(task->executor, source, &\(\(\*request\)\)\)/,
+      /_start_invocation\(task->executor, source, request\)/,
     );
     assert.match(
       emission.stdout,

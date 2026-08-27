@@ -1727,10 +1727,30 @@ function appendAsyncTailPrefixStatement(
 
 function asyncStoredValueParameterIndex(
   in declaration: LoweredFunction,
+  in closureParameterNames: Array<String>,
   expressionIndex: usize
 ): Option<usize> {
-  const expression = view declaration.expressions[expressionIndex];
-  if (expression.kind != LoweredExpressionKind.localValue) {
+  let candidateIndex = expressionIndex;
+  if (
+    declaration.expressions[candidateIndex].kind
+      == LoweredExpressionKind.moveValue
+    && declaration.expressions[candidateIndex].children.length == 1
+  ) candidateIndex = declaration.expressions[candidateIndex].children[0];
+  const expression = view declaration.expressions[candidateIndex];
+  if (
+    expression.kind != LoweredExpressionKind.localValue
+    && expression.kind != LoweredExpressionKind.parameterValue
+  ) {
+    return Option<usize>.none;
+  }
+  if (closureParameterNames.length > 0) {
+    let parameter: usize = 0;
+    while (parameter < closureParameterNames.length) {
+      if (closureParameterNames[parameter] == expression.value) {
+        return Option.some(parameter);
+      }
+      parameter = parameter + 1;
+    }
     return Option<usize>.none;
   }
   let parameter: usize = 0;
@@ -1747,22 +1767,73 @@ function asyncStoredValueParameterIndex(
 
 function appendAsyncTailChildArgument(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in closureParameterNames: Array<String>,
   expressionIndex: usize,
   borrowed: boolean
 ): void throws String {
+  const storedParameter = asyncStoredValueParameterIndex(
+    declaration,
+    closureParameterNames,
+    expressionIndex
+  );
   if (borrowed) {
-    match (asyncStoredValueParameterIndex(
-      declaration,
-      expressionIndex
-    )) {
+    match (storedParameter) {
       some(parameter) => {
-        output.append("&(frame->argument");
-        output.append(`${parameter}`);
-        output.append(")");
+        if (
+          closureParameterNames.length > 0
+          && parameter < functionType.parameters.length
+          && functionType.parameters[parameter].mode
+            != LoweredParameterMode.value
+        ) appendCBindingName(
+          inout output,
+          closureParameterNames[parameter]
+        );
+        else {
+          output.append("&(frame->argument");
+          output.append(`${parameter}`);
+        }
+        if (
+          closureParameterNames.length == 0
+          || parameter >= functionType.parameters.length
+          || functionType.parameters[parameter].mode
+            == LoweredParameterMode.value
+        ) output.append(")");
         return;
       }
       none => output.append("&(");
+    }
+  }
+  if (
+    !borrowed
+    && closureParameterNames.length > 0
+    && declaration.expressions[expressionIndex].kind
+      == LoweredExpressionKind.moveValue
+  ) {
+    match (storedParameter) {
+      some(parameter) => if (
+        parameter < functionType.parameters.length
+        && functionType.parameters[parameter].mode
+          == LoweredParameterMode.value
+        && loweredTypeNeedsDeinit(
+          program,
+          functionType.parameters[parameter].type
+        )
+      ) {
+        output.append("(frame->live_argument");
+        output.append(`${parameter}`);
+        output.append(" = false, ");
+        try appendExpression(
+          inout output,
+          declaration,
+          expressionIndex
+        );
+        output.append(")");
+        return;
+      }
+      none => {}
     }
   }
   try appendExpression(
@@ -1775,7 +1846,10 @@ function appendAsyncTailChildArgument(
 
 function appendAsyncTailChildStart(
   inout output: TextBuffer,
+  in program: LoweredProgram,
   in declaration: LoweredFunction,
+  in functionType: LoweredFunctionType,
+  in closureParameterNames: Array<String>,
   in tailAwait: LoweredExpression,
   tailExpressionIndex: usize,
   waitingState: usize,
@@ -1811,7 +1885,10 @@ function appendAsyncTailChildStart(
         );
       try appendAsyncTailChildArgument(
         inout output,
+        program,
         declaration,
+        functionType,
+        closureParameterNames,
         method.children[argument],
         borrowed
       );
@@ -1838,7 +1915,10 @@ function appendAsyncTailChildStart(
         );
       try appendAsyncTailChildArgument(
         inout output,
+        program,
         declaration,
+        functionType,
+        closureParameterNames,
         tailAwait.children[argument],
         borrowed
       );
@@ -1968,9 +2048,13 @@ function appendAsyncTailDispatchStatement(
           }
           none => {}
         }
+        const noClosureParameterNames = Array<String>();
         try appendAsyncTailChildStart(
           inout output,
+          program,
           declaration,
+          functionType,
+          noClosureParameterNames,
           tailAwait,
           tailExpressionIndex,
           1,
@@ -7408,6 +7492,7 @@ function appendCallableHelpers(
         throw "native callable helper could not resolve its function type";
       }
       const functionType = view program.functionTypes[functionTypeIndex];
+      const noClosureParameterNames = Array<String>();
       const returnType = try cType(functionType.returnType);
       const parameterLabelStart: usize = 3;
       const captureLabelStart = parameterLabelStart
@@ -7874,6 +7959,18 @@ function appendCallableHelpers(
           const awaited = view owner.expressions[
             closureMethodAwaitExpression
           ];
+          let closureParameterNames = Array<String>();
+          let closureParameter: usize = 0;
+          while (closureParameter < functionType.parameters.length) {
+            const parameterName = view expression.labels[
+              parameterLabelStart + closureParameter
+            ];
+            closureParameterNames.push(parameterName.copyBytes(
+              0,
+              parameterName.byteLength
+            ));
+            closureParameter = closureParameter + 1;
+          }
           output.append("static void ");
           appendCallableHelperName(inout output, owner, expressionIndex);
           output.append("_release_child(");
@@ -7941,7 +8038,10 @@ function appendCallableHelpers(
           output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->state == 0) {\n");
           try appendAsyncTailChildStart(
             inout output,
+            program,
             owner,
+            functionType,
+            closureParameterNames,
             awaited,
             closureMethodAwaitExpression,
             1,
@@ -8258,7 +8358,10 @@ function appendCallableHelpers(
           }
           try appendAsyncTailChildStart(
             inout output,
+            program,
             linearDeclaration,
+            functionType,
+            noClosureParameterNames,
             linearAwait,
             shape.expressionIndex,
             1,
@@ -8454,7 +8557,10 @@ function appendCallableHelpers(
           }
           try appendAsyncTailChildStart(
             inout output,
+            program,
             doubleDeclaration,
+            functionType,
+            noClosureParameterNames,
             firstAwait,
             shape.firstExpressionIndex,
             1,
@@ -8505,7 +8611,10 @@ function appendCallableHelpers(
           }
           try appendAsyncTailChildStart(
             inout output,
+            program,
             doubleDeclaration,
+            functionType,
+            noClosureParameterNames,
             secondAwait,
             shape.secondExpressionIndex,
             2,
