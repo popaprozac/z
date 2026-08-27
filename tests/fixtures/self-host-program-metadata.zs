@@ -1,5 +1,7 @@
+import { thread } from "std/thread";
+
 export struct MetadataService {
-  function count(): u64 {
+  function count(): u64 on thread.main {
     return 1;
   }
 }

@@ -7334,6 +7334,24 @@ test("bootstraps a fixed-point native z executable for local use", () => {
     decodedMetadata.modules[0].symbols.map((symbol: { name: string }) => symbol.name),
     ["MetadataService", "register"],
   );
+  const metadataService = decodedMetadata.modules[0].symbols.find(
+    (symbol: { name: string }) => symbol.name === "MetadataService",
+  );
+  assert.equal(
+    metadataService.typeSignature.methods[0].signature.executorAffinity,
+    "thread.main",
+  );
+  const stage0Metadata = spawnSync(
+    process.execPath,
+    [
+      cli,
+      "metadata",
+      resolve(projectRoot, "tests/fixtures/self-host-program-metadata.zs"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(stage0Metadata.status, 0, stage0Metadata.stderr);
+  assert.deepEqual(decodedMetadata, JSON.parse(stage0Metadata.stdout));
   const registerMetadata = decodedMetadata.modules[0].calls.find(
     (call: { target: { name: string } }) => call.target.name === "register",
   );
