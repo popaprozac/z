@@ -11992,9 +11992,24 @@ function lowerExpressionContextual(
         some(_) => localConstruction = true;
         none => {}
       }
+      let importedValueConstruction = false;
       if (
         constructionName.byteLength > 0
-        && (tree.nodes[index].children.length == 2 || localConstruction)
+        && !localConstruction
+        && tree.nodes[index].children.length == 1
+      ) {
+        match (importedValueStructIndex(importedTypes, constructionName)) {
+          some(_) => importedValueConstruction = true;
+          none => {}
+        }
+      }
+      if (
+        constructionName.byteLength > 0
+        && (
+          tree.nodes[index].children.length == 2
+          || localConstruction
+          || importedValueConstruction
+        )
       ) {
         let children = Array<usize>();
         let labels = Array<String>();

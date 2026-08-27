@@ -9,6 +9,6 @@ function createBuilder(): Builder {
 }
 
 export struct Application {
-  name: String;
+  name: String = "Defaults";
   builder: Builder = createBuilder();
 }

@@ -4242,6 +4242,33 @@ message survives the service suspension and immediate placed-child handoff,
 and that the routed response, published response, and original request are each
 destroyed exactly once.
 
+## Generated immutable application metadata
+
+Zapp now evaluates its typed `zapp.config.ts` once, normalizes the application
+identity, and emits a tiny Z module into an isolated build workspace. Its
+application entry stays ordinary Z:
+
+```z
+let app = Application();
+app.services.register("notes", createNotesService());
+return try await app.run();
+```
+
+`Application()` evaluates field defaults that obtain a readonly metadata value
+and a fresh mutable service builder. `run(move this)` then consumes both into a
+frozen runtime configuration before publishing the platform-private shared
+identity. The application cannot accidentally mutate or diverge from the
+configuration that packaging and frontend generation consumed, and source does
+not repeat the application name, identifier, or version.
+
+The real staged build exposed a native self-hosting parity gap: semantic
+checking accepted an imported `Application()` whose fields all had defaults,
+but native lowering recognized only `Application({ ... })` for imported value
+structs and emitted the empty form as a C function call. Imported value-struct
+construction now admits the same zero-argument default path as local structs,
+with an executable cross-module regression. This is a compiler simplification
+for users rather than new syntax or ownership vocabulary.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
