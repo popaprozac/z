@@ -1873,6 +1873,67 @@ test("resumes a reusable function through two awaited children", () => {
   }
 }, 240_000);
 
+test("routes a service result before publishing it on the main executor", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-async-service-main-publication.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const directory = mkdtempSync("/tmp/z-native-service-main-publication-");
+  try {
+    const executable = resolve(directory, "program");
+    const emission = spawnSync(
+      process.execPath,
+      [cli, "self-host-emit", input],
+      { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    );
+    assert.equal(emission.status, 0, emission.stderr);
+    assert.match(
+      emission.stdout,
+      /uint32_t state;[\s\S]*Z_RoutedResponse routed;[\s\S]*Z_PublishedResponse published;[\s\S]*Z_AsyncInvocation child;/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->state = 1;[\s\S]*frame->child\.take_result\(frame->child\.task, &routed\);[\s\S]*frame->state = 2;/,
+    );
+    assert.match(
+      emission.stdout,
+      /_start_invocation\(task->executor, router, &\(frame->argument1\)\)/,
+    );
+    assert.match(
+      emission.stdout,
+      /frame->state = 2;[\s\S]*frame->child\.take_result\(frame->child\.task, &published\);[\s\S]*frame->state = 3;/,
+    );
+    const compilation = spawnSync(
+      "clang",
+      ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+      { encoding: "utf8", input: emission.stdout },
+    );
+    assert.equal(compilation.status, 0, compilation.stderr);
+    const execution = spawnSync(executable, [], { encoding: "utf8" });
+    assert.equal(execution.status, 0, execution.stderr);
+    assert.equal(
+      execution.stdout,
+      [
+        "published routed service response",
+        "released routed routed service response",
+        "observed routed service response",
+        "released published routed service response",
+        "released request service response",
+        "",
+      ].join("\n"),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 240_000);
+
 test("awaits a method from a captured generic async closure", () => {
   const input = resolve(
     projectRoot,

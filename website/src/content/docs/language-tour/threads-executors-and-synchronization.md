@@ -123,10 +123,25 @@ The child transfers either the success value or the owned `PublishError` back
 to the parent frame. Failure skips the success continuation and propagates from
 `invoke`; cancellation remains a separate structural task outcome.
 
-The current fixed-point tier supports a single placed tail return or one
-top-level awaited local. A linear delay-suspending callee receives its own
-cancellable heap frame; owned arguments, results, and typed errors transfer
-exactly once.
+The fixed-point tier also composes ordinary service work with explicit main
+publication:
+
+```z
+async function handle(
+  service: SearchService,
+  request: Request
+): i32 {
+  const routed = await service.route(in request);
+  const published = await on thread.main publish(routed);
+  return published.status;
+}
+```
+
+Both awaits share one heap-owned parent frame. Borrowed value parameters point
+into stable frame storage, owned results transfer between children exactly
+once, and cancellation follows whichever child is active. This lets only the
+UI publication be main-isolated instead of forcing the whole service handler
+onto the main executor.
 
 For anonymous multi-statement work, use a block and explicit ownership-bearing
 captures:

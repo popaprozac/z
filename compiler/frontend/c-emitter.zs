@@ -1725,6 +1725,54 @@ function appendAsyncTailPrefixStatement(
   throw `native prefixed tail await in ${declaration.name} received unsupported control flow`;
 }
 
+function asyncStoredValueParameterIndex(
+  in declaration: LoweredFunction,
+  expressionIndex: usize
+): Option<usize> {
+  const expression = view declaration.expressions[expressionIndex];
+  if (expression.kind != LoweredExpressionKind.localValue) {
+    return Option<usize>.none;
+  }
+  let parameter: usize = 0;
+  while (parameter < declaration.parameters.length) {
+    if (
+      declaration.parameters[parameter].name == expression.value
+      && declaration.parameters[parameter].mode
+        == LoweredParameterMode.value
+    ) return Option.some(parameter);
+    parameter = parameter + 1;
+  }
+  return Option<usize>.none;
+}
+
+function appendAsyncTailChildArgument(
+  inout output: TextBuffer,
+  in declaration: LoweredFunction,
+  expressionIndex: usize,
+  borrowed: boolean
+): void throws String {
+  if (borrowed) {
+    match (asyncStoredValueParameterIndex(
+      declaration,
+      expressionIndex
+    )) {
+      some(parameter) => {
+        output.append("&(frame->argument");
+        output.append(`${parameter}`);
+        output.append(")");
+        return;
+      }
+      none => output.append("&(");
+    }
+  }
+  try appendExpression(
+    inout output,
+    declaration,
+    expressionIndex
+  );
+  if (borrowed) output.append(")");
+}
+
 function appendAsyncTailChildStart(
   inout output: TextBuffer,
   in declaration: LoweredFunction,
@@ -1761,13 +1809,12 @@ function appendAsyncTailChildStart(
           || method.labels[argument + 2] == "inout"
           || method.labels[argument + 2] == "out"
         );
-      if (borrowed) output.append("&(");
-      try appendExpression(
+      try appendAsyncTailChildArgument(
         inout output,
         declaration,
-        method.children[argument]
+        method.children[argument],
+        borrowed
       );
-      if (borrowed) output.append(")");
       argument = argument + 1;
     }
   } else {
@@ -1789,13 +1836,12 @@ function appendAsyncTailChildStart(
           || tailAwait.labels[argument - 1] == "inout"
           || tailAwait.labels[argument - 1] == "out"
         );
-      if (borrowed) output.append("&(");
-      try appendExpression(
+      try appendAsyncTailChildArgument(
         inout output,
         declaration,
-        tailAwait.children[argument]
+        tailAwait.children[argument],
+        borrowed
       );
-      if (borrowed) output.append(")");
       argument = argument + 1;
     }
   }
@@ -8373,7 +8419,7 @@ function appendCallableHelpers(
               functionType.parameters[aliasParameter],
               doubleDeclaration.parameters[aliasParameter].name
             );
-            output.append(" = frame->argument");
+            output.append(" __attribute__((unused)) = frame->argument");
             output.append(`${aliasParameter}`);
             output.append(";\n");
             aliasParameter = aliasParameter + 1;

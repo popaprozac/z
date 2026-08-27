@@ -94,7 +94,10 @@ production or compatibility-sensitive use.
   and synchronous control flow after an await. Both requests now run inside one
   ordinary reusable async free function whose heap-owned frame advances through
   two awaited children. Parameters and owned locals remain stable across both
-  joins and cancellation follows the active child. Imported `TaskScope` and
+  joins and cancellation follows the active child. The second join may be an
+  explicit `await on thread.main publish(value)` call after an ordinary service
+  method await; borrowed value parameters are addressed from stable parent-frame
+  storage rather than a transient poll-stack alias. Imported `TaskScope` and
   `TaskControl` identities are canonical across modules; aggregate field copies
   use their runtime retain operations, and scope finalization happens after an
   active `return await` child rather than before it starts. Scheduled ARC

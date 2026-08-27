@@ -183,11 +183,27 @@ suffix, and performs the same child, argument, and local cleanup as an ordinary
 `try` propagation. Cancellation remains structural rather than becoming a
 `PublishError`.
 
-The fixed-point tier taskifies either one tail return or one top-level awaited
-local. The local may own its result while the remaining straight-line suffix
-inspects, moves, or destroys it. Parent cancellation is forwarded to the active
-child, and argument/result/error cleanup remains exact-once. Multiple child
-awaits, nested suspension, and broader suspending control flow remain staged.
+The fixed-point tier also composes an ordinary service await with an explicit
+publication await:
+
+```z
+async function handle(
+  service: SearchService,
+  request: Request
+): i32 {
+  const routed = await service.route(in request);
+  const published = await on thread.main publish(routed);
+  return published.status;
+}
+```
+
+Both child operations use the same heap-owned parent frame. A value parameter
+lent to the first child is borrowed directly from stable frame storage rather
+than from a temporary poll-stack alias. The routed result can then move into
+the main-isolated child, and the published result remains owned until the
+synchronous suffix consumes or destroys it. Parent cancellation is forwarded
+to whichever child is active. Arbitrary suspension counts, nested suspension,
+and broader suspending control flow remain staged.
 
 ## Block contracts and type transformation
 

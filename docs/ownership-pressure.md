@@ -4211,6 +4211,36 @@ main-executor delay and observes exactly one request destruction and one error
 destruction. The generated parent cancellation hook still forwards to the
 active child before either result arm is selected.
 
+## Service work followed by explicit main publication
+
+The next Zapp-shaped pressure fixture combines the two bounded async tiers in
+one ordinary handler:
+
+```z
+async function handle(
+  router: ServiceRouter,
+  request: ServiceRequest
+): i32 {
+  const routed = await router.route(in request);
+  const published = await on thread.main publish(routed);
+  return published.code;
+}
+```
+
+The first child is an ordinary reusable service method. Its owned result moves
+into a directly taskified main-isolated free function, and the parent resumes a
+synchronous suffix after the publication result arrives. Both joins share one
+heap-owned frame and cancellation follows the currently active child.
+
+This composition exposed a lifetime bug that the simpler fixtures could not:
+the async parent copied its owned `request` frame slot into a poll-stack alias,
+then passed `in request` to the child by taking that alias's address. The child
+correctly suspended, but resumed through a dangling pointer after the poll call
+returned. Async child starts now recognize borrowed value parameters and point
+directly at `frame->argumentN`. The strict-C executable verifies the complete
+message survives both suspensions and that the routed response, published
+response, and original request are each destroyed exactly once.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

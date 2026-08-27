@@ -140,8 +140,13 @@ linear tier now gives an ordinary free function two sequential awaited-local
 suspension sites in one heap-owned frame. Parameters and locals remain
 address-stable across both children, each completion wakes the same parent,
 cancellation routes to whichever child is active, and owned results clean up
-exactly once. Arbitrary counts, branching between suspensions, and the
-equivalent general method-body frame remain staged. Imported `TaskScope` and
+exactly once. The second child may be an explicit
+`await on thread.main publish(value)` direct function call, so service work and
+UI publication no longer require isolating the whole handler. The pressure
+fixture also proves that an `in` value parameter lent to the first async method
+is addressed from parent-frame storage rather than a transient poll-stack
+alias. Arbitrary counts, branching between suspensions, and the equivalent
+general method-body frame remain staged. Imported `TaskScope` and
 `TaskControl` aliases retain their canonical intrinsic identity across linked
 modules, and copying either managed handle from aggregate storage uses its
 runtime retain operation. An owned `TaskScope` declared in an async frame stays

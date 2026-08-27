@@ -17514,8 +17514,13 @@ function rewritePlacedFunctionAwaits(
     );
     return;
   }
-  if (!functionUsesFirstTierPlacedFunctionLinearAwait(declaration)) return;
+  const placedLinear = functionUsesFirstTierPlacedFunctionLinearAwait(
+    declaration
+  );
+  const doubleAwait = functionUsesFirstTierDoubleAwait(declaration);
+  if (!placedLinear && !doubleAwait) return;
   let position: usize = 0;
+  let rewrote = false;
   while (position < declaration.body.roots.length) {
     const sourceRoot = declaration.body.roots[position];
     if (statementIsFirstTierPlacedFunctionAwaitLocal(
@@ -17535,11 +17540,14 @@ function rewritePlacedFunctionAwaits(
         inout expressions,
         inout statements
       );
-      return;
+      rewrote = true;
+      if (placedLinear) return;
     }
     position = position + 1;
   }
-  throw "native placed async local lost its source root";
+  if (placedLinear && !rewrote) {
+    throw "native placed async local lost its source root";
+  }
 }
 
 function statementUsesOnlyFirstTierTailAwaitSuspension(
@@ -17752,10 +17760,13 @@ function functionUsesFirstTierDoubleAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
-    if (!statementIsFirstTierAwaitLocal(
-      declaration.body,
-      root
-    )) return false;
+    if (
+      !statementIsFirstTierAwaitLocal(declaration.body, root)
+      && !statementIsFirstTierPlacedFunctionAwaitLocal(
+        declaration.body,
+        root
+      )
+    ) return false;
     awaitCount = awaitCount + 1;
   }
   return awaitCount == 2;

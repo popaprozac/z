@@ -976,13 +976,54 @@ function functionUsesFirstTierDoubleAwait(
   let awaitCount: usize = 0;
   for (const root of declaration.body.roots) {
     if (!statementContainsSuspension(declaration.body, root)) continue;
-    if (!statementIsFirstTierAwaitLocal(
-      declaration.body,
-      root
-    )) return false;
+    if (
+      !statementIsFirstTierAwaitLocal(declaration.body, root)
+      && !statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
+        declaration.body,
+        root
+      )
+    ) return false;
     awaitCount = awaitCount + 1;
   }
   return awaitCount == 2;
+}
+
+function functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
+  moduleIndex: usize,
+  in modules: Array<ParsedModule>,
+  in graph: ModuleGraph,
+  in declaration: FunctionDeclaration
+): boolean {
+  if (!functionUsesFirstTierDoubleAwait(declaration)) return false;
+  for (const root of declaration.body.roots) {
+    if (!statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
+      declaration.body,
+      root
+    )) continue;
+    const taskifiable = match (in declaration.body.nodes[root].expression) {
+      some(syntax) => match (in syntax.tree) {
+        some(tree) => {
+          let placement = tree.root;
+          if (
+            tree.nodes[placement].kind == ExpressionKind.tryExpression
+            && tree.nodes[placement].children.length == 1
+          ) placement = tree.nodes[placement].children[0];
+          const operation = tree.nodes[placement].children[2];
+          select placedAsyncFunctionCallIsTaskifiable(
+            moduleIndex,
+            modules,
+            graph,
+            tree,
+            operation
+          );
+        }
+        none => false;
+      }
+      none => false;
+    };
+    if (!taskifiable) return false;
+  }
+  return true;
 }
 
 function functionUsesFirstTierPrefixedTailAwait(
@@ -1052,7 +1093,12 @@ function functionHasFirstTierTailAwaitStorage(
       && !functionUsesFirstTierLinearAwait(declaration)
       && !(
         owner.byteLength == 0
-        && functionUsesFirstTierDoubleAwait(declaration)
+        && functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
+          moduleIndex,
+          modules,
+          graph,
+          declaration
+        )
       )
     )
   ) return false;
@@ -2132,6 +2178,24 @@ function validateNativeFunction(
     );
   }
   if (
+    functionUsesFirstTierDoubleAwait(declaration)
+    && !functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    )
+  ) {
+    throw loweringBoundary(
+      path,
+      "Z0700",
+      "a placed async function local in a two-await function requires a directly taskifiable callee in the current native compiler tier",
+      declaration.line,
+      declaration.column,
+      5
+    );
+  }
+  if (
     declaration.asynchronous
     && declaration.name != "main"
     && declaration.executorAffinity != "thread.main"
@@ -2159,6 +2223,11 @@ function validateNativeFunction(
   const asynchronous = declaration.asynchronous;
   const allowNonTailPlacedAsyncCall =
     functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    ) || functionUsesFirstTierDoubleAwaitWithTaskifiablePlacements(
       moduleIndex,
       modules,
       graph,

@@ -200,6 +200,7 @@ export const selfHostEmitFixtureClassifications: Readonly<
   "self-host-emit-async-linear-method.zs": focusedPositive,
   "self-host-emit-async-captured-method.zs": focusedPositive,
   "self-host-emit-async-double-await.zs": focusedPositive,
+  "self-host-emit-async-service-main-publication.zs": focusedPositive,
   "self-host-emit-async-service-composition.zs": focusedPositive,
   "self-host-emit-async-tail-callable.zs": focusedPositive,
   "self-host-emit-async-tail-method.zs": focusedPositive,
