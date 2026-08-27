@@ -5994,13 +5994,7 @@ function wrapOwnedStorage(
     return value;
   }
   if (
-    (
-      payloadType.kind == LoweredTypeKind.classType
-      || payloadType.kind == LoweredTypeKind.weakType
-      || payloadType.kind == LoweredTypeKind.taskScopeType
-      || payloadType.kind == LoweredTypeKind.taskControlType
-      || payloadType.kind == LoweredTypeKind.functionType
-    )
+    moduleTypeRetainsCapturedIdentity(payloadType)
     && expressionBorrowsStoredReference(tree, input)
   ) {
     if (output[value].kind == LoweredExpressionKind.retainValue) {
@@ -20380,10 +20374,7 @@ function lowerStatementCore(
                   importedTypes,
                   expectedTypeName
                 );
-                if (
-                  bindingType.kind == LoweredTypeKind.classType
-                  || bindingType.kind == LoweredTypeKind.weakType
-                ) {
+                if (moduleTypeRetainsCapturedIdentity(bindingType)) {
                   loweredValue = try wrapOwnedStorage(
                     program,
                     importedTypes,

@@ -6,12 +6,15 @@ export struct MetadataService {
   }
 }
 
-export function register(name: String, service: MetadataService): void {
+export function register(
+  name: String,
+  service: MetadataService
+): void on thread.main {
   if (name == "") return;
   service.count();
 }
 
-function main(): i32 {
+function main(): i32 on thread.main {
   register("notes", MetadataService());
   return 0;
 }

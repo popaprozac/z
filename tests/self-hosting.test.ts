@@ -15481,6 +15481,53 @@ hostToolchainTest("transfers owned captures through native TaskScope async frame
   rmSync(directory, { recursive: true, force: true });
 }, 60_000);
 
+hostToolchainTest("retains TaskScope fields copied into owned local bindings", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-emit-task-scope-field.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(
+    emission.stdout,
+    /Z_TaskScope \* updates = Z_TaskScope_retain\(runtime->updates\);/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-task-scope-field-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    [
+      "-x",
+      "c",
+      "-std=c11",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pthread",
+      "-",
+      "-o",
+      executable,
+    ],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 60_000);
+
 test("runs a stored delay-suspending async method through TaskScope", () => {
   const input = resolve(
     projectRoot,
