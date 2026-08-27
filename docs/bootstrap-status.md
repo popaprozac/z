@@ -115,7 +115,11 @@ The placed free-function child may now feed one top-level awaited local in the
 ordinary async parent. A cleanup-bearing result transfers into frame storage,
 the synchronous suffix resumes after child completion, and both moved
 arguments and the owned result are destroyed exactly once on success or
-cancellation.
+cancellation. The same local may be introduced by
+`try await on thread.main operation(...)`: the child transfers its full typed
+`Result`, success resumes the suffix, failure moves the owned error into the
+parent result and skips that suffix, and cancellation continues to unwind as a
+separate structural outcome.
 Non-suspending prefix loops and early-return branches are executable in that
 frame as well. A final consuming enum/`Option` match may now move one selected
 owned async handler into the frame, suspend only that arm, and complete the

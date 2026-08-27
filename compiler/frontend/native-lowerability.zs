@@ -672,7 +672,11 @@ function statementIsFirstTierPlacedAsyncFunctionAwaitLocalSyntax(
   return match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const placement = tree.root;
+        let placement = tree.root;
+        if (
+          tree.nodes[placement].kind == ExpressionKind.tryExpression
+          && tree.nodes[placement].children.length == 1
+        ) placement = tree.nodes[placement].children[0];
         if (
           tree.nodes[placement].kind
             != ExpressionKind.executorPlacementExpression
@@ -740,7 +744,11 @@ function functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
     return match (in declaration.body.nodes[root].expression) {
       some(syntax) => match (in syntax.tree) {
         some(tree) => {
-          const placement = tree.root;
+          let placement = tree.root;
+          if (
+            tree.nodes[placement].kind == ExpressionKind.tryExpression
+            && tree.nodes[placement].children.length == 1
+          ) placement = tree.nodes[placement].children[0];
           const operation = tree.nodes[placement].children[2];
           select placedAsyncFunctionCallIsTaskifiable(
             moduleIndex,
@@ -1049,7 +1057,12 @@ function functionHasFirstTierTailAwaitStorage(
     )
   ) return false;
   match (in declaration.errorType) {
-    some(_) => return false;
+    some(_) => if (!functionUsesFirstTierPlacedAsyncFunctionLinearAwait(
+      moduleIndex,
+      modules,
+      graph,
+      declaration
+    )) return false;
     none => {}
   }
   if (owner.byteLength > 0) {

@@ -165,11 +165,29 @@ async function invoke(service: PublishService): i32 {
 }
 ```
 
+A throwing child uses the ordinary Z propagation spelling:
+
+```z
+async function invoke(
+  service: PublishService
+): i32 throws PublishError {
+  const status = try await on thread.main publishChecked(service);
+  return status == 42 ? 0 : 1;
+}
+```
+
+The suspended child returns its full `Result<i32, PublishError>` across the
+executor boundary. On success the frame extracts `i32` and runs the suffix. On
+failure it moves the owned `PublishError` into the parent result, skips the
+suffix, and performs the same child, argument, and local cleanup as an ordinary
+`try` propagation. Cancellation remains structural rather than becoming a
+`PublishError`.
+
 The fixed-point tier taskifies either one tail return or one top-level awaited
 local. The local may own its result while the remaining straight-line suffix
 inspects, moves, or destroys it. Parent cancellation is forwarded to the active
-child, and argument/result cleanup remains exact-once. Multiple child awaits,
-nested suspension, and broader suspending control flow remain staged.
+child, and argument/result/error cleanup remains exact-once. Multiple child
+awaits, nested suspension, and broader suspending control flow remain staged.
 
 ## Block contracts and type transformation
 

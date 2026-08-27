@@ -108,9 +108,25 @@ async function invoke(service: PublishService): i32 {
 }
 ```
 
+Typed failure keeps the same ordering and the same `try` spelling:
+
+```z
+async function invoke(
+  service: PublishService
+): i32 throws PublishError {
+  const status = try await on thread.main publishChecked(service);
+  return status == 42 ? 0 : 1;
+}
+```
+
+The child transfers either the success value or the owned `PublishError` back
+to the parent frame. Failure skips the success continuation and propagates from
+`invoke`; cancellation remains a separate structural task outcome.
+
 The current fixed-point tier supports a single placed tail return or one
 top-level awaited local. A linear delay-suspending callee receives its own
-cancellable heap frame; owned arguments and results transfer exactly once.
+cancellable heap frame; owned arguments, results, and typed errors transfer
+exactly once.
 
 For anonymous multi-statement work, use a block and explicit ownership-bearing
 captures:

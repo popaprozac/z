@@ -4197,8 +4197,19 @@ synchronous continuation destroyed its local alias of an owned parameter, but
 the frame still marked the original slot live and destroyed the same storage
 again. Successful continuation now disarms the frame's stored-parameter guards
 after ordinary function cleanup. Cancellation continues to use those guards
-while the child is suspended. The full 117-test fixed-point suite and the
+while the child is suspended. The full 118-test fixed-point suite and the
 Stage-0 async runtime tier pass with the same worker-placement behavior.
+
+The Zapp-shaped follow-up made that placed local fallible without adding a new
+execution form. `const status = try await on thread.main publish(request);`
+now keeps the native child's `Result<T, E>` intact through suspension. The
+parent frame extracts and stores `T` only on success. On failure it moves the
+owned `E` into its own result slot, releases the child, cleans frame locals and
+stored arguments, and completes without executing the success suffix. The
+strict-C runtime probe deliberately throws a cleanup-bearing error after a
+main-executor delay and observes exactly one request destruction and one error
+destruction. The generated parent cancellation hook still forwards to the
+active child before either result arm is selected.
 
 ## Not tested yet
 

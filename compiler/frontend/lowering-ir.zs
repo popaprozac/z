@@ -17297,7 +17297,11 @@ function statementIsFirstTierPlacedFunctionAwaitLocal(
   return match (in arena.nodes[index].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const placement = tree.root;
+        let placement = tree.root;
+        if (
+          tree.nodes[placement].kind == ExpressionKind.tryExpression
+          && tree.nodes[placement].children.length == 1
+        ) placement = tree.nodes[placement].children[0];
         if (
           tree.nodes[placement].kind
             != ExpressionKind.executorPlacementExpression
@@ -17360,7 +17364,11 @@ function rewritePlacedFunctionAwaitAtRoot(
   match (in declaration.body.nodes[sourceRoot].expression) {
     some(syntax) => match (in syntax.tree) {
       some(tree) => {
-        const placement = tree.root;
+        let placement = tree.root;
+        if (
+          tree.nodes[placement].kind == ExpressionKind.tryExpression
+          && tree.nodes[placement].children.length == 1
+        ) placement = tree.nodes[placement].children[0];
         const callInput = tree.nodes[placement].children[2];
         const resolutionIndex = resolvedCallResolutionIndex(
           evidence,
@@ -17380,10 +17388,27 @@ function rewritePlacedFunctionAwaitAtRoot(
     }
     none => throw "native placed async tail lost its source expression";
   }
-  const placedIndex = match (in statements[loweredRoot].expression) {
-    some(found) => found;
-    none => throw "native placed async tail lost its lowered expression";
-  };
+  let placedIndex = expressions.length;
+  let loweredTry = statements.length;
+  match (in statements[loweredRoot].expression) {
+    some(found) => placedIndex = found;
+    none => if (
+      statements[loweredRoot].kind == LoweredStatementKind.localStatement
+      && statements[loweredRoot].children.length == 1
+    ) {
+      const nested = statements[loweredRoot].children[0];
+      if (statements[nested].kind == LoweredStatementKind.tryStatement) {
+        loweredTry = nested;
+        match (in statements[nested].expression) {
+          some(found) => placedIndex = found;
+          none => {}
+        }
+      }
+    }
+  }
+  if (placedIndex >= expressions.length) {
+    throw "native placed async tail lost its lowered expression";
+  }
   if (
     expressions[placedIndex].kind
       != LoweredExpressionKind.threadMainCall
@@ -17443,6 +17468,23 @@ function rewritePlacedFunctionAwaitAtRoot(
     children,
     parameterModes
   );
+  if (loweredTry < statements.length) {
+    if (statements[loweredTry].labels.length < 2) {
+      throw "native placed async local received a malformed try";
+    }
+    const innerResult = statements[loweredTry].name.copyBytes(
+      0,
+      statements[loweredTry].name.byteLength
+    );
+    const outerResult = statements[loweredTry].labels[1].copyBytes(
+      0,
+      statements[loweredTry].labels[1].byteLength
+    );
+    statements[loweredRoot].labels.push("async-try");
+    statements[loweredRoot].labels.push(move innerResult);
+    statements[loweredRoot].labels.push(move outerResult);
+    statements[loweredRoot].children = Array<usize>();
+  }
   statements[loweredRoot].expression = Option.some(awaited);
 }
 

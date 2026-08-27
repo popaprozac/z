@@ -5477,6 +5477,98 @@ function appendLocalStatementStorage(
     some(type) => try cType(type);
     none => throw "native C emission received an untyped local";
   };
+  const asyncTry = declaration.statements[index].labels.length == 3
+    && declaration.statements[index].labels[0] == "async-try";
+  if (asyncTry) {
+    const innerResult = declaration.statements[index].labels[1].copyBytes(
+      0,
+      declaration.statements[index].labels[1].byteLength
+    );
+    const outerResult = declaration.statements[index].labels[2].copyBytes(
+      0,
+      declaration.statements[index].labels[2].byteLength
+    );
+    const temporary = `_z_stage1_async_try_${index}`;
+    match (in declaration.statements[index].expression) {
+      some(expression) => try appendBorrowedTemporaryInitializers(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => throw "native linear try await lost its initializer";
+    }
+    appendIndent(inout output, depth);
+    output.append("Z_");
+    output.append(innerResult);
+    output.append(" ");
+    output.append(temporary);
+    output.append(" = ");
+    match (in declaration.statements[index].expression) {
+      some(expression) => try appendExpression(
+        inout output,
+        declaration,
+        expression
+      );
+      none => throw "native linear try await lost its initializer";
+    }
+    output.append(";\n");
+    match (in declaration.statements[index].expression) {
+      some(expression) => appendBorrowedTemporaryCleanups(
+        inout output,
+        declaration,
+        expression,
+        depth
+      );
+      none => {}
+    }
+    appendIndent(inout output, depth);
+    output.append("if (");
+    output.append(temporary);
+    output.append(".tag == Z_");
+    output.append(innerResult);
+    output.append("Tag_failure) {\n");
+    appendIndent(inout output, depth + 1);
+    output.append("Z_");
+    output.append(outerResult);
+    output.append(" _z_stage1_async_failure_");
+    output.append(`${index}`);
+    output.append(" = (Z_");
+    output.append(outerResult);
+    output.append("){.tag = Z_");
+    output.append(outerResult);
+    output.append("Tag_failure, .payload.failure = ");
+    output.append(temporary);
+    output.append(".payload.failure};\n");
+    appendCleanups(
+      inout output,
+      declaration.statements[index].cleanups,
+      depth + 1
+    );
+    appendIndent(inout output, depth + 1);
+    output.append("return _z_stage1_async_failure_");
+    output.append(`${index}`);
+    output.append(";\n");
+    appendIndent(inout output, depth);
+    output.append("}\n");
+    appendIndent(inout output, depth);
+    output.append(type);
+    output.append(" ");
+    appendCBindingName(inout output, declaration.statements[index].name);
+    output.append(" = ");
+    output.append(temporary);
+    output.append(".payload.success;\n");
+    if (declaration.statements[index].liveFlag.byteLength > 0) {
+      appendIndent(inout output, depth);
+      output.append("bool ");
+      appendCBindingName(
+        inout output,
+        declaration.statements[index].liveFlag
+      );
+      output.append(" = true;\n");
+    }
+    return;
+  }
   const constStorage = match (in declaration.statements[index].type) {
     some(storageType) => {
       select storageType.kind != LoweredTypeKind.structType
@@ -8025,6 +8117,28 @@ function appendCallableHelpers(
             some(found) => copy found;
             none => throw "native linear await lost its result type";
           };
+          const propagatesTry = awaitedLocal.labels.length == 3
+            && awaitedLocal.labels[0] == "async-try";
+          if (
+            awaitedLocal.labels.length > 0
+            && !propagatesTry
+          ) throw "native linear await received malformed try metadata";
+          let innerResult = "";
+          let outerResult = "";
+          if (propagatesTry) {
+            innerResult = awaitedLocal.labels[1].copyBytes(
+              0,
+              awaitedLocal.labels[1].byteLength
+            );
+            outerResult = awaitedLocal.labels[2].copyBytes(
+              0,
+              awaitedLocal.labels[2].byteLength
+            );
+            if (
+              functionType.returnType.kind != LoweredTypeKind.enumType
+              || functionType.returnType.name != outerResult
+            ) throw "native linear try await lost its propagated result type";
+          }
           try appendAsyncTailLocalMacros(
             inout output,
             program,
@@ -8119,9 +8233,53 @@ function appendCallableHelpers(
             functionType,
             2
           );
-          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n  frame->child.take_result(frame->child.task, &");
-          appendCBindingName(inout output, awaitedLocal.name);
-          output.append(");\n");
+          output.append("    task->cancelled = true; task->completed = true; return;\n  }\n  if (frame->child.failed != NULL && frame->child.failed(frame->child.task)) abort();\n  if (frame->child.take_result == NULL) abort();\n");
+          if (propagatesTry) {
+            output.append("  Z_");
+            output.append(innerResult);
+            output.append(" _z_stage1_async_try_");
+            output.append(`${shape.statementIndex}`);
+            output.append(";\n  frame->child.take_result(frame->child.task, &_z_stage1_async_try_");
+            output.append(`${shape.statementIndex}`);
+            output.append(");\n  if (_z_stage1_async_try_");
+            output.append(`${shape.statementIndex}`);
+            output.append(".tag == Z_");
+            output.append(innerResult);
+            output.append("Tag_failure) {\n    frame->result = (Z_");
+            output.append(outerResult);
+            output.append("){.tag = Z_");
+            output.append(outerResult);
+            output.append("Tag_failure, .payload.failure = _z_stage1_async_try_");
+            output.append(`${shape.statementIndex}`);
+            output.append(".payload.failure};\n");
+            if (resultNeedsDeinit) {
+              output.append("    frame->live_result = true;\n");
+            }
+            output.append("    ");
+            appendCallableHelperName(inout output, owner, expressionIndex);
+            output.append("_release_child(frame);\n");
+            try appendAsyncTailLocalCleanups(
+              inout output,
+              program,
+              linearDeclaration,
+              2
+            );
+            appendAsyncStoredParameterCleanups(
+              inout output,
+              program,
+              functionType,
+              2
+            );
+            output.append("    task->completed = true; return;\n  }\n  ");
+            appendCBindingName(inout output, awaitedLocal.name);
+            output.append(" = _z_stage1_async_try_");
+            output.append(`${shape.statementIndex}`);
+            output.append(".payload.success;\n");
+          } else {
+            output.append("  frame->child.take_result(frame->child.task, &");
+            appendCBindingName(inout output, awaitedLocal.name);
+            output.append(");\n");
+          }
           if (loweredTypeNeedsDeinit(program, awaitedType)) {
             if (awaitedLocal.liveFlag.byteLength == 0) {
               throw "native linear await lost its result cleanup guard";
