@@ -4238,8 +4238,9 @@ then passed `in request` to the child by taking that alias's address. The child
 correctly suspended, but resumed through a dangling pointer after the poll call
 returned. Async child starts now recognize borrowed value parameters and point
 directly at `frame->argumentN`. The strict-C executable verifies the complete
-message survives both suspensions and that the routed response, published
-response, and original request are each destroyed exactly once.
+message survives the service suspension and immediate placed-child handoff,
+and that the routed response, published response, and original request are each
+destroyed exactly once.
 
 ## Not tested yet
 

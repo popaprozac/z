@@ -1,6 +1,5 @@
 import console from "std/console";
 import { scheduler } from "std/async";
-import { delay } from "std/time";
 import { thread } from "std/thread";
 
 struct ServiceRequest {
@@ -46,7 +45,6 @@ readonly class ServiceRouter {
 async function publish(
   response: RoutedResponse
 ): PublishedResponse on thread.main {
-  await delay(1);
   console.log(`published ${response.message}`);
   return PublishedResponse({
     code: 42,
