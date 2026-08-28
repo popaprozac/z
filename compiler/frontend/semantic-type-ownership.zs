@@ -6,6 +6,7 @@ import {
   valueBindingType,
 } from "./semantic-flow-state.zs";
 import {
+  inferredTypeSymbolLocation,
   rebaseTypeName,
   semanticTypeIdentity,
   transparentTypeName,
@@ -296,6 +297,10 @@ export function typeHasCleanup(
   if (stringStartsWith(typeName, "view ") || stringStartsWith(typeName, "Slice<")) {
     return false;
   }
+  const transparent = transparentTypeName(modules, moduleIndex, typeName);
+  if (transparent != typeName) {
+    return typeHasCleanup(modules, moduleIndex, transparent, visiting);
+  }
   if (
     typeName == "String"
     || typeName == "TextBuffer"
@@ -338,7 +343,7 @@ export function typeHasCleanup(
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, typeName)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, typeName)) {
     some(location) => {
       const kind = modules[location.moduleIndex].symbols[location.symbolIndex].kind;
       if (kind == ModuleSymbolKind.classSymbol) return true;
@@ -658,6 +663,15 @@ export function typeSupportsExplicitCopy(
   if (stringStartsWith(actual, "view ")) {
     actual = actual.copyBytes(5, actual.byteLength);
   }
+  const transparent = transparentTypeName(modules, moduleIndex, actual);
+  if (transparent != actual) {
+    return typeSupportsExplicitCopy(
+      modules,
+      moduleIndex,
+      transparent,
+      visiting
+    );
+  }
   if (actual == "String") return true;
   if (
     actual == "TextBuffer"
@@ -698,7 +712,7 @@ export function typeSupportsExplicitCopy(
     }
     none => {}
   }
-  match (typeSymbolLocation(modules, moduleIndex, actual)) {
+  match (inferredTypeSymbolLocation(modules, moduleIndex, actual)) {
     some(location) => {
       if (
         modules[location.moduleIndex].symbols[location.symbolIndex].kind

@@ -16097,6 +16097,28 @@ test("preserves throwing closure and transparent callable-alias effects natively
   }
 });
 
+test("resolves aggregate members through exported transparent aliases natively", () => {
+  const input = resolve(
+    projectRoot,
+    "tests/fixtures/self-host-transparent-aggregate-alias/main.zs",
+  );
+  const parity = spawnSync(
+    process.execPath,
+    [cli, "check", input, "--native-frontend"],
+    { encoding: "utf8" },
+  );
+  assert.equal(parity.status, 0, parity.stderr);
+
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /\.value\.i32_value = .*\.code/);
+  assert.match(emission.stdout, /\.value\.string_value = .*\.message/);
+});
+
 test("preserves callable identities nested in Map values", () => {
   const input = resolve(
     projectRoot,

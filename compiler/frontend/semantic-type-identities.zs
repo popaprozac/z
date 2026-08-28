@@ -100,6 +100,30 @@ function exportedTypeLocation(
   return Option<ModuleSymbolLocation>.none;
 }
 
+function transparentTypeLocation(
+  in modules: Array<ResolvedModule>,
+  in location: ModuleSymbolLocation
+): ModuleSymbolLocation {
+  const symbol = view modules[location.moduleIndex].symbols[
+    location.symbolIndex
+  ];
+  if (symbol.kind != ModuleSymbolKind.typeAliasSymbol) return location;
+  match (typeSymbolLocation(
+    modules,
+    location.moduleIndex,
+    symbol.importedName
+  )) {
+    some(target) => {
+      if (
+        target.moduleIndex == location.moduleIndex
+        && target.symbolIndex == location.symbolIndex
+      ) return location;
+      return transparentTypeLocation(modules, target);
+    }
+    none => return location;
+  }
+}
+
 export function typeSymbolLocation(
   in modules: Array<ResolvedModule>,
   moduleIndex: usize,
@@ -158,6 +182,10 @@ export function inferredTypeSymbolLocation(
   moduleIndex: usize,
   in sourceType: String
 ): Option<ModuleSymbolLocation> {
+  const transparent = transparentTypeName(modules, moduleIndex, sourceType);
+  if (transparent != sourceType) {
+    return inferredTypeSymbolLocation(modules, moduleIndex, transparent);
+  }
   match (typeSymbolLocation(modules, moduleIndex, sourceType)) {
     some(location) => return Option.some(location);
     none => {}
@@ -188,12 +216,21 @@ export function inferredTypeSymbolLocation(
         modules[candidateModuleIndex].symbols[candidateSymbolIndex].kind
       )
     ) {
-      match (found) {
-        some(_) => return Option<ModuleSymbolLocation>.none;
-        none => found = Option.some(ModuleSymbolLocation({
+      const candidate = transparentTypeLocation(
+        modules,
+        ModuleSymbolLocation({
           moduleIndex: candidateModuleIndex,
           symbolIndex: candidateSymbolIndex,
-        }));
+        })
+      );
+      match (found) {
+        some(existing) => {
+          if (
+            existing.moduleIndex != candidate.moduleIndex
+            || existing.symbolIndex != candidate.symbolIndex
+          ) return Option<ModuleSymbolLocation>.none;
+        }
+        none => found = Option.some(candidate);
       }
     }
     candidateModuleIndex = candidateModuleIndex + 1;

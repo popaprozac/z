@@ -7783,6 +7783,17 @@ function staticallyResolvedExpressionTypeName(
         none => {}
       }
     }
+    for (const resolution of evidence.callResolutions) {
+      if (
+        resolution.offset != tree.nodes[attempted].offset
+        || resolution.line != tree.nodes[attempted].line
+        || resolution.column != tree.nodes[attempted].column
+        || resolution.errorType.byteLength == 0
+      ) continue;
+      return Option.some(
+        `Result<${resolution.returnType}, ${resolution.errorType}>`
+      );
+    }
   }
   if (
     tree.nodes[index].kind == ExpressionKind.tryExpression
@@ -9146,7 +9157,13 @@ function lowerExpressionContextual(
     else if (tree.nodes[index].value == "move") kind = LoweredExpressionKind.moveValue;
     else if (tree.nodes[index].value == "copy") {
       const operandTypeName = match (
-        resolvedExpressionTypeName(evidence, tree, operandInput)
+        evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          operandInput
+        )
       ) {
         some(name) => name;
         none => throw "native copy lowering could not resolve its operand type";
@@ -9235,7 +9252,13 @@ function lowerExpressionContextual(
       operation = checkedIntegerTypeName(program, evidence, tree, index);
     } else if (kind == LoweredExpressionKind.copyValue) {
       const operandTypeName = match (
-        resolvedExpressionTypeName(evidence, tree, operandInput)
+        evidenceResolvedExpressionTypeName(
+          program,
+          importedTypes,
+          evidence,
+          tree,
+          operandInput
+        )
       ) {
         some(name) => name;
         none => throw "native copy lowering lost its operand type";
@@ -24485,7 +24508,10 @@ function importedTypesForModule(
   let addedPublicAlias = true;
   while (addedPublicAlias) {
     addedPublicAlias = false;
+    let candidateModuleIndex: usize = 0;
     for (const candidateModule of graph.modules) {
+      const aliasModuleIndex = candidateModuleIndex;
+      candidateModuleIndex = candidateModuleIndex + 1;
       for (const symbol of candidateModule.symbols) {
         if (
           !symbol.exported
@@ -24496,7 +24522,12 @@ function importedTypesForModule(
           if (type.localName == symbol.name) present = true;
         }
         if (present) continue;
-        const aliasTarget = view symbol.importedName;
+        const aliasTarget = rebaseTypeName(
+          graph.modules,
+          aliasModuleIndex,
+          moduleIndex,
+          symbol.importedName
+        );
         const loweredAttempt = attempt lowerModuleTypeName(
           program,
           types,
@@ -24571,9 +24602,12 @@ function importedTypesForModule(
       || graph.modules[targetModule].symbols[targetSymbolIndex].kind
         != ModuleSymbolKind.typeAliasSymbol
     ) continue;
-    const aliasTarget = view graph.modules[targetModule].symbols[
-      targetSymbolIndex
-    ].importedName;
+    const aliasTarget = rebaseTypeName(
+      graph.modules,
+      targetModule,
+      moduleIndex,
+      graph.modules[targetModule].symbols[targetSymbolIndex].importedName
+    );
     const lowered = try lowerModuleTypeName(program, types, aliasTarget);
     if (lowered.kind == LoweredTypeKind.functionType) {
       const visiting = Array<String>();
@@ -26465,6 +26499,16 @@ function lowerModulesIncludingTests(
   in graph: ModuleGraph,
   includeTests: boolean
 ): LoweredProgram throws String {
+  let alignedModuleIndex: usize = 0;
+  while (
+    alignedModuleIndex < parsed.length
+    && alignedModuleIndex < graph.modules.length
+  ) {
+    if (parsed[alignedModuleIndex].path != graph.modules[alignedModuleIndex].path) {
+      throw `native lowering module order mismatch: parsed ${parsed[alignedModuleIndex].path}, graph ${graph.modules[alignedModuleIndex].path}`;
+    }
+    alignedModuleIndex = alignedModuleIndex + 1;
+  }
   let structs = Array<LoweredStruct>();
   let enums = Array<LoweredEnum>();
   let functions = Array<LoweredFunction>();

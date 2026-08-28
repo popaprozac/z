@@ -22,6 +22,7 @@ import {
 } from "./semantic-type-shapes.zs";
 import { typeHasCleanup } from "./semantic-type-ownership.zs";
 import { typeSymbolLocation } from "./semantic-type-identities.zs";
+import { aggregateFieldShape } from "./semantic-member-lookups.zs";
 import {
   ModuleGraph,
   ModuleResolveError,
@@ -1254,6 +1255,18 @@ function resolvedExpressionType(
       tree,
       receiver
     );
+    match (aggregateFieldShape(
+      graph.modules,
+      moduleIndex,
+      receiverType,
+      nodeValue
+    )) {
+      some(field) => return field.typeName.copyBytes(
+        0,
+        field.typeName.byteLength
+      );
+      none => {}
+    }
     match (genericTypeShape(receiverType)) {
       some(generic) => {
         if (
@@ -2360,38 +2373,47 @@ export function validateNativeLowerability(
   in modules: Array<ParsedModule>,
   in graph: ModuleGraph
 ): void throws ModuleResolveError {
-  let moduleIndex: usize = 0;
-  while (moduleIndex < modules.length) {
-    const module = view modules[moduleIndex];
-    if (moduleIndex < graph.modules.length) {
-      for (const binding of graph.modules[moduleIndex].semanticEvidence.bindingResolutions) {
-        const bindingLength = binding.name.byteLength;
-        const bindingLine = binding.line;
-        const bindingColumn = binding.column;
-        try validateNativeCollectionTypeName(
-          module.path,
-          binding.typeName,
-          bindingLine,
-          bindingColumn,
-          bindingLength
-        );
-      }
-      for (const expression of graph.modules[moduleIndex].semanticEvidence.expressionResolutions) {
-        const expressionLine = expression.line;
-        const expressionColumn = expression.column;
-        try validateNativeCollectionTypeName(
-          module.path,
-          expression.typeName,
-          expressionLine,
-          expressionColumn,
-          1
-        );
-      }
+  let graphModuleIndex: usize = 0;
+  while (graphModuleIndex < graph.modules.length) {
+    const parsedModuleIndex = parsedModuleIndexForGraphModule(
+      modules,
+      graph,
+      graphModuleIndex
+    );
+    if (parsedModuleIndex >= modules.length) {
+      graphModuleIndex = graphModuleIndex + 1;
+      continue;
+    }
+    const module = view modules[parsedModuleIndex];
+    for (const binding of graph.modules[graphModuleIndex]
+      .semanticEvidence.bindingResolutions) {
+      const bindingLength = binding.name.byteLength;
+      const bindingLine = binding.line;
+      const bindingColumn = binding.column;
+      try validateNativeCollectionTypeName(
+        module.path,
+        binding.typeName,
+        bindingLine,
+        bindingColumn,
+        bindingLength
+      );
+    }
+    for (const expression of graph.modules[graphModuleIndex]
+      .semanticEvidence.expressionResolutions) {
+      const expressionLine = expression.line;
+      const expressionColumn = expression.column;
+      try validateNativeCollectionTypeName(
+        module.path,
+        expression.typeName,
+        expressionLine,
+        expressionColumn,
+        1
+      );
     }
     for (const aggregate of module.program.aggregates) {
       try validateNativeAggregate(
         module.path,
-        moduleIndex,
+        graphModuleIndex,
         modules,
         graph,
         aggregate
@@ -2407,7 +2429,7 @@ export function validateNativeLowerability(
       }
       try validateNativeExpression(
         module.path,
-        moduleIndex,
+        graphModuleIndex,
         modules,
         graph,
         declaration.initializer,
@@ -2429,13 +2451,13 @@ export function validateNativeLowerability(
     for (const declaration of module.program.functions) {
       try validateNativeFunction(
         module.path,
-        moduleIndex,
+        graphModuleIndex,
         modules,
         graph,
         declaration,
         ""
       );
     }
-    moduleIndex = moduleIndex + 1;
+    graphModuleIndex = graphModuleIndex + 1;
   }
 }
