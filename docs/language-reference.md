@@ -3301,7 +3301,11 @@ surrounding target configuration.
 
 C imports may be direct and zero-wrapper. Imported non-null Objective-C classes
 are nominal types such as `AppKit.NSWindow`; references use ARC and can be stored
-in Z aggregates or named in signatures. Inferred nullable Objective-C
+in Z aggregates or named in signatures. Objective-C references stored by a Z
+class are strong by default: construction retains each field and deterministic
+class cleanup releases it. Native APIs with an independent close-time release
+policy, such as `NSWindow.releasedWhenClosed`, must disable that policy when Z
+is intended to remain the sole owner. Inferred nullable Objective-C
 references display as `T | null`, require a null check before member access,
 and narrow in the non-null control-flow path without a runtime wrapper. This
 spelling is accepted for imported Objective-C reference fields, parameters,

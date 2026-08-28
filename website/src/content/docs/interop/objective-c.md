@@ -139,6 +139,13 @@ const registration = objc.register({
 The returned token retains the receiver, adapter, and Z controller, then invokes
 the checked remove call exactly once during cleanup.
 
+Objective-C references stored in a Z class are strong by default. This applies
+to ordinary imported objects and `objc.Registration`, so a class returned from
+a helper keeps its native graph alive after the helper's locals end. If a
+native class also releases itself on a lifecycle event, disable that native
+policy when Z is intended to remain the sole owner; AppKit windows use
+`window.releasedWhenClosed = false` for this shape.
+
 ## Direct import versus `std/objc`
 
 | Native shape | Preferred Z surface |

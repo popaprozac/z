@@ -15766,6 +15766,9 @@ function appendStructDefinition(
   for (const field of program.structs[index].fields) {
     const fieldType = try cType(field.type);
     output.append("  ");
+    if (field.type.kind == LoweredTypeKind.foreignObjCType) {
+      output.append("__strong ");
+    }
     output.append(fieldType);
     if (
       field.borrowedView

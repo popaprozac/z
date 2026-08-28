@@ -15,20 +15,24 @@ class RegistrationHandler implements native.ZRegistrationHandler {
 class RegistrationRoot on thread.main {
   owner: native.ZRegistrationOwner;
   registration: objc.Registration;
+
+  function publish(): void {
+    this.owner.emitValue(42);
+  }
 }
 
-function publish(in owner: native.ZRegistrationOwner): void {
-  owner.emitValue(42);
-}
-
-function main(): i32 {
+function createRegistrationRoot(): RegistrationRoot on thread.main {
   const owner = native.ZRegistrationOwner.alloc().init();
   const handler = new RegistrationHandler({});
   const registration = objc.register({
     add: owner.addHandler(handler, "bridge"),
     remove: owner.removeHandlerForName("bridge"),
   });
-  const root = new RegistrationRoot({ owner, registration });
-  publish(in owner);
+  return new RegistrationRoot({ owner, registration });
+}
+
+function main(): i32 {
+  const root = createRegistrationRoot();
+  root.publish();
   return 0;
 }

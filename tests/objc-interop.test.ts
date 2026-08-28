@@ -2119,9 +2119,9 @@ test("owns method-based Objective-C protocol registrations through explicit guar
   assert.match(artifact.source, /\[_z_object addHandler:_z_adapter name:_z_argument_1\]/);
   assert.match(artifact.source, /- \(void\)dealloc \{\n  \(void\)\[_z_object removeHandlerForName:_z_stored_1\]/);
   assert.match(artifact.source, /objc_precise_lifetime, unused\)\) ZObjCRegistration \* const registration/);
-  assert.match(artifact.source, /struct Z_RegistrationRoot \{[^}]*ZRegistrationOwner \* owner;[^}]*ZObjCRegistration \* registration;/);
+  assert.match(artifact.source, /struct Z_RegistrationRoot \{[^}]*__strong ZRegistrationOwner \* owner;[^}]*__strong ZObjCRegistration \* registration;/);
   assert.match(artifact.source, /self->registration = nil;/);
-  assert.match(artifact.source, /publish\(owner\)/);
+  assert.match(artifact.source, /Z_RegistrationRoot_publish\(root\)/);
   assert.doesNotMatch(artifact.source, /publish\(&\(owner\)\)/);
 
   const result = spawnSync(process.execPath, [cli, "run", fixture], { encoding: "utf8" });

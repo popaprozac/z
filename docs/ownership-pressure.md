@@ -4308,6 +4308,31 @@ small typed locals rather than weakening its public ownership behavior. These
 are bootstrap gaps to remove before treating the window module's internal
 layout as final.
 
+## Zapp multi-window Objective-C storage
+
+Zapp's first dynamic two-window WebKit probe exposed an Objective-C lifetime
+bug that a single lexical scope could hide. A helper created an `NSWindow`,
+`WKWebView`, configuration, content controller, registration owner, and checked
+`objc.Registration`, returned them inside an ARC `MacOSWindowRuntime`, and let
+its locals end. Generated Z classes stored those Objective-C pointers in plain
+C aggregate fields. ARC does not infer owning storage for that representation,
+so the later deterministic class finalizer released dangling pointers.
+
+Both C emitters now mark direct Objective-C class fields `__strong`. Their
+generated constructors acquire one retain for each stored reference and class
+finalization releases exactly that ownership. The protocol-registration
+fixture now constructs and returns its registration root from a helper before
+invoking the retained handler, proving the owner and adapter survive beyond
+their construction scope under both Stage 0 and the fixed-point compiler.
+
+The same application found a distinct AppKit ownership rule: an `NSWindow`
+may release itself when closed even while Z still owns its reference. Zapp now
+sets `releasedWhenClosed = false`; a close removes routing identity and ends
+the native window lifecycle, while the Z runtime remains the sole storage owner
+until application teardown. Packaged and Vite smoke tests dynamically create
+two windows, isolate their injection profiles and pending-request namespaces,
+close the last window, and complete deterministic cleanup without a crash.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

@@ -1898,7 +1898,12 @@ function generateStruct(
   const fieldLines = [
     ...(declaration.kind === "class" ? ["  size_t _z_refcount;", "  Z_WeakControl *_z_weak;"] : []),
     ...declaration.fields.map(
-      (field) => `  ${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`,
+      (field) => {
+        const qualifier = foreignNamedTypes.get(field.type.name)?.kind === "object"
+          ? "__strong "
+          : "";
+        return `  ${qualifier}${mapType(field.type.name, structs, enums, foreignNamedTypes)} ${field.name};`;
+      },
     ),
   ];
   if (fieldLines.length === 0) fieldLines.push("  unsigned char _z_empty;");

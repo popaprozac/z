@@ -7863,12 +7863,19 @@ test("bootstraps a fixed-point native z executable for local use", () => {
       registrationEmission,
       /objc_precise_lifetime/,
     );
+    assert.match(
+      registrationEmission,
+      /struct Z_NativeRegistrationRoot \{[^}]*__strong ZNativeRegistrationOwner \* owner;[^}]*__strong ZObjCRegistration \* registration;/,
+    );
     assert.match(registrationEmission, /self->registration = nil;/);
     assert.match(
       registrationEmission,
       /Z_NativeRegistrationHandler_retain\(owner\)/,
     );
-    assert.match(registrationEmission, /publish\(owner\)/);
+    assert.match(
+      registrationEmission,
+      /Z_NativeRegistrationRoot_publish\(root\)/,
+    );
     assert.match(
       registrationEmission,
       /\[_z_object removeHandlerForName:_z_stored_1\]/,
