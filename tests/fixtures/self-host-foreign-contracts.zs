@@ -73,6 +73,7 @@ function inspectObjC(
   const moduleSource = ModuleSource({
     path: sourcePath.copyBytes(0, sourcePath.byteLength),
     source,
+    packageSpecifiers: Array<String>(),
   });
   const parsedOutcome = attempt parseModule(moduleSource);
   const parsed = match (parsedOutcome) {
@@ -288,6 +289,7 @@ function inspect(
   const moduleSource = ModuleSource({
     path: sourcePath.copyBytes(0, sourcePath.byteLength),
     source,
+    packageSpecifiers: Array<String>(),
   });
   const parsedOutcome = attempt parseModule(moduleSource);
   const parsed = match (parsedOutcome) {

@@ -24,14 +24,30 @@ Relative `.zs` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
 
-A project may expose exact external source modules through root-level `imports`
-in `z.json`:
+A reusable Z source package declares its identity and library surface in
+`z.json`:
 
 ```json
 {
-  "imports": {
-    "zapp": "vendor/zapp/zapp.zs",
-    "zapp/window": "vendor/zapp/zapp/window.zs"
+  "package": {
+    "name": "zapp",
+    "version": "0.1.0"
+  },
+  "library": {
+    "entry": "src/zapp.zs",
+    "exports": {
+      "./window": "src/window.zs"
+    }
+  }
+}
+```
+
+An application makes that surface available with one local dependency:
+
+```json
+{
+  "dependencies": {
+    "zapp": { "path": "../zapp" }
   },
   "target": {
     "name": "notes",
@@ -41,12 +57,11 @@ in `z.json`:
 ```
 
 This makes `import { Application } from "zapp";` an ordinary checked source
-import in the compiler and editor. Resolution is exact and fail-closed; an
-unlisted submodule is not made public. Paths are relative to the manifest.
-The declared public identity travels with the source graph through both Stage 0
-and the native frontend, so the target filename does not need to repeat the
-specifier. Package versions, installation, and lockfiles remain a future
-package layer over this primitive.
+import in the compiler and editor. The library entry implicitly owns the root
+specifier; `"./window"` becomes `"zapp/window"`. Resolution is exact and
+fail-closed, package paths are relative to the manifest that declares them,
+and transitive path dependencies are resolved in both Stage 0 and the native
+driver. Registry installation and lockfiles remain future work.
 
 Modules may publish named compile-time values:
 

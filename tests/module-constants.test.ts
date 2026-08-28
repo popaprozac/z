@@ -48,21 +48,42 @@ test("links bundled source-backed standard modules as ordinary Z source", () => 
   }
 });
 
-test("resolves exact public package imports through z.json in Stage 0 and native Z", () => {
+test("resolves local package roots, subpath exports, and transitive dependencies", () => {
   const directory = mkdtempSync("/tmp/z-package-imports-");
-  const packageDirectory = resolve(directory, "packages");
-  const rootModule = resolve(packageDirectory, "framework-root.zs");
-  const windowModule = resolve(packageDirectory, "window-public.zs");
-  const decoyModule = resolve(directory, "zapp.zs");
-  const mainFile = resolve(directory, "main.zs");
+  const applicationDirectory = resolve(directory, "application");
+  const zappDirectory = resolve(directory, "zapp");
+  const utilityDirectory = resolve(directory, "utility");
+  const rootModule = resolve(zappDirectory, "src/zapp.zs");
+  const windowModule = resolve(zappDirectory, "src/window.zs");
+  const utilityModule = resolve(utilityDirectory, "src/utility.zs");
+  const decoyModule = resolve(applicationDirectory, "zapp.zs");
+  const mainFile = resolve(applicationDirectory, "main.zs");
   try {
-    mkdirSync(packageDirectory, { recursive: true });
+    mkdirSync(resolve(zappDirectory, "src"), { recursive: true });
+    mkdirSync(resolve(utilityDirectory, "src"), { recursive: true });
+    mkdirSync(applicationDirectory, { recursive: true });
+    writeFileSync(utilityModule, `
+      export function baseAnswer(): i32 { return 40; }
+    `);
+    writeFileSync(resolve(utilityDirectory, "z.json"), JSON.stringify({
+      package: { name: "utility", version: "0.1.0" },
+      library: { entry: "src/utility.zs" },
+    }));
     writeFileSync(rootModule, `
-      export function frameworkAnswer(): i32 { return 40; }
+      import { baseAnswer } from "utility";
+      export function frameworkAnswer(): i32 { return baseAnswer(); }
     `);
     writeFileSync(windowModule, `
       export function windowAnswer(): i32 { return 2; }
     `);
+    writeFileSync(resolve(zappDirectory, "z.json"), JSON.stringify({
+      package: { name: "zapp", version: "0.1.0-dev.1+local" },
+      library: {
+        entry: "src/zapp.zs",
+        exports: { "./window": "src/window.zs" },
+      },
+      dependencies: { utility: { path: "../utility" } },
+    }));
     writeFileSync(decoyModule, `
       export function decoyAnswer(): i32 { return 0; }
     `);
@@ -75,11 +96,8 @@ test("resolves exact public package imports through z.json in Stage 0 and native
         return frameworkAnswer() + windowAnswer() + decoyAnswer() - 42;
       }
     `);
-    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
-      imports: {
-        zapp: "packages/framework-root.zs",
-        "zapp/window": "packages/window-public.zs",
-      },
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { zapp: { path: "../zapp" } },
       target: {
         name: "package-imports",
         entry: "main.zs",
@@ -107,6 +125,17 @@ test("resolves exact public package imports through z.json in Stage 0 and native
       "function frameworkAnswer(): i32",
     );
 
+    const libraryCheck = spawnSync(process.execPath, [
+      cli,
+      "check",
+      zappDirectory,
+      "--native-frontend",
+    ], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(libraryCheck.status, 0, libraryCheck.stderr);
+
     const native = spawnSync(
       process.execPath,
       [cli, "check", mainFile, "--native-frontend"],
@@ -124,19 +153,53 @@ test("resolves exact public package imports through z.json in Stage 0 and native
   }
 });
 
-test("rejects malformed public source import names in z.json", () => {
+test("rejects malformed public package export names in z.json", () => {
   const directory = mkdtempSync("/tmp/z-package-import-diagnostic-");
   const mainFile = resolve(directory, "main.zs");
   try {
     writeFileSync(mainFile, "function main(): i32 { return 0; }");
     writeFileSync(resolve(directory, "module.zs"), "export function value(): i32 { return 0; }");
     writeFileSync(resolve(directory, "z.json"), JSON.stringify({
-      imports: { "zapp/../internal": "module.zs" },
-      target: { name: "invalid-import", entry: "main.zs" },
+      package: { name: "invalid", version: "0.1.0" },
+      library: {
+        entry: "module.zs",
+        exports: { "../internal": "module.zs" },
+      },
     }));
     assert.throws(
       () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
-      /imports key .* must be a bare Z module specifier/,
+      /library\.exports key .* must be a public subpath/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects undeclared package subpaths before native-header import", () => {
+  const directory = mkdtempSync("/tmp/z-package-private-");
+  const packageDirectory = resolve(directory, "library");
+  const applicationDirectory = resolve(directory, "application");
+  const mainFile = resolve(applicationDirectory, "main.zs");
+  try {
+    mkdirSync(resolve(packageDirectory, "src"), { recursive: true });
+    mkdirSync(applicationDirectory, { recursive: true });
+    writeFileSync(resolve(packageDirectory, "src/root.zs"), "export function value(): i32 { return 42; }");
+    writeFileSync(resolve(packageDirectory, "src/private.zs"), "export function secret(): i32 { return 1; }");
+    writeFileSync(resolve(packageDirectory, "z.json"), JSON.stringify({
+      package: { name: "sample", version: "0.1.0" },
+      library: { entry: "src/root.zs" },
+    }));
+    writeFileSync(mainFile, `
+      import { secret } from "sample/private";
+      function main(): i32 { return secret(); }
+    `);
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { sample: { path: "../library" } },
+      target: { name: "package-private", entry: "main.zs" },
+    }));
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /package "sample" does not export subpath "\.\/private"/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

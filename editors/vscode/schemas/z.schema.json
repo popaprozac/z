@@ -2,12 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/popaprozac/z/main/editors/vscode/schemas/z.schema.json",
   "title": "Z project manifest",
-  "description": "Build target and native dependency configuration for a Z project.",
+  "description": "Package, source dependency, and native build-target configuration for Z.",
   "type": "object",
-  "required": ["target"],
+  "anyOf": [
+    { "required": ["target"] },
+    { "required": ["library"] }
+  ],
   "properties": {
     "imports": {
-      "description": "Exact public Z source-module mappings. Keys are bare import specifiers and paths resolve relative to this manifest.",
+      "description": "Low-level exact Z source-module mappings retained for bootstrap tooling. Authored projects should declare package dependencies instead.",
       "type": "object",
       "propertyNames": {
         "not": {
@@ -22,6 +25,62 @@
       "additionalProperties": {
         "type": "string",
         "pattern": "\\.zs$"
+      }
+    },
+    "package": {
+      "description": "Stable identity for a reusable Z package.",
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "library": {
+      "description": "Source library exported by this package. The entry is the package root; optional exports add exact public subpaths.",
+      "type": "object",
+      "required": ["entry"],
+      "properties": {
+        "entry": {
+          "type": "string",
+          "pattern": "\\.zs$"
+        },
+        "exports": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^\\./(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*\\\\)(?!.*\\.zs$).+$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "\\.zs$"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencies": {
+      "description": "Packages available to this target or library. The first tier resolves local package directories; versioned registry dependencies follow later.",
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
       }
     },
     "target": {
@@ -169,5 +228,11 @@
       "additionalProperties": false
     }
   },
+  "allOf": [
+    {
+      "if": { "required": ["library"] },
+      "then": { "required": ["package"] }
+    }
+  ],
   "additionalProperties": false
 }

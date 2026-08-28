@@ -170,6 +170,27 @@ function sourcePackageModulePath(
   return Option<String>.none;
 }
 
+function sourcePackageRootForHeader(
+  in config: NativeProjectConfig,
+  in header: String
+): Option<String> {
+  for (const sourceImport of config.sourceImports) {
+    let rootSpecifier = true;
+    let index: usize = 0;
+    while (index < sourceImport.specifier.byteLength) {
+      if (sourceImport.specifier.byteAt(index) == 47) rootSpecifier = false;
+      index = index + 1;
+    }
+    if (!rootSpecifier) continue;
+    const prefix = `${sourceImport.specifier}/`;
+    if (
+      header.byteLength > prefix.byteLength
+      && header.copyBytes(0, prefix.byteLength) == prefix
+    ) return Option.some(copy sourceImport.specifier);
+  }
+  return Option<String>.none;
+}
+
 function loadModule(
   in path: String,
   in config: NativeProjectConfig,
@@ -218,6 +239,16 @@ function loadModule(
       some(path) => {
         dependencies.push(path);
         continue;
+      }
+      none => {}
+    }
+    match (sourcePackageRootForHeader(config, declaration.header)) {
+      some(packageRoot) => {
+        const subpath = declaration.header.copyBytes(
+          packageRoot.byteLength + 1,
+          declaration.header.byteLength
+        );
+        throw `${canonical}:${declaration.line}:${declaration.column}: package "${packageRoot}" does not export subpath "./${subpath}"`;
       }
       none => {}
     }
@@ -345,7 +376,7 @@ function checkProject(in entryPath: String): i32 throws String {
   const input = try resolveCommandInput(entryPath);
   const project = try loadProject(input.entryPath);
   try validateExecutableEntry(project, false);
-  if (input.projectMode) {
+  if (input.projectMode && project.config.targetConfigured) {
     if (project.config.targetKind == "executable") {
       try validateExecutableEntry(project, true);
     } else if (
@@ -420,7 +451,8 @@ function emitProjectStandardOutput(in entryPath: String): i32 throws String {
   const project = try loadProject(input.entryPath);
   const emitted = try emitProject(
     project,
-    project.config.targetKind == "executable"
+    project.config.targetConfigured
+    && project.config.targetKind == "executable"
   );
   console.write(emitted);
   return 0;
@@ -880,6 +912,9 @@ function buildManifestProject(
     throw "project build expects a directory or z.json manifest; use `z build <entry.zs> <output>` for the compatibility file build";
   }
   const project = try loadProject(input.entryPath);
+  if (!project.config.targetConfigured) {
+    throw "z build requires a configured target; this manifest declares only a source library";
+  }
   try validateExecutableEntry(project, false);
   if (project.config.targetKind == "executable") {
     return try buildExecutableTarget(project, release);
@@ -1086,6 +1121,12 @@ function runProject(
 ): i32 throws String {
   const input = try resolveCommandInput(entryPath);
   const project = try loadProject(input.entryPath);
+  if (
+    input.projectMode
+    && !project.config.targetConfigured
+  ) {
+    throw "z run requires a configured executable target; this manifest declares only a source library";
+  }
   if (
     input.projectMode
     && project.config.targetKind != "executable"

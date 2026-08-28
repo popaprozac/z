@@ -99,13 +99,30 @@ Resolution is not the same behind the scenes:
 - `std/...` resolves a standard-library module.
 - Header imports ask Clang for native ABI declarations and layouts.
 
-Projects can assign exact public names to external Z modules in `z.json`:
+Source libraries declare their package identity and public entry points in
+`z.json`:
 
 ```json
 {
-  "imports": {
-    "zapp": "vendor/zapp/zapp.zs",
-    "zapp/window": "vendor/zapp/zapp/window.zs"
+  "package": {
+    "name": "zapp",
+    "version": "0.1.0"
+  },
+  "library": {
+    "entry": "src/zapp.zs",
+    "exports": {
+      "./window": "src/window.zs"
+    }
+  }
+}
+```
+
+The consumer declares one dependency alongside its target:
+
+```json
+{
+  "dependencies": {
+    "zapp": { "path": "../zapp" }
   },
   "target": {
     "name": "notes",
@@ -115,10 +132,10 @@ Projects can assign exact public names to external Z modules in `z.json`:
 ```
 
 The compiler and editor then resolve `import { Application } from "zapp";`
-without source rewriting. Only exact mapped names are public, and the declared
-identity travels with the native module batch instead of being guessed from the
-filename. Package tooling can generate the same map from package exports later;
-versions and dependency installation remain future layers.
+without source rewriting. The library entry supplies the package root and only
+exact exported subpaths are public. Local path dependencies work transitively
+in Stage 0 and the native driver; registry versions, downloads, and lockfiles
+remain future layers.
 
 A native import does not introduce an automatic wrapper call. See
 [Native interop](/interop/) for header and `.zd` behavior.

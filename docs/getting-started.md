@@ -119,14 +119,30 @@ selects an executable:
 }
 ```
 
-Projects can give external Z source modules exact public names with the
-root-level `imports` map:
+Reusable source libraries declare a package identity and one implicit root
+entry. Optional exports add exact public subpaths:
 
 ```json
 {
-  "imports": {
-    "zapp": "vendor/zapp/zapp.zs",
-    "zapp/window": "vendor/zapp/zapp/window.zs"
+  "package": {
+    "name": "zapp",
+    "version": "0.1.0"
+  },
+  "library": {
+    "entry": "src/zapp.zs",
+    "exports": {
+      "./window": "src/window.zs"
+    }
+  }
+}
+```
+
+Consumers declare the package once:
+
+```json
+{
+  "dependencies": {
+    "zapp": { "path": "../zapp" }
   },
   "target": {
     "name": "notes",
@@ -135,11 +151,12 @@ root-level `imports` map:
 }
 ```
 
-Source can then use `import { Application } from "zapp";`. Import paths are
-resolved relative to `z.json`, checked by the compiler and language server,
-and fail closed: only exact keys in the map are public. A future package manager
-can produce these exact mappings from package exports; this map does not define package versions,
-registries, or dependency installation.
+Source can then import `Application` from `"zapp"` and `Window` from
+`"zapp/window"`. Dependency paths are relative to the declaring manifest.
+The compiler and language server walk transitive local dependencies, verify
+package identities, and expose only the library root and exact declared
+subpaths. Registry versions, downloads, and lockfiles remain a future package
+layer over this implemented local graph.
 
 With the native `z` executable on `PATH`, project mode makes the current
 manifest authoritative:

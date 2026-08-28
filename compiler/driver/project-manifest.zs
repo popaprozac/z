@@ -10,9 +10,22 @@ export struct NativeSourceImport {
   path: String;
 }
 
+export struct NativePathDependency {
+  name: String;
+  path: String;
+}
+
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
+  packageConfigured: boolean;
+  packageName: Option<String>;
+  packageVersion: Option<String>;
+  libraryConfigured: boolean;
+  libraryEntry: Option<String>;
+  libraryExports: Array<NativeSourceImport>;
+  dependencies: Array<NativePathDependency>;
+  targetConfigured: boolean;
   targetKind: String;
   targetName: Option<String>;
   runtimeInitializer: Option<String>;
@@ -37,6 +50,14 @@ function emptyProjectConfig(): NativeProjectConfig {
   return NativeProjectConfig({
     manifestPath: Option<String>.none,
     directory: "",
+    packageConfigured: false,
+    packageName: Option<String>.none,
+    packageVersion: Option<String>.none,
+    libraryConfigured: false,
+    libraryEntry: Option<String>.none,
+    libraryExports: Array<NativeSourceImport>(),
+    dependencies: Array<NativePathDependency>(),
+    targetConfigured: false,
     targetKind: "executable",
     targetName: Option<String>.none,
     runtimeInitializer: Option<String>.none,
@@ -50,6 +71,194 @@ function emptyProjectConfig(): NativeProjectConfig {
     linkFrameworks: Array<String>(),
     hasSwiftTarget: false,
   });
+}
+
+function parsePackage(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  config.packageConfigured = true;
+  try expectByte(inout cursor, 123, "an object for package");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "name") {
+      const name = try parseJsonString(inout cursor);
+      config.packageName = Option.some(name);
+    } else if (key == "version") {
+      const version = try parseJsonString(inout cursor);
+      config.packageVersion = Option.some(version);
+    } else {
+      throw jsonError(cursor, `z.json package contains unknown field "${key}"`);
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
+function parseLibraryExports(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for library.exports");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const specifier = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    const path = try parseJsonString(inout cursor);
+    config.libraryExports.push(NativeSourceImport({ specifier, path }));
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
+function parseLibrary(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  config.libraryConfigured = true;
+  try expectByte(inout cursor, 123, "an object for library");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "entry") {
+      const entry = try parseJsonString(inout cursor);
+      config.libraryEntry = Option.some(entry);
+    } else if (key == "exports") {
+      try parseLibraryExports(inout cursor, inout config);
+    } else {
+      throw jsonError(cursor, `z.json library contains unknown field "${key}"`);
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
+function parseDependency(
+  inout cursor: JsonCursor,
+  in name: String
+): NativePathDependency throws String {
+  try expectByte(inout cursor, 123, `an object for dependencies.${name}`);
+  let path = "";
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    throw jsonError(cursor, `z.json dependencies.${name}.path is required`);
+  }
+  while (true) {
+    const key = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    if (key == "path") {
+      if (path.byteLength > 0) {
+        throw jsonError(cursor, `z.json dependencies.${name} repeats path`);
+      }
+      path = try parseJsonString(inout cursor);
+    } else {
+      throw jsonError(
+        cursor,
+        `z.json dependencies.${name} contains unknown field "${key}"`
+      );
+    }
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    if (path.byteLength == 0) {
+      throw jsonError(cursor, `z.json dependencies.${name}.path is required`);
+    }
+    return NativePathDependency({ name: copy name, path });
+  }
+  throw jsonError(cursor, `unterminated z.json dependencies.${name}`);
+}
+
+function parseDependencies(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for dependencies");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const name = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    for (const existing of config.dependencies) {
+      if (existing.name == name) {
+        throw jsonError(cursor, `z.json dependencies repeats package "${name}"`);
+      }
+    }
+    const dependency = try parseDependency(inout cursor, name);
+    config.dependencies.push(dependency);
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
 }
 
 function parseSourceImports(
@@ -429,6 +638,7 @@ function parseTarget(
   inout cursor: JsonCursor,
   inout config: NativeProjectConfig
 ): void throws String {
+  config.targetConfigured = true;
   try expectByte(inout cursor, 123, "an object for target");
   skipWhitespace(inout cursor);
   if (
@@ -514,6 +724,12 @@ function parseProjectManifest(
         try parseTarget(inout cursor, inout config);
       } else if (key == "imports") {
         try parseSourceImports(inout cursor, inout config);
+      } else if (key == "package") {
+        try parsePackage(inout cursor, inout config);
+      } else if (key == "library") {
+        try parseLibrary(inout cursor, inout config);
+      } else if (key == "dependencies") {
+        try parseDependencies(inout cursor, inout config);
       } else {
         throw jsonError(
           cursor,
@@ -678,6 +894,44 @@ function validSourceImportSpecifier(in specifier: String): boolean {
   return specifier.byteAt(0) != 47;
 }
 
+function validPackageName(in name: String): boolean {
+  if (name.byteLength == 0) return false;
+  const first = name.byteAt(0);
+  if (
+    !(
+      (first >= 65 && first <= 90)
+      || (first >= 97 && first <= 122)
+      || first == 95
+    )
+  ) return false;
+  let index: usize = 1;
+  while (index < name.byteLength) {
+    const byte = name.byteAt(index);
+    if (
+      !(
+        (byte >= 48 && byte <= 57)
+        || (byte >= 65 && byte <= 90)
+        || (byte >= 97 && byte <= 122)
+        || byte == 45
+        || byte == 95
+      )
+    ) return false;
+    index = index + 1;
+  }
+  return true;
+}
+
+function validPackageSubpath(in subpath: String): boolean {
+  if (
+    subpath.byteLength <= 2
+    || subpath.byteAt(0) != 46
+    || subpath.byteAt(1) != 47
+    || hasZSourceExtension(subpath)
+  ) return false;
+  const publicName = subpath.copyBytes(2, subpath.byteLength);
+  return validSourceImportSpecifier(publicName);
+}
+
 function normalizedPlatform(in platform: String): String {
   if (platform == "macos" || platform == "macosx" || platform == "darwin") {
     return "macos";
@@ -706,8 +960,116 @@ function validVersion(in version: String): boolean {
   return !componentStart;
 }
 
-function validateProjectConfig(
-  inout config: NativeProjectConfig
+function validSemanticVersionSection(
+  in version: String,
+  start: usize,
+  end: usize
+): boolean {
+  if (start >= end) return false;
+  let componentStart = true;
+  let index = start;
+  while (index < end) {
+    const byte = version.byteAt(index);
+    if (byte == 46) {
+      if (componentStart) return false;
+      componentStart = true;
+    } else {
+      const valid = (
+        (byte >= 48 && byte <= 57)
+        || (byte >= 65 && byte <= 90)
+        || (byte >= 97 && byte <= 122)
+        || byte == 45
+      );
+      if (!valid) return false;
+      componentStart = false;
+    }
+    index = index + 1;
+  }
+  return !componentStart;
+}
+
+function validSemanticVersion(in version: String): boolean {
+  const length = version.byteLength;
+  let coreEnd = length;
+  let prereleaseStart = length;
+  let buildStart = length;
+  let hasPrerelease = false;
+  let hasBuild = false;
+  let index: usize = 0;
+  while (index < length) {
+    const byte = version.byteAt(index);
+    if (byte == 45 || byte == 43) {
+      coreEnd = index;
+      if (byte == 45) {
+        hasPrerelease = true;
+        prereleaseStart = index + 1;
+      } else {
+        hasBuild = true;
+        buildStart = index + 1;
+      }
+      break;
+    }
+    index = index + 1;
+  }
+  const core = version.copyBytes(0, coreEnd);
+  if (!validVersion(core)) return false;
+  let dots: usize = 0;
+  index = 0;
+  while (index < core.byteLength) {
+    if (core.byteAt(index) == 46) dots = dots + 1;
+    index = index + 1;
+  }
+  if (dots != 2) return false;
+  if (hasPrerelease) {
+    let prereleaseEnd = length;
+    index = prereleaseStart;
+    while (index < length) {
+      if (version.byteAt(index) == 43) {
+        prereleaseEnd = index;
+        hasBuild = true;
+        buildStart = index + 1;
+        break;
+      }
+      index = index + 1;
+    }
+    if (!validSemanticVersionSection(
+      version,
+      prereleaseStart,
+      prereleaseEnd
+    )) return false;
+  }
+  if (hasBuild) {
+    if (!validSemanticVersionSection(
+      version,
+      buildStart,
+      length
+    )) return false;
+  }
+  return true;
+}
+
+function appendResolvedSourceImport(
+  inout config: NativeProjectConfig,
+  in specifier: String,
+  in canonicalPath: String,
+  in manifestPath: String
+): void throws String {
+  for (const existing of config.sourceImports) {
+    if (existing.specifier != specifier) continue;
+    if (existing.path != canonicalPath) {
+      throw `${manifestPath}:1:1: error: package import "${specifier}" resolves to more than one source module`;
+    }
+    return;
+  }
+  config.sourceImports.push(NativeSourceImport({
+    specifier: copy specifier,
+    path: copy canonicalPath,
+  }));
+}
+
+function validateProjectConfigRecursive(
+  inout config: NativeProjectConfig,
+  in ancestors: Array<String>
 ): void throws String {
   let manifestPath = "";
   match (in config.manifestPath) {
@@ -745,6 +1107,129 @@ function validateProjectConfig(
     }));
   }
   config.sourceImports = move sourceImports;
+
+  let packageName = "";
+  if (config.packageConfigured) {
+    match (in config.packageName) {
+      some(name) => packageName = copy name;
+      none => throw `${manifestPath}:1:1: error: z.json package.name must be a portable package name`;
+    }
+    if (!validPackageName(packageName)) {
+      throw `${manifestPath}:1:1: error: z.json package.name must be a portable package name`;
+    }
+    let packageVersion = "";
+    match (in config.packageVersion) {
+      some(version) => packageVersion = copy version;
+      none => throw `${manifestPath}:1:1: error: z.json package.version must be a semantic version such as "0.1.0"`;
+    }
+    if (!validSemanticVersion(packageVersion)) {
+      throw `${manifestPath}:1:1: error: z.json package.version must be a semantic version such as "0.1.0"`;
+    }
+  }
+  if (config.libraryConfigured && !config.packageConfigured) {
+    throw `${manifestPath}:1:1: error: z.json library requires package metadata`;
+  }
+  if (config.libraryConfigured) {
+    let libraryEntry = "";
+    match (in config.libraryEntry) {
+      some(entry) => libraryEntry = copy entry;
+      none => throw `${manifestPath}:1:1: error: z.json library.entry must be a Z source path ending in .zs`;
+    }
+    if (!hasZSourceExtension(libraryEntry)) {
+      throw `${manifestPath}:1:1: error: z.json library.entry must be a Z source path ending in .zs`;
+    }
+    const entryCandidate = configuredPath(config.directory, libraryEntry);
+    if (!fs.exists(entryCandidate) || fs.isDirectory(entryCandidate)) {
+      throw `${manifestPath}:1:1: error: package export "${packageName}" source "${entryCandidate}" does not exist`;
+    }
+    const canonicalEntry = try fs.realPath(entryCandidate);
+    try appendResolvedSourceImport(
+      inout config,
+      packageName,
+      canonicalEntry,
+      manifestPath
+    );
+    const libraryExports = copy config.libraryExports;
+    for (const exported of libraryExports) {
+      if (!validPackageSubpath(exported.specifier)) {
+        throw `${manifestPath}:1:1: error: z.json library.exports key "${exported.specifier}" must be a public subpath such as "./window"`;
+      }
+      if (!hasZSourceExtension(exported.path)) {
+        throw `${manifestPath}:1:1: error: z.json library.exports.${exported.specifier} must be a Z source path ending in .zs`;
+      }
+      const exportSuffix = exported.specifier.copyBytes(
+        1,
+        exported.specifier.byteLength
+      );
+      const publicSpecifier = `${packageName}${exportSuffix}`;
+      const exportCandidate = configuredPath(config.directory, exported.path);
+      if (!fs.exists(exportCandidate) || fs.isDirectory(exportCandidate)) {
+        throw `${manifestPath}:1:1: error: package export "${publicSpecifier}" source "${exportCandidate}" does not exist`;
+      }
+      const canonicalExport = try fs.realPath(exportCandidate);
+      try appendResolvedSourceImport(
+        inout config,
+        publicSpecifier,
+        canonicalExport,
+        manifestPath
+      );
+    }
+  }
+  if (!config.targetConfigured && !config.libraryConfigured) {
+    throw `${manifestPath}:1:1: error: z.json requires a target or library`;
+  }
+
+  let active = Array<String>();
+  for (const ancestor of ancestors) {
+    active.push(copy ancestor);
+  }
+  active.push(copy manifestPath);
+  const dependencies = copy config.dependencies;
+  for (const dependency of dependencies) {
+    if (!validPackageName(dependency.name)) {
+      throw `${manifestPath}:1:1: error: z.json dependency name "${dependency.name}" must be portable`;
+    }
+    if (dependency.path.byteLength == 0) {
+      throw `${manifestPath}:1:1: error: z.json dependencies.${dependency.name}.path must name a local package directory`;
+    }
+    const dependencyDirectory = configuredPath(config.directory, dependency.path);
+    if (!fs.exists(dependencyDirectory) || !fs.isDirectory(dependencyDirectory)) {
+      throw `${manifestPath}:1:1: error: z.json dependencies.${dependency.name}.path must contain a z.json manifest: "${dependencyDirectory}"`;
+    }
+    const dependencyManifestCandidate = configuredPath(dependencyDirectory, "z.json");
+    if (!fs.exists(dependencyManifestCandidate) || fs.isDirectory(dependencyManifestCandidate)) {
+      throw `${manifestPath}:1:1: error: z.json dependencies.${dependency.name}.path must contain a z.json manifest: "${dependencyDirectory}"`;
+    }
+    const dependencyManifestPath = try fs.realPath(dependencyManifestCandidate);
+    if (containsString(active, dependencyManifestPath)) {
+      throw `${manifestPath}:1:1: error: circular path dependency involving "${dependency.name}"`;
+    }
+    const dependencySource = try fs.readText(dependencyManifestPath);
+    let dependencyConfig = try parseProjectManifest(
+      dependencyManifestPath,
+      dependencyDirectory,
+      dependencySource
+    );
+    let actualName = "<missing>";
+    match (in dependencyConfig.packageName) {
+      some(name) => actualName = copy name;
+      none => {}
+    }
+    if (actualName != dependency.name) {
+      throw `${manifestPath}:1:1: error: z.json dependency "${dependency.name}" points to package "${actualName}"`;
+    }
+    try validateProjectConfigRecursive(inout dependencyConfig, active);
+    for (const imported of dependencyConfig.sourceImports) {
+      try appendResolvedSourceImport(
+        inout config,
+        imported.specifier,
+        imported.path,
+        manifestPath
+      );
+    }
+  }
+
+  if (!config.targetConfigured) return;
   let libraries = Array<String>();
   for (const library of config.linkLibraries) {
     if (!validLibraryName(library)) {
@@ -835,6 +1320,13 @@ function validateProjectConfig(
   }
 }
 
+function validateProjectConfig(
+  inout config: NativeProjectConfig
+): void throws String {
+  const ancestors = Array<String>();
+  try validateProjectConfigRecursive(inout config, ancestors);
+}
+
 export function configuredProjectEntryPath(
   in config: NativeProjectConfig
 ): String throws String {
@@ -843,10 +1335,14 @@ export function configuredProjectEntryPath(
     some(path) => manifestPath = copy path;
     none => throw "project mode requires a z.json manifest";
   }
-  const entry = match (in config.entry) {
-    some(entry) => entry.copyBytes(0, entry.byteLength);
-    none => throw `${manifestPath}:1:1: error: z.json ${config.targetKind} target requires target.entry`;
-  };
+  let entry = "";
+  match (in config.entry) {
+    some(found) => entry = copy found;
+    none => match (in config.libraryEntry) {
+      some(found) => entry = copy found;
+      none => throw `${manifestPath}:1:1: error: z.json requires target.entry or library.entry`;
+    }
+  }
   return configuredPath(config.directory, entry);
 }
 

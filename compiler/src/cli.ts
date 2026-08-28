@@ -154,8 +154,9 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
         let nativeRun: Stage1ResolverRun | null = null;
         const analysis = analyzeSource(source, inputPath, {
           requireMain: input.mode === "project"
+            && input.project.targetConfigured
             && input.project.targetKind === "executable",
-          validateTarget: input.mode === "project",
+          validateTarget: input.mode === "project" && input.project.targetConfigured,
           nativeFrontendResolver: nativeFrontend
             ? (sourceBatch) => {
               nativeRun = runStage1Resolver(inputPath, sourceBatch);
@@ -193,6 +194,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
         }
         if (
           input.mode === "project"
+          && input.project.targetConfigured
           && input.project.targetKind !== "executable"
           && !analysis.program.functions.some((declaration) => (
             declaration.nativeExport?.language === "c"
@@ -232,6 +234,9 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
       const run = parseRunArguments(trailingArguments);
       if (!inputPath.endsWith(".zs")) {
         throw new Error("run currently requires a .zs source module");
+      }
+      if (input.mode === "project" && !input.project.targetConfigured) {
+        throw new Error("z run requires a configured executable target; this manifest declares only a source library");
       }
       if (input.mode === "project" && input.project.targetKind !== "executable") {
         throw new Error(
@@ -1559,8 +1564,8 @@ function resolveCliInput(path: string): CliInput {
   if (!project.manifestPath) {
     throw new Error(`could not find z.json from ${JSON.stringify(path)}`);
   }
-  if (!project.manifestPath || !project.entryPath || !project.targetName) {
-    throw new Error("project configuration is missing its checked entry or name");
+  if (!project.manifestPath || !project.entryPath) {
+    throw new Error("project configuration is missing its checked entry");
   }
   return { mode: "project", project };
 }
@@ -1686,6 +1691,9 @@ function buildProject(
   const unexpected = options.filter((argument) => argument !== "--release");
   if (unexpected.length > 0) throw new Error(`unknown build option ${JSON.stringify(unexpected[0])}`);
   const release = options.includes("--release");
+  if (!project.targetConfigured) {
+    throw new Error("z build requires a configured target; this manifest declares only a source library");
+  }
   if (!project.entryPath || !project.targetName) {
     throw new Error("project configuration is missing its checked entry or name");
   }

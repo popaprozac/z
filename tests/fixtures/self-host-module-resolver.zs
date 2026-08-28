@@ -11,6 +11,7 @@ function module(in path: String, in source: String): ModuleSource {
   return ModuleSource({
     path: path.copyBytes(0, path.byteLength),
     source: source.copyBytes(0, source.byteLength),
+    packageSpecifiers: Array<String>(),
   });
 }
 

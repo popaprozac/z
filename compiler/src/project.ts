@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes } from "./foreign-api-notes.ts";
@@ -7,6 +7,7 @@ import type { ApiNotes } from "./foreign-api-notes.ts";
 export type ProjectBuild = {
   readonly manifestPath: string | null;
   readonly sourceImports: Readonly<Record<string, string>>;
+  readonly targetConfigured: boolean;
   readonly targetKind: "executable" | "static-library" | "shared-library";
   readonly targetName: string | null;
   readonly runtimeInitializer: string | null;
@@ -26,6 +27,15 @@ export type DeploymentTarget = {
 
 type ProjectManifest = {
   readonly imports?: Readonly<Record<string, string>>;
+  readonly package?: {
+    readonly name?: string;
+    readonly version?: string;
+  };
+  readonly library?: {
+    readonly entry?: string;
+    readonly exports?: Readonly<Record<string, string>>;
+  };
+  readonly dependencies?: Readonly<Record<string, { readonly path?: string }>>;
   readonly target?: {
     readonly kind?: "executable" | "static-library" | "shared-library";
     readonly name?: string;
@@ -53,6 +63,7 @@ type ProjectManifest = {
 const emptyBuild: ProjectBuild = {
   manifestPath: null,
   sourceImports: {},
+  targetConfigured: false,
   targetKind: "executable",
   targetName: null,
   runtimeInitializer: null,
@@ -94,7 +105,12 @@ function rejectUnknownProjectFields(
 
 function validateProjectManifestShape(value: unknown, fileName: string): void {
   const manifest = projectObject(value, "root", fileName);
-  rejectUnknownProjectFields(manifest, ["imports", "target"], "root", fileName);
+  rejectUnknownProjectFields(
+    manifest,
+    ["imports", "package", "library", "dependencies", "target"],
+    "root",
+    fileName,
+  );
   if (manifest.imports !== undefined) {
     const imports = projectObject(manifest.imports, "imports", fileName);
     for (const [specifier, target] of Object.entries(imports)) {
@@ -124,6 +140,76 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
         );
       }
     }
+  }
+  if (manifest.package !== undefined) {
+    const packageDeclaration = projectObject(manifest.package, "package", fileName);
+    rejectUnknownProjectFields(packageDeclaration, ["name", "version"], "package", fileName);
+    if (
+      typeof packageDeclaration.name !== "string"
+      || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(packageDeclaration.name)
+    ) {
+      throw projectDiagnostic(fileName, "z.json package.name must be a portable package name");
+    }
+    if (
+      typeof packageDeclaration.version !== "string"
+      || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(packageDeclaration.version)
+    ) {
+      throw projectDiagnostic(fileName, "z.json package.version must be a semantic version such as \"0.1.0\"");
+    }
+  }
+  if (manifest.library !== undefined) {
+    if (manifest.package === undefined) {
+      throw projectDiagnostic(fileName, "z.json library requires package metadata");
+    }
+    const library = projectObject(manifest.library, "library", fileName);
+    rejectUnknownProjectFields(library, ["entry", "exports"], "library", fileName);
+    if (typeof library.entry !== "string" || !library.entry.endsWith(".zs")) {
+      throw projectDiagnostic(fileName, "z.json library.entry must be a Z source path ending in .zs");
+    }
+    if (library.exports !== undefined) {
+      const exports = projectObject(library.exports, "library.exports", fileName);
+      for (const [specifier, target] of Object.entries(exports)) {
+        if (
+          !specifier.startsWith("./")
+          || specifier.length <= 2
+          || specifier.includes("\\")
+          || specifier.endsWith(".zs")
+          || specifier.split("/").some((segment, index) => (
+            index > 0 && (segment.length === 0 || segment === "." || segment === "..")
+          ))
+        ) {
+          throw projectDiagnostic(
+            fileName,
+            `z.json library.exports key ${JSON.stringify(specifier)} must be a public subpath such as \"./window\"`,
+          );
+        }
+        if (typeof target !== "string" || !target.endsWith(".zs")) {
+          throw projectDiagnostic(
+            fileName,
+            `z.json library.exports.${specifier} must be a Z source path ending in .zs`,
+          );
+        }
+      }
+    }
+  }
+  if (manifest.dependencies !== undefined) {
+    const dependencies = projectObject(manifest.dependencies, "dependencies", fileName);
+    for (const [name, declaration] of Object.entries(dependencies)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
+        throw projectDiagnostic(fileName, `z.json dependency name ${JSON.stringify(name)} must be portable`);
+      }
+      const dependency = projectObject(declaration, `dependencies.${name}`, fileName);
+      rejectUnknownProjectFields(dependency, ["path"], `dependencies.${name}`, fileName);
+      if (typeof dependency.path !== "string" || dependency.path.length === 0) {
+        throw projectDiagnostic(fileName, `z.json dependencies.${name}.path must name a local package directory`);
+      }
+    }
+  }
+  if (manifest.target === undefined) {
+    if (manifest.library === undefined) {
+      throw projectDiagnostic(fileName, "z.json requires a target or library");
+    }
+    return;
   }
   const target = projectObject(manifest.target, "target", fileName);
   rejectUnknownProjectFields(
@@ -171,19 +257,150 @@ function validateProjectManifestShape(value: unknown, fileName: string): void {
   }
 }
 
-export function prepareProject(fileName: string): ProjectBuild {
-  const manifestPath = findManifest(fileName);
-  if (!manifestPath) return emptyBuild;
-  const directory = dirname(manifestPath);
+function readProjectManifest(manifestPath: string, diagnosticFileName: string): ProjectManifest {
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(manifestPath, "utf8")) as unknown;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw projectDiagnostic(fileName, `could not read project manifest ${JSON.stringify(manifestPath)}: ${detail}`);
+    throw projectDiagnostic(
+      diagnosticFileName,
+      `could not read project manifest ${JSON.stringify(manifestPath)}: ${detail}`,
+    );
   }
-  validateProjectManifestShape(parsed, fileName);
-  const manifest = parsed as ProjectManifest;
+  validateProjectManifestShape(parsed, diagnosticFileName);
+  return parsed as ProjectManifest;
+}
+
+function addPackageSourceImport(
+  sourceImports: Record<string, string>,
+  specifier: string,
+  sourcePath: string,
+  diagnosticFileName: string,
+): void {
+  if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) {
+    throw projectDiagnostic(
+      diagnosticFileName,
+      `package export ${JSON.stringify(specifier)} source ${JSON.stringify(sourcePath)} does not exist`,
+    );
+  }
+  const canonical = realpathSync(sourcePath);
+  const existing = sourceImports[specifier];
+  if (existing !== undefined && realpathSync(existing) !== canonical) {
+    throw projectDiagnostic(
+      diagnosticFileName,
+      `package import ${JSON.stringify(specifier)} resolves to more than one source module`,
+    );
+  }
+  sourceImports[specifier] = canonical;
+}
+
+function addLibraryExports(
+  manifest: ProjectManifest,
+  manifestPath: string,
+  sourceImports: Record<string, string>,
+  diagnosticFileName: string,
+): void {
+  const packageName = manifest.package?.name;
+  const entry = manifest.library?.entry;
+  if (packageName === undefined || entry === undefined) {
+    throw projectDiagnostic(
+      diagnosticFileName,
+      `path dependency ${JSON.stringify(manifestPath)} must declare package metadata and library.entry`,
+    );
+  }
+  const directory = dirname(manifestPath);
+  addPackageSourceImport(
+    sourceImports,
+    packageName,
+    resolve(directory, entry),
+    diagnosticFileName,
+  );
+  for (const [subpath, sourcePath] of Object.entries(manifest.library?.exports ?? {})) {
+    addPackageSourceImport(
+      sourceImports,
+      `${packageName}${subpath.slice(1)}`,
+      resolve(directory, sourcePath),
+      diagnosticFileName,
+    );
+  }
+}
+
+function addPathDependencies(
+  manifest: ProjectManifest,
+  manifestPath: string,
+  sourceImports: Record<string, string>,
+  diagnosticFileName: string,
+): void {
+  const packages = new Map<string, string>();
+  const active = new Set<string>();
+
+  const visit = (declaredName: string, declaredPath: string, ownerManifestPath: string): void => {
+    const ownerDirectory = dirname(ownerManifestPath);
+    const packageDirectory = resolve(ownerDirectory, declaredPath);
+    const dependencyManifestPath = resolve(packageDirectory, "z.json");
+    if (!existsSync(dependencyManifestPath) || !statSync(dependencyManifestPath).isFile()) {
+      throw projectDiagnostic(
+        diagnosticFileName,
+        `z.json dependencies.${declaredName}.path must contain a z.json manifest: ${JSON.stringify(packageDirectory)}`,
+      );
+    }
+    const canonicalManifestPath = realpathSync(dependencyManifestPath);
+    if (active.has(canonicalManifestPath)) {
+      throw projectDiagnostic(
+        diagnosticFileName,
+        `circular path dependency involving ${JSON.stringify(declaredName)}`,
+      );
+    }
+    const existing = packages.get(declaredName);
+    if (existing !== undefined) {
+      if (existing !== canonicalManifestPath) {
+        throw projectDiagnostic(
+          diagnosticFileName,
+          `path dependency ${JSON.stringify(declaredName)} resolves to both ${JSON.stringify(existing)} and ${JSON.stringify(canonicalManifestPath)}`,
+        );
+      }
+      return;
+    }
+    active.add(canonicalManifestPath);
+    const dependencyManifest = readProjectManifest(canonicalManifestPath, diagnosticFileName);
+    if (dependencyManifest.package?.name !== declaredName) {
+      throw projectDiagnostic(
+        diagnosticFileName,
+        `z.json dependency ${JSON.stringify(declaredName)} points to package ${JSON.stringify(dependencyManifest.package?.name ?? "<missing>")}`,
+      );
+    }
+    packages.set(declaredName, canonicalManifestPath);
+    for (const [specifier, sourcePath] of Object.entries(dependencyManifest.imports ?? {})) {
+      addPackageSourceImport(
+        sourceImports,
+        specifier,
+        resolve(dirname(canonicalManifestPath), sourcePath),
+        diagnosticFileName,
+      );
+    }
+    addLibraryExports(
+      dependencyManifest,
+      canonicalManifestPath,
+      sourceImports,
+      diagnosticFileName,
+    );
+    for (const [name, declaration] of Object.entries(dependencyManifest.dependencies ?? {})) {
+      visit(name, declaration.path!, canonicalManifestPath);
+    }
+    active.delete(canonicalManifestPath);
+  };
+
+  for (const [name, declaration] of Object.entries(manifest.dependencies ?? {})) {
+    visit(name, declaration.path!, manifestPath);
+  }
+}
+
+export function prepareProject(fileName: string): ProjectBuild {
+  const manifestPath = findManifest(fileName);
+  if (!manifestPath) return emptyBuild;
+  const directory = dirname(manifestPath);
+  const manifest = readProjectManifest(manifestPath, fileName);
 
   const sourceImports: Record<string, string> = {};
   for (const [specifier, sourcePath] of Object.entries(manifest.imports ?? {})) {
@@ -196,6 +413,10 @@ export function prepareProject(fileName: string): ProjectBuild {
     }
     sourceImports[specifier] = resolvedSourcePath;
   }
+  if (manifest.package !== undefined && manifest.library !== undefined) {
+    addLibraryExports(manifest, manifestPath, sourceImports, fileName);
+  }
+  addPathDependencies(manifest, manifestPath, sourceImports, fileName);
 
   const swift = manifest.target?.swift;
   const targetKind = manifest.target?.kind ?? "executable";
@@ -210,10 +431,10 @@ export function prepareProject(fileName: string): ProjectBuild {
     );
   }
   const targetName = manifest.target?.name ?? null;
-  if (targetName === null) {
+  if (manifest.target !== undefined && targetName === null) {
     throw projectDiagnostic(fileName, "z.json targets require target.name");
   }
-  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
+  if (targetName !== null && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(targetName)) {
     throw projectDiagnostic(fileName, "z.json target.name must be a portable artifact name");
   }
   const runtimeInitializer = manifest.target?.runtime?.initialize ?? null;
@@ -248,10 +469,17 @@ export function prepareProject(fileName: string): ProjectBuild {
     }
     entryPath = resolve(directory, manifest.target.entry);
     if (!existsSync(entryPath)) throw projectDiagnostic(fileName, `Z entry ${JSON.stringify(entryPath)} does not exist`);
-  } else {
+  } else if (manifest.target !== undefined) {
     throw projectDiagnostic(fileName, "z.json targets require target.entry");
+  } else if (manifest.library?.entry !== undefined) {
+    entryPath = resolve(directory, manifest.library.entry);
+    if (!existsSync(entryPath)) {
+      throw projectDiagnostic(fileName, `Z library entry ${JSON.stringify(entryPath)} does not exist`);
+    }
   }
-  const deploymentTarget = parseDeploymentTarget(manifest.target, fileName);
+  const deploymentTarget = manifest.target === undefined
+    ? null
+    : parseDeploymentTarget(manifest.target, fileName);
   const includeDirectories = parseProjectDirectories(
     manifest.target?.includeDirectories,
     "target.includeDirectories",
@@ -270,6 +498,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     ...emptyBuild,
     manifestPath,
     sourceImports,
+    targetConfigured: manifest.target !== undefined,
     targetKind,
     targetName,
     runtimeInitializer,

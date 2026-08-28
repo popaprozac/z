@@ -130,6 +130,13 @@ export function loadSourceModuleBatch(
     const program = suppliedProgram ?? parse(lex(source, canonical), canonical);
     const dependencies = new Map<number, string>();
     const packageSpecifiers = new Set<string>();
+    for (const [specifier, configuredPath] of Object.entries(options.sourceImports ?? {})) {
+      const absoluteConfigured = resolve(configuredPath);
+      const canonicalConfigured = existsSync(absoluteConfigured)
+        ? realpathSync(absoluteConfigured)
+        : absoluteConfigured;
+      if (canonicalConfigured === canonical) packageSpecifiers.add(specifier);
+    }
     const module: SourceModuleBatchModule = {
       fileName: canonical,
       source,
@@ -141,6 +148,9 @@ export function loadSourceModuleBatch(
     for (const declaration of program.imports) {
       const standardRelativePath = sourceStandardModuleRelativePath(declaration.header);
       const packageDependencyPath = options.sourceImports?.[declaration.header];
+      const packageRoot = Object.keys(options.sourceImports ?? {}).find((specifier) => (
+        !specifier.includes("/") && declaration.header.startsWith(`${specifier}/`)
+      ));
       const dependencyPath = isLocalSourceModuleSpecifier(declaration.header)
         ? resolve(dirname(canonical), declaration.header)
         : standardRelativePath
@@ -148,6 +158,17 @@ export function loadSourceModuleBatch(
         : packageDependencyPath
         ? resolve(packageDependencyPath)
         : null;
+      if (!packageDependencyPath && packageRoot) {
+        throw new DiagnosticError(
+          declaration.location.fileName ?? canonical,
+          declaration.location,
+          `package ${JSON.stringify(packageRoot)} does not export subpath ${JSON.stringify(`./${declaration.header.slice(packageRoot.length + 1)}`)}`,
+          {
+            code: "Z0602",
+            helps: [`add the exact subpath to ${packageRoot}'s z.json library.exports`],
+          },
+        );
+      }
       if (!dependencyPath || !existsSync(dependencyPath)) continue;
       const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
       if (packageDependencyPath) dependency.packageSpecifiers.add(declaration.header);

@@ -79,13 +79,13 @@ Omitting `kind` selects an executable. Library projects choose
 `"static-library"` or `"shared-library"` and expose checked C entry points with
 `export c function`.
 
-Exact external Z modules can receive public import names at the project root:
+Reusable Z packages expose one library root plus optional exact subpaths. A
+consumer declares the package once:
 
 ```json
 {
-  "imports": {
-    "zapp": "vendor/zapp/zapp.zs",
-    "zapp/window": "vendor/zapp/zapp/window.zs"
+  "dependencies": {
+    "zapp": { "path": "../zapp" }
   },
   "target": {
     "name": "notes",
@@ -94,9 +94,10 @@ Exact external Z modules can receive public import names at the project root:
 }
 ```
 
-Both the compiler and editor then resolve `"zapp"` as checked Z source. Only
-the exact listed names are public; package installation and version selection
-remain future tooling over this local resolution primitive.
+Both the compiler and editor resolve the package's checked root and declared
+subpaths. Paths are relative to the manifest that declares them, transitive
+local dependencies are supported, and undeclared package files remain private.
+Registry installation and version selection remain future tooling.
 
 Native dependencies remain build configuration rather than source-level linker
 directives:

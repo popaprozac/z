@@ -11509,8 +11509,11 @@ function main(): i32 {
   assert.equal(manifestFileCheck.status, 0, manifestFileCheck.stderr);
 
   const packageImportProject = resolve(directory, "package-import-project");
-  const packageImportDirectory = resolve(packageImportProject, "packages");
-  mkdirSync(packageImportDirectory, { recursive: true });
+  const packageRoot = resolve(directory, "package-import-zapp");
+  const packageUtility = resolve(directory, "package-import-utility");
+  mkdirSync(packageImportProject, { recursive: true });
+  mkdirSync(resolve(packageRoot, "src"), { recursive: true });
+  mkdirSync(resolve(packageUtility, "src"), { recursive: true });
   writeFileSync(
     resolve(packageImportProject, "main.zs"),
     [
@@ -11521,20 +11524,43 @@ function main(): i32 {
     ].join("\n"),
   );
   writeFileSync(
-    resolve(packageImportDirectory, "framework-root.zs"),
-    "export function frameworkAnswer(): i32 { return 40; }\n",
+    resolve(packageRoot, "src/zapp.zs"),
+    [
+      'import { baseAnswer } from "utility";',
+      "export function frameworkAnswer(): i32 { return baseAnswer(); }",
+      "",
+    ].join("\n"),
   );
   writeFileSync(
-    resolve(packageImportDirectory, "window-public.zs"),
+    resolve(packageRoot, "src/window.zs"),
     "export function windowAnswer(): i32 { return 2; }\n",
+  );
+  writeFileSync(
+    resolve(packageUtility, "src/utility.zs"),
+    "export function baseAnswer(): i32 { return 40; }\n",
+  );
+  writeFileSync(
+    resolve(packageUtility, "z.json"),
+    `${JSON.stringify({
+      package: { name: "utility", version: "0.1.0" },
+      library: { entry: "src/utility.zs" },
+    }, null, 2)}\n`,
+  );
+  writeFileSync(
+    resolve(packageRoot, "z.json"),
+    `${JSON.stringify({
+      package: { name: "zapp", version: "0.1.0-dev.1+local" },
+      library: {
+        entry: "src/zapp.zs",
+        exports: { "./window": "src/window.zs" },
+      },
+      dependencies: { utility: { path: "../package-import-utility" } },
+    }, null, 2)}\n`,
   );
   writeFileSync(
     resolve(packageImportProject, "z.json"),
     `${JSON.stringify({
-      imports: {
-        zapp: "packages/framework-root.zs",
-        "zapp/window": "packages/window-public.zs",
-      },
+      dependencies: { zapp: { path: "../package-import-zapp" } },
       target: {
         name: "package-import-application",
         entry: "main.zs",
@@ -11547,6 +11573,31 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(packageImportCheck.status, 0, packageImportCheck.stderr);
+  const packageLibraryCheck = spawnSync(
+    driver,
+    ["check", packageRoot],
+    { encoding: "utf8" },
+  );
+  assert.equal(packageLibraryCheck.status, 0, packageLibraryCheck.stderr);
+  const privatePackageImport = resolve(packageImportProject, "private-import.zs");
+  writeFileSync(
+    privatePackageImport,
+    [
+      'import { privateValue } from "zapp/private";',
+      "function main(): i32 { return privateValue(); }",
+      "",
+    ].join("\n"),
+  );
+  const privatePackageCheck = spawnSync(
+    driver,
+    ["check", privatePackageImport],
+    { encoding: "utf8" },
+  );
+  assert.notEqual(privatePackageCheck.status, 0);
+  assert.match(
+    privatePackageCheck.stderr,
+    /package "zapp" does not export subpath "\.\/private"/,
+  );
 
   const manifestProjectEmit = spawnSync(
     driver,
