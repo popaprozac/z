@@ -4162,6 +4162,38 @@ test("tracks direct ARC aliases through bounded exclusive class loans", () => {
   );
 });
 
+test("reborrows an inout ARC parameter as an immutable class handle", () => {
+  const source = `
+    class Store {
+      value: i32;
+    }
+    function read(in store: Store): i32 {
+      return store.value;
+    }
+    function forward(inout store: Store): i32 {
+      return read(in store);
+    }
+    function main(): i32 {
+      let store = new Store({ value: 42 });
+      return forward(inout store) - 42;
+    }
+  `;
+  const generated = compileToC(source, "inout-class-reborrow.zs");
+  assert.match(generated, /return read\(\(\*store\)\);/);
+
+  const directory = mkdtempSync("/tmp/z-inout-class-reborrow-");
+  const fileName = resolve(directory, "main.zs");
+  writeFileSync(fileName, source);
+  try {
+    const result = spawnSync(process.execPath, [cli, "run", fileName], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("tracks ARC identities through direct fields and audited struct returns", () => {
   const prefix = `
     class Application { value: i32; }

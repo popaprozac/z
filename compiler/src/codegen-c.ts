@@ -9467,7 +9467,14 @@ function generateExpressionInner(expression: Expression, context: GenerationCont
             context.semanticInfo.foreignNamedTypes,
           )
         )
-      ) return cBindingName(expression.name);
+      ) {
+        const binding = cBindingName(expression.name);
+        if (
+          context.parameterModes.get(expression.name) === "inout"
+          && inParameterUsesStoredValue(argumentType, context)
+        ) return `(*${binding})`;
+        return binding;
+      }
       if (context.parameterModes.get(expression.name) === "inout" || context.parameterModes.get(expression.name) === "out") return cBindingName(expression.name);
       return `&(${generateStoredValue(expression.name, context)})`;
     case "unary": {
@@ -10291,6 +10298,21 @@ function closureCaptureHasReferenceIdentity(
     || type === "TaskControl"
     || structs.get(type)?.kind === "class"
     || foreignNamedTypes.get(type)?.kind === "object";
+}
+
+function inParameterUsesStoredValue(
+  type: string,
+  context: GenerationContext,
+): boolean {
+  return type === "TaskScope"
+    || type === "TaskControl"
+    || storedPointerType(type) !== null
+    || type.startsWith("__z_objc:")
+    || closureCaptureHasReferenceIdentity(
+      type,
+      context.structs,
+      context.semanticInfo.foreignNamedTypes,
+    );
 }
 
 function generateViewPayload(expression: Expression, context: GenerationContext): string {
