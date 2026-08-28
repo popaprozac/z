@@ -2934,6 +2934,33 @@ test("emits and runs source-backed std/json through the native Z AST", () => {
   rmSync(directory, { recursive: true, force: true });
 }, 120_000);
 
+test("derives typed JSON codecs through the native Z AST", () => {
+  const input = resolve(projectRoot, "tests/fixtures/std-json-typed.zs");
+  const emission = spawnSync(
+    process.execPath,
+    [cli, "self-host-emit", input],
+    { encoding: "utf8" },
+  );
+  assert.equal(emission.status, 0, emission.stderr);
+  assert.match(emission.stdout, /Z_JsonDerivedReader/);
+  assert.doesNotMatch(
+    emission.stdout,
+    /the compiler did not materialize json\.decode<T>/,
+  );
+
+  const directory = mkdtempSync("/tmp/z-self-host-json-typed-");
+  const executable = resolve(directory, "program");
+  const compilation = spawnSync(
+    "clang",
+    ["-x", "c", "-std=c11", "-Wall", "-Wextra", "-Werror", "-", "-o", executable],
+    { encoding: "utf8", input: emission.stdout },
+  );
+  assert.equal(compilation.status, 0, compilation.stderr);
+  const execution = spawnSync(executable, [], { encoding: "utf8" });
+  assert.equal(execution.status, 0, execution.stderr);
+  rmSync(directory, { recursive: true, force: true });
+}, 120_000);
+
 test("emits nested value-producing matches through the native Z AST", () => {
   const input = resolve(
     projectRoot,

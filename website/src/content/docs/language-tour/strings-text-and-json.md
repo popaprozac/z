@@ -129,6 +129,7 @@ struct User {
   id: u64;
   name: String;
   active: boolean = true;
+  tags: Array<String>;
 }
 
 function decodeUser(in source: String): User throws json.JsonError {
@@ -144,9 +145,11 @@ defaults; other missing fields fail. Unknown fields are skipped recursively,
 duplicate known fields are rejected, and encoding follows declaration order.
 
 :::caution[Current typed-codec boundary]
-The first derived tier supports public, non-optional `String`, `boolean`, and
-signed or unsigned integer fields in ordinary value structs. Optional values,
-floating point, nested typed aggregates, collections, classes, custom
+The first derived tier supports public, non-optional `String`, `boolean`, signed
+or unsigned integer, and `Array<String>` fields in ordinary value structs.
+Stage 0 and the fixed-point compiler emit direct streaming codecs without an
+intermediate dynamic tree. Optional values, floating point, nested typed
+aggregates, other collections, classes, custom
 constructors, and custom field-name policies remain later tiers. Dynamic
 `json.parse` and `json.stringify` cover broader JSON shapes today.
 :::

@@ -419,6 +419,8 @@ export struct LoweredFunction {
   testName: String;
   sourcePath: String;
   nativeCExportName: String;
+  compilerIntrinsic: String = "";
+  compilerIntrinsicType: Option<LoweredType> = Option<LoweredType>.none;
   asynchronous: boolean;
   asyncSuspension: String;
   mainDelaySegments: Array<LoweredMainDelaySegment>;
@@ -1455,6 +1457,48 @@ function sameStrings(in left: Array<String>, in right: Array<String>): boolean {
     index = index + 1;
   }
   return true;
+}
+
+function stringEndsWithBytes(in value: String, in suffix: String): boolean {
+  if (suffix.byteLength > value.byteLength) return false;
+  return value.copyBytes(
+    value.byteLength - suffix.byteLength,
+    value.byteLength
+  ) == suffix;
+}
+
+function jsonCompilerIntrinsicKind(
+  in sourcePath: String,
+  in name: String
+): String {
+  if (
+    !stringEndsWithBytes(sourcePath, "/stdlib/json.zs")
+    && !stringEndsWithBytes(sourcePath, "\\stdlib\\json.zs")
+  ) return "";
+  if (name == "decode") return "jsonDecode";
+  if (name == "encode") return "jsonEncode";
+  return "";
+}
+
+function attachGenericCompilerIntrinsic(
+  in program: Program,
+  in importedTypes: Array<LoweredImportedType>,
+  in sourcePath: String,
+  in use: LoweredGenericFunctionUse,
+  inout lowered: LoweredFunction
+): void throws String {
+  const kind = jsonCompilerIntrinsicKind(sourcePath, use.name);
+  if (kind.byteLength == 0) return;
+  if (use.typeArguments.length != 1) {
+    throw `native ${kind} lowering requires one concrete type argument`;
+  }
+  const targetType = try lowerModuleTypeName(
+    program,
+    importedTypes,
+    use.typeArguments[0]
+  );
+  lowered.compilerIntrinsic = kind;
+  lowered.compilerIntrinsicType = Option.some(targetType);
 }
 
 function containsGenericMethodUse(
@@ -22536,6 +22580,8 @@ function lowerFunction(
     nativeCExportName: declaration.nativeCExport
       ? declaration.name.copyBytes(0, declaration.name.byteLength)
       : "",
+    compilerIntrinsic: "",
+    compilerIntrinsicType: Option<LoweredType>.none,
     asynchronous: declaration.asynchronous,
     asyncSuspension: move asyncSuspension,
     mainDelaySegments,
@@ -22614,6 +22660,8 @@ function lowerDeinitializer(
     testName: "",
     sourcePath: "",
     nativeCExportName: "",
+    compilerIntrinsic: "",
+    compilerIntrinsicType: Option<LoweredType>.none,
     asynchronous: false,
     asyncSuspension: "",
     mainDelaySegments: Array<LoweredMainDelaySegment>(),
@@ -22671,6 +22719,8 @@ function lowerGenericFieldDefault(
           testName: "",
           sourcePath: sourcePath.copyBytes(0, sourcePath.byteLength),
           nativeCExportName: "",
+          compilerIntrinsic: "",
+          compilerIntrinsicType: Option<LoweredType>.none,
           asynchronous: false,
           asyncSuspension: "",
           mainDelaySegments: Array<LoweredMainDelaySegment>(),
@@ -26015,6 +26065,13 @@ function appendLoweredProgram(
       success(lowered) => lowered;
       failure(message) => throw `function ${declaration.name}: ${message}`;
     };
+    try attachGenericCompilerIntrinsic(
+      program,
+      specializedTypes,
+      sourcePath,
+      use,
+      inout loweredFunction
+    );
     rewritePrivateCallTargets(
       program,
       privateFunctionCollisionNames,
@@ -26261,6 +26318,13 @@ function appendDeferredGenericFunction(
     success(lowered) => lowered;
     failure(message) => throw `function ${declaration.name}: ${message}`;
   };
+  try attachGenericCompilerIntrinsic(
+    program,
+    specializedTypes,
+    sourcePath,
+    use,
+    inout loweredFunction
+  );
   rewritePrivateCallTargets(
     program,
     privateFunctionCollisionNames,

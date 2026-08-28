@@ -2607,6 +2607,7 @@ struct User {
   id: u64;
   name: String;
   active: boolean = true;
+  tags: Array<String>;
 }
 
 function readUser(in source: String): User throws json.JsonError {
@@ -2616,17 +2617,18 @@ function readUser(in source: String): User throws json.JsonError {
 }
 ```
 
-The first derived tier supports public, non-optional `String`, `boolean`, and
-signed or unsigned integer fields. It parses integers directly into their requested Z
+The first derived tier supports public, non-optional `String`, `boolean`, signed
+or unsigned integer, and `Array<String>` fields. It parses integers directly into their requested Z
 width, so even `u64.max` does not require a dynamic intermediate value.
 Missing fields with defaults evaluate those defaults; other missing fields
 throw `JsonError`. Unknown fields are skipped recursively, duplicate known
 fields are rejected, names match exactly, and encoding follows declaration
 order. Classes, custom constructors or `deinit`, optional or floating-point
-fields, nested typed aggregates, collections, `Option`, and field-name policies remain later
+fields, nested typed aggregates, other collections, `Option`, and field-name policies remain later
 derived-codec tiers. `json.parse` / `json.stringify` remain the implemented
-dynamic route for those shapes. Native fixed-point codec materialization is
-also still staged; the DOM module itself already runs through both compilers.
+dynamic route for those shapes. Stage 0 and the fixed-point native compiler
+materialize the same direct streaming codecs without an intermediate dynamic
+JSON tree.
 
 ## Files, processes, and program arguments
 

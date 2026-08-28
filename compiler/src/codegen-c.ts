@@ -205,6 +205,13 @@ export function generateC(
   )];
   const dynamicArrayPushTypes = [...new Set([
     ...collectDynamicArrayPushTypes(program, semanticInfo),
+    ...program.functions.flatMap((declaration) => {
+      if (declaration.compilerIntrinsic?.kind !== "jsonDecode") return [];
+      const target = structs.get(declaration.returnType.name);
+      return target?.fields
+        .map((field) => field.type.name)
+        .filter((name) => parseDynamicArrayType(name)) ?? [];
+    }),
     ...mapTypes.map((name) => {
       const map = parseMapType(name)!;
       return dynamicArrayTypeName(mapEntryTypeName(map.keyType, map.valueType));
@@ -5158,7 +5165,7 @@ function derivedJsonStruct(
     const location = intrinsic.requestLocation;
     throw new DiagnosticError(location.fileName ?? "<source>", location, message, {
       notes: [
-        "derived JSON codecs currently support ordinary value structs containing String, boolean, and integer fields",
+        "derived JSON codecs currently support ordinary value structs containing String, boolean, integer, and Array<String> fields",
         "use json.parse/json.stringify for a dynamic JSON tree while the derived type surface expands",
       ],
     });
@@ -5178,6 +5185,7 @@ function derivedJsonStruct(
     if (
       field.type.name !== "String"
       && field.type.name !== "boolean"
+      && parseDynamicArrayType(field.type.name)?.elementType !== "String"
       && !(field.type.name in derivedJsonUnsignedLimits)
       && !(field.type.name in derivedJsonSignedLimits)
     ) {
@@ -5221,6 +5229,34 @@ function derivedJsonDecodeField(
         : []),
       `    if (!z_json_derived_string(&reader, &${destination})) {`,
       ...failure,
+      "    }",
+    ];
+  }
+  const dynamicArray = parseDynamicArrayType(field.type.name);
+  if (dynamicArray?.elementType === "String") {
+    return [
+      `    if (!z_json_derived_expect(&reader, '[', "expected JSON array")) {`,
+      ...failure,
+      "    }",
+      "    z_json_derived_whitespace(&reader);",
+      "    if (reader.offset < reader.length && reader.data[reader.offset] == ']') {",
+      "      (void)z_json_derived_advance(&reader);",
+      "    } else {",
+      "      while (true) {",
+      "        Z_String _z_json_item = z_string_new();",
+      "        if (!z_json_derived_string(&reader, &_z_json_item)) {",
+      ...failure.map((line) => `  ${line}`),
+      "        }",
+      `        ${dynamicArrayPushName(field.type.name)}(&${destination}, _z_json_item);`,
+      "        z_json_derived_whitespace(&reader);",
+      "        if (reader.offset < reader.length && reader.data[reader.offset] == ']') {",
+      "          (void)z_json_derived_advance(&reader);",
+      "          break;",
+      "        }",
+      "        if (!z_json_derived_expect(&reader, ',', \"expected ',' or ']' in JSON array\")) {",
+      ...failure.map((line) => `  ${line}`),
+      "        }",
+      "      }",
       "    }",
     ];
   }
@@ -5384,6 +5420,15 @@ function derivedJsonEncodeField(
 ): string {
   const value = `(*value).${cBindingName(field.name)}`;
   if (field.type.name === "String") return `  z_json_derived_append_string(&output, ${value});`;
+  const dynamicArray = parseDynamicArrayType(field.type.name);
+  if (dynamicArray?.elementType === "String") {
+    return `  z_string_append_bytes(&output, "[", 1u);
+  for (uintptr_t _z_json_index = 0; _z_json_index < ${value}.length; _z_json_index += 1u) {
+    if (_z_json_index > 0) z_string_append_bytes(&output, ",", 1u);
+    z_json_derived_append_string(&output, ((Z_String *)${value}.data)[_z_json_index]);
+  }
+  z_string_append_bytes(&output, "]", 1u);`;
+  }
   if (field.type.name === "boolean") {
     return `  z_string_append_bytes(&output, ${value} ? "true" : "false", ${value} ? 4u : 5u);`;
   }

@@ -5,6 +5,7 @@ struct User {
   name: String;
   active: boolean = true;
   role: String = "guest";
+  tags: Array<String>;
 }
 
 function verify(in user: User): i32 {
@@ -12,8 +13,10 @@ function verify(in user: User): i32 {
   if (user.name != "Ada") return 2;
   if (!user.active) return 3;
   if (user.role != "admin") return 10;
+  if (user.tags.length != 2) return 12;
+  if (user.tags[0] != "compiler" || user.tags[1] != "native") return 13;
   const encoded = json.encode(in user);
-  if (encoded != '{"id":18446744073709551615,"name":"Ada","active":true,"role":"admin"}') return 4;
+  if (encoded != '{"id":18446744073709551615,"name":"Ada","active":true,"role":"admin","tags":["compiler","native"]}') return 4;
   return 0;
 }
 
@@ -27,12 +30,12 @@ function rejects(in source: String): boolean {
 
 function main(): i32 {
   const decoded = attempt json.decode<User>(
-    '{"id":18446744073709551615,"name":"Ada","role":"admin","ignored":{"nested":[1,true,null]}}'
+    '{"id":18446744073709551615,"name":"Ada","role":"admin","tags":["compiler","native"],"ignored":{"nested":[1,true,null]}}'
   );
   const verified = match (decoded) {
     success(user) => {
       const encoded = json.encode(in user);
-      if (encoded != '{"id":18446744073709551615,"name":"Ada","active":true,"role":"admin"}') {
+      if (encoded != '{"id":18446744073709551615,"name":"Ada","active":true,"role":"admin","tags":["compiler","native"]}') {
         return 11;
       }
       select verify(in user);
