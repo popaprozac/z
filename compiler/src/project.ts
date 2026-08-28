@@ -6,6 +6,7 @@ import type { ApiNotes } from "./foreign-api-notes.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
+  readonly sourceImports: Readonly<Record<string, string>>;
   readonly targetKind: "executable" | "static-library" | "shared-library";
   readonly targetName: string | null;
   readonly runtimeInitializer: string | null;
@@ -24,6 +25,7 @@ export type DeploymentTarget = {
 };
 
 type ProjectManifest = {
+  readonly imports?: Readonly<Record<string, string>>;
   readonly target?: {
     readonly kind?: "executable" | "static-library" | "shared-library";
     readonly name?: string;
@@ -50,6 +52,7 @@ type ProjectManifest = {
 
 const emptyBuild: ProjectBuild = {
   manifestPath: null,
+  sourceImports: {},
   targetKind: "executable",
   targetName: null,
   runtimeInitializer: null,
@@ -91,7 +94,37 @@ function rejectUnknownProjectFields(
 
 function validateProjectManifestShape(value: unknown, fileName: string): void {
   const manifest = projectObject(value, "root", fileName);
-  rejectUnknownProjectFields(manifest, ["target"], "root", fileName);
+  rejectUnknownProjectFields(manifest, ["imports", "target"], "root", fileName);
+  if (manifest.imports !== undefined) {
+    const imports = projectObject(manifest.imports, "imports", fileName);
+    for (const [specifier, target] of Object.entries(imports)) {
+      const segments = specifier.split("/");
+      if (
+        specifier.length === 0
+        || specifier.startsWith("/")
+        || specifier.startsWith("./")
+        || specifier.startsWith("../")
+        || specifier.includes("\\")
+        || specifier.includes("\n")
+        || specifier.includes("\r")
+        || segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")
+        || specifier === "std"
+        || specifier.startsWith("std/")
+        || specifier.endsWith(".zs")
+      ) {
+        throw projectDiagnostic(
+          fileName,
+          `z.json imports key ${JSON.stringify(specifier)} must be a bare Z module specifier`,
+        );
+      }
+      if (typeof target !== "string" || !target.endsWith(".zs")) {
+        throw projectDiagnostic(
+          fileName,
+          `z.json imports.${specifier} must be a Z source path ending in .zs`,
+        );
+      }
+    }
+  }
   const target = projectObject(manifest.target, "target", fileName);
   rejectUnknownProjectFields(
     target,
@@ -151,6 +184,18 @@ export function prepareProject(fileName: string): ProjectBuild {
   }
   validateProjectManifestShape(parsed, fileName);
   const manifest = parsed as ProjectManifest;
+
+  const sourceImports: Record<string, string> = {};
+  for (const [specifier, sourcePath] of Object.entries(manifest.imports ?? {})) {
+    const resolvedSourcePath = resolve(directory, sourcePath);
+    if (!existsSync(resolvedSourcePath)) {
+      throw projectDiagnostic(
+        fileName,
+        `z.json imports.${specifier} source ${JSON.stringify(resolvedSourcePath)} does not exist`,
+      );
+    }
+    sourceImports[specifier] = resolvedSourcePath;
+  }
 
   const swift = manifest.target?.swift;
   const targetKind = manifest.target?.kind ?? "executable";
@@ -224,6 +269,7 @@ export function prepareProject(fileName: string): ProjectBuild {
   const baseBuild: ProjectBuild = {
     ...emptyBuild,
     manifestPath,
+    sourceImports,
     targetKind,
     targetName,
     runtimeInitializer,

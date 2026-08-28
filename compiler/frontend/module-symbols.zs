@@ -32,6 +32,7 @@ import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 export struct ParsedModule {
   path: String;
+  packageSpecifiers: Array<String>;
   program: Program;
 }
 
@@ -199,6 +200,9 @@ export function importTarget(
       modules[index].path,
       declaration.header
     )) return Option.some(index);
+    for (const specifier of modules[index].packageSpecifiers) {
+      if (specifier == declaration.header) return Option.some(index);
+    }
     index = index + 1;
   }
   return Option<usize>.none;

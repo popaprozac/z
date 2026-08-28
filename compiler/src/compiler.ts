@@ -240,7 +240,10 @@ export type AnalysisOptions = {
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
-  const linked = linkSourceModules(source, sourceProgram, fileName);
+  const projectBuild = prepareProject(fileName);
+  const linked = linkSourceModules(source, sourceProgram, fileName, {
+    sourceImports: projectBuild.sourceImports,
+  });
   const linkedProgram = options.includeTests === false
     ? {
         ...linked.program,
@@ -248,7 +251,6 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
       }
     : linked.program;
   const typeAliases = resolveTypeAliases(linkedProgram, fileName, linked.typeDisplayNames);
-  const projectBuild = prepareProject(fileName);
   const includeDirectories = [...new Set([...projectBuild.includeDirectories, ...linked.includeDirectories])];
   const foreignModules = resolveForeignModules(
     typeAliases.program.imports,

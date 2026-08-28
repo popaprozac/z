@@ -160,6 +160,16 @@ function sourceStandardModulePath(in header: String): Option<String> {
   return Option<String>.none;
 }
 
+function sourcePackageModulePath(
+  in config: NativeProjectConfig,
+  in header: String
+): Option<String> {
+  for (const sourceImport of config.sourceImports) {
+    if (sourceImport.specifier == header) return Option.some(copy sourceImport.path);
+  }
+  return Option<String>.none;
+}
+
 function loadModule(
   in path: String,
   in config: NativeProjectConfig,
@@ -174,9 +184,16 @@ function loadModule(
   loaded.add(copy canonical);
 
   const source = try fs.readText(canonical);
+  let packageSpecifiers = Array<String>();
+  for (const sourceImport of config.sourceImports) {
+    if (sourceImport.path == canonical) {
+      packageSpecifiers.push(copy sourceImport.specifier);
+    }
+  }
   const moduleSource = ModuleSource({
     path: copy canonical,
     source,
+    packageSpecifiers,
   });
   const parsedOutcome = attempt parseModule(moduleSource);
   const parsed = match (parsedOutcome) {
@@ -196,6 +213,13 @@ function loadModule(
         none => {}
       }
       continue;
+    }
+    match (sourcePackageModulePath(config, declaration.header)) {
+      some(path) => {
+        dependencies.push(path);
+        continue;
+      }
+      none => {}
     }
     const header = copy declaration.header;
     const line = declaration.line;

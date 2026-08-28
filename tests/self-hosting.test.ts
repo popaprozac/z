@@ -11507,6 +11507,47 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(manifestFileCheck.status, 0, manifestFileCheck.stderr);
+
+  const packageImportProject = resolve(directory, "package-import-project");
+  const packageImportDirectory = resolve(packageImportProject, "packages");
+  mkdirSync(packageImportDirectory, { recursive: true });
+  writeFileSync(
+    resolve(packageImportProject, "main.zs"),
+    [
+      'import { frameworkAnswer } from "zapp";',
+      'import { windowAnswer } from "zapp/window";',
+      "function main(): i32 { return frameworkAnswer() + windowAnswer() - 42; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(packageImportDirectory, "framework-root.zs"),
+    "export function frameworkAnswer(): i32 { return 40; }\n",
+  );
+  writeFileSync(
+    resolve(packageImportDirectory, "window-public.zs"),
+    "export function windowAnswer(): i32 { return 2; }\n",
+  );
+  writeFileSync(
+    resolve(packageImportProject, "z.json"),
+    `${JSON.stringify({
+      imports: {
+        zapp: "packages/framework-root.zs",
+        "zapp/window": "packages/window-public.zs",
+      },
+      target: {
+        name: "package-import-application",
+        entry: "main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const packageImportCheck = spawnSync(
+    driver,
+    ["check", packageImportProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(packageImportCheck.status, 0, packageImportCheck.stderr);
+
   const manifestProjectEmit = spawnSync(
     driver,
     ["emit", manifestProject],
@@ -14263,8 +14304,12 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
   );
   assert.equal(closureCapability.status, 0, closureCapability.stderr);
 
-  const encoded = encodeStage1ModuleBatch([{ path: "/a.zs", source: "é" }]);
-  assert.equal(encoded.byteLength, 32 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
+  const encoded = encodeStage1ModuleBatch([{
+    path: "/a.zs",
+    source: "é",
+    packageSpecifiers: [],
+  }]);
+  assert.equal(encoded.byteLength, 48 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   const callEvidenceGraph = decodeStage1ModuleGraphStream(
     "entry\t0000000000000000\n"
     + "module\t2f612e7a73\n"

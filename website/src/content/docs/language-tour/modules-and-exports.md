@@ -99,6 +99,27 @@ Resolution is not the same behind the scenes:
 - `std/...` resolves a standard-library module.
 - Header imports ask Clang for native ABI declarations and layouts.
 
+Projects can assign exact public names to external Z modules in `z.json`:
+
+```json
+{
+  "imports": {
+    "zapp": "vendor/zapp/zapp.zs",
+    "zapp/window": "vendor/zapp/zapp/window.zs"
+  },
+  "target": {
+    "name": "notes",
+    "entry": "main.zs"
+  }
+}
+```
+
+The compiler and editor then resolve `import { Application } from "zapp";`
+without source rewriting. Only exact mapped names are public, and the declared
+identity travels with the native module batch instead of being guessed from the
+filename. Package tooling can generate the same map from package exports later;
+versions and dependency installation remain future layers.
+
 A native import does not introduce an automatic wrapper call. See
 [Native interop](/interop/) for header and `.zd` behavior.
 

@@ -278,12 +278,16 @@ function runStage1Resolver(
   const sourceBatch = discoveredSourceBatch ?? (() => {
     const entrySource = readFileSync(entryPath, "utf8");
     const entryProgram = parse(lex(entrySource, entryPath), entryPath);
-    return loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+    const project = prepareProject(entryPath);
+    return loadSourceModuleBatch(entrySource, entryProgram, entryPath, {
+      sourceImports: project.sourceImports,
+    });
   })();
   const loadingMilliseconds = performance.now() - loadingStarted;
   const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageSpecifiers: [...module.packageSpecifiers],
   }));
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
   const boundary = prepareSelfHostedStage1StringLibrary(projectRoot, bridgePath);
@@ -473,10 +477,14 @@ function emitWithStage1(inputPath: string): void {
   const entryPath = realpathSync(inputPath);
   const entrySource = readFileSync(entryPath, "utf8");
   const entryProgram = parse(lex(entrySource, entryPath), entryPath);
-  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath);
+  const project = prepareProject(entryPath);
+  const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath, {
+    sourceImports: project.sourceImports,
+  });
   const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageSpecifiers: [...module.packageSpecifiers],
   }));
   const batch = encodeStage1ModuleBatch(sources);
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
@@ -1805,6 +1813,7 @@ function prepareSelfHostedStage1StringLibrary(
   const batch = encodeStage1ModuleBatch(sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageSpecifiers: [...module.packageSpecifiers],
   })));
   const emitted = emitWithNativeFrontendLibrary(
     bootstrap.libraryPath,

@@ -114,6 +114,9 @@ production or compatibility-sensitive use.
   driver without a Stage 0 override.
 - Language-server highlighting, hover, completion, diagnostics, and `z.json`
   schema support
+- Exact `z.json` source-module mappings for bare imports in Stage 0, the editor,
+  and the fixed-point native compiler; package versions and installation remain
+  separate future tooling
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and

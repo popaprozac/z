@@ -3,6 +3,7 @@ import { Map } from "std/collections";
 export struct ModuleSource {
   path: String;
   source: String;
+  packageSpecifiers: Array<String>;
 }
 
 export enum ModuleResolveErrorKind {

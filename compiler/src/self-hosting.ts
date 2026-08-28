@@ -71,6 +71,7 @@ export type Stage1ProgramBatch = ReadonlyMap<string, Stage1Program>;
 export type Stage1ModuleSource = {
   readonly path: string;
   readonly source: string;
+  readonly packageSpecifiers: readonly string[];
 };
 
 export type Stage1ResolvedModule = {
@@ -235,12 +236,14 @@ export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]):
   for (const source of sources) {
     const path = Buffer.from(source.path, "utf8");
     const text = Buffer.from(source.source, "utf8");
+    const packageSpecifiers = Buffer.from(source.packageSpecifiers.join("\n"), "utf8");
     const header = Buffer.from(
       path.byteLength.toString(16).padStart(16, "0")
-      + text.byteLength.toString(16).padStart(16, "0"),
+      + text.byteLength.toString(16).padStart(16, "0")
+      + packageSpecifiers.byteLength.toString(16).padStart(16, "0"),
       "ascii",
     );
-    records.push(header, path, text);
+    records.push(header, path, text, packageSpecifiers);
   }
   return Buffer.concat(records);
 }

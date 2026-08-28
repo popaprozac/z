@@ -6,6 +6,24 @@
   "type": "object",
   "required": ["target"],
   "properties": {
+    "imports": {
+      "description": "Exact public Z source-module mappings. Keys are bare import specifiers and paths resolve relative to this manifest.",
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "anyOf": [
+            { "pattern": "^\\.{1,2}/" },
+            { "pattern": "^/|\\\\|(?:^|/)\\.{1,2}(?:/|$)|//" },
+            { "pattern": "^std(?:/|$)" },
+            { "pattern": "\\.zs$" }
+          ]
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "\\.zs$"
+      }
+    },
     "target": {
       "type": "object",
       "required": ["name", "entry"],

@@ -85,13 +85,34 @@ export function decodeModuleSources(in batch: String): Array<ModuleSource> throw
   while (offset < batch.byteLength) {
     const pathLength = try readHexUsize(batch, offset);
     const sourceLength = try readHexUsize(batch, offset + 16);
-    const pathStart = offset + 32;
+    const packageSpecifiersLength = try readHexUsize(batch, offset + 32);
+    const pathStart = offset + 48;
     const sourceStart = pathStart + pathLength;
-    const next = sourceStart + sourceLength;
+    const packageSpecifiersStart = sourceStart + sourceLength;
+    const next = packageSpecifiersStart + packageSpecifiersLength;
     if (next > batch.byteLength) throw "module batch ended inside a source record";
+    let packageSpecifiers = Array<String>();
+    let specifierStart = packageSpecifiersStart;
+    let specifierOffset = packageSpecifiersStart;
+    while (specifierOffset <= next) {
+      if (
+        specifierOffset == next
+        || batch.byteAt(specifierOffset) == 10
+      ) {
+        if (specifierOffset > specifierStart) {
+          packageSpecifiers.push(batch.copyBytes(
+            specifierStart,
+            specifierOffset
+          ));
+        }
+        specifierStart = specifierOffset + 1;
+      }
+      specifierOffset = specifierOffset + 1;
+    }
     sources.push(ModuleSource({
       path: batch.copyBytes(pathStart, sourceStart),
-      source: batch.copyBytes(sourceStart, next),
+      source: batch.copyBytes(sourceStart, packageSpecifiersStart),
+      packageSpecifiers,
     }));
     offset = next;
   }

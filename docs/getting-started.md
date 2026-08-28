@@ -119,6 +119,28 @@ selects an executable:
 }
 ```
 
+Projects can give external Z source modules exact public names with the
+root-level `imports` map:
+
+```json
+{
+  "imports": {
+    "zapp": "vendor/zapp/zapp.zs",
+    "zapp/window": "vendor/zapp/zapp/window.zs"
+  },
+  "target": {
+    "name": "notes",
+    "entry": "main.zs"
+  }
+}
+```
+
+Source can then use `import { Application } from "zapp";`. Import paths are
+resolved relative to `z.json`, checked by the compiler and language server,
+and fail closed: only exact keys in the map are public. A future package manager
+can produce these exact mappings from package exports; this map does not define package versions,
+registries, or dependency installation.
+
 With the native `z` executable on `PATH`, project mode makes the current
 manifest authoritative:
 

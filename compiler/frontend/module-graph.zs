@@ -66,6 +66,7 @@ export function parseModule(
   };
   const module = ParsedModule({
     path: source.path.copyBytes(0, source.path.byteLength),
+    packageSpecifiers: copy source.packageSpecifiers,
     program,
   });
   try validateModuleBindings(module);

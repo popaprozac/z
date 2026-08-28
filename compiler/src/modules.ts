@@ -51,6 +51,7 @@ export type SourceModuleBatchModule = {
   readonly source: string;
   readonly program: Program;
   readonly dependencies: ReadonlyMap<number, string>;
+  readonly packageSpecifiers: Set<string>;
 };
 
 export type SourceModuleBatch = {
@@ -60,6 +61,7 @@ export type SourceModuleBatch = {
 
 export type SourceModuleOptions = {
   readonly standardLibraryRoot?: string;
+  readonly sourceImports?: Readonly<Record<string, string>>;
 };
 
 type ModuleNode = {
@@ -127,22 +129,28 @@ export function loadSourceModuleBatch(
     const source = suppliedSource ?? readFileSync(canonical, "utf8");
     const program = suppliedProgram ?? parse(lex(source, canonical), canonical);
     const dependencies = new Map<number, string>();
+    const packageSpecifiers = new Set<string>();
     const module: SourceModuleBatchModule = {
       fileName: canonical,
       source,
       program,
       dependencies,
+      packageSpecifiers,
     };
     modules.set(canonical, module);
     for (const declaration of program.imports) {
       const standardRelativePath = sourceStandardModuleRelativePath(declaration.header);
+      const packageDependencyPath = options.sourceImports?.[declaration.header];
       const dependencyPath = isLocalSourceModuleSpecifier(declaration.header)
         ? resolve(dirname(canonical), declaration.header)
         : standardRelativePath
         ? resolve(standardLibraryRoot, standardRelativePath)
+        : packageDependencyPath
+        ? resolve(packageDependencyPath)
         : null;
       if (!dependencyPath || !existsSync(dependencyPath)) continue;
       const dependency = load(dependencyPath, null, null, [...stack, canonical], declaration);
+      if (packageDependencyPath) dependency.packageSpecifiers.add(declaration.header);
       dependencies.set(declaration.location.offset, dependency.fileName);
     }
     return module;

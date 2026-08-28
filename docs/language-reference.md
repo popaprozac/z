@@ -24,6 +24,30 @@ Relative `.zs` imports form a source-module graph. Native headers use the same
 surface (`import C from "library.h"`) but bind declarations supplied by the
 foreign interface rather than redeclaring their ABI.
 
+A project may expose exact external source modules through root-level `imports`
+in `z.json`:
+
+```json
+{
+  "imports": {
+    "zapp": "vendor/zapp/zapp.zs",
+    "zapp/window": "vendor/zapp/zapp/window.zs"
+  },
+  "target": {
+    "name": "notes",
+    "entry": "main.zs"
+  }
+}
+```
+
+This makes `import { Application } from "zapp";` an ordinary checked source
+import in the compiler and editor. Resolution is exact and fail-closed; an
+unlisted submodule is not made public. Paths are relative to the manifest.
+The declared public identity travels with the source graph through both Stage 0
+and the native frontend, so the target filename does not need to repeat the
+specifier. Package versions, installation, and lockfiles remain a future
+package layer over this primitive.
+
 Modules may publish named compile-time values:
 
 ```z

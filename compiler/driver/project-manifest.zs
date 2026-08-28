@@ -5,6 +5,11 @@ import {
   normalizedModulePath,
 } from "../frontend/module-paths.zs";
 
+export struct NativeSourceImport {
+  specifier: String;
+  path: String;
+}
+
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
@@ -14,6 +19,7 @@ export struct NativeProjectConfig {
   entry: Option<String>;
   platform: Option<String>;
   minimumVersion: Option<String>;
+  sourceImports: Array<NativeSourceImport>;
   includeDirectories: Array<String>;
   linkDirectories: Array<String>;
   linkLibraries: Array<String>;
@@ -37,12 +43,52 @@ function emptyProjectConfig(): NativeProjectConfig {
     entry: Option<String>.none,
     platform: Option<String>.none,
     minimumVersion: Option<String>.none,
+    sourceImports: Array<NativeSourceImport>(),
     includeDirectories: Array<String>(),
     linkDirectories: Array<String>(),
     linkLibraries: Array<String>(),
     linkFrameworks: Array<String>(),
     hasSwiftTarget: false,
   });
+}
+
+function parseSourceImports(
+  inout cursor: JsonCursor,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for imports");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const specifier = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    const path = try parseJsonString(inout cursor);
+    for (const existing of config.sourceImports) {
+      if (existing.specifier == specifier) {
+        throw jsonError(
+          cursor,
+          `z.json imports repeats module "${specifier}"`
+        );
+      }
+    }
+    config.sourceImports.push(NativeSourceImport({ specifier, path }));
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
 }
 
 function jsonError(in cursor: JsonCursor, in message: String): String {
@@ -466,6 +512,8 @@ function parseProjectManifest(
       try expectByte(inout cursor, 58, "\":\"");
       if (key == "target") {
         try parseTarget(inout cursor, inout config);
+      } else if (key == "imports") {
+        try parseSourceImports(inout cursor, inout config);
       } else {
         throw jsonError(
           cursor,
@@ -601,6 +649,35 @@ function hasZSourceExtension(in path: String): boolean {
   );
 }
 
+function validSourceImportSpecifier(in specifier: String): boolean {
+  if (specifier.byteLength == 0 || hasZSourceExtension(specifier)) return false;
+  if (specifier == "std") return false;
+  if (
+    specifier.byteLength > 4
+    && specifier.copyBytes(0, 4) == "std/"
+  ) return false;
+  let segmentStart: usize = 0;
+  let index: usize = 0;
+  while (index <= specifier.byteLength) {
+    const boundary = (
+      index == specifier.byteLength
+      || specifier.byteAt(index) == 47
+    );
+    if (!boundary) {
+      const byte = specifier.byteAt(index);
+      if (byte == 10 || byte == 13 || byte == 92) return false;
+      index = index + 1;
+      continue;
+    }
+    if (index == segmentStart) return false;
+    const segment = specifier.copyBytes(segmentStart, index);
+    if (segment == "." || segment == "..") return false;
+    segmentStart = index + 1;
+    index = index + 1;
+  }
+  return specifier.byteAt(0) != 47;
+}
+
 function normalizedPlatform(in platform: String): String {
   if (platform == "macos" || platform == "macosx" || platform == "darwin") {
     return "macos";
@@ -649,6 +726,25 @@ function validateProjectConfig(
     manifestPath,
     "target.link.directories"
   );
+  let sourceImports = Array<NativeSourceImport>();
+  for (const sourceImport of config.sourceImports) {
+    if (!validSourceImportSpecifier(sourceImport.specifier)) {
+      throw `${manifestPath}:1:1: error: z.json imports key "${sourceImport.specifier}" must be a bare Z module specifier`;
+    }
+    if (!hasZSourceExtension(sourceImport.path)) {
+      throw `${manifestPath}:1:1: error: z.json imports.${sourceImport.specifier} must be a Z source path ending in .zs`;
+    }
+    const candidate = configuredPath(config.directory, sourceImport.path);
+    if (!fs.exists(candidate) || fs.isDirectory(candidate)) {
+      throw `${manifestPath}:1:1: error: z.json imports.${sourceImport.specifier} source "${candidate}" does not exist`;
+    }
+    const canonical = try fs.realPath(candidate);
+    sourceImports.push(NativeSourceImport({
+      specifier: copy sourceImport.specifier,
+      path: move canonical,
+    }));
+  }
+  config.sourceImports = move sourceImports;
   let libraries = Array<String>();
   for (const library of config.linkLibraries) {
     if (!validLibraryName(library)) {

@@ -7,6 +7,7 @@ import {
   hover,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   resolve,
   rmSync,
   spawnSync,
@@ -42,6 +43,101 @@ test("links bundled source-backed standard modules as ordinary Z source", () => 
       declaration.name.startsWith("__z_module_")
       && declaration.name.endsWith("_answer")
     )));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("resolves exact public package imports through z.json in Stage 0 and native Z", () => {
+  const directory = mkdtempSync("/tmp/z-package-imports-");
+  const packageDirectory = resolve(directory, "packages");
+  const rootModule = resolve(packageDirectory, "framework-root.zs");
+  const windowModule = resolve(packageDirectory, "window-public.zs");
+  const decoyModule = resolve(directory, "zapp.zs");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(rootModule, `
+      export function frameworkAnswer(): i32 { return 40; }
+    `);
+    writeFileSync(windowModule, `
+      export function windowAnswer(): i32 { return 2; }
+    `);
+    writeFileSync(decoyModule, `
+      export function decoyAnswer(): i32 { return 0; }
+    `);
+    writeFileSync(mainFile, `
+      import { frameworkAnswer } from "zapp";
+      import { windowAnswer } from "zapp/window";
+      import { decoyAnswer } from "./zapp.zs";
+
+      function main(): i32 {
+        return frameworkAnswer() + windowAnswer() + decoyAnswer() - 42;
+      }
+    `);
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      imports: {
+        zapp: "packages/framework-root.zs",
+        "zapp/window": "packages/window-public.zs",
+      },
+      target: {
+        name: "package-imports",
+        entry: "main.zs",
+      },
+    }));
+
+    const generated = compileToC(readFileSync(mainFile, "utf8"), mainFile);
+    assert.match(generated, /frameworkAnswer/);
+    assert.match(generated, /windowAnswer/);
+    const editorSource = readFileSync(mainFile, "utf8");
+    const usageOffset = editorSource.lastIndexOf("frameworkAnswer") + 1;
+    assert.match(
+      hover(editorSource, mainFile, usageOffset)?.contents.value ?? "",
+      /function frameworkAnswer\(\): i32/,
+    );
+    const importCompletionSource = editorSource.replace(
+      "{ frameworkAnswer }",
+      "{ frame }",
+    );
+    const importCompletionOffset = importCompletionSource.indexOf("frame }")
+      + "frame".length;
+    assert.equal(
+      completions(importCompletionSource, mainFile, importCompletionOffset)
+        .find((item) => item.label === "frameworkAnswer")?.detail,
+      "function frameworkAnswer(): i32",
+    );
+
+    const native = spawnSync(
+      process.execPath,
+      [cli, "check", mainFile, "--native-frontend"],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(native.status, 0, native.stderr);
+
+    const execution = spawnSync(process.execPath, [cli, "run", mainFile], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(execution.status, 0, execution.stderr);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects malformed public source import names in z.json", () => {
+  const directory = mkdtempSync("/tmp/z-package-import-diagnostic-");
+  const mainFile = resolve(directory, "main.zs");
+  try {
+    writeFileSync(mainFile, "function main(): i32 { return 0; }");
+    writeFileSync(resolve(directory, "module.zs"), "export function value(): i32 { return 0; }");
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      imports: { "zapp/../internal": "module.zs" },
+      target: { name: "invalid-import", entry: "main.zs" },
+    }));
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /imports key .* must be a bare Z module specifier/,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
