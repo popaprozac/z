@@ -116,7 +116,7 @@ test("keeps service-style callable registries clean across diagnostics, hover, c
       Invocation,
       Outcome,
       Registry,
-      createRegistry,
+      createRegistry as makeRegistry,
     } from "./service-contract.zs";
     import { Map } from "std/collections";
     import { thread } from "std/thread";
@@ -150,7 +150,7 @@ test("keeps service-style callable registries clean across diagnostics, hover, c
     }
 
     export function createBuilder(): Builder {
-      return Builder({ registry: createRegistry() });
+      return Builder({ registry: makeRegistry() });
     }
   `;
   try {
@@ -207,6 +207,114 @@ test("keeps service-style callable registries clean across diagnostics, hover, c
 
     const importedHandler = services.indexOf("Handler,") + 2;
     assert.match(definition(services, `file://${servicesFile}`, importedHandler)?.uri ?? "", /service-contract\.zs$/);
+    const importedCreateRegistry = services.indexOf("createRegistry as");
+    const aliasedMakeRegistry = services.indexOf("makeRegistry,");
+    const calledMakeRegistry = services.lastIndexOf("makeRegistry()");
+    const serviceTokens = decodeSemanticTokens(semanticTokens(services, servicesFile).data);
+    for (const offset of [importedCreateRegistry, aliasedMakeRegistry, calledMakeRegistry]) {
+      const position = positionForOffset(services, offset);
+      assert.ok(serviceTokens.some((token) => (
+        token.line === position.line
+        && token.character === position.character
+        && semanticTokenTypes[token.type] === "function"
+      )));
+    }
+    assert.match(hover(services, servicesFile, importedCreateRegistry + 2)?.contents.value ?? "", /function createRegistry/);
+    assert.match(hover(services, servicesFile, calledMakeRegistry + 2)?.contents.value ?? "", /Alias of `createRegistry`/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("keeps generic service methods fully classified in source and hover signatures", () => {
+  const directory = mkdtempSync("/tmp/z-generic-service-editor-");
+  const fileName = resolve(directory, "services.zs");
+  const source = `
+    import { thread } from "std/thread";
+
+    internal type AsyncHandler =
+      async (in invocation: String) => String on thread.any;
+
+    trait Service {}
+    trait ServiceLifecycle {}
+
+    internal struct Routes {
+      function register<T: Service>(
+        inout this,
+        name: String,
+        service: T
+      ): void {}
+    }
+
+    export struct ApplicationServicesBuilder {
+      internal routes: Routes;
+
+      internal function registerGeneratedWithLifecycle<
+        T: Service & ServiceLifecycle
+      >(
+        inout this,
+        name: String,
+        service: T
+      ): void on thread.main {
+        this.routes.register(move name, service);
+      }
+    }
+  `;
+  try {
+    writeFileSync(resolve(directory, "z.json"), JSON.stringify({
+      package: { name: "generic-service-editor", version: "0.1.0" },
+      library: { entry: "services.zs" },
+    }));
+    writeFileSync(fileName, source);
+    assert.deepEqual(diagnostics(source, fileName), []);
+
+    const tokens = decodeSemanticTokens(semanticTokens(source, fileName).data);
+    const tokenAt = (text: string, offset: number, type: (typeof semanticTokenTypes)[number]) => {
+      const position = positionForOffset(source, offset);
+      assert.ok(tokens.some((token) => (
+        token.line === position.line
+        && token.character === position.character
+        && token.length === text.length
+        && semanticTokenTypes[token.type] === type
+      )), `expected ${JSON.stringify(text)} at ${position.line + 1}:${position.character + 1} to be ${type}`);
+    };
+
+    const methodOffset = source.indexOf("registerGeneratedWithLifecycle");
+    const invocationOffset = source.indexOf("invocation: String");
+    const constraintOffset = source.indexOf("ServiceLifecycle");
+    const typeParameterOffset = source.indexOf("T: Service & ServiceLifecycle");
+    const stringOffset = source.indexOf("name: String", methodOffset) + "name: ".length;
+    const nameOffset = source.indexOf("name: String", methodOffset);
+    const serviceOffset = source.indexOf("service: T", methodOffset);
+    const threadOffset = source.indexOf("thread.main", methodOffset);
+    const mainOffset = threadOffset + "thread.".length;
+    const thisOffset = source.indexOf("this.routes", methodOffset);
+    const routesOffset = thisOffset + "this.".length;
+    const moveOffset = source.indexOf("move name", methodOffset);
+    const movedNameOffset = moveOffset + "move ".length;
+
+    tokenAt("registerGeneratedWithLifecycle", methodOffset, "method");
+    tokenAt("invocation", invocationOffset, "parameter");
+    tokenAt("T", typeParameterOffset, "typeParameter");
+    tokenAt("ServiceLifecycle", constraintOffset, "interface");
+    tokenAt("String", stringOffset, "type");
+    tokenAt("name", nameOffset, "parameter");
+    tokenAt("service", serviceOffset, "parameter");
+    tokenAt("thread", threadOffset, "namespace");
+    tokenAt("main", mainOffset, "property");
+    tokenAt("this", thisOffset, "keyword");
+    tokenAt("routes", routesOffset, "property");
+    tokenAt("move", moveOffset, "keyword");
+    tokenAt("name", movedNameOffset, "parameter");
+
+    const methodHover = hover(source, fileName, methodOffset + 2)?.contents.value ?? "";
+    assert.match(methodHover, /```z\ninternal function registerGeneratedWithLifecycle<T: Service & ServiceLifecycle>/);
+    assert.match(methodHover, /name: String, service: T\): void on thread\.main/);
+    assert.match(hover(source, fileName, invocationOffset + 2)?.contents.value ?? "", /in invocation: String/);
+    assert.match(hover(source, fileName, stringOffset + 2)?.contents.value ?? "", /owned UTF-8 value/);
+    assert.match(hover(source, fileName, nameOffset + 2)?.contents.value ?? "", /name: String/);
+    assert.match(hover(source, fileName, moveOffset + 2)?.contents.value ?? "", /move String -> String/);
+    assert.match(hover(source, fileName, typeParameterOffset)?.contents.value ?? "", /T: Service & ServiceLifecycle/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

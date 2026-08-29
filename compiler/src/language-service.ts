@@ -308,6 +308,7 @@ export const semanticTokenTypes = [
   "enumMember",
   "keyword",
   "modifier",
+  "typeParameter",
 ] as const;
 
 export const semanticTokenModifiers = ["declaration", "readonly", "defaultLibrary"] as const;
@@ -352,10 +353,21 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     ...context.sourceProgram.typeAliases,
   ].map((item) => item.name));
   const enumNames = new Set(context.program.enums.map((item) => item.name));
+  const sourceTypeParameterNames = new Set([
+    ...context.sourceProgram.functions.flatMap((declaration) => declaration.typeParameters ?? []),
+    ...context.sourceProgram.structs.flatMap((declaration) => [
+      ...(declaration.typeParameters ?? []),
+      ...declaration.methods.flatMap((method) => method.typeParameters ?? []),
+    ]),
+    ...context.sourceProgram.traits.flatMap((declaration) => [
+      ...(declaration.typeParameters ?? []),
+      ...declaration.methods.flatMap((method) => method.typeParameters ?? []),
+    ]),
+  ]);
   const enumVariantDeclarations = new Set(
     context.sourceProgram.enums.flatMap((declaration) => declaration.variants.map((variant) => variant.location.offset)),
   );
-  const matchArmInfos = collectMatchArmInfos(context);
+  const matchArmInfos = collectMatchArmInfos(context, bindings);
   const matchVariants = new Set(
     matchArmInfos.filter((item) => item.variantName !== "_").map((item) => item.variantOffset),
   );
@@ -364,6 +376,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
   );
   const modules = new Map([...context.foreignModules.keys()].map((name) => [name, context.foreignModules.get(name)!]));
   const nativeNamespaceBindings = foreignNamespaceBindings(context);
+  const nativeSelectiveBindings = foreignSelectiveBindings(context);
   const localNamespaces = new Map(
     context.sourceProgram.imports
       .map((declaration) => [declaration.moduleName, localSourceModule(context, declaration)] as const)
@@ -378,6 +391,24 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       }] as const))
       .filter((entry): entry is [string, { module: SourceModuleInfo; importedName: string }] => Boolean(entry[1].module)),
   );
+  const importedBindingDeclarations = new Map<number, (typeof semanticTokenTypes)[number]>();
+  for (const declaration of context.sourceProgram.imports) {
+    for (const binding of declaration.bindings ?? []) {
+      const sourceModule = localSourceModule(context, declaration);
+      if (sourceModule) {
+        importedBindingDeclarations.set(
+          binding.location.offset,
+          sourceExportTokenType(sourceModule, binding.importedName),
+        );
+        continue;
+      }
+      const foreignModule = context.foreignModules.get(declaration.moduleName);
+      const tokenType = foreignModule
+        ? foreignModuleMemberTokenType(foreignModule, binding.importedName)
+        : null;
+      if (tokenType) importedBindingDeclarations.set(binding.location.offset, tokenType);
+    }
+  }
   const consoleBindings = context.semanticInfo.consoleBindings;
   const tokens = lex(source, fileName);
   const objcArgumentLabels = new Map(
@@ -452,13 +483,55 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
+    if (token.text === "this") {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
+    const contextualTypeDeclaration = token.text === "type"
+      && next?.kind === "identifier"
+      && tokens[index + 2]?.kind === "equal";
+    const contextualTestDeclaration = token.text === "test" && next?.kind === "string";
+    const contextualRawBoundary = token.text === "raw"
+      && next?.kind === "identifier"
+      && (next.text === "c" || next.text === "cpp" || next.text === "objc");
+    const contextualNativeLanguage = (token.text === "c" || token.text === "cpp" || token.text === "objc")
+      && (previous?.text === "raw" || previous?.kind === "export");
+    if (
+      contextualTypeDeclaration
+      || contextualTestDeclaration
+      || contextualRawBoundary
+      || contextualNativeLanguage
+    ) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("keyword"),
+        modifiers: 0,
+      });
+      continue;
+    }
+    const callableAliasParameter = next?.kind === "colon"
+      && /(?:^|\n)\s*(?:(?:export|internal)\s+)?type\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*(?:async\s+)?\([^;]*$/.test(
+        source.slice(Math.max(0, token.location.offset - 1000), token.location.offset),
+      );
+    if (callableAliasParameter) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("parameter"),
+        modifiers: 1,
+      });
+      continue;
+    }
     const contextualTask = token.text === "task"
       && (next?.kind === "on" || next?.kind === "identifier");
     const contextualOwnership = (token.text === "copy" || token.text === "move" || token.text === "view")
       && (next?.kind === "identifier" || next?.kind === "ellipsis");
-    if (contextualTask || contextualOwnership) {
+    const contextualCapture = token.text === "move"
+      && next?.kind === "leftParen"
+      && /\bmove\s*\([^)]*\)\s*(?:(?::|throws\b)[^=]*)?=>/.test(source.slice(token.location.offset));
+    if (contextualTask || contextualOwnership || contextualCapture) {
       classifications.set(token.location.offset, {
-        type: semanticTokenTypes.indexOf("keyword"),
+        type: semanticTokenTypes.indexOf(contextualCapture ? "modifier" : "keyword"),
         modifiers: 0,
       });
       continue;
@@ -546,8 +619,7 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     const namedBindings = (bindingsByName.get(token.text) ?? []).filter((candidate) => (
       !candidate.fileName || resolve(candidate.fileName) === resolve(fileName)
     ));
-    const binding = namedBindings.filter((candidate) => candidate.offset <= token.location.offset).at(-1)
-      ?? namedBindings[0];
+    const binding = namedBindings.filter((candidate) => candidate.offset <= token.location.offset).at(-1);
     if (binding) {
       const declaration = token.location.offset === binding.offset ? 1 : 0;
       const readonly = binding.readonly ? 2 : 0;
@@ -577,6 +649,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
+    const importedBindingDeclaration = importedBindingDeclarations.get(token.location.offset);
+    if (importedBindingDeclaration) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(importedBindingDeclaration),
+        modifiers: 4,
+      });
+      continue;
+    }
     if (localNamespaces.has(token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("namespace"), modifiers: 4 });
       continue;
@@ -585,6 +665,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
     if (localImport) {
       classifications.set(token.location.offset, {
         type: semanticTokenTypes.indexOf(sourceExportTokenType(localImport.module, localImport.importedName)),
+        modifiers: 4,
+      });
+      continue;
+    }
+    const nativeImport = nativeSelectiveBindings.get(token.text);
+    if (nativeImport) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf(nativeImport.tokenType),
         modifiers: 4,
       });
       continue;
@@ -647,7 +735,14 @@ export function semanticTokens(source: string, fileName: string): { readonly dat
       });
       continue;
     }
-    if (token.text === "Slice" || token.text === "Array" || token.text === "Option") {
+    if (sourceTypeParameterNames.has(token.text)) {
+      classifications.set(token.location.offset, {
+        type: semanticTokenTypes.indexOf("typeParameter"),
+        modifiers: 0,
+      });
+      continue;
+    }
+    if (primitiveTypeTokens.some((primitive) => primitive === token.text)) {
       classifications.set(token.location.offset, { type: semanticTokenTypes.indexOf("type"), modifiers: 4 });
       continue;
     }
@@ -743,6 +838,15 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (!word) return null;
   const context = safeAnalysis(source, fileName);
   if (!context) return declarationHover(source, null, word.text, word.start, word.end);
+  const sourceBindings = collectBindings(context);
+  const directBinding = sourceBindings
+    .filter((candidate) => (
+      candidate.name === word.text
+      && candidate.offset <= word.start
+      && (!candidate.fileName || resolve(candidate.fileName) === resolve(fileName))
+    ))
+    .sort((left, right) => left.offset - right.offset)
+    .at(-1);
   if (word.text === "Option") {
     return markdownHover("compiler-provided enum Option<T>", source, word.start, word.end);
   }
@@ -769,6 +873,13 @@ export function hover(source: string, fileName: string, offset: number): Hover |
       word.start,
       word.end,
     );
+  }
+  const typeParameter = sourceTypeParameterHover(context, word.text, word.start);
+  if (typeParameter) return markdownHover(typeParameter, source, word.start, word.end);
+  const callableParameter = sourceCallableAliasParameterHover(context, source, word.text, word.start);
+  if (callableParameter) return markdownHover(callableParameter, source, word.start, word.end);
+  if (primitiveTypeTokens.some((primitive) => primitive === word.text)) {
+    return markdownHover(primitiveTypeHover(word.text), source, word.start, word.end);
   }
   if (word.text === "instanceof") {
     return markdownHover(
@@ -824,7 +935,8 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   }
   const directWordType = context.semanticInfo.bindingTypes.get(word.start)
     ?? context.semanticInfo.numericLiteralTypes.get(word.start)
-    ?? context.semanticInfo.expressionTypes.get(word.start);
+    ?? context.semanticInfo.expressionTypes.get(word.start)
+    ?? directBinding?.type;
   const moduleConstant = context.sourceProgram.constants.find((declaration) => (
     declaration.name === word.text
     && (
@@ -925,24 +1037,33 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "copy") {
     const plan = context.semanticInfo.explicitCopies.get(word.start);
     if (plan) return markdownHover(explicitCopyHover(plan, context), source, word.start, word.end);
+    const operand = ownershipOperandBinding(source, word.end, sourceBindings, fileName);
+    if (operand) {
+      const type = displayServiceType(operand.type, context);
+      return markdownHover(
+        `copy ${type} -> ${type}\n// explicitly duplicates the value; the source remains available\n// the concrete specialization must prove Copy support`,
+        source,
+        word.start,
+        word.end,
+      );
+    }
   }
   if (
     word.text === "move"
     && /^\s+[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(word.end))
-    && context.semanticInfo.expressionTypes.has(word.start)
   ) {
-    const type = context.semanticInfo.expressionTypes.get(word.start)!;
-    return markdownHover(explicitMoveHover(type, context), source, word.start, word.end);
+    const type = context.semanticInfo.expressionTypes.get(word.start)
+      ?? ownershipOperandBinding(source, word.end, sourceBindings, fileName)?.type;
+    if (type) return markdownHover(explicitMoveHover(type, context), source, word.start, word.end);
   }
   if (
     word.text === "view"
     && /^\s+[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(word.end))
-    && context.semanticInfo.expressionTypes.has(word.start)
   ) {
-    const type = displayType(
-      context.semanticInfo.expressionTypes.get(word.start)!,
-      context.typeDisplayNames,
-    );
+    const rawType = context.semanticInfo.expressionTypes.get(word.start)
+      ?? ownershipOperandBinding(source, word.end, sourceBindings, fileName)?.type;
+    if (!rawType) return null;
+    const type = displayType(rawType, context.typeDisplayNames);
     const ownerName = localViewOwnerAt(context, word.start);
     const owner = ownerName ? ` of ${ownerName}` : "";
     return markdownHover(
@@ -1094,6 +1215,30 @@ export function hover(source: string, fileName: string, offset: number): Hover |
     );
     return sourceImportHover(detail, sourceBinding, source, word.start, word.end);
   }
+  const importedBindingDeclaration = context.sourceProgram.imports
+    .flatMap((declaration) => (declaration.bindings ?? []).map((binding) => ({ declaration, binding })))
+    .find(({ binding }) => binding.location.offset === word.start);
+  if (importedBindingDeclaration) {
+    const sourceModule = localSourceModule(context, importedBindingDeclaration.declaration);
+    if (sourceModule) {
+      const detail = sourceExportDetail(
+        sourceModule,
+        importedBindingDeclaration.binding.importedName,
+        context.typeDisplayNames,
+      );
+      if (detail) return markdownHover(detail, source, word.start, word.end);
+    }
+    const foreignModule = context.foreignModules.get(importedBindingDeclaration.declaration.moduleName);
+    const detail = foreignModule
+      ? describeModuleMember(foreignModule, [], importedBindingDeclaration.binding.importedName)
+      : null;
+    if (detail) return markdownHover(detail, source, word.start, word.end);
+  }
+  const nativeBinding = foreignSelectiveBindings(context).get(word.text);
+  if (nativeBinding && !sourceNameIsShadowed(context, word.text, word.start, fileName)) {
+    const detail = describeModuleMember(nativeBinding.module, [], nativeBinding.importedName);
+    if (detail) return markdownHover(detail, source, word.start, word.end);
+  }
   if (context.semanticInfo.consoleBindings.has(word.text)) {
     return markdownHover(`standard console imported as ${word.text}`, source, word.start, word.end);
   }
@@ -1174,7 +1319,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
   if (word.text === "next") {
     const receiver = source.slice(0, word.start).match(/([A-Za-z_][A-Za-z0-9_]*)\.$/)?.[1];
     const binding = receiver
-      ? collectBindings(context).filter((candidate) => candidate.name === receiver && candidate.offset < word.start).at(-1)
+      ? sourceBindings.filter((candidate) => candidate.name === receiver && candidate.offset < word.start).at(-1)
       : null;
     const generator = binding ? parseGeneratorType(binding.type) : null;
     const asyncGenerator = binding ? parseAsyncGeneratorType(binding.type) : null;
@@ -1557,10 +1702,7 @@ export function hover(source: string, fileName: string, offset: number): Hover |
 
   const type = directWordType;
   if (type) {
-    const binding = collectBindings(context)
-      .filter((candidate) => candidate.name === word.text && candidate.offset <= word.start)
-      .sort((left, right) => left.offset - right.offset)
-      .at(-1);
+    const binding = directBinding;
     const owner = context.semanticInfo.viewBindingOwners.get(binding?.offset ?? word.start);
     const borrowedResource = String(type).startsWith("__z_borrowed:")
       || context.semanticInfo.foreignTypes.get(String(type))?.ownership === "borrowed";
@@ -4235,7 +4377,7 @@ function localViewOwnerAt(context: AnalyzedSource, operatorOffset: number): stri
   return owner;
 }
 
-function collectBindings(context: AnalyzedSource): Binding[] {
+function collectBindings(context: AnalyzedSource, includeMatchBindings = true): Binding[] {
   const bindings: Binding[] = context.sourceProgram.constants.map((declaration) => ({
     name: declaration.name,
     type: context.semanticInfo.bindingTypes.get(declaration.nameLocation.offset)
@@ -4416,10 +4558,30 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     }
     visitStatements(declaration.body);
   };
-  for (const declaration of context.program.functions) visitFunction(declaration);
-  for (const declaration of context.program.structs) {
+  // Editor bindings must come from authored syntax. The linked/materialized
+  // program intentionally removes generic declarations and may synthesize
+  // constructor parameters at field locations, neither of which describes the
+  // document the user is editing.
+  for (const declaration of context.sourceProgram.functions) visitFunction(declaration);
+  for (const declaration of context.sourceProgram.structs) {
+    if (declaration.constructor) {
+      for (const parameter of declaration.constructor.parameters) {
+        bindings.push({
+          name: parameter.name,
+          type: context.semanticInfo.bindingTypes.get(parameter.location.offset) ?? parameter.type.name,
+          offset: parameter.location.offset,
+          readonly: parameter.mode === "value" || parameter.mode === "in",
+          parameter: true,
+          fileName: parameter.location.fileName,
+        });
+      }
+      visitStatements(declaration.constructor.body);
+    }
     for (const method of declaration.methods) visitFunction(method);
     if (declaration.deinitializer) visitStatements(declaration.deinitializer.body);
+  }
+  for (const declaration of context.sourceProgram.traits) {
+    for (const method of declaration.methods) visitFunction(method);
   }
   const visitClosures = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
@@ -4431,17 +4593,19 @@ function collectBindings(context: AnalyzedSource): Binding[] {
     if (node.kind === "closure") visitClosure(node as Extract<Expression, { kind: "closure" }>);
     for (const child of Object.values(value as Record<string, unknown>)) visitClosures(child);
   };
-  visitClosures(context.program);
-  for (const arm of collectMatchArmInfos(context)) {
-    if (!arm.binding || arm.bindingOffset === null || !arm.payloadType) continue;
-    bindings.push({
-      name: arm.binding,
-      type: context.semanticInfo.bindingTypes.get(arm.bindingOffset) ?? arm.payloadType,
-      offset: arm.bindingOffset,
-      readonly: true,
-      parameter: false,
-      fileName: arm.bindingFileName,
-    });
+  visitClosures(context.sourceProgram);
+  if (includeMatchBindings) {
+    for (const arm of collectMatchArmInfos(context, bindings)) {
+      if (!arm.binding || arm.bindingOffset === null || !arm.payloadType) continue;
+      bindings.push({
+        name: arm.binding,
+        type: context.semanticInfo.bindingTypes.get(arm.bindingOffset) ?? arm.payloadType,
+        offset: arm.bindingOffset,
+        readonly: true,
+        parameter: false,
+        fileName: arm.bindingFileName,
+      });
+    }
   }
   return bindings;
 }
@@ -4457,7 +4621,10 @@ type MatchArmInfo = {
   readonly borrowed: boolean;
 };
 
-function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
+function collectMatchArmInfos(
+  context: AnalyzedSource,
+  sourceBindings: readonly Binding[] = collectBindings(context, false),
+): MatchArmInfo[] {
   const collected: MatchArmInfo[] = [];
   const visit = (value: unknown): void => {
     if (!value || typeof value !== "object") return;
@@ -4469,11 +4636,31 @@ function collectMatchArmInfos(context: AnalyzedSource): MatchArmInfo[] {
     if ((node.kind === "match" || node.kind === "matchExpression") && node.expression && Array.isArray(node.arms)) {
       const matchLocation = (node.location as SourceLocation | undefined)?.offset;
       const borrowed = matchLocation !== undefined && context.semanticInfo.borrowedMatches.has(matchLocation);
-      const subject = node.expression as { readonly location?: SourceLocation };
-      const enumName = subject.location
-        ? context.semanticInfo.expressionTypes.get(subject.location.offset)
+      const subject = node.expression as {
+        readonly kind?: string;
+        readonly name?: string;
+        readonly location?: SourceLocation;
+      };
+      const sourceBinding = subject.kind === "identifier" && subject.name && subject.location
+        ? sourceBindings
+          .filter((candidate) => candidate.name === subject.name && candidate.offset <= subject.location!.offset)
+          .sort((left, right) => left.offset - right.offset)
+          .at(-1)
         : null;
-      const declaration = enumName ? context.program.enums.find((item) => item.name === enumName) : null;
+      const inferredEnumName = (subject.location
+        ? context.semanticInfo.expressionTypes.get(subject.location.offset)
+        : null) ?? sourceBinding?.type ?? null;
+      const enumName = inferredEnumName
+        ? parseViewType(inferredEnumName)?.target ?? inferredEnumName
+        : null;
+      const sourceImport = enumName ? localSourceBinding(context, enumName) : null;
+      const linkedEnumName = sourceImport
+        ? sourceImport.module.exports.get(sourceImport.importedName)?.linkedName
+          ?? sourceImport.module.internals.get(sourceImport.importedName)?.linkedName
+        : null;
+      const declaration = enumName
+        ? context.program.enums.find((item) => item.name === enumName || item.name === linkedEnumName)
+        : null;
       const foreignUnion = matchLocation === undefined
         ? null
         : context.semanticInfo.foreignUnionMatches.get(matchLocation) ?? null;
@@ -6385,6 +6572,50 @@ function foreignNamespaceBindings(
   return bindings;
 }
 
+function foreignSelectiveBindings(
+  context: Pick<AnalyzedSource, "foreignModules" | "sourceProgram">,
+): Map<string, {
+  readonly module: ForeignModule;
+  readonly importedName: string;
+  readonly tokenType: (typeof semanticTokenTypes)[number];
+}> {
+  const bindings = new Map<string, {
+    readonly module: ForeignModule;
+    readonly importedName: string;
+    readonly tokenType: (typeof semanticTokenTypes)[number];
+  }>();
+  for (const declaration of context.sourceProgram.imports) {
+    if (isLocalSourceModuleSpecifier(declaration.header) || !declaration.bindings) continue;
+    const module = context.foreignModules.get(declaration.moduleName);
+    if (!module) continue;
+    for (const binding of declaration.bindings) {
+      const tokenType = foreignModuleMemberTokenType(module, binding.importedName);
+      if (tokenType) {
+        bindings.set(binding.localName, {
+          module,
+          importedName: binding.importedName,
+          tokenType,
+        });
+      }
+    }
+  }
+  return bindings;
+}
+
+function foreignModuleMemberTokenType(
+  module: ForeignModule,
+  name: string,
+): (typeof semanticTokenTypes)[number] | null {
+  if (module.namespaces.has(name)) return "namespace";
+  if (resolveModuleFunction(module, [], name)) return "function";
+  const named = resolveModuleNamedType(module, [], name);
+  if (named) return named.kind === "enum" ? "enum" : "type";
+  if (module.interfaces.has(name)) return "class";
+  if (module.protocols.has(name)) return "interface";
+  if (module.constants.has(name)) return "property";
+  return null;
+}
+
 function resolveModuleFunction(
   module: ForeignModule,
   namespacePath: readonly string[],
@@ -6837,7 +7068,11 @@ function methodDetail(
     ? [...substitutions].filter(([parameter, value]) => parameter === value).map(([parameter]) => parameter)
     : [];
   const genericParameters = [...inferredOwnerParameters, ...(method.typeParameters ?? [])];
-  const generic = genericParameters.length ? `<${genericParameters.join(", ")}>` : "";
+  const generic = formatTypeParameters(
+    genericParameters,
+    method.typeParameterConstraints ?? [],
+    typeDisplayNames,
+  );
   const receiver = !method.static && method.receiverMode
     ? [`${method.receiverMode} this`]
     : [];
@@ -7120,6 +7355,92 @@ function explicitCopyHover(
     ? `\n// materializes an owned ${type} from borrowed storage`
     : "";
   return `copy ${source} -> ${type}\n// ${capability}\n// source remains available${materialization}\n// cost: ${cost}`;
+}
+
+function ownershipOperandBinding(
+  source: string,
+  operatorEnd: number,
+  bindings: readonly Binding[],
+  fileName: string,
+): Binding | null {
+  const operand = source.slice(operatorEnd).match(/^\s+([A-Za-z_][A-Za-z0-9_]*)/);
+  if (!operand?.[1]) return null;
+  const operandOffset = operatorEnd + operand[0].lastIndexOf(operand[1]);
+  return bindings
+    .filter((candidate) => (
+      candidate.name === operand[1]
+      && candidate.offset <= operandOffset
+      && (!candidate.fileName || resolve(candidate.fileName) === resolve(fileName))
+    ))
+    .sort((left, right) => left.offset - right.offset)
+    .at(-1) ?? null;
+}
+
+function primitiveTypeHover(type: string): string {
+  if (type === "String") return "String  // owned UTF-8 value with deterministic cleanup";
+  if (type === "cstring") return "cstring  // borrowed NUL-terminated C string; valid only for its proven native lifetime";
+  if (type === "boolean") return "boolean  // true or false; no truthiness coercion";
+  if (type === "void") return "void  // no value is produced";
+  if (/^[iu](?:8|16|32|64)$/.test(type)) {
+    const signed = type.startsWith("i") ? "signed" : "unsigned";
+    return `${type}  // fixed-width ${signed} integer; arithmetic is checked by default`;
+  }
+  if (type === "usize" || type === "isize") {
+    const signed = type === "isize" ? "signed" : "unsigned";
+    return `${type}  // target-pointer-width ${signed} integer`;
+  }
+  if (type === "f32" || type === "f64") return `${type}  // IEEE 754 floating-point value`;
+  if (type === "Slice") return "Slice<T>  // borrowed contiguous elements; non-owning and non-escaping";
+  if (type === "Array") return "Array<T>  // owned growable contiguous collection";
+  if (type === "Option") return "Option<T>  // explicit some(T) or none presence";
+  if (type === "Result") return "Result<T, E>  // explicit success(T) or failure(E) outcome";
+  if (type === "Task") return "Task<T, E?>  // owned handle to structured asynchronous work";
+  if (type === "Weak") return "Weak<T>  // non-owning ARC identity that must be upgraded before use";
+  return type;
+}
+
+function sourceTypeParameterHover(
+  context: AnalyzedSource,
+  name: string,
+  offset: number,
+): string | null {
+  const declarations = [
+    ...context.sourceProgram.functions,
+    ...context.sourceProgram.structs,
+    ...context.sourceProgram.structs.flatMap((declaration) => declaration.methods),
+    ...context.sourceProgram.traits,
+    ...context.sourceProgram.traits.flatMap((declaration) => declaration.methods),
+  ].filter((declaration) => (
+    declaration.location.offset <= offset
+    && declaration.typeParameters?.includes(name)
+  )).sort((left, right) => left.location.offset - right.location.offset);
+  const declaration = declarations.at(-1);
+  if (!declaration) return null;
+  const constraints = declaration.typeParameterConstraints
+    ?.find((constraint) => constraint.parameter === name)
+    ?.traits.map((trait) => displayType(trait.name, context.typeDisplayNames)) ?? [];
+  const constrained = constraints.length > 0 ? `: ${constraints.join(" & ")}` : "";
+  return `${name}${constrained}  // type parameter`;
+}
+
+function sourceCallableAliasParameterHover(
+  context: AnalyzedSource,
+  source: string,
+  name: string,
+  offset: number,
+): string | null {
+  for (const declaration of context.sourceProgram.typeAliases) {
+    const start = declaration.location.offset;
+    if (offset < start) continue;
+    const end = source.indexOf(";", start);
+    if (end < 0 || offset > end) continue;
+    const callable = parseFunctionType(declaration.target.name);
+    const parameter = callable?.parameters.find((candidate) => candidate.name === name);
+    if (!parameter) continue;
+    const capability = parameter.mode === "value" ? "" : `${parameter.mode} `;
+    return `${capability}${name}: ${displayType(parameter.type, context.typeDisplayNames)}  // callable parameter`;
+  }
+  return null;
 }
 
 function explicitMoveHover(typeName: string, context: AnalyzedSource): string {

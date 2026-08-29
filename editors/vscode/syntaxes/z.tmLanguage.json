@@ -10,6 +10,7 @@
     { "include": "#declarations" },
     { "include": "#typeAnnotations" },
     { "include": "#matchPatterns" },
+    { "include": "#executorPaths" },
     { "include": "#memberCalls" },
     { "include": "#keywords" },
     { "include": "#types" },
@@ -437,6 +438,17 @@
         "match": "\\b(?!move\\b)[A-Za-z_][A-Za-z0-9_]*(?=\\s*(?:\\([^)]*\\))?\\s*=>)"
       }]
     },
+    "executorPaths": {
+      "patterns": [{
+        "name": "meta.executor.path.z",
+        "match": "\\b(thread)(\\.)(main|any|pool|io)\\b",
+        "captures": {
+          "1": { "name": "entity.name.namespace.z" },
+          "2": { "name": "punctuation.accessor.dot.z" },
+          "3": { "name": "variable.other.property.z" }
+        }
+      }]
+    },
     "memberCalls": {
       "patterns": [{
         "name": "entity.name.function.member.z",
@@ -504,7 +516,19 @@
       }]
     },
     "types": {
-      "patterns": [{ "name": "storage.type.primitive.z", "match": "\\b(?:void|boolean|String|cstring|Slice|Array|Option|Result|Task|Weak|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b" }]
+      "patterns": [{
+        "name": "storage.type.primitive.z",
+        "match": "\\b(?:void|boolean|cstring|i8|i16|i32|i64|u8|u16|u32|u64|f32|f64|usize|isize)\\b"
+      }, {
+        "name": "support.type.intrinsic.z",
+        "match": "\\b(?:String|Slice|Array|Option|Result|Task|Weak)\\b"
+      }, {
+        "name": "entity.name.type.parameter.z",
+        "match": "\\b[A-Z](?=\\s*(?:[,>:&=)]|\\b(?:extends|implements)\\b))"
+      }, {
+        "name": "entity.name.type.z",
+        "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+      }]
     },
     "constants": {
       "patterns": [

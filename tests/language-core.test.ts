@@ -4525,6 +4525,8 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
     .map((pattern: { name: string }) => pattern.name)
     .join(" ");
   const memberCallPattern = new RegExp(grammar.repository.memberCalls.patterns[0].match);
+  const executorPath = grammar.repository.executorPaths.patterns[0];
+  const executorPathPattern = new RegExp(executorPath.match);
   const qualifiedTypeAnnotation = grammar.repository.typeAnnotations.patterns[0];
   const exportPattern = grammar.repository.keywords.patterns
     .find((pattern: { match: string }) => pattern.match.includes("export"));
@@ -4547,6 +4549,9 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match("using (in value)", new RegExp(usingPattern?.match ?? "$^"));
   assert.doesNotMatch("const using = operation;", new RegExp(usingPattern?.match ?? "$^"));
   assert.match(".yield()", memberCallPattern);
+  assert.match("thread.main", executorPathPattern);
+  assert.equal(executorPath.captures[1].name, "entity.name.namespace.z");
+  assert.equal(executorPath.captures[3].name, "variable.other.property.z");
   assert.doesNotMatch("const task = operation();", new RegExp(taskPattern?.match ?? "$^"));
   assert.match("copy value", new RegExp(ownershipPattern?.match ?? "$^"));
   assert.doesNotMatch("const copy = value;", new RegExp(ownershipPattern?.match ?? "$^"));
@@ -4637,6 +4642,14 @@ test("editor grammar tracks keywords without reserving Result variants", () => {
   assert.match(typePattern, /Result/);
   assert.match(typePattern, /Task/);
   assert.match(typePattern, /Weak/);
+  assert.ok(grammar.repository.types.patterns.some((pattern: { name: string; match: string }) => (
+    pattern.name === "entity.name.type.z"
+    && new RegExp(pattern.match).test("ServiceLifecycle")
+  )));
+  assert.ok(grammar.repository.types.patterns.some((pattern: { name: string; match: string }) => (
+    pattern.name === "entity.name.type.parameter.z"
+    && new RegExp(pattern.match).test("T: Service")
+  )));
   assert.doesNotMatch("bool", new RegExp(typePattern));
   assert.match(constantPattern, /null/);
   assert.match(constantPattern, /this/);
