@@ -15,6 +15,7 @@ import {
   test,
   writeFileSync,
 } from "./support/bootstrap.ts";
+import { createHash } from "node:crypto";
 import { lex } from "../compiler/src/lexer.ts";
 import { linkSourceModules } from "../compiler/src/modules.ts";
 import { parse } from "../compiler/src/parser.ts";
@@ -102,9 +103,128 @@ test("resolves generated modules without editing authored source", () => {
         },
       }],
     }));
+    const staleProject = applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile);
     assert.throws(
-      () => applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile),
-      /call adaptations are declared but are not executable/,
+      () => compileToNative(readFileSync(entryFile, "utf8"), entryFile, {
+        projectBuild: staleProject,
+      }),
+      /source hash is stale/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("checks and lowers source-hashed generated call adaptations", () => {
+  const directory = mkdtempSync("/tmp/z-generated-call-adapter-");
+  const applicationDirectory = resolve(directory, "application");
+  const frameworkDirectory = resolve(directory, "framework");
+  const generatedDirectory = resolve(directory, "generated");
+  const entryFile = resolve(applicationDirectory, "main.zs");
+  const generatedFile = resolve(generatedDirectory, "service-adapters.zs");
+  const overlayFile = resolve(generatedDirectory, "services.zbuild.json");
+  try {
+    mkdirSync(applicationDirectory, { recursive: true });
+    mkdirSync(frameworkDirectory, { recursive: true });
+    mkdirSync(generatedDirectory, { recursive: true });
+    writeFileSync(resolve(frameworkDirectory, "framework.zs"), `
+      export struct Builder {
+        result: i32;
+
+        function register(inout this, name: String, value: i32): void {}
+
+        function install(inout this, name: String, value: i32): void {
+          this.result = value;
+        }
+      }
+    `);
+    writeFileSync(resolve(frameworkDirectory, "z.json"), JSON.stringify({
+      package: { name: "framework", version: "0.1.0" },
+      library: { entry: "framework.zs" },
+    }));
+    writeFileSync(generatedFile, `
+      export function adapt(value: i32): i32 { return value + 1; }
+    `);
+    const source = `
+      import { Builder } from "framework";
+
+      function main(): i32 {
+        let builder = Builder({ result: 0 });
+        builder.register("answer", 41);
+        return builder.result - 42;
+      }
+    `;
+    writeFileSync(entryFile, source);
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { framework: { path: "../framework" } },
+      target: { name: "generated-call-adapter", entry: "main.zs" },
+    }));
+    const overlay = {
+      schemaVersion: 1,
+      modules: {
+        "framework/generated/services": {
+          source: "service-adapters.zs",
+          package: "framework",
+        },
+      },
+      callAdapters: [{
+        source: "../application/main.zs",
+        sourceHash: createHash("sha256").update(source).digest("hex"),
+        offset: source.indexOf("(\"answer\""),
+        target: "Builder.register",
+        replacement: "Builder.install",
+        argument: 1,
+        adapter: {
+          module: "framework/generated/services",
+          export: "adapt",
+        },
+      }],
+    };
+    writeFileSync(overlayFile, JSON.stringify(overlay));
+
+    const project = applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile);
+    const artifact = compileToNative(source, entryFile, { projectBuild: project });
+    assert.match(artifact.source, /adapt/);
+    assert.match(artifact.source, /install/);
+
+    const ran = spawnSync(process.execPath, [
+      cli,
+      "run",
+      applicationDirectory,
+      "--generated",
+      overlayFile,
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(ran.status, 0, ran.stderr);
+
+    const nativeChecked = spawnSync(process.execPath, [
+      cli,
+      "check",
+      applicationDirectory,
+      "--generated",
+      overlayFile,
+      "--native-frontend",
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.notEqual(nativeChecked.status, 0);
+    assert.match(nativeChecked.stderr, /call adaptation is not yet available through the native frontend/);
+
+    writeFileSync(overlayFile, JSON.stringify({
+      ...overlay,
+      callAdapters: [{ ...overlay.callAdapters[0], target: "Builder.missing" }],
+    }));
+    const mismatched = applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile);
+    assert.throws(
+      () => compileToNative(source, entryFile, { projectBuild: mismatched }),
+      /expected "Builder\.missing" but resolved "Builder\.register"/,
+    );
+
+    writeFileSync(overlayFile, JSON.stringify(overlay));
+    writeFileSync(generatedFile, `
+      export function adapt(value: i32): String { return "not an i32"; }
+    `);
+    const illTyped = applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile);
+    assert.throws(
+      () => compileToNative(source, entryFile, { projectBuild: illTyped }),
+      /expected i32, found String/,
     );
   } finally {
     rmSync(directory, { recursive: true, force: true });

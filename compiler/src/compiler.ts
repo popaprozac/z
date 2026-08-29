@@ -41,6 +41,10 @@ import {
   hasRawNativeBodies,
   validateRawNativeGeneratedSymbolAccess,
 } from "./raw-native-hygiene.ts";
+import {
+  validateGeneratedCallAdapters,
+  type ValidatedGeneratedCallAdapter,
+} from "./generated-call-adaptation.ts";
 
 export type NativeLanguage = "c" | "objective-c" | "c++" | "objective-c++";
 
@@ -237,16 +241,57 @@ export type AnalysisOptions = {
     readonly fileName: string;
   }>>;
   readonly projectBuild?: ProjectBuild;
+  /** Compiler-owned second-pass evidence for versioned generated call adaptation. */
+  readonly validatedGeneratedCallAdapters?: readonly ValidatedGeneratedCallAdapter[];
 };
 
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
   const projectBuild = options.projectBuild ?? prepareProject(fileName);
+  const requestedCallAdapters = projectBuild.generatedBuild?.callAdapters ?? [];
+  if (requestedCallAdapters.length > 0 && options.nativeFrontendResolver) {
+    throw new DiagnosticError(fileName, {
+      offset: 0,
+      line: 1,
+      column: 1,
+      fileName,
+    }, "generated call adaptation is not yet available through the native frontend", {
+      code: "Z0840",
+      notes: ["the Stage-0 compiler executes this checked build-overlay tier today"],
+      helps: ["omit --native-frontend for this invocation until native AST adaptation lands"],
+    });
+  }
+  if (requestedCallAdapters.length > 0 && options.validatedGeneratedCallAdapters === undefined) {
+    const generatedBuild = projectBuild.generatedBuild!;
+    const base = analyzeSource(source, fileName, {
+      ...options,
+      nativeFrontendResolver: undefined,
+      validateTarget: false,
+      projectBuild: {
+        ...projectBuild,
+        generatedBuild: { ...generatedBuild, callAdapters: [] },
+      },
+      validatedGeneratedCallAdapters: [],
+    });
+    const validatedGeneratedCallAdapters = validateGeneratedCallAdapters(
+      requestedCallAdapters,
+      generatedBuild.fileName,
+      base.sourceModuleBatch,
+      base.semanticInfo,
+      base.typeDisplayNames,
+    );
+    return analyzeSource(source, fileName, {
+      ...options,
+      projectBuild,
+      validatedGeneratedCallAdapters,
+    });
+  }
   const linked = linkSourceModules(source, sourceProgram, fileName, {
     sourceImports: projectBuild.sourceImports,
     packages: projectBuild.packages,
     generatedModulePackages: projectBuild.generatedModulePackages,
+    generatedCallAdapters: options.validatedGeneratedCallAdapters,
   });
   const linkedProgram = options.includeTests === false
     ? {

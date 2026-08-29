@@ -397,6 +397,8 @@ export type ForeignUnionMatchPlan = {
 
 export type SemanticInfo = {
   readonly warnings: readonly DiagnosticError[];
+  readonly functionCallResolutions: readonly SemanticFunctionCallResolution[];
+  readonly methodCallResolutions: readonly SemanticMethodCallResolution[];
   readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: ReadonlySet<number>;
   readonly viewLoadExpressions: ReadonlySet<number>;
@@ -538,6 +540,8 @@ type StandardTypeName =
 type AnalysisState = {
   readonly packageIdsByFile: ReadonlyMap<string, string>;
   readonly warnings: DiagnosticError[];
+  readonly functionCallResolutions: SemanticFunctionCallResolution[];
+  readonly methodCallResolutions: SemanticMethodCallResolution[];
   readonly warningKeys: Set<string>;
   readonly deploymentTarget: DeploymentTarget | null;
   readonly viewReturnExpressions: Set<number>;
@@ -1017,6 +1021,8 @@ export function analyze(
   const state: AnalysisState = {
     packageIdsByFile,
     warnings: [],
+    functionCallResolutions: [],
+    methodCallResolutions: [],
     warningKeys: new Set(),
     deploymentTarget,
     viewReturnExpressions: new Set(),
@@ -11121,6 +11127,7 @@ function inferExpressionInner(
             rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
             checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
             registerAsyncCall(callable, expression.location, fileName, state);
+            state.methodCallResolutions.push(resolution);
             state.observer?.onMethodCall?.(resolution);
             if (callable.errorType) {
               if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
@@ -12714,6 +12721,7 @@ function inferExpressionInner(
           if (consumingReceiverRoot) rejectOwnerMutationWhileViewed(consumingReceiverRoot.name, expression.callee.object.location, fileName, state);
           consumeOwnedValue(expression.callee.object, receiverType, locals, structs, enums, fileName, state);
         }
+        state.methodCallResolutions.push(resolution);
         state.observer?.onMethodCall?.(resolution);
         if (callable.errorType) {
           if (!allowThrowingCall) throw new DiagnosticError(fileName, expression.location, "throwing call requires `attempt` or `try`");
@@ -12868,6 +12876,7 @@ function inferExpressionInner(
       rejectLabeledArguments(expression.argumentLabels, expression.location, fileName);
       checkArguments(callable, expression.arguments, locals, globals, structs, enums, fileName, expression.location, state);
       registerAsyncCall(callable, expression.location, fileName, state);
+      state.functionCallResolutions.push(functionResolution);
       state.observer?.onFunctionCall?.(functionResolution);
       const classAliasIdentity = state.functionClassAliasIdentities.get(callable.name);
       if (classAliasIdentity) {

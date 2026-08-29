@@ -31,6 +31,10 @@ import {
 } from "./standard-library.ts";
 import { parseViewType, viewTypeName } from "./view-types.ts";
 import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
+import {
+  applyGeneratedCallAdaptersToProgram,
+  type ValidatedGeneratedCallAdapter,
+} from "./generated-call-adaptation.ts";
 
 export type SourceModuleInfo = {
   readonly fileName: string;
@@ -77,6 +81,7 @@ export type SourceModuleOptions = {
     readonly name: string;
     readonly rootDirectory: string;
   }>>;
+  readonly generatedCallAdapters?: readonly ValidatedGeneratedCallAdapter[];
 };
 
 type ModuleNode = {
@@ -153,7 +158,12 @@ export function loadSourceModuleBatch(
       );
     }
     const source = suppliedSource ?? readFileSync(canonical, "utf8");
-    const program = suppliedProgram ?? parse(lex(source, canonical), canonical);
+    const parsedProgram = suppliedProgram ?? parse(lex(source, canonical), canonical);
+    const program = applyGeneratedCallAdaptersToProgram(
+      parsedProgram,
+      source.length,
+      (options.generatedCallAdapters ?? []).filter((adapter) => adapter.sourcePath === canonical),
+    );
     const dependencies = new Map<number, string>();
     const packageSpecifiers = new Set<string>();
     for (const [specifier, configuredPath] of Object.entries(options.sourceImports ?? {})) {

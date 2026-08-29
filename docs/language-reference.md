@@ -85,7 +85,18 @@ z build . --release --generated .zapp/generated/services.zbuild.json
       "package": "zapp"
     }
   },
-  "callAdapters": []
+  "callAdapters": [{
+    "source": "../application/main.zs",
+    "sourceHash": "<lowercase SHA-256>",
+    "offset": 144,
+    "target": "ApplicationServicesBuilder.register",
+    "replacement": "ApplicationServicesBuilder.__registerGenerated",
+    "argument": 1,
+    "adapter": {
+      "module": "zapp/generated/services",
+      "export": "adaptNotesService"
+    }
+  }]
 }
 ```
 
@@ -95,11 +106,18 @@ name an existing package in the resolved graph; it grants the generated module
 that exact package identity for `internal` access. Generated source receives no
 other privilege and is parsed, checked, and lowered as ordinary Z.
 
-The overlay also reserves versioned, source-hashed `callAdapters` for tools that
-need checked generated adapters without rewriting source. Nonempty adaptations
-are rejected until the checked lowering tier is available; they are never
-silently ignored. Generated overlays are build products, not portable package
-configuration, and should normally live under a tool cache such as `.zapp/`.
+Stage 0 also executes versioned, source-hashed `callAdapters` for tools that
+need checked generated adapters without rewriting source. `offset` is the
+parser's call-expression offset and `argument` is zero-based. Before adapting,
+the compiler checks the source digest and proves that the call resolves to
+`target`. The replacement must be a method on that same receiver type. The
+selected argument is passed through the named generated function, then the
+whole transformed AST is linked and checked normally. Stale evidence, a
+missing export, and an incompatible adapter or replacement all fail closed at
+the authored call. The fixed-point driver does not execute this tier yet and
+reports that boundary explicitly. Generated overlays are build products, not
+portable package configuration, and should normally live under a tool cache
+such as `.zapp/`.
 
 Modules may publish named compile-time values:
 

@@ -112,11 +112,6 @@ export function applyGeneratedBuildOverlay(
     throw new Error("--generated requires a Z project with a z.json manifest");
   }
   const generatedBuild = loadGeneratedBuildOverlay(overlayPath);
-  if (generatedBuild.callAdapters.length > 0) {
-    throw new Error(
-      `${generatedBuild.fileName}: generated call adaptations are declared but are not executable in this compiler tier yet`,
-    );
-  }
   const sourceImports = { ...project.sourceImports };
   const generatedModulePackages: Record<string, ProjectPackage> = {};
   for (const module of generatedBuild.modules) {
