@@ -11604,6 +11604,7 @@ function main(): i32 {
     resolve(packageRoot, "src/zapp.zs"),
     [
       'import { baseAnswer } from "utility";',
+      "internal function generatedBaseAnswer(): i32 { return 40; }",
       "export function frameworkAnswer(): i32 { return baseAnswer(); }",
       "",
     ].join("\n"),
@@ -11653,6 +11654,66 @@ function main(): i32 {
     { encoding: "utf8" },
   );
   assert.equal(packageImportCheck.status, 0, packageImportCheck.stderr);
+  const generatedDirectory = resolve(directory, "package-generated");
+  mkdirSync(generatedDirectory, { recursive: true });
+  writeFileSync(
+    resolve(generatedDirectory, "services.zs"),
+    [
+      'import { generatedBaseAnswer } from "zapp";',
+      "export function generatedAnswer(): i32 { return generatedBaseAnswer() + 2; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(packageImportProject, "generated-main.zs"),
+    [
+      'import { generatedAnswer } from "zapp/generated/services";',
+      "function main(): i32 { return generatedAnswer() - 42; }",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    resolve(packageImportProject, "z.json"),
+    `${JSON.stringify({
+      dependencies: { zapp: { path: "../package-import-zapp" } },
+      target: {
+        name: "package-import-application",
+        entry: "generated-main.zs",
+      },
+    }, null, 2)}\n`,
+  );
+  const generatedOverlay = resolve(generatedDirectory, "services.zbuild.json");
+  writeFileSync(
+    generatedOverlay,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      modules: {
+        "zapp/generated/services": {
+          source: "services.zs",
+          package: "zapp",
+        },
+      },
+      callAdapters: [],
+    }, null, 2)}\n`,
+  );
+  const generatedPackageCheck = spawnSync(
+    driver,
+    ["check", packageImportProject, "--generated", generatedOverlay],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    generatedPackageCheck.status,
+    0,
+    generatedPackageCheck.stderr,
+  );
+  assert.match(generatedPackageCheck.stdout, /checked 4 Z modules/);
+  const generatedMetadata = spawnSync(
+    driver,
+    ["metadata", "--generated", generatedOverlay, packageImportProject],
+    { encoding: "utf8" },
+  );
+  assert.equal(generatedMetadata.status, 0, generatedMetadata.stderr);
+  assert.match(generatedMetadata.stdout, /generatedAnswer/);
   const packageLibraryCheck = spawnSync(
     driver,
     ["check", packageRoot],

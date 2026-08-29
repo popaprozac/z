@@ -34,6 +34,7 @@ import {
   resolveParsedModulesWithForeignContracts,
 } from "../frontend/module-resolver.zs";
 import {
+  applyGeneratedBuildOverlay,
   appendProjectCompilerArguments,
   appendProjectCompileArguments,
   configuredProjectEntryPath,
@@ -138,6 +139,20 @@ function resolveCommandInput(
   });
 }
 
+function validateGeneratedProjectInput(
+  in input: NativeCommandInput,
+  in generatedPath: Option<String>
+): void throws String {
+  match (in generatedPath) {
+    some(_) => {
+      if (!input.projectMode) {
+        throw "--generated requires a Z project directory or z.json manifest";
+      }
+    }
+    none => {}
+  }
+}
+
 function sourceStandardModulePath(in header: String): Option<String> {
   const relative = match (sourceStandardModuleRelativePath(header)) {
     some(relative) => relative;
@@ -195,6 +210,9 @@ function sourcePackageIdentity(
   in config: NativeProjectConfig,
   in path: String
 ): String {
+  for (const generated of config.generatedModulePackages) {
+    if (generated.path == path) return copy generated.packageIdentity;
+  }
   let selected = "";
   let selectedLength: usize = 0;
   for (const identity of config.packageIdentities) {
@@ -305,10 +323,17 @@ function loadModule(
   }
 }
 
-function loadProject(in entryPath: String): NativeProject throws String {
+function loadProject(
+  in entryPath: String,
+  in generatedPath: Option<String>
+): NativeProject throws String {
   const normalizedEntry = normalizedModulePath(entryPath);
   const canonicalEntry = try fs.realPath(normalizedEntry);
-  const config = try loadProjectConfig(canonicalEntry);
+  let config = try loadProjectConfig(canonicalEntry);
+  match (in generatedPath) {
+    some(path) => try applyGeneratedBuildOverlay(inout config, path);
+    none => {}
+  }
   let loaded = Set<String>();
   let loadedForeign = Set<String>();
   let modules = Array<ParsedModule>();
@@ -395,9 +420,13 @@ function emitProject(
   return try emitModulesC(project.modules, project.graph);
 }
 
-function checkProject(in entryPath: String): i32 throws String {
+function checkProject(
+  in entryPath: String,
+  in generatedPath: Option<String>
+): i32 throws String {
   const input = try resolveCommandInput(entryPath);
-  const project = try loadProject(input.entryPath);
+  try validateGeneratedProjectInput(input, generatedPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   try validateExecutableEntry(project, false);
   if (input.projectMode && project.config.targetConfigured) {
     if (project.config.targetKind == "executable") {
@@ -417,9 +446,13 @@ function checkProject(in entryPath: String): i32 throws String {
   return 0;
 }
 
-function metadataProject(in entryPath: String): i32 throws String {
+function metadataProject(
+  in entryPath: String,
+  in generatedPath: Option<String>
+): i32 throws String {
   const input = try resolveCommandInput(entryPath);
-  const project = try loadProject(input.entryPath);
+  try validateGeneratedProjectInput(input, generatedPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   try validateExecutableEntry(project, false);
   const metadata = try emitProgramMetadata(project.modules, project.graph);
   console.write(metadata);
@@ -462,16 +495,20 @@ function emitProjectFile(
   if (!isZSourceInput(entryPath)) {
     throw "z emit currently requires an explicit .zs source file and output path";
   }
-  const project = try loadProject(entryPath);
+  const project = try loadProject(entryPath, Option<String>.none);
   const emitted = try emitProject(project, true);
   try fs.writeText(cPath, emitted);
   console.log(`emitted ${project.modules.length} Z modules to ${cPath}`);
   return 0;
 }
 
-function emitProjectStandardOutput(in entryPath: String): i32 throws String {
+function emitProjectStandardOutput(
+  in entryPath: String,
+  in generatedPath: Option<String>
+): i32 throws String {
   const input = try resolveCommandInput(entryPath);
-  const project = try loadProject(input.entryPath);
+  try validateGeneratedProjectInput(input, generatedPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   const emitted = try emitProject(
     project,
     project.config.targetConfigured
@@ -559,13 +596,17 @@ function buildProject(
   in outputPath: String,
   release: boolean
 ): i32 throws String {
-  const project = try loadProject(entryPath);
+  const project = try loadProject(entryPath, Option<String>.none);
   return try buildLoadedProject(project, outputPath, release);
 }
 
-function testProject(in entryPath: String): i32 throws String {
+function testProject(
+  in entryPath: String,
+  in generatedPath: Option<String>
+): i32 throws String {
   const input = try resolveCommandInput(entryPath);
-  const project = try loadProject(input.entryPath);
+  try validateGeneratedProjectInput(input, generatedPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   const emitted = try emitTestModulesC(project.modules, project.graph);
   const outputDirectory = `${project.config.directory}/.z-cache/test`;
   try fs.createDirectories(outputDirectory);
@@ -928,13 +969,14 @@ function buildExecutableTarget(
 
 function buildManifestProject(
   in projectPath: String,
-  release: boolean
+  release: boolean,
+  in generatedPath: Option<String>
 ): i32 throws String {
   const input = try resolveCommandInput(projectPath);
   if (!input.projectMode) {
     throw "project build expects a directory or z.json manifest; use `z build <entry.zs> <output>` for the compatibility file build";
   }
-  const project = try loadProject(input.entryPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   if (!project.config.targetConfigured) {
     throw "z build requires a configured target; this manifest declares only a source library";
   }
@@ -1140,10 +1182,12 @@ function runCacheMatches(
 function runProject(
   in entryPath: String,
   in childArguments: Array<String>,
-  release: boolean
+  release: boolean,
+  in generatedPath: Option<String>
 ): i32 throws String {
   const input = try resolveCommandInput(entryPath);
-  const project = try loadProject(input.entryPath);
+  try validateGeneratedProjectInput(input, generatedPath);
+  const project = try loadProject(input.entryPath, generatedPath);
   if (
     input.projectMode
     && !project.config.targetConfigured
@@ -1213,6 +1257,47 @@ function runProject(
   return try process.run(outputPath, childArguments);
 }
 
+struct GeneratedInputArguments {
+  inputPath: String;
+  generatedPath: Option<String>;
+}
+
+function parseGeneratedInputArguments(
+  in arguments: Array<String>,
+  in command: String
+): GeneratedInputArguments throws String {
+  let inputPath = ".";
+  let inputSeen = false;
+  let generatedPath = Option<String>.none;
+  let generatedSeen = false;
+  let index: usize = 1;
+  while (index < arguments.length) {
+    const argument = copy arguments[index];
+    if (argument == "--generated") {
+      if (generatedSeen) throw "--generated may be supplied only once";
+      if (index + 1 >= arguments.length) {
+        throw "--generated requires a generated .zbuild.json path";
+      }
+      const path = copy arguments[index + 1];
+      if (isOptionArgument(path)) {
+        throw "--generated requires a generated .zbuild.json path";
+      }
+      generatedPath = Option.some(move path);
+      generatedSeen = true;
+      index = index + 2;
+      continue;
+    }
+    if (isOptionArgument(argument)) {
+      throw `unknown ${command} option ${argument}`;
+    }
+    if (inputSeen) throw `usage: z ${command} [entry.zs|project] [--generated file.zbuild.json]`;
+    inputPath = move argument;
+    inputSeen = true;
+    index = index + 1;
+  }
+  return GeneratedInputArguments({ inputPath, generatedPath });
+}
+
 function reportOutcome(outcome: Result<i32, String>): i32 {
   return match (outcome) {
     success(exitCode) => exitCode;
@@ -1240,45 +1325,48 @@ function main(): i32 {
     return 0;
   }
   if (command == "check") {
-    if (arguments.length > 2) {
-      console.error("usage: z check [entry.zs|project]");
-      return 2;
-    }
-    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
-      console.error(`unknown check option ${arguments[1]}`);
-      return 2;
-    }
-    let inputPath = ".";
-    if (arguments.length == 2) inputPath = copy arguments[1];
-    const outcome = attempt checkProject(inputPath);
+    const parsed = attempt parseGeneratedInputArguments(arguments, "check");
+    const options = match (parsed) {
+      success(options) => options;
+      failure(message) => {
+        console.error(message);
+        return 2;
+      }
+    };
+    const outcome = attempt checkProject(
+      options.inputPath,
+      options.generatedPath
+    );
     return reportOutcome(outcome);
   }
   if (command == "test") {
-    if (arguments.length > 2) {
-      console.error("usage: z test [entry.zs|project]");
-      return 2;
-    }
-    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
-      console.error(`unknown test option ${arguments[1]}`);
-      return 2;
-    }
-    let inputPath = ".";
-    if (arguments.length == 2) inputPath = copy arguments[1];
-    const outcome = attempt testProject(inputPath);
+    const parsed = attempt parseGeneratedInputArguments(arguments, "test");
+    const options = match (parsed) {
+      success(options) => options;
+      failure(message) => {
+        console.error(message);
+        return 2;
+      }
+    };
+    const outcome = attempt testProject(
+      options.inputPath,
+      options.generatedPath
+    );
     return reportOutcome(outcome);
   }
   if (command == "metadata") {
-    if (arguments.length > 2) {
-      console.error("usage: z metadata [entry.zs|project]");
-      return 2;
-    }
-    if (arguments.length == 2 && isOptionArgument(arguments[1])) {
-      console.error(`unknown metadata option ${arguments[1]}`);
-      return 2;
-    }
-    let inputPath = ".";
-    if (arguments.length == 2) inputPath = copy arguments[1];
-    const outcome = attempt metadataProject(inputPath);
+    const parsed = attempt parseGeneratedInputArguments(arguments, "metadata");
+    const options = match (parsed) {
+      success(options) => options;
+      failure(message) => {
+        console.error(message);
+        return 2;
+      }
+    };
+    const outcome = attempt metadataProject(
+      options.inputPath,
+      options.generatedPath
+    );
     return reportOutcome(outcome);
   }
   if (command == "foreign-inspect") {
@@ -1302,22 +1390,28 @@ function main(): i32 {
     return reportOutcome(outcome);
   }
   if (command == "emit") {
-    if (arguments.length < 1 || arguments.length > 3) {
-      console.error("usage: z emit [entry.zs | project-directory | z.json]");
-      console.error("       z emit <entry.zs> <output.c>");
-      return 2;
-    }
-    if (arguments.length == 1) {
-      const outcome = attempt emitProjectStandardOutput(".");
+    if (
+      arguments.length == 3
+      && !isOptionArgument(arguments[1])
+      && !isOptionArgument(arguments[2])
+    ) {
+      const outcome = attempt emitProjectFile(
+        arguments[1],
+        arguments[2]
+      );
       return reportOutcome(outcome);
     }
-    if (arguments.length == 2) {
-      const outcome = attempt emitProjectStandardOutput(arguments[1]);
-      return reportOutcome(outcome);
-    }
-    const outcome = attempt emitProjectFile(
-      arguments[1],
-      arguments[2]
+    const parsed = attempt parseGeneratedInputArguments(arguments, "emit");
+    const options = match (parsed) {
+      success(options) => options;
+      failure(message) => {
+        console.error(message);
+        return 2;
+      }
+    };
+    const outcome = attempt emitProjectStandardOutput(
+      options.inputPath,
+      options.generatedPath
     );
     return reportOutcome(outcome);
   }
@@ -1348,30 +1442,56 @@ function main(): i32 {
     }
     let projectPath = ".";
     let release = false;
+    let generatedPath = Option<String>.none;
+    let generatedSeen = false;
+    let projectSeen = false;
     let index: usize = 1;
-    if (index < arguments.length && arguments[index] != "--release") {
-      if (isOptionArgument(arguments[index])) {
-        console.error(`unknown build option ${arguments[index]}`);
+    while (index < arguments.length) {
+      const argument = copy arguments[index];
+      if (argument == "--release") {
+        if (release) {
+          console.error("--release may be supplied only once");
+          return 2;
+        }
+        release = true;
+        index = index + 1;
+        continue;
+      }
+      if (argument == "--generated") {
+        if (generatedSeen) {
+          console.error("--generated may be supplied only once");
+          return 2;
+        }
+        if (index + 1 >= arguments.length) {
+          console.error("--generated requires a generated .zbuild.json path");
+          return 2;
+        }
+        const path = copy arguments[index + 1];
+        if (isOptionArgument(path)) {
+          console.error("--generated requires a generated .zbuild.json path");
+          return 2;
+        }
+        generatedPath = Option.some(move path);
+        generatedSeen = true;
+        index = index + 2;
+        continue;
+      }
+      if (isOptionArgument(argument)) {
+        console.error(`unknown build option ${argument}`);
         return 2;
       }
-      projectPath = copy arguments[1];
-      index = index + 1;
-    }
-    if (index < arguments.length) {
-      if (arguments[index] != "--release") {
-        console.error(`unknown build option ${arguments[index]}`);
+      if (projectSeen) {
+        console.error(`unknown build option ${argument}`);
         return 2;
       }
-      release = true;
+      projectPath = move argument;
+      projectSeen = true;
       index = index + 1;
-    }
-    if (index != arguments.length) {
-      console.error(`unknown build option ${arguments[index]}`);
-      return 2;
     }
     const outcome = attempt buildManifestProject(
       projectPath,
-      release
+      release,
+      generatedPath
     );
     return reportOutcome(outcome);
   }
@@ -1379,32 +1499,55 @@ function main(): i32 {
     let inputPath = ".";
     let childArguments = Array<String>();
     let release = false;
+    let inputSeen = false;
+    let generatedPath = Option<String>.none;
+    let generatedSeen = false;
     let index: usize = 1;
-    if (
-      index < arguments.length
-      && arguments[index] != "--release"
-      && arguments[index] != "--"
-    ) {
-      if (isOptionArgument(arguments[index])) {
-        console.error(`unknown run option ${arguments[index]}`);
+    while (index < arguments.length && arguments[index] != "--") {
+      const argument = copy arguments[index];
+      if (argument == "--release") {
+        if (release) {
+          console.error("--release may be supplied only once");
+          return 2;
+        }
+        release = true;
+        index = index + 1;
+        continue;
+      }
+      if (argument == "--generated") {
+        if (generatedSeen) {
+          console.error("--generated may be supplied only once");
+          return 2;
+        }
+        if (index + 1 >= arguments.length || arguments[index + 1] == "--") {
+          console.error("--generated requires a generated .zbuild.json path");
+          return 2;
+        }
+        const path = copy arguments[index + 1];
+        if (isOptionArgument(path)) {
+          console.error("--generated requires a generated .zbuild.json path");
+          return 2;
+        }
+        generatedPath = Option.some(move path);
+        generatedSeen = true;
+        index = index + 2;
+        continue;
+      }
+      if (isOptionArgument(argument)) {
+        console.error(`unknown run option ${argument}`);
         return 2;
       }
-      inputPath = copy arguments[index];
-      index = index + 1;
-    }
-    if (index < arguments.length && arguments[index] == "--release") {
-      release = true;
-      index = index + 1;
-    }
-    if (index < arguments.length) {
-      if (arguments[index] != "--") {
+      if (inputSeen) {
         console.error(
-          `unknown run option ${arguments[index]}; pass program arguments after --`
+          `unknown run option ${argument}; pass program arguments after --`
         );
         return 2;
       }
+      inputPath = move argument;
+      inputSeen = true;
       index = index + 1;
     }
+    if (index < arguments.length && arguments[index] == "--") index = index + 1;
     while (index < arguments.length) {
       childArguments.push(copy arguments[index]);
       index = index + 1;
@@ -1412,7 +1555,8 @@ function main(): i32 {
     const outcome = attempt runProject(
       inputPath,
       childArguments,
-      release
+      release,
+      generatedPath
     );
     return reportOutcome(outcome);
   }

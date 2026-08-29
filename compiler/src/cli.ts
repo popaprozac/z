@@ -1640,13 +1640,6 @@ function extractGeneratedOption(arguments_: readonly string[]): {
       index += 1;
       continue;
     }
-    if (argument.startsWith("--generated=")) {
-      if (selected !== null) throw new Error("--generated may be supplied only once");
-      const value = argument.slice("--generated=".length);
-      if (value.length === 0) throw new Error("--generated requires a generated .zbuild.json path");
-      selected = resolve(value);
-      continue;
-    }
     remaining.push(argument);
   }
   return { path: selected, remaining };

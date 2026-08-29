@@ -76,6 +76,13 @@ function identifier(value: unknown, field: string, fileName: string): string {
   return value;
 }
 
+function portablePackageName(value: unknown, field: string, fileName: string): string {
+  if (typeof value !== "string" || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value)) {
+    fail(fileName, `${field} must be a portable Z package name`);
+  }
+  return value;
+}
+
 function qualifiedSymbol(value: unknown, field: string, fileName: string): string {
   if (
     typeof value !== "string"
@@ -115,7 +122,7 @@ function parseModules(
     rejectUnknown(declaration, ["source", "package"], `modules.${specifier}`, fileName);
     const packageName = declaration.package === undefined
       ? null
-      : identifier(declaration.package, `modules.${specifier}.package`, fileName);
+      : portablePackageName(declaration.package, `modules.${specifier}.package`, fileName);
     modules.push({
       specifier,
       sourcePath: resolveSourcePath(

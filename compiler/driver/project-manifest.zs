@@ -21,6 +21,11 @@ export struct NativePackageIdentity {
   rootDirectory: String;
 }
 
+export struct NativeGeneratedModulePackage {
+  path: String;
+  packageIdentity: String;
+}
+
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
@@ -36,6 +41,7 @@ export struct NativeProjectConfig {
   libraryLinkFrameworks: Array<String>;
   dependencies: Array<NativePathDependency>;
   packageIdentities: Array<NativePackageIdentity>;
+  generatedModulePackages: Array<NativeGeneratedModulePackage>;
   targetConfigured: boolean;
   targetKind: String;
   targetName: Option<String>;
@@ -73,6 +79,7 @@ function emptyProjectConfig(): NativeProjectConfig {
     libraryLinkFrameworks: Array<String>(),
     dependencies: Array<NativePathDependency>(),
     packageIdentities: Array<NativePackageIdentity>(),
+    generatedModulePackages: Array<NativeGeneratedModulePackage>(),
     targetConfigured: false,
     targetKind: "executable",
     targetName: Option<String>.none,
@@ -984,6 +991,14 @@ function hasZSourceExtension(in path: String): boolean {
   );
 }
 
+function hasPathSuffix(in path: String, in suffix: String): boolean {
+  if (path.byteLength < suffix.byteLength) return false;
+  return (
+    path.copyBytes(path.byteLength - suffix.byteLength, path.byteLength)
+    == suffix
+  );
+}
+
 function validSourceImportSpecifier(in specifier: String): boolean {
   if (specifier.byteLength == 0 || hasZSourceExtension(specifier)) return false;
   if (specifier == "std") return false;
@@ -1516,6 +1531,223 @@ function validateProjectConfig(
 ): void throws String {
   const ancestors = Array<String>();
   try validateProjectConfigRecursive(inout config, ancestors);
+}
+
+function parseGeneratedModuleDeclaration(
+  inout cursor: JsonCursor,
+  in specifier: String,
+  in directory: String,
+  inout config: NativeProjectConfig
+): void throws String {
+  let source = "";
+  let packageName = "";
+  try expectByte(inout cursor, 123, "an object for a generated module");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+  } else {
+    while (true) {
+      const key = try parseJsonString(inout cursor);
+      try expectByte(inout cursor, 58, "\":\"");
+      if (key == "source") source = try parseJsonString(inout cursor);
+      else if (key == "package") packageName = try parseJsonString(inout cursor);
+      else {
+        throw jsonError(
+          cursor,
+          `generated module "${specifier}" contains unknown field "${key}"`
+        );
+      }
+      skipWhitespace(inout cursor);
+      if (
+        cursor.offset < cursor.source.byteLength
+        && cursor.source.byteAt(cursor.offset) == 44
+      ) {
+        cursor.offset = cursor.offset + 1;
+        continue;
+      }
+      try expectByte(inout cursor, 125, "\"}\"");
+      break;
+    }
+  }
+  if (!validSourceImportSpecifier(specifier)) {
+    throw jsonError(
+      cursor,
+      `generated module "${specifier}" must be a bare non-std Z module specifier`
+    );
+  }
+  if (!hasZSourceExtension(source)) {
+    throw jsonError(
+      cursor,
+      `generated module "${specifier}" source must be a .zs path`
+    );
+  }
+  const candidate = configuredPath(directory, source);
+  if (!fs.exists(candidate) || fs.isDirectory(candidate)) {
+    throw jsonError(
+      cursor,
+      `generated module "${specifier}" source "${candidate}" does not exist`
+    );
+  }
+  const canonical = try fs.realPath(candidate);
+  for (const imported of config.sourceImports) {
+    if (imported.specifier == specifier) {
+      throw jsonError(
+        cursor,
+        `generated module "${specifier}" collides with project source "${imported.path}"`
+      );
+    }
+  }
+  config.sourceImports.push(NativeSourceImport({
+    specifier: copy specifier,
+    path: copy canonical,
+  }));
+  if (packageName.byteLength == 0) return;
+  let packageIdentity = "";
+  for (const identity of config.packageIdentities) {
+    if (identity.name == packageName) packageIdentity = copy identity.id;
+  }
+  if (packageIdentity.byteLength == 0) {
+    throw jsonError(
+      cursor,
+      `generated module "${specifier}" names unknown package "${packageName}"`
+    );
+  }
+  config.generatedModulePackages.push(NativeGeneratedModulePackage({
+    path: move canonical,
+    packageIdentity,
+  }));
+}
+
+function parseGeneratedModules(
+  inout cursor: JsonCursor,
+  in directory: String,
+  inout config: NativeProjectConfig
+): void throws String {
+  try expectByte(inout cursor, 123, "an object for modules");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  while (true) {
+    const specifier = try parseJsonString(inout cursor);
+    try expectByte(inout cursor, 58, "\":\"");
+    try parseGeneratedModuleDeclaration(
+      inout cursor,
+      specifier,
+      directory,
+      inout config
+    );
+    skipWhitespace(inout cursor);
+    if (
+      cursor.offset < cursor.source.byteLength
+      && cursor.source.byteAt(cursor.offset) == 44
+    ) {
+      cursor.offset = cursor.offset + 1;
+      continue;
+    }
+    try expectByte(inout cursor, 125, "\"}\"");
+    return;
+  }
+}
+
+function parseGeneratedCallAdapters(inout cursor: JsonCursor): void throws String {
+  try expectByte(inout cursor, 91, "an array for callAdapters");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 93
+  ) {
+    cursor.offset = cursor.offset + 1;
+    return;
+  }
+  throw jsonError(
+    cursor,
+    "generated call adaptations are declared but are not executable in this compiler tier yet"
+  );
+}
+
+export function applyGeneratedBuildOverlay(
+  inout config: NativeProjectConfig,
+  in overlayPath: String
+): void throws String {
+  if (!hasPathSuffix(overlayPath, ".zbuild.json")) {
+    throw "generated build overlays must use the .zbuild.json extension";
+  }
+  const normalized = normalizedModulePath(overlayPath);
+  if (!fs.exists(normalized) || fs.isDirectory(normalized)) {
+    throw `generated build overlay "${normalized}" does not exist`;
+  }
+  const canonical = try fs.realPath(normalized);
+  const overlayDirectory = directoryName(canonical);
+  const source = try fs.readText(canonical);
+  let cursor = JsonCursor({ path: copy canonical, source, offset: 0 });
+  let foundVersion = false;
+  let foundModules = false;
+  try expectByte(inout cursor, 123, "a JSON object");
+  skipWhitespace(inout cursor);
+  if (
+    cursor.offset < cursor.source.byteLength
+    && cursor.source.byteAt(cursor.offset) == 125
+  ) {
+    cursor.offset = cursor.offset + 1;
+  } else {
+    while (true) {
+      const key = try parseJsonString(inout cursor);
+      try expectByte(inout cursor, 58, "\":\"");
+      if (key == "schemaVersion") {
+        skipWhitespace(inout cursor);
+        if (
+          cursor.offset >= cursor.source.byteLength
+          || cursor.source.byteAt(cursor.offset) != 49
+        ) {
+          throw jsonError(cursor, "generated build overlay schemaVersion must be 1");
+        }
+        cursor.offset = cursor.offset + 1;
+        foundVersion = true;
+      } else if (key == "modules") {
+        try parseGeneratedModules(
+          inout cursor,
+          overlayDirectory,
+          inout config
+        );
+        foundModules = true;
+      } else if (key == "callAdapters") {
+        try parseGeneratedCallAdapters(inout cursor);
+      } else {
+        throw jsonError(
+          cursor,
+          `generated build overlay contains unknown field "${key}"`
+        );
+      }
+      skipWhitespace(inout cursor);
+      if (
+        cursor.offset < cursor.source.byteLength
+        && cursor.source.byteAt(cursor.offset) == 44
+      ) {
+        cursor.offset = cursor.offset + 1;
+        continue;
+      }
+      try expectByte(inout cursor, 125, "\"}\"");
+      break;
+    }
+  }
+  skipWhitespace(inout cursor);
+  if (cursor.offset != cursor.source.byteLength) {
+    throw jsonError(cursor, "unexpected text after the generated build overlay");
+  }
+  if (!foundVersion) {
+    throw jsonError(cursor, "generated build overlay schemaVersion must be 1");
+  }
+  if (!foundModules) {
+    throw jsonError(cursor, "generated build overlay modules must be an object");
+  }
 }
 
 export function configuredProjectEntryPath(

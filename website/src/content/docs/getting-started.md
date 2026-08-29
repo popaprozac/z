@@ -71,9 +71,9 @@ z build . --generated .zapp/generated/services.zbuild.json
 ```
 
 The overlay uses exact module specifiers, cannot shadow project or standard
-imports, and generated source is checked as ordinary Z. This first compiler
-slice resolves generated modules in Stage 0; checked generated call adaptation
-and native-driver parity are the next layers.
+imports, and generated source is checked as ordinary Z. Stage 0 and the
+fixed-point native driver resolve the same overlay. Checked generated call
+adaptation is the next layer.
 
 Native dependencies belong in `z.json`. Portable libraries use
 `target.link.libraries`; Apple executables can use
