@@ -4359,6 +4359,31 @@ implementation. Windows/Linux requirements should arrive through the shared Z
 target/comptime model rather than a second condition language invented only for
 manifests.
 
+## Zapp compiled capability profiles
+
+Zapp now compiles named WebView capability profiles from `zapp.config.ts` into
+immutable Z policy. A native `WindowOptions` selects profile names; window
+creation resolves their permission and service-method union once into frozen
+hashed Sets, and every bridge request checks that selection before framework or
+service dispatch. Frontend-created child windows inherit the exact selection,
+while Web content cannot name a profile or inject trusted policy.
+
+This application path exposed two fixed-point composition gaps that Stage 0 did
+not share. First, native lowering cannot yet infer the element type of a
+`for...of` binding over a `readonly Array<String>` stored on a class. Zapp uses
+typed indexed reads plus explicit `copyBytes` while constructing or copying the
+small profile-name list; steady-state authorization remains allocation-free
+apart from ordinary ARC traffic and performs hashed membership lookup. Second,
+extracting an ARC class payload from `Option<T>` into a local emitted a const
+payload pointer assigned to a mutable ARC local. Passing the payload directly
+into a typed helper retains it correctly and avoids the invalid assignment.
+
+Both are compiler implementation gaps rather than desired language
+restrictions. They should become differential fixtures before the workarounds
+spread: readonly collection iteration must preserve its element type, and a
+consuming `Option<ReadonlyClass>` match must transfer or retain an owned class
+payload without discarding C qualifiers.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;
