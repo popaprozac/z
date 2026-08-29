@@ -117,6 +117,9 @@ production or compatibility-sensitive use.
 - Exact `z.json` source-module mappings for bare imports in Stage 0, the editor,
   and the fixed-point native compiler; package versions and installation remain
   separate future tooling
+- Versioned `.zbuild.json` overlays resolve tool-generated modules for one
+  Stage 0 project invocation without mutating authored source or `z.json`.
+  Checked call adaptation and native-driver parity remain the next layers.
 - A standalone native compiler capable of rebuilding its own constrained source
   graph to a fixed point
 - Compiler API 2 and `z metadata`, exposing versioned checked public symbols and

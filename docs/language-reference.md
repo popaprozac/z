@@ -66,6 +66,41 @@ driver. A library may also carry native include and link requirements through
 repeat a package's implementation details. Registry installation and lockfiles
 remain future work.
 
+### Tool-generated modules
+
+Code generators do not add transient paths to authored `z.json`. They may write
+a versioned `.zbuild.json` overlay and supply it to one project invocation:
+
+```sh
+z check . --generated .zapp/generated/services.zbuild.json
+z build . --release --generated .zapp/generated/services.zbuild.json
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "modules": {
+    "zapp/generated/services": {
+      "source": "service-dispatchers.zs",
+      "package": "zapp"
+    }
+  },
+  "callAdapters": []
+}
+```
+
+Module paths are relative to the overlay. Specifiers are exact, bare, and
+cannot shadow `std` or any project/package import. The optional `package` must
+name an existing package in the resolved graph; it grants the generated module
+that exact package identity for `internal` access. Generated source receives no
+other privilege and is parsed, checked, and lowered as ordinary Z.
+
+The overlay also reserves versioned, source-hashed `callAdapters` for tools that
+need checked generated adapters without rewriting source. Nonempty adaptations
+are rejected until the checked lowering tier is available; they are never
+silently ignored. Generated overlays are build products, not portable package
+configuration, and should normally live under a tool cache such as `.zapp/`.
+
 Modules may publish named compile-time values:
 
 ```z

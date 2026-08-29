@@ -29,6 +29,7 @@ import { validateNativeFrontendSemantics } from "./native-semantic-parity.ts";
 import { parse } from "./parser.ts";
 import { createZProgramMetadata, renderZProgramMetadata } from "./program-metadata.ts";
 import {
+  applyGeneratedBuildOverlay,
   deploymentTargetFlags,
   prepareProject,
   type ProjectBuild,
@@ -71,11 +72,15 @@ const inputArgument = projectAware
     ? "."
     : suppliedInputArgument
   : suppliedInputArgument;
-const trailingArguments = projectAware
+const rawTrailingArguments = projectAware
   ? usesDefaultProject
     ? commandArguments
     : commandArguments.slice(1)
   : commandArguments.slice(1);
+const generatedOption = projectAware
+  ? extractGeneratedOption(rawTrailingArguments)
+  : { path: null, remaining: rawTrailingArguments };
+const trailingArguments = generatedOption.remaining;
 
 if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run", "test", "self-host-lex", "self-host-parse", "self-host-resolve", "self-host-emit", "self-host-foreign"].includes(command)) {
   usage();
@@ -83,9 +88,19 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
 } else {
   const suppliedInputPath = resolve(inputArgument);
   try {
-    const input = projectAware
+    const resolvedInput = projectAware
       ? resolveCliInput(suppliedInputPath)
       : { mode: "file" as const, path: suppliedInputPath };
+    const input = generatedOption.path === null
+      ? resolvedInput
+      : resolvedInput.mode === "project"
+        ? {
+            mode: "project" as const,
+            project: applyGeneratedBuildOverlay(resolvedInput.project, generatedOption.path),
+          }
+        : (() => {
+            throw new Error("--generated requires a Z project directory or z.json manifest");
+          })();
     const inputPath = input.mode === "project" ? input.project.entryPath! : input.path;
     if (command === "build") {
       if (input.mode !== "project") {
@@ -127,7 +142,9 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
         throw new Error("test currently requires a .zs source module");
       }
       const source = readFileSync(inputPath, "utf8");
-      const artifact = compileTestsToNative(source, inputPath);
+      const artifact = compileTestsToNative(source, inputPath, {
+        projectBuild: input.mode === "project" ? input.project : undefined,
+      });
       for (const warning of artifact.warnings) {
         console.error(formatDiagnostic(warning, source));
       }
@@ -157,6 +174,7 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
             && input.project.targetConfigured
             && input.project.targetKind === "executable",
           validateTarget: input.mode === "project" && input.project.targetConfigured,
+          projectBuild: input.mode === "project" ? input.project : undefined,
           nativeFrontendResolver: nativeFrontend
             ? (sourceBatch) => {
               nativeRun = runStage1Resolver(inputPath, sourceBatch);
@@ -215,7 +233,11 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
       if (!inputPath.endsWith(".zs")) {
         throw new Error("metadata requires a .zs source module or project entry");
       }
-      const nativeRun = runStage1Resolver(inputPath);
+      const nativeRun = runStage1Resolver(
+        inputPath,
+        undefined,
+        input.mode === "project" ? input.project : undefined,
+      );
       process.stdout.write(renderZProgramMetadata(
         createZProgramMetadata(nativeRun.graph, nativeRun.sourceBatch),
       ));
@@ -227,7 +249,9 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
         throw new Error("emit requires a .zs source module or project entry");
       }
       const source = readFileSync(inputPath, "utf8");
-      const artifact = compileToNative(source, inputPath);
+      const artifact = compileToNative(source, inputPath, {
+        projectBuild: input.mode === "project" ? input.project : undefined,
+      });
       for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, source));
       process.stdout.write(artifact.source);
     } else {
@@ -244,7 +268,10 @@ if (!command || !inputArgument || !["build", "check", "emit", "metadata", "run",
         );
       }
       const source = readFileSync(inputPath, "utf8");
-      const artifact = compileToNative(source, inputPath, { requireMain: true });
+      const artifact = compileToNative(source, inputPath, {
+        requireMain: true,
+        projectBuild: input.mode === "project" ? input.project : undefined,
+      });
       for (const warning of artifact.warnings) console.error(formatDiagnostic(warning, source));
       runNative(
         inputPath,
@@ -276,6 +303,7 @@ type Stage1ResolverRun = {
 function runStage1Resolver(
   inputPath: string,
   discoveredSourceBatch?: SourceModuleBatch,
+  suppliedProject?: ProjectBuild,
 ): Stage1ResolverRun {
   const projectRoot = resolve(dirname(new URL(import.meta.url).pathname), "../..");
   const entryPath = realpathSync(inputPath);
@@ -283,10 +311,11 @@ function runStage1Resolver(
   const sourceBatch = discoveredSourceBatch ?? (() => {
     const entrySource = readFileSync(entryPath, "utf8");
     const entryProgram = parse(lex(entrySource, entryPath), entryPath);
-    const project = prepareProject(entryPath);
+    const project = suppliedProject ?? prepareProject(entryPath);
     return loadSourceModuleBatch(entrySource, entryProgram, entryPath, {
       sourceImports: project.sourceImports,
       packages: project.packages,
+      generatedModulePackages: project.generatedModulePackages,
     });
   })();
   const loadingMilliseconds = performance.now() - loadingStarted;
@@ -1589,6 +1618,40 @@ function parseRunArguments(arguments_: readonly string[]): {
   };
 }
 
+function extractGeneratedOption(arguments_: readonly string[]): {
+  readonly path: string | null;
+  readonly remaining: readonly string[];
+} {
+  let selected: string | null = null;
+  const remaining: string[] = [];
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument === "--") {
+      remaining.push(...arguments_.slice(index));
+      break;
+    }
+    if (argument === "--generated") {
+      if (selected !== null) throw new Error("--generated may be supplied only once");
+      const value = arguments_[index + 1];
+      if (value === undefined || value.startsWith("--")) {
+        throw new Error("--generated requires a generated .zbuild.json path");
+      }
+      selected = resolve(value);
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith("--generated=")) {
+      if (selected !== null) throw new Error("--generated may be supplied only once");
+      const value = argument.slice("--generated=".length);
+      if (value.length === 0) throw new Error("--generated requires a generated .zbuild.json path");
+      selected = resolve(value);
+      continue;
+    }
+    remaining.push(argument);
+  }
+  return { path: selected, remaining };
+}
+
 function runNative(
   inputPath: string,
   artifact: NativeArtifact,
@@ -1705,6 +1768,7 @@ function buildProject(
   const source = readFileSync(project.entryPath, "utf8");
   const artifact = compileToNative(source, project.entryPath, {
     requireMain: project.targetKind === "executable",
+    projectBuild: project,
   });
   for (const warning of artifact.warnings) {
     console.error(formatDiagnostic(warning, source));
@@ -3978,12 +4042,12 @@ function nativeLanguageFlags(language: NativeArtifact["language"]): string[] {
 }
 
 function usage(): void {
-  console.error("usage: z build [project-directory|z.json] [--release]");
-  console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings]");
-  console.error("       z test [project-directory|z.json|file.zs]");
-  console.error("       z emit [project-directory|z.json|file.zs]");
-  console.error("       z metadata [project-directory|z.json|file.zs]");
-  console.error("       z run [project-directory|z.json|file.zs] [--release] [-- program arguments]");
+  console.error("usage: z build [project-directory|z.json] [--release] [--generated file.zbuild.json]");
+  console.error("usage: z check [project-directory|z.json|file.zs] [--native-frontend] [--timings] [--generated file.zbuild.json]");
+  console.error("       z test [project-directory|z.json|file.zs] [--generated file.zbuild.json]");
+  console.error("       z emit [project-directory|z.json|file.zs] [--generated file.zbuild.json]");
+  console.error("       z metadata [project-directory|z.json|file.zs] [--generated file.zbuild.json]");
+  console.error("       z run [project-directory|z.json|file.zs] [--release] [--generated file.zbuild.json] [-- program arguments]");
   console.error("       z self-host-lex <file.zs> [more.zs ...]");
   console.error("       z self-host-parse <file.zs> [more.zs ...] [--timings]");
   console.error("       z self-host-resolve <entry.zs> [--timings]");

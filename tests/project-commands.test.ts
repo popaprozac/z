@@ -26,7 +26,7 @@ test("associates z.json with the implemented project-manifest schema", () => {
     };
   };
   const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
-    readonly required?: readonly string[];
+    readonly anyOf?: readonly { readonly required?: readonly string[] }[];
     readonly properties?: {
       readonly target?: {
         readonly required?: readonly string[];
@@ -59,7 +59,10 @@ test("associates z.json with the implemented project-manifest schema", () => {
     fileMatch: ["z.json"],
     url: "./schemas/z.schema.json",
   }]);
-  assert.deepEqual(schema.required, ["target"]);
+  assert.deepEqual(schema.anyOf, [
+    { required: ["target"] },
+    { required: ["library"] },
+  ]);
   assert.deepEqual(schema.properties?.target?.required, ["name", "entry"]);
   assert.deepEqual(schema.properties?.target?.properties?.kind?.enum, [
     "executable",

@@ -3,6 +3,10 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync
 import { dirname, resolve } from "node:path";
 import { DiagnosticError } from "./diagnostics.ts";
 import type { ApiNotes } from "./foreign-api-notes.ts";
+import {
+  loadGeneratedBuildOverlay,
+  type GeneratedBuildOverlay,
+} from "./generated-build.ts";
 
 export type ProjectBuild = {
   readonly manifestPath: string | null;
@@ -20,6 +24,10 @@ export type ProjectBuild = {
   readonly nativeLinkerArguments: readonly string[];
   readonly frameworks: readonly string[];
   readonly foreignApiNotes: Readonly<Record<string, ApiNotes>>;
+  /** Tool-owned generated modules and checked call adaptations for this invocation. */
+  readonly generatedBuild: GeneratedBuildOverlay | null;
+  /** Exact generated source paths granted an existing package identity. */
+  readonly generatedModulePackages: Readonly<Record<string, ProjectPackage>>;
 };
 
 export type ProjectPackage = {
@@ -92,7 +100,51 @@ const emptyBuild: ProjectBuild = {
   nativeLinkerArguments: [],
   frameworks: [],
   foreignApiNotes: {},
+  generatedBuild: null,
+  generatedModulePackages: {},
 };
+
+export function applyGeneratedBuildOverlay(
+  project: ProjectBuild,
+  overlayPath: string,
+): ProjectBuild {
+  if (project.manifestPath === null) {
+    throw new Error("--generated requires a Z project with a z.json manifest");
+  }
+  const generatedBuild = loadGeneratedBuildOverlay(overlayPath);
+  if (generatedBuild.callAdapters.length > 0) {
+    throw new Error(
+      `${generatedBuild.fileName}: generated call adaptations are declared but are not executable in this compiler tier yet`,
+    );
+  }
+  const sourceImports = { ...project.sourceImports };
+  const generatedModulePackages: Record<string, ProjectPackage> = {};
+  for (const module of generatedBuild.modules) {
+    const existing = sourceImports[module.specifier];
+    if (existing !== undefined) {
+      throw new Error(
+        `${generatedBuild.fileName}: generated module ${JSON.stringify(module.specifier)} `
+        + `collides with project source ${JSON.stringify(existing)}`,
+      );
+    }
+    sourceImports[module.specifier] = module.sourcePath;
+    if (module.packageName === null) continue;
+    const owner = project.packages.find((candidate) => candidate.name === module.packageName);
+    if (!owner) {
+      throw new Error(
+        `${generatedBuild.fileName}: generated module ${JSON.stringify(module.specifier)} `
+        + `names unknown package ${JSON.stringify(module.packageName)}`,
+      );
+    }
+    generatedModulePackages[module.sourcePath] = owner;
+  }
+  return {
+    ...project,
+    sourceImports,
+    generatedBuild,
+    generatedModulePackages,
+  };
+}
 const buildCache = new Map<string, { readonly freshness: number; readonly build: ProjectBuild }>();
 
 function projectObject(

@@ -18,7 +18,98 @@ import {
 import { lex } from "../compiler/src/lexer.ts";
 import { linkSourceModules } from "../compiler/src/modules.ts";
 import { parse } from "../compiler/src/parser.ts";
-import { prepareProject } from "../compiler/src/project.ts";
+import { compileToNative } from "../compiler/src/compiler.ts";
+import {
+  applyGeneratedBuildOverlay,
+  prepareProject,
+} from "../compiler/src/project.ts";
+
+test("resolves generated modules without editing authored source", () => {
+  const directory = mkdtempSync("/tmp/z-generated-build-");
+  const applicationDirectory = resolve(directory, "application");
+  const frameworkDirectory = resolve(directory, "framework");
+  const generatedDirectory = resolve(directory, "generated");
+  const entryFile = resolve(applicationDirectory, "main.zs");
+  const overlayFile = resolve(generatedDirectory, "services.zbuild.json");
+  try {
+    mkdirSync(applicationDirectory, { recursive: true });
+    mkdirSync(frameworkDirectory, { recursive: true });
+    mkdirSync(generatedDirectory, { recursive: true });
+    writeFileSync(resolve(frameworkDirectory, "framework.zs"), `
+      internal function frameworkAnswer(): i32 { return 42; }
+    `);
+    writeFileSync(resolve(frameworkDirectory, "z.json"), JSON.stringify({
+      package: { name: "framework", version: "0.1.0" },
+      library: { entry: "framework.zs" },
+    }));
+    writeFileSync(resolve(generatedDirectory, "service-dispatchers.zs"), `
+      import { frameworkAnswer } from "framework";
+      export function generatedAnswer(): i32 { return frameworkAnswer(); }
+    `);
+    writeFileSync(entryFile, `
+      import { generatedAnswer } from "framework/generated/services";
+      function main(): i32 { return generatedAnswer() - 42; }
+    `);
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { framework: { path: "../framework" } },
+      target: { name: "generated-build", entry: "main.zs" },
+    }));
+    writeFileSync(overlayFile, JSON.stringify({
+      schemaVersion: 1,
+      modules: {
+        "framework/generated/services": {
+          source: "service-dispatchers.zs",
+          package: "framework",
+        },
+      },
+      callAdapters: [],
+    }));
+
+    const project = applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile);
+    const artifact = compileToNative(readFileSync(entryFile, "utf8"), entryFile, {
+      projectBuild: project,
+    });
+    assert.match(artifact.source, /generatedAnswer/);
+    assert.match(artifact.source, /frameworkAnswer/);
+
+    const checked = spawnSync(process.execPath, [
+      cli,
+      "check",
+      applicationDirectory,
+      "--generated",
+      overlayFile,
+    ], { encoding: "utf8", timeout: 30_000 });
+    assert.equal(checked.status, 0, checked.stderr);
+
+    writeFileSync(overlayFile, JSON.stringify({
+      schemaVersion: 1,
+      modules: {
+        "framework/generated/services": {
+          source: "service-dispatchers.zs",
+          package: "framework",
+        },
+      },
+      callAdapters: [{
+        source: "../application/main.zs",
+        sourceHash: "0".repeat(64),
+        offset: 1,
+        target: "ApplicationServicesBuilder.register",
+        replacement: "ApplicationServicesBuilder.__registerGenerated",
+        argument: 1,
+        adapter: {
+          module: "framework/generated/services",
+          export: "generatedAnswer",
+        },
+      }],
+    }));
+    assert.throws(
+      () => applyGeneratedBuildOverlay(prepareProject(entryFile), overlayFile),
+      /call adaptations are declared but are not executable/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("links bundled source-backed standard modules as ordinary Z source", () => {
   const directory = mkdtempSync("/tmp/z-source-stdlib-");

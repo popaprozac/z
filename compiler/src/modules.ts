@@ -72,6 +72,11 @@ export type SourceModuleOptions = {
     readonly name: string;
     readonly rootDirectory: string;
   }[];
+  readonly generatedModulePackages?: Readonly<Record<string, {
+    readonly id: string;
+    readonly name: string;
+    readonly rootDirectory: string;
+  }>>;
 };
 
 type ModuleNode = {
@@ -158,14 +163,16 @@ export function loadSourceModuleBatch(
         : absoluteConfigured;
       if (canonicalConfigured === canonical) packageSpecifiers.add(specifier);
     }
+    const generatedPackage = options.generatedModulePackages?.[canonical];
+    const ownerPackage = generatedPackage ?? packageForFile(canonical);
     const module: SourceModuleBatchModule = {
       fileName: canonical,
       source,
       program,
       dependencies,
       packageSpecifiers,
-      packageId: packageForFile(canonical)?.id ?? null,
-      packageName: packageForFile(canonical)?.name ?? null,
+      packageId: ownerPackage?.id ?? null,
+      packageName: ownerPackage?.name ?? null,
     };
     modules.set(canonical, module);
     for (const declaration of program.imports) {

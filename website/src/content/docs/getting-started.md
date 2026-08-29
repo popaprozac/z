@@ -63,6 +63,18 @@ not claim `.z`, which Unix tooling commonly recognizes as a compressed archive.
 Once the bootstrapped `z` binary is on `PATH`, project commands become simply
 `z check .`, `z run .`, and `z build .`.
 
+Framework tools may add generated Z modules for one invocation without editing
+`z.json` or authored source. They pass a versioned build product explicitly:
+
+```sh
+z build . --generated .zapp/generated/services.zbuild.json
+```
+
+The overlay uses exact module specifiers, cannot shadow project or standard
+imports, and generated source is checked as ordinary Z. This first compiler
+slice resolves generated modules in Stage 0; checked generated call adaptation
+and native-driver parity are the next layers.
+
 Native dependencies belong in `z.json`. Portable libraries use
 `target.link.libraries`; Apple executables can use
 `target.link.frameworks` for checked names such as `AppKit` and `WebKit`

@@ -1941,6 +1941,32 @@ execute arbitrary host code during resolution or compilation. Future generated
 artifacts should instead use compiler-owned declarative transformations with
 explicit inputs and outputs.
 
+Framework tools may provide a versioned generated-build overlay for one compiler
+invocation:
+
+```text
+z build . --generated .zapp/generated/services.zbuild.json
+```
+
+The overlay is not an authored package manifest and is never installed as a
+dependency. It maps exact bare specifiers to generated `.zs` modules and may
+assign a module an existing package identity so compiler-generated framework
+code can use that framework's `internal` implementation surface. An unknown
+package, import collision, missing source, malformed overlay, or stale
+transformation is an error. Generated modules remain ordinary checked Z: their
+imports, exports, ownership, executor requirements, and native dependencies do
+not bypass semantic analysis.
+
+The intended call-adaptation tier is similarly declarative. A record identifies
+one source hash and call offset, the original semantic target, one replacement
+target, an argument position, and an exported adapter in a generated module.
+The compiler must re-resolve and type-check every named symbol before lowering;
+it never executes the generator during compilation and never edits authored
+source. This is deliberately narrower than macros and is suitable for RPC,
+serialization, service registration, and dependency-injection tooling. The
+first executable slice resolves generated modules; nonempty call-adaptation
+records fail closed until checked lowering lands in both compiler drivers.
+
 Package implementation is intentionally queued behind native-compiler
 verification. The intended sequence is local path packages and a deterministic
 lockfile, system-native dependency verification, a curated contract index, and

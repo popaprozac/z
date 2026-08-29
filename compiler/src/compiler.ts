@@ -64,6 +64,7 @@ export type NativeTestArtifact = NativeArtifact & {
 
 export type NativeCompileOptions = {
   readonly requireMain?: boolean;
+  readonly projectBuild?: ProjectBuild;
 };
 
 export type AnalyzedSource = {
@@ -235,15 +236,17 @@ export type AnalysisOptions = {
     readonly source: string;
     readonly fileName: string;
   }>>;
+  readonly projectBuild?: ProjectBuild;
 };
 
 export function analyzeSource(source: string, fileName: string, options: AnalysisOptions = {}): AnalyzedSource {
   const tokens = lex(source, fileName);
   const sourceProgram = parse(tokens, fileName);
-  const projectBuild = prepareProject(fileName);
+  const projectBuild = options.projectBuild ?? prepareProject(fileName);
   const linked = linkSourceModules(source, sourceProgram, fileName, {
     sourceImports: projectBuild.sourceImports,
     packages: projectBuild.packages,
+    generatedModulePackages: projectBuild.generatedModulePackages,
   });
   const linkedProgram = options.includeTests === false
     ? {
@@ -583,6 +586,7 @@ export function compileToNative(
   const { program, semanticInfo, projectBuild, moduleIncludeDirectories } = analyzeSource(source, fileName, {
     requireMain: options.requireMain,
     includeTests: false,
+    projectBuild: options.projectBuild,
   });
   const asyncDeclaration = [
     ...program.functions,
@@ -649,6 +653,7 @@ export function compileToNative(
 export function compileTestsToNative(
   source: string,
   fileName: string,
+  options: NativeCompileOptions = {},
 ): NativeTestArtifact {
   const {
     program,
@@ -658,6 +663,7 @@ export function compileTestsToNative(
   } = analyzeSource(source, fileName, {
     requireMain: false,
     includeTests: true,
+    projectBuild: options.projectBuild,
   });
   const tests = program.functions.filter((declaration) => declaration.testName);
   if (tests.length === 0) {
