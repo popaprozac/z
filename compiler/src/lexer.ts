@@ -12,6 +12,7 @@ export type TokenKind =
   | "templateEnd"
   | "import"
   | "export"
+  | "internal"
   | "from"
   | "as"
   | "function"
@@ -103,6 +104,7 @@ export type Token = {
 const keywords = new Map<string, TokenKind>([
   ["import", "import"],
   ["export", "export"],
+  ["internal", "internal"],
   ["from", "from"],
   ["as", "as"],
   ["function", "function"],

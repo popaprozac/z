@@ -1248,7 +1248,13 @@ export function parse(tokens: Token[], fileName: string): Program {
         deinitializer = { kind: "deinit" as const, body: block.statements, location: deinitToken.location };
         continue;
       }
-      const visibilityToken = match("public") ? "public" : match("private") ? "private" : null;
+      const visibilityToken = match("public")
+        ? "public"
+        : match("internal")
+        ? "internal"
+        : match("private")
+        ? "private"
+        : null;
       const visibility = visibilityToken ?? "public";
       const fieldReadonly = Boolean(match("readonly"));
       const isStatic = match("static");
@@ -1398,6 +1404,7 @@ export function parse(tokens: Token[], fileName: string): Program {
 
   const imports: ImportDeclaration[] = [];
   const exports: Program["exports"] = [];
+  const internals: Program["internals"] = [];
   const constants: Program["constants"] = [];
   const typeAliases: TypeAliasDeclaration[] = [];
   const traits: TraitDeclaration[] = [];
@@ -1406,6 +1413,17 @@ export function parse(tokens: Token[], fileName: string): Program {
   const functions: FunctionDeclaration[] = [];
   while (!at("eof")) {
     const exportToken = match("export") ? previous() : null;
+    const internalToken = match("internal") ? previous() : null;
+    if (exportToken && internalToken) {
+      throw new DiagnosticError(fileName, internalToken.location, "a declaration cannot be both `export` and `internal`", {
+        code: "Z0605",
+        helps: ["use `export` for the public package surface or `internal` for package-only access"],
+      });
+    }
+    const publish = (declaration: Program["exports"][number]): void => {
+      if (exportToken) exports.push(declaration);
+      if (internalToken) internals.push(declaration);
+    };
     const nativeCToken = at("identifier") && peek().text === "c"
       ? take()
       : null;
@@ -1414,6 +1432,7 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` can only modify a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       if (exportToken) throw new DiagnosticError(fileName, exportToken.location, "imports cannot be exported; export declarations from their defining module");
+      if (internalToken) throw new DiagnosticError(fileName, internalToken.location, "imports cannot be internal; apply `internal` to declarations in their defining module");
       imports.push(parseImport());
     } else if (at("const")) {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` cannot modify a module constant");
@@ -1421,10 +1440,10 @@ export function parse(tokens: Token[], fileName: string): Program {
       const start = expect("const", "`const`").location;
       const name = expect("identifier", "a module constant name");
       const type = match("colon") ? parseType() : null;
-      if (exportToken && !type) {
-        throw new DiagnosticError(fileName, name.location, `exported module constant ${JSON.stringify(name.text)} requires an explicit type`, {
+      if ((exportToken || internalToken) && !type) {
+        throw new DiagnosticError(fileName, name.location, `${exportToken ? "exported" : "internal"} module constant ${JSON.stringify(name.text)} requires an explicit type`, {
           code: "Z0604",
-          helps: [`write \`export const ${name.text}: Type = ...;\``],
+          helps: [`write \`${exportToken ? "export" : "internal"} const ${name.text}: Type = ...;\``],
         });
       }
       expect("equal", "`=` after a module constant");
@@ -1438,31 +1457,31 @@ export function parse(tokens: Token[], fileName: string): Program {
         initializer,
         location: start,
       });
-      if (exportToken) exports.push({ name: name.text, declarationKind: "const", location: exportToken.location });
+      publish({ name: name.text, declarationKind: "const", location: (exportToken ?? internalToken)?.location ?? start });
     } else if (at("identifier") && peek().text === "type") {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` can only modify a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTypeAlias();
       typeAliases.push(declaration);
-      if (exportToken) exports.push({ name: declaration.name, declarationKind: "type", location: exportToken.location });
+      publish({ name: declaration.name, declarationKind: "type", location: (exportToken ?? internalToken)?.location ?? declaration.location });
     } else if (at("trait")) {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` can only modify a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseTrait();
       traits.push(declaration);
-      if (exportToken) exports.push({ name: declaration.name, declarationKind: "trait", location: exportToken.location });
+      publish({ name: declaration.name, declarationKind: "trait", location: (exportToken ?? internalToken)?.location ?? declaration.location });
     } else if (at("struct") || at("class")) {
       if (nativeCToken && at("class")) {
         throw new DiagnosticError(fileName, nativeCToken.location, "`c class` is not supported; use a C-layout struct or an opaque exported handle");
       }
       const declaration = parseAggregate(Boolean(readonlyToken), nativeCToken);
       structs.push(declaration);
-      if (exportToken) exports.push({ name: declaration.name, declarationKind: declaration.kind, location: exportToken.location });
+      publish({ name: declaration.name, declarationKind: declaration.kind, location: (exportToken ?? internalToken)?.location ?? declaration.location });
     } else if (at("enum")) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
       const declaration = parseEnum(nativeCToken);
       enums.push(declaration);
-      if (exportToken) exports.push({ name: declaration.name, declarationKind: "enum", location: exportToken.location });
+      publish({ name: declaration.name, declarationKind: "enum", location: (exportToken ?? internalToken)?.location ?? declaration.location });
     } else if (
       at("async")
       && tokens[current + 1]?.kind === "identifier"
@@ -1476,6 +1495,9 @@ export function parse(tokens: Token[], fileName: string): Program {
       if (exportToken) {
         throw new DiagnosticError(fileName, exportToken.location, "tests cannot be exported");
       }
+      if (internalToken) {
+        throw new DiagnosticError(fileName, internalToken.location, "tests cannot be internal");
+      }
       if (nativeCToken) {
         throw new DiagnosticError(fileName, nativeCToken.location, "`c` cannot modify a test declaration");
       }
@@ -1485,8 +1507,11 @@ export function parse(tokens: Token[], fileName: string): Program {
       functions.push(parseTest());
     } else if (at("function") || at("async")) {
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
-      if (nativeCToken && !exportToken) {
+      if (nativeCToken && !exportToken && !internalToken) {
         throw new DiagnosticError(fileName, nativeCToken.location, "a C ABI function must use `export c function`");
+      }
+      if (nativeCToken && internalToken) {
+        throw new DiagnosticError(fileName, internalToken.location, "a C ABI function cannot be internal; C symbols are public ABI contracts");
       }
       const isAsync = match("async");
       const parsed = parseFunction(false, isAsync);
@@ -1501,14 +1526,14 @@ export function parse(tokens: Token[], fileName: string): Program {
           }
         : parsed;
       functions.push(declaration);
-      if (exportToken) exports.push({ name: declaration.name, declarationKind: "function", location: exportToken.location });
+      publish({ name: declaration.name, declarationKind: "function", location: (exportToken ?? internalToken)?.location ?? declaration.location });
     } else {
       if (nativeCToken) throw new DiagnosticError(fileName, nativeCToken.location, "`c` must be followed by a function, struct, or enum declaration");
       if (readonlyToken) throw new DiagnosticError(fileName, readonlyToken.location, "`readonly` can only modify a struct or class declaration");
-      throw new DiagnosticError(fileName, peek().location, "expected an import, export, const, type, trait, struct, class, enum, function, or test declaration");
+      throw new DiagnosticError(fileName, peek().location, "expected an import, export, internal, const, type, trait, struct, class, enum, function, or test declaration");
     }
   }
-  return { kind: "program", imports, exports, constants, typeAliases, traits, structs, enums, functions };
+  return { kind: "program", imports, exports, internals, constants, typeAliases, traits, structs, enums, functions };
 }
 
 function startsPrimary(kind: TokenKind | undefined): boolean {

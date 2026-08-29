@@ -15,6 +15,7 @@ import {
   findModule,
   importTarget,
   moduleExports,
+  moduleHasInternal,
   validateModuleBindings,
 } from "./module-symbols.zs";
 import {
@@ -66,9 +67,22 @@ export function parseModule(
   };
   const module = ParsedModule({
     path: source.path.copyBytes(0, source.path.byteLength),
+    packageIdentity: source.packageIdentity.copyBytes(0, source.packageIdentity.byteLength),
     packageSpecifiers: copy source.packageSpecifiers,
     program,
   });
+  if (module.packageIdentity.byteLength == 0) {
+    for (const declaration of module.program.declarations) {
+      if (!declaration.packageVisible) continue;
+      throw moduleResolutionError(
+        ModuleResolveErrorKind.missingExport,
+        module.path,
+        `internal declaration ${declaration.name} requires a manifest-defined package identity`,
+        declaration.line,
+        declaration.column
+      );
+    }
+  }
   try validateModuleBindings(module);
   return module;
 }
@@ -131,9 +145,22 @@ function resolveDependencies(
     };
     if (declaration.selective) {
       for (const binding of declaration.bindings) {
-        if (!moduleExports(modules[dependency], binding.importedName)) {
+        if (!moduleExports(
+          modules[dependency],
+          binding.importedName,
+          module.packageIdentity
+        )) {
           const line = binding.line;
           const column = binding.column;
+          if (moduleHasInternal(modules[dependency], binding.importedName)) {
+            throw moduleResolutionError(
+              ModuleResolveErrorKind.missingExport,
+              module.path,
+              `declaration ${binding.importedName} is internal to its package`,
+              line,
+              column
+            );
+          }
           throw moduleResolutionError(
             ModuleResolveErrorKind.missingExport,
             module.path,
@@ -160,6 +187,7 @@ export function buildResolvedModules(
     const symbolIndices = buildModuleSymbolIndices(symbols);
     modules.push(ResolvedModule({
       path: parsed[index].path.copyBytes(0, parsed[index].path.byteLength),
+      packageIdentity: parsed[index].packageIdentity.copyBytes(0, parsed[index].packageIdentity.byteLength),
       dependencies,
       symbols,
       symbolIndices,

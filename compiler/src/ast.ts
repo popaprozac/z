@@ -9,6 +9,8 @@ export type Program = {
   readonly kind: "program";
   readonly imports: ImportDeclaration[];
   readonly exports: ExportDeclaration[];
+  /** Declarations exported only to modules in the same manifest-defined package. */
+  readonly internals: ExportDeclaration[];
   readonly constants: ModuleConstantDeclaration[];
   readonly typeAliases: TypeAliasDeclaration[];
   readonly traits: TraitDeclaration[];
@@ -97,7 +99,7 @@ export type FieldDeclaration = {
   /** True when the source declaration used `field?: T`. */
   readonly optional?: boolean;
   readonly defaultValue?: Expression | null;
-  readonly visibility: "public" | "private";
+  readonly visibility: "public" | "internal" | "private";
   readonly readonly: boolean;
   readonly location: SourceLocation;
 };
@@ -148,7 +150,7 @@ export type FunctionDeclaration = {
   };
   readonly async?: boolean;
   readonly static?: boolean;
-  readonly visibility?: "public" | "private";
+  readonly visibility?: "public" | "internal" | "private";
   readonly typeParameters?: string[];
   readonly typeParameterConstraints?: TypeParameterConstraint[];
   readonly receiverMode: "inout" | "move" | null;

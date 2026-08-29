@@ -286,12 +286,14 @@ function runStage1Resolver(
     const project = prepareProject(entryPath);
     return loadSourceModuleBatch(entrySource, entryProgram, entryPath, {
       sourceImports: project.sourceImports,
+      packages: project.packages,
     });
   })();
   const loadingMilliseconds = performance.now() - loadingStarted;
   const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageIdentity: module.packageId ?? "",
     packageSpecifiers: [...module.packageSpecifiers],
   }));
   const bridgePath = join(projectRoot, "compiler/frontend/parser-library.zs");
@@ -485,10 +487,12 @@ function emitWithStage1(inputPath: string): void {
   const project = prepareProject(entryPath);
   const sourceBatch = loadSourceModuleBatch(entrySource, entryProgram, entryPath, {
     sourceImports: project.sourceImports,
+    packages: project.packages,
   });
   const sources: Stage1ModuleSource[] = sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageIdentity: module.packageId ?? "",
     packageSpecifiers: [...module.packageSpecifiers],
   }));
   const batch = encodeStage1ModuleBatch(sources);
@@ -1821,6 +1825,7 @@ function prepareSelfHostedStage1StringLibrary(
   const batch = encodeStage1ModuleBatch(sourceBatch.modules.map((module) => ({
     path: module.fileName,
     source: module.source,
+    packageIdentity: module.packageId ?? "",
     packageSpecifiers: [...module.packageSpecifiers],
   })));
   const emitted = emitWithNativeFrontendLibrary(

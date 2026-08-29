@@ -22,7 +22,15 @@ function main(): i32 {
   const program = parse(lex(source, path), path);
   const batch: SourceModuleBatch = {
     entryFileName: path,
-    modules: [{ fileName: path, source, program, dependencies: new Map() }],
+    modules: [{
+      fileName: path,
+      source,
+      program,
+      dependencies: new Map(),
+      packageSpecifiers: new Set(),
+      packageId: null,
+      packageName: null,
+    }],
   };
   const callOffset = source.indexOf("(", source.indexOf("register"));
   const hiddenOffset = source.indexOf("(", source.indexOf("hidden"));

@@ -94,6 +94,29 @@ and `String` values, plus string literals explicitly typed `cstring`. Calls,
 runtime initialization, and ownership-bearing module values remain outside this
 tier, so importing a module does not run an initializer.
 
+Package implementation APIs use `internal`:
+
+```zs
+// src/window-state.zs
+internal struct WindowRecord {
+  id: String;
+}
+
+export class WindowManager {
+  internal function publish(inout this, in record: WindowRecord): void {
+    // callable by sibling modules in this package
+  }
+}
+```
+
+Top-level `internal` declarations use ordinary imports from sibling modules but
+cannot be imported by a dependent package. Internal fields and methods follow
+the same rule. The owning `z.json` must declare `package.name`; directory
+proximity alone never grants access. `internal` and `export` are mutually
+exclusive, and package-internal names are omitted from public metadata and
+external completion. An internal module constant requires an explicit type for
+the same cross-module stability reason as an exported constant.
+
 ### Explicit application-lifetime roots
 
 `Once<T>` from `std/sync` provides a statically empty module root without
@@ -776,7 +799,9 @@ const same = session;
 ```
 
 Field visibility is separate from storage and ownership: struct and class fields
-are public unless marked `private`. A user class constructor may establish
+are public unless marked `internal` or `private`. `internal` grants the owning
+manifest-defined package access; `private` grants only the declaring aggregate.
+A user class constructor may establish
 invariants and may throw. `trait` is a nominal behavior contract; a struct or
 class opts in with `implements`. Traits do not imply inheritance or storage.
 

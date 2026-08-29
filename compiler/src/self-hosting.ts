@@ -72,6 +72,7 @@ export type Stage1ModuleSource = {
   readonly path: string;
   readonly source: string;
   readonly packageSpecifiers: readonly string[];
+  readonly packageIdentity?: string;
 };
 
 export type Stage1ResolvedModule = {
@@ -149,7 +150,7 @@ export type Stage1ModuleFieldSignature = {
   readonly name: string;
   readonly typeName: string;
   readonly executorAffinity: string | null;
-  readonly visibility: "public" | "private";
+  readonly visibility: "public" | "internal" | "private";
   readonly readonlyField: boolean;
   readonly hasDefault: boolean;
   readonly optionalField: boolean;
@@ -163,7 +164,7 @@ export type Stage1ModuleVariantSignature = {
 export type Stage1ModuleMethodSignature = {
   readonly name: string;
   readonly staticMethod: boolean;
-  readonly visibility: "public" | "private";
+  readonly visibility: "public" | "internal" | "private";
   readonly receiverMode: "in" | "inout" | "move";
   readonly signature: Stage1ModuleFunctionSignature;
 };
@@ -236,14 +237,16 @@ export function encodeStage1ModuleBatch(sources: readonly Stage1ModuleSource[]):
   for (const source of sources) {
     const path = Buffer.from(source.path, "utf8");
     const text = Buffer.from(source.source, "utf8");
+    const packageIdentity = Buffer.from(source.packageIdentity ?? "", "utf8");
     const packageSpecifiers = Buffer.from(source.packageSpecifiers.join("\n"), "utf8");
     const header = Buffer.from(
       path.byteLength.toString(16).padStart(16, "0")
       + text.byteLength.toString(16).padStart(16, "0")
+      + packageIdentity.byteLength.toString(16).padStart(16, "0")
       + packageSpecifiers.byteLength.toString(16).padStart(16, "0"),
       "ascii",
     );
-    records.push(header, path, text, packageSpecifiers);
+    records.push(header, path, text, packageIdentity, packageSpecifiers);
   }
   return Buffer.concat(records);
 }
@@ -659,7 +662,7 @@ export function decodeStage1ModuleGraphStream(
         const readonlyField = encodedFields[index + 4];
         const hasDefault = encodedFields[index + 5];
         const optionalField = encodedFields[index + 6];
-        if (visibility !== "public" && visibility !== "private") {
+        if (visibility !== "public" && visibility !== "internal" && visibility !== "private") {
           throw new Error(`malformed stage-1 field visibility: ${line}`);
         }
         if (readonlyField !== "0" && readonlyField !== "1") {
@@ -773,7 +776,7 @@ export function decodeStage1ModuleGraphStream(
       }
       const visibility = Buffer.from(fields[5], "hex").toString("utf8");
       const receiverMode = Buffer.from(fields[6], "hex").toString("utf8");
-      if (visibility !== "public" && visibility !== "private") {
+      if (visibility !== "public" && visibility !== "internal" && visibility !== "private") {
         throw new Error(`malformed stage-1 method visibility: ${line}`);
       }
       if (receiverMode !== "in" && receiverMode !== "inout" && receiverMode !== "move") {

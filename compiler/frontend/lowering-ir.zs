@@ -24423,12 +24423,21 @@ function importedTypesForModule(
       }
     }
   }
-  // Public types can flow through an imported function signature without a
-  // second explicit type import in the consuming module. Keep their canonical
-  // lowered identity available for inferred locals and intrinsic containers.
+  // Visible public or package-internal types can flow through an imported
+  // function signature without a second explicit type import in the consuming
+  // module. Keep their canonical lowered identity available for inferred locals
+  // and intrinsic containers.
   for (const candidateModule of graph.modules) {
     for (const symbol of candidateModule.symbols) {
-      if (!symbol.exported) continue;
+      if (
+        !symbol.exported
+        && !(
+          symbol.packageVisible
+          && candidateModule.packageIdentity.byteLength > 0
+          && candidateModule.packageIdentity
+            == graph.modules[moduleIndex].packageIdentity
+        )
+      ) continue;
       let present = false;
       for (const type of types) {
         if (
@@ -24501,10 +24510,10 @@ function importedTypesForModule(
       }
     }
   }
-  // Exported aliases can appear inside the public fields and return types
-  // above without being named directly by the consumer. Resolve them to a
-  // fixed point so callable aliases and aliases of aliases remain available
-  // to inferred native lowering without redundant source imports.
+  // Visible aliases can appear inside fields and return types above without
+  // being named directly by the consumer. Resolve them to a fixed point so
+  // callable aliases and aliases of aliases remain available to inferred
+  // native lowering without redundant source imports.
   let addedPublicAlias = true;
   while (addedPublicAlias) {
     addedPublicAlias = false;
@@ -24515,8 +24524,14 @@ function importedTypesForModule(
       for (const symbol of candidateModule.symbols) {
         if (
           !symbol.exported
-          || symbol.kind != ModuleSymbolKind.typeAliasSymbol
+          && !(
+            symbol.packageVisible
+            && candidateModule.packageIdentity.byteLength > 0
+            && candidateModule.packageIdentity
+              == graph.modules[moduleIndex].packageIdentity
+          )
         ) continue;
+        if (symbol.kind != ModuleSymbolKind.typeAliasSymbol) continue;
         let present = false;
         for (const type of types) {
           if (type.localName == symbol.name) present = true;

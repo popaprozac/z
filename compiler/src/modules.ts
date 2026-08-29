@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   Expression,
@@ -34,8 +34,11 @@ import { parseReadonlyType, readonlyTypeName } from "./readonly-types.ts";
 
 export type SourceModuleInfo = {
   readonly fileName: string;
+  readonly packageId: string | null;
+  readonly packageName: string | null;
   readonly program: Program;
   readonly exports: ReadonlyMap<string, { readonly linkedName: string; readonly location: SourceLocation }>;
+  readonly internals: ReadonlyMap<string, { readonly linkedName: string; readonly location: SourceLocation }>;
 };
 
 export type ModuleLinkResult = {
@@ -52,6 +55,8 @@ export type SourceModuleBatchModule = {
   readonly program: Program;
   readonly dependencies: ReadonlyMap<number, string>;
   readonly packageSpecifiers: Set<string>;
+  readonly packageId: string | null;
+  readonly packageName: string | null;
 };
 
 export type SourceModuleBatch = {
@@ -62,6 +67,11 @@ export type SourceModuleBatch = {
 export type SourceModuleOptions = {
   readonly standardLibraryRoot?: string;
   readonly sourceImports?: Readonly<Record<string, string>>;
+  readonly packages?: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly rootDirectory: string;
+  }[];
 };
 
 type ModuleNode = {
@@ -71,9 +81,13 @@ type ModuleNode = {
   readonly dependencies: Map<number, ModuleNode>;
   readonly ownNames: Map<string, string>;
   readonly exports: Map<string, { readonly linkedName: string; readonly location: SourceLocation }>;
+  readonly internals: Map<string, { readonly linkedName: string; readonly location: SourceLocation }>;
+  readonly packageId: string | null;
+  readonly packageName: string | null;
 };
 
 type ModuleScope = {
+  readonly packageId: string | null;
   readonly globals: Map<string, string>;
   readonly namespaces: Map<string, ModuleNode>;
   readonly standardModules: Map<string, StandardModuleName>;
@@ -96,6 +110,13 @@ export function loadSourceModuleBatch(
       ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../stdlib"),
   );
   const modules = new Map<string, SourceModuleBatchModule>();
+  const packageForFile = (fileName: string) => {
+    const matches = (options.packages ?? []).filter((candidate) => (
+      fileName === candidate.rootDirectory || fileName.startsWith(`${candidate.rootDirectory}${sep}`)
+    ));
+    matches.sort((left, right) => right.rootDirectory.length - left.rootDirectory.length);
+    return matches[0] ?? null;
+  };
 
   const load = (
     fileName: string,
@@ -143,6 +164,8 @@ export function loadSourceModuleBatch(
       program,
       dependencies,
       packageSpecifiers,
+      packageId: packageForFile(canonical)?.id ?? null,
+      packageName: packageForFile(canonical)?.name ?? null,
     };
     modules.set(canonical, module);
     for (const declaration of program.imports) {
@@ -212,6 +235,9 @@ export function linkSourceModules(
       dependencies: new Map(),
       ownNames: new Map(),
       exports: new Map(),
+      internals: new Map(),
+      packageId: sourceModule.packageId,
+      packageName: sourceModule.packageName,
     };
     nodes.set(fileName, node);
     collectOwnNames(node, fileName === sourceBatch.entryFileName);
@@ -231,6 +257,22 @@ export function linkSourceModules(
         throw new DiagnosticError(fileName, declaration.location, `duplicate export ${JSON.stringify(declaration.name)}`, { code: "Z0603" });
       }
       node.exports.set(declaration.name, { linkedName, location: declaration.location });
+    }
+    for (const declaration of sourceModule.program.internals) {
+      if (!node.packageId) {
+        throw new DiagnosticError(fileName, declaration.location, `internal declaration ${JSON.stringify(declaration.name)} requires a manifest-defined package identity`, {
+          code: "Z0605",
+          helps: ["add package.name to the owning z.json, or keep the declaration private to this source module"],
+        });
+      }
+      const linkedName = node.ownNames.get(declaration.name);
+      if (!linkedName) {
+        throw new DiagnosticError(fileName, declaration.location, `cannot expose unknown internal declaration ${JSON.stringify(declaration.name)}`, { code: "Z0602" });
+      }
+      if (node.internals.has(declaration.name)) {
+        throw new DiagnosticError(fileName, declaration.location, `duplicate internal declaration ${JSON.stringify(declaration.name)}`, { code: "Z0603" });
+      }
+      node.internals.set(declaration.name, { linkedName, location: declaration.location });
     }
     return node;
   };
@@ -370,6 +412,7 @@ export function linkSourceModules(
     kind: "program",
     imports,
     exports: entry.program.exports,
+    internals: entry.program.internals,
     constants,
     typeAliases,
     traits,
@@ -383,8 +426,11 @@ export function linkSourceModules(
     sourceBatch,
     modules: new Map(ordered.map((node) => [node.fileName, {
       fileName: node.fileName,
+      packageId: node.packageId,
+      packageName: node.packageName,
       program: node.program,
       exports: node.exports,
+      internals: node.internals,
     }])),
     includeDirectories: [...new Set(ordered.filter((node) => node !== entry).map((node) => dirname(node.fileName)))],
     typeDisplayNames: new Map(ordered.flatMap((node) => [
@@ -506,11 +552,19 @@ function buildScope(node: ModuleNode): ModuleScope {
         continue;
       }
       for (const binding of declaration.bindings) {
-        const exported = dependency.exports.get(binding.importedName);
+        const exported = dependency.exports.get(binding.importedName)
+          ?? (node.packageId !== null && node.packageId === dependency.packageId
+            ? dependency.internals.get(binding.importedName)
+            : undefined);
         if (!exported) {
-          throw new DiagnosticError(node.fileName, binding.location, `module ${JSON.stringify(declaration.header)} has no export ${JSON.stringify(binding.importedName)}`, {
+          const packageOnly = dependency.internals.has(binding.importedName);
+          throw new DiagnosticError(node.fileName, binding.location, packageOnly
+            ? `declaration ${JSON.stringify(binding.importedName)} is internal to package ${JSON.stringify(dependency.packageName)}`
+            : `module ${JSON.stringify(declaration.header)} has no export ${JSON.stringify(binding.importedName)}`, {
             code: "Z0602",
-            helps: ["add `export` to the declaration in its defining module"],
+            helps: packageOnly
+              ? ["use a public exported API from the package instead"]
+              : ["add `export` or package-scoped `internal` to the declaration in its defining module"],
           });
         }
         bind(binding.localName, exported.linkedName, binding.location);
@@ -555,7 +609,18 @@ function buildScope(node: ModuleNode): ModuleScope {
       }
     }
   }
-  return { globals, namespaces, standardModules, standardTypes };
+  return { packageId: node.packageId, globals, namespaces, standardModules, standardTypes };
+}
+
+function visibleModuleDeclaration(
+  scope: ModuleScope,
+  dependency: ModuleNode,
+  name: string,
+): { readonly linkedName: string; readonly location: SourceLocation } | undefined {
+  return dependency.exports.get(name)
+    ?? (scope.packageId !== null && scope.packageId === dependency.packageId
+      ? dependency.internals.get(name)
+      : undefined);
 }
 
 function linkedImportName(node: ModuleNode, name: string): string {
@@ -845,11 +910,17 @@ function transformExpression(
         const dependency = scope.namespaces.get(expression.object.name);
         if (dependency) {
           const generic = parseGenericType(expression.property);
-          const exported = dependency.exports.get(generic?.base ?? expression.property);
+          const member = generic?.base ?? expression.property;
+          const exported = visibleModuleDeclaration(scope, dependency, member);
           if (!exported) {
-            throw new DiagnosticError(expression.location.fileName ?? dependency.fileName, expression.location, `module ${JSON.stringify(expression.object.name)} has no export ${JSON.stringify(generic?.base ?? expression.property)}`, {
+            const packageOnly = dependency.internals.has(member);
+            throw new DiagnosticError(expression.location.fileName ?? dependency.fileName, expression.location, packageOnly
+              ? `declaration ${JSON.stringify(member)} is internal to package ${JSON.stringify(dependency.packageName)}`
+              : `module ${JSON.stringify(expression.object.name)} has no export ${JSON.stringify(member)}`, {
               code: "Z0602",
-              helps: ["export the declaration or import an existing exported name"],
+              helps: packageOnly
+                ? ["use a public exported API from the package instead"]
+                : ["export the declaration or import an existing exported name"],
             });
           }
           return {
@@ -1054,8 +1125,13 @@ function renameSimpleType(name: string, scope: ModuleScope): string {
     if (standardModule) return `${standardModule}.${member}`;
     const dependency = scope.namespaces.get(namespace);
     if (dependency) {
-      const exported = dependency.exports.get(member);
-      if (!exported) throw new DiagnosticError(dependency.fileName, { offset: 0, line: 1, column: 1, fileName: dependency.fileName }, `module ${JSON.stringify(namespace)} has no export ${JSON.stringify(member)}`, { code: "Z0602" });
+      const exported = visibleModuleDeclaration(scope, dependency, member);
+      if (!exported) {
+        const packageOnly = dependency.internals.has(member);
+        throw new DiagnosticError(dependency.fileName, { offset: 0, line: 1, column: 1, fileName: dependency.fileName }, packageOnly
+          ? `declaration ${JSON.stringify(member)} is internal to package ${JSON.stringify(dependency.packageName)}`
+          : `module ${JSON.stringify(namespace)} has no export ${JSON.stringify(member)}`, { code: "Z0602" });
+      }
       return exported.linkedName;
     }
     const renamedNamespace = scope.globals.get(namespace);

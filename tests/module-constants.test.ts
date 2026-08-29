@@ -168,6 +168,159 @@ test("resolves local package roots, subpath exports, and transitive dependencies
   }
 });
 
+test("enforces manifest-scoped internal declarations and members", () => {
+  const directory = mkdtempSync("/tmp/z-package-internal-");
+  const applicationDirectory = resolve(directory, "application");
+  const packageDirectory = resolve(directory, "framework");
+  const packageSourceDirectory = resolve(packageDirectory, "src");
+  const internalsFile = resolve(packageSourceDirectory, "internals.zs");
+  const apiFile = resolve(packageSourceDirectory, "api.zs");
+  const mainFile = resolve(applicationDirectory, "main.zs");
+  try {
+    mkdirSync(applicationDirectory, { recursive: true });
+    mkdirSync(packageSourceDirectory, { recursive: true });
+    writeFileSync(internalsFile, `
+      internal function packageAnswer(): i32 { return 42; }
+
+      export struct PackageCounter {
+        internal value: i32 = 42;
+
+        internal function secret(): i32 {
+          return this.value;
+        }
+
+        function publicValue(): i32 {
+          return this.value;
+        }
+      }
+    `);
+    writeFileSync(apiFile, `
+      import { packageAnswer, PackageCounter } from "./internals.zs";
+
+      export function answer(): i32 {
+        const counter = PackageCounter();
+        return packageAnswer() + counter.secret() - counter.publicValue();
+      }
+    `);
+    writeFileSync(resolve(packageDirectory, "z.json"), JSON.stringify({
+      package: { name: "framework", version: "0.1.0" },
+      library: {
+        entry: "src/api.zs",
+        exports: { "./internals": "src/internals.zs" },
+      },
+    }));
+    writeFileSync(resolve(applicationDirectory, "z.json"), JSON.stringify({
+      dependencies: { framework: { path: "../framework" } },
+      target: { name: "package-internal", entry: "main.zs" },
+    }));
+
+    writeFileSync(mainFile, `
+      import { answer } from "framework";
+      function main(): i32 { return answer() - 42; }
+    `);
+    assert.doesNotThrow(() => compileToC(readFileSync(mainFile, "utf8"), mainFile));
+    const native = spawnSync(process.execPath, [cli, "check", mainFile, "--native-frontend"], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(native.status, 0, native.stderr);
+    const metadata = spawnSync(process.execPath, [cli, "metadata", mainFile], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    assert.equal(metadata.status, 0, metadata.stderr);
+    assert.doesNotMatch(metadata.stdout, /packageAnswer|secret|\"name\":\"value\"/);
+    assert.match(metadata.stdout, /publicValue/);
+
+    const siblingCompletionSource = `
+      import { pack } from "./internals.zs";
+      function probe(): i32 { return 0; }
+    `;
+    const siblingCompletionOffset = siblingCompletionSource.indexOf("pack }") + "pack".length;
+    const siblingItems = completions(siblingCompletionSource, apiFile, siblingCompletionOffset);
+    assert.ok(siblingItems.some((item) => (
+      item.label === "packageAnswer" && item.detail?.startsWith("internal function")
+    )), JSON.stringify(siblingItems));
+
+    const siblingMemberSource = `
+      import { PackageCounter } from "./internals.zs";
+      function probe(): i32 {
+        const counter = PackageCounter();
+        return counter.se;
+      }
+    `;
+    const siblingMemberOffset = siblingMemberSource.indexOf("counter.se") + "counter.se".length;
+    const siblingMemberItems = completions(siblingMemberSource, apiFile, siblingMemberOffset);
+    assert.ok(siblingMemberItems.some((item) => (
+      item.label === "secret" && item.detail?.startsWith("internal function")
+    )), JSON.stringify(siblingMemberItems));
+
+    const externalCompletionSource = `
+      import { pack } from "framework/internals";
+      function main(): i32 { return 0; }
+    `;
+    const externalCompletionOffset = externalCompletionSource.indexOf("pack }") + "pack".length;
+    const externalItems = completions(externalCompletionSource, mainFile, externalCompletionOffset);
+    assert.ok(externalItems.some((item) => item.label === "PackageCounter"));
+    assert.ok(!externalItems.some((item) => item.label === "packageAnswer"));
+
+    const externalMemberSource = `
+      import { PackageCounter } from "framework/internals";
+      function main(): i32 {
+        const counter = PackageCounter();
+        return counter.pu;
+      }
+    `;
+    const externalMemberOffset = externalMemberSource.indexOf("counter.pu") + "counter.pu".length;
+    const externalMemberItems = completions(externalMemberSource, mainFile, externalMemberOffset);
+    assert.ok(externalMemberItems.some((item) => item.label === "publicValue"));
+    assert.ok(!externalMemberItems.some((item) => item.label === "secret"));
+
+    writeFileSync(mainFile, `
+      import { packageAnswer } from "framework/internals";
+      function main(): i32 { return packageAnswer(); }
+    `);
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /packageAnswer.*internal to package "framework"/,
+    );
+
+    writeFileSync(mainFile, `
+      import { PackageCounter } from "framework/internals";
+      function main(): i32 {
+        const counter = PackageCounter();
+        return counter.secret();
+      }
+    `);
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /method "secret" is internal to its package/,
+    );
+
+    writeFileSync(mainFile, `
+      import { PackageCounter } from "framework/internals";
+      function main(): i32 {
+        const counter = PackageCounter();
+        return counter.value;
+      }
+    `);
+    assert.throws(
+      () => compileToC(readFileSync(mainFile, "utf8"), mainFile),
+      /field "value" is internal to its package/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("requires a manifest-defined package identity for top-level internal declarations", () => {
+  const fileName = "/tmp/z-internal-without-package.zs";
+  assert.match(
+    diagnostics("internal function helper(): i32 { return 42; }", fileName)[0]?.message ?? "",
+    /requires a manifest-defined package identity/,
+  );
+});
+
 test("composes and deduplicates package-owned native link requirements", () => {
   const directory = mkdtempSync("/tmp/z-package-native-");
   const applicationDirectory = resolve(directory, "application");

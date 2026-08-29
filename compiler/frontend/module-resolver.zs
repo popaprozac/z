@@ -9317,6 +9317,22 @@ function inferExpressionNodeType(
               );
             }
             if (
+              method.visibility == "internal"
+              && (
+                modules[moduleIndex].packageIdentity.byteLength == 0
+                || modules[moduleIndex].packageIdentity
+                  != modules[method.ownerModuleIndex].packageIdentity
+              )
+            ) {
+              throw resolutionError(
+                ModuleResolveErrorKind.unknownMember,
+                module.path,
+                `method "${method.name}" is internal to its package`,
+                tree.nodes[calleeIndex].line,
+                tree.nodes[calleeIndex].column
+              );
+            }
+            if (
               !method.staticMethod
               && method.ownerTypeParameters.length != method.ownerTypeArguments.length
             ) return "";

@@ -243,6 +243,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const projectBuild = prepareProject(fileName);
   const linked = linkSourceModules(source, sourceProgram, fileName, {
     sourceImports: projectBuild.sourceImports,
+    packages: projectBuild.packages,
   });
   const linkedProgram = options.includeTests === false
     ? {
@@ -333,6 +334,25 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
   const nativeSemanticBridge = nativeEvidence
     ? createNativeSemanticBridge(linked.sourceBatch, nativeEvidence.index, typeDisplayNames)
     : null;
+  const packageIdsByFile = new Map<string, string>();
+  for (const module of linked.modules.values()) {
+    if (!module.packageId) continue;
+    packageIdsByFile.set(module.fileName, module.packageId);
+    const declarations = [
+      ...module.program.imports,
+      ...module.program.constants,
+      ...module.program.typeAliases,
+      ...module.program.traits,
+      ...module.program.structs,
+      ...module.program.enums,
+      ...module.program.functions,
+    ];
+    for (const declaration of declarations) {
+      if (declaration.location.fileName) {
+        packageIdsByFile.set(declaration.location.fileName, module.packageId);
+      }
+    }
+  }
   const semanticInfo = analyze(
     program,
     fileName,
@@ -342,6 +362,7 @@ export function analyzeSource(source: string, fileName: string, options: Analysi
     projectBuild.deploymentTarget,
     nativeSemanticBridge?.observer ?? null,
     genericAggregateMaterializations,
+    packageIdsByFile,
   );
   if (options.validateTarget !== false) {
     validateLibraryStandardCalls(program, semanticInfo, projectBuild, fileName);

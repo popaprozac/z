@@ -84,14 +84,22 @@ function validationError(
   return moduleResolutionError(kind, path, message, line, column);
 }
 
-function moduleHasExportedType(
-  in module: ResolvedModule,
+function moduleHasVisibleType(
+  in owner: ResolvedModule,
+  in requester: ResolvedModule,
   in name: String
 ): boolean {
-  const index = moduleSymbolIndex(module, name);
-  return index < module.symbols.length
-    && module.symbols[index].exported
-    && isTypeSymbolKind(module.symbols[index].kind);
+  const index = moduleSymbolIndex(owner, name);
+  return index < owner.symbols.length
+    && (
+      owner.symbols[index].exported
+      || (
+        owner.symbols[index].packageVisible
+        && owner.packageIdentity.byteLength > 0
+        && owner.packageIdentity == requester.packageIdentity
+      )
+    )
+    && isTypeSymbolKind(owner.symbols[index].kind);
 }
 
 function hasTypeName(
@@ -121,14 +129,22 @@ function hasTypeName(
         return false;
       }
       return match (in symbol.targetModule) {
-        some(target) => moduleHasExportedType(modules[target], member);
+        some(target) => moduleHasVisibleType(
+          modules[target],
+          modules[moduleIndex],
+          member
+        );
         none => true;
       };
     }
     if (isTypeSymbolKind(symbol.kind)) return true;
     if (symbol.kind != ModuleSymbolKind.importedSymbol) return false;
     return match (in symbol.targetModule) {
-      some(target) => moduleHasExportedType(modules[target], symbol.importedName);
+      some(target) => moduleHasVisibleType(
+        modules[target],
+        modules[moduleIndex],
+        symbol.importedName
+      );
       none => true;
     };
   }

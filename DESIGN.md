@@ -1654,7 +1654,7 @@ import geometry from "./geometry.zs";
 import { total as sum } from "./geometry.zs";
 ```
 
-### Package-internal visibility (follow-up)
+### Package-internal visibility
 
 Real framework composition has established a need for one visibility tier
 between module-private and public API. Zapp's public `Window` handle, for
@@ -1663,7 +1663,7 @@ operations. Those operations must be callable across cooperating framework
 types and source modules, but must not become callable application API merely
 because `private` is correctly limited to the declaring aggregate.
 
-The proposed spelling is `internal`:
+The spelling is `internal`:
 
 ```z
 export readonly class WindowManager on thread.main {
@@ -1684,8 +1684,8 @@ internal struct WindowRecord {
 }
 ```
 
-`internal` is a deferred design, not implemented syntax. Its intended contract
-is compiler-enforced visibility to the declaration's owning package. Internal
+`internal` is implemented as compiler-enforced visibility to the declaration's
+owning package. Internal
 declarations and members must be absent from public package metadata,
 documentation, and application completion, and an external call must be a
 compile error. `private` continues to mean the declaring aggregate only;
@@ -1705,13 +1705,15 @@ operations can preserve ownership, executor, native-lifetime, and registry
 invariants, so the boundary cannot be a double-underscore naming convention or
 declaration-emission hint.
 
-The feature must wait for a deterministic package identity. Directory ancestry
-alone is insufficient, and “part of the current linked graph” would grant every
-dependency access. Local path packages and eventual resolved packages must use
-the same identity rule before `internal` is accepted. Until then, frameworks may
-use conspicuously named public plumbing as temporary scaffolding, but those
-names are not stable public API and should be hidden from generated user-facing
-surfaces where tooling can distinguish them.
+Package identity comes from the owning `z.json`, never merely from directory
+ancestry or membership in the current linked graph. Local path packages use the
+canonical resolved manifest as identity; eventual registry packages must feed
+the resolver an equivalent canonical identity. A top-level `internal`
+declaration without `package.name` is rejected. The fixed-point frontend
+preserves this visibility in its source graph and public metadata filters it.
+Both Stage 0 and the standalone native driver derive canonical root and
+transitive dependency identities from their resolved manifests, so the same
+boundary applies during bootstrap, native checking, and native builds.
 
 Module-level `const` declarations provide immutable named compile-time values:
 

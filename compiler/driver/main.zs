@@ -191,6 +191,28 @@ function sourcePackageRootForHeader(
   return Option<String>.none;
 }
 
+function sourcePackageIdentity(
+  in config: NativeProjectConfig,
+  in path: String
+): String {
+  let selected = "";
+  let selectedLength: usize = 0;
+  for (const identity of config.packageIdentities) {
+    const prefix = `${identity.rootDirectory}/`;
+    const inside = (
+      path == identity.rootDirectory
+      || (
+        path.byteLength > prefix.byteLength
+        && path.copyBytes(0, prefix.byteLength) == prefix
+      )
+    );
+    if (!inside || identity.rootDirectory.byteLength <= selectedLength) continue;
+    selected = copy identity.id;
+    selectedLength = identity.rootDirectory.byteLength;
+  }
+  return selected;
+}
+
 function loadModule(
   in path: String,
   in config: NativeProjectConfig,
@@ -214,6 +236,7 @@ function loadModule(
   const moduleSource = ModuleSource({
     path: copy canonical,
     source,
+    packageIdentity: sourcePackageIdentity(config, canonical),
     packageSpecifiers,
   });
   const parsedOutcome = attempt parseModule(moduleSource);

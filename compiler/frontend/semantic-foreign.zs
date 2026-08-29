@@ -748,6 +748,7 @@ function attachNamespaceFunctions(
       name: name.copyBytes(0, name.byteLength),
       kind: ModuleSymbolKind.importedSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contract.nativeName.copyBytes(
@@ -790,6 +791,7 @@ function attachNamespaceConstants(
       name,
       kind: ModuleSymbolKind.importedSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contract.nativeName.copyBytes(
@@ -947,6 +949,7 @@ function attachForeignTypes(
       name: namespace.copyBytes(0, namespace.byteLength),
       kind: ModuleSymbolKind.namespaceSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: contracts.moduleSpecifier.copyBytes(
@@ -989,6 +992,7 @@ function attachForeignTypes(
         ? ModuleSymbolKind.enumSymbol
         : ModuleSymbolKind.structSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: type.nativeName.copyBytes(0, type.nativeName.byteLength),
@@ -1032,6 +1036,7 @@ function attachForeignObjCTypes(
       name,
       kind: ModuleSymbolKind.traitSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: protocol.nativeName.copyBytes(
@@ -1066,6 +1071,7 @@ function attachForeignObjCTypes(
       name,
       kind: ModuleSymbolKind.classSymbol,
       exported: false,
+      packageVisible: false,
       nativeCExport: false,
       targetModule: Option<usize>.none,
       importedName: interface_.nativeName.copyBytes(

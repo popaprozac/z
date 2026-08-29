@@ -24,6 +24,28 @@ function internalAudit(in point: Point): void {
 }
 ```
 
+## Package-internal APIs
+
+`internal` exposes implementation declarations to sibling modules in the same
+manifest-defined package without publishing them to consumers:
+
+```zs
+// src/window-state.zs
+internal struct WindowRecord {
+  id: String;
+}
+
+export class WindowManager {
+  internal function publish(inout this, in record: WindowRecord): void {}
+}
+```
+
+Sibling modules use ordinary relative imports. A dependent package cannot
+import `WindowRecord` or call `publish`, and those names are omitted from its
+completion and public metadata. The owning `z.json` must declare
+`package.name`; directory proximity or presence in one linked graph does not
+grant access. `internal` and `export` are mutually exclusive.
+
 ## Namespace imports
 
 A namespace import keeps the source module visible at use sites:
@@ -71,8 +93,9 @@ export const ENABLE_METRICS: boolean = true;
 const CONFIG_REVISION = 1;
 ```
 
-An exported constant requires an explicit type so its public contract cannot
-change when the initializer is edited. A private constant may infer its type.
+An exported or internal constant requires an explicit type so its cross-module
+contract cannot change when the initializer is edited. A module-private
+constant may infer its type.
 
 Module storage is immutable: there is module-level `const`, not module-level
 `let`. Importing a Z module does not execute a hidden initializer. Runtime

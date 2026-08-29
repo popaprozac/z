@@ -2,6 +2,7 @@ import type { CallExpression, Expression, Program } from "./ast.ts";
 import type { SourceModuleBatch } from "./modules.ts";
 import type {
   Stage1ModuleGraph,
+  Stage1ModuleCallResolution,
   Stage1ModuleSymbol,
 } from "./self-hosting.ts";
 
@@ -91,6 +92,30 @@ function argumentMetadata(expression: Expression, type: string): ZProgramArgumen
   return { kind: "other", type };
 }
 
+function publicSymbolMetadata(symbol: Stage1ModuleSymbol): Stage1ModuleSymbol {
+  const copy = structuredClone(symbol);
+  if (!copy.typeSignature) return copy;
+  return {
+    ...copy,
+    typeSignature: {
+      ...copy.typeSignature,
+      fields: copy.typeSignature.fields.filter((field) => field.visibility === "public"),
+      methods: copy.typeSignature.methods.filter((method) => method.visibility === "public"),
+    },
+  };
+}
+
+function resolutionIsPublicMember(
+  symbol: Stage1ModuleSymbol,
+  kind: Stage1ModuleCallResolution["kind"],
+  targetName: string,
+): boolean {
+  if (kind !== "method" && kind !== "staticMethod") return true;
+  const methodName = targetName.split(".").at(-1) ?? targetName;
+  const method = symbol.typeSignature?.methods.find((candidate) => candidate.name === methodName);
+  return method?.visibility !== "internal" && method?.visibility !== "private";
+}
+
 export function createZProgramMetadata(
   graph: Stage1ModuleGraph,
   sourceBatch: SourceModuleBatch,
@@ -111,11 +136,12 @@ export function createZProgramMetadata(
         dependencies: [...module.dependencies],
         symbols: module.symbols
           .filter((symbol) => symbol.exported)
-          .map((symbol) => structuredClone(symbol)),
+          .map(publicSymbolMetadata),
         calls: module.callResolutions.flatMap((resolution) => {
           const targetModule = graph.modules[resolution.targetModule];
           const targetSymbol = targetModule?.symbols[resolution.targetSymbol];
           if (!targetModule || !targetSymbol?.exported) return [];
+          if (!resolutionIsPublicMember(targetSymbol, resolution.kind, resolution.targetName)) return [];
           const call = callExpressionAt(program, resolution.offset);
           if (!call) {
             throw new Error(

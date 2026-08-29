@@ -34,33 +34,64 @@ export function emptySemanticEvidence(): ModuleSemanticEvidence {
   });
 }
 
-function exportedFunctionLocation(
+function symbolVisibleToModule(
   in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
+  ownerModuleIndex: usize,
+  requesterModuleIndex: usize,
+  in symbol: ModuleSymbol
+): boolean {
+  if (symbol.exported) return true;
+  return symbol.packageVisible
+    && modules[ownerModuleIndex].packageIdentity.byteLength > 0
+    && modules[ownerModuleIndex].packageIdentity
+      == modules[requesterModuleIndex].packageIdentity;
+}
+
+function visibleFunctionLocation(
+  in modules: Array<ResolvedModule>,
+  ownerModuleIndex: usize,
+  requesterModuleIndex: usize,
   in name: String
 ): Option<ModuleSymbolLocation> {
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  const symbolIndex = moduleSymbolIndex(modules[ownerModuleIndex], name);
   if (
-    symbolIndex < modules[moduleIndex].symbols.length
-    && modules[moduleIndex].symbols[symbolIndex].exported
-    && modules[moduleIndex].symbols[symbolIndex].kind
+    symbolIndex < modules[ownerModuleIndex].symbols.length
+    && symbolVisibleToModule(
+      modules,
+      ownerModuleIndex,
+      requesterModuleIndex,
+      modules[ownerModuleIndex].symbols[symbolIndex]
+    )
+    && modules[ownerModuleIndex].symbols[symbolIndex].kind
       == ModuleSymbolKind.functionSymbol
-  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+  ) return Option.some(ModuleSymbolLocation({
+    moduleIndex: ownerModuleIndex,
+    symbolIndex,
+  }));
   return Option<ModuleSymbolLocation>.none;
 }
 
-function exportedValueLocation(
+function visibleValueLocation(
   in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
+  ownerModuleIndex: usize,
+  requesterModuleIndex: usize,
   in name: String
 ): Option<ModuleSymbolLocation> {
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  const symbolIndex = moduleSymbolIndex(modules[ownerModuleIndex], name);
   if (
-    symbolIndex < modules[moduleIndex].symbols.length
-    && modules[moduleIndex].symbols[symbolIndex].exported
-    && modules[moduleIndex].symbols[symbolIndex].kind
+    symbolIndex < modules[ownerModuleIndex].symbols.length
+    && symbolVisibleToModule(
+      modules,
+      ownerModuleIndex,
+      requesterModuleIndex,
+      modules[ownerModuleIndex].symbols[symbolIndex]
+    )
+    && modules[ownerModuleIndex].symbols[symbolIndex].kind
       == ModuleSymbolKind.constantSymbol
-  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+  ) return Option.some(ModuleSymbolLocation({
+    moduleIndex: ownerModuleIndex,
+    symbolIndex,
+  }));
   return Option<ModuleSymbolLocation>.none;
 }
 
@@ -101,9 +132,10 @@ export function callableSymbolLocation(
         const target = match (
           in modules[moduleIndex].symbols[symbolIndex].targetModule
         ) {
-          some(target) => exportedFunctionLocation(
+          some(target) => visibleFunctionLocation(
             modules,
             target,
+            moduleIndex,
             importedName
           );
           none => {
@@ -149,9 +181,10 @@ export function callableSymbolLocation(
       return match (
         in modules[moduleIndex].symbols[symbolIndex].targetModule
       ) {
-        some(target) => exportedFunctionLocation(
+        some(target) => visibleFunctionLocation(
           modules,
           target,
+          moduleIndex,
           memberName
         );
         none => {
@@ -202,9 +235,10 @@ export function foreignValueSymbolLocation(
       return Option<ModuleSymbolLocation>.none;
     }
     return match (in symbol.targetModule) {
-      some(target) => exportedValueLocation(
+      some(target) => visibleValueLocation(
         modules,
         target,
+        moduleIndex,
         symbol.importedName
       );
       none => {
@@ -238,7 +272,12 @@ export function foreignValueSymbolLocation(
     ) return match (
       in modules[moduleIndex].symbols[namespaceIndex].targetModule
     ) {
-      some(target) => exportedValueLocation(modules, target, member);
+      some(target) => visibleValueLocation(
+        modules,
+        target,
+        moduleIndex,
+        member
+      );
       none => {
         const qualified = `${namespace}.${member}`;
         const foreignIndex = moduleSymbolIndex(

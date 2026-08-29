@@ -32,6 +32,7 @@ import { genericTypeShape } from "./semantic-type-shapes.zs";
 
 export struct ParsedModule {
   path: String;
+  packageIdentity: String;
   packageSpecifiers: Array<String>;
   program: Program;
 }
@@ -53,13 +54,41 @@ export function findModule(
   return Option<usize>.none;
 }
 
-function hasExport(in declaration: Declaration, in name: String): boolean {
-  return declaration.exported && declaration.name == name;
+function hasVisibleDeclaration(
+  in declaration: Declaration,
+  in name: String,
+  in ownerPackageIdentity: String,
+  in requesterPackageIdentity: String
+): boolean {
+  if (declaration.name != name) return false;
+  if (declaration.exported) return true;
+  return declaration.packageVisible
+    && ownerPackageIdentity.byteLength > 0
+    && ownerPackageIdentity == requesterPackageIdentity;
 }
 
-export function moduleExports(in module: ParsedModule, in name: String): boolean {
+export function moduleExports(
+  in module: ParsedModule,
+  in name: String,
+  in requesterPackageIdentity: String
+): boolean {
   for (const declaration of module.program.declarations) {
-    if (hasExport(declaration, name)) return true;
+    if (hasVisibleDeclaration(
+      declaration,
+      name,
+      module.packageIdentity,
+      requesterPackageIdentity
+    )) return true;
+  }
+  return false;
+}
+
+export function moduleHasInternal(
+  in module: ParsedModule,
+  in name: String
+): boolean {
+  for (const declaration of module.program.declarations) {
+    if (declaration.name == name && declaration.packageVisible) return true;
   }
   return false;
 }
@@ -142,6 +171,7 @@ function ownSymbol(in module: ParsedModule, in declaration: Declaration): Module
     name: declaration.name.copyBytes(0, declaration.name.byteLength),
     kind: declarationSymbolKind(declaration.kind),
     exported: declaration.exported,
+    packageVisible: declaration.packageVisible,
     nativeCExport,
     targetModule: Option<usize>.none,
     importedName,
@@ -170,6 +200,7 @@ function importedSymbol(
     name: name.copyBytes(0, name.byteLength),
     kind,
     exported: false,
+    packageVisible: false,
     nativeCExport: false,
     targetModule,
     importedName: importedName.copyBytes(0, importedName.byteLength),

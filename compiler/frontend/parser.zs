@@ -16,6 +16,7 @@ export struct Declaration {
   kind: DeclarationKind;
   name: String;
   exported: boolean;
+  packageVisible: boolean;
   asynchronous: boolean;
   offset: usize;
   line: usize;
@@ -37,6 +38,7 @@ export enum ReceiverMode {
 
 export enum Visibility {
   publicVisibility,
+  internalVisibility,
   privateVisibility,
 }
 
@@ -3457,6 +3459,7 @@ function parseAggregateDeclaration(
 
     let visibility = Visibility.publicVisibility;
     if (takeIf(tokens, inout current, TokenKind.publicKeyword)) visibility = Visibility.publicVisibility;
+    else if (takeIf(tokens, inout current, TokenKind.internalKeyword)) visibility = Visibility.internalVisibility;
     else if (takeIf(tokens, inout current, TokenKind.privateKeyword)) visibility = Visibility.privateVisibility;
     const fieldReadonly = takeIf(tokens, inout current, TokenKind.readonlyKeyword);
     const isStatic = takeIf(tokens, inout current, TokenKind.staticKeyword);
@@ -3678,6 +3681,14 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       exported = true;
       current = current + 1;
     }
+    let packageVisible = false;
+    if (tokens[current].kind == TokenKind.internalKeyword) {
+      packageVisible = true;
+      current = current + 1;
+    }
+    if (exported && packageVisible) {
+      throw fail(tokens[current], "a declaration cannot be both `export` and `internal`");
+    }
     let nativeCModifier = false;
     if (tokens[current].kind == TokenKind.identifier && tokens[current].text == "c") {
       nativeCModifier = true;
@@ -3707,12 +3718,14 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
     ) {
       throw fail(tokens[current], "`c` can only modify a function, struct, or enum declaration");
     }
+    if (nativeCModifier && packageVisible) throw fail(tokens[current], "a C ABI declaration cannot be internal");
     if (nativeCModifier && !exported && (kind == TokenKind.functionKeyword || kind == TokenKind.asyncKeyword)) {
       throw fail(tokens[current], "a C ABI function must use `export c function`");
     }
     if (kind == TokenKind.importKeyword) {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
       if (exported) throw fail(tokens[current], "imports cannot be exported");
+      if (packageVisible) throw fail(tokens[current], "imports cannot be internal");
       if (asynchronous) throw fail(tokens[current], "imports cannot be async");
       const importDeclaration = try parseImport(
         tokens,
@@ -3723,6 +3736,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.importDeclaration,
         name: importDeclaration.header.copyBytes(0, importDeclaration.header.byteLength),
         exported: false,
+        packageVisible: false,
         asynchronous: false,
         offset: importDeclaration.offset,
         line: importDeclaration.line,
@@ -3741,8 +3755,11 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         let pendingGreater: usize = 0;
         const parsedType = try parseType(tokens, inout current, inout pendingGreater);
         typeAnnotation = Option.some(parsedType);
-      } else if (exported) {
-        throw fail(name, `exported module constant ${name.text} requires an explicit type`);
+      } else if (exported || packageVisible) {
+        if (exported) {
+          throw fail(name, `exported module constant ${name.text} requires an explicit type`);
+        }
+        throw fail(name, `internal module constant ${name.text} requires an explicit type`);
       }
       try expectKind(tokens, inout current, TokenKind.equal, "`=` after a module constant");
       let statementNodes = Array<Statement>();
@@ -3756,6 +3773,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.constantDeclaration,
         name: name.text.copyBytes(0, name.text.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: start.offset,
         line: start.line,
@@ -3777,6 +3795,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.typeAliasDeclaration,
         name: alias.name.copyBytes(0, alias.name.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: alias.offset,
         line: alias.line,
@@ -3785,6 +3804,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       typeAliases.push(alias);
     } else if (kind == TokenKind.identifier && tokens[current].text == "test") {
       if (exported) throw fail(tokens[current], "tests cannot be exported");
+      if (packageVisible) throw fail(tokens[current], "tests cannot be internal");
       if (nativeCModifier) throw fail(tokens[current], "`c` cannot modify a test declaration");
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` cannot modify a test declaration");
       if (asynchronous) throw fail(tokens[current], "async tests are not implemented yet");
@@ -3793,6 +3813,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.functionDeclaration,
         name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),
         exported: false,
+        packageVisible: false,
         asynchronous: false,
         offset: functionDeclaration.offset,
         line: functionDeclaration.line,
@@ -3814,6 +3835,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.functionDeclaration,
         name: functionDeclaration.name.copyBytes(0, functionDeclaration.name.byteLength),
         exported,
+        packageVisible,
         asynchronous,
         offset: functionDeclaration.offset,
         line: functionDeclaration.line,
@@ -3836,6 +3858,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.structDeclaration,
         name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: aggregate.offset,
         line: aggregate.line,
@@ -3859,6 +3882,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.classDeclaration,
         name: aggregate.name.copyBytes(0, aggregate.name.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: aggregate.offset,
         line: aggregate.line,
@@ -3874,6 +3898,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.traitDeclaration,
         name: traitDeclaration.name.copyBytes(0, traitDeclaration.name.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: traitDeclaration.offset,
         line: traitDeclaration.line,
@@ -3889,6 +3914,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
         kind: DeclarationKind.enumDeclaration,
         name: enumDeclaration.name.copyBytes(0, enumDeclaration.name.byteLength),
         exported,
+        packageVisible,
         asynchronous: false,
         offset: enumDeclaration.offset,
         line: enumDeclaration.line,
@@ -3898,7 +3924,7 @@ export function parseProgram(in tokens: Array<Token>): Program throws ParserErro
       enums.push(enumDeclaration);
     } else {
       if (aggregateReadonly) throw fail(tokens[current], "`readonly` can only modify a struct or class declaration");
-      throw fail(tokens[current], "expected an import, const, type, function, struct, class, trait, enum, or test declaration");
+      throw fail(tokens[current], "expected an import, export, internal, const, type, function, struct, class, trait, enum, or test declaration");
     }
   }
   return Program({ declarations, imports, constants, typeAliases, functions, aggregates, traits, enums });
@@ -4302,6 +4328,7 @@ export function functionSignatureText(in declaration: FunctionDeclaration): Stri
 function visibilityName(visibility: Visibility): String {
   return match (visibility) {
     publicVisibility => "public ";
+    internalVisibility => "internal ";
     privateVisibility => "private ";
   };
 }

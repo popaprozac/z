@@ -8833,6 +8833,82 @@ test("compiles a multi-module Z application through the standalone native driver
   );
   assert.equal(contentHashRun.status, 0, contentHashRun.stderr);
 
+  const internalProject = resolve(directory, "internal-project");
+  const internalFramework = resolve(internalProject, "framework");
+  const internalApplication = resolve(internalProject, "application");
+  mkdirSync(internalProject);
+  mkdirSync(internalFramework);
+  mkdirSync(resolve(internalFramework, "src"));
+  mkdirSync(internalApplication);
+  writeFileSync(resolve(internalFramework, "src/internals.zs"), [
+    "internal const PACKAGE_BONUS: i32 = 0;",
+    "internal struct PackageValue { value: i32; }",
+    "internal function packageAnswer(): PackageValue {",
+    "  return PackageValue({ value: 42 });",
+    "}",
+    "export struct PublicCounter {",
+    "  function publicValue(): i32 { return 42; }",
+    "  internal function secret(): i32 { return 1; }",
+    "}",
+    "",
+  ].join("\n"));
+  writeFileSync(resolve(internalFramework, "src/api.zs"), [
+    'import internals from "./internals.zs";',
+    "export function answer(): i32 {",
+    "  const packaged = internals.packageAnswer();",
+    "  return packaged.value + internals.PACKAGE_BONUS;",
+    "}",
+    "",
+  ].join("\n"));
+  writeFileSync(resolve(internalFramework, "z.json"), JSON.stringify({
+    package: { name: "framework", version: "0.1.0" },
+    library: {
+      entry: "src/api.zs",
+      exports: { "./internals": "src/internals.zs" },
+    },
+  }));
+  writeFileSync(resolve(internalApplication, "main.zs"), [
+    'import { answer } from "framework";',
+    "function main(): i32 { return answer() - 42; }",
+    "",
+  ].join("\n"));
+  writeFileSync(resolve(internalApplication, "z.json"), JSON.stringify({
+    dependencies: { framework: { path: "../framework" } },
+    target: { name: "internal-application", entry: "main.zs" },
+  }));
+  const internalRun = spawnSync(
+    driver,
+    ["run", internalApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(internalRun.status, 0, internalRun.stderr);
+  const internalMetadata = spawnSync(
+    driver,
+    ["metadata", internalApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(internalMetadata.status, 0, internalMetadata.stderr);
+  assert.match(internalMetadata.stdout, /publicValue/);
+  assert.doesNotMatch(
+    internalMetadata.stdout,
+    /packageAnswer|PACKAGE_BONUS|PackageValue|secret/,
+  );
+  writeFileSync(resolve(internalApplication, "main.zs"), [
+    'import { packageAnswer } from "framework/internals";',
+    "function main(): i32 { return packageAnswer(); }",
+    "",
+  ].join("\n"));
+  const externalInternalCheck = spawnSync(
+    driver,
+    ["check", internalApplication],
+    { encoding: "utf8" },
+  );
+  assert.equal(externalInternalCheck.status, 1);
+  assert.match(
+    externalInternalCheck.stderr,
+    /packageAnswer.*internal to its package/,
+  );
+
   const foreignAdapterSource = resolve(directory, "foreign-adapter-input.zs");
   const foreignAdapterHeader = resolve(
     projectRoot,
@@ -14364,7 +14440,7 @@ hostToolchainTest("resolves a canonical module graph directly from native Z ASTs
     source: "é",
     packageSpecifiers: [],
   }]);
-  assert.equal(encoded.byteLength, 48 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
+  assert.equal(encoded.byteLength, 64 + Buffer.byteLength("/a.zs") + Buffer.byteLength("é"));
   const callEvidenceGraph = decodeStage1ModuleGraphStream(
     "entry\t0000000000000000\n"
     + "module\t2f612e7a73\n"

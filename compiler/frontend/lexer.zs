@@ -12,6 +12,7 @@ export enum TokenKind {
   templateEnd,
   importKeyword,
   exportKeyword,
+  internalKeyword,
   fromKeyword,
   asKeyword,
   functionKeyword,
@@ -137,6 +138,7 @@ function isWhitespace(byte: u8): boolean {
 function keywordKind(in text: String): Option<TokenKind> {
   if (text == "import") return Option.some(TokenKind.importKeyword);
   if (text == "export") return Option.some(TokenKind.exportKeyword);
+  if (text == "internal") return Option.some(TokenKind.internalKeyword);
   if (text == "from") return Option.some(TokenKind.fromKeyword);
   if (text == "as") return Option.some(TokenKind.asKeyword);
   if (text == "function") return Option.some(TokenKind.functionKeyword);
@@ -757,6 +759,7 @@ export function tokenKindName(kind: TokenKind): String {
     templateEnd => "templateEnd";
     importKeyword => "import";
     exportKeyword => "export";
+    internalKeyword => "internal";
     fromKeyword => "from";
     asKeyword => "as";
     functionKeyword => "function";

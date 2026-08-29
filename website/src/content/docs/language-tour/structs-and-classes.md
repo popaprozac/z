@@ -110,8 +110,10 @@ the type has methods.
 
 ## Visibility and readonly storage
 
-Fields are public unless marked `private`. `readonly` prevents replacement or
-mutation through that stored field after construction:
+Fields are public unless marked `internal` or `private`. `internal` grants the
+owning manifest-defined package access, while `private` grants only the
+declaring aggregate. `readonly` prevents replacement or mutation through that
+stored field after construction:
 
 ```z
 readonly struct Coordinate {

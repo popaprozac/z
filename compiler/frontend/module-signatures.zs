@@ -905,6 +905,7 @@ function receiverModeName(mode: ReceiverMode): String {
 
 function visibilityName(visibility: Visibility): String {
   if (visibility == Visibility.privateVisibility) return "private";
+  if (visibility == Visibility.internalVisibility) return "internal";
   return "public";
 }
 

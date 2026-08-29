@@ -86,17 +86,29 @@ export function isUnresolvedExternalType(
   return unresolvedExternalTypeBase(modules, moduleIndex, name);
 }
 
-function exportedTypeLocation(
+function visibleTypeLocation(
   in modules: Array<ResolvedModule>,
-  moduleIndex: usize,
+  ownerModuleIndex: usize,
+  requesterModuleIndex: usize,
   in name: String
 ): Option<ModuleSymbolLocation> {
-  const symbolIndex = moduleSymbolIndex(modules[moduleIndex], name);
+  const symbolIndex = moduleSymbolIndex(modules[ownerModuleIndex], name);
   if (
-    symbolIndex < modules[moduleIndex].symbols.length
-    && modules[moduleIndex].symbols[symbolIndex].exported
-    && isTypeSymbolKind(modules[moduleIndex].symbols[symbolIndex].kind)
-  ) return Option.some(ModuleSymbolLocation({ moduleIndex, symbolIndex }));
+    symbolIndex < modules[ownerModuleIndex].symbols.length
+    && (
+      modules[ownerModuleIndex].symbols[symbolIndex].exported
+      || (
+        modules[ownerModuleIndex].symbols[symbolIndex].packageVisible
+        && modules[ownerModuleIndex].packageIdentity.byteLength > 0
+        && modules[ownerModuleIndex].packageIdentity
+          == modules[requesterModuleIndex].packageIdentity
+      )
+    )
+    && isTypeSymbolKind(modules[ownerModuleIndex].symbols[symbolIndex].kind)
+  ) return Option.some(ModuleSymbolLocation({
+    moduleIndex: ownerModuleIndex,
+    symbolIndex,
+  }));
   return Option<ModuleSymbolLocation>.none;
 }
 
@@ -143,7 +155,12 @@ export function typeSymbolLocation(
         return Option<ModuleSymbolLocation>.none;
       }
       return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-        some(target) => exportedTypeLocation(modules, target, member);
+        some(target) => visibleTypeLocation(
+          modules,
+          target,
+          moduleIndex,
+          member
+        );
         none => {
           const exact = moduleSymbolIndex(modules[moduleIndex], typeName);
           if (
@@ -168,7 +185,12 @@ export function typeSymbolLocation(
         modules[moduleIndex].symbols[symbolIndex].importedName.byteLength
       );
       return match (in modules[moduleIndex].symbols[symbolIndex].targetModule) {
-        some(target) => exportedTypeLocation(modules, target, importedName);
+        some(target) => visibleTypeLocation(
+          modules,
+          target,
+          moduleIndex,
+          importedName
+        );
         none => Option<ModuleSymbolLocation>.none;
       };
     }
@@ -211,7 +233,15 @@ export function inferredTypeSymbolLocation(
     );
     if (
       candidateSymbolIndex < modules[candidateModuleIndex].symbols.length
-      && modules[candidateModuleIndex].symbols[candidateSymbolIndex].exported
+      && (
+        modules[candidateModuleIndex].symbols[candidateSymbolIndex].exported
+        || (
+          modules[candidateModuleIndex].symbols[candidateSymbolIndex].packageVisible
+          && modules[candidateModuleIndex].packageIdentity.byteLength > 0
+          && modules[candidateModuleIndex].packageIdentity
+            == modules[moduleIndex].packageIdentity
+        )
+      )
       && isTypeSymbolKind(
         modules[candidateModuleIndex].symbols[candidateSymbolIndex].kind
       )

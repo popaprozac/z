@@ -7,6 +7,8 @@ import type { ApiNotes } from "./foreign-api-notes.ts";
 export type ProjectBuild = {
   readonly manifestPath: string | null;
   readonly sourceImports: Readonly<Record<string, string>>;
+  /** Manifest-established package identities used for package-only visibility. */
+  readonly packages: readonly ProjectPackage[];
   readonly targetConfigured: boolean;
   readonly targetKind: "executable" | "static-library" | "shared-library";
   readonly targetName: string | null;
@@ -18,6 +20,13 @@ export type ProjectBuild = {
   readonly nativeLinkerArguments: readonly string[];
   readonly frameworks: readonly string[];
   readonly foreignApiNotes: Readonly<Record<string, ApiNotes>>;
+};
+
+export type ProjectPackage = {
+  /** Canonical manifest path; stable for every local reference to this package. */
+  readonly id: string;
+  readonly name: string;
+  readonly rootDirectory: string;
 };
 
 export type DeploymentTarget = {
@@ -71,6 +80,7 @@ type ProjectManifest = {
 const emptyBuild: ProjectBuild = {
   manifestPath: null,
   sourceImports: {},
+  packages: [],
   targetConfigured: false,
   targetKind: "executable",
   targetName: null,
@@ -415,6 +425,7 @@ function addPathDependencies(
   manifestPath: string,
   sourceImports: Record<string, string>,
   nativeRequirements: MutableNativeRequirements,
+  packageIdentities: ProjectPackage[],
   diagnosticFileName: string,
 ): void {
   const packages = new Map<string, string>();
@@ -456,6 +467,11 @@ function addPathDependencies(
       );
     }
     packages.set(declaredName, canonicalManifestPath);
+    packageIdentities.push({
+      id: canonicalManifestPath,
+      name: declaredName,
+      rootDirectory: dirname(canonicalManifestPath),
+    });
     for (const [specifier, sourcePath] of Object.entries(dependencyManifest.imports ?? {})) {
       addPackageSourceImport(
         sourceImports,
@@ -488,12 +504,21 @@ function addPathDependencies(
 }
 
 export function prepareProject(fileName: string): ProjectBuild {
-  const manifestPath = findManifest(fileName);
-  if (!manifestPath) return emptyBuild;
+  const discoveredManifestPath = findManifest(fileName);
+  if (!discoveredManifestPath) return emptyBuild;
+  const manifestPath = realpathSync(discoveredManifestPath);
   const directory = dirname(manifestPath);
   const manifest = readProjectManifest(manifestPath, fileName);
 
   const sourceImports: Record<string, string> = {};
+  const packages: ProjectPackage[] = [];
+  if (manifest.package?.name !== undefined) {
+    packages.push({
+      id: manifestPath,
+      name: manifest.package.name,
+      rootDirectory: directory,
+    });
+  }
   for (const [specifier, sourcePath] of Object.entries(manifest.imports ?? {})) {
     const resolvedSourcePath = resolve(directory, sourcePath);
     if (!existsSync(resolvedSourcePath)) {
@@ -519,6 +544,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     manifestPath,
     sourceImports,
     nativeRequirements,
+    packages,
     fileName,
   );
 
@@ -626,6 +652,7 @@ export function prepareProject(fileName: string): ProjectBuild {
     ...emptyBuild,
     manifestPath,
     sourceImports,
+    packages,
     targetConfigured: manifest.target !== undefined,
     targetKind,
     targetName,

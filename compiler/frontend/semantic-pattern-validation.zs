@@ -106,13 +106,28 @@ export function requireVisibleField(
   in bindings: Array<NativeValueBinding>,
   in field: NativeFieldShape
 ): void throws ModuleResolveError {
-  if (field.visibility != "private") return;
-  if (activeOwnerMatches(modules, moduleIndex, bindings, field)) return;
+  if (field.visibility == "public") return;
+  if (field.visibility == "private" && activeOwnerMatches(modules, moduleIndex, bindings, field)) return;
+  if (
+    field.visibility == "internal"
+    && modules[moduleIndex].packageIdentity.byteLength > 0
+    && modules[moduleIndex].packageIdentity
+      == modules[field.ownerModuleIndex].packageIdentity
+  ) return;
   let ownerKind = "struct";
   if (
     modules[field.ownerModuleIndex].symbols[field.ownerSymbolIndex].kind
     == ModuleSymbolKind.classSymbol
   ) ownerKind = "class";
+  if (field.visibility == "internal") {
+    throw moduleResolutionError(
+      ModuleResolveErrorKind.unknownMember,
+      module.path,
+      `field "${field.name}" is internal to its package`,
+      tree.nodes[index].line,
+      tree.nodes[index].column
+    );
+  }
   throw moduleResolutionError(
     ModuleResolveErrorKind.unknownMember,
     module.path,

@@ -3,6 +3,7 @@ import { Map } from "std/collections";
 export struct ModuleSource {
   path: String;
   source: String;
+  packageIdentity: String = "";
   packageSpecifiers: Array<String>;
 }
 
@@ -72,6 +73,7 @@ export function codedModuleResolutionError(
 
 export struct ResolvedModule {
   path: String;
+  packageIdentity: String;
   dependencies: Array<usize>;
   symbols: Array<ModuleSymbol>;
   symbolIndices: Map<String, usize>;
@@ -192,6 +194,7 @@ export struct ModuleSymbol {
   name: String;
   kind: ModuleSymbolKind;
   exported: boolean;
+  packageVisible: boolean;
   nativeCExport: boolean;
   targetModule: Option<usize>;
   importedName: String;

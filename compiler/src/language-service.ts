@@ -107,7 +107,7 @@ const completionKinds = {
 
 const sourceKeywordTokens = [
   "as", "async", "attempt", "await", "break", "class", "const", "constructor",
-  "continue", "declare", "deinit", "else", "enum", "export", "for", "from",
+  "continue", "declare", "deinit", "else", "enum", "export", "internal", "for", "from",
   "function", "if", "implements", "import", "in", "inout", "instanceof", "let", "match", "module",
   "copy", "move", "mut", "new", "of", "on", "out", "private", "public", "return", "scope", "select",
   "readonly", "static", "struct", "task", "test", "throw", "throws", "trait", "type", "try", "unsafe", "view",
@@ -1929,7 +1929,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
   const declaration = context.sourceProgram.imports[0];
   const sourceModule = declaration ? localSourceModule(context, declaration) : null;
   if (sourceModule) {
-    return [...sourceModule.exports.keys()].map((name) => ({
+    return visibleSourceModuleNames(context, sourceModule).map((name) => ({
       label: name,
       kind: sourceExportCompletionKind(sourceModule, name),
       detail: sourceExportDetail(sourceModule, name, context.typeDisplayNames),
@@ -1942,7 +1942,7 @@ function selectiveImportCandidates(specifier: string, fileName: string): Complet
 type ObjectFieldShape = {
   readonly name: string;
   readonly type: string;
-  readonly visibility: "public" | "private";
+  readonly visibility: "public" | "internal" | "private";
   readonly defaulted?: boolean;
   readonly optional?: boolean;
 };
@@ -2013,7 +2013,7 @@ function objectFieldCompletions(
       }
       if (fields) {
         const items = fields
-          .filter((field) => field.visibility === "public" && !used.has(field.name))
+          .filter((field) => field.visibility !== "private" && !used.has(field.name))
           .map((field) => ({
             label: field.name,
             kind: completionKinds.field,
@@ -2087,13 +2087,16 @@ function objectFieldsForType(
   if (context) {
     const aggregate = sourceAggregateForType(context, typeName);
     if (aggregate) {
-      return aggregate.declaration.fields.map((field) => ({
+      const includeInternal = canAccessInternalMembers(context, aggregate.declaration);
+      return aggregate.declaration.fields
+        .filter((field) => field.visibility === "public" || (field.visibility === "internal" && includeInternal))
+        .map((field) => ({
         name: field.name,
         type: displaySubstitutedType(field.type.name, aggregate.substitutions, context.typeDisplayNames),
         visibility: field.visibility,
         defaulted: Boolean(field.defaultValue) || Boolean(field.optional),
         optional: Boolean(field.optional),
-      }));
+        }));
     }
     const foreign = resolveForeignNamedTypeForText(context, typeName);
     if (foreign?.kind === "record") {
@@ -2159,8 +2162,12 @@ function localAggregateFields(source: string, typeName: string): ObjectFieldShap
         continue;
       }
       if (depth !== 1) continue;
-      const visibility = tokens[cursor].kind === "private" ? "private" : "public";
-      const nameIndex = tokens[cursor].kind === "private" || tokens[cursor].kind === "public"
+      const visibility = tokens[cursor].kind === "private"
+        ? "private"
+        : tokens[cursor].kind === "internal"
+        ? "internal"
+        : "public";
+      const nameIndex = tokens[cursor].kind === "private" || tokens[cursor].kind === "public" || tokens[cursor].kind === "internal"
         ? cursor + 1
         : cursor;
       const optional = tokens[nameIndex + 1]?.kind === "question";
@@ -4619,7 +4626,7 @@ function memberCompletions(
   ));
   const sourceModule = sourceImport ? localSourceModule(importContext, sourceImport) : null;
   if (sourceModule) {
-    return filterCompletions([...sourceModule.exports.keys()].map((name) => ({
+    return filterCompletions(visibleSourceModuleNames(importContext, sourceModule).map((name) => ({
       label: name,
       kind: sourceExportCompletionKind(sourceModule, name),
       detail: sourceExportDetail(sourceModule, name, importContext.typeDisplayNames),
@@ -4802,7 +4809,7 @@ function memberCompletions(
     const aggregate = iterationContext.program.structs.find((item) => item.name === iterationBinding.type);
     if (aggregate) {
       return filterCompletions(
-        structCompletions(aggregate, iterationContext.typeDisplayNames, false),
+        structCompletions(aggregate, iterationContext.typeDisplayNames, false, canAccessInternalMembers(iterationContext, aggregate)),
         prefix,
         1000,
       );
@@ -4815,7 +4822,7 @@ function memberCompletions(
   if (staticOwner) {
     const includePrivate = insideAggregateBody(source, fileName, offset, staticOwner.declaration.name);
     return filterCompletions(
-      staticCompletions(staticOwner.declaration, staticContext.typeDisplayNames, staticOwner.substitutions, includePrivate),
+      staticCompletions(staticOwner.declaration, staticContext.typeDisplayNames, staticOwner.substitutions, includePrivate, canAccessInternalMembers(staticContext, staticOwner.declaration)),
       prefix,
       1000,
     );
@@ -4917,7 +4924,7 @@ function memberCompletions(
       if (declaration) {
         const includePrivate = insideAggregateBody(source, fileName, offset, declaration.name);
         return filterCompletions(
-          structCompletions(declaration, importContext.typeDisplayNames, includePrivate, declaration),
+          structCompletions(declaration, importContext.typeDisplayNames, includePrivate, canAccessInternalMembers(importContext, declaration), declaration),
           prefix,
           1000,
         );
@@ -4930,7 +4937,7 @@ function memberCompletions(
   if (resolved?.kind === "struct") {
     const includePrivate = insideAggregateBody(source, fileName, offset, resolved.declaration.name);
     return filterCompletions(
-      structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate, resolved.sourceDeclaration),
+      structCompletions(resolved.declaration, context.typeDisplayNames, includePrivate, canAccessInternalMembers(context, resolved.declaration), resolved.sourceDeclaration),
       prefix,
       1000,
     );
@@ -5208,6 +5215,37 @@ function localSourceModule(context: AnalyzedSource, declaration: Program["import
     ?? null;
 }
 
+function visibleSourceModuleNames(
+  context: AnalyzedSource,
+  module: SourceModuleInfo,
+): readonly string[] {
+  const entry = context.sourceModuleBatch.modules.find((candidate) => (
+    candidate.fileName === context.sourceModuleBatch.entryFileName
+  ));
+  const includeInternal = entry?.packageId !== null
+    && entry?.packageId !== undefined
+    && entry.packageId === module.packageId;
+  return [...new Set([
+    ...module.exports.keys(),
+    ...(includeInternal ? module.internals.keys() : []),
+  ])];
+}
+
+function canAccessInternalMembers(
+  context: AnalyzedSource,
+  declaration: StructDeclaration,
+): boolean {
+  const current = context.sourceModuleBatch.modules.find((candidate) => (
+    candidate.fileName === context.sourceModuleBatch.entryFileName
+  ));
+  const declarationFile = declaration.location.fileName;
+  if (!current?.packageId || !declarationFile) return false;
+  const owner = context.sourceModuleBatch.modules.find((candidate) => (
+    candidate.fileName === declarationFile || resolve(candidate.fileName) === resolve(declarationFile)
+  ));
+  return owner?.packageId === current.packageId;
+}
+
 function localSourceBinding(
   context: AnalyzedSource,
   localName: string,
@@ -5266,17 +5304,18 @@ function sourceExportDetail(
   displayName = name,
 ): string {
   const declaration = sourceExportDeclaration(module, name);
-  if (!declaration) return `export ${displayName}`;
+  const access = module.internals.has(name) ? "internal " : "";
+  if (!declaration) return `${access || "export "}${displayName}`;
   if (declaration.kind === "constant") {
     const type = declaration.type?.name ?? "inferred";
     const once = parseOnceType(type);
     const affinity = once
       ? sourceProgramExecutorAffinity(module.program, once.valueType)
       : undefined;
-    return `const ${displayName}: ${displayType(type, typeDisplayNames)}${executorAffinityHover(affinity)}`;
+    return `${access}const ${displayName}: ${displayType(type, typeDisplayNames)}${executorAffinityHover(affinity)}`;
   }
   if (declaration.kind === "function") {
-    return zFunctionDetail(
+    return `${access}${zFunctionDetail(
       displayName,
       declaration.parameters,
       declaration.returnType.name,
@@ -5287,7 +5326,7 @@ function sourceExportDetail(
       declaration.errorType?.name,
       Boolean(declaration.executorAffinity),
       Boolean(declaration.threadContract),
-    );
+    )}`;
   }
   if (declaration.kind === "struct" || declaration.kind === "class") {
     const affinity = sourceProgramExecutorAffinity(module.program, declaration.name);
@@ -5299,23 +5338,23 @@ function sourceExportDetail(
       && affinity
       ? mixedClassLifecycleHover(affinity)
       : executorAffinityHover(affinity);
-    return `${declaration.kind} ${displayName}${formatTypeParameters(
+    return `${access}${declaration.kind} ${displayName}${formatTypeParameters(
       declaration.typeParameters ?? [],
       declaration.typeParameterConstraints ?? [],
       typeDisplayNames,
     )}${executor}${affinityDetail}`;
   }
   if (declaration.kind === "trait") {
-    return `trait ${displayName}${formatTypeParameters(
+    return `${access}trait ${displayName}${formatTypeParameters(
       declaration.typeParameters ?? [],
       declaration.typeParameterConstraints ?? [],
       typeDisplayNames,
     )}`;
   }
   if (declaration.kind === "type") {
-    return `type ${displayName} = ${displayType(declaration.target.name, typeDisplayNames)}`;
+    return `${access}type ${displayName} = ${displayType(declaration.target.name, typeDisplayNames)}`;
   }
-  return `${declaration.kind} ${displayName}`;
+  return `${access}${declaration.kind} ${displayName}`;
 }
 
 function sourceProgramExecutorAffinity(
@@ -5870,6 +5909,7 @@ function structCompletions(
   declaration: StructDeclaration,
   typeDisplayNames: ReadonlyMap<string, string>,
   includePrivate: boolean,
+  includeInternal: boolean,
   sourceDeclaration: StructDeclaration | null = null,
 ): CompletionItem[] {
   const methods = [
@@ -5880,14 +5920,14 @@ function structCompletions(
   ];
   return [
     ...declaration.fields
-      .filter((field) => field.visibility === "public" || includePrivate)
+      .filter((field) => field.visibility === "public" || (field.visibility === "internal" && includeInternal) || includePrivate)
       .map((field) => ({
         label: field.name,
         kind: completionKinds.field,
         detail: memberFieldCompletionDetail(field, typeDisplayNames),
       })),
     ...methods
-      .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || includePrivate))
+      .filter((method) => !method.static && ((method.visibility ?? "public") === "public" || ((method.visibility ?? "public") === "internal" && includeInternal) || includePrivate))
       .map((method) => ({
       label: method.name,
       kind: completionKinds.method,
@@ -5901,7 +5941,7 @@ function memberFieldCompletionDetail(
   field: StructDeclaration["fields"][number],
   typeDisplayNames: ReadonlyMap<string, string>,
 ): string {
-  const visibility = field.visibility === "private" ? "private " : "";
+  const visibility = field.visibility === "private" ? "private " : field.visibility === "internal" ? "internal " : "";
   const readonly = field.readonly ? "readonly " : "";
   const storedType = displayType(field.type.name, typeDisplayNames);
   const executor = field.executorAffinity ? " on thread.main" : "";
@@ -5914,7 +5954,7 @@ function fieldDetail(
   typeDisplayNames: ReadonlyMap<string, string>,
   sourceSpelling = false,
 ): string {
-  const visibility = field.visibility === "private" ? "private " : "";
+  const visibility = field.visibility === "private" ? "private " : field.visibility === "internal" ? "internal " : "";
   const readonly = field.readonly ? "readonly " : "";
   const defaulted = field.defaultValue ? " = default" : "";
   const storedType = displayType(field.type.name, typeDisplayNames);
@@ -5932,9 +5972,10 @@ function staticCompletions(
   typeDisplayNames: ReadonlyMap<string, string>,
   substitutions: ReadonlyMap<string, string>,
   includePrivate: boolean,
+  includeInternal: boolean,
 ): CompletionItem[] {
   return declaration.methods
-    .filter((method) => method.static && ((method.visibility ?? "public") === "public" || includePrivate))
+    .filter((method) => method.static && ((method.visibility ?? "public") === "public" || ((method.visibility ?? "public") === "internal" && includeInternal) || includePrivate))
     .map((method) => ({
       label: method.name,
       kind: completionKinds.method,

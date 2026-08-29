@@ -15,6 +15,12 @@ export struct NativePathDependency {
   path: String;
 }
 
+export struct NativePackageIdentity {
+  id: String;
+  name: String;
+  rootDirectory: String;
+}
+
 export struct NativeProjectConfig {
   manifestPath: Option<String>;
   directory: String;
@@ -29,6 +35,7 @@ export struct NativeProjectConfig {
   libraryLinkLibraries: Array<String>;
   libraryLinkFrameworks: Array<String>;
   dependencies: Array<NativePathDependency>;
+  packageIdentities: Array<NativePackageIdentity>;
   targetConfigured: boolean;
   targetKind: String;
   targetName: Option<String>;
@@ -65,6 +72,7 @@ function emptyProjectConfig(): NativeProjectConfig {
     libraryLinkLibraries: Array<String>(),
     libraryLinkFrameworks: Array<String>(),
     dependencies: Array<NativePathDependency>(),
+    packageIdentities: Array<NativePackageIdentity>(),
     targetConfigured: false,
     targetKind: "executable",
     targetName: Option<String>.none,
@@ -1178,6 +1186,20 @@ function appendResolvedSourceImport(
   }));
 }
 
+function appendPackageIdentity(
+  inout config: NativeProjectConfig,
+  in identity: NativePackageIdentity
+): void {
+  for (const existing of config.packageIdentities) {
+    if (existing.id == identity.id) return;
+  }
+  config.packageIdentities.push(NativePackageIdentity({
+    id: copy identity.id,
+    name: copy identity.name,
+    rootDirectory: copy identity.rootDirectory,
+  }));
+}
+
 function validateProjectConfigRecursive(
   inout config: NativeProjectConfig,
   in ancestors: Array<String>
@@ -1268,6 +1290,12 @@ function validateProjectConfigRecursive(
     if (!validSemanticVersion(packageVersion)) {
       throw `${manifestPath}:1:1: error: z.json package.version must be a semantic version such as "0.1.0"`;
     }
+    const identity = NativePackageIdentity({
+      id: copy manifestPath,
+      name: copy packageName,
+      rootDirectory: directoryName(manifestPath),
+    });
+    appendPackageIdentity(inout config, identity);
   }
   if (config.libraryConfigured && !config.packageConfigured) {
     throw `${manifestPath}:1:1: error: z.json library requires package metadata`;
@@ -1362,6 +1390,9 @@ function validateProjectConfigRecursive(
       throw `${manifestPath}:1:1: error: z.json dependency "${dependency.name}" points to package "${actualName}"`;
     }
     try validateProjectConfigRecursive(inout dependencyConfig, active);
+    for (const identity of dependencyConfig.packageIdentities) {
+      appendPackageIdentity(inout config, identity);
+    }
     for (const imported of dependencyConfig.sourceImports) {
       try appendResolvedSourceImport(
         inout config,

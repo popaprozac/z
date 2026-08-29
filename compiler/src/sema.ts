@@ -536,6 +536,7 @@ type StandardTypeName =
   | "Mutex";
 
 type AnalysisState = {
+  readonly packageIdsByFile: ReadonlyMap<string, string>;
   readonly warnings: DiagnosticError[];
   readonly warningKeys: Set<string>;
   readonly deploymentTarget: DeploymentTarget | null;
@@ -714,6 +715,47 @@ type ClosureInferenceOptions = {
   readonly executionContext?: ClosureExecutionContext;
 };
 
+function requireMemberVisibility(
+  visibility: FieldDeclaration["visibility"] | NonNullable<FunctionDeclaration["visibility"]> | undefined,
+  memberKind: "field" | "method" | "static method",
+  memberName: string,
+  declaration: StructDeclaration,
+  memberLocation: SourceLocation,
+  useLocation: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (visibility === "private" && state.activeReceiver !== declaration.name) {
+    throw new DiagnosticError(fileName, useLocation, `${memberKind} ${JSON.stringify(memberName)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
+  }
+  if (visibility !== "internal") return;
+  const declaringFile = memberLocation.fileName ?? declaration.location.fileName;
+  const usingFile = useLocation.fileName ?? fileName;
+  const declaringPackage = declaringFile ? state.packageIdsByFile.get(declaringFile) : undefined;
+  const usingPackage = usingFile ? state.packageIdsByFile.get(usingFile) : undefined;
+  if (declaringPackage && declaringPackage === usingPackage) return;
+  throw new DiagnosticError(fileName, useLocation, `${memberKind} ${JSON.stringify(memberName)} is internal to its package`, {
+    code: "Z0605",
+    labels: [{ location: memberLocation, message: "internal member declared here", length: memberName.length }],
+    helps: ["expose a public member when callers outside the package require this operation"],
+  });
+}
+
+function requireDestructuredFieldVisibility(
+  field: FieldDeclaration,
+  declaration: StructDeclaration,
+  useLocation: SourceLocation,
+  fileName: string,
+  state: AnalysisState,
+): void {
+  if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
+    throw new DiagnosticError(fileName, useLocation, `cannot destructure private field ${JSON.stringify(field.name)} of ${declaration.name}`, { code: "Z0220" });
+  }
+  if (field.visibility === "internal") {
+    requireMemberVisibility(field.visibility, "field", field.name, declaration, field.location, useLocation, fileName, state);
+  }
+}
+
 type AccessLoan = {
   readonly root: string;
   readonly fields?: readonly string[];
@@ -835,6 +877,7 @@ export function analyze(
     string,
     GenericAggregateMaterialization
   > = new Map(),
+  packageIdsByFile: ReadonlyMap<string, string> = new Map(),
 ): SemanticInfo {
   typeDisplayNames = new Map([
     ...typeDisplayNames,
@@ -972,6 +1015,7 @@ export function analyze(
     ]);
   }
   const state: AnalysisState = {
+    packageIdsByFile,
     warnings: [],
     warningKeys: new Set(),
     deploymentTarget,
@@ -2412,9 +2456,9 @@ function analyzeStructDeclaration(
       helps: ["initialize the field in the class constructor for now"],
     });
   }
-  if (declaration.kind === "class" && declaration.fields.some((field) => field.visibility === "private") && !declaration.constructor) {
-    const field = declaration.fields.find((candidate) => candidate.visibility === "private")!;
-    throw new DiagnosticError(fileName, field.location, `class ${JSON.stringify(declaration.name)} needs a constructor to initialize private field ${JSON.stringify(field.name)}`);
+  if (declaration.kind === "class" && declaration.fields.some((field) => field.visibility !== "public") && !declaration.constructor) {
+    const field = declaration.fields.find((candidate) => candidate.visibility !== "public")!;
+    throw new DiagnosticError(fileName, field.location, `class ${JSON.stringify(declaration.name)} needs a constructor to initialize ${field.visibility} field ${JSON.stringify(field.name)}`);
   }
   if (declaration.kind === "class" && declaration.methods.some((method) => !method.static && method.receiverMode === "move")) {
     const method = declaration.methods.find((candidate) => !candidate.static && candidate.receiverMode === "move")!;
@@ -4547,7 +4591,7 @@ function analyzeStatement(
         declaration,
         locals,
         fileName,
-        state.activeReceiver,
+        state,
       );
       if (declaration.deinitializer) {
         throw new DiagnosticError(fileName, statement.location, `cannot destructure ${declaration.name} because it defines deinit`, {
@@ -5273,9 +5317,7 @@ function analyzeStatement(
               throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
             }
             const field = resolveSemanticField(fieldBinding.fieldLocation, payloadDeclaration, declaredField, state);
-            if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
-              throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
-            }
+            requireMemberVisibility(field.visibility, "field", field.name, payloadDeclaration, field.location, fieldBinding.fieldLocation, fileName, state);
             resolvedObjectFields.set(fieldBinding.fieldName, field);
             validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
           }
@@ -6949,9 +6991,7 @@ function inferMatchExpression(
           throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `${payloadDeclaration.kind} ${JSON.stringify(payloadDeclaration.name)} has no field ${JSON.stringify(fieldBinding.fieldName)}`);
         }
         const field = resolveSemanticField(fieldBinding.fieldLocation, payloadDeclaration, declaredField, state);
-        if (field.visibility === "private" && state.activeReceiver !== payloadDeclaration.name) {
-          throw new DiagnosticError(fileName, fieldBinding.fieldLocation, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(payloadDeclaration.name)}`);
-        }
+        requireMemberVisibility(field.visibility, "field", field.name, payloadDeclaration, field.location, fieldBinding.fieldLocation, fileName, state);
         resolvedObjectFields.set(fieldBinding.fieldName, field);
         validateUserName(fieldBinding.bindingName, fieldBinding.bindingLocation, fileName);
       }
@@ -9486,6 +9526,13 @@ function inferExpressionInner(
         const field = declaration && "type" in declaredField
           ? resolveSemanticField(initializer.location, declaration, declaredField, state)
           : declaredField;
+        if (declaration && "visibility" in field && field.visibility === "internal") {
+          const synthesizedDefault = initializer.location.offset === field.location.offset
+            && initializer.location.fileName === field.location.fileName;
+          if (!synthesizedDefault) {
+            requireMemberVisibility(field.visibility, "field", field.name, declaration, field.location, initializer.location, fileName, state);
+          }
+        }
         const fieldType = "type" in field ? field.type.name : field.typeName;
         let actual = inferExpression(initializer.expression, locals, globals, structs, enums, fileName, state);
         actual = contextualCStringLiteral(fieldType, initializer.expression, state) ?? actual;
@@ -9956,9 +10003,7 @@ function inferExpressionInner(
         if (aggregate) {
           const method = aggregate.methods.find((candidate) => candidate.name === expression.property);
           if (method?.static) {
-            if (method.visibility === "private" && state.activeReceiver !== aggregate.name) {
-              throw new DiagnosticError(fileName, expression.location, `static method ${JSON.stringify(method.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
-            }
+            requireMemberVisibility(method.visibility, "static method", method.name, aggregate, method.location, expression.location, fileName, state);
             throw new DiagnosticError(fileName, expression.location, "static method values are not implemented; call the method instead");
           }
           if (method) {
@@ -10152,9 +10197,7 @@ function inferExpressionInner(
       const declaredField = declaration.fields.find((candidate) => candidate.name === expression.property);
       if (declaredField) {
         const field = resolveSemanticField(expression.location, declaration, declaredField, state);
-        if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
-          throw new DiagnosticError(fileName, expression.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(displayAssignableType(declaration.name, state))}`);
-        }
+        requireMemberVisibility(field.visibility, "field", field.name, declaration, field.location, expression.location, fileName, state);
         const memberAffinity = declaration.executorAffinity
           ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
           : state.fieldExecutorAffinities.get(`${declaration.name}.${field.name}`) ?? null;
@@ -11063,9 +11106,7 @@ function inferExpressionInner(
             if (!callable.static) {
               throw new DiagnosticError(fileName, expression.callee.location, `instance method ${JSON.stringify(callable.name)} must be called through a ${aggregate.name} value`);
             }
-            if (callable.visibility === "private" && state.activeReceiver !== aggregate.name) {
-              throw new DiagnosticError(fileName, expression.callee.location, `static method ${JSON.stringify(callable.name)} is private to ${aggregate.kind} ${JSON.stringify(aggregate.name)}`);
-            }
+            requireMemberVisibility(callable.visibility, "static method", callable.name, aggregate, callable.location, expression.callee.location, fileName, state);
             const staticAffinity = aggregate.executorAffinity
               ? state.aggregateExecutorAffinities.get(aggregate.name) ?? null
               : null;
@@ -12510,9 +12551,7 @@ function inferExpressionInner(
           : null;
         const fieldFunctionType = field ? parseFunctionType(field.type.name) : null;
         if (declaration && field && fieldFunctionType) {
-          if (field.visibility === "private" && state.activeReceiver !== declaration.name) {
-            throw new DiagnosticError(fileName, expression.callee.location, `field ${JSON.stringify(field.name)} is private to class ${JSON.stringify(declaration.name)}`);
-          }
+          requireMemberVisibility(field.visibility, "field", field.name, declaration, field.location, expression.callee.location, fileName, state);
           if (hasOwnershipType(receiverType, structs, enums, state) && !isNamedStorageExpression(expression.callee.object)) {
             throw new DiagnosticError(fileName, expression.callee.object.location, "a cleanup-bearing temporary must be bound before calling one of its function fields");
           }
@@ -12567,9 +12606,7 @@ function inferExpressionInner(
             helps: ["call the mutating or consuming method on the owner after the view's last use"],
           });
         }
-        if (callable.visibility === "private" && state.activeReceiver !== declaration.name) {
-          throw new DiagnosticError(fileName, expression.callee.location, `method ${JSON.stringify(callable.name)} is private to ${declaration.kind} ${JSON.stringify(declaration.name)}`);
-        }
+        requireMemberVisibility(callable.visibility, "method", callable.name, declaration, callable.location, expression.callee.location, fileName, state);
         const methodAffinity = declaration.executorAffinity
           ? state.aggregateExecutorAffinities.get(declaration.name) ?? null
           : null;
@@ -15409,7 +15446,7 @@ function resolveObjectBindingFields(
   declaration: StructDeclaration,
   locals: ReadonlyMap<string, ValueType>,
   fileName: string,
-  activeReceiver: string | null,
+  state: AnalysisState,
 ): Array<{ readonly binding: MatchObjectBinding; readonly field: FieldDeclaration }> {
   if (bindings.length === 0) {
     throw new DiagnosticError(fileName, declaration.location, "object destructuring requires at least one field", { code: "Z0220" });
@@ -15430,9 +15467,7 @@ function resolveObjectBindingFields(
     if (!field) {
       throw new DiagnosticError(fileName, binding.fieldLocation, `${declaration.name} has no field ${JSON.stringify(binding.fieldName)}`, { code: "Z0220" });
     }
-    if (field.visibility === "private" && activeReceiver !== declaration.name) {
-      throw new DiagnosticError(fileName, binding.fieldLocation, `cannot destructure private field ${JSON.stringify(binding.fieldName)} of ${declaration.name}`, { code: "Z0220" });
-    }
+    requireDestructuredFieldVisibility(field, declaration, binding.fieldLocation, fileName, state);
     return { binding, field };
   });
 }
@@ -15626,7 +15661,7 @@ function analyzeForLoop(
     });
   }
   const objectFields = statement.objectBindings && elementDeclaration
-    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state.activeReceiver)
+    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state)
     : [];
   if (statement.binding && statement.bindingLocation) {
     state.bindingTypes.set(statement.bindingLocation.offset, collection.elementType);
@@ -15812,7 +15847,7 @@ function analyzeIteratorForLoop(
     });
   }
   const objectFields = statement.objectBindings && elementDeclaration
-    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state.activeReceiver)
+    ? resolveObjectBindingFields(statement.objectBindings, elementDeclaration, locals, fileName, state)
     : [];
   if (statement.binding && statement.bindingLocation) {
     state.bindingTypes.set(statement.bindingLocation.offset, elementType);

@@ -158,9 +158,12 @@ function appendTypeSignature(
   appendStringArray(inout output, signature.implementedTraits);
   output.append(",\"fields\":[");
   let fieldIndex: usize = 0;
+  let emittedFields: usize = 0;
   while (fieldIndex < signature.fields.length) {
-    if (fieldIndex > 0) output.append(",");
     const field = view signature.fields[fieldIndex];
+    fieldIndex = fieldIndex + 1;
+    if (field.visibility != "public") continue;
+    if (emittedFields > 0) output.append(",");
     output.append("{\"name\":");
     appendQuoted(inout output, field.name);
     output.append(",\"typeName\":");
@@ -176,13 +179,16 @@ function appendTypeSignature(
     output.append(",\"optionalField\":");
     appendBoolean(inout output, field.optionalField);
     output.append("}");
-    fieldIndex = fieldIndex + 1;
+    emittedFields = emittedFields + 1;
   }
   output.append("],\"methods\":[");
   let methodIndex: usize = 0;
+  let emittedMethods: usize = 0;
   while (methodIndex < signature.methods.length) {
-    if (methodIndex > 0) output.append(",");
     const method = view signature.methods[methodIndex];
+    methodIndex = methodIndex + 1;
+    if (method.visibility != "public") continue;
+    if (emittedMethods > 0) output.append(",");
     output.append("{\"name\":");
     appendQuoted(inout output, method.name);
     output.append(",\"staticMethod\":");
@@ -194,7 +200,7 @@ function appendTypeSignature(
     output.append(",\"signature\":");
     appendFunctionSignature(inout output, method.signature);
     output.append("}");
-    methodIndex = methodIndex + 1;
+    emittedMethods = emittedMethods + 1;
   }
   output.append("],\"variants\":[");
   let variantIndex: usize = 0;
@@ -244,6 +250,27 @@ function appendSymbol(inout output: TextBuffer, in symbol: ModuleSymbol): void {
     none => output.append("null");
   }
   output.append(`,"location":{"offset":${symbol.offset},"line":${symbol.line},"column":${symbol.column}}}`);
+}
+
+function resolutionTargetsPublicMember(
+  in symbol: ModuleSymbol,
+  in resolution: ModuleCallResolution
+): boolean {
+  if (resolution.kind != "method" && resolution.kind != "staticMethod") {
+    return true;
+  }
+  match (in symbol.typeSignature) {
+    some(signature) => {
+      for (const method of signature.methods) {
+        if (
+          resolution.targetName == method.name
+          || resolution.targetName == `${symbol.name}.${method.name}`
+        ) return method.visibility == "public";
+      }
+    }
+    none => {}
+  }
+  return true;
 }
 
 function appendArgument(
@@ -502,6 +529,7 @@ export function emitProgramMetadata(
       if (resolution.targetSymbolIndex >= targetModule.symbols.length) continue;
       const targetSymbol = view targetModule.symbols[resolution.targetSymbolIndex];
       if (!targetSymbol.exported) continue;
+      if (!resolutionTargetsPublicMember(targetSymbol, resolution)) continue;
       if (emittedCalls > 0) output.append(",");
       try appendCall(
         inout output,
