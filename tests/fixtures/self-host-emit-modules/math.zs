@@ -21,6 +21,8 @@ export function add(first: i32, second: i32): i32 {
 export function integerParity(value: u8): i32 {
   const widened = usize(value);
   const signed = i32(widened);
+  const wideSigned = i64(signed);
+  if (wideSigned != 2) return 1;
   const native = usize(signed);
   const narrowed = u8(native);
   const maximum: u8 = 255;

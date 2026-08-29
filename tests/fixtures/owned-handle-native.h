@@ -44,6 +44,13 @@ static inline int z_owned_handle_read_with_policy(
   return handle->value + policy;
 }
 
+static inline int z_owned_handle_matches_label(
+  ZOwnedHandle *handle,
+  const char *label
+) {
+  return handle != NULL && label != NULL && label[0] == 'v' ? 1 : 0;
+}
+
 static inline int z_owned_handle_apply_policy(
   ZOwnedHandle *handle,
   int policy
@@ -74,6 +81,12 @@ static inline const char *z_owned_handle_label(ZOwnedHandle *handle) {
   return handle->value == 42 ? "answer" : "value";
 }
 
+static inline const unsigned char *z_owned_handle_unsigned_label(
+  ZOwnedHandle *handle
+) {
+  return (const unsigned char *)z_owned_handle_label(handle);
+}
+
 static inline int z_owned_child_read(ZOwnedChild *child) {
   return child == NULL ? -1 : child->value;
 }
@@ -85,10 +98,11 @@ static inline int z_owned_handle_advance(ZOwnedHandle *handle) {
   return handle->value;
 }
 
-static inline void z_owned_handle_close(ZOwnedHandle *handle) {
-  if (handle == NULL) return;
+static inline int z_owned_handle_close(ZOwnedHandle *handle) {
+  if (handle == NULL) return 0;
   z_owned_handle_closed_count += 1;
   free(handle);
+  return 0;
 }
 
 static inline int z_owned_handle_closed(void) {

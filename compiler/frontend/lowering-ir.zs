@@ -2705,6 +2705,16 @@ function lowerTypeName(
       name: "cstring",
     });
   }
+  if (name == "null") {
+    // A `.zd` null-only parameter is source-visible so callers must spell the
+    // sentinel explicitly, but it has no independent runtime value type.
+    // Lower it as the universal C pointer carrier; the expression itself emits
+    // NULL and the imported ABI signature remains authoritative.
+    return LoweredType({
+      kind: LoweredTypeKind.foreignHandleType,
+      name: "void *",
+    });
+  }
   if (name == "WeakExpired") {
     return LoweredType({
       kind: LoweredTypeKind.structType,
@@ -7654,6 +7664,23 @@ function staticallyResolvedExpressionTypeName(
     ));
   }
   if (
+    tree.nodes[index].kind == ExpressionKind.callExpression
+    && tree.nodes[index].children.length == 2
+  ) {
+    const callee = tree.nodes[index].children[0];
+    if (
+      tree.nodes[callee].kind == ExpressionKind.memberExpression
+      && tree.nodes[callee].value == "from"
+      && tree.nodes[callee].children.length == 1
+    ) {
+      const receiver = tree.nodes[callee].children[0];
+      if (
+        tree.nodes[receiver].kind == ExpressionKind.identifierExpression
+        && tree.nodes[receiver].value == "String"
+      ) return Option.some("String");
+    }
+  }
+  if (
     tree.nodes[index].kind == ExpressionKind.conditionalExpression
     && tree.nodes[index].children.length == 3
   ) {
@@ -11133,8 +11160,12 @@ function lowerExpressionContextual(
       tree.nodes[calleeInput].kind == ExpressionKind.identifierExpression
       && tree.nodes[index].children.length == 2
       && (
-        tree.nodes[calleeInput].value == "i32"
+        tree.nodes[calleeInput].value == "i8"
+        || tree.nodes[calleeInput].value == "i16"
+        || tree.nodes[calleeInput].value == "i32"
+        || tree.nodes[calleeInput].value == "i64"
         || tree.nodes[calleeInput].value == "u8"
+        || tree.nodes[calleeInput].value == "u16"
         || tree.nodes[calleeInput].value == "u32"
         || tree.nodes[calleeInput].value == "u64"
         || tree.nodes[calleeInput].value == "usize"
@@ -12998,6 +13029,18 @@ function lowerExpressionContextual(
         tree.nodes[calleeInput].value
       )
     ) standardTarget = "time.sleep";
+    if (
+      standardTarget.byteLength == 0
+      && tree.nodes[calleeInput].kind == ExpressionKind.memberExpression
+      && tree.nodes[calleeInput].value == "from"
+      && tree.nodes[calleeInput].children.length == 1
+    ) {
+      const stringOwner = tree.nodes[calleeInput].children[0];
+      if (
+        tree.nodes[stringOwner].kind == ExpressionKind.identifierExpression
+        && tree.nodes[stringOwner].value == "String"
+      ) standardTarget = "String.from";
+    }
     match (resolvedForeignCallTarget(evidence, tree, index)) {
       some(target) => foreignTarget = move target;
       none => {}
@@ -13604,10 +13647,29 @@ function lowerExpressionContextual(
         none => {}
       }
     }
+    let resultMode = "";
+    if (foreignTarget.byteLength > 0) {
+      match (evidenceResolvedExpressionTypeName(
+        program,
+        importedTypes,
+        evidence,
+        tree,
+        index
+      )) {
+        some(resultType) => {
+          if (
+            resultType == "cstring"
+            || resultType == "view cstring"
+            || resultType == "view cstring | null"
+          ) resultMode = "foreignCString";
+        }
+        none => {}
+      }
+    }
     return pushExpression(
       inout output,
       LoweredExpressionKind.directCall,
-      "",
+      resultMode,
       children,
       callLabels
     );

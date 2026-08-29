@@ -4384,6 +4384,36 @@ spread: readonly collection iteration must preserve its element type, and a
 consuming `Option<ReadonlyClass>` match must transfer or retain an owned class
 payload without discarding C qualifiers.
 
+## Z Notes product benchmark and direct SQLite ownership
+
+The first framework-neutral Z Notes benchmark moved beyond a window-opening
+probe: a packaged Zapp application now owns a SQLite-backed notes service,
+seeded persistence, typed create/list operations, embedded WebView assets, and
+deterministic cleanup. The native implementation imports `sqlite3.h` directly
+with a checked `.zd` contract and contains no handwritten C shim.
+
+That workload exposed several fixed-point differences that were easy to miss
+in narrower foreign fixtures. A C handle closer may return a status even though
+implicit `deinit` intentionally discards it (`sqlite3_close` is canonical);
+borrowed `const char *` inputs retain their source-level `in` loan while passing
+by value at the ABI; a contract can expose an explicit null-only pointer
+argument; `i32` to `i64` widening must compile as a direct representable cast;
+and borrowed `unsigned char *` text must cast to the C-string carrier before
+`String.from` performs one checked owned copy. Native inference, lowering,
+runtime selection, C emission, and differential fixtures now cover those
+shapes.
+
+The application also supplied useful negative evidence. SQLite's
+`SQLITE_TRANSIENT` is an expression-like C macro and does not yet enter Z's
+typed importer, so the benchmark currently passes the documented null
+destructor while keeping each Z string alive through `sqlite3_step` and
+statement finalization. This is safe but library-specific; general macro
+expressions remain importer work. Zapp's generated service codecs also do not
+yet support `Array<Note>`, so the first benchmark revision returns one typed
+page containing exact JSON for the collection. Neither boundary should be
+hidden by a shim: both are concrete pressure targets for the importer and
+generated-code layers.
+
 ## Not tested yet
 
 - child-task output and cross-thread borrows that survive suspension;

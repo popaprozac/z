@@ -11024,7 +11024,15 @@ function main(): i32 {
   );
   assert.match(
     emittedHandleSource,
-    /const char \* const label = z_owned_handle_label\(owner\)/,
+    /const char \* const label = \(\(const char \*\)\(z_owned_handle_unsigned_label\(owner\)\)\)/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /Z_String text = z_stage1_string_from_cstring\(label\)/,
+  );
+  assert.match(
+    emittedHandleSource,
+    /z_owned_handle_matches_label\(owner, z_stage1_string_cstring\(Z_STRING_LITERAL\("value"\)\)\)/,
   );
   assert.match(
     emittedHandleSource,
@@ -11571,6 +11579,10 @@ function main(): i32 {
   assert.match(
     emittedApplicationSource,
     /z_stage1_checked_convert_i32_to_usize\(z_signed\)/,
+  );
+  assert.match(
+    emittedApplicationSource,
+    /const int64_t wideSigned = \(\(int64_t\)\(z_signed\)\)/,
   );
   assert.match(
     emittedApplicationSource,

@@ -40,8 +40,10 @@ function inspectChild(): i32 {
 function inspectLabel(): i32 {
   const owner = native.z_owned_handle_open(42);
   if (owner == null) return -1;
-  const label = native.z_owned_handle_label(in owner);
+  const label = native.z_owned_handle_unsigned_label(in owner);
   if (label == null) return -2;
+  const text = String.from(label);
+  if (text != "answer") return -3;
   return native.z_owned_handle_read(in owner);
 }
 
@@ -51,6 +53,12 @@ function inspectFixedAndNullOnly(): i32 throws i32 {
   if (native.z_owned_handle_read_with_policy(in owner) != 51) return -2;
   try native.z_owned_handle_apply_policy(in owner);
   return native.z_owned_handle_has_null_tail(in owner, null);
+}
+
+function inspectBorrowedTextInput(): i32 {
+  const owner = native.z_owned_handle_open(42);
+  if (owner == null) return -1;
+  return native.z_owned_handle_matches_label(in owner, "value");
 }
 
 function propagateProducedFailure(): void throws i32 {
@@ -91,6 +99,8 @@ function main(): i32 {
   };
   if (fixedValue != 1) return 19;
   if (native.z_owned_handle_closed() != 6) return 20;
+  if (inspectBorrowedTextInput() != 1) return 21;
+  if (native.z_owned_handle_closed() != 7) return 22;
 
   const produced = attempt propagateProducedFailure();
   const producedStatus = match (produced) {
@@ -98,7 +108,7 @@ function main(): i32 {
     failure(status) => status;
   };
   if (producedStatus != 7) return 7;
-  if (native.z_owned_handle_closed() != 7) return 8;
+  if (native.z_owned_handle_closed() != 8) return 8;
 
   const empty = attempt propagateEmptyFailure();
   const emptyStatus = match (empty) {
@@ -106,7 +116,7 @@ function main(): i32 {
     failure(status) => status;
   };
   if (emptyStatus != -2) return 9;
-  if (native.z_owned_handle_closed() != 7) return 10;
+  if (native.z_owned_handle_closed() != 8) return 10;
 
   const opened = attempt openThroughOut();
   const openedValue = match (opened) {
@@ -114,6 +124,6 @@ function main(): i32 {
     failure(status) => status;
   };
   if (openedValue != 42) return 11;
-  if (native.z_owned_handle_closed() != 8) return 12;
+  if (native.z_owned_handle_closed() != 9) return 12;
   return 0;
 }

@@ -3976,6 +3976,7 @@ function appendExpression(
     if (
       source == target
       || source == "u8"
+      || (source == "i32" && target == "i64")
       || (source == "u32" && target == "u64")
       || (source == "usize" && target == "u64")
     ) {
@@ -4637,6 +4638,9 @@ function appendExpression(
     if (declaration.expressions[index].children.length == 0) {
       throw "native C emission received a malformed direct call";
     }
+    const foreignCString = declaration.expressions[index].value
+      == "foreignCString";
+    if (foreignCString) output.append("((const char *)(");
     const callee = declaration.expressions[index].children[0];
     if (
       declaration.expressions[callee].kind
@@ -4724,6 +4728,11 @@ function appendExpression(
         == LoweredExpressionKind.localValue
       && declaration.expressions[callee].value == "time.sleep"
     ) output.append("z_stage1_sleep");
+    else if (
+      declaration.expressions[callee].kind
+        == LoweredExpressionKind.localValue
+      && declaration.expressions[callee].value == "String.from"
+    ) output.append("z_stage1_string_from_cstring");
     else try appendExpression(inout output, declaration, callee);
     output.append("(");
     let argument: usize = 1;
@@ -4750,6 +4759,7 @@ function appendExpression(
       argument = argument + 1;
     }
     output.append(")");
+    if (foreignCString) output.append("))");
     return;
   }
   if (declaration.expressions[index].kind == LoweredExpressionKind.functionCall) {
@@ -18636,7 +18646,8 @@ function emitLoweredC(
     || usesCreateDirectories
     || usesRealPath
     || usesProcessArguments
-    || usesProcessRun;
+    || usesProcessRun
+    || programUsesStandardCall(program, "String.from");
   for (const declaration of program.functions) {
     if (declaration.nativeCExportName.byteLength == 0) continue;
     for (const parameter of declaration.parameters) {

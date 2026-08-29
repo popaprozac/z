@@ -17,6 +17,10 @@ declare module "owned-handle-native.h" {
     in handle: _,
     policy: _ { fixed Z_OWNED_HANDLE_POLICY; }
   ): _;
+  export function z_owned_handle_matches_label(
+    in handle: _,
+    in label: _
+  ): _;
   export function z_owned_handle_apply_policy(
     in handle: _,
     policy: _ { fixed Z_OWNED_HANDLE_POLICY; }
@@ -34,6 +38,11 @@ declare module "owned-handle-native.h" {
     borrowed from handle;
   }
   export function z_owned_handle_label(in handle: _): view cstring | null {
+    borrowed from handle;
+  }
+  export function z_owned_handle_unsigned_label(
+    in handle: _
+  ): view cstring | null {
     borrowed from handle;
   }
   export function z_owned_child_read(in child: _): _;

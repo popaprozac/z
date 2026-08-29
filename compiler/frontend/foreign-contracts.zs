@@ -2104,8 +2104,13 @@ function validateHandleRelease(
   const overload = view declarations.overloads[
     declarations.functions[releaseIndex].overloadStart
   ];
-  if (overload.parameterCount != 1 || overload.returnNativeType != "void") {
-    throw `native handle deinit "${release}" must take one pointer value and return void`;
+  // C handle closers frequently return a status (sqlite3_close is the
+  // canonical example). Cleanup still consumes the handle; Z deliberately
+  // discards that status on an implicit deinit path. Stage 0 validates the
+  // consumed pointer identity without requiring a void return, so native
+  // metadata must preserve the same contract.
+  if (overload.parameterCount != 1) {
+    throw `native handle deinit "${release}" must take one pointer value`;
   }
   const parameter = view declarations.parameters[overload.parameterStart];
   let matches = parameter.nativeType == nativeType;
@@ -3386,6 +3391,39 @@ export function normalizeForeignContracts(
         }));
         parameterIndex = parameterIndex + 1;
         continue;
+      }
+      const borrowedTextInput = attempt foreignValueTypeName(
+        declarations,
+        types,
+        declarations.parameters[rawParameterIndex].nativeType,
+        declarations.parameters[rawParameterIndex].canonicalNativeType
+      );
+      match (borrowedTextInput) {
+        success(typeName) => {
+          if (
+            contract.parameters[parameterIndex].capability == "in"
+            && typeName == "cstring"
+          ) {
+            // `in` is the Z source capability for borrowed text, but a C
+            // character pointer is already passed directly at the ABI. Keep
+            // the source-level loan while lowering the native argument as a
+            // value, matching Stage 0 and header-only inference.
+            parameters.push(NativeForeignParameterContract({
+              name: contract.parameters[parameterIndex].name.copyBytes(
+                0,
+                contract.parameters[parameterIndex].name.byteLength
+              ),
+              capability: "in",
+              abiMode: "value",
+              typeName: "cstring",
+              nullOnly: false,
+              fixedValue: "",
+            }));
+            parameterIndex = parameterIndex + 1;
+            continue;
+          }
+        }
+        failure(_) => {}
       }
       const scalarPointer = resolvedScalarPointerShape(
         declarations,
